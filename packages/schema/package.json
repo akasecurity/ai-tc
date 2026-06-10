@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "drizzle-orm": "^0.44.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

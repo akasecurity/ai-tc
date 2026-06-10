@@ -1,4 +1,4 @@
 export { getLoadedRules, redact, registerPack, scan } from './engine.ts';
-export type { MatchResult, Matcher, RulePack, ScanResult } from './types.ts';
-export { luhnCheck } from './validators/luhn.ts';
+export type { Matcher, MatchResult, RulePack, ScanResult } from './types.ts';
 export { isHighEntropy, shannonEntropy } from './validators/entropy.ts';
+export { luhnCheck } from './validators/luhn.ts';

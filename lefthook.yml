@@ -1,7 +1,7 @@
 pre-commit:
   commands:
     format-staged:
-      glob: '*.{ts,tsx,mts,cts,json,md,yaml,yml}'
+      glob: '*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,json,md,yaml,yml}'
       run: pnpm exec prettier --write {staged_files} && git add {staged_files}
 
 commit-msg:

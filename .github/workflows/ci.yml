@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs: a new push to the same branch/PR stops the in-flight
+# run instead of letting both finish. Saves the most Actions minutes on PRs that
+# are pushed to repeatedly while iterating. main keeps a stable group per ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Persist Turbo's local task cache across runs. Without this the runner
+      # starts empty every time, so lint/typecheck/test/build re-run from
+      # scratch for every package even when a PR touches only one.
+      #
+      # Cache-correctness invariants (a stale hit here = a false-green CI):
+      #   - Root inputs that live outside any package and would otherwise be
+      #     invisible to Turbo are declared in turbo.json globalDependencies:
+      #     tsconfig.base.json (extended by every package's tsconfig) and
+      #     rules/** (the built-in rule packs that plugin-sdk and detections
+      #     load and test directly). Editing either busts every package's hash.
+      #   - Cross-package invalidation for `test` and `build` flows through
+      #     `^typecheck` (every lib has a typecheck task whose hash includes
+      #     its source); `^build` alone was insufficient because libs are
+      #     consumed as raw source and have no build task. See the test/build
+      #     dependsOn in turbo.json.
+      #   - format:check (prettier), check:boundaries, and check:comments run
+      #     outside Turbo, so they are never cached and always run fresh; the
+      #     shared ESLint ruleset is graph-tracked via the ^lint edge to
+      #     @akasecurity/eslint-config.
+      #
+      # Key is scoped by lockfile hash so a dependency bump starts a fresh
+      # cache lineage instead of dragging the old tree forward forever; the
+      # per-commit suffix keeps entries immutable. restore-keys warm-start
+      # from the newest compatible prior cache. GitHub's 10 GB LRU + 7-day
+      # eviction bounds total growth.
+      - name: Restore Turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-${{ runner.os }}-
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Package boundary check (no forbidden imports across package walls)
+        run: pnpm check:boundaries
+
+      - name: Comment-hygiene check
+        run: pnpm check:comments
+
+      - name: Installer checksum self-check (bootstrap pins match install.mjs)
+        run: node tools/installer/checksum-selfcheck.mjs
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
+  # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
+  # processes — gets exercised on windows-latest. Scoped to the shipped-surface
+  # packages to keep the job fast; the full suite runs on the Linux job above.
+  windows:
+    name: Windows · Unit tests (shipped surface)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test shipped-surface packages
+        # --continue: report every package's failures in one run instead of
+        # hiding later packages behind the first red one.
+        run: >
+          pnpm turbo run test
+          --continue
+          --filter=@akasecurity/schema
+          --filter=@akasecurity/extract
+          --filter=@akasecurity/detections
+          --filter=@akasecurity/persistence
+          --filter=@akasecurity/plugin-sdk
+          --filter=@akasecurity/plugin-runtime
+          --filter=@akasecurity/scanner
+          --filter=@akasecurity/local-ops

@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/email",
+  "name": "Email address",
+  "category": "pii",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\\.[A-Za-z]{2,24}\\b",
+    "flags": "g"
+  },
+  "examples": ["user@example.com"]
+}

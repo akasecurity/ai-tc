@@ -1,0 +1,31 @@
+node_modules
+dist
+.turbo
+coverage
+*.local
+.env
+.env.*
+!.env.example
+docs/site
+*.tsbuildinfo
+
+.idea/
+.vscode/
+.pnpm-store/
+.atl/
+
+.DS_Store
+plugins/claude-code/scripts/
+
+# Per-developer Claude Code settings (plugin enablement etc.) stay local.
+.claude/settings.local.json
+
+# Optional local pattern overlay for scripts/check-comment-hygiene.mjs — never committed.
+scripts/comment-hygiene.local.json
+
+# local agent-tooling state — not product code
+.wolf/
+
+# Claude Code project config stays local — never ship agent-tooling config
+.claude/settings.json
+.claude/rules/

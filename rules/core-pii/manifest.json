@@ -1,0 +1,22 @@
+{
+  "specVersion": 1,
+  "id": "core-pii",
+  "name": "Core PII",
+  "version": "2.1.0",
+  "rules": [
+    "email",
+    "ssn",
+    "phone-us",
+    "phone-intl",
+    "ip-address",
+    "dob",
+    "drivers-license-us",
+    "passport-us",
+    "home-address",
+    "name",
+    "vin",
+    "mac-address",
+    "national-id",
+    "zip"
+  ]
+}

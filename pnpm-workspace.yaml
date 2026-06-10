@@ -1,0 +1,13 @@
+packages:
+  - 'packages/*'
+  - 'cli'
+  - 'web-ui'
+  - 'plugins/*'
+  - 'docs'
+  - 'tools/*'
+
+onlyBuiltDependencies:
+  - esbuild
+  - lefthook
+  - sharp
+  - unrs-resolver

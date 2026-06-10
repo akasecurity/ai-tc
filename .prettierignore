@@ -1,0 +1,20 @@
+node_modules
+dist
+.turbo
+.next
+coverage
+plugins/claude-code/scripts
+*.sql
+pnpm-lock.yaml
+
+# Local-only, git-ignored dev files (never committed; keep format:check from
+# scanning a developer's machine state). The worktrees are OTHER agent
+# sessions' live checkouts — a root format must never touch their state.
+.claude/settings.local.json
+.claude/worktrees
+
+# drizzle-kit generated migration metadata (journals/snapshots) — not prettier-managed
+**/drizzle/**/meta
+
+.wolf/
+.gitattributes

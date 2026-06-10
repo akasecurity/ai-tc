@@ -1,0 +1,29 @@
+{
+  "name": "@akasecurity/plugin-sdk",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "gen:bundled-packs": "node scripts/gen-bundled-packs.mjs",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@akasecurity/detections": "workspace:*",
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "ignore": "^7.0.5",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@types/node": "^25.9.3",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

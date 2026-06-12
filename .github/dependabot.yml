@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # pnpm workspace — single root lockfile covers every workspace package
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # MkDocs site
+  - package-ecosystem: pip
+    directory: '/docs'
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      pip-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # CI workflow actions
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

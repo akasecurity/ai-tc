@@ -4,19 +4,29 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./theme.css": "./src/styles/theme.css",
+    "./styles/*": "./src/styles/*"
   },
   "scripts": {
     "lint": "eslint src",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.6",
+    "@radix-ui/react-slot": "^1.1.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.544.0",
+    "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
     "@aka/eslint-config": "workspace:*",
-    "@types/react": "^19.0.0",
+    "@types/react": "^19.2.17",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0"
   }

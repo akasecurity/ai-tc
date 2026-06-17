@@ -1,0 +1,76 @@
+name: Release rules
+
+# Publishes the repo's base rule packs (rules/<pack>/) to the global rule
+# registry under the `aka` namespace. The registry derives a content hash
+# and treats published (pack, version) pairs as immutable: an unchanged re-publish
+# is a no-op, and changed content without a manifest.version bump fails with 409 —
+# so this workflow enforces that rule edits are versioned.
+#
+# Release flow: bump `version` in the changed rules/<pack>/manifest.json, then
+# push a tag `rules-v<date-or-semver>` (e.g. rules-v2026.06.17).
+
+on:
+  push:
+    tags:
+      - 'rules-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the registry (otherwise validate-only — a dry run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Validate · Publish
+    runs-on: ubuntu-latest
+    # Lifted to job env so the notify step can gate on it in `if:` (the secrets
+    # context is not available in step conditionals; the env context is).
+    env:
+      RULES_PUBLISH_TOKEN: ${{ secrets.RULES_PUBLISH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fixtures are the correctness gate — a rule whose fixtures fail never ships.
+      - name: Test detection engine (fixtures)
+        run: pnpm turbo run test --filter=@akasecurity/detections
+
+      # Publishing runs in the repo configured via the RULES_PUBLISHER_REPO
+      # variable — it holds the registry credentials. Once the fixtures pass,
+      # notify it via a repository_dispatch; its workflow checks out these rules
+      # and runs the publisher. No registry URL or secret is referenced here, and
+      # forks (where the dispatch token is unset) skip the dispatch.
+      - name: Notify rules publisher
+        if: (github.event_name == 'push' || inputs.publish) && env.RULES_PUBLISH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.RULES_PUBLISH_TOKEN }}
+          RULES_PUBLISHER_REPO: ${{ vars.RULES_PUBLISHER_REPO }}
+        run: |
+          gh api "repos/${RULES_PUBLISHER_REPO}/dispatches" \
+            -f event_type=rules-publish \
+            -F client_payload[ref]="${GITHUB_REF}" \
+            -F client_payload[sha]="${GITHUB_SHA}"
+
+      # On the canonical repo a missing/rotated-away dispatch token must fail the
+      # run, not silently skip it — otherwise a rules tag looks released while
+      # nothing was published. Forks still no-op above.
+      - name: Fail if the publish dispatch is not configured
+        if: (github.event_name == 'push' || inputs.publish) && github.repository == 'akasecurity/ai-tc' && env.RULES_PUBLISH_TOKEN == ''
+        run: |
+          echo "::error::rules release requested but the RULES_PUBLISH_TOKEN secret is not configured — nothing was published"
+          exit 1

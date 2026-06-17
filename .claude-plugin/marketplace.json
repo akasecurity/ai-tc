@@ -1,0 +1,22 @@
+{
+  "name": "ai-tc",
+  "owner": {
+    "name": "AKA Security",
+    "url": "https://github.com/akasecurity/ai-tc"
+  },
+  "description": "AI Traffic Control plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "aka",
+      "source": {
+        "source": "npm",
+        "package": "@akasecurity/plugin-claude-code"
+      },
+      "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code. Local detection with inline warn/redact/block policies; every event is recorded to a local SQLite store on your machine.",
+      "author": {
+        "name": "AKA Security"
+      },
+      "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/claude-code"
+    }
+  ]
+}

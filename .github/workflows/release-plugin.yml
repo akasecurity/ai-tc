@@ -1,0 +1,120 @@
+name: Release plugin
+
+# Publishes the Claude Code plugin package to the public npm registry and
+# attaches the packed tarball to a GitHub Release. The plugin's hook scripts are
+# a build artifact (plugins/claude-code/scripts/, git-ignored) — they are
+# generated here and shipped inside the package, never committed. End users
+# install via the `ai-tc` marketplace, whose source resolves this package.
+#
+# Release flow: bump version in package.json + .claude-plugin/plugin.json, then
+# push a tag `plugin-v<version>` (e.g. plugin-v0.1.0).
+
+on:
+  push:
+    tags:
+      - 'plugin-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm (otherwise build + pack only — a dry run)'
+        type: boolean
+        default: false
+
+jobs:
+  # Tag pushes get no run of the main CI workflow (it triggers only on main
+  # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
+  # publishes from a commit that would fail CI.
+  verify:
+    name: Lint · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+  release:
+    name: Build · Verify · Publish
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/plugin-claude-code
+
+      - name: Verify tag matches manifest versions
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#plugin-v}"
+          pkg=$(node -p "require('./plugins/claude-code/package.json').version")
+          manifest=$(node -p "require('./plugins/claude-code/.claude-plugin/plugin.json').version")
+          echo "tag=$tag  package.json=$pkg  plugin.json=$manifest"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$manifest" ]; then
+            echo "::error::Version mismatch — tag plugin-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
+            exit 1
+          fi
+
+      - name: Smoke-test built scripts (self-contained, fail-open)
+        run: |
+          cd plugins/claude-code
+          for f in user-prompt-submit pre-tool-use post-tool-use sync; do
+            test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
+          done
+          # The hooks run on the user's machine with no node_modules; junk input
+          # must produce no output and exit 0 (the fail-open contract).
+          echo 'not json' | node scripts/user-prompt-submit.js
+          echo "fail-open OK"
+
+      - name: Pack tarball (release asset)
+        run: pnpm --filter @akasecurity/plugin-claude-code pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.publish
+        run: pnpm --filter @akasecurity/plugin-claude-code publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          files: ${{ runner.temp }}/*.tgz
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-v0.') }}

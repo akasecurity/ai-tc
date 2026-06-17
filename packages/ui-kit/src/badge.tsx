@@ -1,18 +1,49 @@
+import { cva, type VariantProps } from 'class-variance-authority';
 import type { ReactNode } from 'react';
 
-interface BadgeProps {
-  variant?: 'critical' | 'high' | 'medium' | 'low' | 'default';
+import { cn } from './lib/cn.ts';
+
+const badgeVariants = cva(
+  'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold',
+  {
+    variants: {
+      variant: {
+        default: 'bg-surface-3 text-text-2',
+        outline: 'border border-border text-text-2',
+        critical: 'bg-sev-critical-fill text-sev-critical',
+        high: 'bg-sev-high-fill text-sev-high',
+        medium: 'bg-sev-medium-fill text-sev-medium',
+        low: 'bg-sev-low-fill text-sev-low',
+      },
+    },
+    defaultVariants: { variant: 'default' },
+  },
+);
+
+export type Severity = 'critical' | 'high' | 'medium' | 'low';
+
+export interface BadgeProps extends VariantProps<typeof badgeVariants> {
   children: ReactNode;
+  className?: string;
 }
 
-const VARIANT_CLASSES: Record<NonNullable<BadgeProps['variant']>, string> = {
-  critical: 'badge badge--critical',
-  high: 'badge badge--high',
-  medium: 'badge badge--medium',
-  low: 'badge badge--low',
-  default: 'badge',
+export function Badge({ variant, className, children }: BadgeProps) {
+  return <span className={cn(badgeVariants({ variant }), className)}>{children}</span>;
+}
+
+const DOT_CLASS: Record<Severity, string> = {
+  critical: 'bg-sev-critical',
+  high: 'bg-sev-high',
+  medium: 'bg-sev-medium',
+  low: 'bg-sev-low',
 };
 
-export function Badge({ variant = 'default', children }: BadgeProps) {
-  return <span className={VARIANT_CLASSES[variant]}>{children}</span>;
+/** A severity pill with a leading status dot — capitalizes the label. */
+export function SeverityBadge({ severity }: { severity: Severity }) {
+  return (
+    <Badge variant={severity}>
+      <span className={cn('size-1.5 rounded-full', DOT_CLASS[severity])} />
+      <span className="capitalize">{severity}</span>
+    </Badge>
+  );
 }

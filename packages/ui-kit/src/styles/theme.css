@@ -1,0 +1,62 @@
+/* ============================================================
+   AKA — AI Control Plane · design tokens for Tailwind v4
+   Ported from the Figma export (design/fig-tokens.css) and the
+   semantic layer in the mockups (styles.css). These @theme tokens
+   generate Tailwind utilities: bg-surface, text-text-2,
+   border-border, bg-sev-critical-fill, text-sev-critical, font-display…
+   ============================================================ */
+@theme {
+  /* surfaces */
+  --color-canvas: #f9fafb;
+  --color-surface: #ffffff;
+  --color-surface-2: #f9fafb;
+  --color-surface-3: #f1f2f4;
+  --color-border: #e3e5e8;
+  --color-border-strong: #d6d8dc;
+
+  /* text */
+  --color-text: #252f3d;
+  --color-text-2: #5d6572;
+  --color-text-3: #838995;
+  --color-text-inv: #ffffff;
+
+  /* brand */
+  --color-primary: #2c3cf2;
+  --color-primary-hover: #1d2de2;
+  --color-primary-tint: #f3f7ff;
+  --color-brand: #33e6c6;
+
+  /* severity (foreground + fill tint) */
+  --color-sev-critical: #e63448;
+  --color-sev-critical-fill: #ffe8ed;
+  --color-sev-high: #e97a0a;
+  --color-sev-high-fill: #ffecd9;
+  --color-sev-medium: #f7bd00;
+  --color-sev-medium-fill: #fdf5db;
+  --color-sev-low: #0581d4;
+  --color-sev-low-fill: #dff1fd;
+
+  /* typefaces */
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, 'Menlo', monospace;
+
+  /* type scale — named tiers from the design (14px body is set on <body>).
+     text-ui    13px — chrome: breadcrumbs, nav, secondary labels
+     text-label 11px — uppercase section headings */
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.4;
+  --text-label: 0.6875rem;
+  --text-label--line-height: 1.2;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-ui);
+    color: var(--color-text);
+    background: var(--color-canvas);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}

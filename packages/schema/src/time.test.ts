@@ -9,10 +9,10 @@ describe('time helpers', () => {
     expect(isoToEpochMillis(epochMillisToIso(ms))).toBe(ms);
   });
 
-  it('epochMillisToIso output satisfies z.string().datetime()', () => {
+  it('epochMillisToIso output satisfies z.iso.datetime()', () => {
     const ms = 1749571200000;
     const iso = epochMillisToIso(ms);
-    const result = z.string().datetime().safeParse(iso);
+    const result = z.iso.datetime().safeParse(iso);
     expect(result.success).toBe(true);
   });
 

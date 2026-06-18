@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { createPolicyStore } from './policy-store.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
@@ -60,5 +61,36 @@ describe('runtime without a synced policy bundle', () => {
   it('reports policy as absent and stale', async () => {
     const runtime = await makeRuntime();
     expect(await runtime.policyStatus()).toEqual({ present: false, stale: true, version: null });
+  });
+});
+
+describe('runtime with synced installed-pack rules', () => {
+  it('enforces rules delivered in the synced bundle (not just bundled packs)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'aka-runtime-installed-'));
+    const store = createPolicyStore(dir);
+    await store.write({
+      version: '1',
+      policies: [],
+      // A rule that exists ONLY in the synced bundle — no bundled pack has it.
+      rules: [
+        {
+          specVersion: 1,
+          id: 'aka-labs/installed-marker',
+          name: 'Installed marker',
+          category: 'secret',
+          severity: 'critical',
+          matcher: { type: 'keyword', keywords: ['INSTALLED_MARKER'], caseSensitive: false },
+        },
+      ],
+      customKeywords: [],
+      fetchedAt: new Date().toISOString(),
+    });
+
+    const runtime = createPluginRuntime({ backendUrl: '', token: '', dataDir: dir });
+    const result = await runtime.processText('here is INSTALLED_MARKER value');
+
+    // secret → block via DEFAULT_ACTIONS, proving the synced rule was registered.
+    expect(result.action).toBe('block');
+    expect(result.findings.map((f) => f.ruleId)).toContain('aka-labs/installed-marker');
   });
 });

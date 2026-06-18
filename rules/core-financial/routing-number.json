@@ -1,0 +1,14 @@
+{
+  "specVersion": 1,
+  "id": "core-financial/routing-number",
+  "name": "US bank routing number (ABA)",
+  "category": "financial",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:routing|aba|rtn)\\b[\\s#:=-]{0,8}(\\d{9})\\b",
+    "flags": "gi",
+    "captureGroup": 1
+  },
+  "examples": ["Routing: 021000021", "ABA 111000025"]
+}

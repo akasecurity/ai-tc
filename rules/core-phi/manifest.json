@@ -1,0 +1,7 @@
+{
+  "specVersion": 1,
+  "id": "core-phi",
+  "name": "Protected Health Information",
+  "version": "1.0.0",
+  "rules": ["mrn", "hipaa-identifier", "icd10-code", "ndc-code", "genetic-data", "biometric-ref"]
+}

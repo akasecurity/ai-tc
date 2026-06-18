@@ -1,0 +1,22 @@
+[
+  {
+    "label": "SWIFT 8-char with label",
+    "text": "SWIFT: BOFAUS3N",
+    "shouldMatch": true
+  },
+  {
+    "label": "BIC 11-char with label",
+    "text": "BIC: CHASGB2LXXX",
+    "shouldMatch": true
+  },
+  {
+    "label": "8-letter uppercase word without SWIFT context",
+    "text": "Section ABCDEFGH follows",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short with context",
+    "text": "SWIFT: ABCD",
+    "shouldMatch": false
+  }
+]

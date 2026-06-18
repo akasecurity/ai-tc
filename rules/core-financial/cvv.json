@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-financial/cvv",
+  "name": "Card security code (CVV/CVC)",
+  "category": "financial",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:CVV|CVC|CID|security\\s+code|card\\s+code)[:\\s]*\\d{3,4}\\b",
+    "flags": "gi"
+  },
+  "examples": ["CVV: 123", "CVC: 456"]
+}

@@ -1,0 +1,17 @@
+{
+  "specVersion": 1,
+  "id": "core-financial/iban",
+  "name": "International Bank Account Number",
+  "category": "financial",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b[A-Z]{2}\\d{2}[A-Z0-9 ]{10,30}\\b",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "labels": ["iban", "bank", "account", "bic", "swift"],
+    "windowChars": 160
+  },
+  "examples": ["IBAN: GB82 WEST 1234 5698 7654 32", "IBAN: DE89 3704 0044 0532 0130 00"]
+}

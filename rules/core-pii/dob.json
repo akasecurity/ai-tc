@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/dob",
+  "name": "Date of birth",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:(?:19[4-9]\\d|20[0-1]\\d)[/-]\\d{1,2}[/-]\\d{1,2}|\\d{1,2}[/-]\\d{1,2}[/-](?:19[4-9]\\d|20[0-1]\\d))\\b",
+    "flags": "g"
+  },
+  "examples": ["1985-03-22", "03/22/1985"]
+}

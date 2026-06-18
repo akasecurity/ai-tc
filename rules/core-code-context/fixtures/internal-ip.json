@@ -1,0 +1,27 @@
+[
+  {
+    "label": "10.x.x.x",
+    "text": "Server: 10.0.0.5",
+    "shouldMatch": true
+  },
+  {
+    "label": "192.168.x.x",
+    "text": "Connect to 192.168.1.100",
+    "shouldMatch": true
+  },
+  {
+    "label": "172.16.x.x",
+    "text": "Docker: 172.17.0.2",
+    "shouldMatch": true
+  },
+  {
+    "label": "public IP (should not match RFC 1918)",
+    "text": "Server: 8.8.8.8",
+    "shouldMatch": false
+  },
+  {
+    "label": "not IP",
+    "text": "10.999.999.999",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "DNA reference",
+    "text": "My DNA sequence shows a variant in the BRCA1 gene",
+    "shouldMatch": true
+  },
+  {
+    "label": "genetic test",
+    "text": "My genetic test results indicate I am a carrier",
+    "shouldMatch": true
+  },
+  {
+    "label": "not genetic",
+    "text": "The DNA of the organization is innovative",
+    "shouldMatch": false
+  },
+  {
+    "label": "generic",
+    "text": "The test results are ready",
+    "shouldMatch": false
+  }
+]

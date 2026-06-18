@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/vin",
+  "name": "Vehicle Identification Number",
+  "category": "pii",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b[A-HJ-NPR-Z0-9]{17}\\b",
+    "flags": "g"
+  },
+  "examples": ["1HGCM82633A004352"]
+}

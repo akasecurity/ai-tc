@@ -1,0 +1,22 @@
+[
+  {
+    "label": "MRN label",
+    "text": "MRN: 1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "medical record text",
+    "text": "Medical Record: ABCD1234",
+    "shouldMatch": true
+  },
+  {
+    "label": "no MRN context",
+    "text": "Record: 12345",
+    "shouldMatch": false
+  },
+  {
+    "label": "random number",
+    "text": "The number is 1234567890123456",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "specVersion": 1,
+  "id": "core-phi/biometric-ref",
+  "name": "Biometric data reference",
+  "category": "phi",
+  "severity": "high",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "fingerprint data",
+      "fingerprint scan",
+      "my iris scan",
+      "my retina scan",
+      "my biometric",
+      "my facial recognition",
+      "my voiceprint",
+      "my palm print",
+      "my hand geometry"
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["My fingerprint data is stored in the biometric database"]
+}

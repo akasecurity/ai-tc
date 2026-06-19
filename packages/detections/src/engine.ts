@@ -60,10 +60,11 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
   if (!req) return true;
 
   // windowChars has a schema default (160), so it is always present post-parse.
-  const window = req.windowChars;
+  // It is a radius applied on both sides of the span, hence "half window".
+  const halfWindow = req.windowChars;
   const { start, end } = candidate.match.span;
-  const winStart = start - window;
-  const winEnd = end + window;
+  const winStart = start - halfWindow;
+  const winEnd = end + halfWindow;
 
   // (a)/(b): another candidate match whose span falls inside the window and
   // whose category/ruleId matches. A candidate never corroborates itself.
@@ -151,9 +152,11 @@ export function scan(text: string, rules?: Rule[]): MatchResult[] {
     }
     if (!isCorroborated(candidate, candidates, text)) continue;
     const boost = req.confidenceBoost;
+    // Cap below 1.0 — a heuristic, corroboration-based match should never read as
+    // mathematically "certain".
     findings.push(
       boost
-        ? { ...candidate.match, confidence: Math.min(1, candidate.match.confidence + boost) }
+        ? { ...candidate.match, confidence: Math.min(0.99, candidate.match.confidence + boost) }
         : candidate.match,
     );
   }

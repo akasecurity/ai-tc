@@ -14,5 +14,5 @@
     "labels": ["dob", "date of birth", "birth", "d.o.b"],
     "windowChars": 160
   },
-  "examples": ["1985-03-22", "03/22/1985"]
+  "examples": ["DOB: 1985-03-22", "Date of birth: 03/22/1985"]
 }

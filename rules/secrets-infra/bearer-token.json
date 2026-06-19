@@ -6,8 +6,9 @@
   "severity": "high",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b(?:Bearer|bearer)\\s+[A-Za-z0-9_\\-]{20,200}\\b",
-    "flags": "g"
+    "pattern": "\\b(?:Bearer|bearer)\\s+([A-Za-z0-9_\\-.]{20,500})",
+    "flags": "g",
+    "captureGroup": 1
   },
   "postValidators": ["entropy"],
   "examples": [

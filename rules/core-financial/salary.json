@@ -1,0 +1,23 @@
+{
+  "specVersion": 1,
+  "id": "core-financial/salary",
+  "name": "Salary/compensation (contextual)",
+  "category": "financial",
+  "severity": "low",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "my salary is",
+      "my base salary",
+      "annual compensation",
+      "total comp",
+      "my tc is",
+      "my package is",
+      "i make $",
+      "i earn $",
+      "offered $"
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["My salary is $150,000"]
+}

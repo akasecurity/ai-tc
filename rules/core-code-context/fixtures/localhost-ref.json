@@ -1,0 +1,22 @@
+[
+  {
+    "label": "localhost",
+    "text": "Server running on localhost:3000",
+    "shouldMatch": true
+  },
+  {
+    "label": "127.0.0.1",
+    "text": "Connect to 127.0.0.1",
+    "shouldMatch": true
+  },
+  {
+    "label": "dev context",
+    "text": "Use 0.0.0.0 for all interfaces",
+    "shouldMatch": true
+  },
+  {
+    "label": "not localhost",
+    "text": "hostname: server.internal",
+    "shouldMatch": false
+  }
+]

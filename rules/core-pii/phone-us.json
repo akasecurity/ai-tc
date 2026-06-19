@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/phone-us",
+  "name": "US phone number",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<!\\d)(?:\\+?1[-.\\s]?)?(?:\\([2-9]\\d{2}\\)[-.\\s]?|[2-9]\\d{2}[-.\\s])\\d{3}[-.\\s]\\d{4}(?!\\d)",
+    "flags": "g"
+  },
+  "examples": ["(555) 123-4567", "+1-555-123-4567"]
+}

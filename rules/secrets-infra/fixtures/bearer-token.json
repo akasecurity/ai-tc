@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Bearer token",
+    "text": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJkYXRhIjoidGVzdCJ9.9Q6J3gYtL9m7VxP4R8G0kL2nB4wM6zE8",
+    "shouldMatch": true
+  },
+  {
+    "label": "short bearer",
+    "text": "Bearer AbCdEfGhIjKlMnOpQrStUvWxYz1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "generic word",
+    "text": "Bearer of bad news",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "Bearer abc",
+    "shouldMatch": false
+  }
+]

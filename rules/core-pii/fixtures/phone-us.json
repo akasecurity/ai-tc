@@ -1,0 +1,32 @@
+[
+  {
+    "label": "parenthesized",
+    "text": "Call (555) 123-4567 for support",
+    "shouldMatch": true
+  },
+  {
+    "label": "dashed with +1",
+    "text": "Phone: +1-555-123-4567",
+    "shouldMatch": true
+  },
+  {
+    "label": "too short",
+    "text": "My number is 12345",
+    "shouldMatch": false
+  },
+  {
+    "label": "random digits",
+    "text": "Count: 123456789012",
+    "shouldMatch": false
+  },
+  {
+    "label": "dashed without country code",
+    "text": "call 555-123-4567 now",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare digit run is not a phone number",
+    "text": "order 41555512340 shipped",
+    "shouldMatch": false
+  }
+]

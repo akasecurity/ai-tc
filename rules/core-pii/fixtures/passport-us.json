@@ -1,0 +1,22 @@
+[
+  {
+    "label": "passport number",
+    "text": "Passport: A12345678",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare number without passport context",
+    "text": "Document A12345678 is ready",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "ID: A1234567",
+    "shouldMatch": false
+  },
+  {
+    "label": "all digits",
+    "text": "Number: 123456789",
+    "shouldMatch": false
+  }
+]

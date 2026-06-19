@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-phi/ndc-code",
+  "name": "National Drug Code (NDC)",
+  "category": "phi",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b\\d{4,5}-\\d{3,4}-\\d{1,2}\\b",
+    "flags": "g"
+  },
+  "examples": ["0002-1427-01", "68788-6965-1"]
+}

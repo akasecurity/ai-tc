@@ -1,0 +1,17 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/passport-us",
+  "name": "US passport number",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b[A-Z]\\d{8}\\b",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "labels": ["passport"],
+    "windowChars": 160
+  },
+  "examples": ["Passport: A12345678"]
+}

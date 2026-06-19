@@ -1,0 +1,22 @@
+[
+  {
+    "label": "staging URL",
+    "text": "Deploy to https://staging.example.com",
+    "shouldMatch": true
+  },
+  {
+    "label": "dev URL",
+    "text": "API: https://dev.api.internal",
+    "shouldMatch": true
+  },
+  {
+    "label": "not internal",
+    "text": "Visit https://example.com for more info",
+    "shouldMatch": false
+  },
+  {
+    "label": "production",
+    "text": "https://app.example.com",
+    "shouldMatch": false
+  }
+]

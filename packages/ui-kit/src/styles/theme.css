@@ -26,6 +26,16 @@
   --color-primary-tint: #f3f7ff;
   --color-brand: #33e6c6;
 
+  /* accent hues (foreground + fill tint) — category icon tiles, chips, charts */
+  --color-violet: #7c3aed;
+  --color-violet-fill: #f1ecfd;
+  --color-teal: #0d9488;
+  --color-teal-fill: #d6f5ee;
+
+  /* success / ok (foreground + fill tint) */
+  --color-ok: #0db15f;
+  --color-ok-fill: #e3f6ec;
+
   /* severity (foreground + fill tint) */
   --color-sev-critical: #e63448;
   --color-sev-critical-fill: #ffe8ed;

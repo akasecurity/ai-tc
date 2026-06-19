@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/phone-intl",
+  "name": "International phone number",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\+\\d{1,3}(?:[-.\\s]\\d{1,14}){1,5}\\b",
+    "flags": "g"
+  },
+  "examples": ["+44 20 7946 0958", "+86 138 0013 8000"]
+}

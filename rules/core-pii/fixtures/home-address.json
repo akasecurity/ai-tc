@@ -1,0 +1,22 @@
+[
+  {
+    "label": "address prefix",
+    "text": "My address is 123 Main St, Springfield, IL 62701",
+    "shouldMatch": true
+  },
+  {
+    "label": "home address prefix",
+    "text": "Home address: 456 Oak Ave, Portland, OR 97201",
+    "shouldMatch": true
+  },
+  {
+    "label": "service address phrase (not a home address)",
+    "text": "The service address is not available",
+    "shouldMatch": false
+  },
+  {
+    "label": "generic 'live at' phrase",
+    "text": "I live at the edge of town",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "label": "Visa",
+    "text": "Card: 4111111111111111",
+    "shouldMatch": true
+  },
+  {
+    "label": "Mastercard",
+    "text": "CC: 5500000000000004",
+    "shouldMatch": true
+  },
+  {
+    "label": "Amex",
+    "text": "Amex: 378282246310005",
+    "shouldMatch": true
+  },
+  {
+    "label": "invalid Luhn",
+    "text": "Card: 1234567890123456",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "Card: 4111",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "UK number",
+    "text": "International: +44 20 7946 0958",
+    "shouldMatch": true
+  },
+  {
+    "label": "Japan number",
+    "text": "Call +81 3 1234 5678",
+    "shouldMatch": true
+  },
+  {
+    "label": "no plus prefix",
+    "text": "Phone: 555-123-4567",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "+12",
+    "shouldMatch": false
+  }
+]

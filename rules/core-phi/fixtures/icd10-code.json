@@ -1,0 +1,27 @@
+[
+  {
+    "label": "ICD-10 labelled code",
+    "text": "ICD-10: I10 (essential hypertension)",
+    "shouldMatch": true
+  },
+  {
+    "label": "diagnosis context with decimal",
+    "text": "Diagnosis code E11.9 documented",
+    "shouldMatch": true
+  },
+  {
+    "label": "dx abbreviation",
+    "text": "dx: J45.909",
+    "shouldMatch": true
+  },
+  {
+    "label": "letter+digits without diagnosis context",
+    "text": "Code Z00 in the manual",
+    "shouldMatch": false
+  },
+  {
+    "label": "version string without context",
+    "text": "Version: A12 released",
+    "shouldMatch": false
+  }
+]

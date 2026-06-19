@@ -1,0 +1,21 @@
+{
+  "specVersion": 1,
+  "id": "secrets-infra",
+  "name": "Infrastructure Secrets",
+  "version": "1.4.0",
+  "rules": [
+    "ssh-private-key",
+    "db-connection-string",
+    "jwt-token",
+    "basic-auth-url",
+    "basic-auth-header",
+    "pgp-private-key",
+    "bearer-token",
+    "env-key-value",
+    "password-field",
+    "docker-config-auth",
+    "kubeconfig-token",
+    "api-key-header",
+    "generic-high-entropy-secret"
+  ]
+}

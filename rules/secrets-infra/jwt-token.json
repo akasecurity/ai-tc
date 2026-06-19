@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "secrets-infra/jwt-token",
+  "name": "JSON Web Token (JWT)",
+  "category": "secret",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\beyJ[A-Za-z0-9_\\-+/]+\\.[A-Za-z0-9_\\-+/]+\\.[A-Za-z0-9_\\-+/]+\\b",
+    "flags": "g"
+  },
+  "postValidators": ["entropy"],
+  "examples": [
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "RSA private key header",
+    "text": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",
+    "shouldMatch": true
+  },
+  {
+    "label": "OpenSSH private key",
+    "text": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA...\n-----END OPENSSH PRIVATE KEY-----",
+    "shouldMatch": true
+  },
+  {
+    "label": "not a key",
+    "text": "BEGIN RSA PRIVATE KEY",
+    "shouldMatch": false
+  },
+  {
+    "label": "wrong format",
+    "text": "-----BEGIN CERTIFICATE-----",
+    "shouldMatch": false
+  }
+]

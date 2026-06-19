@@ -1,0 +1,22 @@
+[
+  {
+    "label": "health plan number",
+    "text": "Health Plan: XYZ123456789",
+    "shouldMatch": true
+  },
+  {
+    "label": "member ID",
+    "text": "Member ID: ABC987654321",
+    "shouldMatch": true
+  },
+  {
+    "label": "no HIPAA context",
+    "text": "Plan: basic",
+    "shouldMatch": false
+  },
+  {
+    "label": "short ID",
+    "text": "Claim number: 123",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "common private IP",
+    "text": "Server: 192.168.1.100",
+    "shouldMatch": true
+  },
+  {
+    "label": "public IP",
+    "text": "Connect to 8.8.8.8",
+    "shouldMatch": true
+  },
+  {
+    "label": "not an IP",
+    "text": "Version 256.256.256.256 is invalid",
+    "shouldMatch": false
+  },
+  {
+    "label": "incomplete",
+    "text": "just 192.168",
+    "shouldMatch": false
+  }
+]

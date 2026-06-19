@@ -1,0 +1,22 @@
+[
+  {
+    "label": "CVV number",
+    "text": "CVV: 123",
+    "shouldMatch": true
+  },
+  {
+    "label": "CVC number",
+    "text": "CVC 456",
+    "shouldMatch": true
+  },
+  {
+    "label": "standalone digits",
+    "text": "Number: 1234",
+    "shouldMatch": false
+  },
+  {
+    "label": "no CVV context",
+    "text": "Code: 12345",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/mac-address",
+  "name": "MAC address",
+  "category": "pii",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\\b",
+    "flags": "g"
+  },
+  "examples": ["AA:BB:CC:DD:EE:FF"]
+}

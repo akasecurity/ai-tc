@@ -1,0 +1,27 @@
+[
+  {
+    "label": "PostgreSQL URL",
+    "text": "DATABASE_URL=postgresql://admin:secret123@prod-db.internal:5432/mydb",
+    "shouldMatch": true
+  },
+  {
+    "label": "MySQL URL",
+    "text": "mysql://user:pass@host:3306/dbname",
+    "shouldMatch": true
+  },
+  {
+    "label": "MongoDB URL",
+    "text": "mongodb+srv://admin:password@cluster0.abcde.mongodb.net/mydb",
+    "shouldMatch": true
+  },
+  {
+    "label": "no credentials",
+    "text": "postgresql://localhost:5432/mydb",
+    "shouldMatch": false
+  },
+  {
+    "label": "not a DB URL",
+    "text": "https://example.com:443/path",
+    "shouldMatch": false
+  }
+]

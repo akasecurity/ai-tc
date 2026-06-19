@@ -1,0 +1,27 @@
+[
+  {
+    "label": "SQL table ref",
+    "text": "SELECT * FROM users WHERE id = 1",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT",
+    "text": "INSERT INTO orders (user_id, total) VALUES (1, 99.99)",
+    "shouldMatch": true
+  },
+  {
+    "label": "DDL",
+    "text": "CREATE TABLE employees (id INT, name TEXT)",
+    "shouldMatch": true
+  },
+  {
+    "label": "no table name",
+    "text": "SELECT 1",
+    "shouldMatch": false
+  },
+  {
+    "label": "not SQL",
+    "text": "FROM the bottom of my heart",
+    "shouldMatch": false
+  }
+]

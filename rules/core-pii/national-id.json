@@ -1,0 +1,27 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/national-id",
+  "name": "National ID number (multi-country)",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b[A-Z]{2}\\d{6}[A-D]\\b|\\b[2-9]\\d{11}\\b|(?:national\\s*id|aadhaar|\\bSIN\\b).{0,10}?\\d{3}[\\s-]?\\d{3}[\\s-]?\\d{3}\\b",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": [
+      "national id",
+      "national identity",
+      "national insurance",
+      "nino",
+      "ni",
+      "aadhaar",
+      "sin",
+      "identity number",
+      "id number"
+    ],
+    "windowChars": 160
+  },
+  "examples": ["Aadhaar: 234567890123", "NI: AB123456C", "SIN: 123-456-789"]
+}

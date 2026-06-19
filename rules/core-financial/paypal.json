@@ -1,0 +1,14 @@
+{
+  "specVersion": 1,
+  "id": "core-financial/paypal",
+  "name": "PayPal transaction/merchant ID",
+  "category": "financial",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "paypal.{0,30}?\\b([A-Z0-9]{17})\\b",
+    "flags": "gi",
+    "captureGroup": 1
+  },
+  "examples": ["PayPal transaction ID: 9HW7382910ABCDEF1"]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "fingerprint data reference",
+    "text": "My fingerprint data is stored in the biometric database",
+    "shouldMatch": true
+  },
+  {
+    "label": "facial recognition reference",
+    "text": "My facial recognition profile is on file",
+    "shouldMatch": true
+  },
+  {
+    "label": "casual fingerprint mention (not biometric data)",
+    "text": "My fingerprint is on the glass",
+    "shouldMatch": false
+  },
+  {
+    "label": "generic scanner mention",
+    "text": "The scanner is ready",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "specVersion": 1,
+  "id": "secrets-infra/pgp-private-key",
+  "name": "PGP private key block",
+  "category": "secret",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+    "flags": "g"
+  },
+  "examples": [
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: Keybase Go 1.0.0\n...\n-----END PGP PRIVATE KEY BLOCK-----"
+  ]
+}

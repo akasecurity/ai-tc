@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-code-context/internal-domain",
+  "name": "Internal domain / hostname",
+  "category": "code_context",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?<![A-Za-z0-9.-])[A-Za-z0-9][A-Za-z0-9.-]{0,251}\\.(?:internal|corp|local|lan|intranet|private|dev|staging|test|qa)(?:\\.(?:com|net|org|io|co|app))?\\b",
+    "flags": "gi"
+  },
+  "examples": ["db.internal.com", "app.corp.local", "api.staging.example.com"]
+}

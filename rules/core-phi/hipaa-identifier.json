@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-phi/hipaa-identifier",
+  "name": "HIPAA standard identifier (health plan beneficiary number)",
+  "category": "phi",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:health\\s+plan|beneficiary|claim\\s+number|member\\s+id|subscriber)[:\\s]*[A-Za-z0-9]{8,20}\\b",
+    "flags": "gi"
+  },
+  "examples": ["Health Plan: XYZ123456789", "Member ID: ABC987654321"]
+}

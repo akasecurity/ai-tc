@@ -1,0 +1,32 @@
+[
+  {
+    "label": "UK IBAN",
+    "text": "IBAN: GB82WEST12345698765432",
+    "shouldMatch": true
+  },
+  {
+    "label": "German IBAN",
+    "text": "IBAN: DE89370400440532013000",
+    "shouldMatch": true
+  },
+  {
+    "label": "spaced UK IBAN",
+    "text": "Bank: GB82 WEST 1234 5698 7654 32",
+    "shouldMatch": true
+  },
+  {
+    "label": "not IBAN",
+    "text": "Code: AA1234",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "IBAN: GB12",
+    "shouldMatch": false
+  },
+  {
+    "label": "IBAN-shaped token without banking context",
+    "text": "tracking code GB82WEST12345698765432 attached",
+    "shouldMatch": false
+  }
+]

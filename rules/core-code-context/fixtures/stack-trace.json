@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Java stack trace",
+    "text": "at com.example.service.UserService.findUser(UserService.java:42:13)",
+    "shouldMatch": true
+  },
+  {
+    "label": "Node.js stack trace",
+    "text": "at Server.request (/app/src/server.ts:120:25)",
+    "shouldMatch": true
+  },
+  {
+    "label": "not a stack trace",
+    "text": "at the office meeting",
+    "shouldMatch": false
+  },
+  {
+    "label": "function call",
+    "text": "at function call($arg)",
+    "shouldMatch": false
+  }
+]

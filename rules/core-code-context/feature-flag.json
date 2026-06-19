@@ -1,0 +1,24 @@
+{
+  "specVersion": 1,
+  "id": "core-code-context/feature-flag",
+  "name": "Feature flag / toggle name",
+  "category": "code_context",
+  "severity": "low",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "feature_flag:",
+      "feature_toggle:",
+      "feature-flag:",
+      "feature-toggle:",
+      "FF_",
+      "FEATURE_FLAG_",
+      "FEATURE_TOGGLE_",
+      "unleash:",
+      "launchdarkly:",
+      "split.io:"
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["feature_flag: new-checkout-flow", "FF_ENABLE_DARK_MODE"]
+}

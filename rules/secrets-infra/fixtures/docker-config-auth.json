@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Docker auth config",
+    "text": "{\"auths\": {\"https://index.docker.io/v1/\": {\"auth\": \"dXNlcjpwYXNzd29yZA==\"}}}",
+    "shouldMatch": true
+  },
+  {
+    "label": "in JSON",
+    "text": "\"auth\": \"cHJveHk6Y29udGFpbmVyLXNlY3JldA==\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "not Docker auth",
+    "text": "auth: basic-token",
+    "shouldMatch": false
+  },
+  {
+    "label": "short value",
+    "text": "\"auth\": \"cHJveHk=\"",
+    "shouldMatch": false
+  }
+]

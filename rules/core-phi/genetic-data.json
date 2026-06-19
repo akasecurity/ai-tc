@@ -1,0 +1,24 @@
+{
+  "specVersion": 1,
+  "id": "core-phi/genetic-data",
+  "name": "Genetic/DNA sequence reference",
+  "category": "phi",
+  "severity": "high",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "my dna sequence",
+      "my genome",
+      "my genetic",
+      "dna test results",
+      "genetic test results",
+      "my 23andme",
+      "my ancestrydna",
+      "gene variant",
+      "my genotype",
+      "my haplogroup"
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["My DNA sequence shows a variant in the BRCA1 gene"]
+}

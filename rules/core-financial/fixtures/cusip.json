@@ -1,0 +1,22 @@
+[
+  {
+    "label": "CUSIP with label",
+    "text": "CUSIP: 037833100",
+    "shouldMatch": true
+  },
+  {
+    "label": "CUSIP inline",
+    "text": "CUSIP 931142103 listed",
+    "shouldMatch": true
+  },
+  {
+    "label": "9-char identifier without CUSIP context",
+    "text": "Security 931142103 is listed",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "CUSIP: 12345",
+    "shouldMatch": false
+  }
+]

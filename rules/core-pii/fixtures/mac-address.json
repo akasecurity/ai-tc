@@ -1,0 +1,22 @@
+[
+  {
+    "label": "colon-separated",
+    "text": "MAC: AA:BB:CC:DD:EE:FF",
+    "shouldMatch": true
+  },
+  {
+    "label": "dash-separated",
+    "text": "Interface: aa-bb-cc-dd-ee-ff",
+    "shouldMatch": true
+  },
+  {
+    "label": "too short",
+    "text": "MAC: AA:BB:CC",
+    "shouldMatch": false
+  },
+  {
+    "label": "no separators",
+    "text": "AABBCCDDEEFF",
+    "shouldMatch": false
+  }
+]

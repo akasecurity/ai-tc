@@ -1,0 +1,22 @@
+[
+  {
+    "label": "JWT token",
+    "text": "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    "shouldMatch": true
+  },
+  {
+    "label": "JWT in auth header",
+    "text": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJkYXRhIjoidGVzdCJ9.9Q6J3gYtL9m7VxP4R8G0kL2nB4wM6zE8",
+    "shouldMatch": true
+  },
+  {
+    "label": "not JWT (starts with eyJ but too short)",
+    "text": "eyJzaG9ydA",
+    "shouldMatch": false
+  },
+  {
+    "label": "not base64url",
+    "text": "token.with.dots",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "HTTPS with creds",
+    "text": "https://admin:secret123@internal.corp.com/api",
+    "shouldMatch": true
+  },
+  {
+    "label": "in config",
+    "text": "url: \"http://user:pass@localhost:8080/path\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "no credentials",
+    "text": "https://example.com/path",
+    "shouldMatch": false
+  },
+  {
+    "label": "no password",
+    "text": "https://user@example.com",
+    "shouldMatch": false
+  }
+]

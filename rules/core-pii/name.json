@@ -1,0 +1,21 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/name",
+  "name": "Personal name (contextual)",
+  "category": "pii",
+  "severity": "medium",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "my name is",
+      "my full name",
+      "i am called",
+      "please call me",
+      "name:\n",
+      "\"full_name\": \"",
+      "\"fullName\": \""
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["My name is John Doe"]
+}

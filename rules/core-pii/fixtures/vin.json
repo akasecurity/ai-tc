@@ -1,0 +1,22 @@
+[
+  {
+    "label": "VIN number",
+    "text": "VIN: 1HGCM82633A004352",
+    "shouldMatch": true
+  },
+  {
+    "label": "VIN in text",
+    "text": "Vehicle 1HGCM82633A004352 is in the lot",
+    "shouldMatch": true
+  },
+  {
+    "label": "has I,O,Q (invalid)",
+    "text": "Code: A1B2C3D4E5F6G7H8I",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "VIN: 1HGCM8263",
+    "shouldMatch": false
+  }
+]

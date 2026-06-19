@@ -1,0 +1,38 @@
+[
+  {
+    "label": "driver's license with letter prefix",
+    "text": "Driver's License: D1234567",
+    "shouldMatch": true
+  },
+  {
+    "label": "DL label with digits",
+    "text": "DL: 123456789",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare order number without license context",
+    "text": "Order number 12345678 placed",
+    "shouldMatch": false
+  },
+  {
+    "label": "bare account number without license context",
+    "text": "Account 123456789 active",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short with context",
+    "text": "License: 12345",
+    "shouldMatch": false
+  },
+  {
+    "label": "span pins the captured group when its text repeats in the match",
+    "text": "DL 123456789123456789",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 12,
+        "end": 21
+      }
+    ]
+  }
+]

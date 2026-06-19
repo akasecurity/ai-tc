@@ -1,0 +1,15 @@
+{
+  "specVersion": 1,
+  "id": "secrets-infra/ssh-private-key",
+  "name": "SSH private key",
+  "category": "secret",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "-----BEGIN (?:RSA |DSA |EC |OPENSSH |SSH2 )?PRIVATE KEY-----",
+    "flags": "g"
+  },
+  "examples": [
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+  ]
+}

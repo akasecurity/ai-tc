@@ -1,0 +1,22 @@
+[
+  {
+    "label": "basic auth header",
+    "text": "Authorization: Basic dXNlcjpwYXNzd29yZDEyMzQ=",
+    "shouldMatch": true
+  },
+  {
+    "label": "lowercase header in curl",
+    "text": "curl -H 'authorization: basic YWRtaW46c3VwZXJzZWNyZXQ='",
+    "shouldMatch": true
+  },
+  {
+    "label": "bearer token header",
+    "text": "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    "shouldMatch": false
+  },
+  {
+    "label": "too-short blob",
+    "text": "Authorization: Basic abc123",
+    "shouldMatch": false
+  }
+]

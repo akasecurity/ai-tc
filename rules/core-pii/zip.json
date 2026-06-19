@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/zip",
+  "name": "US ZIP / ZIP+4 postal code",
+  "category": "pii",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b\\d{5}(?:-\\d{4})?\\b",
+    "flags": "g"
+  },
+  "examples": ["Springfield, IL 94107-1234", "San Francisco, CA 94107"]
+}

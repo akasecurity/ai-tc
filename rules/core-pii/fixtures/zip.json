@@ -1,0 +1,22 @@
+[
+  {
+    "label": "ZIP+4 in address",
+    "text": "Springfield, IL 94107-1234",
+    "shouldMatch": true
+  },
+  {
+    "label": "5-digit ZIP in address",
+    "text": "123 Main St, San Francisco, CA 94107",
+    "shouldMatch": true
+  },
+  {
+    "label": "no 5-digit run (phone-like)",
+    "text": "call 12-345",
+    "shouldMatch": false
+  },
+  {
+    "label": "only 4 digits",
+    "text": "abc 1234",
+    "shouldMatch": false
+  }
+]

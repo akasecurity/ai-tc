@@ -10,6 +10,11 @@
     "shouldMatch": true
   },
   {
+    "label": "group ID",
+    "text": "Group ID: GRP12345678",
+    "shouldMatch": true
+  },
+  {
     "label": "no HIPAA context",
     "text": "Plan: basic",
     "shouldMatch": false

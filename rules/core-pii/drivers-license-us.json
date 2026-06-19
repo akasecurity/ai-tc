@@ -1,0 +1,14 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/drivers-license-us",
+  "name": "US driver's license number",
+  "category": "pii",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(?:driver'?s?\\s*licen[sc]e|licen[sc]e|\\bDL\\b).{0,10}?([A-Z]\\d{6,8}|\\d{8,9})\\b",
+    "flags": "gi",
+    "captureGroup": 1
+  },
+  "examples": ["Driver's License: D1234567", "DL: 123456789"]
+}

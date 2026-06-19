@@ -1,0 +1,22 @@
+[
+  {
+    "label": "LaunchDarkly style",
+    "text": "feature_flag: new-checkout-flow",
+    "shouldMatch": true
+  },
+  {
+    "label": "env var flag",
+    "text": "FF_ENABLE_DARK_MODE=true",
+    "shouldMatch": true
+  },
+  {
+    "label": "not a flag",
+    "text": "feature flag is enabled",
+    "shouldMatch": false
+  },
+  {
+    "label": "generic",
+    "text": "The flag was set",
+    "shouldMatch": false
+  }
+]

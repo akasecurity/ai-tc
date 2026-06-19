@@ -1,0 +1,27 @@
+[
+  {
+    "label": "routing number with label",
+    "text": "Routing: 021000021",
+    "shouldMatch": true
+  },
+  {
+    "label": "ABA label",
+    "text": "ABA 111000025 is valid",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare 9-digit number without context",
+    "text": "Order #123456789 shipped",
+    "shouldMatch": false
+  },
+  {
+    "label": "9-digit SSN-like without routing context",
+    "text": "Reference 123456789 on file",
+    "shouldMatch": false
+  },
+  {
+    "label": "8 digits with context",
+    "text": "Routing: 12345678",
+    "shouldMatch": false
+  }
+]

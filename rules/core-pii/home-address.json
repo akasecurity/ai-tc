@@ -1,0 +1,21 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/home-address",
+  "name": "Home address (contextual)",
+  "category": "pii",
+  "severity": "medium",
+  "matcher": {
+    "type": "keyword",
+    "keywords": [
+      "my address is",
+      "home address",
+      "shipping address",
+      "billing address",
+      "mailing address",
+      "my home is at",
+      "i reside at"
+    ],
+    "caseSensitive": false
+  },
+  "examples": ["My address is 123 Main St, Springfield, IL 62701"]
+}

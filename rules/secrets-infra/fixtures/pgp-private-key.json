@@ -1,0 +1,22 @@
+[
+  {
+    "label": "PGP key header",
+    "text": "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: Keybase Go 1.0.0\nxsFNBG...\n-----END PGP PRIVATE KEY BLOCK-----",
+    "shouldMatch": true
+  },
+  {
+    "label": "in encoded text",
+    "text": "key: \"-----BEGIN PGP PRIVATE KEY BLOCK-----\\nxsFNBG...\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "not a key",
+    "text": "BEGIN PGP PRIVATE KEY BLOCK",
+    "shouldMatch": false
+  },
+  {
+    "label": "public key",
+    "text": "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+    "shouldMatch": false
+  }
+]

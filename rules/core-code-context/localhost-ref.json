@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-code-context/localhost-ref",
+  "name": "Localhost reference",
+  "category": "code_context",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|::1)\\b",
+    "flags": "g"
+  },
+  "examples": ["localhost", "127.0.0.1"]
+}

@@ -18,7 +18,7 @@ export const DATA_FILE_MODE = 0o600;
 
 // On-disk layout (shared by ALL plugins; see HLD B1):
 //   ~/.aka/settings/  config.json (enterprise; Phase 2) · settings.json
-//   ~/.aka/data/      aka.db (+ -wal/-shm sidecars)
+//   ~/.aka/data/      aka.db (+ -wal/-shm sidecars) · policy-cache.json
 export function settingsDir(base: string = defaultDataDir()): string {
   return join(base, 'settings');
 }
@@ -55,23 +55,32 @@ export function ensureDataDirSync(dir: string = defaultDataDir()): void {
   }
 }
 
-// One-time, best-effort relocation of the pre-layout flat files into settings/.
-// Older installs wrote ~/.aka/config.json and ~/.aka/policy-cache.json directly
-// under the base; the layout moved them into settings/. Fail-open: any error
-// (already moved, missing, unwritable) leaves the old file where it is — the
-// loaders treat a missing settings file as "unonboarded defaults" regardless.
+// One-time, best-effort relocation of the pre-layout flat files into their
+// layout subdirs. Older installs wrote ~/.aka/config.json and
+// ~/.aka/policy-cache.json directly under the base; the layout splits them by
+// kind — config.json is settings, but policy-cache.json is a cache that lives
+// with the SQLite store under data/ (where createPolicyStore reads it). Routing
+// it to settings/ would strand the cache. Fail-open: any error (already moved,
+// missing, unwritable) leaves the old file where it is — the loaders treat a
+// missing settings/cache file as "unonboarded defaults" regardless.
 export function migrateLegacyLayout(base: string = defaultDataDir()): void {
-  const dest = settingsDir(base);
-  try {
-    mkdirSync(dest, { recursive: true, mode: DATA_DIR_MODE });
-  } catch {
-    return; // can't create settings/ → leave legacy files untouched
-  }
-  for (const name of ['config.json', 'policy-cache.json']) {
+  const moves: { name: string; dest: string }[] = [
+    { name: 'config.json', dest: settingsDir(base) },
+    { name: 'policy-cache.json', dest: dataDir(base) },
+  ];
+  for (const { name, dest } of moves) {
     try {
+      mkdirSync(dest, { recursive: true, mode: DATA_DIR_MODE });
+      // mkdirSync only applies mode on creation (and is umask-masked); tighten
+      // a pre-existing dir to owner-only too, since it holds sensitive files.
+      try {
+        chmodSync(dest, DATA_DIR_MODE);
+      } catch {
+        // best-effort: platform without POSIX modes, or not owned by us
+      }
       renameSync(join(base, name), join(dest, name));
     } catch {
-      // not present, already moved, or unwritable — nothing to do
+      // can't create dest, not present, already moved, or unwritable — skip
     }
   }
 }

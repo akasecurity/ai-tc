@@ -44,11 +44,17 @@ interface Candidate {
   match: MatchResult;
 }
 
+// Escape regex metacharacters so a label is matched literally.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Pass 2 helper: is `candidate` corroborated by another signal within its
-// rule's proximity window? Looks for (a) another match in one of `categories`,
-// (b) another match whose ruleId is in `ruleIds`, or (c) a `labels` keyword
-// present (case-insensitively) in the surrounding text window. Pure and
-// non-throwing — a malformed `requiresNearby` simply fails to corroborate.
+// rule's proximity window? Looks for (a) another match in one of `categories`
+// FROM A DIFFERENT RULE, (b) another match whose ruleId is in `ruleIds`, or
+// (c) a `labels` keyword present (on word boundaries) in the surrounding text
+// window. Pure and non-throwing — a malformed `requiresNearby` simply fails to
+// corroborate.
 function isCorroborated(candidate: Candidate, candidates: Candidate[], text: string): boolean {
   const req = candidate.rule.requiresNearby;
   if (!req) return true;
@@ -69,17 +75,33 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
       const os = other.match.span;
       // Overlap of [os.start, os.end] with [winStart, winEnd].
       if (os.end < winStart || os.start > winEnd) continue;
-      if (categories?.includes(other.match.category)) return true;
+      // Category corroboration must come from a DIFFERENT rule — otherwise two
+      // matches of the same rule (e.g. two nearby dates) would corroborate each
+      // other, defeating independent corroboration. `ruleIds` is an explicit
+      // opt-in, so it is intentionally not subject to this restriction.
+      if (
+        other.match.ruleId !== candidate.match.ruleId &&
+        categories?.includes(other.match.category)
+      ) {
+        return true;
+      }
       if (ruleIds?.includes(other.match.ruleId)) return true;
     }
   }
 
-  // (c): a label keyword present in the surrounding text window.
+  // (c): a label keyword present in the surrounding text window. Matched on word
+  // boundaries (not a raw substring) so e.g. the label "state" does not
+  // corroborate inside "estate" — labels behave like standalone keywords/phrases.
   const labels = req.labels;
   if (labels && labels.length > 0) {
-    const haystack = text.slice(Math.max(0, winStart), winEnd).toLowerCase();
+    const haystack = text.slice(Math.max(0, winStart), winEnd);
     for (const label of labels) {
-      if (haystack.includes(label.toLowerCase())) return true;
+      const trimmed = label.trim();
+      if (trimmed.length === 0) continue;
+      // Boundaries = non-alphanumeric neighbours; robust for labels containing
+      // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
+      const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
+      if (re.test(haystack)) return true;
     }
   }
 

@@ -3,18 +3,24 @@ import { chmod, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  DATA_DIR_MODE,
+  DATA_FILE_MODE,
+  ensureDataDirSync as ensureDirOwnerOnly,
+} from '@aka/persistence';
+
+// The owner-only directory / 0600-file permission policy is single-sourced in
+// @aka/persistence (the lowest layer that touches the store); this module owns
+// only the ~/.aka *layout* (which paths live where) and re-exports the modes so
+// existing SDK consumers keep importing them from here.
+export { DATA_DIR_MODE, DATA_FILE_MODE };
+
 // All adapters share one on-disk home under the machine-account: settings and
 // the local SQLite store. This is the BASE; the layout below splits it into
 // settings/ and data/ subdirs so a new plugin reuses the exact same paths.
 export function defaultDataDir(): string {
   return join(homedir(), '.aka');
 }
-
-// ~/.aka holds sensitive data (prompt content, policy, bearer token), so the
-// directory is owner-only and files are written 0600. On multi-user systems
-// this keeps other local users from reading the store, cache, or token.
-export const DATA_DIR_MODE = 0o700;
-export const DATA_FILE_MODE = 0o600;
 
 // On-disk layout (shared by ALL plugins; see HLD B1):
 //   ~/.aka/settings/  config.json (enterprise; Phase 2) · settings.json
@@ -43,16 +49,11 @@ export async function ensureDataDir(dir: string = defaultDataDir()): Promise<voi
   }
 }
 
-// Synchronous twin of ensureDataDir for the local-store open path: node:sqlite's
-// DatabaseSync is synchronous, so the dir must exist before opening without an
-// await. Same owner-only + best-effort-chmod contract.
+// Synchronous twin of ensureDataDir, defaulted to the layout base. Delegates to
+// the single owner-only-mkdir implementation in @aka/persistence so the
+// permission contract lives in exactly one place.
 export function ensureDataDirSync(dir: string = defaultDataDir()): void {
-  mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
-  try {
-    chmodSync(dir, DATA_DIR_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
-  }
+  ensureDirOwnerOnly(dir);
 }
 
 // One-time, best-effort relocation of the pre-layout flat files into their

@@ -41,9 +41,9 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function config(redaction: 'redact' | 'warn' = 'redact'): PluginConfig {
+function config(policy: 'redact' | 'warn' = 'redact'): PluginConfig {
   return {
-    settings: { specVersion: 1, mode: 'plugin-only', redaction },
+    settings: { specVersion: 1, runMode: 'standalone', policy },
     dataDir: dir,
     dbPath: join(dir, 'aka.db'),
     settingsDir: dir,

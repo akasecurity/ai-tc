@@ -59,6 +59,28 @@ describe('scanTabular', () => {
     );
   });
 
+  it('normalizes snake_case headers so whitespace-based label regexes can match', () => {
+    const memberIdRule = RuleSchema.parse({
+      specVersion: 1,
+      id: 'test/member-id',
+      name: 'Member ID',
+      category: 'phi',
+      severity: 'high',
+      matcher: {
+        type: 'regex',
+        pattern: '\\bmember\\s*(?:id|number|no|#)\\s*[:#]?\\s*[A-Za-z0-9]{6,20}\\b',
+        flags: 'gi',
+      },
+    });
+
+    const table = { columns: ['member_id'], rows: [['ABC987654321']] };
+    const found = scanTabular(table, [memberIdRule]);
+
+    expect(found).toContainEqual(
+      expect.objectContaining({ column: 'member_id', ruleId: 'test/member-id', viaHeaderCue: false }),
+    );
+  });
+
   it('does not fire the gated DOB rule when the column header lacks the label', () => {
     const table = { columns: ['col_x'], rows: [['1990-05-01']] };
     const found = scanTabular(table, rules).filter((f) => f.ruleId === 'test/dob');

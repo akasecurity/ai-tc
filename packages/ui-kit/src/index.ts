@@ -34,4 +34,5 @@ export {
   type PopoverContentProps,
   PopoverTrigger,
 } from './popover.tsx';
+export { Skeleton } from './skeleton.tsx';
 export { Tag, type TagProps } from './tag.tsx';

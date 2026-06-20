@@ -1,0 +1,75 @@
+[
+  {
+    "label": "API_KEY env",
+    "text": "API_KEY=aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 8,
+        "end": 44
+      }
+    ]
+  },
+  {
+    "label": "SECRET env",
+    "text": "export SECRET=super-secret-value-12345",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 14,
+        "end": 38
+      }
+    ]
+  },
+  {
+    "label": "API_KEY without value",
+    "text": "API_KEY=\"sk-...we-should-mask-this\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "not sensitive",
+    "text": "NAME=John",
+    "shouldMatch": false
+  },
+  {
+    "label": "naming convention",
+    "text": "THE_API_KEY is configured",
+    "shouldMatch": false
+  },
+  {
+    "label": "PRIVATE_KEY env",
+    "text": "PRIVATE_KEY=aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "encryption_key env, lowercase",
+    "text": "encryption_key=aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "SIGNING_KEY env",
+    "text": "export SIGNING_KEY=super-secret-value-12345",
+    "shouldMatch": true
+  },
+  {
+    "label": "naming convention, not an assignment",
+    "text": "THE_PRIVATE_KEY is rotated automatically",
+    "shouldMatch": false
+  },
+  {
+    "label": "unrelated _KEY suffix not in the keyword list",
+    "text": "PUBLIC_KEY=aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": false
+  },
+  {
+    "label": "exported shell password, value is the span",
+    "text": "export PASSWORD=SuperSecret123!",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 16,
+        "end": 31
+      }
+    ]
+  }
+]

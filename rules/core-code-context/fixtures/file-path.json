@@ -1,0 +1,27 @@
+[
+  {
+    "label": "Unix absolute path",
+    "text": "Config: /etc/nginx/nginx.conf",
+    "shouldMatch": true
+  },
+  {
+    "label": "home path",
+    "text": "ssh key at /home/user/.ssh/id_rsa",
+    "shouldMatch": true
+  },
+  {
+    "label": "Windows path",
+    "text": "File: C:\\Users\\Admin\\Documents\\report.pdf",
+    "shouldMatch": true
+  },
+  {
+    "label": "relative path",
+    "text": "use a relative path like dist/ for output",
+    "shouldMatch": false
+  },
+  {
+    "label": "URL like",
+    "text": "see the docs at readme.md for details",
+    "shouldMatch": false
+  }
+]

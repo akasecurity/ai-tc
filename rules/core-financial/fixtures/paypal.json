@@ -1,0 +1,22 @@
+[
+  {
+    "label": "PayPal transaction ID with context",
+    "text": "PayPal transaction ID: 9HW7382910ABCDEF1",
+    "shouldMatch": true
+  },
+  {
+    "label": "paypal txn field",
+    "text": "paypal_txn=1AB23456CD7890123",
+    "shouldMatch": true
+  },
+  {
+    "label": "17-char id without PayPal context",
+    "text": "order id: 1AB23456CD7890123",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "paypal id: 12345",
+    "shouldMatch": false
+  }
+]

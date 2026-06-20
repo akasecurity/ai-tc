@@ -1,0 +1,27 @@
+[
+  {
+    "label": "name prefix",
+    "text": "My name is John Doe and I work at Acme",
+    "shouldMatch": true
+  },
+  {
+    "label": "JSON full_name field",
+    "text": "{\"full_name\": \"Jane Smith\"}",
+    "shouldMatch": true
+  },
+  {
+    "label": "generic",
+    "text": "The name of the project is Odyssey",
+    "shouldMatch": false
+  },
+  {
+    "label": "not a name",
+    "text": "Is your name on the list?",
+    "shouldMatch": false
+  },
+  {
+    "label": "package manifest name field is not a person",
+    "text": "{\"name\": \"my-app\", \"version\": \"1.0.0\"}",
+    "shouldMatch": false
+  }
+]

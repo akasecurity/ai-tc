@@ -1,0 +1,27 @@
+[
+  {
+    "label": "salary text",
+    "text": "My salary is $150,000 per year",
+    "shouldMatch": true
+  },
+  {
+    "label": "total comp",
+    "text": "My total comp is $200,000",
+    "shouldMatch": true
+  },
+  {
+    "label": "generic",
+    "text": "The salary range for this role is competitive",
+    "shouldMatch": false
+  },
+  {
+    "label": "not compensation",
+    "text": "I make a difference every day",
+    "shouldMatch": false
+  },
+  {
+    "label": "i make dollar amount",
+    "text": "I make $250,000 a year",
+    "shouldMatch": true
+  }
+]

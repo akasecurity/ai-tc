@@ -1,6 +1,22 @@
 [
-  { "label": "dashed SSN", "text": "SSN: 123-45-6789", "shouldMatch": true },
-  { "label": "spaced SSN", "text": "My SSN is 321 54 9876", "shouldMatch": true },
-  { "label": "invalid all-zeros area", "text": "000-12-3456", "shouldMatch": false },
-  { "label": "random number", "text": "Order #12345678", "shouldMatch": false }
+  {
+    "label": "dashed SSN",
+    "text": "SSN: 123-45-6789",
+    "shouldMatch": true
+  },
+  {
+    "label": "spaced SSN",
+    "text": "My SSN is 321 54 9876",
+    "shouldMatch": true
+  },
+  {
+    "label": "invalid all-zeros area",
+    "text": "000-12-3456",
+    "shouldMatch": false
+  },
+  {
+    "label": "random number",
+    "text": "Order #12345678",
+    "shouldMatch": false
+  }
 ]

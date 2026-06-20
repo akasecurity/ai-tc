@@ -1,0 +1,22 @@
+[
+  {
+    "label": "NDC code",
+    "text": "NDC: 0002-1427-01",
+    "shouldMatch": true
+  },
+  {
+    "label": "short NDC segments",
+    "text": "Drug code 68788-6965-1",
+    "shouldMatch": true
+  },
+  {
+    "label": "segments too short",
+    "text": "Code: 12-34-56",
+    "shouldMatch": false
+  },
+  {
+    "label": "ISO date, not an NDC",
+    "text": "Recorded 2024-01-15 in chart",
+    "shouldMatch": false
+  }
+]

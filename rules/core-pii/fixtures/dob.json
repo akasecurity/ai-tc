@@ -1,0 +1,22 @@
+[
+  {
+    "label": "ISO format DOB",
+    "text": "DOB: 1985-03-22",
+    "shouldMatch": true
+  },
+  {
+    "label": "US format DOB",
+    "text": "Date of Birth: 03/22/1985",
+    "shouldMatch": true
+  },
+  {
+    "label": "future date",
+    "text": "Expires: 01/01/2030",
+    "shouldMatch": false
+  },
+  {
+    "label": "invalid",
+    "text": "Year: 1800",
+    "shouldMatch": false
+  }
+]

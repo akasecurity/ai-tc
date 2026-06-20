@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/ip-address",
+  "name": "IP address",
+  "category": "pii",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\.){3}(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)\\b",
+    "flags": "g"
+  },
+  "examples": ["192.168.1.1", "10.0.0.1"]
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "label": "Aadhaar (India) 12 digits",
+    "text": "Aadhaar: 234567890123",
+    "shouldMatch": true
+  },
+  {
+    "label": "UK National Insurance number",
+    "text": "NI: AB123456C",
+    "shouldMatch": true
+  },
+  {
+    "label": "Canadian SIN with context",
+    "text": "SIN: 123-456-789",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare 9-digit number without national-id context",
+    "text": "Order #123456789 shipped",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "ID: 123456",
+    "shouldMatch": false
+  },
+  {
+    "label": "bare 12-digit number without national-id context",
+    "text": "warehouse barcode 693456789012 scanned",
+    "shouldMatch": false
+  }
+]

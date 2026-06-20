@@ -11,7 +11,8 @@
   "scripts": {
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:sqlite-ddl": "node scripts/gen-sqlite-ddl.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@aka/eslint-config": "workspace:*",
+    "@types/node": "^25.9.3",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"

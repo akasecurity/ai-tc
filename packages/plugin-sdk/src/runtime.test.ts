@@ -48,7 +48,7 @@ function config(policy: 'redact' | 'warn' = 'redact'): PluginConfig {
     dbPath: join(dir, 'aka.db'),
     settingsDir: dir,
     onboarded: true,
-    enterprise: null,
+    backend: null,
   };
 }
 

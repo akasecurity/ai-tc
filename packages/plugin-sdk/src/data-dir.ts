@@ -23,7 +23,7 @@ export function defaultDataDir(): string {
 }
 
 // On-disk layout (shared by ALL plugins; see HLD B1):
-//   ~/.aka/settings/  config.json (enterprise; Phase 2) · settings.json
+//   ~/.aka/settings/  config.json (backend connection) · settings.json
 //   ~/.aka/data/      aka.db (+ -wal/-shm sidecars) · policy-cache.json
 export function settingsDir(base: string = defaultDataDir()): string {
   return join(base, 'settings');

@@ -77,7 +77,11 @@ describe('scanTabular', () => {
     const found = scanTabular(table, [memberIdRule]);
 
     expect(found).toContainEqual(
-      expect.objectContaining({ column: 'member_id', ruleId: 'test/member-id', viaHeaderCue: false }),
+      expect.objectContaining({
+        column: 'member_id',
+        ruleId: 'test/member-id',
+        viaHeaderCue: false,
+      }),
     );
   });
 

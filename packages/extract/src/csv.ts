@@ -71,7 +71,9 @@ function parseGrid(input: string, delimiter: string): string[][] {
       continue;
     }
 
-    if (char === '"') {
+    if (char === '"' && field === '') {
+      // A `"` only opens a quoted field at the START of a field. Anywhere else
+      // (e.g. `a"b",c`) it is a literal character, not a quoting toggle.
       inQuotes = true;
     } else if (char === delimiter) {
       pushField();
@@ -105,6 +107,13 @@ function parseGrid(input: string, delimiter: string): string[][] {
  */
 export function extractCsv(input: string, opts?: ExtractCsvOptions): ExtractResult {
   const delimiter = opts?.delimiter ?? ',';
+  // The parser compares the delimiter to a single input character, so a multi-
+  // character (or empty) delimiter would never match and silently mis-parse.
+  if (delimiter.length !== 1) {
+    throw new Error(
+      `extractCsv: delimiter must be a single character, got ${JSON.stringify(delimiter)}`,
+    );
+  }
 
   if (input === '') {
     return { columns: [], rows: [], text: '' };
@@ -128,10 +137,15 @@ export function extractCsv(input: string, opts?: ExtractCsvOptions): ExtractResu
     dataRows = grid.slice(1);
   }
 
+  // A header-prefixed cell always needs a label, so fall back to `colN` when the
+  // header is missing OR an empty string (`??` alone would keep the empty label).
+  const labelFor = (idx: number): string => {
+    const col = columns[idx];
+    return col !== undefined && col !== '' ? col : `col${String(idx + 1)}`;
+  };
+
   const text = dataRows
-    .map((cells) =>
-      cells.map((cell, idx) => `${columns[idx] ?? `col${String(idx + 1)}`}: ${cell}`).join(' | '),
-    )
+    .map((cells) => cells.map((cell, idx) => `${labelFor(idx)}: ${cell}`).join(' | '))
     .join('\n');
 
   return { columns, rows: dataRows, text };

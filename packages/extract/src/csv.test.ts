@@ -72,6 +72,24 @@ describe('extractCsv', () => {
     expect(result.rows).toEqual([['1', '2']]);
   });
 
+  it('treats a quote in the middle of an unquoted field as a literal character', () => {
+    // Regression: a `"` only opens a quoted field at the START of a field; a quote
+    // mid-field (e.g. `a"b",c`) must be kept literally, not toggle quoting.
+    const result = extractCsv('col_a,col_b\na"b",c');
+    expect(result.rows).toEqual([['a"b"', 'c']]);
+  });
+
+  it('rejects a delimiter that is not exactly one character', () => {
+    expect(() => extractCsv('a,b\n1,2', { delimiter: ',,' })).toThrow();
+    expect(() => extractCsv('a,b\n1,2', { delimiter: '' })).toThrow();
+  });
+
+  it('falls back to colN in text when a header cell is empty', () => {
+    const result = extractCsv('a,,c\n1,2,3');
+    expect(result.columns).toEqual(['a', '', 'c']);
+    expect(result.text).toBe('a: 1 | col2: 2 | c: 3');
+  });
+
   it('returns an empty result for empty input', () => {
     expect(extractCsv('')).toEqual({ columns: [], rows: [], text: '' });
   });

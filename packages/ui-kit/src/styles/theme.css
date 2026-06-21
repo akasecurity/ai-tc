@@ -27,7 +27,8 @@
   --color-brand: #33e6c6;
 
   /* ink — dark panels (e.g. the Data Flow control-plane) gradient from
-     --color-ink to --color-ink-deep */
+     --color-ink to --color-ink-deep; the hex coincides with the Cursor
+     provider brand color and --color-text but is a distinct semantic token */
   --color-ink: #252f3d;
   --color-ink-deep: #1b2738;
 

@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "core-phi/group-id",
+  "name": "Health plan group ID",
+  "category": "phi",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bgroup\\s*(?:id|number|no|#)\\s*[:#]?\\s*[A-Za-z0-9]{6,20}\\b",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "ruleIds": ["core-phi/member-id"],
+    "labels": ["member id", "subscriber", "health plan"],
+    "windowChars": 200,
+    "confidenceBoost": 0.05
+  },
+  "examples": ["Member ID: ABC987654321, Group ID: GRP12345678"]
+}

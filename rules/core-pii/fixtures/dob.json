@@ -1,13 +1,23 @@
 [
   {
-    "label": "ISO format DOB",
+    "label": "ISO format DOB with label",
     "text": "DOB: 1985-03-22",
     "shouldMatch": true
   },
   {
-    "label": "US format DOB",
+    "label": "US format DOB with label",
     "text": "Date of Birth: 03/22/1985",
     "shouldMatch": true
+  },
+  {
+    "label": "DOB corroborated by a nearby name (pii category)",
+    "text": "My name is Jane Doe, born 1985-03-22",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare date with no nearby name or label",
+    "text": "The meeting is scheduled for 1985-03-22",
+    "shouldMatch": false
   },
   {
     "label": "future date",

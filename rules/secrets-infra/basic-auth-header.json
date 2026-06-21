@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "secrets-infra/basic-auth-header",
+  "name": "HTTP Basic auth Authorization header",
+  "category": "secret",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "authorization\\s*:\\s*basic\\s+[A-Za-z0-9+/=]{16,}",
+    "flags": "gi"
+  },
+  "examples": ["Authorization: Basic dXNlcjpwYXNzd29yZDEyMzQ="]
+}

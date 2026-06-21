@@ -5,8 +5,8 @@
     "shouldMatch": true
   },
   {
-    "label": "member ID",
-    "text": "Member ID: ABC987654321",
+    "label": "beneficiary number",
+    "text": "Beneficiary: ABC987654321",
     "shouldMatch": true
   },
   {
@@ -15,7 +15,7 @@
     "shouldMatch": false
   },
   {
-    "label": "short ID",
+    "label": "short claim number",
     "text": "Claim number: 123",
     "shouldMatch": false
   }

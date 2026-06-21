@@ -1,5 +1,5 @@
 {
-  "name": "@aka/detections",
+  "name": "@aka/extract",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -11,12 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@aka/schema": "workspace:*"
-  },
   "devDependencies": {
     "@aka/eslint-config": "workspace:*",
-    "@aka/extract": "workspace:*",
     "@types/node": "^25.9.3",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",

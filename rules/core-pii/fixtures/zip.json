@@ -1,0 +1,22 @@
+[
+  {
+    "label": "ZIP+4 with address label nearby",
+    "text": "Shipping address: 123 Main Street, Springfield, IL 94107-1234",
+    "shouldMatch": true
+  },
+  {
+    "label": "ZIP with home-address phrase nearby",
+    "text": "My address is 1 Market St, San Francisco, CA 94107",
+    "shouldMatch": true
+  },
+  {
+    "label": "5-digit with no address context (gated out)",
+    "text": "Build #94107 passed in CI",
+    "shouldMatch": false
+  },
+  {
+    "label": "no 5-digit run",
+    "text": "abc 1234",
+    "shouldMatch": false
+  }
+]

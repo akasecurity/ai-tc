@@ -1,0 +1,30 @@
+{
+  "specVersion": 1,
+  "id": "core-pii/zip",
+  "name": "US ZIP / ZIP+4 postal code",
+  "category": "pii",
+  "severity": "low",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b\\d{5}(?:-\\d{4})?\\b",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "ruleIds": ["core-pii/home-address"],
+    "labels": [
+      "address",
+      "street",
+      "avenue",
+      "boulevard",
+      "mailing",
+      "shipping",
+      "billing",
+      "suite",
+      "p.o. box",
+      "po box",
+      "postal"
+    ],
+    "windowChars": 120
+  },
+  "examples": ["Shipping address: 123 Main Street, Springfield, IL 94107-1234"]
+}

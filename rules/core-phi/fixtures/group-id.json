@@ -1,0 +1,17 @@
+[
+  {
+    "label": "group id corroborated by member id",
+    "text": "Member ID: ABC987654321, Group ID: GRP12345678",
+    "shouldMatch": true
+  },
+  {
+    "label": "group id alone, no member context (gated out)",
+    "text": "Group ID: GRP12345678",
+    "shouldMatch": false
+  },
+  {
+    "label": "no group identifier at all",
+    "text": "Team channel for the platform group",
+    "shouldMatch": false
+  }
+]

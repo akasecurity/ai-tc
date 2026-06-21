@@ -37,10 +37,83 @@ export function getLoadedRules(): Rule[] {
   return [...packs.values()].flatMap((p) => p.rules);
 }
 
+// A candidate match plus the rule that produced it, retained between the two
+// passes of scan() so the proximity gate can inspect each candidate's rule.
+interface Candidate {
+  rule: Rule;
+  match: MatchResult;
+}
+
+// Escape regex metacharacters so a label is matched literally.
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Pass 2 helper: is `candidate` corroborated by another signal within its
+// rule's proximity window? Looks for (a) another match in one of `categories`
+// FROM A DIFFERENT RULE, (b) another match whose ruleId is in `ruleIds`, or
+// (c) a `labels` keyword present (on word boundaries) in the surrounding text
+// window. Pure and non-throwing — a malformed `requiresNearby` simply fails to
+// corroborate.
+function isCorroborated(candidate: Candidate, candidates: Candidate[], text: string): boolean {
+  const req = candidate.rule.requiresNearby;
+  if (!req) return true;
+
+  // windowChars has a schema default (160), so it is always present post-parse.
+  // It is a radius applied on both sides of the span, hence "half window".
+  const halfWindow = req.windowChars;
+  const { start, end } = candidate.match.span;
+  const winStart = start - halfWindow;
+  const winEnd = end + halfWindow;
+
+  // (a)/(b): another candidate match whose span falls inside the window and
+  // whose category/ruleId matches. A candidate never corroborates itself.
+  const categories = req.categories;
+  const ruleIds = req.ruleIds;
+  if (categories?.length || ruleIds?.length) {
+    for (const other of candidates) {
+      if (other === candidate) continue;
+      const os = other.match.span;
+      // Overlap of [os.start, os.end] with [winStart, winEnd].
+      if (os.end < winStart || os.start > winEnd) continue;
+      // Category corroboration must come from a DIFFERENT rule — otherwise two
+      // matches of the same rule (e.g. two nearby dates) would corroborate each
+      // other, defeating independent corroboration. `ruleIds` is an explicit
+      // opt-in, so it is intentionally not subject to this restriction.
+      if (
+        other.match.ruleId !== candidate.match.ruleId &&
+        categories?.includes(other.match.category)
+      ) {
+        return true;
+      }
+      if (ruleIds?.includes(other.match.ruleId)) return true;
+    }
+  }
+
+  // (c): a label keyword present in the surrounding text window. Matched on word
+  // boundaries (not a raw substring) so e.g. the label "state" does not
+  // corroborate inside "estate" — labels behave like standalone keywords/phrases.
+  const labels = req.labels;
+  if (labels && labels.length > 0) {
+    const haystack = text.slice(Math.max(0, winStart), winEnd);
+    for (const label of labels) {
+      const trimmed = label.trim();
+      if (trimmed.length === 0) continue;
+      // Boundaries = non-alphanumeric neighbours; robust for labels containing
+      // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
+      const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
+      if (re.test(haystack)) return true;
+    }
+  }
+
+  return false;
+}
+
 export function scan(text: string, rules?: Rule[]): MatchResult[] {
   const ruleset = rules ?? getLoadedRules();
-  const findings: MatchResult[] = [];
 
+  // Pass 1: run primitive matchers for ALL rules → candidate matches.
+  const candidates: Candidate[] = [];
   for (const rule of ruleset) {
     let spans;
     if (rule.matcher.type === 'keyword') {
@@ -54,15 +127,38 @@ export function scan(text: string, rules?: Rule[]): MatchResult[] {
     for (const span of spans) {
       const rawMatch = text.slice(span.start, span.end);
       if (!passesPostValidators(rule, rawMatch)) continue;
-      findings.push({
-        ruleId: rule.id,
-        category: rule.category,
-        severity: rule.severity,
-        span,
-        rawMatch,
-        confidence: 0.9,
+      candidates.push({
+        rule,
+        match: {
+          ruleId: rule.id,
+          category: rule.category,
+          severity: rule.severity,
+          span,
+          rawMatch,
+          confidence: 0.9,
+        },
       });
     }
+  }
+
+  // Pass 2: apply proximity gating. Candidates whose rule has no
+  // `requiresNearby` are kept verbatim (identical to the pre-gate behavior).
+  const findings: MatchResult[] = [];
+  for (const candidate of candidates) {
+    const req = candidate.rule.requiresNearby;
+    if (!req) {
+      findings.push(candidate.match);
+      continue;
+    }
+    if (!isCorroborated(candidate, candidates, text)) continue;
+    const boost = req.confidenceBoost;
+    // Cap below 1.0 — a heuristic, corroboration-based match should never read as
+    // mathematically "certain".
+    findings.push(
+      boost
+        ? { ...candidate.match, confidence: Math.min(0.99, candidate.match.confidence + boost) }
+        : candidate.match,
+    );
   }
 
   return findings;

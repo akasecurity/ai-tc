@@ -1,0 +1,22 @@
+[
+  {
+    "label": "labelled member id",
+    "text": "Member ID: ABC987654321",
+    "shouldMatch": true
+  },
+  {
+    "label": "member number variant",
+    "text": "Member Number 4567890123",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare alnum, no member label",
+    "text": "Reference ABC987654321 on file",
+    "shouldMatch": false
+  },
+  {
+    "label": "too short",
+    "text": "Member ID: 123",
+    "shouldMatch": false
+  }
+]

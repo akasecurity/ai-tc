@@ -1,14 +1,15 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createPolicyStore } from './policy-store.ts';
+import type { PluginConfig } from './config.ts';
+import { createLocalStore } from './local-store.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
-// No policy bundle on disk → DEFAULT_ACTIONS apply (secret: block, pii: redact)
+// Markers resolved by the seeded default policies (secret: block, pii: redact).
 registerRulePack('test-pack', [
   {
     specVersion: 1,
@@ -30,67 +31,85 @@ registerRulePack('test-pack', [
   },
 ]);
 
-async function makeRuntime() {
-  const dir = await mkdtemp(join(tmpdir(), 'aka-runtime-'));
-  return createPluginRuntime({ backendUrl: '', token: '', dataDir: dir });
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'aka-runtime-'));
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function config(policy: 'redact' | 'warn' = 'redact'): PluginConfig {
+  return {
+    settings: { specVersion: 1, runMode: 'standalone', policy },
+    dataDir: dir,
+    dbPath: join(dir, 'aka.db'),
+    settingsDir: dir,
+    onboarded: true,
+    enterprise: null,
+  };
 }
 
-describe('runtime without a synced policy bundle', () => {
-  it('passes benign text through', async () => {
-    const runtime = await makeRuntime();
-    const result = await runtime.processText('nothing to see here');
-    expect(result.action).toBe('log');
-    expect(result.text).toBe('nothing to see here');
+describe('createPluginRuntime — decisions from seeded default policies', () => {
+  it('passes benign text through as log', () => {
+    const rt = createPluginRuntime(config());
+    expect(rt.processText('nothing to see here')).toMatchObject({
+      action: 'log',
+      text: 'nothing to see here',
+    });
+    rt.close();
   });
 
-  it('blocks secrets by default', async () => {
-    const runtime = await makeRuntime();
-    const result = await runtime.processText('deploy with SECRET_MARKER now');
+  it('blocks secrets by default', () => {
+    const rt = createPluginRuntime(config());
+    const result = rt.processText('deploy with SECRET_MARKER now');
     expect(result.action).toBe('block');
     expect(result.text).toBeNull();
     expect(result.findings.map((f) => f.ruleId)).toContain('test/secret-marker');
+    rt.close();
   });
 
-  it('redacts PII by default', async () => {
-    const runtime = await makeRuntime();
-    const result = await runtime.processText('contact PII_MARKER please');
-    expect(result.action).toBe('redact');
-    expect(result.text).toBe('contact [REDACTED:PII] please');
+  it('redacts PII by default', () => {
+    const rt = createPluginRuntime(config());
+    expect(rt.processText('contact PII_MARKER please')).toMatchObject({
+      action: 'redact',
+      text: 'contact [REDACTED:PII] please',
+    });
+    rt.close();
   });
 
-  it('reports policy as absent and stale', async () => {
-    const runtime = await makeRuntime();
-    expect(await runtime.policyStatus()).toEqual({ present: false, stale: true, version: null });
+  it('warn redaction mode downgrades block/redact to warn and leaves text intact', () => {
+    const rt = createPluginRuntime(config('warn'));
+    expect(rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
+      action: 'warn',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    expect(rt.processText('contact PII_MARKER please')).toMatchObject({
+      action: 'warn',
+      text: 'contact PII_MARKER please',
+    });
+    rt.close();
   });
 });
 
-describe('runtime with synced installed-pack rules', () => {
-  it('enforces rules delivered in the synced bundle (not just bundled packs)', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'aka-runtime-installed-'));
-    const store = createPolicyStore(dir);
-    await store.write({
-      version: '1',
-      policies: [],
-      // A rule that exists ONLY in the synced bundle — no bundled pack has it.
-      rules: [
-        {
-          specVersion: 1,
-          id: 'aka-labs/installed-marker',
-          name: 'Installed marker',
-          category: 'secret',
-          severity: 'critical',
-          matcher: { type: 'keyword', keywords: ['INSTALLED_MARKER'], caseSensitive: false },
-        },
-      ],
-      customKeywords: [],
-      fetchedAt: new Date().toISOString(),
+describe('capture', () => {
+  it('records the event + findings and returns the same decision', () => {
+    const rt = createPluginRuntime(config());
+    const result = rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'deploy with SECRET_MARKER now',
     });
-
-    const runtime = createPluginRuntime({ backendUrl: '', token: '', dataDir: dir });
-    const result = await runtime.processText('here is INSTALLED_MARKER value');
-
-    // secret → block via DEFAULT_ACTIONS, proving the synced rule was registered.
     expect(result.action).toBe('block');
-    expect(result.findings.map((f) => f.ruleId)).toContain('aka-labs/installed-marker');
+    rt.close();
+
+    const store = createLocalStore(dir);
+    const findings = store.recentFindings();
+    store.close();
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('test/secret-marker');
+    expect(findings[0]?.actionTaken).toBe('block');
   });
 });

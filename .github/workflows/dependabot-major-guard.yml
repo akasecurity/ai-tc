@@ -1,0 +1,57 @@
+name: Dependabot major-version guard
+
+# Flags Dependabot pull requests that bump a dependency by a MAJOR version so
+# they stand out for deliberate manual review and are never rubber-stamped /
+# auto-merged. Minor and patch bumps are left untouched (they flow as usual,
+# grouped per .github/dependabot.yml).
+#
+# pull_request_target is required: Dependabot PRs run with a read-only token on
+# the plain `pull_request` event. This job only reads update metadata and edits
+# the PR (label + comment) — it never checks out or executes PR code, so running
+# in the trusted base context is safe.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  # issues: write is required for `gh label create` (labels are a repo/issues
+  # resource) — pull-requests: write alone cannot create the label.
+  issues: write
+
+jobs:
+  flag-major:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Flag major bumps for manual review
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DEP: ${{ steps.meta.outputs.dependency-names }}
+          FROM: ${{ steps.meta.outputs.previous-version }}
+          TO: ${{ steps.meta.outputs.new-version }}
+        run: |
+          # Label create + add are idempotent, so they run on every event
+          # (including `synchronize` when Dependabot rebases the PR).
+          gh label create "dependencies:major" \
+            --color D93F0B \
+            --description "Major dependency bump — manual review required, do not auto-merge" \
+            --force
+          gh pr edit "$PR_URL" --add-label "dependencies:major"
+
+          # Post the review-required comment only once. The workflow re-runs on
+          # every `synchronize` push, so guard against duplicate comments with a
+          # hidden marker rather than commenting again on each rebase.
+          marker="<!-- dependabot-major-guard -->"
+          if ! gh pr view "$PR_URL" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
+            body="${marker}"$'\n'"⚠️ **Major version bump** (\`${DEP}\`: ${FROM} → ${TO}) — held for manual review. Major bumps have broken CI before (Node ABI, vitest 3/4, lint). Verify breaking changes and do **not** auto-merge."
+            gh pr comment "$PR_URL" --body "$body"
+          fi

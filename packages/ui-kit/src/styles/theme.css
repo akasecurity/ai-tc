@@ -26,6 +26,11 @@
   --color-primary-tint: #f3f7ff;
   --color-brand: #33e6c6;
 
+  /* ink — dark panels (e.g. the Data Flow control-plane) gradient from
+     --color-ink to --color-ink-deep */
+  --color-ink: #252f3d;
+  --color-ink-deep: #1b2738;
+
   /* accent hues (foreground + fill tint) — category icon tiles, chips, charts */
   --color-violet: #7c3aed;
   --color-violet-fill: #f1ecfd;

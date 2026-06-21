@@ -1,15 +1,12 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import type { PolicyBundle, Rule, WorkspaceSettings } from '@aka/schema';
+import { describe, expect, it } from 'vitest';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import type { PluginConfig } from './config.ts';
-import { createLocalStore } from './local-store.ts';
+import type { CaptureRecord, DataGateway } from './data-gateway.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
-// Markers resolved by the seeded default policies (secret: block, pii: redact).
+// Markers resolved by DEFAULT_ACTIONS (secret: block, pii: redact) when the
+// bundle carries no explicit policy. Registered into the global bundled packs.
 registerRulePack('test-pack', [
   {
     specVersion: 1,
@@ -31,85 +28,118 @@ registerRulePack('test-pack', [
   },
 ]);
 
-let dir: string;
+// A rule that exists ONLY in a pulled bundle (not in the bundled packs), used to
+// prove getPolicyBundle().rules are registered into the engine.
+const PULLED_RULE: Rule = {
+  specVersion: 1,
+  id: 'pulled/secret-marker',
+  name: 'Pulled secret marker',
+  category: 'secret',
+  severity: 'critical',
+  matcher: { type: 'keyword', keywords: ['PULLED_MARKER'], caseSensitive: false },
+  examples: ['PULLED_MARKER'],
+};
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-runtime-'));
-});
+function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
+  return { specVersion: 1, runMode: 'standalone', policy };
+}
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
-
-function config(policy: 'redact' | 'warn' = 'redact'): PluginConfig {
+function bundle(rules: Rule[] = []): PolicyBundle {
   return {
-    settings: { specVersion: 1, runMode: 'standalone', policy },
-    dataDir: dir,
-    dbPath: join(dir, 'aka.db'),
-    settingsDir: dir,
-    onboarded: true,
-    enterprise: null,
+    version: 'test',
+    policies: [],
+    rules,
+    customKeywords: [],
+    fetchedAt: new Date().toISOString(),
   };
 }
 
-describe('createPluginRuntime — decisions from seeded default policies', () => {
-  it('passes benign text through as log', () => {
-    const rt = createPluginRuntime(config());
-    expect(rt.processText('nothing to see here')).toMatchObject({
+// A fake gateway: returns a fixed bundle and records every recordCapture call.
+function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] } {
+  const records: CaptureRecord[] = [];
+  return {
+    records,
+    recordCapture: (record) => {
+      records.push(record);
+      return Promise.resolve();
+    },
+    getPolicyBundle: () => Promise.resolve(b),
+    recentFindings: () => Promise.resolve([]),
+    healthSummary: () => Promise.resolve({ findings: 0, byAction: {} as never, coverage: 0 }),
+    activityByDay: () => Promise.resolve([]),
+    close: () => Promise.resolve(),
+  };
+}
+
+describe('createPluginRuntime — decisions from the pulled bundle (DEFAULT_ACTIONS fallback)', () => {
+  it('passes benign text through as log', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.processText('nothing to see here')).toMatchObject({
       action: 'log',
       text: 'nothing to see here',
     });
-    rt.close();
+    await rt.close();
   });
 
-  it('blocks secrets by default', () => {
-    const rt = createPluginRuntime(config());
-    const result = rt.processText('deploy with SECRET_MARKER now');
+  it('blocks secrets by default', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    const result = await rt.processText('deploy with SECRET_MARKER now');
     expect(result.action).toBe('block');
     expect(result.text).toBeNull();
     expect(result.findings.map((f) => f.ruleId)).toContain('test/secret-marker');
-    rt.close();
+    await rt.close();
   });
 
-  it('redacts PII by default', () => {
-    const rt = createPluginRuntime(config());
-    expect(rt.processText('contact PII_MARKER please')).toMatchObject({
+  it('redacts PII by default', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt.processText('contact PII_MARKER please')).toMatchObject({
       action: 'redact',
       text: 'contact [REDACTED:PII] please',
     });
-    rt.close();
+    await rt.close();
   });
 
-  it('warn redaction mode downgrades block/redact to warn and leaves text intact', () => {
-    const rt = createPluginRuntime(config('warn'));
-    expect(rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
+  it('warn mode downgrades block/redact to warn and leaves text intact', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings('warn'));
+    expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
       action: 'warn',
       text: 'deploy with SECRET_MARKER now',
     });
-    expect(rt.processText('contact PII_MARKER please')).toMatchObject({
-      action: 'warn',
-      text: 'contact PII_MARKER please',
-    });
-    rt.close();
+    await rt.close();
+  });
+});
+
+describe('rules pull', () => {
+  it('detects with rules pulled from the bundle (not just bundled packs)', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    const result = await rt.processText('ship PULLED_MARKER today');
+    expect(result.action).toBe('block');
+    expect(result.findings.map((f) => f.ruleId)).toContain('pulled/secret-marker');
+    await rt.close();
   });
 });
 
 describe('capture', () => {
-  it('records the event + findings and returns the same decision', () => {
-    const rt = createPluginRuntime(config());
-    const result = rt.capture({
+  it('records the event + masked findings and returns the same decision', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture({
       kind: 'prompt',
       sourceTool: 'claude-code',
       text: 'deploy with SECRET_MARKER now',
     });
     expect(result.action).toBe('block');
-    rt.close();
+    await rt.close();
 
-    const store = createLocalStore(dir);
-    const findings = store.recentFindings();
-    store.close();
-    expect(findings).toHaveLength(1);
-    expect(findings[0]?.ruleId).toBe('test/secret-marker');
-    expect(findings[0]?.actionTaken).toBe('block');
+    expect(gw.records).toHaveLength(1);
+    const record = gw.records[0];
+    expect(record?.findings).toHaveLength(1);
+    expect(record?.findings[0]?.ruleId).toBe('test/secret-marker');
+    expect(record?.findings[0]?.actionTaken).toBe('block');
+    // The raw secret is masked before it reaches the gateway.
+    expect(record?.findings[0]?.maskedMatch).not.toContain('SECRET_MARKER');
+    // Stored content has the secret masked; content_hash is of the original.
+    expect(record?.event.content).not.toContain('SECRET_MARKER');
+    expect(record?.event.content).toContain('[REDACTED:SECRET]');
   });
 });

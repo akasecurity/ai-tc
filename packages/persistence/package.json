@@ -1,0 +1,24 @@
+{
+  "name": "@aka/persistence",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aka/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@aka/eslint-config": "workspace:*",
+    "@types/node": "^25.9.3",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

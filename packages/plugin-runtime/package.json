@@ -1,0 +1,26 @@
+{
+  "name": "@akasecurity/plugin-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@types/node": "^25.9.3",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

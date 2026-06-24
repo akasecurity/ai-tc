@@ -1,0 +1,22 @@
+[
+  {
+    "label": "exec with request.query nearby",
+    "text": "// runs user query command\nexec(req.query.cmd, callback);",
+    "shouldMatch": true
+  },
+  {
+    "label": "execSync with user input nearby",
+    "text": "const body = req.body;\nexecSync(body.command);",
+    "shouldMatch": true
+  },
+  {
+    "label": "exec with literal string argument",
+    "text": "exec('ls -la', (err, stdout) => console.log(stdout));",
+    "shouldMatch": false
+  },
+  {
+    "label": "exec with template literal (starts with quote)",
+    "text": "exec(`git status`, callback);",
+    "shouldMatch": false
+  }
+]

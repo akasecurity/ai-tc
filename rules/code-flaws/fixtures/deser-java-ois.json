@@ -1,0 +1,22 @@
+[
+  {
+    "label": "ObjectInputStream with readObject nearby",
+    "text": "ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());\nObject obj = ois.readObject();",
+    "shouldMatch": true
+  },
+  {
+    "label": "ObjectInputStream used with readObject in same block",
+    "text": "ObjectInputStream in = new ObjectInputStream(request.getInputStream());\nreturn in.readObject();",
+    "shouldMatch": true
+  },
+  {
+    "label": "ObjectInputStream without readObject",
+    "text": "ObjectInputStream ois = new ObjectInputStream(trusted_stream);",
+    "shouldMatch": false
+  },
+  {
+    "label": "comment about ObjectInputStream",
+    "text": "// Use ObjectInputStream only with trusted data",
+    "shouldMatch": false
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "requests.get with verify=False",
+    "text": "response = requests.get(url, verify=False)",
+    "shouldMatch": true
+  },
+  {
+    "label": "requests.post with verify=False",
+    "text": "resp = requests.post(endpoint, data=payload, verify=False)",
+    "shouldMatch": true
+  },
+  {
+    "label": "requests.get with verify=True",
+    "text": "response = requests.get(url, verify=True)",
+    "shouldMatch": false
+  },
+  {
+    "label": "requests.get without verify param",
+    "text": "response = requests.get(url, headers=headers)",
+    "shouldMatch": false
+  }
+]

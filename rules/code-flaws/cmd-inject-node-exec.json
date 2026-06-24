@@ -1,0 +1,17 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/cmd-inject-node-exec",
+  "name": "Command injection via Node.js exec with variable argument",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bexec(?:Sync)?\\s*\\(\\s*(?!['\"`])",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "labels": ["input", "request", "param", "argv", "user", "query", "body"],
+    "windowChars": 200
+  },
+  "examples": ["exec(req.query.cmd)", "execSync(userInput)"]
+}

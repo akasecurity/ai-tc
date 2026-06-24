@@ -1,0 +1,22 @@
+[
+  {
+    "label": "innerHTML assignment",
+    "text": "document.getElementById('out').innerHTML = userInput;",
+    "shouldMatch": true
+  },
+  {
+    "label": "innerHTML= without space",
+    "text": "el.innerHTML=data;",
+    "shouldMatch": true
+  },
+  {
+    "label": "innerText safe alternative",
+    "text": "element.innerText = userInput;",
+    "shouldMatch": false
+  },
+  {
+    "label": "textContent safe alternative",
+    "text": "el.textContent = data;",
+    "shouldMatch": false
+  }
+]

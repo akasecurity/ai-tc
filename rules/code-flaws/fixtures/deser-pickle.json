@@ -1,0 +1,22 @@
+[
+  {
+    "label": "pickle.loads with user data",
+    "text": "obj = pickle.loads(request.data)",
+    "shouldMatch": true
+  },
+  {
+    "label": "pickle.load from file stream",
+    "text": "data = pickle.load(user_file)",
+    "shouldMatch": true
+  },
+  {
+    "label": "safe JSON deserialization",
+    "text": "data = json.loads(request.data)",
+    "shouldMatch": false
+  },
+  {
+    "label": "pickle.dumps for serialization",
+    "text": "serialized = pickle.dumps(safe_object)",
+    "shouldMatch": false
+  }
+]

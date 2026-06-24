@@ -1,0 +1,22 @@
+[
+  {
+    "label": "yaml.load without loader",
+    "text": "config = yaml.load(user_input)",
+    "shouldMatch": true
+  },
+  {
+    "label": "yaml.load with open file no SafeLoader",
+    "text": "data = yaml.load(f)",
+    "shouldMatch": true
+  },
+  {
+    "label": "yaml.load with SafeLoader",
+    "text": "config = yaml.load(data, Loader=yaml.SafeLoader)",
+    "shouldMatch": false
+  },
+  {
+    "label": "yaml.safe_load",
+    "text": "data = yaml.safe_load(stream)",
+    "shouldMatch": false
+  }
+]

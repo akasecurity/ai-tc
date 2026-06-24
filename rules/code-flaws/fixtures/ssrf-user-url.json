@@ -1,0 +1,22 @@
+[
+  {
+    "label": "fetch with req.query URL",
+    "text": "const data = await fetch(req.query.url);",
+    "shouldMatch": true
+  },
+  {
+    "label": "requests.get with form URL",
+    "text": "resp = requests.get(request.form['url'])",
+    "shouldMatch": true
+  },
+  {
+    "label": "fetch with hardcoded URL",
+    "text": "const data = await fetch('https://api.example.com/data');",
+    "shouldMatch": false
+  },
+  {
+    "label": "axios get with constant",
+    "text": "axios.get(`${API_BASE}/users/${id}`)",
+    "shouldMatch": false
+  }
+]

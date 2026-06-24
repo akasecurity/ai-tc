@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/xss-dangerously-set",
+  "name": "XSS via React dangerouslySetInnerHTML",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "keyword",
+    "keywords": ["dangerouslySetInnerHTML"],
+    "caseSensitive": true
+  },
+  "examples": ["<div dangerouslySetInnerHTML={{ __html: userContent }} />"]
+}

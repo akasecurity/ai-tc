@@ -1,0 +1,17 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/crypto-insecure-random",
+  "name": "Insecure random number generator used for security-sensitive value",
+  "category": "code_flaw",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(Math\\.random\\(\\)|random\\.random\\(\\)|random\\.randint\\()",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": ["token", "session", "key", "password", "secret", "nonce", "salt"],
+    "windowChars": 160
+  },
+  "examples": ["const token = Math.random().toString(36)", "session_key = str(random.random())"]
+}

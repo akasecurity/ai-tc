@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/auth-ssl-verify-false",
+  "name": "SSL certificate verification disabled",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\brequests\\.(get|post|put|delete|patch|request)\\s*\\([^)]*verify\\s*=\\s*False",
+    "flags": "gi"
+  },
+  "examples": [
+    "requests.get(url, verify=False)",
+    "requests.post(endpoint, data=payload, verify=False)"
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "hashlib.sha1 for password hash",
+    "text": "password_hash = hashlib.sha1(password.encode()).hexdigest()",
+    "shouldMatch": true
+  },
+  {
+    "label": "Java SHA1 for token hashing",
+    "text": "// token hash\nMessageDigest.getInstance(\"SHA1\")",
+    "shouldMatch": true
+  },
+  {
+    "label": "sha1 for non-security checksum",
+    "text": "file_checksum = hashlib.sha1(file_data).hexdigest()",
+    "shouldMatch": false
+  },
+  {
+    "label": "sha256 for password",
+    "text": "password_hash = hashlib.sha256(password.encode()).hexdigest()",
+    "shouldMatch": false
+  }
+]

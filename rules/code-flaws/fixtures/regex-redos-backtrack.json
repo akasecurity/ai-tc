@@ -1,0 +1,22 @@
+[
+  {
+    "label": "nested quantifier (a+)+",
+    "text": "const re = /(a+)+/;",
+    "shouldMatch": true
+  },
+  {
+    "label": "nested quantifier (\\w+\\s*)+",
+    "text": "const pattern = /(\\w+\\s*)+$/;",
+    "shouldMatch": true
+  },
+  {
+    "label": "simple quantifier without nesting",
+    "text": "const re = /\\w+/;",
+    "shouldMatch": false
+  },
+  {
+    "label": "greedy quantifier without catastrophic nesting",
+    "text": "const re = /[a-z]+[0-9]*/;",
+    "shouldMatch": false
+  }
+]

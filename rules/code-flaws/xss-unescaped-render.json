@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/xss-unescaped-render",
+  "name": "XSS via unescaped template rendering",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(\\braw\\s*\\(|\\bhtml_safe\\b|\\|\\s*safe\\b|\\bmark_safe\\s*\\()",
+    "flags": "gi"
+  },
+  "examples": ["<%= raw(user_comment) %>", "{{ user_input | safe }}", "mark_safe(user_html)"]
+}

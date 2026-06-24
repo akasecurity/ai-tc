@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/sql-inject-interp",
+  "name": "SQL injection via Ruby string interpolation or PHP variable",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(select|insert|update|delete|where)[^\\n]*?(#\\{|\\$[a-z_])",
+    "flags": "gi"
+  },
+  "examples": [
+    "\"SELECT * FROM users WHERE id = #{params[:id]}\"",
+    "\"SELECT * FROM users WHERE id = $userId\""
+  ]
+}

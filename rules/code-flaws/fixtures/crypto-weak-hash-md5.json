@@ -1,0 +1,27 @@
+[
+  {
+    "label": "Python hashlib.md5",
+    "text": "digest = hashlib.md5(password.encode()).hexdigest()",
+    "shouldMatch": true
+  },
+  {
+    "label": "Java MessageDigest MD5",
+    "text": "MessageDigest md = MessageDigest.getInstance(\"MD5\");",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby Digest::MD5",
+    "text": "hash = Digest::MD5.hexdigest(data)",
+    "shouldMatch": true
+  },
+  {
+    "label": "strong hash sha256",
+    "text": "digest = hashlib.sha256(password.encode()).hexdigest()",
+    "shouldMatch": false
+  },
+  {
+    "label": "bcrypt for password hashing",
+    "text": "hashed = bcrypt.hashpw(password, bcrypt.gensalt())",
+    "shouldMatch": false
+  }
+]

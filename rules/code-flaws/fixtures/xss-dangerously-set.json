@@ -1,0 +1,22 @@
+[
+  {
+    "label": "dangerouslySetInnerHTML in JSX",
+    "text": "<div dangerouslySetInnerHTML={{ __html: userContent }} />",
+    "shouldMatch": true
+  },
+  {
+    "label": "dangerouslySetInnerHTML with variable",
+    "text": "return <span dangerouslySetInnerHTML={markup} />;",
+    "shouldMatch": true
+  },
+  {
+    "label": "safe JSX rendering via children",
+    "text": "<div>{userContent}</div>",
+    "shouldMatch": false
+  },
+  {
+    "label": "DOM text content assignment",
+    "text": "element.textContent = userContent;",
+    "shouldMatch": false
+  }
+]

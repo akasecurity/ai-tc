@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Object.assign with req.body",
+    "text": "Object.assign(config, req.body);",
+    "shouldMatch": true
+  },
+  {
+    "label": "lodash merge with request body",
+    "text": "_.merge(options, request.body);",
+    "shouldMatch": true
+  },
+  {
+    "label": "Object.assign with safe literal",
+    "text": "Object.assign(config, { timeout: 30 });",
+    "shouldMatch": false
+  },
+  {
+    "label": "Object.assign creating new object",
+    "text": "const merged = Object.assign({}, defaults, userPrefs);",
+    "shouldMatch": false
+  }
+]

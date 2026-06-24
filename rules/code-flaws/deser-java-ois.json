@@ -1,0 +1,19 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/deser-java-ois",
+  "name": "Insecure deserialization via Java ObjectInputStream",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bObjectInputStream\\b",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "labels": ["readObject"],
+    "windowChars": 200
+  },
+  "examples": [
+    "ObjectInputStream ois = new ObjectInputStream(inputStream); Object obj = ois.readObject();"
+  ]
+}

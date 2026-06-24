@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/ssrf-user-url",
+  "name": "Server-side request forgery via user-controlled URL",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(fetch|axios\\.\\w+|requests\\.get|urllib\\.request\\.urlopen)\\s*\\(\\s*(req|request|params|query|body)",
+    "flags": "gi"
+  },
+  "examples": ["fetch(req.query.url)", "requests.get(request.form['url'])"]
+}

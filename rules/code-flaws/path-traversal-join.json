@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/path-traversal-join",
+  "name": "Path traversal via os.path.join with user-controlled component",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "os\\.path\\.join\\s*\\([^,)]+,\\s*(request|req|params|user)",
+    "flags": "gi"
+  },
+  "examples": [
+    "os.path.join(base_dir, request.args['file'])",
+    "os.path.join(upload_dir, user_filename)"
+  ]
+}

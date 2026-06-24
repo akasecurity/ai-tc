@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/deser-yaml-unsafe",
+  "name": "Insecure deserialization via yaml.load without SafeLoader",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\byaml\\.load\\s*\\((?![^)]*SafeLoader|[^)]*safe_load)",
+    "flags": "gi"
+  },
+  "examples": ["data = yaml.load(user_input)", "config = yaml.load(f)"]
+}

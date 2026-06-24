@@ -1,0 +1,20 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/crypto-weak-hash-sha1",
+  "name": "Weak cryptographic hash: SHA-1 in security context",
+  "category": "code_flaw",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(hashlib\\.sha1\\s*\\(|SHA1\\.(?:digest|hash)\\b|Digest::SHA1|MessageDigest\\.getInstance\\s*\\(\\s*[\"']SHA-?1[\"'])",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": ["password", "credential", "hash", "token", "secret"],
+    "windowChars": 160
+  },
+  "examples": [
+    "password_hash = hashlib.sha1(password.encode()).hexdigest()",
+    "MessageDigest.getInstance(\"SHA1\")"
+  ]
+}

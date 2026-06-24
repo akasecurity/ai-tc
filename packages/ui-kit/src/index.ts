@@ -45,6 +45,17 @@ export {
   type PopoverContentProps,
   PopoverTrigger,
 } from './popover.tsx';
+export {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  type SheetContentProps,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from './sheet.tsx';
 export { Skeleton } from './skeleton.tsx';
 export { Switch, type SwitchProps } from './switch.tsx';
+export { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './table.tsx';
 export { Tag, type TagProps } from './tag.tsx';

@@ -41,7 +41,7 @@ const DOT_CLASS: Record<Severity, string> = {
 /** A severity pill with a leading status dot — capitalizes the label. */
 export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
-    <Badge variant={severity}>
+    <Badge variant={severity} className="h-6">
       <span className={cn('size-1.5 rounded-full', DOT_CLASS[severity])} />
       <span className="capitalize">{severity}</span>
     </Badge>

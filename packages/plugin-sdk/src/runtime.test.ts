@@ -41,7 +41,7 @@ const PULLED_RULE: Rule = {
 };
 
 function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
-  return { specVersion: 1, runMode: 'standalone', policy };
+  return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'session-only' };
 }
 
 function bundle(rules: Rule[] = []): PolicyBundle {
@@ -73,6 +73,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
         coverage: 0,
       }),
     activityByDay: () => Promise.resolve([]),
+    knownContentHashes: () => Promise.resolve(new Set<string>()),
     close: () => Promise.resolve(),
   };
 }
@@ -147,5 +148,39 @@ describe('capture', () => {
     // Stored content has the secret masked; content_hash is of the original.
     expect(record?.event.content).not.toContain('SECRET_MARKER');
     expect(record?.event.content).toContain('[REDACTED:SECRET]');
+  });
+
+  it('stamps the supplied occurredAt on the event (historical backfill)', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const occurredAt = '2026-05-01T09:00:00.000Z';
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+      occurredAt,
+    });
+    await rt.close();
+    expect(gw.records[0]?.event.occurredAt).toBe(occurredAt);
+  });
+
+  it("persist 'with-findings' skips benign text but records hits", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'nothing here' },
+      {
+        persist: 'with-findings',
+      },
+    );
+    expect(gw.records).toHaveLength(0); // benign → nothing stored
+    await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      {
+        persist: 'with-findings',
+      },
+    );
+    expect(gw.records).toHaveLength(1); // a hit → recorded
+    await rt.close();
   });
 });

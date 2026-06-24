@@ -14,6 +14,17 @@ export {
   CardTitle,
 } from './card.tsx';
 export {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  type DialogContentProps,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from './dialog.tsx';
+export {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -35,4 +46,5 @@ export {
   PopoverTrigger,
 } from './popover.tsx';
 export { Skeleton } from './skeleton.tsx';
+export { Switch, type SwitchProps } from './switch.tsx';
 export { Tag, type TagProps } from './tag.tsx';

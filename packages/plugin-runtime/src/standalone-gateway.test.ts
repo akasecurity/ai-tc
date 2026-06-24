@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import type { DetectedFinding, IngestEvent } from '@aka/schema';
+import { DB_FILENAME } from '@aka/persistence';
+import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@aka/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { StandaloneDataGateway } from './standalone-gateway.ts';
@@ -71,6 +73,35 @@ describe('StandaloneDataGateway', () => {
       new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'custom']),
     );
     await gw.close();
+  });
+
+  it('records the detections inventory into installed_packs on open', async () => {
+    const detections: InstalledPackInput[] = [
+      {
+        namespace: 'aka',
+        packId: 'secrets',
+        version: '2.0.0',
+        name: 'Secrets & Credentials',
+        rules: [
+          {
+            specVersion: 1,
+            id: 'secrets/aws',
+            name: 'aws',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'x', flags: 'g' },
+          },
+        ],
+      },
+    ];
+    const gw = new StandaloneDataGateway(dir, detections);
+    await gw.close();
+
+    // Verify it landed in the shared store (the gateway exposes no pack reads).
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = raw.prepare('SELECT count(*) AS c FROM installed_packs').get() as { c: number };
+    raw.close();
+    expect(row.c).toBe(1);
   });
 
   it('reports health and daily activity from the local store', async () => {

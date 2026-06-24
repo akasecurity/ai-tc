@@ -65,7 +65,13 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     },
     getPolicyBundle: () => Promise.resolve(b),
     recentFindings: () => Promise.resolve([]),
-    healthSummary: () => Promise.resolve({ findings: 0, byAction: {} as never, coverage: 0 }),
+    healthSummary: () =>
+      Promise.resolve({
+        findings: 0,
+        byAction: {} as never,
+        bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+        coverage: 0,
+      }),
     activityByDay: () => Promise.resolve([]),
     close: () => Promise.resolve(),
   };

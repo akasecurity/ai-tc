@@ -27,9 +27,8 @@
   --color-brand: #33e6c6;
 
   /* ink — dark panels (e.g. the Data Flow control-plane) gradient from
-     --color-ink to --color-ink-deep; the hex coincides with the Cursor
-     provider brand color and --color-text but is a distinct semantic token */
-  --color-ink: #252f3d;
+     --color-ink to --color-ink-deep; */
+  --color-ink: #11171f;
   --color-ink-deep: #1b2738;
 
   /* accent hues (foreground + fill tint) — category icon tiles, chips, charts */
@@ -41,6 +40,14 @@
   /* success / ok (foreground + fill tint) */
   --color-ok: #0db15f;
   --color-ok-fill: #e3f6ec;
+
+  /* code / terminal panels — the rule-inspector editors render matcher source on
+     a dark ink panel with these syntax-style highlight colors. */
+  --color-code-fg: #cdd5e0;
+  --color-code-muted: #6b7686;
+  --color-code-hit: #9defc1;
+  --color-code-ok: #4ade9a;
+  --color-code-err: #ff8da2;
 
   /* severity (foreground + fill tint) */
   --color-sev-critical: #e63448;

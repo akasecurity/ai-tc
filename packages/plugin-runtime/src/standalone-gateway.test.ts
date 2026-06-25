@@ -70,7 +70,7 @@ describe('StandaloneDataGateway', () => {
       .map((p) => ('category' in p.target ? p.target.category : null))
       .filter(Boolean);
     expect(new Set(categories)).toEqual(
-      new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'custom']),
+      new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'code_flaw', 'custom']),
     );
     await gw.close();
   });

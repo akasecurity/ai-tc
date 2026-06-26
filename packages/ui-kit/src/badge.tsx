@@ -14,6 +14,11 @@ const badgeVariants = cva(
         high: 'bg-sev-high-fill text-sev-high',
         medium: 'bg-sev-medium-fill text-sev-medium',
         low: 'bg-sev-low-fill text-sev-low',
+        // Tonal (non-severity) variants for status/category chips.
+        success: 'bg-ok-fill text-ok',
+        teal: 'bg-teal-fill text-teal',
+        info: 'bg-sev-low-fill text-sev-low',
+        primary: 'bg-primary-tint text-primary',
       },
     },
     defaultVariants: { variant: 'default' },

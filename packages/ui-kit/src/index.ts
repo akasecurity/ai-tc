@@ -46,6 +46,12 @@ export {
   PopoverTrigger,
 } from './popover.tsx';
 export {
+  SegmentedControl,
+  SegmentedControlItem,
+  type SegmentedControlItemProps,
+  type SegmentedControlProps,
+} from './segmented-control.tsx';
+export {
   Sheet,
   SheetClose,
   SheetContent,

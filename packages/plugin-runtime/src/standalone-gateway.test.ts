@@ -104,6 +104,33 @@ describe('StandaloneDataGateway', () => {
     expect(row.c).toBe(1);
   });
 
+  it('ensures inventory and serves facets from the local dimension', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    const resolved = await gw.ensureInventory({
+      host: {
+        objectType: 'host',
+        identityKey: 'machine-1',
+        title: 'laptop',
+        attributes: { host_name: 'laptop', os_version: '25.5.0' },
+      },
+      harness: {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'Claude Code',
+        attributes: { harness_version: '1.2.3' },
+      },
+      project: { url: 'git@github.com:org/repo.git', name: 'repo', attributes: {} },
+    });
+    expect(resolved.hostId).toBeTypeOf('string');
+
+    const facets = await gw.facets();
+    expect(facets.hosts).toEqual(['laptop']);
+    expect(facets.harnesses).toEqual(['Claude Code']);
+    expect(facets.osVersions).toEqual(['25.5.0']);
+    expect(facets.projects).toEqual(['repo']);
+    await gw.close();
+  });
+
   it('reports health and daily activity from the local store', async () => {
     const gw = new StandaloneDataGateway(dir);
     const ev = event();

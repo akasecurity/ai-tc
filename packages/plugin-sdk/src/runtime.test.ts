@@ -65,6 +65,8 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     },
     ensureInventory: () => Promise.resolve({}),
     recordAuditEvent: () => Promise.resolve(),
+    recordLlmCall: () => Promise.resolve(),
+    readSessionProvider: () => Promise.resolve(undefined),
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: () => Promise.resolve(b),
     recentFindings: () => Promise.resolve([]),

@@ -1,6 +1,6 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { InspectionDefinitionInput, LocalIdentity } from '@aka/schema';
+import type { InspectionDefinitionInput } from '@aka/schema';
 import { toInspectionDefinitionRow } from '@aka/schema';
 
 import { inspectionDefinitionId } from '../ids.ts';
@@ -14,25 +14,21 @@ import { inspectionDefinitionId } from '../ids.ts';
 export class SqliteInspectionDefinitionsRepository {
   private readonly insertStmt: StatementSync;
 
-  constructor(
-    private readonly db: DatabaseSync,
-    private readonly identity: LocalIdentity,
-  ) {
+  constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(
       `INSERT OR IGNORE INTO inspection_definitions
-         (id, tenant_id, rule_id, name, category, severity, definition, version)
+         (id, rule_id, name, category, severity, definition, version)
        VALUES
-         (:id, :tenantId, :ruleId, :name, :category, :severity, :definition, :version)`,
+         (:id, :ruleId, :name, :category, :severity, :definition, :version)`,
     );
   }
 
   // Idempotent upsert; returns the content-addressed definition id.
   upsert(input: InspectionDefinitionInput): string {
-    const id = inspectionDefinitionId(this.identity.tenantId, input.ruleId, input.version);
-    const row = toInspectionDefinitionRow(input, id, this.identity.tenantId);
+    const id = inspectionDefinitionId(input.ruleId, input.version);
+    const row = toInspectionDefinitionRow(input, id);
     this.insertStmt.run({
       id: row.id,
-      tenantId: row.tenantId,
       ruleId: row.ruleId,
       name: row.name,
       category: row.category,

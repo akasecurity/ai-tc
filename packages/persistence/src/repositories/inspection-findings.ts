@@ -1,6 +1,6 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { InspectionFindingInput, LocalIdentity } from '@aka/schema';
+import type { InspectionFindingInput } from '@aka/schema';
 import { toInspectionFindingRow } from '@aka/schema';
 
 /**
@@ -11,25 +11,21 @@ import { toInspectionFindingRow } from '@aka/schema';
 export class SqliteInspectionFindingsRepository {
   private readonly insertStmt: StatementSync;
 
-  constructor(
-    private readonly db: DatabaseSync,
-    private readonly identity: LocalIdentity,
-  ) {
+  constructor(private readonly db: DatabaseSync) {
     this.insertStmt = db.prepare(
       `INSERT INTO inspection_findings
-         (id, tenant_id, audit_event_id, inspection_definition_id, classified_data_id,
+         (id, audit_event_id, inspection_definition_id, classified_data_id,
           span_start, span_end, masked_match, action_taken, confidence)
        VALUES
-         (:id, :tenantId, :auditEventId, :inspectionDefinitionId, :classifiedDataId,
+         (:id, :auditEventId, :inspectionDefinitionId, :classifiedDataId,
           :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence)`,
     );
   }
 
   insertFinding(input: InspectionFindingInput): void {
-    const row = toInspectionFindingRow(input, this.identity.tenantId);
+    const row = toInspectionFindingRow(input);
     this.insertStmt.run({
       id: row.id,
-      tenantId: row.tenantId,
       auditEventId: row.auditEventId,
       inspectionDefinitionId: row.inspectionDefinitionId,
       classifiedDataId: row.classifiedDataId ?? null,

@@ -1,7 +1,7 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { InspectionFindingInput } from '@aka/schema';
-import { toInspectionFindingRow } from '@aka/schema';
+import type { InspectionFindingInput } from '@akasecurity/schema';
+import { toInspectionFindingRow } from '@akasecurity/schema';
 
 /**
  * Inspection finding (a hit of a definition against an audit event) writer. The

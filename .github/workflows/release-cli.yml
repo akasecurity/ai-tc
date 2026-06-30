@@ -1,0 +1,149 @@
+name: Release CLI
+
+# Publishes the @akasecurity/cli package to the public npm registry and attaches
+# the packed tarball to a GitHub Release. The CLI is bundled self-contained by tsup
+# (its workspace deps are devDependencies, bundled into dist/), and the OSS
+# web-ui is shipped as a prebuilt Next "standalone" server under web-ui/ so
+# `aka dashboard` works after a global install with no build step.
+#
+# Release flow: bump cli/package.json version, then push a tag
+# `cli-v<version>` (e.g. cli-v0.1.0). Or run via workflow_dispatch for a dry run.
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to npm (otherwise build + pack only — a dry run)'
+        type: boolean
+        default: false
+
+jobs:
+  # Tag pushes get no run of the main CI workflow (it triggers only on main
+  # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
+  # publishes from a commit that would fail CI.
+  verify:
+    name: Lint · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+  release:
+    name: Build · Pack · Publish
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release + move the cli-latest tag
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # Fail fast on a version mismatch — before the (slow) build/pack.
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#cli-v}"
+          pkg=$(node -p "require('./cli/package.json').version")
+          echo "tag=$tag  package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Version mismatch — tag cli-v$tag must equal cli/package.json ($pkg)"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The CLI's `prepack` (tsup + scripts/bundle-web-ui.mjs) builds dist/ AND the
+      # bundled web-ui standalone, so the tarball is complete however it is packed —
+      # not just inside this workflow.
+      - name: Pack tarball (prepack builds CLI + bundles web-ui)
+        run: pnpm --filter @akasecurity/cli pack --pack-destination "$RUNNER_TEMP"
+
+      # Prove the PUBLISHED artifact actually works: install the packed tarball into
+      # a clean dir, scaffold a store, boot the bundled standalone server, and curl
+      # /security. A `test -f server.js` only proved a file was copied, not that the
+      # dashboard boots.
+      - name: Boot-verify the packed CLI (install tarball → boot dashboard → curl /security)
+        run: |
+          set -eu
+          tgz=$(ls "$RUNNER_TEMP"/akasecurity-cli-*.tgz)
+          verify="$RUNNER_TEMP/verify"
+          rm -rf "$verify"; mkdir -p "$verify"; cd "$verify"
+          npm init -y >/dev/null 2>&1
+          npm install "$tgz" >/dev/null
+          bin="$verify/node_modules/.bin/aka"
+          test -x "$bin" || { echo "::error::aka bin missing from the published tarball"; exit 1; }
+          "$bin" init
+          server="$verify/node_modules/@akasecurity/cli/web-ui/web-ui/server.js"
+          test -f "$server" || { echo "::error::bundled standalone server.js missing in the tarball"; exit 1; }
+          PORT=4319 HOSTNAME=127.0.0.1 node "$server" &
+          srv=$!
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4319/security >/dev/null 2>&1; then ok=1; break; fi
+            sleep 2
+          done
+          kill "$srv" 2>/dev/null || true
+          wait "$srv" 2>/dev/null || true
+          if [ "$ok" != 1 ]; then
+            echo "::error::published CLI did not serve /security — the bundled dashboard is broken"
+            exit 1
+          fi
+          echo "✓ published CLI boots the bundled dashboard and serves /security"
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.publish
+        run: pnpm --filter @akasecurity/cli publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The install one-liners fetch the bootstrap scripts from the `cli-latest`
+      # tag, so a successful publish must move it to this release commit.
+      - name: Point cli-latest at this release
+        if: github.event_name == 'push'
+        run: |
+          git tag -f cli-latest
+          git push -f origin cli-latest
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          files: ${{ runner.temp }}/*.tgz
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'cli-v0.') }}

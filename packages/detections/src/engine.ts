@@ -1,4 +1,4 @@
-import type { Rule } from '@aka/schema';
+import type { Rule } from '@akasecurity/schema';
 
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';

@@ -1,4 +1,4 @@
-// Theme tokens referenced as CSS variables (defined in @aka/ui-kit/theme.css),
+// Theme tokens referenced as CSS variables (defined in @akasecurity/ui-kit/theme.css),
 // so charts/SVG stay in sync with the single source of truth instead of
 // duplicating hex values here.
 export const COLORS = {

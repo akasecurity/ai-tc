@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { InstalledPackInput, Rule } from '@aka/schema';
+import type { InstalledPackInput, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../database.ts';

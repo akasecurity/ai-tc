@@ -1,4 +1,4 @@
-import type { FindingsTimeseriesPoint } from '@aka/schema';
+import type { FindingsTimeseriesPoint } from '@akasecurity/schema';
 import {
   Card,
   CardAction,
@@ -9,7 +9,7 @@ import {
   CardIcon,
   CardTitle,
   Skeleton,
-} from '@aka/ui-kit';
+} from '@akasecurity/ui-kit';
 
 import { AreaChart } from '../charts.tsx';
 import { COLORS } from '../lib/colors.ts';

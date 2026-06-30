@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME } from '@aka/persistence';
-import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@aka/schema';
+import { DB_FILENAME } from '@akasecurity/persistence';
+import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { StandaloneDataGateway } from './standalone-gateway.ts';

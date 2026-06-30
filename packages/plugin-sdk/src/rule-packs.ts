@@ -1,6 +1,6 @@
-import { registerPack } from '@aka/detections';
-import type { InstalledPackInput } from '@aka/schema';
-import { Rule } from '@aka/schema';
+import { registerPack } from '@akasecurity/detections';
+import type { InstalledPackInput } from '@akasecurity/schema';
+import { Rule } from '@akasecurity/schema';
 
 import coreEmail from '../../../rules/core-pii/email.json';
 import corePiiManifest from '../../../rules/core-pii/manifest.json';

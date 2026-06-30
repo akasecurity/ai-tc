@@ -1,5 +1,5 @@
-import type { EnforcementAction } from '@aka/schema';
-import { Card, CardContent, Skeleton } from '@aka/ui-kit';
+import type { EnforcementAction } from '@akasecurity/schema';
+import { Card, CardContent, Skeleton } from '@akasecurity/ui-kit';
 
 import { ArrowDownIcon, ArrowUpIcon } from './icons.tsx';
 import { ENFORCEMENT_META } from './meta.ts';

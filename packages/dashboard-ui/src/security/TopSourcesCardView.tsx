@@ -1,4 +1,4 @@
-import type { TopSource } from '@aka/schema';
+import type { TopSource } from '@akasecurity/schema';
 import {
   Card,
   CardContent,
@@ -9,7 +9,7 @@ import {
   CardTitle,
   cn,
   Skeleton,
-} from '@aka/ui-kit';
+} from '@akasecurity/ui-kit';
 
 import { BranchIcon, TargetIcon, UserIcon } from './icons.tsx';
 import { numberFormat, WidgetError } from './widget-shared.tsx';

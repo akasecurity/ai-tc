@@ -1,5 +1,5 @@
 // @ts-check
-import { base } from '@aka/eslint-config';
+import { base } from '@akasecurity/eslint-config';
 
 export default [
   ...base,

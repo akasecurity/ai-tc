@@ -1,7 +1,7 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { InspectionDefinitionInput } from '@aka/schema';
-import { toInspectionDefinitionRow } from '@aka/schema';
+import type { InspectionDefinitionInput } from '@akasecurity/schema';
+import { toInspectionDefinitionRow } from '@akasecurity/schema';
 
 import { inspectionDefinitionId } from '../ids.ts';
 

@@ -1,5 +1,5 @@
 {
-  "name": "@aka/ui-kit",
+  "name": "@akasecurity/ui-kit",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -27,7 +27,7 @@
     "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/react": "^19.2.17",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0"

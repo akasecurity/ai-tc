@@ -1,5 +1,5 @@
 {
-  "name": "@aka/schema",
+  "name": "@akasecurity/schema",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -19,7 +19,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/node": "^25.9.3",
     "drizzle-kit": "^0.31.0",
     "eslint": "^9.0.0",

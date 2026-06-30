@@ -1,4 +1,4 @@
-import type { PolicyBundle, Rule, WorkspaceSettings } from '@aka/schema';
+import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from './data-gateway.ts';

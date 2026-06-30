@@ -1,5 +1,5 @@
 {
-  "name": "@aka/persistence",
+  "name": "@akasecurity/persistence",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -12,10 +12,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aka/schema": "workspace:*"
+    "@akasecurity/schema": "workspace:*"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/node": "^25.9.3",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",

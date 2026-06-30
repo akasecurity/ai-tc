@@ -1,6 +1,6 @@
 // Cross-view helpers for the security widget cards. Presentation only — moved
 // from apps/dashboard so the OSS web-ui renders the same empty/error states.
-import { cn } from '@aka/ui-kit';
+import { cn } from '@akasecurity/ui-kit';
 
 export const numberFormat = new Intl.NumberFormat('en-US');
 

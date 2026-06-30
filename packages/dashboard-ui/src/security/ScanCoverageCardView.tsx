@@ -1,4 +1,4 @@
-import type { ScanCoverageProvider } from '@aka/schema';
+import type { ScanCoverageProvider } from '@akasecurity/schema';
 import {
   Card,
   CardContent,
@@ -10,7 +10,7 @@ import {
   cn,
   Meter,
   Skeleton,
-} from '@aka/ui-kit';
+} from '@akasecurity/ui-kit';
 
 import { COLORS } from '../lib/colors.ts';
 import { Provider, PROVIDERS } from '../Provider.tsx';

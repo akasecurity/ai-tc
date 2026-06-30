@@ -1,4 +1,4 @@
-import { getLoadedRules, scan } from '@aka/detections';
+import { getLoadedRules, scan } from '@akasecurity/detections';
 import { describe, expect, it } from 'vitest';
 
 import { bundledDetections, registerBundledPacks, uniqueRuleIds } from './rule-packs.ts';

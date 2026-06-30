@@ -1,4 +1,4 @@
-import type { DetectionCategory, Rule, Severity, Span } from '@aka/schema';
+import type { DetectionCategory, Rule, Severity, Span } from '@akasecurity/schema';
 
 export interface MatchResult {
   ruleId: string;

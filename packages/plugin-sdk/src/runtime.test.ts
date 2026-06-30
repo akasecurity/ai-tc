@@ -66,6 +66,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     ensureInventory: () => Promise.resolve({}),
     recordAuditEvent: () => Promise.resolve(),
     recordLlmCall: () => Promise.resolve(),
+    recordLlmCalls: () => Promise.resolve(),
     readSessionProvider: () => Promise.resolve(undefined),
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: () => Promise.resolve(b),
@@ -78,6 +79,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
         coverage: 0,
       }),
     activityByDay: () => Promise.resolve([]),
+    tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     close: () => Promise.resolve(),
   };

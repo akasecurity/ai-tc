@@ -109,33 +109,22 @@
       "indexes": {
         "idx_audit_parent": {
           "name": "idx_audit_parent",
-          "columns": [
-            "parent_id"
-          ],
+          "columns": ["parent_id"],
           "isUnique": false
         },
         "idx_audit_session": {
           "name": "idx_audit_session",
-          "columns": [
-            "root_session_id",
-            "started_at"
-          ],
+          "columns": ["root_session_id", "started_at"],
           "isUnique": false
         },
         "idx_audit_harness_t": {
           "name": "idx_audit_harness_t",
-          "columns": [
-            "harness_id",
-            "started_at"
-          ],
+          "columns": ["harness_id", "started_at"],
           "isUnique": false
         },
         "idx_audit_project_t": {
           "name": "idx_audit_project_t",
-          "columns": [
-            "source_project_id",
-            "started_at"
-          ],
+          "columns": ["source_project_id", "started_at"],
           "isUnique": false
         }
       },
@@ -144,12 +133,8 @@
           "name": "audit_events_parent_id_audit_events_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "audit_events",
-          "columnsFrom": [
-            "parent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["parent_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -157,12 +142,8 @@
           "name": "audit_events_root_session_id_audit_events_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "audit_events",
-          "columnsFrom": [
-            "root_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["root_session_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -170,12 +151,8 @@
           "name": "audit_events_host_id_inventory_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "inventory",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["host_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -183,12 +160,8 @@
           "name": "audit_events_harness_id_inventory_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "inventory",
-          "columnsFrom": [
-            "harness_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["harness_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -196,12 +169,8 @@
           "name": "audit_events_source_project_id_source_project_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "source_project",
-          "columnsFrom": [
-            "source_project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["source_project_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -304,9 +273,7 @@
       "indexes": {
         "idx_events_occurred": {
           "name": "idx_events_occurred",
-          "columns": [
-            "occurred_at"
-          ],
+          "columns": ["occurred_at"],
           "isUnique": false
         }
       },
@@ -392,9 +359,7 @@
       "indexes": {
         "idx_findings_event": {
           "name": "idx_findings_event",
-          "columns": [
-            "event_id"
-          ],
+          "columns": ["event_id"],
           "isUnique": false
         }
       },
@@ -403,12 +368,8 @@
           "name": "findings_event_id_events_id_fk",
           "tableFrom": "findings",
           "tableTo": "events",
-          "columnsFrom": [
-            "event_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["event_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -546,9 +507,7 @@
       "indexes": {
         "idx_inspection_findings_event": {
           "name": "idx_inspection_findings_event",
-          "columns": [
-            "audit_event_id"
-          ],
+          "columns": ["audit_event_id"],
           "isUnique": false
         }
       },
@@ -557,12 +516,8 @@
           "name": "inspection_findings_audit_event_id_audit_events_id_fk",
           "tableFrom": "inspection_findings",
           "tableTo": "audit_events",
-          "columnsFrom": [
-            "audit_event_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["audit_event_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -570,12 +525,8 @@
           "name": "inspection_findings_inspection_definition_id_inspection_definitions_id_fk",
           "tableFrom": "inspection_findings",
           "tableTo": "inspection_definitions",
-          "columnsFrom": [
-            "inspection_definition_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["inspection_definition_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -583,12 +534,8 @@
           "name": "inspection_findings_classified_data_id_classified_data_id_fk",
           "tableFrom": "inspection_findings",
           "tableTo": "classified_data",
-          "columnsFrom": [
-            "classified_data_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["classified_data_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -675,10 +622,7 @@
       "indexes": {
         "uq_installed_packs_pack": {
           "name": "uq_installed_packs_pack",
-          "columns": [
-            "namespace",
-            "pack_id"
-          ],
+          "columns": ["namespace", "pack_id"],
           "isUnique": true
         }
       },
@@ -772,25 +716,17 @@
       "indexes": {
         "idx_inventory_type": {
           "name": "idx_inventory_type",
-          "columns": [
-            "object_type"
-          ],
+          "columns": ["object_type"],
           "isUnique": false
         },
         "idx_inventory_type_osver": {
           "name": "idx_inventory_type_osver",
-          "columns": [
-            "object_type",
-            "os_version"
-          ],
+          "columns": ["object_type", "os_version"],
           "isUnique": false
         },
         "idx_inventory_type_harnessver": {
           "name": "idx_inventory_type_harnessver",
-          "columns": [
-            "object_type",
-            "harness_version"
-          ],
+          "columns": ["object_type", "harness_version"],
           "isUnique": false
         }
       },
@@ -799,12 +735,8 @@
           "name": "inventory_host_id_inventory_id_fk",
           "tableFrom": "inventory",
           "tableTo": "inventory",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["host_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -885,10 +817,7 @@
       "indexes": {
         "uq_policies_scope_target": {
           "name": "uq_policies_scope_target",
-          "columns": [
-            "scope",
-            "target"
-          ],
+          "columns": ["scope", "target"],
           "isUnique": true
         }
       },

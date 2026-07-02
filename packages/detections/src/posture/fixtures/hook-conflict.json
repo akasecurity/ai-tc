@@ -1,0 +1,109 @@
+[
+  {
+    "label": "prettier + eslint --fix on the same event and matcher (the mock case)",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "overlap via an absent matcher (matches all tools)",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "user"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Write",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "partial matcher overlap (Edit|Write vs Write|Bash)",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Write|Bash",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "same commands on different events — no ordering hazard",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "matcher": "Edit|Write",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "disjoint matchers on the same event",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Bash",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "overlapping but only one hook mutates (a read-only linter is safe)",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "prettier --write \"$FILE\"",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "eslint \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  }
+]

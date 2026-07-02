@@ -18,5 +18,11 @@
     "label": "Runtime.exec reference without nearby taint signal",
     "text": "// See Runtime.getRuntime().exec() documentation for details",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "String input = request.getParameter(\"cmd\");\nRuntime.getRuntime().exec(input);",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

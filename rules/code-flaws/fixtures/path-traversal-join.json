@@ -18,5 +18,11 @@
     "label": "os.path.join with sanitized input",
     "text": "safe = secure_filename(user_filename)\npath = os.path.join(upload_dir, safe)",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "path = os.path.join(base_dir, request.args['file'])",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

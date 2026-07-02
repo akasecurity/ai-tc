@@ -13,5 +13,8 @@
     "labels": ["input", "request", "param", "argv", "user"],
     "windowChars": 300
   },
-  "examples": ["subprocess.run(user_input, shell=True)"]
+  "examples": ["subprocess.run(user_input, shell=True)"],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
 }

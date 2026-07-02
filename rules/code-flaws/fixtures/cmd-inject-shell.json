@@ -18,5 +18,11 @@
     "label": "subprocess.run without shell=True",
     "text": "subprocess.run(['grep', '-r', pattern, directory])",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "user_input = request.args['cmd']\nsubprocess.run(user_input, shell=True)",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

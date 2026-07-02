@@ -9,5 +9,8 @@
     "pattern": "\\bpickle\\.loads?\\s*\\(",
     "flags": "gi"
   },
-  "examples": ["data = pickle.loads(user_data)", "obj = pickle.load(request.stream)"]
+  "examples": ["data = pickle.loads(user_data)", "obj = pickle.load(request.stream)"],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
 }

@@ -25,6 +25,7 @@ import codeFlawsPathTraversalOpen from '../../../rules/code-flaws/path-traversal
 import codeFlawsPrototypePollutionMerge from '../../../rules/code-flaws/prototype-pollution-merge.json';
 import codeFlawsRegexRedosBacktrack from '../../../rules/code-flaws/regex-redos-backtrack.json';
 import codeFlawsSqlInjectConcat from '../../../rules/code-flaws/sql-inject-concat.json';
+import codeFlawsSqlInjectConcatDot from '../../../rules/code-flaws/sql-inject-concat-dot.json';
 import codeFlawsSqlInjectFormat from '../../../rules/code-flaws/sql-inject-format.json';
 import codeFlawsSqlInjectInterp from '../../../rules/code-flaws/sql-inject-interp.json';
 import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
@@ -80,6 +81,7 @@ const BUNDLED_PACKS: readonly BundledPack[] = [
     version: codeFlawsManifest.version,
     rawRules: [
       codeFlawsSqlInjectConcat,
+      codeFlawsSqlInjectConcatDot,
       codeFlawsSqlInjectFormat,
       codeFlawsSqlInjectInterp,
       codeFlawsCmdInjectShell,

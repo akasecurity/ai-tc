@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/sql-inject-concat-dot",
+  "name": "SQL injection via string concatenation (PHP dot operator)",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "[\"'][^\\n]*?(select|insert|update|delete|drop|where)[^\\n]*?[\"']\\s*\\.",
+    "flags": "gi"
+  },
+  "appliesTo": {
+    "extensions": [".php"]
+  },
+  "examples": ["$query = \"SELECT * FROM orders WHERE user = \" . $username;"]
+}

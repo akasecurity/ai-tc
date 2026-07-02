@@ -12,5 +12,8 @@
   "examples": [
     "os.path.join(base_dir, request.args['file'])",
     "os.path.join(upload_dir, user_filename)"
-  ]
+  ],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
 }

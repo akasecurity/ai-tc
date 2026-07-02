@@ -9,5 +9,8 @@
     "pattern": "(fetch|axios\\.\\w+|requests\\.get|urllib\\.request\\.urlopen)\\s*\\(\\s*(req|request|params|query|body)",
     "flags": "gi"
   },
-  "examples": ["fetch(req.query.url)", "requests.get(request.form['url'])"]
+  "examples": ["fetch(req.query.url)", "requests.get(request.form['url'])"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"]
+  }
 }

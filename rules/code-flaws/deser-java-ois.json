@@ -15,5 +15,8 @@
   },
   "examples": [
     "ObjectInputStream ois = new ObjectInputStream(inputStream); Object obj = ois.readObject();"
-  ]
+  ],
+  "appliesTo": {
+    "extensions": [".java"]
+  }
 }

@@ -13,5 +13,8 @@
     "labels": ["input", "request", "param", "user"],
     "windowChars": 200
   },
-  "examples": ["Runtime.getRuntime().exec(userInput)"]
+  "examples": ["Runtime.getRuntime().exec(userInput)"],
+  "appliesTo": {
+    "extensions": [".java"]
+  }
 }

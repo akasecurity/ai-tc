@@ -9,5 +9,8 @@
     "pattern": "(hashlib\\.md5\\s*\\(|MD5\\.(?:digest|hash)\\b|Digest::MD5|MessageDigest\\.getInstance\\s*\\(\\s*[\"']MD5[\"'])",
     "flags": "gi"
   },
-  "examples": ["hashlib.md5(password.encode())", "MessageDigest.getInstance(\"MD5\")"]
+  "examples": ["hashlib.md5(password.encode())", "MessageDigest.getInstance(\"MD5\")"],
+  "appliesTo": {
+    "extensions": [".py", ".rb", ".java"]
+  }
 }

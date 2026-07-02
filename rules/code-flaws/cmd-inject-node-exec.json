@@ -13,5 +13,8 @@
     "labels": ["input", "request", "param", "argv", "user", "query", "body"],
     "windowChars": 200
   },
-  "examples": ["exec(req.query.cmd)", "execSync(userInput)"]
+  "examples": ["exec(req.query.cmd)", "execSync(userInput)"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+  }
 }

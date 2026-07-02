@@ -12,5 +12,8 @@
   "examples": [
     "requests.get(url, verify=False)",
     "requests.post(endpoint, data=payload, verify=False)"
-  ]
+  ],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
 }

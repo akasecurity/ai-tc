@@ -18,5 +18,11 @@
     "label": "Object.assign creating new object",
     "text": "const merged = Object.assign({}, defaults, userPrefs);",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "Object.assign(config, req.body);",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

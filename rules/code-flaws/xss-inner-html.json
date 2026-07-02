@@ -9,5 +9,8 @@
     "keywords": ["innerHTML =", "innerHTML="],
     "caseSensitive": true
   },
-  "examples": ["element.innerHTML = userInput"]
+  "examples": ["element.innerHTML = userInput"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+  }
 }

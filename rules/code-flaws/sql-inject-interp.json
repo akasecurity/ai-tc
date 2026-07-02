@@ -12,5 +12,8 @@
   "examples": [
     "\"SELECT * FROM users WHERE id = #{params[:id]}\"",
     "\"SELECT * FROM users WHERE id = $userId\""
-  ]
+  ],
+  "appliesTo": {
+    "extensions": [".rb", ".php"]
+  }
 }

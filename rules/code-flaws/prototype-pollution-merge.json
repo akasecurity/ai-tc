@@ -9,5 +9,8 @@
     "pattern": "(Object\\.assign\\s*\\(\\s*\\w+\\s*,\\s*(req|request|body|params|query)|_\\.merge\\s*\\(\\s*\\w+\\s*,\\s*(req|request))",
     "flags": "gi"
   },
-  "examples": ["Object.assign(config, req.body)", "_.merge(target, request.body)"]
+  "examples": ["Object.assign(config, req.body)", "_.merge(target, request.body)"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+  }
 }

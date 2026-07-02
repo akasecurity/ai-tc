@@ -18,5 +18,11 @@
     "label": "requests.get without verify param",
     "text": "response = requests.get(url, headers=headers)",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "response = requests.get(url, verify=False)",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

@@ -18,5 +18,11 @@
     "label": "DOM text content assignment",
     "text": "element.textContent = userContent;",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "<div dangerouslySetInnerHTML={{ __html: userContent }} />",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

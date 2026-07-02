@@ -18,5 +18,11 @@
     "label": "safe variable name unrelated to rendering",
     "text": "is_safe_mode = True",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "{{ user_content | safe }}",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

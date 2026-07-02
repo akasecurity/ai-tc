@@ -16,5 +16,8 @@
   "examples": [
     "password_hash = hashlib.sha1(password.encode()).hexdigest()",
     "MessageDigest.getInstance(\"SHA1\")"
-  ]
+  ],
+  "appliesTo": {
+    "extensions": [".py", ".rb", ".java"]
+  }
 }

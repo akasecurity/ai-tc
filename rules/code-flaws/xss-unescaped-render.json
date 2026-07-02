@@ -9,5 +9,8 @@
     "pattern": "(\\braw\\s*\\(|\\bhtml_safe\\b|\\|\\s*safe\\b|\\bmark_safe\\s*\\()",
     "flags": "gi"
   },
-  "examples": ["<%= raw(user_comment) %>", "{{ user_input | safe }}", "mark_safe(user_html)"]
+  "examples": ["<%= raw(user_comment) %>", "{{ user_input | safe }}", "mark_safe(user_html)"],
+  "appliesTo": {
+    "extensions": [".rb", ".py"]
+  }
 }

@@ -23,5 +23,11 @@
     "label": "bcrypt for password hashing",
     "text": "hashed = bcrypt.hashpw(password, bcrypt.gensalt())",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "digest = hashlib.md5(password.encode()).hexdigest()",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

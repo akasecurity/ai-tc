@@ -9,5 +9,8 @@
     "pattern": "\\byaml\\.load\\s*\\((?![^)]*SafeLoader|[^)]*safe_load)",
     "flags": "gi"
   },
-  "examples": ["data = yaml.load(user_input)", "config = yaml.load(f)"]
+  "examples": ["data = yaml.load(user_input)", "config = yaml.load(f)"],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
 }

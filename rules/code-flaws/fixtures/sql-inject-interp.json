@@ -18,5 +18,11 @@
     "label": "PHP PDO prepared statement",
     "text": "$stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "query = \"SELECT * FROM users WHERE id = #{params[:id]}\"",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

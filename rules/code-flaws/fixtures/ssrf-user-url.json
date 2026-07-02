@@ -18,5 +18,11 @@
     "label": "axios get with constant",
     "text": "axios.get(`${API_BASE}/users/${id}`)",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "const data = await fetch(req.query.url);",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

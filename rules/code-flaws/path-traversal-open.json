@@ -13,5 +13,8 @@
     "labels": ["request", "param", "input", "argv", "user"],
     "windowChars": 200
   },
-  "examples": ["open(request.args['filename'])", "open(params['path'])"]
+  "examples": ["open(request.args['filename'])", "open(params['path'])"],
+  "appliesTo": {
+    "extensions": [".py", ".rb"]
+  }
 }

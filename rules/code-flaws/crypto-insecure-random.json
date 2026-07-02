@@ -13,5 +13,8 @@
     "labels": ["token", "session", "key", "password", "secret", "nonce", "salt"],
     "windowChars": 160
   },
-  "examples": ["const token = Math.random().toString(36)", "session_key = str(random.random())"]
+  "examples": ["const token = Math.random().toString(36)", "session_key = str(random.random())"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py"]
+  }
 }

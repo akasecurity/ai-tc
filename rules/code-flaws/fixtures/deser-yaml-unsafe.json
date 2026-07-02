@@ -18,5 +18,11 @@
     "label": "yaml.safe_load",
     "text": "data = yaml.safe_load(stream)",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "config = yaml.load(user_input)",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

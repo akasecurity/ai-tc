@@ -243,3 +243,45 @@ describe('capture — dedupe threading', () => {
     await rt.close();
   });
 });
+
+describe('capture — appliesTo file-context threading', () => {
+  // A Python-only rule delivered via the pulled bundle, so this test does not
+  // pollute the global bundled packs shared by other tests.
+  const pyOnlyRule: Rule = {
+    specVersion: 1,
+    id: 'pulled/py-only-marker',
+    name: 'Python-only marker',
+    category: 'code_flaw',
+    severity: 'high',
+    matcher: { type: 'keyword', keywords: ['PY_ONLY_MARKER'], caseSensitive: false },
+    appliesTo: { extensions: ['.py'] },
+    examples: ['PY_ONLY_MARKER'],
+  };
+
+  it('gates a scoped rule by the capture metadata filePath', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([pyOnlyRule])), settings());
+    const tsResult = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'PY_ONLY_MARKER',
+      metadata: { filePath: '/repo/src/app.ts' },
+    });
+    expect(tsResult.findings.map((f) => f.ruleId)).not.toContain('pulled/py-only-marker');
+
+    const pyResult = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'PY_ONLY_MARKER',
+      metadata: { filePath: '/repo/src/app.py' },
+    });
+    expect(pyResult.findings.map((f) => f.ruleId)).toContain('pulled/py-only-marker');
+    await rt.close();
+  });
+
+  it('runs scoped rules when no file context exists (prompt path)', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([pyOnlyRule])), settings());
+    const result = await rt.processText('PY_ONLY_MARKER');
+    expect(result.findings.map((f) => f.ruleId)).toContain('pulled/py-only-marker');
+    await rt.close();
+  });
+});

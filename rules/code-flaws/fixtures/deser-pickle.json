@@ -18,5 +18,11 @@
     "label": "pickle.dumps for serialization",
     "text": "serialized = pickle.dumps(safe_object)",
     "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "obj = pickle.loads(request.data)",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
   }
 ]

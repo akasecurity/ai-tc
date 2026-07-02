@@ -74,6 +74,8 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
       }),
     activityByDay: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
+    scanLedger: () => Promise.resolve(new Map()),
+    recordScanned: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }
@@ -181,6 +183,56 @@ describe('capture', () => {
       },
     );
     expect(gw.records).toHaveLength(1); // a hit → recorded
+    await rt.close();
+  });
+});
+
+describe('rulesetFingerprint', () => {
+  it('is stable across runtimes over the same effective ruleset', async () => {
+    const rt1 = createPluginRuntime(fakeGateway(bundle()), settings());
+    const rt2 = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt1.rulesetFingerprint()).toBe(await rt2.rulesetFingerprint());
+    await rt1.close();
+    await rt2.close();
+  });
+
+  it('changes when the pulled bundle adds a rule', async () => {
+    const without = createPluginRuntime(fakeGateway(bundle()), settings());
+    const withPulled = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    expect(await without.rulesetFingerprint()).not.toBe(await withPulled.rulesetFingerprint());
+    await without.close();
+    await withPulled.close();
+  });
+
+  it('returns a non-reusable nonce when the bundle pull fails (fail toward rescan)', async () => {
+    const broken: DataGateway = {
+      ...fakeGateway(bundle()),
+      getPolicyBundle: () => Promise.reject(new Error('offline')),
+    };
+    const rt = createPluginRuntime(broken, settings());
+    const first = await rt.rulesetFingerprint();
+    expect(first).toMatch(/^unresolved-/);
+    await rt.close();
+  });
+});
+
+describe('capture — dedupe threading', () => {
+  it("threads dedupe: 'content-hash' through to the gateway record", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'code_change', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings', dedupe: 'content-hash' },
+    );
+    expect(gw.records[0]?.dedupe).toBe('content-hash');
+    await rt.close();
+  });
+
+  it('leaves dedupe unset on the live hook path', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' });
+    expect(gw.records[0]?.dedupe).toBeUndefined();
     await rt.close();
   });
 });

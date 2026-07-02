@@ -1,5 +1,5 @@
 {
-  "name": "@aka/scanner",
+  "name": "@akasecurity/scanner",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -12,12 +12,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aka/plugin-runtime": "workspace:*",
-    "@aka/plugin-sdk": "workspace:*",
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
     "ignore": "^7.0.5"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/node": "^25.9.3",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",

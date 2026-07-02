@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { InstalledPackInput, Rule } from '@aka/schema';
+import type { InstalledPackInput, Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../database.ts';
@@ -35,34 +35,34 @@ function pack(packId: string, version: string, ruleIds: string[]): InstalledPack
 }
 
 describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', () => {
-  it('records the inventory and rolls up detections / rules / active counts', () => {
+  it('records the inventory and rolls up detections / rules / active counts', async () => {
     const db = openLocalDatabase(dir);
     db.installedPacks.upsertPacks([
       pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
     ]);
-    expect(db.installedPacks.counts()).toEqual({ packs: 2, rules: 3, enabled: 2 });
+    expect(await db.installedPacks.counts()).toEqual({ packs: 2, rules: 3, enabled: 2 });
     db.close();
   });
 
-  it('is idempotent on (namespace, packId) and refreshes version + rule snapshot', () => {
+  it('is idempotent on (namespace, packId) and refreshes version + rule snapshot', async () => {
     const db = openLocalDatabase(dir);
     db.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.installedPacks.upsertPacks([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
 
-    const counts = db.installedPacks.counts();
+    const counts = await db.installedPacks.counts();
     expect(counts.packs).toBe(1); // upserted, not duplicated
     expect(counts.rules).toBe(2); // snapshot refreshed
     db.close();
   });
 
-  it('persists the inventory across reopen', () => {
+  it('persists the inventory across reopen', async () => {
     const a = openLocalDatabase(dir);
     a.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
     const b = openLocalDatabase(dir);
-    expect(b.installedPacks.counts().packs).toBe(1);
+    expect((await b.installedPacks.counts()).packs).toBe(1);
     b.close();
   });
 
@@ -88,7 +88,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     expect(row.t).toBe(0); // guard held — no rewrite
   });
 
-  it('preserves a user-disabled detection when the inventory is re-recorded', () => {
+  it('preserves a user-disabled detection when the inventory is re-recorded', async () => {
     const a = openLocalDatabase(dir);
     a.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
@@ -101,7 +101,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     // A later session re-records the (now newer) inventory.
     const b = openLocalDatabase(dir);
     b.installedPacks.upsertPacks([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
-    const counts = b.installedPacks.counts();
+    const counts = await b.installedPacks.counts();
     expect(counts.enabled).toBe(0); // stays disabled
     expect(counts.rules).toBe(2); // but version/rules still refresh
     b.close();

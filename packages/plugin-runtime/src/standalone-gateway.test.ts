@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME } from '@aka/persistence';
-import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@aka/schema';
+import { DB_FILENAME } from '@akasecurity/persistence';
+import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { StandaloneDataGateway } from './standalone-gateway.ts';
@@ -102,6 +102,33 @@ describe('StandaloneDataGateway', () => {
     const row = raw.prepare('SELECT count(*) AS c FROM installed_packs').get() as { c: number };
     raw.close();
     expect(row.c).toBe(1);
+  });
+
+  it('ensures inventory and serves facets from the local dimension', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    const resolved = await gw.ensureInventory({
+      host: {
+        objectType: 'host',
+        identityKey: 'machine-1',
+        title: 'laptop',
+        attributes: { host_name: 'laptop', os_version: '25.5.0' },
+      },
+      harness: {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'Claude Code',
+        attributes: { harness_version: '1.2.3' },
+      },
+      project: { url: 'git@github.com:org/repo.git', name: 'repo', attributes: {} },
+    });
+    expect(resolved.hostId).toBeTypeOf('string');
+
+    const facets = await gw.facets();
+    expect(facets.hosts).toEqual(['laptop']);
+    expect(facets.harnesses).toEqual(['Claude Code']);
+    expect(facets.osVersions).toEqual(['25.5.0']);
+    expect(facets.projects).toEqual(['repo']);
+    await gw.close();
   });
 
   it('reports health and daily activity from the local store', async () => {

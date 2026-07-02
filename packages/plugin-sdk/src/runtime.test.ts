@@ -1,4 +1,4 @@
-import type { PolicyBundle, Rule, WorkspaceSettings } from '@aka/schema';
+import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from './data-gateway.ts';
@@ -63,6 +63,12 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
       records.push(record);
       return Promise.resolve();
     },
+    ensureInventory: () => Promise.resolve({}),
+    recordAuditEvent: () => Promise.resolve(),
+    recordLlmCall: () => Promise.resolve(),
+    recordLlmCalls: () => Promise.resolve(),
+    readSessionProvider: () => Promise.resolve(undefined),
+    facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: () => Promise.resolve(b),
     recentFindings: () => Promise.resolve([]),
     healthSummary: () =>
@@ -73,6 +79,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
         coverage: 0,
       }),
     activityByDay: () => Promise.resolve([]),
+    tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),

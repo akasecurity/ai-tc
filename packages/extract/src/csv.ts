@@ -2,7 +2,7 @@
  * CSV content extraction.
  *
  * Pure, dependency-free, RFC-4180-ish CSV parsing. No I/O, no Node-API deps.
- * The detections engine ({@link @aka/detections}) only scans strings, so bulk
+ * The detections engine ({@link @akasecurity/detections}) only scans strings, so bulk
  * tabular formats are flattened here into a normalized, header-prefixed `text`
  * rendering that places each column name adjacent to its value. This lets the
  * proximity engine (`requiresNearby`) corroborate values against their header

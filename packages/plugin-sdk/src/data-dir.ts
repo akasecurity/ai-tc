@@ -7,10 +7,10 @@ import {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   ensureDataDirSync as ensureDirOwnerOnly,
-} from '@aka/persistence';
+} from '@akasecurity/persistence';
 
 // The owner-only directory / 0600-file permission policy is single-sourced in
-// @aka/persistence (the lowest layer that touches the store); this module owns
+// @akasecurity/persistence (the lowest layer that touches the store); this module owns
 // only the ~/.aka *layout* (which paths live where) and re-exports the modes so
 // existing SDK consumers keep importing them from here.
 export { DATA_DIR_MODE, DATA_FILE_MODE };
@@ -50,7 +50,7 @@ export async function ensureDataDir(dir: string = defaultDataDir()): Promise<voi
 }
 
 // Synchronous twin of ensureDataDir, defaulted to the layout base. Delegates to
-// the single owner-only-mkdir implementation in @aka/persistence so the
+// the single owner-only-mkdir implementation in @akasecurity/persistence so the
 // permission contract lives in exactly one place.
 export function ensureDataDirSync(dir: string = defaultDataDir()): void {
   ensureDirOwnerOnly(dir);

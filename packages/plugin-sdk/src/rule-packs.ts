@@ -1,6 +1,6 @@
-import { registerPack } from '@aka/detections';
-import type { InstalledPackInput } from '@aka/schema';
-import { Rule } from '@aka/schema';
+import { registerPack } from '@akasecurity/detections';
+import type { InstalledPackInput } from '@akasecurity/schema';
+import { Rule } from '@akasecurity/schema';
 
 import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
 import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';

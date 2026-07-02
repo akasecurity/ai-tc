@@ -1,5 +1,5 @@
-import { extractCsv } from '@aka/extract';
-import { Rule as RuleSchema } from '@aka/schema';
+import { extractCsv } from '@akasecurity/extract';
+import { Rule as RuleSchema } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { scanTabular } from './tabular.ts';

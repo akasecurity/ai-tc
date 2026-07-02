@@ -1,5 +1,5 @@
 {
-  "name": "@aka/schema",
+  "name": "@akasecurity/schema",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -12,15 +12,16 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "gen:sqlite-ddl": "node scripts/gen-sqlite-ddl.mjs"
+    "gen:sqlite-ddl": "drizzle-kit generate --config drizzle.config.local.ts && node scripts/gen-sqlite-ddl.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/node": "^25.9.3",
+    "drizzle-kit": "^0.31.0",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"

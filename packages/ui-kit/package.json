@@ -1,5 +1,5 @@
 {
-  "name": "@aka/ui-kit",
+  "name": "@akasecurity/ui-kit",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -22,12 +22,13 @@
     "@radix-ui/react-popover": "^1.1.17",
     "@radix-ui/react-slot": "^1.1.2",
     "@radix-ui/react-switch": "^1.1.3",
+    "@radix-ui/react-toggle-group": "^1.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "tailwind-merge": "^3.0.2"
   },
   "devDependencies": {
-    "@aka/eslint-config": "workspace:*",
+    "@akasecurity/eslint-config": "workspace:*",
     "@types/react": "^19.2.17",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0"

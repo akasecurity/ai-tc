@@ -1,4 +1,4 @@
-import type { Rule, Span } from '@aka/schema';
+import type { Rule, Span } from '@akasecurity/schema';
 
 import type { Matcher } from '../types.ts';
 

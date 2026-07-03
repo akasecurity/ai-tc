@@ -402,6 +402,12 @@ export const GetProjectTreeQuery = z.object({
   path: z.string().optional(),
   /** Free-text filter applied to file paths. */
   q: z.string().optional(),
+  /**
+   * Special listing mode. `blocked` returns every effectively-blocked, auto-blocked
+   * file across the whole repo (folders omitted, most-recent first), ignoring
+   * `path`/`q` — powers the project-wide "recently blocked" strip.
+   */
+  filter: z.enum(['blocked']).optional(),
 });
 export type GetProjectTreeQuery = z.infer<typeof GetProjectTreeQuery>;
 

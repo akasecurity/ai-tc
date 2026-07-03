@@ -1,6 +1,6 @@
 import type { FindingProvider } from '@akasecurity/schema';
 
-import { Provider, PROVIDERS } from '../Provider.tsx';
+import { Provider, PROVIDERS } from '../shared/Provider.tsx';
 
 /** Overlapping avatar stack of the distinct providers for a finding. */
 export function ProviderChips({ ids }: { ids: FindingProvider[] }) {

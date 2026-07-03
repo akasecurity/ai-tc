@@ -157,14 +157,12 @@ function EndpointDetail({
 }) {
   return (
     <>
-      {d.endpoints.length > 1 && (
-        <div>
-          <Button onClick={onBack} size="sm" variant="ghost" tone="primary">
-            <ChevronLeftIcon aria-hidden focusable={false} className="size-3.5" />
-            All {d.endpoints.length} endpoints
-          </Button>
-        </div>
-      )}
+      <div>
+        <Button onClick={onBack} size="sm" variant="ghost" tone="primary">
+          <ChevronLeftIcon aria-hidden focusable={false} className="size-3.5" />
+          Back to destination
+        </Button>
+      </div>
 
       <div>
         <div className="mb-2 flex items-center gap-2.5">

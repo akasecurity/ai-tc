@@ -258,8 +258,13 @@ export const ListShareDestinationsQuery = z.object({
   kind: z.array(DestinationKind).optional(),
   /** Reserved for future grouping modes; only 'destination' is supported today. */
   groupBy: z.enum(['destination']).default('destination'),
-  /** When true, return a flat severity-ordered `items[]` instead of `groups`. */
-  review: z.coerce.boolean().default(false),
+  /**
+   * When true, return a flat severity-ordered `items[]` instead of `groups`.
+   * Uses `z.stringbool()` (NOT `z.coerce.boolean()` — `Boolean(str)` is true for
+   * any non-empty string, so `?review=false`/`?review=0` would wrongly coerce
+   * to `true`). `z.stringbool()` parses true/1/yes vs false/0/no correctly.
+   */
+  review: z.stringbool().default(false),
 });
 export type ListShareDestinationsQuery = z.infer<typeof ListShareDestinationsQuery>;
 

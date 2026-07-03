@@ -1,0 +1,22 @@
+[
+  {
+    "label": "eval with request body",
+    "text": "// runs user code\neval(request.body.code);",
+    "shouldMatch": true
+  },
+  {
+    "label": "exec with user input",
+    "text": "user_input = request.args['expr']\nexec(user_input)",
+    "shouldMatch": true
+  },
+  {
+    "label": "eval with safe literal",
+    "text": "eval('2 + 2');",
+    "shouldMatch": false
+  },
+  {
+    "label": "exec with hardcoded string",
+    "text": "exec('import os; os.getcwd()')",
+    "shouldMatch": false
+  }
+]

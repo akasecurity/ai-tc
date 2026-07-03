@@ -1,0 +1,20 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/path-traversal-open",
+  "name": "Path traversal via open() with user-controlled path",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bopen\\s*\\(\\s*(request|req|params|argv|input)",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": ["request", "param", "input", "argv", "user"],
+    "windowChars": 200
+  },
+  "examples": ["open(request.args['filename'])", "open(params['path'])"],
+  "appliesTo": {
+    "extensions": [".py", ".rb"]
+  }
+}

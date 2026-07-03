@@ -1,0 +1,27 @@
+[
+  {
+    "label": "Python DEBUG = True",
+    "text": "DEBUG = True",
+    "shouldMatch": true
+  },
+  {
+    "label": "YAML debug: true",
+    "text": "debug: true",
+    "shouldMatch": true
+  },
+  {
+    "label": "Flask debug mode",
+    "text": "app.debug = True",
+    "shouldMatch": true
+  },
+  {
+    "label": "DEBUG = False",
+    "text": "DEBUG = False",
+    "shouldMatch": false
+  },
+  {
+    "label": "debug logging call without assignment",
+    "text": "logging.debug(message)",
+    "shouldMatch": false
+  }
+]

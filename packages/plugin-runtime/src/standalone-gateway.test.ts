@@ -70,7 +70,7 @@ describe('StandaloneDataGateway', () => {
       .map((p) => ('category' in p.target ? p.target.category : null))
       .filter(Boolean);
     expect(new Set(categories)).toEqual(
-      new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'custom']),
+      new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'code_flaw', 'custom']),
     );
     await gw.close();
   });
@@ -145,6 +145,28 @@ describe('StandaloneDataGateway', () => {
     expect(days).toHaveLength(7);
     const today = new Date().toISOString().slice(0, 10);
     expect(days.find((d) => d.day === today)?.blocked).toBe(1);
+    await gw.close();
+  });
+});
+
+describe('StandaloneDataGateway — scan ledger', () => {
+  it('round-trips scanned entries and filters by ruleset hash', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordScanned([
+      {
+        path: '/repo/a.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h1',
+        rulesetHash: 'rs1',
+      },
+    ]);
+
+    const sameRuleset = await gw.scanLedger('rs1');
+    expect(sameRuleset.get('/repo/a.ts')).toEqual({
+      mtime: '2026-07-02T10:00:00.000Z',
+      contentHash: 'h1',
+    });
+    expect((await gw.scanLedger('rs2')).size).toBe(0);
     await gw.close();
   });
 });

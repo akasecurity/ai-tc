@@ -1,0 +1,32 @@
+[
+  {
+    "label": "Python f-string in SELECT",
+    "text": "query = f\"SELECT * FROM users WHERE id = {user_id}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "Python % format in WHERE",
+    "text": "query = \"SELECT * FROM users WHERE name = '%s'\" % username",
+    "shouldMatch": true
+  },
+  {
+    "label": "safe parameterized query with ? placeholder",
+    "text": "cursor.execute(\"SELECT * FROM users WHERE id = ?\", [user_id])",
+    "shouldMatch": false
+  },
+  {
+    "label": "f-string unrelated to SQL",
+    "text": "message = f\"Hello, {name}! Welcome.\"",
+    "shouldMatch": false
+  },
+  {
+    "label": "log template starting with a SQL verb is not SQL",
+    "text": "logger.info(`update complete for {batchId}`)",
+    "shouldMatch": false
+  },
+  {
+    "label": "UPDATE..SET with %d placeholder",
+    "text": "q = \"UPDATE users SET active = %d\" % flag",
+    "shouldMatch": true
+  }
+]

@@ -1,3 +1,4 @@
+'use client';
 // Grouped, expandable Data Shares register. Destinations are sectioned by kind
 // (providers / internal domains / raw IPs); each group row expands to reveal its
 // endpoint rows. Pure and props-driven — expansion/selection state and all

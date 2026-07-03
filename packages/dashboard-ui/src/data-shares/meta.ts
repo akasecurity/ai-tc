@@ -9,7 +9,6 @@ import {
   ActivityIcon,
   AlertIcon,
   AlertOctagonIcon,
-  BuildingIcon,
   CheckCircleIcon,
   CodeIcon,
   FingerprintIcon,
@@ -19,10 +18,8 @@ import {
   KeyIcon,
   ListIcon,
   LockIcon,
-  PinIcon,
   PulseIcon,
   RouteIcon,
-  ServerIcon,
   ShieldCheckIcon,
   UploadIcon,
   UserIcon,
@@ -94,12 +91,6 @@ export function destMarkStyle(d: ShareDestination): string {
   if (d.kind === 'ip') return 'bg-sev-critical-fill text-sev-critical';
   if (d.trust === 'unverified') return 'bg-sev-high-fill text-sev-high';
   return 'bg-primary-tint text-primary';
-}
-/** Icon for a non-provider destination mark. */
-export function destMarkIcon(d: ShareDestination): IconComponent {
-  if (d.kind === 'ip') return PinIcon;
-  if (d.trust === 'unverified') return BuildingIcon;
-  return ServerIcon;
 }
 
 // ─── Derived per-destination rollups ─────────────────────────────────────────

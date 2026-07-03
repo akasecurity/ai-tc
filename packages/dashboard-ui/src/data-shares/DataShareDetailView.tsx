@@ -1,3 +1,4 @@
+'use client';
 // Data Shares detail drawer body: a destination overview that drills into a
 // single endpoint (URL, classification, and the call sites in code that invoke
 // it). Rendered inside a ui-kit Sheet by the app. Pure/props-driven; selection

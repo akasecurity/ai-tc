@@ -1,3 +1,4 @@
+'use client';
 import { Button, cn } from '@akasecurity/ui-kit';
 
 import { AlertIcon, ChevronDownIcon } from '../shared/icons.tsx';

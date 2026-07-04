@@ -1,0 +1,28 @@
+[
+  {
+    "label": "subprocess.run with shell=True and user input nearby",
+    "text": "user_input = request.args['cmd']\nsubprocess.run(user_input, shell=True)",
+    "shouldMatch": true
+  },
+  {
+    "label": "subprocess.Popen with shell=True and argv nearby",
+    "text": "cmd = argv[1]\nsubprocess.Popen(cmd, shell=True)",
+    "shouldMatch": true
+  },
+  {
+    "label": "subprocess.run with fixed command and shell=True",
+    "text": "subprocess.run(['ls', '-la'], shell=False)",
+    "shouldMatch": false
+  },
+  {
+    "label": "subprocess.run without shell=True",
+    "text": "subprocess.run(['grep', '-r', pattern, directory])",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "user_input = request.args['cmd']\nsubprocess.run(user_input, shell=True)",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  }
+]

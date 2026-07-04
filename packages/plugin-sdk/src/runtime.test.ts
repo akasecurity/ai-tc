@@ -84,6 +84,8 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     activityByDay: () => Promise.resolve([]),
     tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
+    scanLedger: () => Promise.resolve(new Map()),
+    recordScanned: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }
@@ -191,6 +193,98 @@ describe('capture', () => {
       },
     );
     expect(gw.records).toHaveLength(1); // a hit → recorded
+    await rt.close();
+  });
+});
+
+describe('rulesetFingerprint', () => {
+  it('is stable across runtimes over the same effective ruleset', async () => {
+    const rt1 = createPluginRuntime(fakeGateway(bundle()), settings());
+    const rt2 = createPluginRuntime(fakeGateway(bundle()), settings());
+    expect(await rt1.rulesetFingerprint()).toBe(await rt2.rulesetFingerprint());
+    await rt1.close();
+    await rt2.close();
+  });
+
+  it('changes when the pulled bundle adds a rule', async () => {
+    const without = createPluginRuntime(fakeGateway(bundle()), settings());
+    const withPulled = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    expect(await without.rulesetFingerprint()).not.toBe(await withPulled.rulesetFingerprint());
+    await without.close();
+    await withPulled.close();
+  });
+
+  it('returns a non-reusable nonce when the bundle pull fails (fail toward rescan)', async () => {
+    const broken: DataGateway = {
+      ...fakeGateway(bundle()),
+      getPolicyBundle: () => Promise.reject(new Error('offline')),
+    };
+    const rt = createPluginRuntime(broken, settings());
+    const first = await rt.rulesetFingerprint();
+    expect(first).toMatch(/^unresolved-/);
+    await rt.close();
+  });
+});
+
+describe('capture — dedupe threading', () => {
+  it("threads dedupe: 'content-hash' through to the gateway record", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'code_change', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings', dedupe: 'content-hash' },
+    );
+    expect(gw.records[0]?.dedupe).toBe('content-hash');
+    await rt.close();
+  });
+
+  it('leaves dedupe unset on the live hook path', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' });
+    expect(gw.records[0]?.dedupe).toBeUndefined();
+    await rt.close();
+  });
+});
+
+describe('capture — appliesTo file-context threading', () => {
+  // A Python-only rule delivered via the pulled bundle, so this test does not
+  // pollute the global bundled packs shared by other tests.
+  const pyOnlyRule: Rule = {
+    specVersion: 1,
+    id: 'pulled/py-only-marker',
+    name: 'Python-only marker',
+    category: 'code_flaw',
+    severity: 'high',
+    matcher: { type: 'keyword', keywords: ['PY_ONLY_MARKER'], caseSensitive: false },
+    appliesTo: { extensions: ['.py'] },
+    examples: ['PY_ONLY_MARKER'],
+  };
+
+  it('gates a scoped rule by the capture metadata filePath', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([pyOnlyRule])), settings());
+    const tsResult = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'PY_ONLY_MARKER',
+      metadata: { filePath: '/repo/src/app.ts' },
+    });
+    expect(tsResult.findings.map((f) => f.ruleId)).not.toContain('pulled/py-only-marker');
+
+    const pyResult = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'PY_ONLY_MARKER',
+      metadata: { filePath: '/repo/src/app.py' },
+    });
+    expect(pyResult.findings.map((f) => f.ruleId)).toContain('pulled/py-only-marker');
+    await rt.close();
+  });
+
+  it('runs scoped rules when no file context exists (prompt path)', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([pyOnlyRule])), settings());
+    const result = await rt.processText('PY_ONLY_MARKER');
+    expect(result.findings.map((f) => f.ruleId)).toContain('pulled/py-only-marker');
     await rt.close();
   });
 });

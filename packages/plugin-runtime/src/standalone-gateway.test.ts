@@ -149,3 +149,25 @@ describe('StandaloneDataGateway', () => {
     await gw.close();
   });
 });
+
+describe('StandaloneDataGateway — scan ledger', () => {
+  it('round-trips scanned entries and filters by ruleset hash', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordScanned([
+      {
+        path: '/repo/a.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h1',
+        rulesetHash: 'rs1',
+      },
+    ]);
+
+    const sameRuleset = await gw.scanLedger('rs1');
+    expect(sameRuleset.get('/repo/a.ts')).toEqual({
+      mtime: '2026-07-02T10:00:00.000Z',
+      contentHash: 'h1',
+    });
+    expect((await gw.scanLedger('rs2')).size).toBe(0);
+    await gw.close();
+  });
+});

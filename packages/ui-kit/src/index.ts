@@ -26,6 +26,7 @@ export {
 } from './dialog.tsx';
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,

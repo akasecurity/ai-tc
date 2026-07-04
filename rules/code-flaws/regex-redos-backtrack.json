@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/regex-redos-backtrack",
+  "name": "ReDoS via catastrophic backtracking pattern",
+  "category": "code_flaw",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\((?:\\?:)?(?:\\\\.|\\[[^\\]]*\\]|[^\\\\()\\[\\]+*?|])[+*](?:(?:\\\\.|\\[[^\\]]*\\]|[^\\\\()\\[\\]+*?|])\\*)?\\)[+*]|\\((?:\\?:)?([^()|]+)\\|\\1\\)[+*]",
+    "flags": "g"
+  },
+  "examples": ["/(a+)+/", "/(\\w+\\s*)+/"]
+}

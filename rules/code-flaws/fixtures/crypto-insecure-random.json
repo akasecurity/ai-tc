@@ -1,0 +1,28 @@
+[
+  {
+    "label": "Math.random() for token generation",
+    "text": "const token = Math.random().toString(36).slice(2);\n// session token",
+    "shouldMatch": true
+  },
+  {
+    "label": "random.random() for session key",
+    "text": "session_key = str(random.random())",
+    "shouldMatch": true
+  },
+  {
+    "label": "Math.random() for UI animation (no security context)",
+    "text": "const delay = Math.random() * 1000;",
+    "shouldMatch": false
+  },
+  {
+    "label": "secrets module for token",
+    "text": "token = secrets.token_hex(32)",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "const token = Math.random().toString(36).slice(2);\n// session token",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  }
+]

@@ -1,0 +1,25 @@
+[
+  {
+    "label": "PHP dot concatenation into WHERE clause",
+    "text": "$query = \"SELECT * FROM orders WHERE user = \" . $username;",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP dot concatenation, gate passes for a .php file",
+    "text": "$query = \"SELECT * FROM orders WHERE user = \" . $username;",
+    "shouldMatch": true,
+    "filePath": "src/orders.php"
+  },
+  {
+    "label": "JS method call on a SQL string is out of scope (dot is not concat in JS)",
+    "text": "const q = \"SELECT * FROM users\".trim();",
+    "shouldMatch": false,
+    "filePath": "src/db.js"
+  },
+  {
+    "label": "Python attribute access on a SQL string is out of scope",
+    "text": "n = \"select * from users\".upper()",
+    "shouldMatch": false,
+    "filePath": "app/db.py"
+  }
+]

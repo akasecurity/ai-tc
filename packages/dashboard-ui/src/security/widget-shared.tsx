@@ -2,7 +2,7 @@
 // from apps/dashboard so the OSS web-ui renders the same empty/error states.
 import { cn } from '@akasecurity/ui-kit';
 
-export const numberFormat = new Intl.NumberFormat('en-US');
+export { numberFormat } from '../lib/numberFormat.ts';
 
 /** Reusable inline error for a widget whose data failed to load. */
 export function WidgetError({ message }: { message: string }) {

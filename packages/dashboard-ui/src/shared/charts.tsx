@@ -62,6 +62,80 @@ export function Donut({
   );
 }
 
+/**
+ * A compact single-series sparkline. Renders on a fixed viewBox and stretches to
+ * the parent via `preserveAspectRatio="none"` — no ResizeObserver needed — so it
+ * drops into a stat tile or a narrow table cell. `vectorEffect` keeps the stroke
+ * an even width despite the non-uniform scale.
+ */
+export function Sparkline({
+  data,
+  color,
+  height = 34,
+  fill = true,
+  strokeWidth = 2,
+}: {
+  data: number[];
+  color: string;
+  height?: number;
+  fill?: boolean;
+  strokeWidth?: number;
+}) {
+  const gradientId = `spark-${useId().replace(/:/g, '')}`;
+  const viewW = 100;
+  const pad = 2;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  const xAt = (i: number) =>
+    data.length <= 1 ? viewW / 2 : pad + (i / (data.length - 1)) * (viewW - pad * 2);
+  const yAt = (v: number) => height - pad - ((v - min) / range) * (height - pad * 2);
+  const points = data.map((v, i): [number, number] => [xAt(i), yAt(v)]);
+
+  const linePath =
+    line()
+      .x((d) => d[0])
+      .y((d) => d[1])
+      .curve(curveMonotoneX)(points) ?? undefined;
+  const areaPath =
+    area()
+      .x((d) => d[0])
+      .y0(height)
+      .y1((d) => d[1])
+      .curve(curveMonotoneX)(points) ?? undefined;
+
+  return (
+    // Decorative: the trend is a supporting glyph beside a labeled value.
+    <svg
+      aria-hidden
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${String(viewW)} ${String(height)}`}
+      preserveAspectRatio="none"
+      className="block"
+    >
+      {fill && (
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.18} />
+            <stop offset="100%" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+      )}
+      {fill && <path d={areaPath} fill={`url(#${gradientId})`} stroke="none" />}
+      <path
+        d={linePath}
+        fill="none"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
+
 export interface AreaSeries {
   /** Stable key for the series (used for the dataKey + gradient id). */
   key: string;

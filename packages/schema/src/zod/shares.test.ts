@@ -429,9 +429,23 @@ describe('ListShareDestinationsQuery', () => {
   });
 
   it('accepts q, kind[], and review=true', () => {
+    // review arrives as a raw query-string value (always a string, never a JS
+    // boolean) — z.stringbool() only accepts strings, matching real HTTP usage.
     expect(
-      ListShareDestinationsQuery.safeParse({ q: 'settlement', kind: ['ip'], review: true }).success,
+      ListShareDestinationsQuery.safeParse({ q: 'settlement', kind: ['ip'], review: 'true' })
+        .success,
     ).toBe(true);
+  });
+
+  it("review parses true/false/1/0 strings correctly — NOT z.coerce.boolean()'s Boolean(str) footgun", () => {
+    // z.coerce.boolean() would make ANY non-empty string true, including
+    // "false" and "0" — z.stringbool() must parse these as false.
+    const parseReview = (v: unknown) => ListShareDestinationsQuery.parse({ review: v }).review;
+    expect(parseReview('false')).toBe(false);
+    expect(parseReview('0')).toBe(false);
+    expect(parseReview('true')).toBe(true);
+    expect(parseReview('1')).toBe(true);
+    expect(parseReview(undefined)).toBe(false);
   });
 });
 

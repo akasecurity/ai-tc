@@ -1,0 +1,27 @@
+[
+  {
+    "label": "Express CORS wildcard origin",
+    "text": "app.use(cors({ origin: '*' }));",
+    "shouldMatch": true
+  },
+  {
+    "label": "Django CORS_ALLOW_ALL_ORIGINS",
+    "text": "CORS_ALLOW_ALL_ORIGINS = True",
+    "shouldMatch": true
+  },
+  {
+    "label": "allow_all_origins FastAPI",
+    "text": "allow_all_origins=True",
+    "shouldMatch": true
+  },
+  {
+    "label": "specific origin allowed",
+    "text": "app.use(cors({ origin: 'https://example.com' }));",
+    "shouldMatch": false
+  },
+  {
+    "label": "CORS_ALLOW_ALL_ORIGINS = False",
+    "text": "CORS_ALLOW_ALL_ORIGINS = False",
+    "shouldMatch": false
+  }
+]

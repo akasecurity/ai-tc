@@ -1,7 +1,7 @@
 import type { EnforcementAction } from '@akasecurity/schema';
 import { Card, CardContent, Skeleton } from '@akasecurity/ui-kit';
 
-import { ArrowDownIcon, ArrowUpIcon } from './icons.tsx';
+import { ArrowDownIcon, ArrowUpIcon } from '../shared/icons.tsx';
 import { ENFORCEMENT_META } from './meta.ts';
 import { numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 

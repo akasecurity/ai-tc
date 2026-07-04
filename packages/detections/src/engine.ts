@@ -14,17 +14,34 @@ const packs = new Map<string, RulePack>();
 // Post-validators run against each candidate match (the captured span) and must
 // all pass for the match to become a finding. Unknown validator names are
 // ignored so rules can reference validators a given engine build doesn't ship.
-const POST_VALIDATORS: Record<string, (value: string) => boolean> = {
-  entropy: (value) => isHighEntropy(value),
+// A validator may take per-rule config (the object form of PostValidatorRef).
+const POST_VALIDATORS: Record<
+  string,
+  (value: string, config?: Record<string, unknown>) => boolean
+> = {
+  entropy: (value, config) =>
+    isHighEntropy(value, numberOption(config, 'threshold'), numberOption(config, 'minLength')),
   luhn: (value) => luhnCheck(value),
 };
+
+// Pull a numeric option out of untyped validator config; undefined (falling
+// back to the validator's own default) for anything missing or non-numeric.
+function numberOption(
+  config: Record<string, unknown> | undefined,
+  key: string,
+): number | undefined {
+  const value = config?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
 
 function passesPostValidators(rule: Rule, value: string): boolean {
   const validators = rule.postValidators;
   if (!validators || validators.length === 0) return true;
-  for (const name of validators) {
+  for (const ref of validators) {
+    const name = typeof ref === 'string' ? ref : ref.name;
+    const config = typeof ref === 'string' ? undefined : ref.config;
     const validate = POST_VALIDATORS[name];
-    if (validate && !validate(value)) return false;
+    if (validate && !validate(value, config)) return false;
   }
   return true;
 }
@@ -109,12 +126,39 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
   return false;
 }
 
-export function scan(text: string, rules?: Rule[]): MatchResult[] {
-  const ruleset = rules ?? getLoadedRules();
+// Where the scanned text came from, when known. The worktree scanner supplies
+// the file path; live prompt/response hooks have none.
+export interface ScanContext {
+  filePath?: string | undefined;
+}
 
-  // Pass 1: run primitive matchers for ALL rules → candidate matches.
+// Pure string-ops extension extraction (this package takes no Node-API deps, so
+// no node:path). Mirrors path.extname semantics: dotfiles (.eslintrc) and
+// extension-less names (Makefile) yield undefined. Lowercased for comparison.
+function extensionOf(filePath: string): string | undefined {
+  const base = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot).toLowerCase() : undefined;
+}
+
+// Should this rule run against text from this context? An `appliesTo`-scoped
+// rule is skipped only when the context provides a NON-matching extension.
+// With no file context (or no recognizable extension) the rule still runs:
+// pasted code in a prompt has no knowable language, and missing a real leak
+// costs more than a cross-language false positive there.
+function ruleApplies(rule: Rule, extension: string | undefined): boolean {
+  if (!rule.appliesTo || extension === undefined) return true;
+  return rule.appliesTo.extensions.some((e) => e.toLowerCase() === extension);
+}
+
+export function scan(text: string, rules?: Rule[], context?: ScanContext): MatchResult[] {
+  const ruleset = rules ?? getLoadedRules();
+  const extension = context?.filePath ? extensionOf(context.filePath) : undefined;
+
+  // Pass 1: run primitive matchers for ALL applicable rules → candidate matches.
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
+    if (!ruleApplies(rule, extension)) continue;
     let spans;
     if (rule.matcher.type === 'keyword') {
       spans = keywordMatcher.match(text, rule);

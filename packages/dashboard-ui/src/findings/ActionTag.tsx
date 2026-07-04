@@ -1,7 +1,7 @@
 import type { FindingAction } from '@akasecurity/schema';
 import { cn, Tag } from '@akasecurity/ui-kit';
 
-import { LayersIcon } from './icons.tsx';
+import { LayersIcon } from '../shared/icons.tsx';
 import { ACTION_META } from './meta.ts';
 
 // A colored status pill — Tag's neutral border/surface is overridden via cn so it

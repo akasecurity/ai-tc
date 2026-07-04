@@ -4,7 +4,8 @@ import { type ButtonHTMLAttributes, type Ref } from 'react';
 
 import { cn } from './lib/cn.ts';
 
-// Two independent axes: `variant` is the fill style, `tone` is the color. Their
+// Two independent axes: `variant` is the fill style (`solid`/`outline`/`ghost`, plus
+// a boxless `link` that renders as inline text), `tone` is the color. Their
 // combinations are resolved by `compoundVariants` — e.g. a primary ghost button
 // is `<Button variant="ghost" tone="primary" />`.
 const buttonVariants = cva(
@@ -15,6 +16,7 @@ const buttonVariants = cva(
         solid: '',
         outline: 'border',
         ghost: '',
+        link: '',
       },
       tone: {
         primary: '',
@@ -68,6 +70,20 @@ const buttonVariants = cva(
         tone: 'danger',
         class: 'text-sev-critical hover:bg-sev-critical-fill',
       },
+      // link — an inline text link; strips the button box (height/padding/gap) so it
+      // sits within copy, and underlines on hover. Tone sets the text color.
+      {
+        variant: 'link',
+        class:
+          'h-auto gap-1 rounded-sm p-0 align-baseline font-semibold underline-offset-4 [&_svg]:size-3.5',
+      },
+      { variant: 'link', tone: 'primary', class: 'text-primary hover:underline' },
+      {
+        variant: 'link',
+        tone: 'neutral',
+        class: 'text-text-2 hover:text-text hover:underline',
+      },
+      { variant: 'link', tone: 'danger', class: 'text-sev-critical hover:underline' },
     ],
     defaultVariants: { variant: 'solid', tone: 'neutral', size: 'md' },
   },

@@ -53,7 +53,11 @@ const EGRESS_RE = /\b(curl|wget|nc|ncat|netcat|ssh|scp|rsync)\b|https?:\/\//;
 
 // A command that MUTATES the tool target (vs merely reading it) — the
 // ingredient that turns same-event matcher overlap into an ordering hazard.
-const MUTATION_RE = /(--write|--fix|\s-w\b|\s-i\b|>\s?\S)/;
+// The redirect branch excludes fd/stderr redirects (`2>`, `&>`, `2>>`): they
+// route diagnostics, not the target. `-i`/`-w` remain heuristic (read-only for
+// some tools, e.g. `grep -i`) — harmless alone, since a conflict needs TWO
+// overlapping mutating hooks.
+const MUTATION_RE = /(--write|--fix|\s-w\b|\s-i\b|(?<![\d&>])>\s?\S)/;
 
 export const CONFIG_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
   {
@@ -73,7 +77,11 @@ export const CONFIG_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
     version: RULE_VERSION,
     name: 'Unknown hook — not attributable to a plugin or known tool',
     category: 'config',
-    severity: 'high',
+    // medium, not high: with a deliberately tiny allowlist this v1 heuristic
+    // fires on ordinary interpreter hooks (python3 x.py) and compound commands
+    // (cd … && tool); 'high' is reserved for egress, which is genuinely
+    // dangerous. Revisit when the known-hooks registry replaces the allowlist.
+    severity: 'medium',
     definition: JSON.stringify({ kind: 'hook-unknown', knownTools: [...KNOWN_TOOLS] }),
   },
   {
@@ -138,7 +146,10 @@ function isUnknown(hook: HookScanEntry): boolean {
   return !KNOWN_TOOLS.has(basename(token));
 }
 
-// The first token that isn't an env assignment (FOO=bar cmd …).
+// The first token that isn't an env assignment (FOO=bar cmd …). Known v1 gap:
+// compound commands are NOT split, so `cd /x && prettier …` resolves to `cd`
+// (unknown) even though the real tool is prettier — one more reason the rule
+// severity stays medium until the registry lands.
 function firstExecutableToken(command: string): string | undefined {
   for (const token of command.trim().split(/\s+/)) {
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
@@ -176,7 +187,11 @@ function conflictingHooks(hooks: HookScanEntry[]): HookScanEntry[] {
   return conflicted;
 }
 
-// Matchers are '|'-separated tool names; absent or '*' matches all tools.
+// Matchers are treated as literal '|'-separated tool names; absent or '*'
+// matches all tools. Claude Code matchers are actually REGEX ('Edit.*'), so
+// this literal comparison UNDER-reports: 'Edit.*' vs 'Edit' is not detected as
+// overlapping unless a literal token coincides. A v1 simplification — false
+// negatives only, never a spurious conflict.
 function matchersOverlap(a: string | undefined, b: string | undefined): boolean {
   if (isUniversal(a) || isUniversal(b)) return true;
   const tokens = new Set((a ?? '').split('|').map((t) => t.trim()));

@@ -89,6 +89,24 @@
     ]
   },
   {
+    "label": "stderr/fd redirects are not mutations (2>/dev/null, 2>&1)",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "jq . \"$FILE\" 2>/dev/null",
+        "scope": "project"
+      },
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "git diff \"$FILE\" 2>&1",
+        "scope": "project"
+      }
+    ]
+  },
+  {
     "label": "overlapping but only one hook mutates (a read-only linter is safe)",
     "shouldMatch": false,
     "hooks": [

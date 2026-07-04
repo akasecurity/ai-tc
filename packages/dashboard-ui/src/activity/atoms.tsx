@@ -23,7 +23,7 @@ export function StatusDot({ status }: { status: SessionStatus }) {
 export function SessionStatusBadge({ status }: { status: SessionStatus }) {
   const m = STATUS_META[status];
   return (
-    <Badge variant={m.badge} className="h-5.5 gap-1.5">
+    <Badge variant={m.badge} className="h-6 gap-1.5">
       <StatusDot status={status} />
       {m.label}
     </Badge>
@@ -44,7 +44,7 @@ export function Metric({ icon: Icon, children }: { icon: IconComponent; children
 export function ToolChip({ name, n }: { name: string; n: number }) {
   const Icon = TOOL_META[name] ?? TOOL_ICON_FALLBACK;
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 py-0.5 pl-2 pr-2.5 text-xs font-semibold text-text-2">
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 py-0.5 px-2 text-xs font-semibold text-text-2">
       <Icon aria-hidden focusable={false} className="size-3 text-text-3" />
       {name}
       <span className="tabular-nums text-text">{n}</span>

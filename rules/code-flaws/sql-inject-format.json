@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/sql-inject-format",
+  "name": "SQL injection via format string or f-string",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\b(?:select\\b[^\\n]*?\\bfrom\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b[^\\n]*?=)[^\\n]*?(?:[%][sd]|\\{[^}]+\\})",
+    "flags": "gi"
+  },
+  "examples": [
+    "f\"SELECT * FROM users WHERE id = {user_id}\"",
+    "\"SELECT * FROM users WHERE name = '%s'\" % name"
+  ]
+}

@@ -4,6 +4,8 @@
 export const COLORS = {
   primary: 'var(--color-primary)',
   ok: 'var(--color-ok)',
+  violet: 'var(--color-violet)',
+  teal: 'var(--color-teal)',
   sevCritical: 'var(--color-sev-critical)',
   sevHigh: 'var(--color-sev-high)',
   sevMedium: 'var(--color-sev-medium)',

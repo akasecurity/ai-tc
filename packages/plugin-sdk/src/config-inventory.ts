@@ -167,6 +167,9 @@ function collectSkillsDir(scan: ConfigScanResult, dir: string, origin: SkillOrig
 
 // Lenient SKILL.md frontmatter: a leading `---` block of `key: value` lines.
 // Skills without frontmatter (heading-only SKILL.md) fall back to the dir name.
+// `description` fidelity is best-effort: only the single line after
+// `description:` is captured, so YAML block scalars / multi-line values come
+// out truncated. Identity rests on `name` (dir-name fallback), not description.
 function parseFrontmatter(raw: string): { name?: string; description?: string; version?: string } {
   const out: { name?: string; description?: string; version?: string } = {};
   const lines = raw.split('\n');

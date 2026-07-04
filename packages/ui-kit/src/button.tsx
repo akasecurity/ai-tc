@@ -19,6 +19,7 @@ const buttonVariants = cva(
       tone: {
         primary: '',
         neutral: '',
+        danger: '',
       },
       size: {
         sm: 'h-8 px-3 text-xs',
@@ -34,6 +35,11 @@ const buttonVariants = cva(
         class: 'bg-primary text-text-inv hover:bg-primary-hover',
       },
       { variant: 'solid', tone: 'neutral', class: 'bg-surface-3 text-text hover:bg-border-strong' },
+      {
+        variant: 'solid',
+        tone: 'danger',
+        class: 'bg-sev-critical text-text-inv hover:bg-sev-critical-hover',
+      },
       // outline
       {
         variant: 'outline',
@@ -45,12 +51,22 @@ const buttonVariants = cva(
         tone: 'neutral',
         class: 'border-border bg-surface text-text hover:bg-surface-2',
       },
+      {
+        variant: 'outline',
+        tone: 'danger',
+        class: 'border-sev-critical text-sev-critical hover:bg-sev-critical-fill',
+      },
       // ghost
       { variant: 'ghost', tone: 'primary', class: 'text-primary hover:bg-primary-tint' },
       {
         variant: 'ghost',
         tone: 'neutral',
         class: 'text-text-2 hover:bg-surface-2 hover:text-text',
+      },
+      {
+        variant: 'ghost',
+        tone: 'danger',
+        class: 'text-sev-critical hover:bg-sev-critical-fill',
       },
     ],
     defaultVariants: { variant: 'solid', tone: 'neutral', size: 'md' },

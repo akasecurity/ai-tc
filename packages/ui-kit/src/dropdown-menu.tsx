@@ -35,6 +35,7 @@ export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
+export const DropdownMenuItemIndicator = DropdownMenuPrimitive.ItemIndicator;
 
 const itemClass =
   'flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-text-2 outline-none focus:bg-surface-2 focus:text-text data-[disabled]:pointer-events-none data-[disabled]:opacity-50';
@@ -84,6 +85,35 @@ export function DropdownMenuRadioItem({
         <CheckMark className="size-4 text-primary" />
       </DropdownMenuPrimitive.ItemIndicator>
     </DropdownMenuPrimitive.RadioItem>
+  );
+}
+
+/**
+ * A multi-select menu item with a leading checkbox box. Radix closes the menu on
+ * select by default — for a multi-select filter, call `e.preventDefault()` in
+ * `onSelect` so the menu stays open across toggles.
+ */
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  ...props
+}: ComponentPropsWithRef<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  return (
+    <DropdownMenuPrimitive.CheckboxItem
+      className={cn(
+        itemClass,
+        'group data-[state=checked]:font-semibold data-[state=checked]:text-text',
+        className,
+      )}
+      {...props}
+    >
+      <span className="grid size-4 shrink-0 place-items-center rounded-[5px] border border-border-strong text-text-inv transition-colors group-data-[state=checked]:border-primary group-data-[state=checked]:bg-primary">
+        <DropdownMenuPrimitive.ItemIndicator>
+          <CheckMark className="size-3" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      <span className="flex-1">{children}</span>
+    </DropdownMenuPrimitive.CheckboxItem>
   );
 }
 

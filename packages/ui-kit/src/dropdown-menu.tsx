@@ -35,7 +35,6 @@ export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
-export const DropdownMenuItemIndicator = DropdownMenuPrimitive.ItemIndicator;
 
 const itemClass =
   'flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-text-2 outline-none focus:bg-surface-2 focus:text-text data-[disabled]:pointer-events-none data-[disabled]:opacity-50';

@@ -22,9 +22,7 @@ function DeltaPill({ label, tone = 'neutral', dir }: StatDelta) {
     tone === 'positive' ? 'text-ok' : tone === 'negative' ? 'text-sev-critical' : 'text-text-3';
   const Arrow = dir === 'up' ? ArrowUpIcon : dir === 'down' ? ArrowDownIcon : null;
   return (
-    <span
-      className={cn('mb-0.5 inline-flex items-center gap-0.5 text-xs font-semibold', toneClass)}
-    >
+    <span className={cn('inline-flex items-center gap-1 text-xs font-semibold', toneClass)}>
       {Arrow && <Arrow aria-hidden focusable={false} className="size-3" />}
       {label}
     </span>

@@ -167,6 +167,8 @@ export const ReviewDestination = z
     id: z.string(),
     kind: DestinationKind,
     name: z.string(),
+    /** Registrable host — lets the strip derive the provider lettermark, as the register does. */
+    host: z.string(),
     trust: ShareTrustLevel,
     status: EgressStatus,
     review: ReviewInfo,

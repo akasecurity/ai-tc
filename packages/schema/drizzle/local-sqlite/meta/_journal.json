@@ -15,6 +15,13 @@
       "when": 1782820773574,
       "tag": "0001_adorable_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783338217996,
+      "tag": "0002_oval_pride",
+      "breakpoints": true
     }
   ]
 }

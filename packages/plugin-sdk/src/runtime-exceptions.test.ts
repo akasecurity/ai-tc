@@ -190,7 +190,13 @@ describe('exception evaluation — downgrade to allow', () => {
     // The still-enforced pair lands in the blocked-detections ledger.
     expect(gw.blocked).toHaveLength(1);
     expect(gw.blocked[0]?.ruleId).toBe('ex/pii-marker');
-    expect(result.blockedReferences).toEqual([gw.blocked[0]?.reference]);
+    expect(result.blockedReferences).toEqual([
+      {
+        reference: gw.blocked[0]?.reference,
+        ruleId: gw.blocked[0]?.ruleId,
+        maskedValue: gw.blocked[0]?.maskedValue,
+      },
+    ]);
   });
 
   it('consumes once per unique (rule, value) pair and downgrades every span', async () => {
@@ -330,22 +336,37 @@ describe('exception evaluation — conditions', () => {
 });
 
 describe('no exceptions in the bundle — behavior unchanged, zero footprint', () => {
-  it('keeps today’s decisions and creates no key file (stub gateway, no grants)', async () => {
+  it('a benign capture creates no key file — zero footprint until enforcement fires', async () => {
     const gw = fakeGateway(bundle());
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     expect((await rt.processText('nothing to see here')).action).toBe('log');
-    const blocked = await rt.processText('EX_SECRET_MARKER');
-    expect(blocked.action).toBe('block');
-    expect(blocked.text).toBeNull();
     await rt.close();
 
-    // The runtime never mints a key on its own — no exceptions were riding the
-    // bundle, so no fingerprint work happened and no ledger rows were written.
+    // Nothing was enforced and no grants rode the bundle: no fingerprint work,
+    // no ledger rows, and — decisive for upgrade footprint — no key file.
     expect(existsSync(join(dir, 'exception.key'))).toBe(false);
     expect(gw.consumed).toHaveLength(0);
     expect(gw.blocked).toHaveLength(0);
-    expect(blocked.blockedReferences).toBeUndefined();
+  });
+
+  it('the first block mints the key so its ledger row is approvable', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+
+    const blocked = await rt.processText('EX_SECRET_MARKER');
+    await rt.close();
+
+    expect(blocked.action).toBe('block');
+    expect(blocked.text).toBeNull();
+    // The block is the moment the exception feature becomes relevant: the key
+    // now exists, the ledger row was written under it, and the returned ref
+    // carries the SAME masked preview as the ledger row.
+    expect(existsSync(join(dir, 'exception.key'))).toBe(true);
+    expect(gw.consumed).toHaveLength(0);
+    expect(gw.blocked).toHaveLength(1);
+    expect(blocked.blockedReferences?.[0]?.reference).toBe(gw.blocked[0]?.reference);
+    expect(blocked.blockedReferences?.[0]?.maskedValue).toBe(gw.blocked[0]?.maskedValue);
   });
 });
 
@@ -375,7 +396,9 @@ describe('blocked-detections ledger', () => {
     expect(row?.sessionId).toBe('sess-1');
     expect(row?.repo).toBe('org/payments');
     expect(row?.reference).toMatch(/^[0-9a-f]{6}$/);
-    expect(result.blockedReferences).toEqual([row?.reference]);
+    expect(result.blockedReferences).toEqual([
+      { reference: row?.reference, ruleId: row?.ruleId, maskedValue: row?.maskedValue },
+    ]);
   });
 
   it('processText: a block records a ledger row too (no event write, null provenance)', async () => {
@@ -391,7 +414,13 @@ describe('blocked-detections ledger', () => {
     expect(gw.blocked).toHaveLength(1);
     expect(gw.blocked[0]?.sessionId).toBeNull();
     expect(gw.blocked[0]?.repo).toBeNull();
-    expect(result.blockedReferences).toEqual([gw.blocked[0]?.reference]);
+    expect(result.blockedReferences).toEqual([
+      {
+        reference: gw.blocked[0]?.reference,
+        ruleId: gw.blocked[0]?.ruleId,
+        maskedValue: gw.blocked[0]?.maskedValue,
+      },
+    ]);
   });
 
   it('a failing ledger write never affects the decision', async () => {

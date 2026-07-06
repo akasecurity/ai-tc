@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1cc339bf-7db3-4220-9f01-45ebbf3a6843",
+  "id": "aa4bb68e-2f79-46d9-9cad-7b19f60ad5cd",
   "prevId": "31ade0f8-80ee-4924-8c9f-1e445f97c698",
   "tables": {
     "audit_events": {
@@ -536,15 +536,6 @@
         }
       },
       "indexes": {
-        "idx_exceptions_lookup": {
-          "name": "idx_exceptions_lookup",
-          "columns": [
-            "rule_id",
-            "value_fingerprint"
-          ],
-          "isUnique": false,
-          "where": "revoked_at IS NULL"
-        },
         "uq_exceptions_active": {
           "name": "uq_exceptions_active",
           "columns": [

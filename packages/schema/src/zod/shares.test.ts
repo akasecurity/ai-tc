@@ -326,6 +326,7 @@ describe('ReviewDestination', () => {
       id: 'ip-198-51-100-23',
       kind: 'ip',
       name: '198.51.100.23',
+      host: '198.51.100.23',
       trust: 'ip',
       status: 'review',
       review: { needsReview: true, reasons: ['raw_ip'] },

@@ -60,6 +60,22 @@ describe('DetectionException', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('rejects an unknown condition key (fail-closed: never silently widen a grant)', () => {
+    const result = DetectionException.safeParse({
+      ...validException,
+      conditions: { repo: 'github.com/acme/api', branch: 'main' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a malformed fingerprint (wrong length, non-hex, or raw-looking)', () => {
+    for (const bad of ['a'.repeat(63), 'A'.repeat(64), 'zz'.repeat(32), 'AKIA-not-a-digest']) {
+      expect(
+        DetectionException.safeParse({ ...validException, valueFingerprint: bad }).success,
+      ).toBe(false);
+    }
+  });
 });
 
 describe('ExceptionBundleEntry', () => {

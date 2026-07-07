@@ -1,5 +1,5 @@
 {
-  "name": "@akasecurity/dashboard-ui",
+  "name": "@akasecurity/scanner",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -11,19 +11,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "peerDependencies": {
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
-  },
   "dependencies": {
-    "@akasecurity/schema": "workspace:*",
-    "@akasecurity/ui-kit": "workspace:*",
-    "d3-shape": "^3.2.0"
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "ignore": "^7.0.5"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@types/d3-shape": "^3.1.8",
-    "@types/react": "^19.2.17",
+    "@types/node": "^25.9.3",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"

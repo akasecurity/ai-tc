@@ -1,0 +1,20 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/cmd-inject-shell",
+  "name": "Command injection via subprocess shell=True",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "subprocess\\.(run|Popen|call|check_output)\\s*\\([^)]*shell\\s*=\\s*True",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": ["input", "request", "param", "argv", "user"],
+    "windowChars": 300
+  },
+  "examples": ["subprocess.run(user_input, shell=True)"],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
+}

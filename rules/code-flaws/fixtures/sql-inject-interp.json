@@ -1,0 +1,28 @@
+[
+  {
+    "label": "Ruby string interpolation in SELECT",
+    "text": "query = \"SELECT * FROM users WHERE id = #{params[:id]}\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "PHP variable in WHERE clause",
+    "text": "$sql = \"SELECT * FROM users WHERE name = '$username'\";",
+    "shouldMatch": true
+  },
+  {
+    "label": "Ruby safe parameterized query",
+    "text": "User.where('id = ?', params[:id])",
+    "shouldMatch": false
+  },
+  {
+    "label": "PHP PDO prepared statement",
+    "text": "$stmt = $pdo->prepare('SELECT * FROM users WHERE id = :id');",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "query = \"SELECT * FROM users WHERE id = #{params[:id]}\"",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  }
+]

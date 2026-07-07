@@ -144,7 +144,6 @@ function GroupRow({
       <TableCell className="whitespace-nowrap text-xs text-text-3">
         {relativeTime(d.lastSeen)}
       </TableCell>
-      <TableCell className="w-9"></TableCell>
     </TableRow>
   );
 }
@@ -168,7 +167,7 @@ function EndpointRow({
     >
       <TableCell className="w-9" />
       <TableCell colSpan={2}>
-        <div className="flex min-w-0 items-center gap-2.5 pl-1.5">
+        <div className="flex min-w-0 items-center gap-2.5 pl-1.5 py-1">
           <span className="h-3.5 w-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
           <MethodTag method={ep.method} />
           <span className="flex min-w-0 items-center gap-2">
@@ -189,11 +188,6 @@ function EndpointRow({
       <TableCell className="whitespace-nowrap text-xs text-text-3">
         {relativeTime(ep.lastSeen)}
       </TableCell>
-      <TableCell className="w-9">
-        <div className="size-7 grid place-items-center">
-          <ChevronRightIcon aria-hidden focusable={false} className="size-4 text-text-3" />
-        </div>
-      </TableCell>
     </TableRow>
   );
 }
@@ -202,7 +196,7 @@ function EndpointRow({
 function SectionRow({ group }: { group: ShareDestinationGroup }) {
   return (
     <TableRow className="border-0 hover:bg-transparent">
-      <TableCell colSpan={8} className="pb-2 pt-4">
+      <TableCell colSpan={7} className="pb-2 pt-4">
         <div className="flex items-center gap-2">
           <span className="text-label font-semibold uppercase tracking-wider text-text-3">
             {KIND_LABEL[group.kind]}
@@ -247,7 +241,6 @@ export function DataSharesTableView({
           <TableHead>Data sent</TableHead>
           <TableHead>Footprint</TableHead>
           <TableHead>Last seen</TableHead>
-          <TableHead className="w-9" />
         </TableRow>
       </TableHeader>
       <TableBody>

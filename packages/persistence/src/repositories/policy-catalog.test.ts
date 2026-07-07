@@ -58,13 +58,23 @@ describe('SqlitePolicyCatalogRepository', () => {
     expect((await catalog.getPolicyList('custom')).items).toEqual([]);
   });
 
-  it('stats count the governed detections across every built-in id', async () => {
+  it('attributes unassigned (NULL policy) detections to Monitor across list + stats', async () => {
     packs.upsertPacks([pack('secrets', ['a']), pack('pii', ['b']), pack('code', ['c'])]);
     packs.setPolicy('aka', 'secrets', 'block');
     packs.setPolicy('aka', 'pii', 'redact');
+    // 'code' is left unassigned (policy_id NULL). The Detections views tag such a
+    // pack with PLACEHOLDER_POLICY ('monitor'), so the catalog must count it under
+    // Monitor too — otherwise the same pack reads "Monitor" on one page and
+    // "0 governed" on the other (OSS has no policy_id backfill).
+    const { items } = await catalog.getPolicyList();
+    const countFor = (id: string): number | undefined =>
+      items.find((p) => p.id === id)?.usedByCount;
+    expect(countFor('monitor')).toBe(1);
+    expect(countFor('redact')).toBe(1);
+    expect(countFor('block')).toBe(1);
 
     const stats = await catalog.getPolicyStats();
-    expect(stats).toEqual({ policies: 4, builtin: 4, custom: 0, detectionsGoverned: 2 });
+    expect(stats).toEqual({ policies: 4, builtin: 4, custom: 0, detectionsGoverned: 3 });
   });
 
   it('detail carries the catalog description + usedBy detections; null for unknown', async () => {
@@ -80,5 +90,14 @@ describe('SqlitePolicyCatalogRepository', () => {
     ]);
 
     expect(await catalog.getPolicyDetail('bogus')).toBeNull();
+  });
+
+  it('Monitor detail lists the unassigned (NULL policy) packs it counts', async () => {
+    packs.upsertPacks([pack('unassigned', ['a', 'b'])]);
+    // No setPolicy — policy_id stays NULL.
+    const detail = await catalog.getPolicyDetail('monitor');
+    expect(detail?.usedBy).toEqual([
+      { id: 'aka/unassigned', name: 'unassigned detection', ruleCount: 2, enabled: true },
+    ]);
   });
 });

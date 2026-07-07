@@ -1,0 +1,20 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/auth-jwt-no-verify",
+  "name": "JWT decoded without signature verification",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(verify\\s*=\\s*false|verify_signature.*false|algorithms\\s*=\\s*\\[\\])",
+    "flags": "gi"
+  },
+  "requiresNearby": {
+    "labels": ["jwt", "decode", "token"],
+    "windowChars": 160
+  },
+  "examples": [
+    "jwt.decode(token, options={\"verify_signature\": False})",
+    "jwt.decode(token, algorithms=[])"
+  ]
+}

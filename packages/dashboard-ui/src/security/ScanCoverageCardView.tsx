@@ -13,8 +13,8 @@ import {
 } from '@akasecurity/ui-kit';
 
 import { COLORS } from '../lib/colors.ts';
-import { Provider, PROVIDERS } from '../Provider.tsx';
-import { ShieldCheckIcon } from './icons.tsx';
+import { ShieldCheckIcon } from '../shared/icons.tsx';
+import { Provider, PROVIDERS } from '../shared/Provider.tsx';
 import { WidgetError } from './widget-shared.tsx';
 
 /** Coverage below this percentage is shown in the high-severity color. */

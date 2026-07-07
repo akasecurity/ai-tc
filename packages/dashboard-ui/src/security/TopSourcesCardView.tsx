@@ -11,7 +11,7 @@ import {
   Skeleton,
 } from '@akasecurity/ui-kit';
 
-import { BranchIcon, TargetIcon, UserIcon } from './icons.tsx';
+import { BranchIcon, TargetIcon, UserIcon } from '../shared/icons.tsx';
 import { numberFormat, WidgetError } from './widget-shared.tsx';
 
 export interface TopSourcesView {

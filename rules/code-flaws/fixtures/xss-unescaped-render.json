@@ -1,0 +1,28 @@
+[
+  {
+    "label": "Jinja2 safe filter",
+    "text": "{{ user_content | safe }}",
+    "shouldMatch": true
+  },
+  {
+    "label": "Django mark_safe",
+    "text": "return mark_safe(user_html)",
+    "shouldMatch": true
+  },
+  {
+    "label": "Rails html_safe",
+    "text": "content.html_safe",
+    "shouldMatch": true
+  },
+  {
+    "label": "safe variable name unrelated to rendering",
+    "text": "is_safe_mode = True",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "{{ user_content | safe }}",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  }
+]

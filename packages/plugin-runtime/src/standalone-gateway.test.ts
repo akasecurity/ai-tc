@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { DB_FILENAME } from '@akasecurity/persistence';
+import { loadOrCreateFingerprintKey } from '@akasecurity/plugin-sdk';
 import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -146,6 +147,66 @@ describe('StandaloneDataGateway', () => {
     expect(days).toHaveLength(7);
     const today = new Date().toISOString().slice(0, 10);
     expect(days.find((d) => d.day === today)?.blocked).toBe(1);
+    await gw.close();
+  });
+});
+
+describe('StandaloneDataGateway — detection exceptions', () => {
+  it('rides active grants on the bundle, consumes atomically, and records blocked detections', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    // The gateway is read-only over the key: with no key file yet, the cold
+    // bundle omits `exceptions` and — decisive for upgrade footprint — no key
+    // is minted by merely pulling a bundle.
+    const cold = await gw.getPolicyBundle();
+    expect(cold.exceptions).toBeUndefined();
+    expect(existsSync(join(dir, 'exception.key'))).toBe(false);
+    // Mint the key the way the write paths do (ledger/CLI), then grants ride.
+    const key = loadOrCreateFingerprintKey(dir);
+    expect(key.version).toBe(1);
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const now = Date.now();
+    raw
+      .prepare(
+        `INSERT INTO exceptions (
+           id, rule_id, category, value_fingerprint, key_version, masked_value,
+           scope, expires_at, max_uses, use_count, justification, created_by,
+           created_via, created_at, updated_at
+         ) VALUES (?, 'secrets/aws-access-key', 'secret', '0000000000000000000000000000000000000000000000000000000000000001', 1, 'AK…Q',
+           'once', NULL, 1, 0, 'temp deploy', 'tester', 'cli-add', ?, ?)`,
+      )
+      .run(randomUUID(), now, now);
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    expect(bundle.exceptions).toHaveLength(1);
+    const grant = bundle.exceptions?.[0];
+    expect(grant?.valueFingerprint).toBe(
+      '0000000000000000000000000000000000000000000000000000000000000001',
+    );
+
+    // First consume claims the single use; the second fails secure.
+    expect(await gw.consumeException(grant?.id ?? '')).toBe(true);
+    expect(await gw.consumeException(grant?.id ?? '')).toBe(false);
+    // The exhausted grant no longer rides the bundle.
+    expect((await gw.getPolicyBundle()).exceptions).toEqual([]);
+
+    await gw.recordBlockedDetection({
+      reference: 'abc123',
+      ruleId: 'secrets/aws-access-key',
+      category: 'secret',
+      valueFingerprint: '0000000000000000000000000000000000000000000000000000000000000002',
+      keyVersion: 1,
+      maskedValue: 'AK…Q',
+      sessionId: null,
+      repo: null,
+    });
+    const check = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = check.prepare('SELECT count(*) AS c FROM blocked_detections').get() as {
+      c: number;
+    };
+    check.close();
+    expect(row.c).toBe(1);
     await gw.close();
   });
 });

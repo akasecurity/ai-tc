@@ -40,7 +40,7 @@ export function SheetContent({ className, children, ...props }: SheetContentProp
         {...props}
       >
         {children}
-        <Dialog.Close className="absolute right-4 top-4 cursor-pointer rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text">
+        <Dialog.Close className="absolute right-4 top-4 cursor-pointer rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text size-8 grid place-content-center">
           <svg
             aria-hidden
             viewBox="0 0 24 24"

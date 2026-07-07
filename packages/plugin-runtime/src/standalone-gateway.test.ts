@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DB_FILENAME } from '@akasecurity/persistence';
 import { loadOrCreateFingerprintKey } from '@akasecurity/plugin-sdk';
 import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@akasecurity/schema';
+import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { StandaloneDataGateway } from './standalone-gateway.ts';
@@ -70,9 +71,9 @@ describe('StandaloneDataGateway', () => {
     const categories = bundle.policies
       .map((p) => ('category' in p.target ? p.target.category : null))
       .filter(Boolean);
-    expect(new Set(categories)).toEqual(
-      new Set(['secret', 'pii', 'financial', 'phi', 'code_context', 'code_flaw', 'custom']),
-    );
+    // Derived from DEFAULT_ACTIONS so a new category extends the seed without
+    // a hand-maintained duplicate here.
+    expect(new Set(categories)).toEqual(new Set(Object.keys(DEFAULT_ACTIONS)));
     await gw.close();
   });
 

@@ -1,0 +1,72 @@
+[
+  {
+    "label": "bare project shell script at user scope",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "matcher": "Bash",
+        "command": "guard-dangerous-cmds.sh",
+        "scope": "user"
+      }
+    ]
+  },
+  {
+    "label": "absolute-path script outside any plugin",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "UserPromptSubmit",
+        "command": "/opt/tools/scan-secrets.sh --redact",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "arbitrary script via bash (bash itself vouches for nothing)",
+    "shouldMatch": true,
+    "hooks": [
+      {
+        "event": "Stop",
+        "command": "bash ~/scripts/cleanup.sh",
+        "scope": "local"
+      }
+    ]
+  },
+  {
+    "label": "recognizable tool with an env-assignment prefix",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "NODE_OPTIONS=--max-old-space-size=4096 prettier --write \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "label": "plugin-scope hook is attributed by the install manifest — never unknown",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PreToolUse",
+        "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-use.js\"",
+        "scope": "plugin",
+        "pluginName": "aka"
+      }
+    ]
+  },
+  {
+    "label": "plain eslint --fix at project scope is a known tool",
+    "shouldMatch": false,
+    "hooks": [
+      {
+        "event": "PostToolUse",
+        "matcher": "Edit|Write",
+        "command": "eslint --fix \"$FILE\"",
+        "scope": "project"
+      }
+    ]
+  }
+]

@@ -22,6 +22,13 @@
       "when": 1783369407374,
       "tag": "0002_groovy_big_bertha",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783441617547,
+      "tag": "0003_rich_sage",
+      "breakpoints": true
     }
   ]
 }

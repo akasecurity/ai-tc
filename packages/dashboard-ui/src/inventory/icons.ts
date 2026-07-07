@@ -6,6 +6,7 @@
 import type { IconComponent } from '../lib/icons.ts';
 import {
   AlertIcon,
+  AlertOctagonIcon,
   ArrowUpIcon,
   BoltIcon,
   BranchIcon,
@@ -18,6 +19,7 @@ import {
   CodeIcon,
   DatabaseIcon,
   EditIcon,
+  ExternalShareIcon,
   EyeIcon,
   EyeOffIcon,
   FileIcon,
@@ -28,6 +30,7 @@ import {
   LayersIcon,
   ListIcon,
   LockIcon,
+  PlusIcon,
   RedactIcon,
   RefreshIcon,
   RepoIcon,
@@ -46,6 +49,7 @@ import {
 
 const ICONS = {
   alert: AlertIcon,
+  'alert-octagon': AlertOctagonIcon,
   'arrow-up': ArrowUpIcon,
   bolt: BoltIcon,
   book: FileIcon,
@@ -59,6 +63,7 @@ const ICONS = {
   code: CodeIcon,
   database: DatabaseIcon,
   edit: EditIcon,
+  'external-share': ExternalShareIcon,
   eye: EyeIcon,
   'eye-off': EyeOffIcon,
   file: FileIcon,
@@ -66,9 +71,11 @@ const ICONS = {
   folder: FolderIcon,
   globe: GlobeIcon,
   help: InfoIcon,
+  info: InfoIcon,
   layers: LayersIcon,
   list: ListIcon,
   lock: LockIcon,
+  plus: PlusIcon,
   redact: RedactIcon,
   refresh: RefreshIcon,
   repo: RepoIcon,

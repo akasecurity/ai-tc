@@ -1,0 +1,17 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/dev-wildcard-cors",
+  "name": "CORS wildcard allowing all origins",
+  "category": "code_flaw",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "(Access-Control-Allow-Origin:\\s*\\*|origin:\\s*[\"']\\*[\"']|allow_all_origins\\s*=\\s*True|CORS_ALLOW_ALL_ORIGINS\\s*=\\s*True)",
+    "flags": "gi"
+  },
+  "examples": [
+    "Access-Control-Allow-Origin: *",
+    "cors({ origin: '*' })",
+    "CORS_ALLOW_ALL_ORIGINS = True"
+  ]
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "label": "PyJWT decode with verify_signature False",
+    "text": "payload = jwt.decode(token, options={\"verify_signature\": False})",
+    "shouldMatch": true
+  },
+  {
+    "label": "PyJWT decode with empty algorithms",
+    "text": "data = jwt.decode(token, key, algorithms=[])",
+    "shouldMatch": true
+  },
+  {
+    "label": "JWT decode with proper algorithm",
+    "text": "payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])",
+    "shouldMatch": false
+  },
+  {
+    "label": "verify flag unrelated to JWT",
+    "text": "is_valid = verify_email(token)",
+    "shouldMatch": false
+  }
+]

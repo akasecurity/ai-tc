@@ -17,7 +17,7 @@ describe('registerBundledPacks', () => {
 describe('bundledDetections', () => {
   it('reports each bundled pack with its manifest version + parsed rule snapshot', () => {
     const packs = bundledDetections();
-    expect(packs.map((p) => p.packId).sort()).toEqual(['core-pii', 'secrets']);
+    expect(packs.map((p) => p.packId).sort()).toEqual(['code-flaws', 'core-pii', 'secrets']);
 
     const secrets = packs.find((p) => p.packId === 'secrets');
     expect(secrets).toBeDefined();

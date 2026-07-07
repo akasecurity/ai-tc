@@ -1,0 +1,28 @@
+[
+  {
+    "label": "innerHTML assignment",
+    "text": "document.getElementById('out').innerHTML = userInput;",
+    "shouldMatch": true
+  },
+  {
+    "label": "innerHTML= without space",
+    "text": "el.innerHTML=data;",
+    "shouldMatch": true
+  },
+  {
+    "label": "innerText safe alternative",
+    "text": "element.innerText = userInput;",
+    "shouldMatch": false
+  },
+  {
+    "label": "textContent safe alternative",
+    "text": "el.textContent = data;",
+    "shouldMatch": false
+  },
+  {
+    "label": "same code in an out-of-scope file (.go) is gated by appliesTo",
+    "text": "document.getElementById('out').innerHTML = userInput;",
+    "shouldMatch": false,
+    "filePath": "src/example.go"
+  }
+]

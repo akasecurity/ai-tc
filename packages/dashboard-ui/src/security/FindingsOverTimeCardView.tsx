@@ -11,9 +11,9 @@ import {
   Skeleton,
 } from '@akasecurity/ui-kit';
 
-import { AreaChart } from '../charts.tsx';
 import { COLORS } from '../lib/colors.ts';
-import { AnalyticsIcon } from './icons.tsx';
+import { AreaChart } from '../shared/charts.tsx';
+import { AnalyticsIcon } from '../shared/icons.tsx';
 import { WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // One day's point with a presentation `label` (the raw `timestamp` resolved to a

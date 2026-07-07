@@ -1,0 +1,20 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/cmd-inject-exec",
+  "name": "Command injection via Java Runtime.exec",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "Runtime\\.getRuntime\\(\\)\\.exec\\(",
+    "flags": "g"
+  },
+  "requiresNearby": {
+    "labels": ["input", "request", "param", "user"],
+    "windowChars": 200
+  },
+  "examples": ["Runtime.getRuntime().exec(userInput)"],
+  "appliesTo": {
+    "extensions": [".java"]
+  }
+}

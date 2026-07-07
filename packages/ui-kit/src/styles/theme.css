@@ -51,6 +51,7 @@
 
   /* severity (foreground + fill tint) */
   --color-sev-critical: #e63448;
+  --color-sev-critical-hover: #cf2637; /* darker critical — solid danger button hover */
   --color-sev-critical-fill: #ffe8ed;
   --color-sev-high: #e97a0a;
   --color-sev-high-fill: #ffecd9;

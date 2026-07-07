@@ -3,8 +3,8 @@
 import type { FindingFacets, FindingProvider } from '@akasecurity/schema';
 import { Button, cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
 
-import { PROVIDERS } from '../Provider.tsx';
-import { CheckIcon, ChevronDownIcon, SearchIcon, SlidersIcon } from './icons.tsx';
+import { CheckIcon, ChevronDownIcon, SearchIcon, SlidersIcon } from '../shared/icons.tsx';
+import { PROVIDERS } from '../shared/Provider.tsx';
 import {
   type ColumnVisibility,
   type FindingColumn,

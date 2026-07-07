@@ -26,6 +26,7 @@ export {
 } from './dialog.tsx';
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -35,6 +36,7 @@ export {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './dropdown-menu.tsx';
+export { Input } from './input.tsx';
 export { cn } from './lib/cn.ts';
 export { Meter, type MeterProps } from './meter.tsx';
 export {
@@ -51,6 +53,18 @@ export {
   type SegmentedControlItemProps,
   type SegmentedControlProps,
 } from './segmented-control.tsx';
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectScrollDownButton,
+  SelectScrollUpButton,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from './select.tsx';
 export {
   Sheet,
   SheetClose,

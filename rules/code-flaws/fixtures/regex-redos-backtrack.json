@@ -1,0 +1,47 @@
+[
+  {
+    "label": "nested quantifier (a+)+",
+    "text": "const re = /(a+)+/;",
+    "shouldMatch": true
+  },
+  {
+    "label": "nested quantifier (\\w+\\s*)+",
+    "text": "const pattern = /(\\w+\\s*)+$/;",
+    "shouldMatch": true
+  },
+  {
+    "label": "non-capturing nested quantifier (?:\\w+)*",
+    "text": "re.compile(r'(?:\\w+)*$')",
+    "shouldMatch": true
+  },
+  {
+    "label": "identical alternation (a|a)*",
+    "text": "const re = /(a|a)*/;",
+    "shouldMatch": true
+  },
+  {
+    "label": "simple quantifier without nesting",
+    "text": "const re = /\\w+/;",
+    "shouldMatch": false
+  },
+  {
+    "label": "greedy quantifier without catastrophic nesting",
+    "text": "const re = /[a-z]+[0-9]*/;",
+    "shouldMatch": false
+  },
+  {
+    "label": "anchored group repetition (ab+)* is linear-time",
+    "text": "const re = /(ab+)*/;",
+    "shouldMatch": false
+  },
+  {
+    "label": "bounded outer quantifier (\\d+)? cannot blow up",
+    "text": "const re = /(\\d+)?/;",
+    "shouldMatch": false
+  },
+  {
+    "label": "plain group repetition (abc)+ has no inner quantifier",
+    "text": "const re = /(abc)+/;",
+    "shouldMatch": false
+  }
+]

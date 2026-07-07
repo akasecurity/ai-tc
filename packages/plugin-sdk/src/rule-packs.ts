@@ -2,6 +2,36 @@ import { registerPack } from '@akasecurity/detections';
 import type { InstalledPackInput } from '@akasecurity/schema';
 import { Rule } from '@akasecurity/schema';
 
+import codeFlawsAuthJwtNoVerify from '../../../rules/code-flaws/auth-jwt-no-verify.json';
+import codeFlawsAuthSslVerifyFalse from '../../../rules/code-flaws/auth-ssl-verify-false.json';
+import codeFlawsCmdInjectExec from '../../../rules/code-flaws/cmd-inject-exec.json';
+import codeFlawsCmdInjectNodeExec from '../../../rules/code-flaws/cmd-inject-node-exec.json';
+import codeFlawsCmdInjectShell from '../../../rules/code-flaws/cmd-inject-shell.json';
+import codeFlawsCryptoInsecureRandom from '../../../rules/code-flaws/crypto-insecure-random.json';
+import codeFlawsCryptoWeakHashMd5 from '../../../rules/code-flaws/crypto-weak-hash-md5.json';
+import codeFlawsCryptoWeakHashSha1 from '../../../rules/code-flaws/crypto-weak-hash-sha1.json';
+import codeFlawsDeserJavaOis from '../../../rules/code-flaws/deser-java-ois.json';
+import codeFlawsDeserPickle from '../../../rules/code-flaws/deser-pickle.json';
+import codeFlawsDeserYamlUnsafe from '../../../rules/code-flaws/deser-yaml-unsafe.json';
+import codeFlawsDevDebugEnabled from '../../../rules/code-flaws/dev-debug-enabled.json';
+import codeFlawsDevPlaceholderSecret from '../../../rules/code-flaws/dev-placeholder-secret.json';
+import codeFlawsDevWildcardCors from '../../../rules/code-flaws/dev-wildcard-cors.json';
+import codeFlawsEvalDynamicExec from '../../../rules/code-flaws/eval-dynamic-exec.json';
+import codeFlawsHardcodedPassword from '../../../rules/code-flaws/hardcoded-password.json';
+import codeFlawsHardcodedSecretKey from '../../../rules/code-flaws/hardcoded-secret-key.json';
+import codeFlawsManifest from '../../../rules/code-flaws/manifest.json';
+import codeFlawsPathTraversalJoin from '../../../rules/code-flaws/path-traversal-join.json';
+import codeFlawsPathTraversalOpen from '../../../rules/code-flaws/path-traversal-open.json';
+import codeFlawsPrototypePollutionMerge from '../../../rules/code-flaws/prototype-pollution-merge.json';
+import codeFlawsRegexRedosBacktrack from '../../../rules/code-flaws/regex-redos-backtrack.json';
+import codeFlawsSqlInjectConcat from '../../../rules/code-flaws/sql-inject-concat.json';
+import codeFlawsSqlInjectConcatDot from '../../../rules/code-flaws/sql-inject-concat-dot.json';
+import codeFlawsSqlInjectFormat from '../../../rules/code-flaws/sql-inject-format.json';
+import codeFlawsSqlInjectInterp from '../../../rules/code-flaws/sql-inject-interp.json';
+import codeFlawsSsrfUserUrl from '../../../rules/code-flaws/ssrf-user-url.json';
+import codeFlawsXssDangerouslySet from '../../../rules/code-flaws/xss-dangerously-set.json';
+import codeFlawsXssInnerHtml from '../../../rules/code-flaws/xss-inner-html.json';
+import codeFlawsXssUnescapedRender from '../../../rules/code-flaws/xss-unescaped-render.json';
 import coreEmail from '../../../rules/core-pii/email.json';
 import corePiiManifest from '../../../rules/core-pii/manifest.json';
 import coreSsn from '../../../rules/core-pii/ssn.json';
@@ -44,6 +74,42 @@ const BUNDLED_PACKS: readonly BundledPack[] = [
     name: corePiiManifest.name,
     version: corePiiManifest.version,
     rawRules: [coreEmail, coreSsn],
+  },
+  {
+    packId: codeFlawsManifest.id,
+    name: codeFlawsManifest.name,
+    version: codeFlawsManifest.version,
+    rawRules: [
+      codeFlawsSqlInjectConcat,
+      codeFlawsSqlInjectConcatDot,
+      codeFlawsSqlInjectFormat,
+      codeFlawsSqlInjectInterp,
+      codeFlawsCmdInjectShell,
+      codeFlawsCmdInjectExec,
+      codeFlawsCmdInjectNodeExec,
+      codeFlawsXssInnerHtml,
+      codeFlawsXssDangerouslySet,
+      codeFlawsXssUnescapedRender,
+      codeFlawsDeserPickle,
+      codeFlawsDeserYamlUnsafe,
+      codeFlawsDeserJavaOis,
+      codeFlawsHardcodedPassword,
+      codeFlawsHardcodedSecretKey,
+      codeFlawsDevDebugEnabled,
+      codeFlawsDevPlaceholderSecret,
+      codeFlawsDevWildcardCors,
+      codeFlawsAuthSslVerifyFalse,
+      codeFlawsAuthJwtNoVerify,
+      codeFlawsPathTraversalOpen,
+      codeFlawsPathTraversalJoin,
+      codeFlawsCryptoWeakHashMd5,
+      codeFlawsCryptoWeakHashSha1,
+      codeFlawsCryptoInsecureRandom,
+      codeFlawsPrototypePollutionMerge,
+      codeFlawsEvalDynamicExec,
+      codeFlawsSsrfUserUrl,
+      codeFlawsRegexRedosBacktrack,
+    ],
   },
 ];
 

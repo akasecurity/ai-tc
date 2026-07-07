@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/sql-inject-concat",
+  "name": "SQL injection via string concatenation",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "regex",
+    "pattern": "[\"']\\s*(?:select\\b[^\\n]*?\\bfrom\\b|insert\\s+into\\b|update\\s+\\S+\\s+set\\b|delete\\s+from\\b|drop\\s+(?:table|database)\\b|where\\b[^\\n]*?=)[^\\n]*?[\"']\\s*\\+",
+    "flags": "gi"
+  },
+  "examples": ["\"SELECT * FROM users WHERE id = \" + userId"]
+}

@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/xss-inner-html",
+  "name": "XSS via innerHTML assignment",
+  "category": "code_flaw",
+  "severity": "high",
+  "matcher": {
+    "type": "keyword",
+    "keywords": ["innerHTML =", "innerHTML="],
+    "caseSensitive": true
+  },
+  "examples": ["element.innerHTML = userInput"],
+  "appliesTo": {
+    "extensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+  }
+}

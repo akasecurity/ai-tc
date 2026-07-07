@@ -1,0 +1,16 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/deser-pickle",
+  "name": "Insecure deserialization via Python pickle",
+  "category": "code_flaw",
+  "severity": "critical",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bpickle\\.loads?\\s*\\(",
+    "flags": "gi"
+  },
+  "examples": ["data = pickle.loads(user_data)", "obj = pickle.load(request.stream)"],
+  "appliesTo": {
+    "extensions": [".py"]
+  }
+}

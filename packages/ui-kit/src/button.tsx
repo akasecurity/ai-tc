@@ -4,7 +4,8 @@ import { type ButtonHTMLAttributes, type Ref } from 'react';
 
 import { cn } from './lib/cn.ts';
 
-// Two independent axes: `variant` is the fill style, `tone` is the color. Their
+// Two independent axes: `variant` is the fill style (`solid`/`outline`/`ghost`, plus
+// a boxless `link` that renders as inline text), `tone` is the color. Their
 // combinations are resolved by `compoundVariants` — e.g. a primary ghost button
 // is `<Button variant="ghost" tone="primary" />`.
 const buttonVariants = cva(
@@ -15,10 +16,12 @@ const buttonVariants = cva(
         solid: '',
         outline: 'border',
         ghost: '',
+        link: '',
       },
       tone: {
         primary: '',
         neutral: '',
+        danger: '',
       },
       size: {
         sm: 'h-8 px-3 text-xs',
@@ -34,6 +37,11 @@ const buttonVariants = cva(
         class: 'bg-primary text-text-inv hover:bg-primary-hover',
       },
       { variant: 'solid', tone: 'neutral', class: 'bg-surface-3 text-text hover:bg-border-strong' },
+      {
+        variant: 'solid',
+        tone: 'danger',
+        class: 'bg-sev-critical text-text-inv hover:bg-sev-critical-hover',
+      },
       // outline
       {
         variant: 'outline',
@@ -45,6 +53,11 @@ const buttonVariants = cva(
         tone: 'neutral',
         class: 'border-border bg-surface text-text hover:bg-surface-2',
       },
+      {
+        variant: 'outline',
+        tone: 'danger',
+        class: 'border-sev-critical text-sev-critical hover:bg-sev-critical-fill',
+      },
       // ghost
       { variant: 'ghost', tone: 'primary', class: 'text-primary hover:bg-primary-tint' },
       {
@@ -52,6 +65,25 @@ const buttonVariants = cva(
         tone: 'neutral',
         class: 'text-text-2 hover:bg-surface-2 hover:text-text',
       },
+      {
+        variant: 'ghost',
+        tone: 'danger',
+        class: 'text-sev-critical hover:bg-sev-critical-fill',
+      },
+      // link — an inline text link; strips the button box (height/padding/gap) so it
+      // sits within copy, and underlines on hover. Tone sets the text color.
+      {
+        variant: 'link',
+        class:
+          'h-auto gap-1 rounded-sm p-0 align-baseline font-semibold underline-offset-4 [&_svg]:size-3.5',
+      },
+      { variant: 'link', tone: 'primary', class: 'text-primary hover:underline' },
+      {
+        variant: 'link',
+        tone: 'neutral',
+        class: 'text-text-2 hover:text-text hover:underline',
+      },
+      { variant: 'link', tone: 'danger', class: 'text-sev-critical hover:underline' },
     ],
     defaultVariants: { variant: 'solid', tone: 'neutral', size: 'md' },
   },

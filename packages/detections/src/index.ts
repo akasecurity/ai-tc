@@ -1,3 +1,4 @@
+export type { ScanContext } from './engine.ts';
 export { getLoadedRules, redact, registerPack, scan } from './engine.ts';
 export { maskMatch } from './mask.ts';
 export type { TabularMatch, TabularTable } from './tabular.ts';

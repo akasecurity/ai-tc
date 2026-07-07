@@ -12,7 +12,9 @@ export function shannonEntropy(str: string): number {
   return entropy;
 }
 
-// A string with entropy >= 3.5 across a 20+ char run is likely a secret
-export function isHighEntropy(value: string, threshold = 3.5): boolean {
-  return value.length >= 20 && shannonEntropy(value) >= threshold;
+// A string with entropy >= 3.5 across a 20+ char run is likely a secret. The
+// defaults are tuned for API-key-shaped values; rules matching shorter secrets
+// (passwords) override them via post-validator config (see PostValidatorRef).
+export function isHighEntropy(value: string, threshold = 3.5, minLength = 20): boolean {
+  return value.length >= minLength && shannonEntropy(value) >= threshold;
 }

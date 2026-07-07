@@ -1,0 +1,62 @@
+[
+  {
+    "label": "Java string concatenation into SELECT",
+    "text": "String query = \"SELECT * FROM users WHERE id = \" + userId;",
+    "shouldMatch": true
+  },
+  {
+    "label": "Python + concatenation into WHERE clause",
+    "text": "query = \"SELECT * FROM orders WHERE user = \" + username",
+    "shouldMatch": true
+  },
+  {
+    "label": "safe parameterized query with ?",
+    "text": "String query = \"SELECT * FROM users WHERE id = ?\";",
+    "shouldMatch": false
+  },
+  {
+    "label": "comment about avoiding SQL concat",
+    "text": "// Always use prepared statements instead of concatenation",
+    "shouldMatch": false
+  },
+  {
+    "label": "JS string method call is not concatenation",
+    "text": "const q = \"SELECT * FROM users\".trim();",
+    "shouldMatch": false
+  },
+  {
+    "label": "property access on a SQL-ish string is not concatenation",
+    "text": "const n = \"...select something...\".length;",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose word containing a SQL verb is not SQL",
+    "text": "const msg = \"Selected items: \" + count;",
+    "shouldMatch": false
+  },
+  {
+    "label": "log message starting with a SQL verb is not SQL",
+    "text": "logger.info(\"update complete for batch \" + batchId);",
+    "shouldMatch": false
+  },
+  {
+    "label": "UPDATE..SET concatenation",
+    "text": "q = \"UPDATE users SET name = \" + name",
+    "shouldMatch": true
+  },
+  {
+    "label": "DELETE FROM concatenation",
+    "text": "q = \"DELETE FROM sessions WHERE id = \" + id",
+    "shouldMatch": true
+  },
+  {
+    "label": "INSERT INTO concatenation",
+    "text": "q = \"INSERT INTO logs VALUES (\" + v",
+    "shouldMatch": true
+  },
+  {
+    "label": "WHERE-clause fragment concatenation",
+    "text": "clause = \"WHERE id = \" + userId",
+    "shouldMatch": true
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "specVersion": 1,
+  "id": "code-flaws/dev-debug-enabled",
+  "name": "Debug mode enabled in configuration",
+  "category": "code_flaw",
+  "severity": "medium",
+  "matcher": {
+    "type": "regex",
+    "pattern": "\\bdebug\\s*[=:]\\s*(true|1|yes)",
+    "flags": "gi"
+  },
+  "examples": ["DEBUG = True", "debug: true", "app.debug = True"]
+}

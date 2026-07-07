@@ -2,11 +2,18 @@
 // Data Shares detail drawer body: a destination overview that drills into a
 // single endpoint (URL, classification, and the call sites in code that invoke
 // it). Rendered inside a ui-kit Sheet by the app. Pure/props-driven; selection
-// navigation and (inert, demo) footer actions are handled here.
+// navigation and the egress-decision footer are handled by the app. All shapes
+// are @akasecurity/schema types.
+import type {
+  CallSite,
+  EgressDecision,
+  EndpointWithSites,
+  ShareDestinationDetail,
+} from '@akasecurity/schema';
 import { Badge, Button, cn } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
 
-import { MetaItem } from '../shared/DetailFields.tsx';
+import { relativeTime } from '../lib/relativeTime.ts';
+import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import {
   BracesIcon,
   CheckIcon,
@@ -18,19 +25,7 @@ import {
   SlashCircleIcon,
 } from '../shared/icons.tsx';
 import { ClassTag, DestMark, MethodTag, TemplateUrl, TransportTag, TrustTag } from './atoms.tsx';
-import { destSites, TRUST_META } from './meta.ts';
-import type { CallSite, ShareDestination, ShareEndpoint } from './types.ts';
-
-function SectionLabel({ children, right }: { children: ReactNode; right?: ReactNode }) {
-  return (
-    <div className="mb-2 flex items-center">
-      <span className="text-label font-semibold uppercase tracking-wider text-text-3">
-        {children}
-      </span>
-      {right && <span className="ml-auto">{right}</span>}
-    </div>
-  );
-}
+import { TRUST_META } from './meta.ts';
 
 function CallSiteCard({ st }: { st: CallSite }) {
   return (
@@ -67,13 +62,20 @@ function CallSiteCard({ st }: { st: CallSite }) {
   );
 }
 
-function DestDetail({ d, onPick }: { d: ShareDestination; onPick: (ei: number) => void }) {
+function DestDetail({
+  d,
+  onPick,
+}: {
+  d: ShareDestinationDetail;
+  onPick: (endpointId: string) => void;
+}) {
   const tm = TRUST_META[d.trust];
   const TrustIcon = tm.icon;
+  const callSites = d.endpoints.reduce((n, ep) => n + ep.callSiteCount, 0);
   return (
     <>
       <div className="flex items-start gap-3">
-        <DestMark d={d} size={44} />
+        <DestMark kind={d.kind} trust={d.trust} name={d.name} host={d.host} size={44} />
         <div className="min-w-0">
           <div
             className={cn(
@@ -84,29 +86,30 @@ function DestDetail({ d, onPick }: { d: ShareDestination; onPick: (ei: number) =
             {d.name}
           </div>
           <div className="mt-0.5 text-xs text-text-3">
-            {d.category} · {d.endpoints.length} endpoints · {destSites(d)} call sites
+            {d.category} · {d.endpoints.length} endpoints · {callSites} call sites
           </div>
         </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
         <TrustTag trust={d.trust} />
-        {Array.from(new Set(d.endpoints.map((ep) => ep.transport))).map((t) => (
+        {d.transports.map((t) => (
           <TransportTag key={t} transport={t} />
         ))}
       </div>
 
-      {(d.note !== undefined || d.geo !== undefined) && (
+      {(d.note !== null || d.network?.geo != null) && (
         <div className="flex gap-2.5 rounded-lg border border-border bg-surface-2 px-3 py-2.5">
           <TrustIcon aria-hidden focusable={false} className="mt-0.5 size-4 shrink-0 text-text-2" />
           <div className="text-xs leading-normal text-text-2">
-            {d.geo && (
+            {d.network?.geo != null && (
               <div>
                 <b className="text-text">Resolves to </b>
-                {d.geo} · {d.ptr}
+                {d.network.geo}
+                {d.network.ptr != null ? ' · ' + d.network.ptr : ''}
               </div>
             )}
-            {d.note && <div className={d.geo ? 'mt-1' : ''}>{d.note}</div>}
+            {d.note != null && <div className={d.network?.geo != null ? 'mt-1' : ''}>{d.note}</div>}
           </div>
         </div>
       )}
@@ -114,12 +117,12 @@ function DestDetail({ d, onPick }: { d: ShareDestination; onPick: (ei: number) =
       <div>
         <SectionLabel>Endpoints</SectionLabel>
         <div className="flex flex-col gap-2">
-          {d.endpoints.map((ep, i) => (
+          {d.endpoints.map((ep) => (
             <button
-              key={i}
+              key={ep.id}
               type="button"
               onClick={() => {
-                onPick(i);
+                onPick(ep.id);
               }}
               className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-left hover:bg-surface-2"
             >
@@ -129,7 +132,7 @@ function DestDetail({ d, onPick }: { d: ShareDestination; onPick: (ei: number) =
                 <div className="mt-1 flex items-center gap-2">
                   <TransportTag transport={ep.transport} plain />
                   <span className="text-xs text-text-3">
-                    · {ep.sites.length} call{ep.sites.length === 1 ? '' : 's'}
+                    · {ep.callSiteCount} call{ep.callSiteCount === 1 ? '' : 's'}
                   </span>
                 </div>
               </div>
@@ -151,14 +154,14 @@ function EndpointDetail({
   ep,
   onBack,
 }: {
-  d: ShareDestination;
-  ep: ShareEndpoint;
+  d: ShareDestinationDetail;
+  ep: EndpointWithSites;
   onBack: () => void;
 }) {
   return (
     <>
       <div>
-        <Button onClick={onBack} size="sm" variant="ghost" tone="primary">
+        <Button onClick={onBack} size="sm" variant="link" tone="primary">
           <ChevronLeftIcon aria-hidden focusable={false} className="size-3.5" />
           Back to destination
         </Button>
@@ -167,7 +170,7 @@ function EndpointDetail({
       <div>
         <div className="mb-2 flex items-center gap-2.5">
           <MethodTag method={ep.method} />
-          <DestMark d={d} size={22} />
+          <DestMark kind={d.kind} trust={d.trust} name={d.name} host={d.host} size={22} />
           <span className="text-xs font-semibold text-text-3">{d.name}</span>
         </div>
         <div className="rounded-lg border border-border bg-surface-2 px-3 py-2.5">
@@ -202,21 +205,17 @@ function EndpointDetail({
         </MetaItem>
         <MetaItem label="Data classification">
           <span className="inline-flex">
-            <ClassTag cls={ep.cls} />
+            <ClassTag cls={ep.dataClass} />
           </span>
         </MetaItem>
-        <MetaItem label="Last seen">{ep.lastSeen}</MetaItem>
+        <MetaItem label="Last seen">{relativeTime(ep.lastSeen)}</MetaItem>
       </div>
 
       <div>
-        <SectionLabel
-          right={<span className="text-xs text-text-3">{ep.sites.length} in code</span>}
-        >
-          Call sites
-        </SectionLabel>
+        <SectionLabel>Call sites</SectionLabel>
         <div className="flex flex-col gap-2">
-          {ep.sites.map((st, i) => (
-            <CallSiteCard key={i} st={st} />
+          {ep.sites.map((st) => (
+            <CallSiteCard key={st.id} st={st} />
           ))}
         </div>
       </div>
@@ -225,11 +224,14 @@ function EndpointDetail({
 }
 
 export interface DataShareDetailViewProps {
-  destination: ShareDestination;
+  destination: ShareDestinationDetail;
   /** The endpoint being viewed, or null for the destination overview. */
-  endpoint: ShareEndpoint | null;
-  onPick: (ei: number) => void;
+  endpoint: EndpointWithSites | null;
+  onPick: (endpointId: string) => void;
   onBack: () => void;
+  /** Write the per-destination egress decision (`null` clears the override). */
+  onSetDecision: (decision: EgressDecision | null) => void;
+  isSettingDecision: boolean;
 }
 
 export function DataShareDetailView({
@@ -237,8 +239,12 @@ export function DataShareDetailView({
   endpoint,
   onPick,
   onBack,
+  onSetDecision,
+  isSettingDecision,
 }: DataShareDetailViewProps) {
-  const allowed = d.trust === 'recognized' || d.trust === 'internal';
+  // `status` (effective egress state) and `isCustom` (override differs from the
+  // trust default) already ride on the destination — read them from there.
+  const blocked = d.status === 'blocked';
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2.5 border-b border-border px-4.5 py-4 pr-12">
@@ -256,20 +262,51 @@ export function DataShareDetailView({
         )}
       </div>
 
-      <footer className="flex gap-2 border-t border-border p-3.5">
-        <Button variant="outline" className="flex-1">
-          <PolicyIcon aria-hidden focusable={false} />
-          Add policy
-        </Button>
-        {allowed ? (
-          <Button variant="outline" className="flex-1 border-ok-fill text-ok hover:bg-ok-fill">
-            <CheckIcon aria-hidden focusable={false} />
-            Allowed
+      <footer className="flex flex-col gap-2 border-t border-border p-3.5">
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1">
+            <PolicyIcon aria-hidden focusable={false} />
+            Add policy
           </Button>
-        ) : (
-          <Button variant="solid" tone="danger" className="flex-1">
-            <SlashCircleIcon aria-hidden focusable={false} />
-            Block egress
+          {blocked ? (
+            <Button
+              variant="outline"
+              className="flex-1 border-ok-fill text-ok hover:bg-ok-fill"
+              disabled={isSettingDecision}
+              onClick={() => {
+                onSetDecision('allow');
+              }}
+            >
+              <CheckIcon aria-hidden focusable={false} />
+              Allow egress
+            </Button>
+          ) : (
+            <Button
+              variant="solid"
+              tone="danger"
+              className="flex-1"
+              disabled={isSettingDecision}
+              onClick={() => {
+                onSetDecision('block');
+              }}
+            >
+              <SlashCircleIcon aria-hidden focusable={false} />
+              Block egress
+            </Button>
+          )}
+        </div>
+        {d.isCustom && (
+          <Button
+            variant="ghost"
+            size="sm"
+            tone="neutral"
+            className="self-center text-xs text-text-3"
+            disabled={isSettingDecision}
+            onClick={() => {
+              onSetDecision(null);
+            }}
+          >
+            Reset to default ({TRUST_META[d.trust].label})
           </Button>
         )}
       </footer>

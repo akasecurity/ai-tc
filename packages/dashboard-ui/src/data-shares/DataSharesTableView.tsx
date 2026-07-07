@@ -2,7 +2,13 @@
 // Grouped, expandable Data Shares register. Destinations are sectioned by kind
 // (providers / internal domains / raw IPs); each group row expands to reveal its
 // endpoint rows. Pure and props-driven — expansion/selection state and all
-// handlers come from the app.
+// handlers come from the app; all shapes are @akasecurity/schema types.
+import type {
+  DataClass,
+  EndpointSummary,
+  ShareDestinationGroup,
+  ShareDestinationSummary,
+} from '@akasecurity/schema';
 import {
   Button,
   cn,
@@ -15,6 +21,7 @@ import {
 } from '@akasecurity/ui-kit';
 import { Fragment } from 'react';
 
+import { relativeTime } from '../lib/relativeTime.ts';
 import { AlertIcon, ChevronRightIcon } from '../shared/icons.tsx';
 import {
   ClassTag,
@@ -25,17 +32,11 @@ import {
   TransportTag,
   TrustTag,
 } from './atoms.tsx';
-import { destClasses, destSites, destTransports, hasInsecure, KIND_LABEL } from './meta.ts';
-import type {
-  DataClass,
-  ShareDestination,
-  ShareEndpoint,
-  ShareGroup,
-  ShareSelection,
-} from './types.ts';
+import { hasInsecureTransport, KIND_LABEL } from './meta.ts';
+import type { ShareSelection } from './types.ts';
 
 export interface DataSharesTableViewProps {
-  groups: ShareGroup[];
+  groups: ShareDestinationGroup[];
   /** Which group rows are expanded (by destination id). */
   expanded: Record<string, boolean>;
   /** Force every group open (used while a search query is active). */
@@ -46,7 +47,7 @@ export interface DataSharesTableViewProps {
   drawerOpen: boolean;
   onToggle: (id: string) => void;
   onOpenDest: (id: string) => void;
-  onOpenEndpoint: (id: string, ei: number) => void;
+  onOpenEndpoint: (id: string, endpointId: string) => void;
 }
 
 function ClassCell({ classes }: { classes: DataClass[] }) {
@@ -67,15 +68,13 @@ function GroupRow({
   onToggle,
   onOpen,
 }: {
-  d: ShareDestination;
+  d: ShareDestinationSummary;
   expanded: boolean;
   selected: boolean;
   onToggle: () => void;
   onOpen: () => void;
 }) {
-  const transports = destTransports(d);
-  const nSites = destSites(d);
-  const insecure = hasInsecure(d);
+  const insecure = hasInsecureTransport(d.transports);
   return (
     <TableRow
       onClick={onOpen}
@@ -100,7 +99,7 @@ function GroupRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          <DestMark d={d} />
+          <DestMark kind={d.kind} trust={d.trust} name={d.name} host={d.host} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span
@@ -119,7 +118,7 @@ function GroupRow({
             </div>
             <div className="whitespace-nowrap text-xs text-text-3">
               {d.category}
-              {d.geo ? ' · ' + d.geo : ''}
+              {d.network?.geo ? ' · ' + d.network.geo : ''}
             </div>
           </div>
         </div>
@@ -129,21 +128,22 @@ function GroupRow({
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap gap-1.5">
-          {transports.map((t) => (
+          {d.transports.map((t) => (
             <TransportTag key={t} transport={t} />
           ))}
         </div>
       </TableCell>
       <TableCell>
-        <ClassCell classes={destClasses(d)} />
+        <ClassCell classes={d.dataClasses} />
       </TableCell>
       <TableCell className="whitespace-nowrap text-xs text-text-3">
-        <b className="text-text">{d.endpoints.length}</b> endpoint
-        {d.endpoints.length === 1 ? '' : 's'} · <b className="text-text">{nSites}</b> call
-        {nSites === 1 ? '' : 's'}
+        <b className="text-text">{d.endpointCount}</b> endpoint
+        {d.endpointCount === 1 ? '' : 's'} · <b className="text-text">{d.callSiteCount}</b> call
+        {d.callSiteCount === 1 ? '' : 's'}
       </TableCell>
-      <TableCell className="whitespace-nowrap text-xs text-text-3">{d.lastSeen}</TableCell>
-      <TableCell className="w-9"></TableCell>
+      <TableCell className="whitespace-nowrap text-xs text-text-3">
+        {relativeTime(d.lastSeen)}
+      </TableCell>
     </TableRow>
   );
 }
@@ -153,7 +153,7 @@ function EndpointRow({
   selected,
   onClick,
 }: {
-  ep: ShareEndpoint;
+  ep: EndpointSummary;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -167,7 +167,7 @@ function EndpointRow({
     >
       <TableCell className="w-9" />
       <TableCell colSpan={2}>
-        <div className="flex min-w-0 items-center gap-2.5 pl-1.5">
+        <div className="flex min-w-0 items-center gap-2.5 pl-1.5 py-1">
           <span className="h-3.5 w-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
           <MethodTag method={ep.method} />
           <span className="flex min-w-0 items-center gap-2">
@@ -180,32 +180,29 @@ function EndpointRow({
         <TransportTag transport={ep.transport} />
       </TableCell>
       <TableCell>
-        <ClassTag cls={ep.cls} />
+        <ClassTag cls={ep.dataClass} />
       </TableCell>
       <TableCell className="whitespace-nowrap text-xs text-text-3">
-        <b className="text-text">{ep.sites.length}</b> call{ep.sites.length === 1 ? '' : 's'}
+        <b className="text-text">{ep.callSiteCount}</b> call{ep.callSiteCount === 1 ? '' : 's'}
       </TableCell>
-      <TableCell className="whitespace-nowrap text-xs text-text-3">{ep.lastSeen}</TableCell>
-      <TableCell className="w-9">
-        <div className="size-7 grid place-items-center">
-          <ChevronRightIcon aria-hidden focusable={false} className="size-4 text-text-3" />
-        </div>
+      <TableCell className="whitespace-nowrap text-xs text-text-3">
+        {relativeTime(ep.lastSeen)}
       </TableCell>
     </TableRow>
   );
 }
 
 /** Full-width kind-section header row rendered between destination groups. */
-function SectionRow({ group }: { group: ShareGroup }) {
+function SectionRow({ group }: { group: ShareDestinationGroup }) {
   return (
     <TableRow className="border-0 hover:bg-transparent">
-      <TableCell colSpan={8} className="pb-2 pt-4">
+      <TableCell colSpan={7} className="pb-2 pt-4">
         <div className="flex items-center gap-2">
           <span className="text-label font-semibold uppercase tracking-wider text-text-3">
             {KIND_LABEL[group.kind]}
           </span>
           <span className="rounded-full border border-border bg-surface-2 px-1.5 text-label py-0.5 font-semibold text-text-2">
-            {group.items.length}
+            {group.total}
           </span>
           {group.kind === 'ip' && (
             <span className="inline-flex items-center gap-1 text-xs text-sev-critical">
@@ -244,7 +241,6 @@ export function DataSharesTableView({
           <TableHead>Data sent</TableHead>
           <TableHead>Footprint</TableHead>
           <TableHead>Last seen</TableHead>
-          <TableHead className="w-9" />
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -253,7 +249,7 @@ export function DataSharesTableView({
             <SectionRow group={g} />
             {g.items.map((d) => {
               const isExp = (forceExpand ?? false) || !!expanded[d.id];
-              const groupSel = drawerOpen && selection?.id === d.id && selection.ei == null;
+              const groupSel = drawerOpen && selection?.id === d.id && selection.endpointId == null;
               return (
                 <Fragment key={d.id}>
                   <GroupRow
@@ -268,13 +264,15 @@ export function DataSharesTableView({
                     }}
                   />
                   {isExp &&
-                    d.endpoints.map((ep, ei) => (
+                    d.endpoints.map((ep) => (
                       <EndpointRow
-                        key={ei}
+                        key={ep.id}
                         ep={ep}
-                        selected={drawerOpen && selection?.id === d.id && selection.ei === ei}
+                        selected={
+                          drawerOpen && selection?.id === d.id && selection.endpointId === ep.id
+                        }
                         onClick={() => {
-                          onOpenEndpoint(d.id, ei);
+                          onOpenEndpoint(d.id, ep.id);
                         }}
                       />
                     ))}

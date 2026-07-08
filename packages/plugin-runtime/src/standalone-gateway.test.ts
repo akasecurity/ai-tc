@@ -62,11 +62,15 @@ describe('StandaloneDataGateway', () => {
     await gw.close();
   });
 
-  it('synthesizes a local policy bundle from the seeded policies (no rules)', async () => {
+  it('synthesizes a local policy bundle from the seeded policies (empty store → bundled fallback)', async () => {
     const gw = new StandaloneDataGateway(dir);
     const bundle = await gw.getPolicyBundle();
     expect(bundle.version).toBe('local');
+    // No installed packs at all (nothing seeded): the snapshot is not
+    // authoritative, so rules stays empty WITHOUT rulesComplete — the runtime
+    // falls back to its compiled-in bundled packs.
     expect(bundle.rules).toEqual([]);
+    expect(bundle.rulesComplete).toBeUndefined();
     // One seeded policy per default category.
     const categories = bundle.policies
       .map((p) => ('category' in p.target ? p.target.category : null))
@@ -74,6 +78,145 @@ describe('StandaloneDataGateway', () => {
     // Derived from DEFAULT_ACTIONS so a new category extends the seed without
     // a hand-maintained duplicate here.
     expect(new Set(categories)).toEqual(new Set(Object.keys(DEFAULT_ACTIONS)));
+    await gw.close();
+  });
+
+  it('serves the installed snapshot as the COMPLETE ruleset once packs are recorded', async () => {
+    const gw = new StandaloneDataGateway(dir, [
+      {
+        namespace: 'aka',
+        packId: 'secrets',
+        version: '2.0.0',
+        name: 'Secrets',
+        rules: [
+          {
+            specVersion: 1,
+            id: 'secrets/aws',
+            name: 'aws',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'x', flags: 'g' },
+          },
+        ],
+      },
+    ]);
+    const bundle = await gw.getPolicyBundle();
+    expect(bundle.rulesComplete).toBe(true);
+    expect(bundle.rules?.map((r) => r.id)).toEqual(['secrets/aws']);
+    await gw.close();
+  });
+
+  it('respects a fully-disabled inventory (complete empty ruleset, not a fallback)', async () => {
+    const gw = new StandaloneDataGateway(dir, [
+      {
+        namespace: 'aka',
+        packId: 'secrets',
+        version: '2.0.0',
+        name: 'Secrets',
+        rules: [
+          {
+            specVersion: 1,
+            id: 'secrets/aws',
+            name: 'aws',
+            category: 'secret',
+            severity: 'high',
+            matcher: { type: 'regex', pattern: 'x', flags: 'g' },
+          },
+        ],
+      },
+    ]);
+    // The user turns the only pack off.
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw.exec('UPDATE installed_packs SET enabled = 0');
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    // Disabled-by-choice is authoritative: complete + empty, NOT bundled fallback.
+    expect(bundle.rulesComplete).toBe(true);
+    expect(bundle.rules).toEqual([]);
+    await gw.close();
+  });
+
+  it('falls back to bundled packs when every enabled rule is invalid (corrupt snapshot)', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('c', 'aka', 'corrupt', '1.0.0', 'Corrupt', '[{"nope":true}]', 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    // Packs exist and are enabled, but no rule parses: the snapshot is
+    // unusable — fail open to the runtime's bundled packs.
+    expect(bundle.rulesComplete).toBeUndefined();
+    expect(bundle.rules).toEqual([]);
+    await gw.close();
+  });
+
+  it('falls back to bundled packs on JSON-level corruption (malformed / non-array rules_json)', async () => {
+    // Nastier than a bad rule object: the whole rules_json fails to parse. The
+    // display-tolerant reads render this as "0 rules"; the SCAN path must not —
+    // an authoritative empty ruleset here would silently disable all detection.
+    const gw = new StandaloneDataGateway(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('t', 'aka', 'truncated', '1.0.0', 'Truncated', '[{"id":', 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    expect(bundle.rulesComplete).toBeUndefined(); // not authoritative → bundled fallback
+    expect(bundle.rules).toEqual([]);
+    await gw.close();
+  });
+
+  it('falls back to bundled packs when an ENABLED pack contributes zero rules (empty-but-enabled)', async () => {
+    // rules_json = '[]' on an enabled pack: 0 rules, 0 invalid. This is NOT a
+    // legitimate "detect nothing" (that is expressed by DISABLING packs) — an
+    // enabled pack that produces nothing is untrustworthy, so it must fall back
+    // to the bundled packs rather than be served as an authoritative empty set.
+    const gw = new StandaloneDataGateway(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('e', 'aka', 'empty', '1.0.0', 'Empty', '[]', 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    expect(bundle.rulesComplete).toBeUndefined();
+    expect(bundle.rules).toEqual([]);
+    await gw.close();
+  });
+
+  it('falls back to bundled packs on PARTIAL corruption (one bad rule among valid ones)', async () => {
+    // An enabled pack with some valid + one malformed rule: rules.length > 0, so
+    // the old ladder would have served the valid SUBSET as complete — silently
+    // dropping the corrupted rule with no fallback. Any invalid rule now taints
+    // the snapshot, so it falls back to the bundled superset instead.
+    const gw = new StandaloneDataGateway(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('p', 'aka', 'partial', '1.0.0', 'Partial',
+                 '[{"specVersion":1,"id":"partial/ok","name":"ok","category":"secret","severity":"high","matcher":{"type":"regex","pattern":"x","flags":"g"}},{"nope":true}]',
+                 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+
+    const bundle = await gw.getPolicyBundle();
+    expect(bundle.rulesComplete).toBeUndefined();
+    expect(bundle.rules).toEqual([]);
     await gw.close();
   });
 

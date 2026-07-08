@@ -141,6 +141,39 @@ describe('rules pull', () => {
   });
 });
 
+describe('rulesComplete — the bundle rules replace the compiled-in packs', () => {
+  it('scans ONLY the bundle rules when the bundle marks them complete', async () => {
+    const complete = { ...bundle([PULLED_RULE]), rulesComplete: true };
+    const rt = createPluginRuntime(fakeGateway(complete), settings());
+    // The bundled test-pack marker is NOT in the complete ruleset → passes through.
+    expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
+      action: 'log',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    // The snapshot rule still detects.
+    const result = await rt.processText('ship PULLED_MARKER today');
+    expect(result.action).toBe('block');
+    expect(result.findings.map((f) => f.ruleId)).toContain('pulled/secret-marker');
+    await rt.close();
+  });
+
+  it('respects a complete-and-empty ruleset (user disabled every pack)', async () => {
+    const rt = createPluginRuntime(fakeGateway({ ...bundle([]), rulesComplete: true }), settings());
+    expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
+      action: 'log',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    await rt.close();
+  });
+
+  it('keeps bundled packs when rulesComplete is absent (historical composition)', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([])), settings());
+    const result = await rt.processText('deploy with SECRET_MARKER now');
+    expect(result.action).toBe('block');
+    await rt.close();
+  });
+});
+
 describe('capture', () => {
   it('records the event + masked findings and returns the same decision', async () => {
     const gw = fakeGateway(bundle());

@@ -208,15 +208,55 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   return findings;
 }
 
+// Severity precedence for naming a merged region's placeholder — the most
+// severe finding inside the region wins.
+const SEVERITY_RANK: Record<MatchResult['severity'], number> = {
+  critical: 3,
+  high: 2,
+  medium: 1,
+  low: 0,
+};
+
+// A contiguous stretch of text covered by one or more overlapping findings,
+// replaced by a single placeholder.
+interface RedactRegion {
+  start: number;
+  end: number;
+  category: MatchResult['category'];
+  rank: number;
+}
+
 export function redact(text: string, findings: MatchResult[]): string {
   if (findings.length === 0) return text;
 
-  // Sort spans by start descending so slice replacements don't shift indices
-  const sorted = [...findings].sort((a, b) => b.span.start - a.span.start);
-  let result = text;
+  // Findings may overlap (cross-rule double-fires, duplicate keyword spans).
+  // Replacing overlapping spans independently splices with indices from the
+  // original string and corrupts the output, so fold them into disjoint
+  // regions first: sort ascending, extend the open region while spans overlap.
+  // Adjacent-but-disjoint spans stay separate regions.
+  const sorted = [...findings].sort(
+    (a, b) => a.span.start - b.span.start || a.span.end - b.span.end,
+  );
+  const regions: RedactRegion[] = [];
   for (const f of sorted) {
-    const placeholder = `[REDACTED:${f.category.toUpperCase()}]`;
-    result = result.slice(0, f.span.start) + placeholder + result.slice(f.span.end);
+    const rank = SEVERITY_RANK[f.severity];
+    const open = regions[regions.length - 1];
+    if (open && f.span.start < open.end) {
+      open.end = Math.max(open.end, f.span.end);
+      if (rank > open.rank) {
+        open.rank = rank;
+        open.category = f.category;
+      }
+    } else {
+      regions.push({ start: f.span.start, end: f.span.end, category: f.category, rank });
+    }
+  }
+
+  // Replace back-to-front so earlier region indices stay valid.
+  let result = text;
+  for (const r of [...regions].reverse()) {
+    const placeholder = `[REDACTED:${r.category.toUpperCase()}]`;
+    result = result.slice(0, r.start) + placeholder + result.slice(r.end);
   }
   return result;
 }

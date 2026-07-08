@@ -169,3 +169,123 @@ describe('resolveConfigInventory — installed plugins', () => {
     expect(scan.skills).toEqual([]);
   });
 });
+
+describe('resolveConfigInventory — marketplace + code skills', () => {
+  it('scans all non-Claude marketplaces (root + plugins + external), excluding the official catalog', () => {
+    const acme = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    const official = join(home, '.claude', 'plugins', 'marketplaces', 'claude-plugins-official');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: acme, source: { repo: 'acme-co/plugins' } },
+      'claude-plugins-official': {
+        installLocation: official,
+        source: { repo: 'anthropics/claude-plugins-official' },
+      },
+    });
+    write(join(acme, 'skills', 'backend-conventions', 'SKILL.md'), '# backend-conventions\n');
+    write(
+      join(acme, 'plugins', 'guard', 'skills', 'audit', 'SKILL.md'),
+      '---\nname: audit\nversion: 3.0.0\n---\n# audit\n',
+    );
+    write(join(acme, 'external_plugins', 'discord', 'skills', 'access', 'SKILL.md'), '# access\n');
+    // Anthropic's official catalog — must NOT be inventoried.
+    write(join(official, 'plugins', 'math-olympiad', 'skills', 'math', 'SKILL.md'), '# math\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toEqual([]);
+    expect(scan.skills.map((s) => s.name).sort()).toEqual([
+      'access',
+      'audit',
+      'backend-conventions',
+    ]);
+    expect(scan.skills.find((s) => s.name === 'audit')).toMatchObject({
+      source: 'acme',
+      scope: 'plugin',
+      pluginName: 'guard',
+      version: '3.0.0',
+    });
+    expect(scan.skills.some((s) => s.name === 'math')).toBe(false);
+  });
+
+  it('excludes a marketplace published by anthropics/ regardless of its name', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'renamed');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      renamed: { installLocation: mp, source: { repo: 'anthropics/claude-plugins-official' } },
+    });
+    write(join(mp, 'skills', 'pdf', 'SKILL.md'), '# pdf\n');
+
+    expect(resolveConfigInventory({ cwd: project, homeDir: home }).skills).toEqual([]);
+  });
+
+  it('scans project code skills from the repo top-level skills/ dir', () => {
+    write(join(project, 'skills', 'backend-conventions', 'SKILL.md'), '# backend-conventions\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const skill = scan.skills.find((s) => s.name === 'backend-conventions');
+    expect(skill?.scope).toBe('project');
+    expect(skill?.source.startsWith('project:')).toBe(true);
+  });
+
+  it('keeps a marketplace skill and a same-named project-code skill as distinct rows', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
+    });
+    write(join(mp, 'skills', 'backend-conventions', 'SKILL.md'), '# backend-conventions\n');
+    write(join(project, 'skills', 'backend-conventions', 'SKILL.md'), '# backend-conventions\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const matches = scan.skills.filter((s) => s.name === 'backend-conventions');
+    // Distinct sources (marketplace vs project code) are two inventory identities,
+    // so both surface — dedup only collapses the same source + name.
+    expect(matches).toHaveLength(2);
+    expect(matches.map((s) => s.source).sort()).toEqual(['acme', `project:${project}`]);
+  });
+
+  it('keeps a same-named skill from two different marketplaces as distinct rows', () => {
+    const acme = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    const globex = join(home, '.claude', 'plugins', 'marketplaces', 'globex');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: acme, source: { repo: 'acme-co/plugins' } },
+      globex: { installLocation: globex, source: { repo: 'globex-co/plugins' } },
+    });
+    write(join(acme, 'skills', 'audit', 'SKILL.md'), '# audit\n');
+    write(join(globex, 'skills', 'audit', 'SKILL.md'), '# audit\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const sources = scan.skills
+      .filter((s) => s.name === 'audit')
+      .map((s) => s.source)
+      .sort();
+    expect(sources).toEqual(['acme', 'globex']);
+  });
+
+  it('keeps a personal skill and a same-named marketplace skill as distinct rows', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
+    });
+    write(join(home, '.claude', 'skills', 'pdf', 'SKILL.md'), '# pdf\n');
+    write(join(mp, 'skills', 'pdf', 'SKILL.md'), '# pdf\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const sources = scan.skills
+      .filter((s) => s.name === 'pdf')
+      .map((s) => s.source)
+      .sort();
+    expect(sources).toEqual(['acme', 'local']);
+  });
+
+  it('collapses one skill reachable twice under the same source (same identity)', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
+    });
+    // Same name under both the marketplace root and one of its plugins → the same
+    // (source 'acme', name 'audit') identity → one row.
+    write(join(mp, 'skills', 'audit', 'SKILL.md'), '# audit\n');
+    write(join(mp, 'plugins', 'guard', 'skills', 'audit', 'SKILL.md'), '# audit\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.skills.filter((s) => s.name === 'audit')).toHaveLength(1);
+  });
+});

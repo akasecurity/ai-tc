@@ -8,6 +8,7 @@ import type {
   HookScanEntry,
   SkillScanEntry,
 } from '@akasecurity/schema';
+import { skillIdentityKey } from '@akasecurity/schema';
 
 import { resolveRepoIdentity } from './repo.ts';
 
@@ -32,11 +33,14 @@ export interface ResolveConfigInventoryInput {
  * - Hooks: `~/.claude/settings.json` (user), `<cwd>/.claude/settings.json`
  *   (project), `<cwd>/.claude/settings.local.json` (local), plus each installed
  *   plugin's `<installPath>/hooks/hooks.json` (scope `plugin`).
- * - Skills: `~/.claude/skills/<name>/SKILL.md` (source 'local'),
- *   `<cwd>/.claude/skills/<name>/SKILL.md` (source `project:<repo-identity>` —
- *   the surrogate keeps a project `pdf` from colliding with a marketplace
- *   `pdf`), plus each installed plugin's `<installPath>/skills/<name>/SKILL.md`
- *   (source = the plugin's marketplace).
+ * - Skills: `~/.claude/skills/<name>/SKILL.md` (source 'local'), the project's
+ *   `<cwd>/.claude/skills` and top-level `<cwd>/skills` (source
+ *   `project:<repo-identity>`), each installed plugin's
+ *   `<installPath>/skills/<name>/SKILL.md` (source = the plugin's marketplace),
+ *   plus every known marketplace's skills (root + `plugins/*` + `external_plugins/*`)
+ *   EXCEPT Anthropic's built-in `claude-plugins-official` catalog. Skills are
+ *   de-duplicated by inventory identity (source + name), so distinct sources that
+ *   share a name (personal `pdf` vs a marketplace `pdf`) stay separate.
  *
  * Installed plugins come from `~/.claude/plugins/installed_plugins.json`
  * (version 2: `plugins: { "<name>@<marketplace>": [{ installPath, version }] }`)
@@ -60,16 +64,34 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     collectSettingsHooks(scan, join(input.cwd, '.claude', 'settings.json'), 'project');
     collectSettingsHooks(scan, join(input.cwd, '.claude', 'settings.local.json'), 'local');
 
-    // Personal + project skills.
+    // Personal skills + project skills (the Claude Code `.claude/skills` convention).
     collectSkillsDir(scan, join(claudeDir, 'skills'), { source: 'local', scope: 'user' });
     const repo = resolveRepoIdentity(input.cwd);
+    const projectSource = `project:${repo?.url ?? input.cwd}`;
     collectSkillsDir(scan, join(input.cwd, '.claude', 'skills'), {
-      source: `project:${repo?.url ?? input.cwd}`,
+      source: projectSource,
       scope: 'project',
     });
 
     // Plugin-owned hooks + skills, attributed via the harness's install manifest.
     collectInstalledPlugins(scan, claudeDir);
+
+    // Every known marketplace's skills EXCEPT Anthropic's built-in catalog — the
+    // third-party surface the user pulled in (installPath scans can miss these:
+    // a built installPath may carry only commands/ + hooks/, the skills living in
+    // the marketplace clone).
+    collectMarketplaceSkills(scan, claudeDir);
+
+    // Project code skills: a repo can define skills at its top-level `skills/`
+    // (not the `.claude/skills` convention) — e.g. this codebase. These carry the
+    // `project:` source, so a repo that is ALSO a registered marketplace surfaces
+    // its skills as two distinct rows (project code + marketplace checkout) — they
+    // are genuinely two registrations with two identities, not one to collapse.
+    collectSkillsDir(scan, join(input.cwd, 'skills'), { source: projectSource, scope: 'project' });
+
+    // Collapse only skills that share an inventory identity (source + name); see
+    // dedupeSkills. Distinct-source same-name skills are kept.
+    scan.skills = dedupeSkills(scan.skills);
   } catch (err) {
     // Fail-open belt-and-braces: even a scanner bug yields a (partial) result.
     scan.errors.push({ source: 'config-scan', reason: message(err) });
@@ -246,6 +268,106 @@ function collectInstalledPlugins(scan: ConfigScanResult, claudeDir: string): voi
       collectSkillsDir(scan, join(installPath, 'skills'), origin);
     }
   }
+}
+
+// ── Marketplace skills (all except Anthropic's own) ────────────────────────────────
+
+// Skills that ship inside a marketplace checkout. Every known marketplace is
+// walked EXCEPT Anthropic's built-in `claude-plugins-official` (the tool's own
+// bundled catalog, not the user's config): marketplace-root `skills/` plus every
+// plugin's `plugins/<p>/skills` and `external_plugins/<p>/skills`. Not scoped to
+// enabled plugins — the user asked to see the third-party surface they pulled in.
+function collectMarketplaceSkills(scan: ConfigScanResult, claudeDir: string): void {
+  for (const mp of readMarketplaces(join(claudeDir, 'plugins', 'known_marketplaces.json'))) {
+    if (isClaudeOfficialMarketplace(mp.name, mp.repo)) continue;
+    // Marketplace-root skills (repo-level skills shipped in the checkout).
+    collectSkillsDir(scan, join(mp.installLocation, 'skills'), {
+      source: mp.name,
+      scope: 'plugin',
+    });
+    // Each plugin's own skills, in the standard or external layout.
+    collectPluginSkillDirs(scan, join(mp.installLocation, 'plugins'), mp.name);
+    collectPluginSkillDirs(scan, join(mp.installLocation, 'external_plugins'), mp.name);
+  }
+}
+
+// Scan every `<pluginsDir>/<plugin>/skills` — attribute each to its plugin, with
+// the source staying the marketplace (the publisher).
+function collectPluginSkillDirs(
+  scan: ConfigScanResult,
+  pluginsDir: string,
+  marketplace: string,
+): void {
+  let plugins: string[];
+  try {
+    plugins = readdirSync(pluginsDir);
+  } catch {
+    return; // this marketplace doesn't use this layout
+  }
+  for (const plugin of plugins) {
+    collectSkillsDir(scan, join(pluginsDir, plugin, 'skills'), {
+      source: marketplace,
+      scope: 'plugin',
+      pluginName: plugin,
+    });
+  }
+}
+
+interface KnownMarketplace {
+  name: string;
+  installLocation: string;
+  repo: string | undefined;
+}
+
+// `known_marketplaces.json`: { "<name>": { installLocation, source: { repo } } }.
+function readMarketplaces(manifestPath: string): KnownMarketplace[] {
+  const raw = readOptional(manifestPath);
+  if (raw === undefined) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return [];
+    const out: KnownMarketplace[] = [];
+    for (const [name, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const rec = entry as Record<string, unknown> | null;
+      const loc = rec?.installLocation;
+      if (typeof loc !== 'string' || loc.length === 0) continue;
+      const source = rec?.source as Record<string, unknown> | undefined;
+      const repo = typeof source?.repo === 'string' ? source.repo : undefined;
+      out.push({ name, installLocation: loc, repo });
+    }
+    return out;
+  } catch {
+    return []; // malformed manifest → no marketplace skills
+  }
+}
+
+// Anthropic's built-in plugin catalog — excluded from the inventory (it's the
+// tool's own bundled skills, not the user's third-party config). Matched by the
+// publishing org (`anthropics/…`, case-insensitively — GitHub org names are) or
+// the canonical marketplace name.
+function isClaudeOfficialMarketplace(name: string, repo: string | undefined): boolean {
+  return (
+    name === 'claude-plugins-official' || (repo?.toLowerCase().startsWith('anthropics/') ?? false)
+  );
+}
+
+// Collapse skills that share an INVENTORY IDENTITY (source + name — the exact key
+// @akasecurity/persistence content-addresses on, §4.1) to one entry. A skill can
+// surface from several roots with the same source (the same dir reached by two
+// scans); those are one row. Distinct sources that happen to share a name — a
+// personal `pdf` and a marketplace `pdf`, or two marketplaces that each ship an
+// `audit` skill — are genuinely different installed skills and stay separate, so
+// the inventory never under-reports the surface. First hit per identity wins.
+function dedupeSkills(skills: SkillScanEntry[]): SkillScanEntry[] {
+  const seen = new Set<string>();
+  const out: SkillScanEntry[] = [];
+  for (const skill of skills) {
+    const key = skillIdentityKey(skill);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(skill);
+  }
+  return out;
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────

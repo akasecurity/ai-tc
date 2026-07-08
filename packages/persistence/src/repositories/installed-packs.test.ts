@@ -37,7 +37,7 @@ function pack(packId: string, version: string, ruleIds: string[]): InstalledPack
 describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', () => {
   it('records the inventory and rolls up detections / rules / active counts', async () => {
     const db = openLocalDatabase(dir);
-    db.installedPacks.upsertPacks([
+    db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
     ]);
@@ -45,20 +45,107 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     db.close();
   });
 
-  it('is idempotent on (namespace, packId) and refreshes version + rule snapshot', async () => {
+  it('NEVER auto-updates an installed pack — a newer inventory only refreshes the available mirror', async () => {
     const db = openLocalDatabase(dir);
-    db.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
-    db.installedPacks.upsertPacks([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    // A binary upgrade re-records with a newer version + more rules…
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
 
+    // …but the INSTALLED snapshot is untouched (updates are manual).
     const counts = await db.installedPacks.counts();
-    expect(counts.packs).toBe(1); // upserted, not duplicated
-    expect(counts.rules).toBe(2); // snapshot refreshed
+    expect(counts.packs).toBe(1);
+    expect(counts.rules).toBe(1); // still the v2.0.0 single-rule snapshot
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const installed = raw
+      .prepare(`SELECT version FROM installed_packs WHERE pack_id = 'secrets'`)
+      .get() as { version: string };
+    const available = raw
+      .prepare(`SELECT version FROM available_packs WHERE pack_id = 'secrets'`)
+      .get() as { version: string };
+    raw.close();
+    expect(installed.version).toBe('2.0.0');
+    expect(available.version).toBe('2.5.0'); // the mirror tracks the binary
+    db.close();
+  });
+
+  it('auto-installs a pack the user does not have yet (insert-only)', async () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    // A later release ships a brand-new pack alongside the existing one.
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-phi', '1.0.0', ['core-phi/mrn']),
+    ]);
+    const counts = await db.installedPacks.counts();
+    expect(counts.packs).toBe(2);
+    expect(counts.enabled).toBe(2); // new packs install enabled (monitor default)
+    db.close();
+  });
+
+  it('applyUpdate copies the available snapshot onto the installed pack, preserving user state', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.installedPacks.setEnabled('aka', 'secrets', false);
+    db.installedPacks.setPolicy('aka', 'secrets', 'redact');
+    // Binary upgrade: mirror moves ahead, installed stays.
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+
+    expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = raw
+      .prepare(
+        `SELECT version, enabled, policy_id AS policyId, json_array_length(rules_json) AS rules
+         FROM installed_packs WHERE pack_id = 'secrets'`,
+      )
+      .get() as { version: string; enabled: number; policyId: string; rules: number };
+    raw.close();
+    expect(row.version).toBe('2.5.0');
+    expect(row.rules).toBe(2);
+    expect(row.enabled).toBe(0); // user's disable survives the update
+    expect(row.policyId).toBe('redact'); // and so does the policy assignment
+    db.close();
+  });
+
+  it('applyUpdate returns false for an unknown pack or one with no available counterpart', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.applyUpdate('aka', 'nope')).toBe(false);
+
+    // A foreign installed row with no available mirror row: not updatable.
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('x', 'aka', 'foreign', '1.0.0', 'Foreign', '[]', 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+    expect(db.installedPacks.applyUpdate('aka', 'foreign')).toBe(false);
+    db.close();
+  });
+
+  it('prunes available rows for packs the binary no longer ships', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('legacy', '1.0.0', ['legacy/a']),
+    ]);
+    db.installedPacks.recordInventory([pack('secrets', '2.1.0', ['secrets/aws'])]);
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const rows = raw.prepare(`SELECT pack_id AS packId FROM available_packs`).all() as {
+      packId: string;
+    }[];
+    raw.close();
+    expect(rows.map((r) => r.packId)).toEqual(['secrets']);
     db.close();
   });
 
   it('persists the inventory across reopen', async () => {
     const a = openLocalDatabase(dir);
-    a.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
     const b = openLocalDatabase(dir);
@@ -66,20 +153,20 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     b.close();
   });
 
-  it('leaves updated_at untouched when re-recording an unchanged pack (no churn)', () => {
+  it('leaves updated_at untouched when re-recording an unchanged inventory (no churn)', () => {
     const a = openLocalDatabase(dir);
-    a.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
     // Stamp a sentinel updated_at; an unchanged re-record must NOT overwrite it
-    // (the upsert runs on every gateway open, so a no-op here is what prevents
+    // (the record runs on every gateway open, so a no-op here is what prevents
     // write amplification on the hook path).
     const raw = new DatabaseSync(join(dir, DB_FILENAME));
     raw.exec('UPDATE installed_packs SET updated_at = 0');
     raw.close();
 
     const b = openLocalDatabase(dir);
-    b.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]); // identical
+    b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]); // identical
     b.close();
 
     const check = new DatabaseSync(join(dir, DB_FILENAME));
@@ -88,22 +175,180 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     expect(row.t).toBe(0); // guard held — no rewrite
   });
 
-  it('preserves a user-disabled detection when the inventory is re-recorded', async () => {
+  it('surfaces a rules-only change (same version) as available without touching the install', () => {
     const a = openLocalDatabase(dir);
-    a.installedPacks.upsertPacks([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
-    // No toggle API yet — simulate the user disabling the detection directly.
+    // Same version, but the rule set grew (coverage added without a version
+    // bump). The signature hashes rule content, so the mirror refreshes — but
+    // the installed snapshot must stay at one rule until a manual update.
+    const b = openLocalDatabase(dir);
+    b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh'])]);
+
     const raw = new DatabaseSync(join(dir, DB_FILENAME));
-    raw.exec('UPDATE installed_packs SET enabled = 0');
+    const installedRules = raw
+      .prepare(`SELECT json_array_length(rules_json) AS n FROM installed_packs`)
+      .get() as { n: number };
+    const availableRules = raw
+      .prepare(`SELECT json_array_length(rules_json) AS n FROM available_packs`)
+      .get() as { n: number };
     raw.close();
+    expect(installedRules.n).toBe(1);
+    expect(availableRules.n).toBe(2);
+
+    expect(b.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
+    const after = new DatabaseSync(join(dir, DB_FILENAME));
+    const n = (
+      after.prepare(`SELECT json_array_length(rules_json) AS n FROM installed_packs`).get() as {
+        n: number;
+      }
+    ).n;
+    after.close();
+    expect(n).toBe(2);
+    b.close();
+  });
+
+  it('preserves a user-disabled detection across re-records and updates', async () => {
+    const a = openLocalDatabase(dir);
+    a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    a.installedPacks.setEnabled('aka', 'secrets', false);
+    a.close();
 
     // A later session re-records the (now newer) inventory.
     const b = openLocalDatabase(dir);
-    b.installedPacks.upsertPacks([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+    b.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     const counts = await b.installedPacks.counts();
     expect(counts.enabled).toBe(0); // stays disabled
-    expect(counts.rules).toBe(2); // but version/rules still refresh
+    expect(counts.rules).toBe(1); // and the snapshot stays until a manual update
     b.close();
+  });
+});
+
+describe('installedRuleset (scan-time snapshot)', () => {
+  it('returns only rules from ENABLED packs, with the ladder counts', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    db.installedPacks.setEnabled('aka', 'core-pii', false);
+
+    const snapshot = db.installedPacks.installedRuleset();
+    expect(snapshot.installedPacks).toBe(2);
+    expect(snapshot.enabledPacks).toBe(1);
+    expect(snapshot.rules.map((r) => r.id).sort()).toEqual(['secrets/aws', 'secrets/gh']);
+    expect(snapshot.invalidRules).toBe(0);
+    db.close();
+  });
+
+  it('counts JSON-level corruption (malformed / non-array rules_json) as invalid', () => {
+    // The display-tolerant parseRules silently returns [] for these — at scan
+    // time that would masquerade as "no rules" and let the ladder authorize an
+    // empty ruleset. installedRuleset must surface them as invalid instead.
+    const db = openLocalDatabase(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const insert = raw.prepare(
+      `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+       VALUES (?, 'aka', ?, '1.0.0', ?, ?, 1, 0, 0)`,
+    );
+    insert.run('t1', 'truncated', 'Truncated', '[{"id":'); // malformed JSON
+    insert.run('t2', 'object', 'Object', '{}'); // not an array
+    raw.close();
+
+    const snapshot = db.installedPacks.installedRuleset();
+    expect(snapshot.enabledPacks).toBe(2);
+    expect(snapshot.rules).toEqual([]);
+    expect(snapshot.invalidRules).toBe(2); // one per unusable pack — ladder falls back
+    db.close();
+  });
+
+  // Read the current available_packs mirror row for `secrets`.
+  function mirrorSecrets(): { version: string; n: number } {
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = raw
+      .prepare(
+        `SELECT version, json_array_length(rules_json) AS n FROM available_packs WHERE pack_id = 'secrets'`,
+      )
+      .get() as { version: string; n: number };
+    raw.close();
+    return row;
+  }
+
+  it('never rewrites the mirror to an OLDER pack version (downgrade guard)', () => {
+    const db = openLocalDatabase(dir);
+    // A newer binary records v2.5.0 with two rules…
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+    // …then an OLDER binary (version skew: plugin vs CLI) records v2.0.0.
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+
+    // The mirror keeps the newer snapshot — otherwise the manual update flow
+    // would present a protection downgrade as an "update".
+    expect(mirrorSecrets()).toEqual({ version: '2.5.0', n: 2 });
+    db.close();
+  });
+
+  it('at an EQUAL version, refuses a content regression but accepts a superset', () => {
+    const db = openLocalDatabase(dir);
+    // Mirror is 2.0.0 = [aws, gh, slack] (a newer binary shipped more rules at
+    // the same manifest version — coverage growth).
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh', 'secrets/slack']),
+    ]);
+    // An older binary records the SAME version with FEWER rules. Same version
+    // passes the version compare; the rule-content signature differs so it isn't
+    // skipped — the superset check must still refuse the downgrade.
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(mirrorSecrets()).toEqual({ version: '2.0.0', n: 3 });
+
+    // A binary that ADDS coverage at the same version is a valid advance.
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh', 'secrets/slack', 'secrets/stripe']),
+    ]);
+    expect(mirrorSecrets()).toEqual({ version: '2.0.0', n: 4 });
+    db.close();
+  });
+
+  it('fails CLOSED on an unparsable INCOMING version (refuses the rewrite)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+    // A malformed version ('v2.6.0') must not be trusted to overwrite the mirror
+    // in either direction — the guard distrusts exactly the input it exists to catch.
+    db.installedPacks.recordInventory([pack('secrets', 'v2.6.0', ['secrets/aws'])]);
+    expect(mirrorSecrets()).toEqual({ version: '2.5.0', n: 2 });
+    db.close();
+  });
+
+  it('lets a VALID incoming version heal an unparsable stored mirror row', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    // Corrupt the stored version directly.
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw.exec(`UPDATE available_packs SET version = 'garbage' WHERE pack_id = 'secrets'`);
+    raw.close();
+    // A well-formed incoming record replaces the bad row (stored-unparsable path).
+    db.installedPacks.recordInventory([pack('secrets', '2.1.0', ['secrets/aws', 'secrets/gh'])]);
+    expect(mirrorSecrets()).toEqual({ version: '2.1.0', n: 2 });
+    db.close();
+  });
+
+  it('counts invalid rules instead of throwing on a corrupt row', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES ('y', 'aka', 'broken', '1.0.0', 'Broken', '[{"name":"not a rule"}]', 1, 0, 0)`,
+      )
+      .run();
+    raw.close();
+
+    const snapshot = db.installedPacks.installedRuleset();
+    expect(snapshot.installedPacks).toBe(2);
+    expect(snapshot.enabledPacks).toBe(2);
+    expect(snapshot.rules.map((r) => r.id)).toEqual(['secrets/aws']);
+    expect(snapshot.invalidRules).toBe(1);
+    db.close();
   });
 });

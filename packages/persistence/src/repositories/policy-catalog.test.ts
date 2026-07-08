@@ -42,7 +42,7 @@ function pack(packId: string, ruleIds: string[]): InstalledPackInput {
 
 describe('SqlitePolicyCatalogRepository', () => {
   it('lists the 4 built-ins with live usedBy counts', async () => {
-    packs.upsertPacks([pack('secrets', ['a', 'b']), pack('pii', ['c'])]);
+    packs.recordInventory([pack('secrets', ['a', 'b']), pack('pii', ['c'])]);
     packs.setPolicy('aka', 'secrets', 'block');
     packs.setPolicy('aka', 'pii', 'block');
 
@@ -59,7 +59,7 @@ describe('SqlitePolicyCatalogRepository', () => {
   });
 
   it('attributes unassigned (NULL policy) detections to Monitor across list + stats', async () => {
-    packs.upsertPacks([pack('secrets', ['a']), pack('pii', ['b']), pack('code', ['c'])]);
+    packs.recordInventory([pack('secrets', ['a']), pack('pii', ['b']), pack('code', ['c'])]);
     packs.setPolicy('aka', 'secrets', 'block');
     packs.setPolicy('aka', 'pii', 'redact');
     // 'code' is left unassigned (policy_id NULL). The Detections views tag such a
@@ -78,7 +78,7 @@ describe('SqlitePolicyCatalogRepository', () => {
   });
 
   it('detail carries the catalog description + usedBy detections; null for unknown', async () => {
-    packs.upsertPacks([pack('secrets', ['a', 'b', 'c'])]);
+    packs.recordInventory([pack('secrets', ['a', 'b', 'c'])]);
     packs.setPolicy('aka', 'secrets', 'block');
 
     const detail = await catalog.getPolicyDetail('block');
@@ -93,7 +93,7 @@ describe('SqlitePolicyCatalogRepository', () => {
   });
 
   it('Monitor detail lists the unassigned (NULL policy) packs it counts', async () => {
-    packs.upsertPacks([pack('unassigned', ['a', 'b'])]);
+    packs.recordInventory([pack('unassigned', ['a', 'b'])]);
     // No setPolicy — policy_id stays NULL.
     const detail = await catalog.getPolicyDetail('monitor');
     expect(detail?.usedBy).toEqual([

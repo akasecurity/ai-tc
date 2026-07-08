@@ -1,0 +1,52 @@
+[
+  {
+    "label": "X-Api-Key header",
+    "text": "X-Api-Key: aBc123XyZ789kLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "hyphenated Api-Key header, lowercase",
+    "text": "api-key: sk_live_aBc123XyZ789kLmNoPqRsTuVwXyZ12345",
+    "shouldMatch": true
+  },
+  {
+    "label": "no-hyphen apikey header",
+    "text": "apikey: aBc123XyZ789kLmNoPqRsTuVwXyZ1234567890",
+    "shouldMatch": true
+  },
+  {
+    "label": "quoted header value",
+    "text": "X-API-KEY: \"aBc123XyZ789kLmNoPqRsTuVwXyZ1234567890\"",
+    "shouldMatch": true
+  },
+  {
+    "label": "quoted header name in a JS/JSON headers object",
+    "text": "headers: { \"x-api-key\": \"aBc123XyZ789kLmNoPqRsTuVwXyZ1234567890\" }",
+    "shouldMatch": true
+  },
+  {
+    "label": "single-quoted name and value",
+    "text": "headers: { 'apikey': 'aBc123XyZ789kLmNoPqRsTuVwXyZ1234567890' }",
+    "shouldMatch": true
+  },
+  {
+    "label": "value too short",
+    "text": "X-Api-Key: short123",
+    "shouldMatch": false
+  },
+  {
+    "label": "low-entropy placeholder value",
+    "text": "X-Api-Key: your-api-key-here-your-api-key-here",
+    "shouldMatch": false
+  },
+  {
+    "label": "unrelated bearer auth header",
+    "text": "Authorization: Bearer some-token-value-not-relevant-here",
+    "shouldMatch": false
+  },
+  {
+    "label": "prose mentioning API key without header shape",
+    "text": "Please generate a new API key for your account from the dashboard.",
+    "shouldMatch": false
+  }
+]

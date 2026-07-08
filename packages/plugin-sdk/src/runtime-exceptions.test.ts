@@ -97,6 +97,7 @@ function fakeGateway(
     recordAuditEvent: () => Promise.resolve(),
     recordLlmCall: () => Promise.resolve(),
     recordLlmCalls: () => Promise.resolve(),
+    recordToolCalls: () => Promise.resolve(),
     recordConfigScan: () => Promise.resolve(),
     configInventoryReport: () =>
       Promise.resolve({ scannedAt: null, skills: [], hooks: [], topics: [] }),

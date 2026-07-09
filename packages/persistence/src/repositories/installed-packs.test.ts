@@ -548,3 +548,38 @@ describe('recordInventory recorded_by stamp', () => {
     expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alpha.7');
   });
 });
+
+describe('newestRecordedBinary', () => {
+  function stampRecordedBy(packId: string, recordedBy: string | null): void {
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(`UPDATE available_packs SET recorded_by = ? WHERE pack_id = ?`)
+      .run(recordedBy, packId);
+    raw.close();
+  }
+
+  it('returns the newest recorded binary across mirror rows, skipping nulls and garbage', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+      pack('code-flaws', '1.0.0', ['code-flaws/x']),
+    ]);
+    stampRecordedBy('secrets', 'plugin@0.0.2-alpha.5');
+    stampRecordedBy('core-pii', 'aka-cli@0.0.2-alpha.7');
+    stampRecordedBy('code-flaws', 'not a stamp'); // malformed → skipped
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'aka-cli',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null on a pre-hardening store (no recorded_by anywhere)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
+});

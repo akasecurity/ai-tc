@@ -341,13 +341,17 @@ function readMarketplaces(manifestPath: string): KnownMarketplace[] {
   }
 }
 
-// Anthropic's built-in plugin catalog — excluded from the inventory (it's the
-// tool's own bundled skills, not the user's third-party config). Matched by the
-// publishing org (`anthropics/…`, case-insensitively — GitHub org names are) or
-// the canonical marketplace name.
+// Claude Code's built-in plugin catalog — excluded from the inventory (it's the
+// tool's own BUNDLED skills, not the user's config). Matched by the canonical
+// marketplace name, or its canonical repo (case-insensitively) so a locally
+// renamed clone of the same catalog is still caught. Deliberately NOT a broad
+// `anthropics/*` org match: a marketplace the user opted into (e.g. the public
+// `anthropics/skills` collection) IS third-party config we must surface — org-wide
+// exclusion would silently under-report it, against this scanner's whole intent.
 function isClaudeOfficialMarketplace(name: string, repo: string | undefined): boolean {
   return (
-    name === 'claude-plugins-official' || (repo?.toLowerCase().startsWith('anthropics/') ?? false)
+    name === 'claude-plugins-official' ||
+    repo?.toLowerCase() === 'anthropics/claude-plugins-official'
   );
 }
 

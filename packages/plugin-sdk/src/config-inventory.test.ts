@@ -206,7 +206,7 @@ describe('resolveConfigInventory — marketplace + code skills', () => {
     expect(scan.skills.some((s) => s.name === 'math')).toBe(false);
   });
 
-  it('excludes a marketplace published by anthropics/ regardless of its name', () => {
+  it('excludes the built-in catalog by its canonical repo even when locally renamed', () => {
     const mp = join(home, '.claude', 'plugins', 'marketplaces', 'renamed');
     writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
       renamed: { installLocation: mp, source: { repo: 'anthropics/claude-plugins-official' } },
@@ -214,6 +214,20 @@ describe('resolveConfigInventory — marketplace + code skills', () => {
     write(join(mp, 'skills', 'pdf', 'SKILL.md'), '# pdf\n');
 
     expect(resolveConfigInventory({ cwd: project, homeDir: home }).skills).toEqual([]);
+  });
+
+  it('surfaces a user-added Anthropic-published marketplace that is NOT the built-in catalog', () => {
+    // `anthropics/skills` (the public skills collection) is config the user opted
+    // into — it must appear, unlike the tool's bundled `claude-plugins-official`.
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'anthropic-skills');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      'anthropic-skills': { installLocation: mp, source: { repo: 'anthropics/skills' } },
+    });
+    write(join(mp, 'skills', 'pdf', 'SKILL.md'), '# pdf\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.skills.map((s) => s.name)).toEqual(['pdf']);
+    expect(scan.skills[0]?.source).toBe('anthropic-skills');
   });
 
   it('scans project code skills from the repo top-level skills/ dir', () => {

@@ -2,7 +2,6 @@ import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
 
 import type { ProjectFileInput, ProjectFilesScan } from '@akasecurity/schema';
-
 import ignore, { type Ignore } from 'ignore';
 
 import { resolveWorktreeRoot } from './repo.ts';
@@ -153,21 +152,20 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
     const root: string = worktree;
 
     const files: ProjectFileInput[] = [];
-    let truncated = false;
 
-    function visit(dir: string, layers: IgnoreLayer[]): void {
-      if (truncated) return;
+    // Returns true when the file cap was hit — propagated up so the whole walk
+    // stops at the first over-cap file.
+    function visit(dir: string, layers: IgnoreLayer[]): boolean {
       let dirents: Dirent[];
       try {
         dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
       } catch {
-        return;
+        return false;
       }
       const layer = readIgnoreLayer(dir);
       const dirLayers = layer ? [...layers, layer] : layers;
 
       for (const entry of dirents) {
-        if (truncated) return;
         const fullPath = join(dir, entry.name);
         if (entry.isDirectory()) {
           if (SKIP_DIRS.has(entry.name) || isIgnored(dirLayers, fullPath, true)) continue;
@@ -175,17 +173,14 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
           // under .claude/worktrees/, a nested clone, a submodule) — its files
           // belong to THAT project's tree, never this one's.
           if (existsSync(join(fullPath, '.git'))) continue;
-          visit(fullPath, dirLayers);
+          if (visit(fullPath, dirLayers)) return true;
           continue;
         }
         if (!entry.isFile()) continue;
         if (entry.name === '.git') continue;
         if (isIgnored(dirLayers, fullPath, false)) continue;
 
-        if (files.length >= MAX_FILES) {
-          truncated = true;
-          return;
-        }
+        if (files.length >= MAX_FILES) return true;
         const relPath = relative(root, fullPath).split(sep).join('/');
         files.push({
           path: relPath,
@@ -194,9 +189,10 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
           defaultAccess: 'approved',
         });
       }
+      return false;
     }
 
-    visit(root, []);
+    const truncated = visit(root, []);
     if (files.length === 0) return undefined;
     files.sort((a, b) => a.path.localeCompare(b.path));
     return { files, truncated, scannedAt: new Date().toISOString() };

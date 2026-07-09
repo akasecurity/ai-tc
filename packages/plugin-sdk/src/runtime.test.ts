@@ -70,7 +70,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     recordToolCalls: () => Promise.resolve(),
     recordConfigScan: () => Promise.resolve(),
     configInventoryReport: () =>
-      Promise.resolve({ scannedAt: null, skills: [], hooks: [], topics: [] }),
+      Promise.resolve({ scannedAt: null, skills: [], hooks: [], mcpServers: [], topics: [] }),
     readSessionProvider: () => Promise.resolve(undefined),
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: () => Promise.resolve(b),

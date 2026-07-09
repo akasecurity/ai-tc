@@ -53,6 +53,9 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     scannedAt: new Date().toISOString(),
     skills: [],
     hooks: [],
+    // Populated by the MCP collectors (next PR in the stack) — the widened
+    // contract lands first so every consumer moves in one mechanical sweep.
+    mcpServers: [],
     errors: [],
   };
   try {

@@ -153,14 +153,14 @@ describe('reconcileWorktreeProjects', () => {
     expect(projects.items.map((p) => p.id).sort()).toEqual([projectId, unrelated].sort());
   });
 
-  it('escapes LIKE metacharacters in the head root', async () => {
+  it('escapes LIKE metacharacters in the head root', () => {
     const trickyHead = '/home/dev/pay_ments';
     // Would match the underscore-wildcard pattern if unescaped, but lives under
-    // a DIFFERENT head ('payXments' ≠ 'pay_ments') — must survive.
+    // a DIFFERENT head ('payXments' ≠ 'pay_ments') — the sweep must not delete
+    // it. (Asserted on the row itself: the read views hide ALL checkout paths.)
     const lookalike = ghostRow('/home/dev/payXments/.claude/worktrees/wt-x');
     db.reconcileWorktreeProjects(projectId, trickyHead, `${trickyHead}/.claude/worktrees/wt-y`);
 
-    const projects = await db.inventoryAssets.listProjects();
-    expect(projects.items.map((p) => p.id)).toContain(lookalike);
+    expect(db.sourceProject.findById(lookalike)).toBeDefined();
   });
 });

@@ -406,11 +406,11 @@ describe('staleBinaryNotice (prevention P2)', () => {
     await gateway.close();
     expect(notice).toContain('v0.0.2-alpha.5');
     expect(notice).toContain('aka-cli v0.0.2-alpha.7');
-    expect(notice).toContain('restart the session');
-    // A CLI recorded — there's no newer plugin on disk, so the call-to-action
-    // names the packs rather than promising a plugin that isn't there.
-    expect(notice).toContain('newer detection packs');
+    // A CLI recorded — a restart wouldn't clear it (the plugin stays behind), so
+    // the call-to-action points at bringing the plugin up to match, not a restart.
+    expect(notice).toContain('update the AKA plugin to match');
     expect(notice).not.toContain('newer plugin');
+    expect(notice).not.toContain('restart');
   });
 
   it('keeps the "newer plugin" call-to-action when a newer PLUGIN recorded', async () => {

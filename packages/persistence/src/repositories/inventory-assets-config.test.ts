@@ -171,6 +171,29 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
     expect(stats.harnesses).toBe(1);
   });
 
+  it('exempts sample harnesses from the liveness window (demo store never goes lopsided)', async () => {
+    const old = Date.now() - 90 * 24 * 60 * 60 * 1000; // seeded 90 days ago, last_seen frozen
+    // A sample harness (provenance='sample') — exempt, so it still renders as a card.
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'sample-cc',
+        title: 'claude-code',
+        attributes: { provenance: 'sample', harness_version: '1.0.0' },
+      },
+      old,
+    );
+    // An equally-old REAL harness — no exemption, so hidden by the window.
+    seedRealCursorHarness(old);
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    expect(items.map((h) => h.id)).toContain('claudecode'); // sample → exempt, shown
+    expect(items.map((h) => h.id)).not.toContain('cursor'); // real + stale → hidden
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.harnesses).toBe(1); // only the exempt sample harness
+  });
+
   it('hides config skills/hooks entirely when no live Claude Code harness (stats + lists agree)', async () => {
     // A scan exists, but the only Claude Code harness is stale (outside the window).
     seedRealCursorHarness(Date.now()); // an unrelated live harness — must not host config
@@ -195,7 +218,45 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
     expect(groups.map((g) => g.type)).not.toContain('hook');
 
     const cursor = (await db.inventoryAssets.listHarnesses()).items.find((h) => h.id === 'cursor');
-    expect(cursor?.assetCount ?? 0).toBe(0);
+    expect(cursor).toBeDefined(); // the live Cursor card must still render …
+    expect(cursor?.assetCount).toBe(0); // … just with no config assets attached
+    expect(cursor?.categories ?? []).toEqual([]);
+  });
+
+  it('a second scan invalidates the memoized rows (re-read reflects the new scan)', async () => {
+    seedRealHarness();
+    // Explicit, well-separated scan times so liveness (last_seen >= latest scan) is
+    // unambiguous: scan-1's skill goes stale the moment scan-2 lands.
+    const t1 = new Date(Date.now() - 60_000).toISOString();
+    const t2 = new Date().toISOString();
+    db.recordConfigScan(record(scan({ scannedAt: t1 }), 'scan-1'));
+
+    // Prime the config-rows memo (keyed by scan-1's id).
+    let names = (await db.inventoryAssets.listAssets({ type: ['skill'] })).groups.flatMap((g) =>
+      g.items.map((i) => i.name),
+    );
+    expect(names).toEqual(['pdf']);
+
+    // A second scan with a different skill set must invalidate the memo.
+    const s2 = scan({
+      scannedAt: t2,
+      skills: [
+        {
+          name: 'docx',
+          source: 'anthropics/skills',
+          scope: 'plugin',
+          pluginName: 'anthropic-skills',
+          version: '1.0.0',
+          description: 'Word docs',
+        },
+      ],
+    });
+    db.recordConfigScan(record(s2, 'scan-2'));
+
+    names = (await db.inventoryAssets.listAssets({ type: ['skill'] })).groups.flatMap((g) =>
+      g.items.map((i) => i.name),
+    );
+    expect(names).toEqual(['docx']); // new scan reflected; scan-1's 'pdf' is now stale
   });
 
   it('asset detail carries the projected meta for a scanned skill', async () => {

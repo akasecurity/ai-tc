@@ -99,6 +99,7 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
     expect(report.topics).toEqual([
       { topic: 'skills', count: 1 },
       { topic: 'hooks', count: 1 },
+      { topic: 'mcp', count: 0 },
       { topic: 'configuration', count: 0 },
     ]);
   });
@@ -139,6 +140,79 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
     expect(report.hooks).toEqual([]);
     // History survives: the stale row still exists in the dimension.
     expect(db.inventory.findById(itemId(scanResult(), 'hook'))).toBeDefined();
+  });
+
+  it('round-trips MCP servers: review-required default, override applied, drift on a stable row', () => {
+    // setMcpTrust resolves projected ids through the Inventory-page projection,
+    // which only surfaces config assets while a live real Claude Code harness
+    // exists — seed one, as the SessionStart inventory pass would have.
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'Claude Code',
+        attributes: { provider: 'claudecode', label: 'Claude Code' },
+      },
+      Date.now(),
+    );
+    const scan = scanResult({
+      mcpServers: [
+        {
+          name: 'github',
+          scope: 'project',
+          project: 'https://github.com/acme/repo-a.git',
+          transport: 'stdio',
+          command: 'npx -y @modelcontextprotocol/server-github',
+          envKeys: ['GITHUB_TOKEN'],
+        },
+      ],
+    });
+    db.recordConfigScan(record(scan, 'scan-1'));
+
+    const report = db.configInventoryReport();
+    expect(report.mcpServers).toHaveLength(1);
+    expect(report.mcpServers[0]).toMatchObject({
+      name: 'github',
+      scope: 'project:https://github.com/acme/repo-a.git',
+      project: 'https://github.com/acme/repo-a.git',
+      transport: 'stdio',
+      command: 'npx -y @modelcontextprotocol/server-github',
+      envKeys: ['GITHUB_TOKEN'],
+      // No verification registry: unreviewed = review-required, never a guess.
+      trust: 'unapproved',
+    });
+    expect(report.topics.find((t) => t.topic === 'mcp')).toEqual({
+      topic: 'mcp',
+      count: 1,
+      attention: '1 unapproved',
+    });
+
+    // The user promotes the server; the override is read back as effective trust.
+    const rowId = itemId(scan, 'mcp_server');
+    expect(db.inventoryAssets.setMcpTrust(rowId, 'known-good')).toBe('ok');
+    expect(db.configInventoryReport().mcpServers[0]?.trust).toBe('known-good');
+
+    // A rescan with a CHANGED command is drift on the SAME row (name + scope
+    // identity) — the trust decision sticks; the bag shows the new command.
+    const drifted = scanResult({
+      scannedAt: new Date(Date.now() + 1000).toISOString(),
+      mcpServers: [
+        {
+          name: 'github',
+          scope: 'project',
+          project: 'https://github.com/acme/repo-a.git',
+          transport: 'stdio',
+          command: 'malicious-lookalike',
+        },
+      ],
+    });
+    db.recordConfigScan(record(drifted, 'scan-2'));
+
+    const after = db.configInventoryReport();
+    expect(after.mcpServers).toHaveLength(1);
+    expect(after.mcpServers[0]?.command).toBe('malicious-lookalike');
+    expect(after.mcpServers[0]?.trust).toBe('known-good');
+    expect(itemId(drifted, 'mcp_server')).toBe(rowId);
   });
 
   it('persists posture definitions + findings atomically and derives hook status', () => {
@@ -272,7 +346,7 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
 
 // The content-addressed inventory id of the scan's single skill/hook item, for
 // direct dimension-row assertions.
-function itemId(scan: ConfigScanResult, type: 'skill' | 'hook'): string {
+function itemId(scan: ConfigScanResult, type: 'skill' | 'hook' | 'mcp_server'): string {
   const item = configInventoryInputs(scan).find((i) => i.objectType === type);
   if (!item) throw new Error(`no ${type} in scan`);
   // Mirror SqliteInventoryRepository.upsert's minting.

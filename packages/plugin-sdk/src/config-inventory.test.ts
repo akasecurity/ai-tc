@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -91,7 +91,301 @@ describe('resolveConfigInventory — hooks', () => {
     const scan = resolveConfigInventory({ cwd: project, homeDir: home });
     expect(scan.hooks).toEqual([]);
     expect(scan.skills).toEqual([]);
+    expect(scan.mcpServers).toEqual([]);
     expect(scan.errors).toEqual([]);
+  });
+});
+
+describe('resolveConfigInventory — MCP servers', () => {
+  it('collects project .mcp.json servers: stdio command+args, remote url, env NAMES only', () => {
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: {
+        github: {
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-github'],
+          // Deliberately bland fixture (a secret-shaped one trips the repo's own
+          // detection stack at edit time) — the assertion below is that the
+          // VALUE never reaches the scan, whatever it looks like.
+          env: { MCP_WORKSPACE: 'env-value-the-scan-must-drop' },
+        },
+        sentry: { type: 'http', url: 'https://mcp.sentry.io/mcp' },
+      },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toEqual([]);
+    expect(scan.mcpServers).toHaveLength(2);
+
+    const github = scan.mcpServers.find((s) => s.name === 'github');
+    expect(github).toMatchObject({
+      scope: 'project',
+      transport: 'stdio',
+      command: 'npx -y @modelcontextprotocol/server-github',
+      envKeys: ['MCP_WORKSPACE'],
+      location: join(project, '.mcp.json'),
+    });
+    expect(github?.url).toBeUndefined();
+    // The env VALUE must never appear anywhere in the scan.
+    expect(JSON.stringify(scan)).not.toContain('env-value-the-scan-must-drop');
+
+    const sentry = scan.mcpServers.find((s) => s.name === 'sentry');
+    expect(sentry).toMatchObject({
+      scope: 'project',
+      transport: 'http',
+      url: 'https://mcp.sentry.io/mcp',
+    });
+    expect(sentry?.command).toBeUndefined();
+    expect(sentry?.envKeys).toBeUndefined();
+  });
+
+  it('collects ~/.claude.json user servers and this project’s local servers only', () => {
+    writeJson(join(home, '.claude.json'), {
+      mcpServers: {
+        filesystem: { command: 'mcp-filesystem' },
+      },
+      projects: {
+        [project]: { mcpServers: { puppeteer: { command: 'mcp-puppeteer' } } },
+        '/some/other/repo': { mcpServers: { stripe: { command: 'mcp-stripe' } } },
+      },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers.map((s) => s.name).sort()).toEqual(['filesystem', 'puppeteer']);
+    expect(scan.mcpServers.find((s) => s.name === 'filesystem')?.scope).toBe('user');
+    expect(scan.mcpServers.find((s) => s.name === 'puppeteer')?.scope).toBe('local');
+    // Another repo's local servers are not this session's surface.
+    expect(scan.mcpServers.some((s) => s.name === 'stripe')).toBe(false);
+  });
+
+  it('collects a mcpServers key from settings files (managed deployments)', () => {
+    writeJson(join(home, '.claude', 'settings.json'), {
+      mcpServers: { audit: { type: 'sse', url: 'https://mcp.example.com/audit' } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers).toHaveLength(1);
+    expect(scan.mcpServers[0]).toMatchObject({ name: 'audit', scope: 'user', transport: 'sse' });
+  });
+
+  it('attributes plugin .mcp.json servers via installed_plugins.json', () => {
+    const installPath = join(home, '.claude', 'plugins', 'cache', 'acme', 'guard', '1.2.3');
+    writeJson(join(home, '.claude', 'plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: { 'guard@acme-marketplace': [{ installPath, version: '1.2.3' }] },
+    });
+    writeJson(join(installPath, '.mcp.json'), {
+      mcpServers: { scanner: { command: 'node scan-server.js' } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers).toHaveLength(1);
+    expect(scan.mcpServers[0]).toMatchObject({
+      name: 'scanner',
+      scope: 'plugin',
+      pluginName: 'guard',
+      transport: 'stdio',
+    });
+  });
+
+  it('dedupes the same (name + scope) across files, canonical source winning the bag', () => {
+    // The same user-scope server registered in ~/.claude.json AND user settings:
+    // one row, and the ~/.claude.json (canonical, scanned first) command wins.
+    writeJson(join(home, '.claude.json'), {
+      mcpServers: { github: { command: 'canonical-github-server' } },
+    });
+    writeJson(join(home, '.claude', 'settings.json'), {
+      mcpServers: { github: { command: 'settings-copy' } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers).toHaveLength(1);
+    expect(scan.mcpServers[0]?.command).toBe('canonical-github-server');
+  });
+
+  it('keeps the same server name at two scopes as two rows', () => {
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: { github: { command: 'project-github' } },
+    });
+    writeJson(join(home, '.claude.json'), {
+      mcpServers: { github: { command: 'user-github' } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers.map((s) => s.scope).sort()).toEqual(['project', 'user']);
+  });
+
+  it('a malformed .claude.json becomes an error entry; entries without command/url are skipped', () => {
+    write(join(home, '.claude.json'), '{ not json');
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: {
+        github: { command: 'mcp-github' },
+        'not-a-server': { disabled: true },
+      },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers.map((s) => s.name)).toEqual(['github']);
+    expect(scan.errors).toHaveLength(1);
+    expect(scan.errors[0]?.source).toBe(join(home, '.claude.json'));
+  });
+
+  it('folds the repo/project identity into project-scope entries (trust never crosses repos)', () => {
+    writeJson(join(project, '.mcp.json'), { mcpServers: { github: { command: 'mcp-github' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    // Fixture project has no git remote → the cwd IS the repo identity.
+    expect(scan.mcpServers[0]?.project).toBe(project);
+  });
+
+  it('masks secret-shaped tokens out of captured commands and urls (no-secrets rule)', () => {
+    // Assembled at runtime so no contiguous token ever sits in this file.
+    const token = ['ghp', 'ZaK9mQ2xL7vB4nR8tY3wPd5sF1hJ6cE0uG'].join('_');
+    // The real-world shape from the wild: mcp-remote with an auth header arg.
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: {
+        linear: {
+          command: 'npx',
+          args: [
+            '-y',
+            'mcp-remote',
+            'https://mcp.linear.app/sse',
+            '--header',
+            `Authorization: Bearer ${token}`,
+          ],
+        },
+        jira: {
+          type: 'http',
+          url: `https://bot:${token}@example.atlassian.net/mcp?apiKey=${token}`,
+        },
+      },
+    });
+    writeJson(join(home, '.claude', 'settings.json'), {
+      hooks: {
+        PostToolUse: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: `curl -H "Authorization: Bearer ${token}" https://x.example`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    // The token must appear NOWHERE in the scan — not in commands, urls, or errors.
+    expect(JSON.stringify(scan)).not.toContain(token);
+    // The surrounding shape survives for review.
+    expect(scan.mcpServers.find((m) => m.name === 'linear')?.command).toContain('mcp-remote');
+    const jira = scan.mcpServers.find((m) => m.name === 'jira');
+    expect(jira?.url).toContain('example.atlassian.net');
+    // Structural URL hygiene: userinfo stripped, query VALUES masked, names kept.
+    expect(jira?.url).not.toContain('bot:');
+    expect(jira?.url).toContain('apiKey=');
+    expect(scan.hooks[0]?.command).toContain('curl -H');
+  });
+
+  it('sanitizes JSON parse errors so file content never rides the error reason', () => {
+    const secretish = ['sk', 'live', 'Qq8Zz7Xx6Cc5Vv4Bb3Nn2Mm1'].join('-');
+    // Malformed on purpose: an unquoted value → SyntaxError quoting the source.
+    write(join(home, '.claude.json'), `{ "mcpServers": { "a": { "command": ${secretish} } } }`);
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.errors).toHaveLength(1);
+    expect(scan.errors[0]?.reason).toMatch(/invalid JSON/);
+    expect(JSON.stringify(scan.errors)).not.toContain(secretish);
+  });
+
+  it('collects manifest-declared plugin MCP servers (plugin.json mcpServers), inline and path form', () => {
+    const inlinePath = join(home, '.claude', 'plugins', 'cache', 'acme', 'inline-plugin', '1.0.0');
+    const filePath = join(home, '.claude', 'plugins', 'cache', 'acme', 'file-plugin', '1.0.0');
+    writeJson(join(home, '.claude', 'plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: {
+        'inline-plugin@acme': [{ installPath: inlinePath, version: '1.0.0' }],
+        'file-plugin@acme': [{ installPath: filePath, version: '1.0.0' }],
+      },
+    });
+    writeJson(join(inlinePath, '.claude-plugin', 'plugin.json'), {
+      name: 'inline-plugin',
+      mcpServers: { scanner: { command: 'node scanner.js' } },
+    });
+    writeJson(join(filePath, '.claude-plugin', 'plugin.json'), {
+      name: 'file-plugin',
+      mcpServers: './mcp/servers.json',
+    });
+    writeJson(join(filePath, 'mcp', 'servers.json'), {
+      mcpServers: { relay: { command: 'node relay.js' } },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers.map((m) => m.name).sort()).toEqual(['relay', 'scanner']);
+    expect(scan.mcpServers.find((m) => m.name === 'scanner')).toMatchObject({
+      scope: 'plugin',
+      pluginName: 'inline-plugin',
+      marketplace: 'acme',
+    });
+  });
+
+  it('keeps same-named servers from same-named plugins in DIFFERENT marketplaces distinct', () => {
+    const a = join(home, '.claude', 'plugins', 'cache', 'acme', 'guard', '1.0.0');
+    const b = join(home, '.claude', 'plugins', 'cache', 'evil', 'guard', '1.0.0');
+    writeJson(join(home, '.claude', 'plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: {
+        'guard@acme': [{ installPath: a, version: '1.0.0' }],
+        'guard@evil': [{ installPath: b, version: '1.0.0' }],
+      },
+    });
+    writeJson(join(a, '.mcp.json'), { mcpServers: { scanner: { command: 'trusted-server' } } });
+    writeJson(join(b, '.mcp.json'), { mcpServers: { scanner: { command: 'lookalike-server' } } });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const scanners = scan.mcpServers.filter((m) => m.name === 'scanner');
+    // Without marketplace in identity these would collapse to one row and the
+    // second would silently inherit the first's trust.
+    expect(scanners).toHaveLength(2);
+    expect(scanners.map((m) => m.marketplace).sort()).toEqual(['acme', 'evil']);
+  });
+
+  it('matches projects[cwd] leniently: resolved symlinks and trailing slashes', () => {
+    // macOS tmpdirs are symlinked (/var → /private/var), so realpath differs
+    // from the raw fixture path — exactly the mismatch this guards against.
+    writeJson(join(home, '.claude.json'), {
+      projects: {
+        [realpathSync(project)]: { mcpServers: { local1: { command: 'mcp-local' } } },
+      },
+    });
+
+    const viaRealpath = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(viaRealpath.mcpServers.map((m) => m.name)).toEqual(['local1']);
+    expect(viaRealpath.mcpServers[0]?.scope).toBe('local');
+
+    // A trailing slash on the session cwd must not lose the entry either.
+    writeJson(join(home, '.claude.json'), {
+      projects: { [project]: { mcpServers: { local2: { command: 'mcp-local' } } } },
+    });
+    const viaSlash = resolveConfigInventory({ cwd: `${project}/`, homeDir: home });
+    expect(viaSlash.mcpServers.map((m) => m.name)).toEqual(['local2']);
+  });
+
+  it('a malformed project .mcp.json becomes an error entry (its only parse)', () => {
+    write(join(project, '.mcp.json'), '{ not json');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.mcpServers).toEqual([]);
+    expect(scan.errors).toHaveLength(1);
+    expect(scan.errors[0]?.source).toBe(join(project, '.mcp.json'));
+  });
+
+  it('a malformed settings file is recorded once, not once per collector pass', () => {
+    write(join(home, '.claude', 'settings.json'), '{ not json');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    // collectSettingsHooks records it; the MCP pass over the same file stays silent.
+    expect(scan.errors).toHaveLength(1);
   });
 });
 

@@ -289,17 +289,52 @@ describe('resolveConfigInventory — marketplace + code skills', () => {
     expect(sources).toEqual(['acme', 'local']);
   });
 
-  it('collapses one skill reachable twice under the same source (same identity)', () => {
+  it('keeps same-named skills from two different plugins in one marketplace', () => {
     const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
     writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
       acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
     });
-    // Same name under both the marketplace root and one of its plugins → the same
-    // (source 'acme', name 'audit') identity → one row.
+    write(join(mp, 'plugins', 'guard', 'skills', 'audit', 'SKILL.md'), '# audit\n');
+    write(join(mp, 'plugins', 'sentinel', 'skills', 'audit', 'SKILL.md'), '# audit\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const audits = scan.skills.filter((s) => s.name === 'audit');
+    // Both share source 'acme'; pluginName is folded into identity, so neither is
+    // dropped — the inventory doesn't under-report two distinct plugins.
+    expect(audits).toHaveLength(2);
+    expect(audits.map((s) => s.pluginName).sort()).toEqual(['guard', 'sentinel']);
+  });
+
+  it('keeps a marketplace-root skill and a plugin skill of the same name distinct', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
+    });
     write(join(mp, 'skills', 'audit', 'SKILL.md'), '# audit\n');
     write(join(mp, 'plugins', 'guard', 'skills', 'audit', 'SKILL.md'), '# audit\n');
 
     const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const audits = scan.skills.filter((s) => s.name === 'audit');
+    // Same source 'acme', but the plugin folds pluginName in → two distinct rows.
+    expect(audits).toHaveLength(2);
+    expect(audits.map((s) => s.pluginName ?? '(root)').sort()).toEqual(['(root)', 'guard']);
+  });
+
+  it('collapses a plugin skill reached via both installed_plugins and its marketplace clone', () => {
+    const mp = join(home, '.claude', 'plugins', 'marketplaces', 'acme');
+    const pluginDir = join(mp, 'plugins', 'guard');
+    writeJson(join(home, '.claude', 'plugins', 'known_marketplaces.json'), {
+      acme: { installLocation: mp, source: { repo: 'acme-co/plugins' } },
+    });
+    // installed_plugins points at the same on-disk dir the marketplace scan walks.
+    writeJson(join(home, '.claude', 'plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: { 'guard@acme': [{ installPath: pluginDir, version: '3.0.0' }] },
+    });
+    write(join(pluginDir, 'skills', 'audit', 'SKILL.md'), '# audit\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    // Both scans resolve to (source 'acme', name 'audit', plugin 'guard') → one row.
     expect(scan.skills.filter((s) => s.name === 'audit')).toHaveLength(1);
   });
 });

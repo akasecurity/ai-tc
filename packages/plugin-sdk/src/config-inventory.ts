@@ -355,13 +355,14 @@ function isClaudeOfficialMarketplace(name: string, repo: string | undefined): bo
   );
 }
 
-// Collapse skills that share an INVENTORY IDENTITY (source + name — the exact key
-// @akasecurity/persistence content-addresses on, §4.1) to one entry. A skill can
-// surface from several roots with the same source (the same dir reached by two
-// scans); those are one row. Distinct sources that happen to share a name — a
-// personal `pdf` and a marketplace `pdf`, or two marketplaces that each ship an
-// `audit` skill — are genuinely different installed skills and stay separate, so
-// the inventory never under-reports the surface. First hit per identity wins.
+// Collapse skills that share an INVENTORY IDENTITY (source + name + owning plugin —
+// the exact key @akasecurity/persistence content-addresses on via skillIdentityKey) to
+// one entry. A skill can surface from several roots with the same identity (the
+// same plugin dir reached by both installed_plugins and its marketplace clone);
+// those are one row. Anything with a distinct identity stays separate — a personal
+// `pdf` vs a marketplace `pdf`, two marketplaces that each ship `audit`, or two
+// different plugins in ONE marketplace that each ship `audit` — so the inventory
+// never under-reports the surface. First hit per identity wins.
 function dedupeSkills(skills: SkillScanEntry[]): SkillScanEntry[] {
   const seen = new Set<string>();
   const out: SkillScanEntry[] = [];

@@ -28,16 +28,32 @@ afterEach(() => {
 });
 
 // A real Claude Code harness dimension row (no provenance='sample') — the card the
-// projected skills/hooks attach to.
+// projected skills/hooks attach to. Shaped like the row the plugin actually writes
+// (resolveInventoryContext): identityKey = tool, title = 'claude-code', a bare
+// { harness_version } bag with NO `provider` — so resolveHarnessId must fall through
+// to the title heuristic, the path production genuinely relies on.
 function seedRealHarness(): void {
   db.inventory.upsert(
     {
       objectType: 'harness',
       identityKey: 'claude-code',
-      title: 'Claude Code',
-      attributes: { provider: 'claudecode', label: 'Claude Code', harness_version: '1.0.0' },
+      title: 'claude-code',
+      attributes: { harness_version: '0.0.1' },
     },
     Date.now(),
+  );
+}
+
+// A second real harness (Cursor), likewise resolved via the title heuristic.
+function seedRealCursorHarness(lastSeen: number): void {
+  db.inventory.upsert(
+    {
+      objectType: 'harness',
+      identityKey: 'cursor',
+      title: 'Cursor',
+      attributes: { harness_version: '1.0.0' },
+    },
+    lastSeen,
   );
 }
 
@@ -125,15 +141,7 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
 
   it('attaches scanned skills/hooks only to the Claude Code card, not other real harnesses', async () => {
     seedRealHarness();
-    db.inventory.upsert(
-      {
-        objectType: 'harness',
-        identityKey: 'cursor',
-        title: 'Cursor',
-        attributes: { provider: 'cursor', label: 'Cursor', harness_version: '1.0.0' },
-      },
-      Date.now(),
-    );
+    seedRealCursorHarness(Date.now());
     db.recordConfigScan(record(scan(), 'scan-1'));
 
     const { items } = await db.inventoryAssets.listHarnesses();
@@ -147,6 +155,47 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
     const stats = await db.inventoryAssets.getInventoryStats();
     expect(stats.byType.skill).toBe(1);
     expect(stats.byType.hook).toBe(1);
+  });
+
+  it('hides a harness not seen within the liveness window (stale)', async () => {
+    seedRealHarness(); // claude-code, seen now
+    // Cursor last seen 40 days ago — outside the 30-day window → stale.
+    seedRealCursorHarness(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    db.recordConfigScan(record(scan(), 'scan-1'));
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    expect(items.map((h) => h.id)).toContain('claudecode');
+    expect(items.map((h) => h.id)).not.toContain('cursor');
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.harnesses).toBe(1);
+  });
+
+  it('hides config skills/hooks entirely when no live Claude Code harness (stats + lists agree)', async () => {
+    // A scan exists, but the only Claude Code harness is stale (outside the window).
+    seedRealCursorHarness(Date.now()); // an unrelated live harness — must not host config
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'claude-code',
+        attributes: { harness_version: '0.0.1' },
+      },
+      Date.now() - 40 * 24 * 60 * 60 * 1000,
+    );
+    db.recordConfigScan(record(scan(), 'scan-1'));
+
+    // All three read surfaces agree: no live Claude Code harness → no config assets.
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.skill).toBe(0);
+    expect(stats.byType.hook).toBe(0);
+
+    const { groups } = await db.inventoryAssets.listAssets({});
+    expect(groups.map((g) => g.type)).not.toContain('skill');
+    expect(groups.map((g) => g.type)).not.toContain('hook');
+
+    const cursor = (await db.inventoryAssets.listHarnesses()).items.find((h) => h.id === 'cursor');
+    expect(cursor?.assetCount ?? 0).toBe(0);
   });
 
   it('asset detail carries the projected meta for a scanned skill', async () => {

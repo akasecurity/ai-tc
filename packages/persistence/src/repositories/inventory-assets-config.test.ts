@@ -79,6 +79,7 @@ function scan(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
       },
     ],
     mcpServers: [],
+    configFiles: [],
     errors: [],
     ...overrides,
   };

@@ -69,6 +69,8 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     skills: [],
     hooks: [],
     mcpServers: [],
+    // Populated by the config-file collector (next PR in the stack).
+    configFiles: [],
     errors: [],
   };
   try {

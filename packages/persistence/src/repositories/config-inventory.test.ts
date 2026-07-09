@@ -45,6 +45,7 @@ function scanResult(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
       },
     ],
     mcpServers: [],
+    configFiles: [],
     errors: [],
     ...overrides,
   };
@@ -67,7 +68,14 @@ function record(scan: ConfigScanResult, scanId: string): ConfigScanRecord {
 describe('recordConfigScan → configInventoryReport round-trip', () => {
   it('reports an empty (never-scanned) store with a null scannedAt', () => {
     const report = db.configInventoryReport();
-    expect(report).toEqual({ scannedAt: null, skills: [], hooks: [], mcpServers: [], topics: [] });
+    expect(report).toEqual({
+      scannedAt: null,
+      skills: [],
+      hooks: [],
+      mcpServers: [],
+      configFiles: [],
+      topics: [],
+    });
   });
 
   it('round-trips a scan into the report with derived statuses', () => {

@@ -1,10 +1,10 @@
 // Small presentational atoms for the Activity views. Pure/props-driven — no state.
+import type { SessionStatus } from '@akasecurity/schema';
 import { Badge, cn } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { STATUS_META, TOOL_ICON_FALLBACK, TOOL_META } from './meta.ts';
-import type { SessionStatus } from './types.ts';
 
 /** A status dot. `active` renders a pulsing "live" ring; others a solid token dot. */
 export function StatusDot({ status }: { status: SessionStatus }) {

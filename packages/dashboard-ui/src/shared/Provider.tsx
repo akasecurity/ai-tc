@@ -10,6 +10,7 @@ export const PROVIDERS = {
   claudecode: { label: 'Claude Code', short: 'CC', color: '#C96442' },
   claudedesktop: { label: 'Claude Desktop', short: 'CD', color: '#A8553A' },
   cursor: { label: 'Cursor', short: 'Cu', color: '#252F3D' },
+  windsurf: { label: 'Windsurf', short: 'Wf', color: '#0B8F7B' },
   codex: { label: 'Codex CLI', short: 'Cx', color: '#10A37F' },
   copilot: { label: 'GitHub Copilot', short: 'Co', color: '#0581D4' },
   chatgpt: { label: 'ChatGPT', short: 'GP', color: '#0d8f6f' },

@@ -2,6 +2,7 @@
 // Multi-select harness filter. Empty selection == "All harnesses"; selecting every
 // harness collapses back to All. Built on the ui-kit DropdownMenu (Radix) — the
 // checkbox items keep the menu open on toggle via preventDefault.
+import type { Harness } from '@akasecurity/schema';
 import {
   Badge,
   cn,
@@ -15,14 +16,13 @@ import {
 import { ChevronDownIcon, TerminalIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { HARNESS_IDS } from './meta.ts';
-import type { HarnessId } from './types.ts';
 
 export function HarnessSelect({
   value,
   onChange,
 }: {
-  value: HarnessId[];
-  onChange: (next: HarnessId[]) => void;
+  value: Harness[];
+  onChange: (next: Harness[]) => void;
 }) {
   const all = value.length === 0;
   const first = value[0];
@@ -32,7 +32,7 @@ export function HarnessSelect({
       ? PROVIDERS[first].label
       : `${String(value.length)} harnesses`;
 
-  function toggle(id: HarnessId) {
+  function toggle(id: Harness) {
     const next = value.includes(id) ? value.filter((x) => x !== id) : [...value, id];
     // Everything selected individually reads the same as "All".
     onChange(next.length === HARNESS_IDS.length ? [] : next);

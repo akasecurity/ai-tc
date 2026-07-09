@@ -78,6 +78,7 @@ function scan(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
         scope: 'project',
       },
     ],
+    mcpServers: [],
     errors: [],
     ...overrides,
   };

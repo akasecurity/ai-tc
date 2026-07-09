@@ -36,6 +36,13 @@
       "when": 1783515503131,
       "tag": "0004_glorious_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783595360117,
+      "tag": "0005_fast_vindicator",
+      "breakpoints": true
     }
   ]
 }

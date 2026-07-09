@@ -582,4 +582,32 @@ describe('newestRecordedBinary', () => {
     expect(db.installedPacks.newestRecordedBinary()).toBeNull();
     db.close();
   });
+
+  it('skips a stamp whose version is unparseable, keeping the newer parseable one', () => {
+    // Well-formed `<binary>@<version>` structure, but an unparseable version.
+    // It compares *equal* to everything, so if it were kept as the running max a
+    // genuinely-newer parseable stamp (which is not `> 0` against it) could never
+    // displace it. It must be skipped outright, whatever the row order.
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    stampRecordedBy('secrets', 'aka-cli@garbage'); // parseable structure, unparseable version
+    stampRecordedBy('core-pii', 'plugin@0.0.2-alpha.7');
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'plugin',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null when every stamp has an unparseable version (never surfaces garbage)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    stampRecordedBy('secrets', 'aka-cli@garbage');
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
 });

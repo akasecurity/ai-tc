@@ -407,6 +407,22 @@ describe('staleBinaryNotice (prevention P2)', () => {
     expect(notice).toContain('v0.0.2-alpha.5');
     expect(notice).toContain('aka-cli v0.0.2-alpha.7');
     expect(notice).toContain('restart the session');
+    // A CLI recorded — there's no newer plugin on disk, so the call-to-action
+    // names the packs rather than promising a plugin that isn't there.
+    expect(notice).toContain('newer detection packs');
+    expect(notice).not.toContain('newer plugin');
+  });
+
+  it('keeps the "newer plugin" call-to-action when a newer PLUGIN recorded', async () => {
+    const newer = new StandaloneDataGateway(dir, [secretsPack], {
+      recordedBy: 'plugin@0.0.2-alpha.7',
+    });
+    await newer.close();
+    const gateway = new StandaloneDataGateway(dir);
+    const notice = gateway.staleBinaryNotice('0.0.2-alpha.5');
+    await gateway.close();
+    expect(notice).toContain('plugin v0.0.2-alpha.7');
+    expect(notice).toContain('restart the session to pick up the newer plugin');
   });
 
   it('stays silent when this session IS the newest generation, or nothing was recorded', async () => {

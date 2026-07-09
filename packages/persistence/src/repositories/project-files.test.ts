@@ -139,8 +139,10 @@ describe('reconcileWorktreeProjects', () => {
 
     db.reconcileWorktreeProjects(projectId, HEAD, '/somewhere/else/wt-b');
 
-    const projects = await db.inventoryAssets.listProjects();
-    expect(projects.items.map((p) => p.id)).toEqual([projectId]);
+    const ids = (await db.inventoryAssets.listProjects()).items.map((p) => p.id);
+    expect(ids).toEqual([projectId]);
+    expect(ids).not.toContain(ghostA);
+    expect(ids).not.toContain(ghostB);
   });
 
   it('never touches the canonical row or unrelated path projects', async () => {

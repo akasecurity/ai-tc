@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c5619c43-a6c3-41ca-9240-db210581b449",
+  "id": "d0284c0f-8f68-4dff-adcc-fad087746a14",
   "prevId": "2f344fa6-123b-492a-be0d-2fd79c18a3e2",
   "tables": {
     "audit_events": {
@@ -328,6 +328,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "recorded_by": {
+          "name": "recorded_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "updated_at": {
@@ -769,73 +776,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "finding_resolution": {
-      "name": "finding_resolution",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "finding_key": {
-          "name": "finding_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "method": {
-          "name": "method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "evidence": {
-          "name": "evidence",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "idx_finding_resolution_key": {
-          "name": "idx_finding_resolution_key",
-          "columns": [
-            "finding_key"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "findings": {
       "name": "findings",
       "columns": {
@@ -908,13 +848,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "finding_key": {
-          "name": "finding_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -922,13 +855,6 @@
           "name": "idx_findings_event",
           "columns": [
             "event_id"
-          ],
-          "isUnique": false
-        },
-        "idx_findings_key": {
-          "name": "idx_findings_key",
-          "columns": [
-            "finding_key"
           ],
           "isUnique": false
         }
@@ -1586,6 +1512,36 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "_pack_write_gate": {
+      "name": "_pack_write_gate",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "open": {
+          "name": "open",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "ck_pack_write_gate_single_row": {
+          "name": "ck_pack_write_gate_single_row",
+          "value": "\"_pack_write_gate\".\"id\" = 1"
+        }
+      }
     },
     "policies": {
       "name": "policies",

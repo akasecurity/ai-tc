@@ -1,87 +1,15 @@
-import { chmodSync, mkdirSync, renameSync } from 'node:fs';
-import { chmod, mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-
-import {
+// The ~/.aka layout + permission modes now live in @akasecurity/persistence (the
+// lowest layer that touches the store), shared with the CLI and the OSS web-ui.
+// This module is a re-export shim so existing SDK consumers keep importing them
+// from here.
+export {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
-  ensureDataDirSync as ensureDirOwnerOnly,
+  dataDir,
+  dbPath,
+  defaultDataDir,
+  ensureDataDir,
+  ensureLayoutDirSync as ensureDataDirSync,
+  migrateLegacyLayout,
+  settingsDir,
 } from '@akasecurity/persistence';
-
-// The owner-only directory / 0600-file permission policy is single-sourced in
-// @akasecurity/persistence (the lowest layer that touches the store); this module owns
-// only the ~/.aka *layout* (which paths live where) and re-exports the modes so
-// existing SDK consumers keep importing them from here.
-export { DATA_DIR_MODE, DATA_FILE_MODE };
-
-// All adapters share one on-disk home under the machine-account: settings and
-// the local SQLite store. This is the BASE; the layout below splits it into
-// settings/ and data/ subdirs so a new plugin reuses the exact same paths.
-export function defaultDataDir(): string {
-  return join(homedir(), '.aka');
-}
-
-// On-disk layout (shared by ALL plugins; see HLD B1):
-//   ~/.aka/settings/  config.json (backend connection) · settings.json
-//   ~/.aka/data/      aka.db (+ -wal/-shm sidecars) · policy-cache.json
-export function settingsDir(base: string = defaultDataDir()): string {
-  return join(base, 'settings');
-}
-
-export function dataDir(base: string = defaultDataDir()): string {
-  return join(base, 'data');
-}
-
-export function dbPath(base: string = defaultDataDir()): string {
-  return join(dataDir(base), 'aka.db');
-}
-
-// Create the dir owner-only, and tighten it even if it pre-existed with looser
-// permissions. chmod is best-effort (a no-op on platforms without POSIX modes,
-// e.g. Windows) and must never break the fail-open hook path.
-export async function ensureDataDir(dir: string = defaultDataDir()): Promise<void> {
-  await mkdir(dir, { recursive: true, mode: DATA_DIR_MODE });
-  try {
-    await chmod(dir, DATA_DIR_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
-  }
-}
-
-// Synchronous twin of ensureDataDir, defaulted to the layout base. Delegates to
-// the single owner-only-mkdir implementation in @akasecurity/persistence so the
-// permission contract lives in exactly one place.
-export function ensureDataDirSync(dir: string = defaultDataDir()): void {
-  ensureDirOwnerOnly(dir);
-}
-
-// One-time, best-effort relocation of the pre-layout flat files into their
-// layout subdirs. Older installs wrote ~/.aka/config.json and
-// ~/.aka/policy-cache.json directly under the base; the layout splits them by
-// kind — config.json is settings, but policy-cache.json is a cache that lives
-// with the SQLite store under data/ (where createPolicyStore reads it). Routing
-// it to settings/ would strand the cache. Fail-open: any error (already moved,
-// missing, unwritable) leaves the old file where it is — the loaders treat a
-// missing settings/cache file as "unonboarded defaults" regardless.
-export function migrateLegacyLayout(base: string = defaultDataDir()): void {
-  const moves: { name: string; dest: string }[] = [
-    { name: 'config.json', dest: settingsDir(base) },
-    { name: 'policy-cache.json', dest: dataDir(base) },
-  ];
-  for (const { name, dest } of moves) {
-    try {
-      mkdirSync(dest, { recursive: true, mode: DATA_DIR_MODE });
-      // mkdirSync only applies mode on creation (and is umask-masked); tighten
-      // a pre-existing dir to owner-only too, since it holds sensitive files.
-      try {
-        chmodSync(dest, DATA_DIR_MODE);
-      } catch {
-        // best-effort: platform without POSIX modes, or not owned by us
-      }
-      renameSync(join(base, name), join(dest, name));
-    } catch {
-      // can't create dest, not present, already moved, or unwritable — skip
-    }
-  }
-}

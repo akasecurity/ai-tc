@@ -64,6 +64,13 @@
       "when": 1783678486267,
       "tag": "0008_freezing_selene",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1783690389260,
+      "tag": "0009_findings_path_expression_index",
+      "breakpoints": true
     }
   ]
 }

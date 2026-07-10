@@ -19,7 +19,7 @@ let db: LocalDatabase;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aka-inv-config-'));
-  db = openLocalDatabase(dir); // NOTE: no seedSampleData — a real, un-seeded store.
+  db = openLocalDatabase(dir); // NOTE: no sample fixtures — a real, un-seeded store.
 });
 
 afterEach(() => {

@@ -353,7 +353,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 });
 
-// ─── Write gate (migration 0005) ─────────────────────────────────────────────
+// ─── Write gate (migration 0006) ─────────────────────────────────────────────
 // The manual-updates invariant is defended IN THE DATABASE: a column-scoped
 // BEFORE UPDATE trigger on installed_packs silently ignores (RAISE(IGNORE))
 // any UPDATE of version/name/rules_json unless the one-row _pack_write_gate is
@@ -384,7 +384,7 @@ function gateState(storeDir: string): number {
   return row.open;
 }
 
-describe('installed_packs write gate (migration 0005)', () => {
+describe('installed_packs write gate (migration 0006)', () => {
   it('applyUpdate works end-to-end post-migration and leaves the gate closed', () => {
     const db = openLocalDatabase(dir);
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);

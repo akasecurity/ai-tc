@@ -189,8 +189,13 @@ describe('buildFindingGroups status derivation', () => {
     expect(groups[0]?.status).toBe('handled');
   });
 
-  it('derives dismissed when mixed dismissed + handled (dismissed beats handled)', () => {
+  it('derives handled when mixed dismissed + handled (handled beats dismissed — an active enforcement must not be hidden behind a human dismissal elsewhere in the group)', () => {
     const groups = buildFindingGroups(statusRows(['dismissed', 'handled']));
+    expect(groups[0]?.status).toBe('handled');
+  });
+
+  it('derives dismissed when mixed dismissed + resolved (dismissed beats resolved)', () => {
+    const groups = buildFindingGroups(statusRows(['dismissed', 'resolved']));
     expect(groups[0]?.status).toBe('dismissed');
   });
 

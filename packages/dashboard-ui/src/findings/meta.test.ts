@@ -1,4 +1,9 @@
-import type { FindingAction, FindingGroup, FindingStatus } from '@akasecurity/schema';
+import type {
+  FindingAction,
+  FindingGroup,
+  FindingInstance,
+  FindingStatus,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { formatConfidence } from './FindingDetailView.tsx';
@@ -7,6 +12,7 @@ import {
   CATEGORY_LABEL,
   categoryStyle,
   filterGroupsByStatus,
+  filterInstancesByStatus,
   SEVERITIES,
 } from './meta.ts';
 
@@ -26,6 +32,20 @@ function buildGroup(id: string, status?: FindingStatus): FindingGroup {
     aggregateAction: 'allowed',
     latestDetectedAt: '2026-01-01T00:00:00.000Z',
     instances: [],
+    ...(status ? { status } : {}),
+  };
+}
+
+// Minimal FindingInstance fixture — only `id` and `status` vary per test.
+function buildInstance(id: string, status?: FindingStatus): FindingInstance {
+  return {
+    id,
+    provider: 'claudecode',
+    repo: 'acme/api',
+    file: 'src/a.ts',
+    action: 'allowed',
+    detectedAt: '2026-01-01T00:00:00.000Z',
+    confidence: 0.9,
     ...(status ? { status } : {}),
   };
 }
@@ -105,5 +125,41 @@ describe('filterGroupsByStatus', () => {
 
   it('returns every group unchanged when no status filter is given', () => {
     expect(filterGroupsByStatus(groups, undefined)).toEqual(groups);
+  });
+});
+
+describe('filterInstancesByStatus', () => {
+  const instances: FindingInstance[] = [
+    buildInstance('i-open', 'open'),
+    buildInstance('i-handled', 'handled'),
+    buildInstance('i-resolved', 'resolved'),
+    buildInstance('i-dismissed', 'dismissed'),
+    buildInstance('i-legacy'), // no status (predates the resolution feature)
+  ];
+
+  it('keeps only instances whose own status matches the given status', () => {
+    expect(filterInstancesByStatus(instances, 'open')).toEqual([instances[0]]);
+    expect(filterInstancesByStatus(instances, 'handled')).toEqual([instances[1]]);
+  });
+
+  it('excludes a legacy instance with no status when filtering by a specific status', () => {
+    const legacyOnly = instances.filter((i) => i.id === 'i-legacy');
+    expect(filterInstancesByStatus(legacyOnly, 'open')).toEqual([]);
+  });
+
+  it('returns every instance unchanged for "all"', () => {
+    expect(filterInstancesByStatus(instances, 'all')).toEqual(instances);
+  });
+
+  it('returns every instance unchanged when no status filter is given', () => {
+    expect(filterInstancesByStatus(instances, undefined)).toEqual(instances);
+  });
+
+  it('never empties out a group that filterGroupsByStatus already deemed visible', () => {
+    // deriveGroupStatus only assigns a candidate status to a group when at
+    // least one instance carries it — so filtering that SAME group's
+    // instances by the SAME status can never yield an empty expanded list.
+    const mixed = [buildInstance('i1', 'handled'), buildInstance('i2', 'dismissed')];
+    expect(filterInstancesByStatus(mixed, 'handled')).toHaveLength(1);
   });
 });

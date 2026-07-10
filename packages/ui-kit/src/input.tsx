@@ -14,7 +14,7 @@ export function Input({ className, type = 'text', ...props }: ComponentPropsWith
       data-slot="input"
       className={cn(
         'h-9 w-full rounded-lg border border-border bg-surface px-3 text-sm text-text',
-        'placeholder:text-text-3 transition-colors',
+        'truncate placeholder:text-text-3 transition-colors',
         'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,

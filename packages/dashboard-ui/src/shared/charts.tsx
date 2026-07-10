@@ -166,6 +166,12 @@ export function useMeasuredWidth() {
  * Multi-series smooth area chart. `data` is an array of points where each point
  * holds a value per series key (e.g. `{ label, findings, redactions, blocks }`).
  *
+ * A per-key value may be `null` to mean "no data at this point" — those render
+ * as GAPS in the line/area (via d3's `.defined()`), not as a misleading zero,
+ * and are skipped in the hover tooltip. Count charts that never pass null are
+ * unaffected. `valueFormat` humanizes the tooltip value (default `String(v)`),
+ * so e.g. an MTTR chart can render `"2d 4h"` instead of raw milliseconds.
+ *
  * Hand-rolled SVG: d3-shape generates the area/line paths and a ResizeObserver
  * supplies the responsive width — no charting runtime needed.
  */
@@ -173,19 +179,28 @@ export function AreaChart<K extends string>({
   data,
   series,
   height = 160,
+  valueFormat = (v: number) => String(v),
 }: {
-  data: (Record<K, number> & { label: string })[];
+  data: (Record<K, number | null> & { label: string })[];
   series: (AreaSeries & { key: K })[];
   height?: number;
+  valueFormat?: (v: number, key: K) => string;
 }) {
-  type Point = Record<K, number> & { label: string };
+  type Point = Record<K, number | null> & { label: string };
   const gradientPrefix = useId().replace(/:/g, '');
   const [ref, width] = useMeasuredWidth();
   const [hover, setHover] = useState<number | null>(null);
 
   const innerW = Math.max(0, width - MARGIN.left - MARGIN.right);
   const innerH = Math.max(0, height - MARGIN.top - MARGIN.bottom);
-  const maxValue = Math.max(1, ...data.flatMap((d) => series.map((s) => d[s.key])));
+  const definedValues: number[] = [];
+  for (const d of data) {
+    for (const s of series) {
+      const v = d[s.key];
+      if (typeof v === 'number') definedValues.push(v);
+    }
+  }
+  const maxValue = Math.max(1, ...definedValues);
 
   const xAt = (i: number) => (data.length <= 1 ? 0 : (i / (data.length - 1)) * innerW);
   const yAt = (v: number) => innerH - (v / maxValue) * innerH;
@@ -243,16 +258,22 @@ export function AreaChart<K extends string>({
               />
             ))}
             {series.map((s) => {
+              // `.defined()` breaks the path at null points so a no-data bucket
+              // renders as a gap, not a dip to zero. The y accessor still runs
+              // for undefined points (result ignored), so it must not throw —
+              // `?? 0` keeps it finite.
               const areaPath =
                 area<Point>()
+                  .defined((d) => d[s.key] !== null)
                   .x((_d, i) => xAt(i))
                   .y0(yAt(0))
-                  .y1((d) => yAt(d[s.key]))
+                  .y1((d) => yAt(d[s.key] ?? 0))
                   .curve(curveMonotoneX)(data) ?? undefined;
               const linePath =
                 line<Point>()
+                  .defined((d) => d[s.key] !== null)
                   .x((_d, i) => xAt(i))
-                  .y((d) => yAt(d[s.key]))
+                  .y((d) => yAt(d[s.key] ?? 0))
                   .curve(curveMonotoneX)(data) ?? undefined;
               return (
                 <g key={s.key}>
@@ -264,15 +285,12 @@ export function AreaChart<K extends string>({
             {hoverPoint && hover !== null && (
               <g>
                 <line x1={xAt(hover)} x2={xAt(hover)} y1={0} y2={innerH} stroke={COLORS.border} />
-                {series.map((s) => (
-                  <circle
-                    key={s.key}
-                    cx={xAt(hover)}
-                    cy={yAt(hoverPoint[s.key])}
-                    r={3}
-                    fill={s.color}
-                  />
-                ))}
+                {series.map((s) => {
+                  const v = hoverPoint[s.key];
+                  // No marker for a no-data point — nothing sits on the line there.
+                  if (v === null) return null;
+                  return <circle key={s.key} cx={xAt(hover)} cy={yAt(v)} r={3} fill={s.color} />;
+                })}
               </g>
             )}
           </g>
@@ -294,15 +312,24 @@ export function AreaChart<K extends string>({
           <div style={{ color: COLORS.text3, fontSize: 11, marginBottom: 4 }}>
             {hoverPoint.label}
           </div>
-          {series.map((s) => (
-            <div key={s.key} className="flex items-center gap-1.5" style={{ color: COLORS.text2 }}>
-              <span
-                className="size-2 rounded-xs"
-                style={{ background: s.color, display: 'inline-block' }}
-              />
-              <span className="font-semibold">{hoverPoint[s.key]}</span>
-            </div>
-          ))}
+          {series.map((s) => {
+            const v = hoverPoint[s.key];
+            // Skip a no-data series entirely rather than showing a bogus "0".
+            if (v === null) return null;
+            return (
+              <div
+                key={s.key}
+                className="flex items-center gap-1.5"
+                style={{ color: COLORS.text2 }}
+              >
+                <span
+                  className="size-2 rounded-xs"
+                  style={{ background: s.color, display: 'inline-block' }}
+                />
+                <span className="font-semibold">{valueFormat(v, s.key)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

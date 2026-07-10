@@ -4,7 +4,7 @@ import { basename, join, relative, sep } from 'node:path';
 import type { ProjectFileInput, ProjectFilesScan } from '@akasecurity/schema';
 import ignore, { type Ignore } from 'ignore';
 
-import { resolveWorktreeRoot } from './repo.ts';
+import { resolveHeadRoot, resolveWorktreeRoot } from './repo.ts';
 
 // The real project-file inventory walk: enumerate the session worktree so the
 // Inventory page's file tree shows the actual repo instead of an empty pane.
@@ -12,8 +12,16 @@ import { resolveWorktreeRoot } from './repo.ts';
 // that's where secrets hide), this is an inventory of the project as shared —
 // gitignored files are local scratch, not part of the repo, so they are
 // SKIPPED along with .git and dependency/build trees. Stat-only (no file
-// contents), pure fs, fail-open: any unreadable entry is silently dropped and
-// a walk that can't even start returns undefined.
+// contents), pure fs, fail-open: an unreadable directory marks the scan
+// truncated (a partial walk must never shrink the stored tree) and a walk
+// that can't even start returns undefined.
+//
+// Known fidelity gaps vs. "the project as shared", deliberate for now:
+// symlinks are skipped (never followed — avoids cycle/escape risks; git
+// tracks them as first-class entries, so recording them un-followed is a
+// possible future upgrade), tracked-but-ignored files (`git add -f`, committed
+// files under SKIP_DIRS) are invisible, `.git/info/exclude` and the global
+// gitignore aren't consulted, and MAX_FILES bounds KEPT files, not traversal.
 
 // Hard floor of never-inventoried directories — huge machine-generated trees.
 const SKIP_DIRS = new Set([
@@ -84,6 +92,9 @@ const GENERATED_FILES = new Set([
 ]);
 const CONFIG_EXTENSIONS = new Set(['.yml', '.yaml', '.toml', '.ini', '.properties', '.conf']);
 const DOCS_EXTENSIONS = new Set(['.md', '.mdx', '.rst', '.adoc', '.txt']);
+// `.txt` files that are manifests/config, not prose — checked BEFORE the docs
+// branch, which would otherwise claim them via the blanket `.txt` extension.
+const CONFIG_TXT_BASENAMES = new Set(['cmakelists.txt', 'constraints.txt', 'robots.txt']);
 const DATA_EXTENSIONS = new Set(['.csv', '.tsv', '.parquet', '.sql', '.jsonl', '.ndjson']);
 const CONFIG_BASENAMES = new Set([
   'package.json',
@@ -116,6 +127,13 @@ function classifyOrigin(relPath: string, name: string): ProjectFileInput['origin
     return 'generated';
   }
   if (segments.includes('vendor') || segments.includes('third_party')) return 'vendored';
+  // `requirements*.txt` covers requirements-dev.txt / requirements_test.txt….
+  if (
+    CONFIG_TXT_BASENAMES.has(lowerName) ||
+    (ext === '.txt' && lowerName.startsWith('requirements'))
+  ) {
+    return 'config';
+  }
   if (DOCS_EXTENSIONS.has(ext) || lowerName.startsWith('license') || segments[0] === 'docs') {
     return 'docs';
   }
@@ -150,8 +168,20 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
     const worktree = resolveWorktreeRoot(cwd);
     if (!worktree) return undefined;
     const root: string = worktree;
+    // A LINKED-worktree session walks its branch checkout, but the scan is
+    // recorded under the HEAD repo's canonical project id — so it is a partial
+    // view by construction (main-only files are absent from this checkout) and
+    // must never prune the stored tree. Marked truncated, same as a capped walk.
+    const isLinkedCheckout = resolveHeadRoot(cwd) !== worktree;
 
     const files: ProjectFileInput[] = [];
+    // An unreadable subdirectory (chmod, antivirus lock, transient EMFILE)
+    // means the walk lost a subtree it may have seen before — indistinguishable
+    // from deletion unless the scan is marked truncated so the prune is skipped.
+    // Held on an object, not a `let`: the flag is only ever set inside the
+    // recursive `visit` closure, which control-flow analysis can't see — a
+    // property read stays `boolean` where a narrowed `let` would read as `false`.
+    const walk = { lostSubtree: false };
 
     // Returns true when the file cap was hit — propagated up so the whole walk
     // stops at the first over-cap file.
@@ -160,6 +190,7 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
       try {
         dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
       } catch {
+        walk.lostSubtree = true;
         return false;
       }
       const layer = readIgnoreLayer(dir);
@@ -176,6 +207,9 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
           if (visit(fullPath, dirLayers)) return true;
           continue;
         }
+        // Dirent types are lstat-based, so a symlink is neither a file nor a
+        // directory here and falls through — intentionally skipped, never
+        // followed (see the fidelity-gaps note above).
         if (!entry.isFile()) continue;
         if (entry.name === '.git') continue;
         if (isIgnored(dirLayers, fullPath, false)) continue;
@@ -192,7 +226,7 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
       return false;
     }
 
-    const truncated = visit(root, []);
+    const truncated = visit(root, []) || walk.lostSubtree || isLinkedCheckout;
     if (files.length === 0) return undefined;
     files.sort((a, b) => a.path.localeCompare(b.path));
     return { files, truncated, scannedAt: new Date().toISOString() };

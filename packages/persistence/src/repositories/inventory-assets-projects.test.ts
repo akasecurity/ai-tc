@@ -51,6 +51,22 @@ describe('worktree-checkout ghost rows', () => {
     expect(stats.byType.project).toBe(1);
   });
 
+  it('hides Windows (backslash-separated) checkout ghosts too', async () => {
+    db.sourceProject.upsert(
+      {
+        url: 'C:\\dev\\payments-api\\.claude\\worktrees\\wt-x',
+        name: 'wt-x',
+        attributes: {},
+      },
+      Date.now(),
+    );
+
+    const projects = await db.inventoryAssets.listProjects();
+    expect(projects.items).toEqual([]);
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.project).toBe(0);
+  });
+
   it('keeps a remote-less repo keyed by a plain root path visible', async () => {
     db.sourceProject.upsert(
       { url: '/home/dev/local-only-repo', name: 'local-only-repo', attributes: {} },

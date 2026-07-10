@@ -163,4 +163,47 @@ describe('reconcileWorktreeProjects', () => {
 
     expect(db.sourceProject.findById(lookalike)).toBeDefined();
   });
+
+  it('migrates ghost file-access overrides to the canonical row (its own wins on conflict)', async () => {
+    db.recordProjectFiles(projectId, scan([file('secret.ts'), file('config.ts')]));
+    // Overrides a user set while the ghost row WAS the project's identity.
+    const ghost = ghostRow(`${HEAD}/.claude/worktrees/wt-old`);
+    db.recordProjectFiles(ghost, scan([file('secret.ts'), file('config.ts')]));
+    expect(db.inventoryAssets.setFileAccess(ghost, 'secret.ts', 'blocked')).toBe(true);
+    expect(db.inventoryAssets.setFileAccess(ghost, 'config.ts', 'open')).toBe(true);
+    // The canonical row already carries its own override for config.ts.
+    expect(db.inventoryAssets.setFileAccess(projectId, 'config.ts', 'blocked')).toBe(true);
+
+    db.reconcileWorktreeProjects(projectId, HEAD, `${HEAD}/.claude/worktrees/wt-new`);
+
+    const tree = await db.inventoryAssets.getProjectTree(projectId, {});
+    const access = new Map(tree?.files.map((f) => [f.path, f.access]));
+    expect(access.get('secret.ts')).toBe('blocked'); // migrated from the ghost
+    expect(access.get('config.ts')).toBe('blocked'); // canonical's own override kept
+    expect(db.sourceProject.findById(ghost)).toBeUndefined();
+  });
+
+  it("never folds the repo's own remote-less-era row on a plain-clone session (worktreeRoot === headRoot)", async () => {
+    // The repo lived at HEAD with no remote: its row is keyed by the path — a
+    // LEGITIMATE identity, not a ghost. The user blocked a file on it. When a
+    // remote is added later, the next plain-clone session reconciles with
+    // worktreeRoot === headRoot — and must not touch the old row or its override.
+    const pathKeyed = ghostRow(HEAD);
+    db.recordProjectFiles(pathKeyed, scan([file('secret.ts')]));
+    expect(db.inventoryAssets.setFileAccess(pathKeyed, 'secret.ts', 'blocked')).toBe(true);
+
+    db.reconcileWorktreeProjects(projectId, HEAD, HEAD);
+
+    expect(db.sourceProject.findById(pathKeyed)).toBeDefined();
+    const tree = await db.inventoryAssets.getProjectTree(pathKeyed, {});
+    expect(tree?.files[0]?.access).toBe('blocked');
+  });
+
+  it('folds Windows (backslash-separated) ghost rows the posix patterns miss', () => {
+    const winHead = 'C:\\dev\\payments-api';
+    const ghost = ghostRow(`${winHead}\\.claude\\worktrees\\wt-old`);
+    db.reconcileWorktreeProjects(projectId, winHead, `${winHead}\\.claude\\worktrees\\wt-new`);
+
+    expect(db.sourceProject.findById(ghost)).toBeUndefined();
+  });
 });

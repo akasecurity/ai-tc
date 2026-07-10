@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,5 +98,51 @@ describe('resolveProjectFiles', () => {
     expect(byPath.get('vendor/lib.js')).toBe('vendored');
     expect(byPath.get('test/fixtures/case.json')).toBe('data');
     expect(byPath.get('data/rows.csv')).toBe('data');
+  });
+
+  it('classifies manifest-style .txt files as config, not docs', () => {
+    write('requirements.txt');
+    write('requirements-dev.txt');
+    write('CMakeLists.txt');
+    write('robots.txt');
+    write('notes.txt');
+    const byPath = new Map(resolveProjectFiles(root)?.files.map((f) => [f.path, f.origin]));
+    expect(byPath.get('requirements.txt')).toBe('config');
+    expect(byPath.get('requirements-dev.txt')).toBe('config');
+    expect(byPath.get('CMakeLists.txt')).toBe('config');
+    expect(byPath.get('robots.txt')).toBe('config');
+    expect(byPath.get('notes.txt')).toBe('docs'); // the blanket .txt rule still holds
+  });
+
+  // chmod 0o000 is a no-op for root and not a POSIX permission model on Windows.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'marks the scan truncated when a subdirectory is unreadable (the prune must be skipped)',
+    () => {
+      write('src/app.ts');
+      write('src/private/hidden.ts');
+      chmodSync(join(root, 'src', 'private'), 0o000);
+      try {
+        const scan = resolveProjectFiles(root);
+        expect(scan?.files.map((f) => f.path)).toEqual(['src/app.ts']);
+        expect(scan?.truncated).toBe(true);
+      } finally {
+        chmodSync(join(root, 'src', 'private'), 0o755);
+      }
+    },
+  );
+
+  it('marks a linked-worktree checkout scan truncated (a branch view must never prune the head tree)', () => {
+    // The worktree the way git lays it out, under the parent repo at `root`.
+    const gitdir = join(root, '.git', 'worktrees', 'wt');
+    mkdirSync(gitdir, { recursive: true });
+    writeFileSync(join(gitdir, 'commondir'), '../..\n');
+    const wt = join(root, '.claude', 'worktrees', 'wt');
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, '.git'), `gitdir: ${gitdir}\n`);
+    writeFileSync(join(wt, 'branch-only.ts'), '');
+
+    const scan = resolveProjectFiles(wt);
+    expect(scan?.files.map((f) => f.path)).toEqual(['branch-only.ts']);
+    expect(scan?.truncated).toBe(true);
   });
 });

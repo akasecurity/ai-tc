@@ -1,0 +1,5 @@
+# Detection-rule fixtures under /rules are deliberately full of the exact
+# patterns each rule targets — scanning them would flood real findings with
+# self-inflicted noise. Hard-skip, not gitignore-mark: these are tracked,
+# intentional examples, not local scratch.
+rules/

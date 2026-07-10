@@ -548,3 +548,66 @@ describe('recordInventory recorded_by stamp', () => {
     expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alpha.7');
   });
 });
+
+describe('newestRecordedBinary', () => {
+  function stampRecordedBy(packId: string, recordedBy: string | null): void {
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(`UPDATE available_packs SET recorded_by = ? WHERE pack_id = ?`)
+      .run(recordedBy, packId);
+    raw.close();
+  }
+
+  it('returns the newest recorded binary across mirror rows, skipping nulls and garbage', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+      pack('code-flaws', '1.0.0', ['code-flaws/x']),
+    ]);
+    stampRecordedBy('secrets', 'plugin@0.0.2-alpha.5');
+    stampRecordedBy('core-pii', 'aka-cli@0.0.2-alpha.7');
+    stampRecordedBy('code-flaws', 'not a stamp'); // malformed → skipped
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'aka-cli',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null on a pre-hardening store (no recorded_by anywhere)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
+
+  it('skips a stamp whose version is unparseable, keeping the newer parseable one', () => {
+    // Well-formed `<binary>@<version>` structure, but an unparseable version.
+    // It compares *equal* to everything, so if it were kept as the running max a
+    // genuinely-newer parseable stamp (which is not `> 0` against it) could never
+    // displace it. It must be skipped outright, whatever the row order.
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    stampRecordedBy('secrets', 'aka-cli@garbage'); // parseable structure, unparseable version
+    stampRecordedBy('core-pii', 'plugin@0.0.2-alpha.7');
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'plugin',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null when every stamp has an unparseable version (never surfaces garbage)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    stampRecordedBy('secrets', 'aka-cli@garbage');
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
+});

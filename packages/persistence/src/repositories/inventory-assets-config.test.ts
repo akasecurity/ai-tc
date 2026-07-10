@@ -98,6 +98,42 @@ function record(s: ConfigScanResult, id: string): ConfigScanRecord {
   };
 }
 
+describe('harness card labeling for real scanned rows', () => {
+  it('a bare real harness row (no label attr) renders the display label, not the raw title', async () => {
+    // Exactly what the SessionStart inventory pass writes: machine-ish title,
+    // attributes carrying only the harness version — no label/provider/kind.
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'claude-code',
+        attributes: { harness_version: '0.0.2-alpha.6' },
+      },
+      Date.now(),
+    );
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    const cc = items.find((h) => h.id === 'claudecode');
+    expect(cc?.label).toBe('Claude Code');
+    expect(cc?.version).toBe('0.0.2-alpha.6');
+  });
+
+  it('an authored label attr (sample rows) still wins over the display map', async () => {
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'claude-code',
+        attributes: { provider: 'claudecode', label: 'Claude Code (custom)' },
+      },
+      Date.now(),
+    );
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    expect(items.find((h) => h.id === 'claudecode')?.label).toBe('Claude Code (custom)');
+  });
+});
+
 describe('Inventory page surfaces real scanned skills/hooks', () => {
   it('an un-scanned store shows no skill/hook assets (unchanged behaviour)', async () => {
     seedRealHarness();

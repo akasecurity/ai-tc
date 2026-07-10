@@ -352,3 +352,198 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 });
+
+// ─── Write gate (migration 0006) ─────────────────────────────────────────────
+// The manual-updates invariant is defended IN THE DATABASE: a column-scoped
+// BEFORE UPDATE trigger on installed_packs silently ignores (RAISE(IGNORE))
+// any UPDATE of version/name/rules_json unless the one-row _pack_write_gate is
+// open — and only applyUpdate ever opens it, inside its own transaction. This
+// is what stops ALREADY-SHIPPED legacy binaries (≤0.0.2-alpha.5 hooks run a
+// compiled-in auto-sync upsert) from clobbering an applied update: app-level
+// guards don't bind code that is already on disk. The gate MECHANICS live
+// here; the frozen legacy-SQL replays live in legacy-writers.test.ts (the
+// prevention-P1 class suite — extend it for any write-semantics change).
+
+function installedRow(storeDir: string, packId: string): { version: string; rules: number } {
+  const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
+  const row = raw
+    .prepare(
+      `SELECT version, json_array_length(rules_json) AS rules FROM installed_packs WHERE pack_id = ?`,
+    )
+    .get(packId) as { version: string; rules: number };
+  raw.close();
+  return row;
+}
+
+function gateState(storeDir: string): number {
+  const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
+  const row = raw.prepare(`SELECT open FROM _pack_write_gate WHERE id = 1`).get() as {
+    open: number;
+  };
+  raw.close();
+  return row.open;
+}
+
+describe('installed_packs write gate (migration 0006)', () => {
+  it('applyUpdate works end-to-end post-migration and leaves the gate closed', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+    expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
+    db.close();
+    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.5.0', rules: 2 });
+    expect(gateState(dir)).toBe(0);
+  });
+
+  it('resets the gate when applyUpdate fails mid-transaction (rollback reverts the open)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
+
+    // Sabotage: a second trigger that aborts the UPDATE only while the gate is
+    // open — i.e. exactly when applyUpdate's inner write runs.
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw.exec(
+      `CREATE TRIGGER test_sabotage BEFORE UPDATE OF version ON installed_packs
+       WHEN (SELECT open FROM _pack_write_gate WHERE id = 1) = 1
+       BEGIN SELECT RAISE(ABORT, 'sabotage'); END;`,
+    );
+    raw.close();
+    try {
+      expect(() => db.installedPacks.applyUpdate('aka', 'secrets')).toThrow(/sabotage/);
+    } finally {
+      const cleanup = new DatabaseSync(join(dir, DB_FILENAME));
+      cleanup.exec('DROP TRIGGER test_sabotage');
+      cleanup.close();
+      db.close();
+    }
+    // ROLLBACK reverted both the row write AND the gate open — no dangling gate.
+    expect(gateState(dir)).toBe(0);
+    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.0.0', rules: 1 });
+  });
+
+  it('setEnabled / setPolicy are untouched by the column-scoped trigger', async () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+    expect((await db.installedPacks.counts()).enabled).toBe(0);
+    expect(db.installedPacks.setPolicy('aka', 'secrets', 'redact')).toBe(true);
+    db.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = raw
+      .prepare(`SELECT enabled, policy_id AS policyId FROM installed_packs WHERE pack_id = ?`)
+      .get('secrets') as { enabled: number; policyId: string };
+    raw.close();
+    expect(row).toEqual({ enabled: 0, policyId: 'redact' });
+  });
+});
+
+describe('recordInventory recorded_by stamp', () => {
+  function recordedBy(storeDir: string, packId: string): string | null {
+    const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
+    const row = raw
+      .prepare(`SELECT recorded_by AS recordedBy FROM available_packs WHERE pack_id = ?`)
+      .get(packId) as { recordedBy: string | null };
+    raw.close();
+    return row.recordedBy;
+  }
+
+  it('stamps the recording binary on mirror rows it changes', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
+      recordedBy: 'plugin@0.0.2-alpha.7',
+    });
+    db.close();
+    expect(recordedBy(dir, 'secrets')).toBe('plugin@0.0.2-alpha.7');
+  });
+
+  it('leaves recorded_by null for versionless writers, and unchanged on identical re-records', () => {
+    const a = openLocalDatabase(dir);
+    a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    a.close();
+    expect(recordedBy(dir, 'secrets')).toBeNull();
+
+    // Identical content from a versioned binary: the signature gate (and the
+    // change-detection WHERE, which excludes recorded_by) keep it a no-op —
+    // recorded_by names who last CHANGED the mirror, not who last looked.
+    const b = openLocalDatabase(dir);
+    b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
+      recordedBy: 'aka-cli@0.0.2-alpha.7',
+    });
+    b.close();
+    expect(recordedBy(dir, 'secrets')).toBeNull();
+
+    // Changed content DOES take the new stamp.
+    const c = openLocalDatabase(dir);
+    c.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])], {
+      recordedBy: 'aka-cli@0.0.2-alpha.7',
+    });
+    c.close();
+    expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alpha.7');
+  });
+});
+
+describe('newestRecordedBinary', () => {
+  function stampRecordedBy(packId: string, recordedBy: string | null): void {
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    raw
+      .prepare(`UPDATE available_packs SET recorded_by = ? WHERE pack_id = ?`)
+      .run(recordedBy, packId);
+    raw.close();
+  }
+
+  it('returns the newest recorded binary across mirror rows, skipping nulls and garbage', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+      pack('code-flaws', '1.0.0', ['code-flaws/x']),
+    ]);
+    stampRecordedBy('secrets', 'plugin@0.0.2-alpha.5');
+    stampRecordedBy('core-pii', 'aka-cli@0.0.2-alpha.7');
+    stampRecordedBy('code-flaws', 'not a stamp'); // malformed → skipped
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'aka-cli',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null on a pre-hardening store (no recorded_by anywhere)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
+
+  it('skips a stamp whose version is unparseable, keeping the newer parseable one', () => {
+    // Well-formed `<binary>@<version>` structure, but an unparseable version.
+    // It compares *equal* to everything, so if it were kept as the running max a
+    // genuinely-newer parseable stamp (which is not `> 0` against it) could never
+    // displace it. It must be skipped outright, whatever the row order.
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    stampRecordedBy('secrets', 'aka-cli@garbage'); // parseable structure, unparseable version
+    stampRecordedBy('core-pii', 'plugin@0.0.2-alpha.7');
+
+    expect(db.installedPacks.newestRecordedBinary()).toEqual({
+      binary: 'plugin',
+      version: '0.0.2-alpha.7',
+    });
+    db.close();
+  });
+
+  it('returns null when every stamp has an unparseable version (never surfaces garbage)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    stampRecordedBy('secrets', 'aka-cli@garbage');
+    expect(db.installedPacks.newestRecordedBinary()).toBeNull();
+    db.close();
+  });
+});

@@ -51,7 +51,7 @@ export function DialogHeader({ className, ...props }: ComponentPropsWithRef<'div
   return (
     <div
       data-slot="dialog-header"
-      className={cn('flex shrink-0 items-center gap-3 border-b border-border px-5 py-4', className)}
+      className={cn('flex shrink-0 flex-col gap-1 border-b border-border px-5 py-4', className)}
       {...props}
     />
   );

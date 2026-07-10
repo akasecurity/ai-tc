@@ -107,8 +107,8 @@ describe('ResolvedFeedItem', () => {
       ruleId: 'rule_secret_aws_key',
       severity: 'high',
       path: 'src/config/secrets.ts',
-      resolvedAt: 1_752_000_000_000,
-      detectedAt: 1_751_000_000_000,
+      resolvedAt: '2026-07-08T12:00:00Z',
+      detectedAt: '2026-06-26T09:30:00Z',
     });
     expect(result.success).toBe(true);
   });
@@ -119,20 +119,20 @@ describe('ResolvedFeedItem', () => {
       ruleId: 'rule_secret_aws_key',
       severity: 'urgent',
       path: 'src/config/secrets.ts',
-      resolvedAt: 1_752_000_000_000,
-      detectedAt: 1_751_000_000_000,
+      resolvedAt: '2026-07-08T12:00:00Z',
+      detectedAt: '2026-06-26T09:30:00Z',
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects a non-numeric resolvedAt', () => {
+  it('rejects a non-ISO-datetime resolvedAt', () => {
     const result = ResolvedFeedItem.safeParse({
       findingKey: 'finding_abc123',
       ruleId: 'rule_secret_aws_key',
       severity: 'high',
       path: 'src/config/secrets.ts',
-      resolvedAt: '2026-07-08T00:00:00Z',
-      detectedAt: 1_751_000_000_000,
+      resolvedAt: 1_752_000_000_000,
+      detectedAt: '2026-06-26T09:30:00Z',
     });
     expect(result.success).toBe(false);
   });
@@ -147,8 +147,8 @@ describe('RecentlyResolvedResponse', () => {
           ruleId: 'rule_secret_aws_key',
           severity: 'high',
           path: 'src/config/secrets.ts',
-          resolvedAt: 1_752_000_000_000,
-          detectedAt: 1_751_000_000_000,
+          resolvedAt: '2026-07-08T12:00:00Z',
+          detectedAt: '2026-06-26T09:30:00Z',
         },
       ],
     });
@@ -163,8 +163,8 @@ describe('RecentlyResolvedResponse', () => {
           ruleId: 'rule_secret_aws_key',
           severity: 'high',
           path: 'src/config/secrets.ts',
-          resolvedAt: 1_752_000_000_000,
-          detectedAt: 'not-a-number',
+          resolvedAt: '2026-07-08T12:00:00Z',
+          detectedAt: 'not-a-datetime',
         },
       ],
     });

@@ -453,10 +453,10 @@ describe('recordInventory recorded_by stamp', () => {
   it('stamps the recording binary on mirror rows it changes', () => {
     const db = openLocalDatabase(dir);
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
-      recordedBy: 'plugin@0.0.2-alpha.7',
+      recordedBy: 'plugin@0.0.2-alhpa.8',
     });
     db.close();
-    expect(recordedBy(dir, 'secrets')).toBe('plugin@0.0.2-alpha.7');
+    expect(recordedBy(dir, 'secrets')).toBe('plugin@0.0.2-alhpa.8');
   });
 
   it('leaves recorded_by null for versionless writers, and unchanged on identical re-records', () => {
@@ -470,7 +470,7 @@ describe('recordInventory recorded_by stamp', () => {
     // recorded_by names who last CHANGED the mirror, not who last looked.
     const b = openLocalDatabase(dir);
     b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
-      recordedBy: 'aka-cli@0.0.2-alpha.7',
+      recordedBy: 'aka-cli@0.0.2-alhpa.8',
     });
     b.close();
     expect(recordedBy(dir, 'secrets')).toBeNull();
@@ -478,10 +478,10 @@ describe('recordInventory recorded_by stamp', () => {
     // Changed content DOES take the new stamp.
     const c = openLocalDatabase(dir);
     c.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])], {
-      recordedBy: 'aka-cli@0.0.2-alpha.7',
+      recordedBy: 'aka-cli@0.0.2-alhpa.8',
     });
     c.close();
-    expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alpha.7');
+    expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alhpa.8');
   });
 });
 
@@ -502,12 +502,12 @@ describe('newestRecordedBinary', () => {
       pack('code-flaws', '1.0.0', ['code-flaws/x']),
     ]);
     stampRecordedBy('secrets', 'plugin@0.0.2-alpha.5');
-    stampRecordedBy('core-pii', 'aka-cli@0.0.2-alpha.7');
+    stampRecordedBy('core-pii', 'aka-cli@0.0.2-alhpa.8');
     stampRecordedBy('code-flaws', 'not a stamp'); // malformed → skipped
 
     expect(db.installedPacks.newestRecordedBinary()).toEqual({
       binary: 'aka-cli',
-      version: '0.0.2-alpha.7',
+      version: '0.0.2-alhpa.8',
     });
     db.close();
   });
@@ -530,11 +530,11 @@ describe('newestRecordedBinary', () => {
       pack('core-pii', '2.0.0', ['core-pii/email']),
     ]);
     stampRecordedBy('secrets', 'aka-cli@garbage'); // parseable structure, unparseable version
-    stampRecordedBy('core-pii', 'plugin@0.0.2-alpha.7');
+    stampRecordedBy('core-pii', 'plugin@0.0.2-alhpa.8');
 
     expect(db.installedPacks.newestRecordedBinary()).toEqual({
       binary: 'plugin',
-      version: '0.0.2-alpha.7',
+      version: '0.0.2-alhpa.8',
     });
     db.close();
   });

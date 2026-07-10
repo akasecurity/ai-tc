@@ -93,6 +93,8 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),
+    openAtRestKeysForPath: () => Promise.resolve([]),
+    insertResolution: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }
@@ -431,5 +433,51 @@ describe('capture — at-rest finding_key', () => {
     const keys = gw.records[0]?.findings.map((f) => f.findingKey) ?? [];
     expect(keys).toHaveLength(2);
     expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe('capture() — CaptureResult.findingKeys (scanner re-scan resolver hook)', () => {
+  it('echoes the at-rest finding_keys produced onto the returned decision', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER and PII_MARKER both here',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+
+    const recordedKeys = gw.records[0]?.findings.map((f) => f.findingKey) ?? [];
+    expect(result.findingKeys).toHaveLength(2);
+    expect(result.findingKeys).toEqual(recordedKeys);
+  });
+
+  it('leaves findingKeys unset for in-flight (prompt) captures — nothing to correlate against', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'deploy with SECRET_MARKER now' },
+      { persist: 'always' },
+    );
+    await rt.close();
+    expect(result.findingKeys).toBeUndefined();
+  });
+
+  it('leaves findingKeys unset when the with-findings short-circuit returns before persisting', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture(
+      {
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'nothing sensitive here',
+        metadata: { filePath: '/repo/src/a.ts' },
+      },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+    expect(result.findingKeys).toBeUndefined();
+    expect(gw.records).toHaveLength(0);
   });
 });

@@ -360,47 +360,9 @@ describe('installedRuleset (scan-time snapshot)', () => {
 // open — and only applyUpdate ever opens it, inside its own transaction. This
 // is what stops ALREADY-SHIPPED legacy binaries (≤0.0.2-alpha.5 hooks run a
 // compiled-in auto-sync upsert) from clobbering an applied update: app-level
-// guards don't bind code that is already on disk.
-
-// The EXACT upsert statement the ≤alpha.5 plugin/CLI executed on every hook
-// (vendored verbatim from git — packages/persistence/src/repositories/
-// installed-packs.ts at 93fc55f, the pre-#296 tree). Frozen as a fixture: this
-// is what still runs from cached plugin generations in old sessions, so the
-// invariants must hold against this literal SQL forever. Any change to the
-// installed_packs/available_packs write semantics must keep this replay green
-// (and extend the legacy-writers suite).
-const LEGACY_ALPHA5_UPSERT = `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
-       VALUES (:id, :namespace, :packId, :version, :name, :rulesJson, 1, :now, :now)
-       ON CONFLICT (namespace, pack_id) DO UPDATE SET
-         version = excluded.version,
-         name = excluded.name,
-         rules_json = excluded.rules_json,
-         updated_at = excluded.updated_at
-       WHERE installed_packs.version <> excluded.version
-          OR installed_packs.name <> excluded.name
-          OR installed_packs.rules_json <> excluded.rules_json`;
-
-// Run the frozen legacy statement exactly as a legacy process would: its own
-// raw connection, no repository code.
-function replayLegacyUpsert(
-  storeDir: string,
-  pack: { packId: string; version: string; ruleIds: string[] },
-): void {
-  const legacy = new DatabaseSync(join(storeDir, DB_FILENAME));
-  try {
-    legacy.prepare(LEGACY_ALPHA5_UPSERT).run({
-      id: `legacy-${pack.packId}`,
-      namespace: 'aka',
-      packId: pack.packId,
-      version: pack.version,
-      name: pack.packId,
-      rulesJson: JSON.stringify(pack.ruleIds.map(rule)),
-      now: Date.now(),
-    });
-  } finally {
-    legacy.close();
-  }
-}
+// guards don't bind code that is already on disk. The gate MECHANICS live
+// here; the frozen legacy-SQL replays live in legacy-writers.test.ts (the
+// prevention-P1 class suite — extend it for any write-semantics change).
 
 function installedRow(storeDir: string, packId: string): { version: string; rules: number } {
   const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
@@ -423,32 +385,6 @@ function gateState(storeDir: string): number {
 }
 
 describe('installed_packs write gate (migration 0005)', () => {
-  it('the exact alpha.5 legacy upsert can no longer clobber an applied update — and raises no error', () => {
-    const db = openLocalDatabase(dir);
-    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
-    db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
-    expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
-    db.close();
-    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.5.0', rules: 2 });
-
-    // The field bug: an old-generation hook replays its compiled-in 2.1.0
-    // subset over the applied 2.5.0 snapshot. RAISE(IGNORE) must skip the row
-    // op SILENTLY — fail-open for the shipped binary, no crash, no clobber.
-    expect(() => {
-      replayLegacyUpsert(dir, { packId: 'secrets', version: '2.1.0', ruleIds: ['secrets/aws'] });
-    }).not.toThrow();
-    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.5.0', rules: 2 });
-  });
-
-  it('a legacy INSERT of a brand-new pack still works (the gate scopes to UPDATEs)', () => {
-    const db = openLocalDatabase(dir);
-    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
-    db.close();
-
-    replayLegacyUpsert(dir, { packId: 'legacy-pack', version: '1.0.0', ruleIds: ['legacy/a'] });
-    expect(installedRow(dir, 'legacy-pack')).toEqual({ version: '1.0.0', rules: 1 });
-  });
-
   it('applyUpdate works end-to-end post-migration and leaves the gate closed', () => {
     const db = openLocalDatabase(dir);
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);

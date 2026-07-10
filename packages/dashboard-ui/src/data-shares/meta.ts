@@ -131,18 +131,6 @@ export interface ProviderMark {
   color: string;
 }
 
-/** Known SaaS provider marks, keyed by registrable host. */
-const PROVIDER_MARKS: Record<string, ProviderMark> = {
-  'newrelic.com': { short: 'NR', color: '#00AC69' },
-  'datadoghq.com': { short: 'DD', color: '#632CA6' },
-  'stripe.com': { short: 'St', color: '#635BFF' },
-  'amazonaws.com': { short: 'S3', color: '#E47911' },
-  'sentry.io': { short: 'Se', color: '#362D59' },
-  'slack.com': { short: 'Sl', color: '#611F69' },
-  'segment.io': { short: 'Sg', color: '#52BD95' },
-  'openai.com': { short: 'AI', color: '#10A37F' },
-};
-
 /** Deterministic fallback palette for open-ended SaaS destinations. */
 const FALLBACK_COLORS = ['#2563EB', '#7C3AED', '#DB2777', '#0891B2', '#CA8A04', '#059669'];
 
@@ -160,12 +148,9 @@ function initials(name: string): string {
 
 /**
  * Provider lettermark ({short,color}) derived client-side from name/host — the
- * API doesn't send it, since SaaS destinations are open-ended. Known providers
- * use the registry; unknown ones get initials + a hashed color.
+ * API doesn't send it, since SaaS destinations are open-ended.
  */
 export function providerMark(name: string, host?: string): ProviderMark {
-  const known = host ? PROVIDER_MARKS[host] : undefined;
-  if (known) return known;
   const key = host ?? name;
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;

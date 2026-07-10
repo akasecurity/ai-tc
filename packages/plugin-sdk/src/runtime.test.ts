@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -96,6 +100,9 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),
+    openAtRestKeysForPath: () => Promise.resolve([]),
+    resolvedAtRestKeysForPath: () => Promise.resolve([]),
+    insertResolution: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }
@@ -329,5 +336,156 @@ describe('capture — appliesTo file-context threading', () => {
     const result = await rt.processText('PY_ONLY_MARKER');
     expect(result.findings.map((f) => f.ruleId)).toContain('pulled/py-only-marker');
     await rt.close();
+  });
+});
+
+describe('capture — at-rest finding_key', () => {
+  it('is stable across two captures of the same rule/path/value (re-scan reconciliation)', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'aka-runtime-fk-'));
+    try {
+      const gw1 = fakeGateway(bundle());
+      const rt1 = createPluginRuntime(gw1, settings(), { dataDir });
+      await rt1.capture({
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'deploy with SECRET_MARKER now',
+        metadata: { filePath: '/repo/src/a.ts' },
+      });
+      await rt1.close();
+
+      // A second scan (fresh runtime instance — a hook is short-lived — but the
+      // SAME dataDir, so the same on-disk fingerprint key is read back).
+      const gw2 = fakeGateway(bundle());
+      const rt2 = createPluginRuntime(gw2, settings(), { dataDir });
+      await rt2.capture({
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'deploy with SECRET_MARKER now',
+        metadata: { filePath: '/repo/src/a.ts' },
+      });
+      await rt2.close();
+
+      const key1 = gw1.records[0]?.findings[0]?.findingKey;
+      const key2 = gw2.records[0]?.findings[0]?.findingKey;
+      expect(key1).toMatch(/^[0-9a-f]{64}$/);
+      expect(key1).toBe(key2);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('changes when the file path changes (same rule/value, different location)', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'aka-runtime-fk-'));
+    try {
+      const gw = fakeGateway(bundle());
+      const rt = createPluginRuntime(gw, settings(), { dataDir });
+      await rt.capture({
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'deploy with SECRET_MARKER now',
+        metadata: { filePath: '/repo/src/a.ts' },
+      });
+      await rt.capture({
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'deploy with SECRET_MARKER now',
+        metadata: { filePath: '/repo/src/b.ts' },
+      });
+      await rt.close();
+
+      const keyA = gw.records[0]?.findings[0]?.findingKey;
+      const keyB = gw.records[1]?.findings[0]?.findingKey;
+      expect(keyA).toBeDefined();
+      expect(keyA).not.toBe(keyB);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('never attaches a finding_key to in-flight (prompt) findings', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    await rt.close();
+    expect(gw.records[0]?.findings[0]?.findingKey).toBeUndefined();
+  });
+
+  it('falls back to the masked match when no fingerprint key is available (no dataDir)', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings()); // no dataDir → keyForLedger() is null
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'deploy with SECRET_MARKER now',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+    expect(gw.records[0]?.findings[0]?.findingKey).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('gives two distinct secrets in the same file two distinct finding_keys', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER and PII_MARKER both here',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+
+    const keys = gw.records[0]?.findings.map((f) => f.findingKey) ?? [];
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe('capture() — CaptureResult.findingKeys (scanner re-scan resolver hook)', () => {
+  it('echoes the at-rest finding_keys produced onto the returned decision', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER and PII_MARKER both here',
+      metadata: { filePath: '/repo/src/a.ts' },
+    });
+    await rt.close();
+
+    const recordedKeys = gw.records[0]?.findings.map((f) => f.findingKey) ?? [];
+    expect(result.findingKeys).toHaveLength(2);
+    expect(result.findingKeys).toEqual(recordedKeys);
+  });
+
+  it('leaves findingKeys unset for in-flight (prompt) captures — nothing to correlate against', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: 'deploy with SECRET_MARKER now' },
+      { persist: 'always' },
+    );
+    await rt.close();
+    expect(result.findingKeys).toBeUndefined();
+  });
+
+  it('leaves findingKeys unset when the with-findings short-circuit returns before persisting', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture(
+      {
+        kind: 'code_change',
+        sourceTool: 'claude-code',
+        text: 'nothing sensitive here',
+        metadata: { filePath: '/repo/src/a.ts' },
+      },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+    expect(result.findingKeys).toBeUndefined();
+    expect(gw.records).toHaveLength(0);
   });
 });

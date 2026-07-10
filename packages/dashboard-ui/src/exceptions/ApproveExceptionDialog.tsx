@@ -3,6 +3,7 @@ import type { BlockedDetection } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -79,53 +80,55 @@ export function ApproveExceptionDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {entry && (
-          <div className="flex flex-col gap-4">
-            <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs">
-              <div className="font-mono font-semibold text-text">{entry.ruleId}</div>
-              <div className="mt-1 font-mono text-text-2">{entry.maskedValue}</div>
-            </div>
-
-            <div>
-              <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-                Scope — pick one
+        <DialogBody>
+          {entry && (
+            <div className="flex flex-col gap-4">
+              <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs">
+                <div className="font-mono font-semibold text-text">{entry.ruleId}</div>
+                <div className="mt-1 font-mono text-text-2">{entry.maskedValue}</div>
               </div>
-              <ScopePicker value={scope} onChange={setScope} />
-            </div>
 
-            <div>
-              <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-                Reason (required — the audit trail)
-              </div>
-              <Input
-                value={reason}
-                onChange={(e) => {
-                  setReason(e.target.value);
-                }}
-                placeholder="Why this value may pass"
-              />
-            </div>
-
-            {needsConfirmation && (
               <div>
                 <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-                  Type the masked value to confirm a permanent grant
+                  Scope — pick one
+                </div>
+                <ScopePicker value={scope} onChange={setScope} />
+              </div>
+
+              <div>
+                <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
+                  Reason (required — the audit trail)
                 </div>
                 <Input
-                  value={confirmation}
+                  value={reason}
                   onChange={(e) => {
-                    setConfirmation(e.target.value);
+                    setReason(e.target.value);
                   }}
-                  placeholder={entry.maskedValue}
-                  autoComplete="off"
-                  className="font-mono"
+                  placeholder="Why this value may pass"
                 />
               </div>
-            )}
 
-            {error && <p className="text-xs text-sev-critical">{error}</p>}
-          </div>
-        )}
+              {needsConfirmation && (
+                <div>
+                  <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
+                    Type the masked value to confirm a permanent grant
+                  </div>
+                  <Input
+                    value={confirmation}
+                    onChange={(e) => {
+                      setConfirmation(e.target.value);
+                    }}
+                    placeholder={entry.maskedValue}
+                    autoComplete="off"
+                    className="font-mono"
+                  />
+                </div>
+              )}
+
+              {error && <p className="text-xs text-sev-critical">{error}</p>}
+            </div>
+          )}
+        </DialogBody>
 
         <DialogFooter>
           <Button

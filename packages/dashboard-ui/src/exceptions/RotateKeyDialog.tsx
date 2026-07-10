@@ -3,6 +3,7 @@ import type { DetectionException } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -65,35 +66,37 @@ export function RotateKeyDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {activePermanent.length > 0 && (
-          <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
-            <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
-              Active permanent grants that will stop applying
+        <DialogBody>
+          {activePermanent.length > 0 && (
+            <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+                Active permanent grants that will stop applying
+              </div>
+              <ul className="flex flex-col gap-1">
+                {activePermanent.map((ex) => (
+                  <li key={ex.id} className="font-mono text-xs text-text-2">
+                    {ex.ruleId} · {ex.maskedValue}
+                  </li>
+                ))}
+              </ul>
             </div>
-            <ul className="flex flex-col gap-1">
-              {activePermanent.map((ex) => (
-                <li key={ex.id} className="font-mono text-xs text-text-2">
-                  {ex.ruleId} · {ex.maskedValue}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+          )}
 
-        <div>
-          <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-            Type “{ROTATE_CONFIRMATION}” to confirm
+          <div>
+            <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
+              Type “{ROTATE_CONFIRMATION}” to confirm
+            </div>
+            <Input
+              value={typed}
+              onChange={(e) => {
+                setTyped(e.target.value);
+              }}
+              autoComplete="off"
+            />
           </div>
-          <Input
-            value={typed}
-            onChange={(e) => {
-              setTyped(e.target.value);
-            }}
-            autoComplete="off"
-          />
-        </div>
 
-        {error && <p className="text-xs text-sev-critical">{error}</p>}
+          {error && <p className="text-xs text-sev-critical">{error}</p>}
+        </DialogBody>
 
         <DialogFooter>
           <Button

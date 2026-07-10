@@ -50,7 +50,7 @@ export function SegmentedControlItem({ className, ...props }: SegmentedControlIt
     <ToggleGroupPrimitive.Item
       data-slot="segmented-control-item"
       className={cn(
-        'inline-flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold text-text-3 transition-colors cursor-pointer',
+        'inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold text-text-3 transition-colors cursor-pointer',
         'hover:text-text-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         'data-[state=on]:bg-surface data-[state=on]:text-text data-[state=on]:shadow-sm',
         '[&_svg]:size-4 [&_svg]:shrink-0',

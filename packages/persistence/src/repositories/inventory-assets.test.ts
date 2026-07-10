@@ -3,7 +3,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyMigrations } from '../migrations.ts';
-import { clearSampleData, seedSampleData } from '../seed/sample-data.ts';
+import { purgeSampleData } from '../sample-purge.ts';
+import { seedSampleFixtures } from '../test-fixtures/index.ts';
 import { SqliteInventoryAssetsRepository } from './inventory-assets.ts';
 
 let db: DatabaseSync;
@@ -13,7 +14,7 @@ beforeEach(() => {
   db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   applyMigrations(db);
-  seedSampleData(db);
+  seedSampleFixtures(db);
   inv = new SqliteInventoryAssetsRepository(db);
 });
 
@@ -112,12 +113,11 @@ describe('SqliteInventoryAssetsRepository over the sample dataset', () => {
   });
 });
 
-describe('inventory sample seed lifecycle', () => {
-  it('is idempotent and fully cleared by clearSampleData', async () => {
-    seedSampleData(db); // second call is a no-op (marker)
+describe('legacy sample purge over the inventory fixtures', () => {
+  it('purgeSampleData fully clears the sample inventory', async () => {
     expect((await inv.getInventoryStats()).byType.skill).toBe(3);
 
-    clearSampleData(db);
+    purgeSampleData(db);
     const stats = await inv.getInventoryStats();
     expect(stats.byType).toEqual({ project: 0, skill: 0, mcp: 0, hook: 0, config: 0 });
     expect(stats.harnesses).toBe(0);

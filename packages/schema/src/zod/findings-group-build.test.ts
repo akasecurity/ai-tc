@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { FindingStatus } from './finding.ts';
 import {
   applyFindingFilters,
   buildFindingGroups,
@@ -151,6 +152,56 @@ describe('buildFindingGroups', () => {
   it('applies overrides ahead of the row action', () => {
     const overridden = buildFindingGroups(rows, { overrides: new Map([['i3', 'block']]) });
     expect(overridden.find((g) => g.id === 'email')?.aggregateAction).toBe('blocked');
+  });
+});
+
+// ─── status derivation (open-dominates precedence) ────────────────────────────
+
+describe('buildFindingGroups status derivation', () => {
+  const statusRows = (statuses: (FindingStatus | undefined)[]): GroupableFindingRow[] =>
+    statuses.map((status, i) => ({
+      id: `s${String(i)}`,
+      ruleId: 'aws-key',
+      category: 'secret',
+      severity: 'critical',
+      maskedMatch: 'AKIA…1',
+      actionTaken: 'block',
+      confidence: 0.9,
+      occurredAt: `2026-01-0${String(i + 1)}T00:00:00.000Z`,
+      sourceTool: 'claude-code',
+      repo: 'acme/api',
+      file: 'a.ts',
+      ...(status !== undefined ? { status } : {}),
+    }));
+
+  it('derives open when any instance is open (open dominates)', () => {
+    const groups = buildFindingGroups(statusRows(['resolved', 'open', 'handled']));
+    expect(groups[0]?.status).toBe('open');
+  });
+
+  it('derives resolved when all instances are resolved', () => {
+    const groups = buildFindingGroups(statusRows(['resolved', 'resolved']));
+    expect(groups[0]?.status).toBe('resolved');
+  });
+
+  it('derives handled when mixed handled + resolved (handled beats resolved)', () => {
+    const groups = buildFindingGroups(statusRows(['handled', 'resolved']));
+    expect(groups[0]?.status).toBe('handled');
+  });
+
+  it('derives dismissed when mixed dismissed + handled (dismissed beats handled)', () => {
+    const groups = buildFindingGroups(statusRows(['dismissed', 'handled']));
+    expect(groups[0]?.status).toBe('dismissed');
+  });
+
+  it('leaves group status undefined when no instance carries a status', () => {
+    const groups = buildFindingGroups(statusRows([undefined, undefined]));
+    expect(groups[0]?.status).toBeUndefined();
+  });
+
+  it('propagates status onto each instance', () => {
+    const groups = buildFindingGroups(statusRows(['open', 'resolved']));
+    expect(groups[0]?.instances.map((i) => i.status)).toEqual(['open', 'resolved']);
   });
 });
 

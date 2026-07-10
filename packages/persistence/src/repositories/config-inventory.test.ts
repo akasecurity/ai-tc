@@ -45,6 +45,7 @@ function scanResult(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
       },
     ],
     mcpServers: [],
+    configFiles: [],
     errors: [],
     ...overrides,
   };
@@ -67,7 +68,14 @@ function record(scan: ConfigScanResult, scanId: string): ConfigScanRecord {
 describe('recordConfigScan → configInventoryReport round-trip', () => {
   it('reports an empty (never-scanned) store with a null scannedAt', () => {
     const report = db.configInventoryReport();
-    expect(report).toEqual({ scannedAt: null, skills: [], hooks: [], mcpServers: [], topics: [] });
+    expect(report).toEqual({
+      scannedAt: null,
+      skills: [],
+      hooks: [],
+      mcpServers: [],
+      configFiles: [],
+      topics: [],
+    });
   });
 
   it('round-trips a scan into the report with derived statuses', () => {
@@ -100,6 +108,7 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
       { topic: 'skills', count: 1 },
       { topic: 'hooks', count: 1 },
       { topic: 'mcp', count: 0 },
+      { topic: 'config_files', count: 0 },
       { topic: 'configuration', count: 0 },
     ]);
   });
@@ -140,6 +149,59 @@ describe('recordConfigScan → configInventoryReport round-trip', () => {
     expect(report.hooks).toEqual([]);
     // History survives: the stale row still exists in the dimension.
     expect(db.inventory.findById(itemId(scanResult(), 'hook'))).toBeDefined();
+  });
+
+  it('round-trips config files: kind/detail/mtime, untracked local override, topic rollup', () => {
+    const scan = scanResult({
+      configFiles: [
+        {
+          name: 'settings.json',
+          path: '/home/u/.claude/settings.json',
+          scope: 'user',
+          kind: 'User settings',
+          detail: 'Permissions, model, env',
+          updatedAt: '2026-07-01T10:00:00.000Z',
+        },
+        {
+          name: 'settings.local.json',
+          path: '/repo/.claude/settings.local.json',
+          scope: 'local',
+          kind: 'Local overrides',
+        },
+        {
+          name: 'commands',
+          path: '/repo/.claude/commands',
+          scope: 'project',
+          kind: 'Slash commands',
+          detail: '3 commands',
+          entryCount: 3,
+        },
+      ],
+    });
+    db.recordConfigScan(record(scan, 'scan-1'));
+
+    const report = db.configInventoryReport();
+    expect(report.configFiles).toHaveLength(3);
+
+    const settings = report.configFiles.find((f) => f.kind === 'User settings');
+    expect(settings).toMatchObject({
+      name: 'settings.json',
+      path: '/home/u/.claude/settings.json',
+      scope: 'user',
+      detail: 'Permissions, model, env',
+      updatedAt: '2026-07-01T10:00:00.000Z',
+      untracked: false,
+    });
+
+    // The gitignored-by-convention local override is flagged.
+    expect(report.configFiles.find((f) => f.scope === 'local')?.untracked).toBe(true);
+    expect(report.configFiles.find((f) => f.kind === 'Slash commands')?.entryCount).toBe(3);
+
+    expect(report.topics.find((t) => t.topic === 'config_files')).toEqual({
+      topic: 'config_files',
+      count: 3,
+      attention: '1 untracked',
+    });
   });
 
   it('round-trips MCP servers: review-required default, override applied, drift on a stable row', () => {

@@ -1,8 +1,9 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type {
+  ConfigFileScanEntry,
   ConfigScanResult,
   ConfigScope,
   HookScanEntry,
@@ -48,6 +49,11 @@ export interface ResolveConfigInventoryInput {
  *   command/url wins the bag. No secrets: env var NAMES only, commands/urls
  *   masked through the bundled detection packs, url userinfo/query values
  *   stripped structurally.
+ * - Config files: existence + a derived SHAPE summary — never content. The
+ *   three settings files (top-level key names), `~/.claude/CLAUDE.md` and
+ *   `<cwd>/CLAUDE.md` memory (line counts), `<cwd>/.mcp.json` (server count),
+ *   and the project's `.claude/commands/` + `.claude/agents/` dirs (entry
+ *   counts). Absent files are a non-event.
  * - Skills: `~/.claude/skills/<name>/SKILL.md` (source 'local'), the project's
  *   `<cwd>/.claude/skills` and top-level `<cwd>/skills` (source
  *   `project:<repo-identity>`), each installed plugin's
@@ -69,6 +75,7 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
     skills: [],
     hooks: [],
     mcpServers: [],
+    configFiles: [],
     errors: [],
   };
   try {
@@ -106,6 +113,9 @@ export function resolveConfigInventory(input: ResolveConfigInventoryInput): Conf
       scope: 'local',
       project: repoIdentity,
     });
+
+    // Configuration files: existence + shape summaries, never content.
+    collectConfigFiles(scan, claudeDir, input.cwd);
 
     // Personal skills + project skills (the Claude Code `.claude/skills` convention).
     collectSkillsDir(scan, join(claudeDir, 'skills'), { source: 'local', scope: 'user' });
@@ -375,6 +385,154 @@ function collectPluginManifestMcp(
   } catch (err) {
     scan.errors.push({ source: manifestPath, reason: parseErrorReason(err) });
   }
+}
+
+// ── Config files ─────────────────────────────────────────────────────────────
+// Existence + a derived SHAPE summary per file — top-level key names, entry
+// counts, line counts. Never file content or values: memory files in particular
+// can carry sensitive project detail. An absent file is a non-event; a
+// malformed one is still a row (existence is filesystem truth), just without a
+// shape summary (parse errors on these files are recorded by the hook/MCP
+// collectors that also read them, or don't matter for existence).
+
+// The settings keys worth naming in the summary, with their display labels
+// (the long tail of unknown keys is skipped, not guessed at).
+const SETTINGS_KEY_LABELS: readonly [key: string, label: string][] = [
+  ['permissions', 'Permissions'],
+  ['model', 'model'],
+  ['env', 'env'],
+  ['hooks', 'hooks'],
+  ['mcpServers', 'MCP servers'],
+  ['statusLine', 'status line'],
+];
+
+function collectConfigFiles(scan: ConfigScanResult, claudeDir: string, cwd: string): void {
+  settingsConfigFile(scan, join(claudeDir, 'settings.json'), 'user', 'User settings');
+  settingsConfigFile(scan, join(cwd, '.claude', 'settings.json'), 'project', 'Project settings');
+  settingsConfigFile(scan, join(cwd, '.claude', 'settings.local.json'), 'local', 'Local overrides');
+  memoryConfigFile(scan, join(claudeDir, 'CLAUDE.md'), 'user', 'User memory');
+  memoryConfigFile(scan, join(cwd, 'CLAUDE.md'), 'project', 'Project memory');
+  mcpJsonConfigFile(scan, join(cwd, '.mcp.json'));
+  dirConfigFile(scan, join(cwd, '.claude', 'commands'), 'Slash commands', 'command');
+  dirConfigFile(scan, join(cwd, '.claude', 'agents'), 'Subagents', 'subagent');
+}
+
+// The row skeleton every source shares: basename, mtime, kind. Returns
+// undefined when the path doesn't exist (a non-event, not an error).
+function configFileEntry(
+  path: string,
+  scope: ConfigScope,
+  kind: string,
+): ConfigFileScanEntry | undefined {
+  try {
+    const stat = statSync(path);
+    return { name: basename(path), path, scope, kind, updatedAt: stat.mtime.toISOString() };
+  } catch {
+    return undefined;
+  }
+}
+
+function settingsConfigFile(
+  scan: ConfigScanResult,
+  path: string,
+  scope: ConfigScope,
+  kind: string,
+): void {
+  const entry = configFileEntry(path, scope, kind);
+  if (!entry) return;
+  const raw = readOptional(path);
+  if (raw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null) {
+        const labels = SETTINGS_KEY_LABELS.filter(([key]) => key in parsed).map(
+          ([, label]) => label,
+        );
+        if (labels.length > 0) entry.detail = labels.join(', ');
+      }
+    } catch {
+      // Malformed settings: the row still records existence; the parse error
+      // is already an errors entry via collectSettingsHooks.
+    }
+  }
+  scan.configFiles.push(entry);
+}
+
+function memoryConfigFile(
+  scan: ConfigScanResult,
+  path: string,
+  scope: ConfigScope,
+  kind: string,
+): void {
+  const entry = configFileEntry(path, scope, kind);
+  if (!entry) return;
+  const raw = readOptional(path);
+  if (raw !== undefined) {
+    // Line count only — memory content never leaves the machine's file. A
+    // trailing newline terminates the last line rather than starting a new
+    // one, and an empty file has zero lines, not one.
+    const trimmed = raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+    const lines = trimmed === '' ? 0 : trimmed.split('\n').length;
+    entry.detail = `${String(lines)} lines`;
+  }
+  scan.configFiles.push(entry);
+}
+
+function mcpJsonConfigFile(scan: ConfigScanResult, path: string): void {
+  const entry = configFileEntry(path, 'project', 'MCP servers');
+  if (!entry) return;
+  const raw = readOptional(path);
+  if (raw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      const servers = (parsed as Record<string, unknown> | null)?.mcpServers;
+      if (typeof servers === 'object' && servers !== null) {
+        // Count what the MCP scanner actually accepts (a command or url), so
+        // this surface and the MCP asset list never disagree about the same
+        // file — a disabled stub without either is not a server.
+        const count = Object.values(servers).filter(
+          (v) =>
+            typeof v === 'object' &&
+            v !== null &&
+            (str((v as Record<string, unknown>).command) !== undefined ||
+              str((v as Record<string, unknown>).url) !== undefined),
+        ).length;
+        entry.entryCount = count;
+        entry.detail = `${String(count)} server${count === 1 ? '' : 's'}`;
+      }
+    } catch {
+      // Recorded as an error by collectMcpFile — existence still rows here.
+    }
+  }
+  scan.configFiles.push(entry);
+}
+
+// A directory config surface (commands/, agents/): the entry count is its
+// shape. Both surfaces are defined by .md files, possibly nested in namespace
+// subdirectories — so count .md files recursively, and never count what the
+// harness doesn't load (.DS_Store, dotfiles, stray non-.md files).
+function dirConfigFile(scan: ConfigScanResult, path: string, kind: string, noun: string): void {
+  const entry = configFileEntry(path, 'project', kind);
+  if (!entry) return;
+  try {
+    const count = countMarkdownFiles(path, 0);
+    entry.entryCount = count;
+    entry.detail = `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
+  } catch {
+    // Unreadable dir: existence still rows, without a count.
+  }
+  scan.configFiles.push(entry);
+}
+
+function countMarkdownFiles(dir: string, depth: number): number {
+  if (depth > 4) return 0; // defensive bound — config dirs are shallow
+  let count = 0;
+  for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+    if (dirent.name.startsWith('.')) continue;
+    if (dirent.isDirectory()) count += countMarkdownFiles(join(dir, dirent.name), depth + 1);
+    else if (dirent.name.endsWith('.md')) count += 1;
+  }
+  return count;
 }
 
 // ── Skills ───────────────────────────────────────────────────────────────────

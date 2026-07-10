@@ -79,6 +79,7 @@ function scan(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
       },
     ],
     mcpServers: [],
+    configFiles: [],
     errors: [],
     ...overrides,
   };
@@ -315,6 +316,80 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
     const { groups } = await db.inventoryAssets.listAssets({ q: 'pdf' });
     const names = groups.flatMap((g) => g.items).map((i) => i.name);
     expect(names).toEqual(['pdf']);
+  });
+});
+
+describe('Inventory page surfaces real scanned config files', () => {
+  function fileScan(): ConfigScanResult {
+    return scan({
+      configFiles: [
+        {
+          name: 'settings.json',
+          path: '/home/u/.claude/settings.json',
+          scope: 'user',
+          kind: 'User settings',
+          detail: 'Permissions, model, env',
+          updatedAt: '2026-07-01T10:00:00.000Z',
+        },
+        {
+          name: 'settings.local.json',
+          path: '/repo/.claude/settings.local.json',
+          scope: 'local',
+          kind: 'Local overrides',
+        },
+      ],
+    });
+  }
+
+  it('lists real config files as a config group, untracked flag on the local override', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['config'] });
+    const config = groups.find((g) => g.type === 'config');
+    expect(config?.total).toBe(2);
+    expect(config?.flagRollup).toEqual({ untracked: 1 });
+
+    const settings = config?.items.find((i) => i.name === 'settings.json');
+    expect(settings?.sub).toBe('User settings');
+    expect(settings?.flags).toEqual([]);
+
+    const local = config?.items.find((i) => i.name === 'settings.local.json');
+    expect(local?.flags).toEqual(['untracked']);
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.config).toBe(2);
+    // The untracked flag counts toward the attention rollup.
+    expect(stats.attention).toBeGreaterThanOrEqual(1);
+  });
+
+  it('detail carries the shape summary + path in the meta grid', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['config'] });
+    const id = groups[0]?.items.find((i) => i.name === 'settings.json')?.id ?? '';
+    const detail = await db.inventoryAssets.getAsset(id);
+    expect(detail?.description).toBe('Permissions, model, env');
+    expect(detail?.trust).toBeNull();
+    expect(detail?.meta).toMatchObject({
+      kind: 'User settings',
+      scope: 'user',
+      path: '/home/u/.claude/settings.json',
+    });
+  });
+
+  it('attaches config files to the real Claude Code harness card, counted once', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    const cc = items.find((h) => h.id === 'claudecode');
+    const configCategory = cc?.categories.find((c) => c.type === 'config');
+    expect(configCategory?.assets).toHaveLength(2);
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.config).toBe(configCategory?.assets.length);
   });
 });
 

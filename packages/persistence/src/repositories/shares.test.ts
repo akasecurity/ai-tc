@@ -97,12 +97,12 @@ describe('SqliteSharesRepository over the sample dataset', () => {
       q: 'matching-core',
     });
     const hosts = byProject.groups.flatMap((g) => g.items).map((d) => d.host);
-    expect(hosts).toEqual(['45.79.142.6']);
+    expect(hosts).toEqual(['203.0.113.6']);
   });
 
   it('orders the needs-review strip by severity (raw_ip before unverified)', async () => {
     const { items } = await shares.needsReview();
-    expect(items.map((d) => d.host)).toEqual(['45.79.142.6', 'acme-partner.com']);
+    expect(items.map((d) => d.host)).toEqual(['203.0.113.6', 'acme-partner.com']);
     expect(items[0]?.topDataClass).toBe('telemetry');
     expect(items[1]?.review.reasons).toEqual(['unverified_domain']);
   });

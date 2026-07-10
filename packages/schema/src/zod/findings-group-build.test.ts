@@ -160,14 +160,14 @@ describe('buildFindingGroups', () => {
 describe('buildFindingGroups status derivation', () => {
   const statusRows = (statuses: (FindingStatus | undefined)[]): GroupableFindingRow[] =>
     statuses.map((status, i) => ({
-      id: `s${i}`,
+      id: `s${String(i)}`,
       ruleId: 'aws-key',
       category: 'secret',
       severity: 'critical',
       maskedMatch: 'AKIA…1',
       actionTaken: 'block',
       confidence: 0.9,
-      occurredAt: `2026-01-0${i + 1}T00:00:00.000Z`,
+      occurredAt: `2026-01-0${String(i + 1)}T00:00:00.000Z`,
       sourceTool: 'claude-code',
       repo: 'acme/api',
       file: 'a.ts',

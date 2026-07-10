@@ -94,6 +94,7 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),
     openAtRestKeysForPath: () => Promise.resolve([]),
+    resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };

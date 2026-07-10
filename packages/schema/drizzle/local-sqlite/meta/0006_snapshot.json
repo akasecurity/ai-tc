@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "2f344fa6-123b-492a-be0d-2fd79c18a3e2",
-  "prevId": "a28fc053-07da-4fa9-b040-ea02fdc8287b",
+  "id": "d0284c0f-8f68-4dff-adcc-fad087746a14",
+  "prevId": "2f344fa6-123b-492a-be0d-2fd79c18a3e2",
   "tables": {
     "audit_events": {
       "name": "audit_events",
@@ -328,6 +328,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "recorded_by": {
+          "name": "recorded_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "updated_at": {
@@ -1505,6 +1512,36 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "_pack_write_gate": {
+      "name": "_pack_write_gate",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "open": {
+          "name": "open",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "ck_pack_write_gate_single_row": {
+          "name": "ck_pack_write_gate_single_row",
+          "value": "\"_pack_write_gate\".\"id\" = 1"
+        }
+      }
     },
     "policies": {
       "name": "policies",

@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "6",
-      "when": 1783597678947,
-      "tag": "0005_magenta_flatman",
+      "when": 1783595360117,
+      "tag": "0005_fast_vindicator",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783674274948,
+      "tag": "0006_magenta_flatman",
       "breakpoints": true
     }
   ]

@@ -1,10 +1,11 @@
 // The audit-log timeline: a vertical rail of events, each with a tinted node,
 // timestamp, title + badges, and detail line. Presentational — takes events via props.
+import type { AuditEvent } from '@akasecurity/schema';
 import { Badge, Button, cn, SeverityBadge } from '@akasecurity/ui-kit';
 
 import { AlertIcon, ArrowUpRightIcon, ShieldCheckIcon } from '../shared/icons.tsx';
+import { eventTime } from './format.ts';
 import { EVENT_META, LINK_LABEL, TOOL_META } from './meta.ts';
-import type { AuditEvent } from './types.ts';
 
 function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; last: boolean }) {
   const meta = EVENT_META[event.kind];
@@ -17,7 +18,7 @@ function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; l
   return (
     <div className="grid grid-cols-[60px_24px_1fr] gap-x-3">
       <div className="whitespace-nowrap pt-1.5 text-right font-mono text-label text-text-3">
-        {event.time}
+        {eventTime(event.occurredAt)}
       </div>
       <div className="relative flex justify-center">
         {!(first && last) && (
@@ -44,7 +45,7 @@ function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; l
       <div className={cn('pt-0.5', last ? 'pb-0' : 'pb-4.5')}>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-ui font-semibold text-text">{event.title}</span>
-          {event.sev && <SeverityBadge severity={event.sev} />}
+          {event.severity && <SeverityBadge severity={event.severity} />}
           {event.flagged && (
             <Badge variant="critical" className="h-6 gap-1.5">
               <AlertIcon aria-hidden focusable={false} className="size-3" />
@@ -76,12 +77,7 @@ export function AuditTimelineView({ events }: { events: AuditEvent[] }) {
   return (
     <div>
       {events.map((event, i) => (
-        <EventRow
-          key={`${event.time}-${String(i)}`}
-          event={event}
-          first={i === 0}
-          last={i === events.length - 1}
-        />
+        <EventRow key={event.id} event={event} first={i === 0} last={i === events.length - 1} />
       ))}
     </div>
   );

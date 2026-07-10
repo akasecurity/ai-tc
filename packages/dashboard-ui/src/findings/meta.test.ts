@@ -1,8 +1,34 @@
-import type { FindingAction } from '@akasecurity/schema';
+import type { FindingAction, FindingGroup, FindingStatus } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { formatConfidence } from './FindingDetailView.tsx';
-import { ACTION_META, CATEGORY_LABEL, categoryStyle, SEVERITIES } from './meta.ts';
+import {
+  ACTION_META,
+  CATEGORY_LABEL,
+  categoryStyle,
+  filterGroupsByStatus,
+  SEVERITIES,
+} from './meta.ts';
+
+// Minimal FindingGroup fixture — only `id` and `status` vary per test; the rest
+// are placeholder values satisfying the required shape.
+function buildGroup(id: string, status?: FindingStatus): FindingGroup {
+  return {
+    id,
+    category: 'secret',
+    subtype: 'aws-key',
+    severity: 'high',
+    match: { maskedValue: '****', contextPrefix: '' },
+    detection: { id: 'aws-key', name: null },
+    policy: { id: 'category:secret', name: 'secret' },
+    instanceCount: 1,
+    providers: ['api'],
+    aggregateAction: 'allowed',
+    latestDetectedAt: '2026-01-01T00:00:00.000Z',
+    instances: [],
+    ...(status ? { status } : {}),
+  };
+}
 
 describe('categoryStyle', () => {
   it('returns the tinted classes for a known category', () => {
@@ -51,5 +77,33 @@ describe('formatConfidence', () => {
     expect(formatConfidence(0.7)).toEqual({ label: 'Medium · 0.70', tone: 'text-sev-high' });
     expect(formatConfidence(0.69)).toEqual({ label: 'Low · 0.69', tone: 'text-text-2' });
     expect(formatConfidence(0)).toEqual({ label: 'Low · 0.00', tone: 'text-text-2' });
+  });
+});
+
+describe('filterGroupsByStatus', () => {
+  const groups: FindingGroup[] = [
+    buildGroup('g-open', 'open'),
+    buildGroup('g-handled', 'handled'),
+    buildGroup('g-resolved', 'resolved'),
+    buildGroup('g-dismissed', 'dismissed'),
+    buildGroup('g-legacy'), // no status (predates the resolution feature)
+  ];
+
+  it('keeps only groups whose derived status matches the given status', () => {
+    expect(filterGroupsByStatus(groups, 'open')).toEqual([groups[0]]);
+    expect(filterGroupsByStatus(groups, 'resolved')).toEqual([groups[2]]);
+  });
+
+  it('excludes a legacy group with no status when filtering by a specific status', () => {
+    const legacyOnly = groups.filter((g) => g.id === 'g-legacy');
+    expect(filterGroupsByStatus(legacyOnly, 'open')).toEqual([]);
+  });
+
+  it('returns every group unchanged for "all"', () => {
+    expect(filterGroupsByStatus(groups, 'all')).toEqual(groups);
+  });
+
+  it('returns every group unchanged when no status filter is given', () => {
+    expect(filterGroupsByStatus(groups, undefined)).toEqual(groups);
   });
 });

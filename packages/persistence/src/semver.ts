@@ -1,15 +1,18 @@
-// A tiny semver comparator — just enough to answer "is `latest` newer than what's
-// installed?" for the update check. The schema's `SemVer` (packages/schema) is a
-// validation regex only; it has no comparator, so we add this CLI-local one. Handles
-// `X.Y.Z` with an optional `-prerelease` (a version WITH a prerelease sorts BELOW the
-// same version without one, per semver §11). Unparseable input compares as equal so
-// the update check never nags on a garbage version string.
+// A tiny semver comparator for `recorded_by` binary versions — enough to
+// answer "is that recorded binary newer than the one running this session?"
+// for the stale-session notice. Handles `X.Y.Z` with an optional
+// `-prerelease` (a version WITH a prerelease sorts BELOW the same version
+// without one, per semver §11) — prerelease awareness is load-bearing here:
+// the release line is `0.0.2-alpha.N`, so a triplet-only comparison would
+// call every alpha equal. Unparseable input compares as equal so the notice
+// never fires on a garbage version string.
 //
-// TWIN: packages/persistence/src/semver.ts holds a boundary-forced copy of this
-// comparator (persistence may not import an app; the plugin may not import the
-// CLI). The two must stay semantically identical — mirror any change to the
-// ordering rules or the parse grammar in both files, and in both test suites
-// (this one and packages/persistence/src/semver.test.ts).
+// INTENTIONAL boundary-forced copy of the comparator in
+// `cli/src/lib/semver.ts` (same semantics, same tests): persistence may
+// not import from an app, the CLI may not be imported by the plugin, and the
+// packages that could host a shared copy either depend on persistence
+// (local-ops) or must stay I/O-free (detections). Mirror any semantic change
+// in both places.
 
 interface Parsed {
   core: [number, number, number];
@@ -49,8 +52,8 @@ function comparePre(a: string[], b: string[]): -1 | 0 | 1 {
   return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
-// -1 if a < b, 0 if equal, 1 if a > b. Unparseable versions compare as equal.
-export function compareSemver(a: string, b: string): -1 | 0 | 1 {
+/** -1 if a < b, 0 if equal, 1 if a > b. Unparseable versions compare as equal. */
+export function compareBinaryVersions(a: string, b: string): -1 | 0 | 1 {
   const pa = parse(a);
   const pb = parse(b);
   if (!pa || !pb) return 0;
@@ -62,8 +65,13 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   return comparePre(pa.pre, pb.pre);
 }
 
-// Is `latest` strictly newer than `installed`? Both must parse; anything else
-// (unknown/garbage version) is treated as "no update" so the check stays quiet.
-export function isNewer(latest: string, installed: string): boolean {
-  return compareSemver(latest, installed) > 0;
+/**
+ * Whether a version string parses under the same grammar the comparator uses.
+ * Callers that pick a maximum via `compareBinaryVersions` use this to drop
+ * unparseable versions first: those compare *equal* (0) to everything, so an
+ * unparseable value that landed as the running max would never be displaced by
+ * a genuinely-newer parseable one (0 is not `> 0`).
+ */
+export function isParseableBinaryVersion(version: string): boolean {
+  return parse(version) !== null;
 }

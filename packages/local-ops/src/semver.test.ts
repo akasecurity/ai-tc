@@ -1,3 +1,8 @@
+// TWIN: packages/persistence/src/semver.test.ts covers the boundary-forced copy
+// of this comparator (`compareBinaryVersions`). The two comparators must stay
+// semantically identical — if you change the ordering rules or the parse grammar
+// in semver.ts, mirror it in the persistence copy and update both suites. The
+// duplication is intentional (OSS/CLI boundary); see the note atop semver.ts.
 import { describe, expect, it } from 'vitest';
 
 import { compareSemver, isNewer } from './semver.ts';

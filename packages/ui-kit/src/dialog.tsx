@@ -13,7 +13,7 @@ import { cn } from './lib/cn.ts';
  *         <DialogTitle>Title</DialogTitle>
  *         <DialogDescription>Subtitle</DialogDescription>
  *       </DialogHeader>
- *       …body…
+ *       <DialogBody>…body…</DialogBody>
  *       <DialogFooter>
  *         <DialogClose asChild><Button>Cancel</Button></DialogClose>
  *       </DialogFooter>
@@ -52,6 +52,23 @@ export function DialogHeader({ className, ...props }: ComponentPropsWithRef<'div
     <div
       data-slot="dialog-header"
       className={cn('flex shrink-0 flex-col gap-1 border-b border-border px-5 py-4', className)}
+      {...props}
+    />
+  );
+}
+
+/**
+ * The scrollable middle section between DialogHeader and DialogFooter. Carries
+ * the same px-5 inset as the header/footer (DialogContent itself is padding-less),
+ * a default gap between children, and takes the remaining height so long bodies
+ * scroll while the header/footer stay pinned. Without it, raw children placed
+ * directly in DialogContent render edge-to-edge with no vertical rhythm.
+ */
+export function DialogBody({ className, ...props }: ComponentPropsWithRef<'div'>) {
+  return (
+    <div
+      data-slot="dialog-body"
+      className={cn('flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4', className)}
       {...props}
     />
   );

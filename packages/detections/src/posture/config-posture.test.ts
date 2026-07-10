@@ -24,7 +24,14 @@ function loadFixtures(ruleId: string): FixtureCase[] {
 }
 
 function scan(hooks: HookScanEntry[]): ConfigScanResult {
-  return { scannedAt: new Date().toISOString(), skills: [], hooks, errors: [] };
+  return {
+    scannedAt: new Date().toISOString(),
+    skills: [],
+    hooks,
+    mcpServers: [],
+    configFiles: [],
+    errors: [],
+  };
 }
 
 // The same bar the rule-pack CI gate sets: every rule has labeled positive AND

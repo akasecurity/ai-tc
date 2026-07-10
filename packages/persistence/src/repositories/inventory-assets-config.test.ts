@@ -78,6 +78,8 @@ function scan(overrides?: Partial<ConfigScanResult>): ConfigScanResult {
         scope: 'project',
       },
     ],
+    mcpServers: [],
+    configFiles: [],
     errors: [],
     ...overrides,
   };
@@ -96,6 +98,42 @@ function record(s: ConfigScanResult, id: string): ConfigScanRecord {
     },
   };
 }
+
+describe('harness card labeling for real scanned rows', () => {
+  it('a bare real harness row (no label attr) renders the display label, not the raw title', async () => {
+    // Exactly what the SessionStart inventory pass writes: machine-ish title,
+    // attributes carrying only the harness version — no label/provider/kind.
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'claude-code',
+        attributes: { harness_version: '0.0.2-alpha.6' },
+      },
+      Date.now(),
+    );
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    const cc = items.find((h) => h.id === 'claudecode');
+    expect(cc?.label).toBe('Claude Code');
+    expect(cc?.version).toBe('0.0.2-alpha.6');
+  });
+
+  it('an authored label attr (sample rows) still wins over the display map', async () => {
+    db.inventory.upsert(
+      {
+        objectType: 'harness',
+        identityKey: 'claude-code',
+        title: 'claude-code',
+        attributes: { provider: 'claudecode', label: 'Claude Code (custom)' },
+      },
+      Date.now(),
+    );
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    expect(items.find((h) => h.id === 'claudecode')?.label).toBe('Claude Code (custom)');
+  });
+});
 
 describe('Inventory page surfaces real scanned skills/hooks', () => {
   it('an un-scanned store shows no skill/hook assets (unchanged behaviour)', async () => {
@@ -314,5 +352,199 @@ describe('Inventory page surfaces real scanned skills/hooks', () => {
     const { groups } = await db.inventoryAssets.listAssets({ q: 'pdf' });
     const names = groups.flatMap((g) => g.items).map((i) => i.name);
     expect(names).toEqual(['pdf']);
+  });
+});
+
+describe('Inventory page surfaces real scanned config files', () => {
+  function fileScan(): ConfigScanResult {
+    return scan({
+      configFiles: [
+        {
+          name: 'settings.json',
+          path: '/home/u/.claude/settings.json',
+          scope: 'user',
+          kind: 'User settings',
+          detail: 'Permissions, model, env',
+          updatedAt: '2026-07-01T10:00:00.000Z',
+        },
+        {
+          name: 'settings.local.json',
+          path: '/repo/.claude/settings.local.json',
+          scope: 'local',
+          kind: 'Local overrides',
+        },
+      ],
+    });
+  }
+
+  it('lists real config files as a config group, untracked flag on the local override', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['config'] });
+    const config = groups.find((g) => g.type === 'config');
+    expect(config?.total).toBe(2);
+    expect(config?.flagRollup).toEqual({ untracked: 1 });
+
+    const settings = config?.items.find((i) => i.name === 'settings.json');
+    expect(settings?.sub).toBe('User settings');
+    expect(settings?.flags).toEqual([]);
+
+    const local = config?.items.find((i) => i.name === 'settings.local.json');
+    expect(local?.flags).toEqual(['untracked']);
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.config).toBe(2);
+    // The untracked flag counts toward the attention rollup.
+    expect(stats.attention).toBeGreaterThanOrEqual(1);
+  });
+
+  it('detail carries the shape summary + path in the meta grid', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['config'] });
+    const id = groups[0]?.items.find((i) => i.name === 'settings.json')?.id ?? '';
+    const detail = await db.inventoryAssets.getAsset(id);
+    expect(detail?.description).toBe('Permissions, model, env');
+    expect(detail?.trust).toBeNull();
+    expect(detail?.meta).toMatchObject({
+      kind: 'User settings',
+      scope: 'user',
+      path: '/home/u/.claude/settings.json',
+    });
+  });
+
+  it('attaches config files to the real Claude Code harness card, counted once', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(fileScan(), 'scan-1'));
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    const cc = items.find((h) => h.id === 'claudecode');
+    const configCategory = cc?.categories.find((c) => c.type === 'config');
+    expect(configCategory?.assets).toHaveLength(2);
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.config).toBe(configCategory?.assets.length);
+  });
+});
+
+describe('Inventory page surfaces real scanned MCP servers', () => {
+  function mcpScan(): ConfigScanResult {
+    return scan({
+      mcpServers: [
+        {
+          name: 'github',
+          scope: 'project',
+          project: 'https://github.com/acme/repo-a.git',
+          transport: 'stdio',
+          command: 'npx -y @modelcontextprotocol/server-github',
+          envKeys: ['GITHUB_TOKEN'],
+          location: '/repo/.mcp.json',
+        },
+        {
+          name: 'sentry',
+          scope: 'user',
+          transport: 'http',
+          url: 'https://mcp.sentry.io/mcp',
+        },
+      ],
+    });
+  }
+
+  it('lists real MCP servers as an mcp group with the review-required trust rollup', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(mcpScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const mcp = groups.find((g) => g.type === 'mcp');
+    expect(mcp?.total).toBe(2);
+    // Unreviewed servers default to unapproved — the review queue.
+    expect(mcp?.trustRollup).toEqual({ unapproved: 2 });
+
+    const github = mcp?.items.find((i) => i.name === 'github');
+    expect(github?.trust).toBe('unapproved');
+    expect(github?.sub).toBe('MCP server · stdio · npx -y @modelcontextprotocol/server-github');
+    // A remote server's sub shows its host, not the raw url.
+    const sentry = mcp?.items.find((i) => i.name === 'sentry');
+    expect(sentry?.sub).toBe('MCP server · http · mcp.sentry.io');
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    expect(stats.byType.mcp).toBe(2);
+    expect(stats.mcpTrust).toEqual({ 'known-good': 0, risky: 0, unapproved: 2 });
+  });
+
+  it('detail omits the tools list (needs a live handshake) and carries env-key names', async () => {
+    seedRealHarness();
+    const s = mcpScan();
+    db.recordConfigScan(record(s, 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const id = groups[0]?.items.find((i) => i.name === 'github')?.id ?? '';
+    const detail = await db.inventoryAssets.getAsset(id);
+    expect(detail?.trust).toBe('unapproved');
+    expect(detail?.tools).toBeUndefined();
+    expect(detail?.meta).toMatchObject({
+      scope: 'project:https://github.com/acme/repo-a.git',
+      transport: 'stdio',
+      envKeys: ['GITHUB_TOKEN'],
+      project: 'https://github.com/acme/repo-a.git',
+    });
+  });
+
+  it('setMcpTrust round-trips on a projected id and survives a rescan (drifted command)', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(mcpScan(), 'scan-1'));
+
+    const { groups } = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const id = groups[0]?.items.find((i) => i.name === 'github')?.id ?? '';
+
+    // The override INSERT must work although the id is NOT an inventory_asset
+    // row (the FK was dropped in migration 0005).
+    expect(db.inventoryAssets.setMcpTrust(id, 'known-good')).toBe('ok');
+    const after = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    expect(after.groups[0]?.items.find((i) => i.id === id)?.trust).toBe('known-good');
+    expect(after.groups[0]?.trustRollup).toEqual({ 'known-good': 1, unapproved: 1 });
+
+    // Rescan with a changed command: same (name + scope) identity → same row,
+    // trust preserved; only the bag drifts.
+    const drifted = scan({
+      scannedAt: new Date(Date.now() + 1000).toISOString(),
+      mcpServers: [
+        {
+          name: 'github',
+          scope: 'project',
+          project: 'https://github.com/acme/repo-a.git',
+          transport: 'stdio',
+          command: 'changed-command',
+        },
+        { name: 'sentry', scope: 'user', transport: 'http', url: 'https://mcp.sentry.io/mcp' },
+      ],
+    });
+    db.recordConfigScan(record(drifted, 'scan-2'));
+
+    const rescanned = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    const github = rescanned.groups[0]?.items.find((i) => i.name === 'github');
+    expect(github?.id).toBe(id);
+    expect(github?.trust).toBe('known-good');
+
+    // Setting back to the review-required default clears the override row.
+    expect(db.inventoryAssets.setMcpTrust(id, 'unapproved')).toBe('ok');
+    const cleared = await db.inventoryAssets.listAssets({ type: ['mcp'] });
+    expect(cleared.groups[0]?.items.find((i) => i.id === id)?.trust).toBe('unapproved');
+  });
+
+  it('attaches MCP servers to the real Claude Code harness card and counts once', async () => {
+    seedRealHarness();
+    db.recordConfigScan(record(mcpScan(), 'scan-1'));
+
+    const { items } = await db.inventoryAssets.listHarnesses();
+    const cc = items.find((h) => h.id === 'claudecode');
+    const mcpCategory = cc?.categories.find((c) => c.type === 'mcp');
+    expect(mcpCategory?.assets).toHaveLength(2);
+
+    const stats = await db.inventoryAssets.getInventoryStats();
+    // listHarnesses' single card and getInventoryStats agree.
+    expect(stats.byType.mcp).toBe(mcpCategory?.assets.length);
   });
 });

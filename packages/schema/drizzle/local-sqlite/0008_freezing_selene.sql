@@ -1,0 +1,2 @@
+ALTER TABLE `findings` ADD `first_detected_at` integer;--> statement-breakpoint
+UPDATE `findings` SET `first_detected_at` = (SELECT `occurred_at` FROM `events` WHERE `events`.`id` = `findings`.`event_id`) WHERE `first_detected_at` IS NULL;

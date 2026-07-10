@@ -57,6 +57,13 @@
       "when": 1783656085693,
       "tag": "0007_classy_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783678486267,
+      "tag": "0008_freezing_selene",
+      "breakpoints": true
     }
   ]
 }

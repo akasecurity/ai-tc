@@ -389,6 +389,117 @@ describe('resolveConfigInventory — MCP servers', () => {
   });
 });
 
+describe('resolveConfigInventory — config files', () => {
+  it('records settings files with a top-level-key shape summary, never values', () => {
+    writeJson(join(home, '.claude', 'settings.json'), {
+      permissions: { allow: ['Bash(ls:*)'] },
+      model: 'opus',
+      env: { SOME_FLAG: 'value-that-must-not-leak' },
+    });
+    writeJson(join(project, '.claude', 'settings.local.json'), { hooks: {} });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.configFiles).toHaveLength(2);
+
+    const user = scan.configFiles.find((f) => f.scope === 'user');
+    expect(user).toMatchObject({
+      name: 'settings.json',
+      path: join(home, '.claude', 'settings.json'),
+      kind: 'User settings',
+      detail: 'Permissions, model, env',
+    });
+    expect(user?.updatedAt).toBeTruthy();
+    // Shape only: no key values anywhere in the scan.
+    expect(JSON.stringify(scan.configFiles)).not.toContain('value-that-must-not-leak');
+
+    const local = scan.configFiles.find((f) => f.scope === 'local');
+    expect(local).toMatchObject({ kind: 'Local overrides', detail: 'hooks' });
+  });
+
+  it('records memory files with a line count only — content never leaves the file', () => {
+    write(join(home, '.claude', 'CLAUDE.md'), 'line one\nsecret project detail\nline three');
+    write(join(project, 'CLAUDE.md'), '# Conventions\n');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    const userMemory = scan.configFiles.find((f) => f.kind === 'User memory');
+    expect(userMemory).toMatchObject({ name: 'CLAUDE.md', scope: 'user', detail: '3 lines' });
+    expect(JSON.stringify(scan.configFiles)).not.toContain('secret project detail');
+
+    const projectMemory = scan.configFiles.find((f) => f.kind === 'Project memory');
+    expect(projectMemory?.scope).toBe('project');
+  });
+
+  it('records .mcp.json and the commands/agents dirs with entry counts', () => {
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: { github: { command: 'mcp-github' }, sentry: { command: 'mcp-sentry' } },
+    });
+    write(join(project, '.claude', 'commands', 'deploy.md'), '# deploy');
+    write(join(project, '.claude', 'commands', 'review.md'), '# review');
+    write(join(project, '.claude', 'commands', 'ship.md'), '# ship');
+    write(join(project, '.claude', 'agents', 'tester.md'), '# tester');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+
+    const mcp = scan.configFiles.find((f) => f.kind === 'MCP servers');
+    expect(mcp).toMatchObject({ name: '.mcp.json', entryCount: 2, detail: '2 servers' });
+
+    const commands = scan.configFiles.find((f) => f.kind === 'Slash commands');
+    expect(commands).toMatchObject({ name: 'commands', entryCount: 3, detail: '3 commands' });
+
+    const agents = scan.configFiles.find((f) => f.kind === 'Subagents');
+    expect(agents).toMatchObject({ name: 'agents', entryCount: 1, detail: '1 subagent' });
+  });
+
+  it('dir counts are recursive .md only — dotfiles, stray files and nesting handled', () => {
+    write(join(project, '.claude', 'commands', 'deploy.md'), '# deploy');
+    write(join(project, '.claude', 'commands', '.DS_Store'), 'junk');
+    write(join(project, '.claude', 'commands', 'notes.txt'), 'not a command');
+    write(join(project, '.claude', 'commands', 'frontend', 'lint.md'), '# lint');
+    write(join(project, '.claude', 'commands', 'frontend', 'test.md'), '# test');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const commands = scan.configFiles.find((f) => f.kind === 'Slash commands');
+    expect(commands).toMatchObject({ entryCount: 3, detail: '3 commands' });
+  });
+
+  it('.mcp.json entryCount counts only entries the MCP scanner accepts', () => {
+    writeJson(join(project, '.mcp.json'), {
+      mcpServers: {
+        github: { command: 'mcp-github' },
+        'disabled-stub': { disabled: true },
+      },
+    });
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    const mcp = scan.configFiles.find((f) => f.kind === 'MCP servers');
+    // One VALID server — agreeing with the MCP asset list over the same file.
+    expect(mcp).toMatchObject({ entryCount: 1, detail: '1 server' });
+    expect(scan.mcpServers).toHaveLength(1);
+  });
+
+  it('memory line counts ignore the trailing newline; an empty file is 0 lines', () => {
+    write(join(project, 'CLAUDE.md'), 'one\ntwo\n');
+    write(join(home, '.claude', 'CLAUDE.md'), '');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    expect(scan.configFiles.find((f) => f.kind === 'Project memory')?.detail).toBe('2 lines');
+    expect(scan.configFiles.find((f) => f.kind === 'User memory')?.detail).toBe('0 lines');
+  });
+
+  it('absent files produce no rows; a malformed settings file still rows on existence', () => {
+    write(join(home, '.claude', 'settings.json'), '{ not json');
+
+    const scan = resolveConfigInventory({ cwd: project, homeDir: home });
+    // Existence is filesystem truth — the row is there, without a shape summary.
+    expect(scan.configFiles).toHaveLength(1);
+    expect(scan.configFiles[0]).toMatchObject({ name: 'settings.json', kind: 'User settings' });
+    expect(scan.configFiles[0]?.detail).toBeUndefined();
+    // And no phantom rows for anything that doesn't exist.
+    expect(scan.configFiles.some((f) => f.kind === 'Project memory')).toBe(false);
+  });
+});
+
 describe('resolveConfigInventory — skills', () => {
   it('collects personal skills with frontmatter, falling back to the dir name', () => {
     write(

@@ -375,3 +375,71 @@ describe('StandaloneDataGateway — scan ledger', () => {
     await gw.close();
   });
 });
+
+describe('staleBinaryNotice (prevention P2)', () => {
+  const secretsPack: InstalledPackInput = {
+    namespace: 'aka',
+    packId: 'secrets',
+    version: '2.0.0',
+    name: 'Secrets & Credentials',
+    rules: [
+      {
+        specVersion: 1,
+        id: 'secrets/aws',
+        name: 'aws',
+        category: 'secret',
+        severity: 'high',
+        matcher: { type: 'regex', pattern: 'x', flags: 'g' },
+      },
+    ],
+  };
+
+  it('fires when a newer binary recorded the mirror, quoting both versions', async () => {
+    // A newer CLI recorded the inventory…
+    const newer = new StandaloneDataGateway(dir, [secretsPack], {
+      recordedBy: 'aka-cli@0.0.2-alpha.7',
+    });
+    await newer.close();
+    // …and a session running an older plugin generation asks.
+    const gateway = new StandaloneDataGateway(dir);
+    const notice = gateway.staleBinaryNotice('0.0.2-alpha.5');
+    await gateway.close();
+    expect(notice).toContain('v0.0.2-alpha.5');
+    expect(notice).toContain('aka-cli v0.0.2-alpha.7');
+    // A CLI recorded — a restart wouldn't clear it (the plugin stays behind), so
+    // the call-to-action points at bringing the plugin up to match, not a restart.
+    expect(notice).toContain('update the AKA plugin to match');
+    expect(notice).not.toContain('newer plugin');
+    expect(notice).not.toContain('restart');
+  });
+
+  it('keeps the "newer plugin" call-to-action when a newer PLUGIN recorded', async () => {
+    const newer = new StandaloneDataGateway(dir, [secretsPack], {
+      recordedBy: 'plugin@0.0.2-alpha.7',
+    });
+    await newer.close();
+    const gateway = new StandaloneDataGateway(dir);
+    const notice = gateway.staleBinaryNotice('0.0.2-alpha.5');
+    await gateway.close();
+    expect(notice).toContain('plugin v0.0.2-alpha.7');
+    expect(notice).toContain('restart the session to pick up the newer plugin');
+  });
+
+  it('stays silent when this session IS the newest generation, or nothing was recorded', async () => {
+    const first = new StandaloneDataGateway(dir, [secretsPack], {
+      recordedBy: 'plugin@0.0.2-alpha.6',
+    });
+    expect(first.staleBinaryNotice('0.0.2-alpha.6')).toBeNull(); // same generation
+    expect(first.staleBinaryNotice('0.0.2-alpha.7')).toBeNull(); // even newer
+    await first.close();
+
+    const fresh = mkdtempSync(join(tmpdir(), 'aka-standalone-fresh-'));
+    try {
+      const bare = new StandaloneDataGateway(fresh, [secretsPack]);
+      expect(bare.staleBinaryNotice('0.0.2-alpha.5')).toBeNull(); // no recorded_by anywhere
+      await bare.close();
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
+  });
+});

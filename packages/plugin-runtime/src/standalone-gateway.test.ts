@@ -4,9 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME } from '@akasecurity/persistence';
-import { loadOrCreateFingerprintKey } from '@akasecurity/plugin-sdk';
-import type { DetectedFinding, IngestEvent, InstalledPackInput } from '@akasecurity/schema';
+import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
+import { createPluginRuntime, loadOrCreateFingerprintKey } from '@akasecurity/plugin-sdk';
+import type {
+  DetectedFinding,
+  IngestEvent,
+  InstalledPackInput,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -441,5 +446,91 @@ describe('staleBinaryNotice (prevention P2)', () => {
     } finally {
       rmSync(fresh, { recursive: true, force: true });
     }
+  });
+});
+
+// End-to-end for the reported bug: a detection's per-detection policy
+// (installed_packs.policy_id — what the OSS Detections page writes) must drive
+// the runtime's enforcement decision, not the seeded per-category defaults. The
+// gateway + runtime are exercised together because the wiring spans both: the
+// gateway synthesizes ruleId-targeted policies from policy_id, the runtime's
+// resolveAction prefers them.
+describe('per-detection policy drives enforcement (installed_packs.policy_id)', () => {
+  const secretPack: InstalledPackInput = {
+    namespace: 'aka',
+    packId: 'secrets',
+    version: '2.0.0',
+    name: 'Secrets',
+    rules: [
+      {
+        specVersion: 1,
+        id: 'secrets/marker',
+        name: 'marker',
+        category: 'secret',
+        severity: 'critical',
+        matcher: { type: 'keyword', keywords: ['ZZTOP'], caseSensitive: false },
+      },
+    ],
+  };
+
+  const settings: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+  };
+
+  // Seed the installed pack (so an installed_packs row exists), then optionally
+  // assign it a per-detection policy via the same setPolicy the web-ui calls.
+  async function seed(policyId: string | null): Promise<void> {
+    const gw = new StandaloneDataGateway(dir, [secretPack]);
+    await gw.close();
+    if (policyId !== null) {
+      const db = openLocalDatabase(dir);
+      db.installedPacks.setPolicy('aka', 'secrets', policyId);
+      db.close();
+    }
+  }
+
+  // Run the Bash-style enforcement path (processText) against a fresh runtime,
+  // which re-pulls the bundle so the just-set policy takes effect.
+  async function decide(): Promise<{ action: string; text: string | null }> {
+    const gw = new StandaloneDataGateway(dir, [secretPack]);
+    const rt = createPluginRuntime(gw, settings, { dataDir: dir });
+    try {
+      const { action, text } = await rt.processText('deploy with ZZTOP now');
+      return { action, text };
+    } finally {
+      await rt.close();
+    }
+  }
+
+  it('logs (does NOT block) a secret when the detection is left unassigned — Monitor by default', async () => {
+    // The exact reported symptom: a secret still blocked despite the UI showing
+    // every detection as Monitor. Unassigned now resolves to monitor/log.
+    await seed(null);
+    expect(await decide()).toEqual({ action: 'log', text: 'deploy with ZZTOP now' });
+  });
+
+  it('logs a secret when the detection is explicitly set to Monitor', async () => {
+    await seed('monitor');
+    expect(await decide()).toEqual({ action: 'log', text: 'deploy with ZZTOP now' });
+  });
+
+  it('blocks when the detection is explicitly set to Block', async () => {
+    await seed('block');
+    expect(await decide()).toEqual({ action: 'block', text: null });
+  });
+
+  it('redacts when the detection is explicitly set to Redact', async () => {
+    await seed('redact');
+    const result = await decide();
+    expect(result.action).toBe('redact');
+    expect(result.text).not.toContain('ZZTOP');
+  });
+
+  it('warns (text intact) when the detection is explicitly set to Warn', async () => {
+    await seed('warn');
+    expect(await decide()).toEqual({ action: 'warn', text: 'deploy with ZZTOP now' });
   });
 });

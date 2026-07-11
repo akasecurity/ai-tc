@@ -181,6 +181,32 @@ describe('exception evaluation — downgrade to allow', () => {
     expect(result.blockedReferences).toBeUndefined();
   });
 
+  it('does NOT consume an active grant when the detection is Monitor (log-only)', async () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
+    const b = bundle([ex]);
+    // The secret detection is set to Monitor: its findings resolve to 'log', never
+    // block/redact, so there is no enforcement for the grant to bypass — and its
+    // use budget must be preserved (nothing to consume).
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'log',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
+
+    const result = await rt.processText('deploy with EX_SECRET_MARKER now');
+    await rt.close();
+
+    expect(result.action).toBe('log');
+    expect(gw.consumed).toEqual([]);
+  });
+
   it('mixed capture: the excepted value passes while an unexcepted finding still enforces', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });

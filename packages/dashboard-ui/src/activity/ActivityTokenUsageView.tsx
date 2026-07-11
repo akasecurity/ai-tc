@@ -161,7 +161,7 @@ export function ActivityTokenUsageView({
       {open && (
         <div
           id="activity-token-usage-body"
-          className="max-h-64 overflow-y-auto border-t border-border px-2 pb-2 pt-1"
+          className="max-h-64 overflow-y-auto border-t border-border px-2 py-2"
         >
           <ModelTable summary={summary} />
           {summary.costIsPartial && (

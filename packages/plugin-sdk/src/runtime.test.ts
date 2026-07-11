@@ -222,6 +222,35 @@ describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () 
     expect((await rt.processText('deploy with SECRET_MARKER now')).action).toBe('block');
     await rt.close();
   });
+
+  it('collapses mixed Block + Monitor detections in one input to the worst action (block)', async () => {
+    const rt = createPluginRuntime(
+      fakeGateway(
+        bundleWithPolicies([
+          {
+            id: '55555555-5555-4555-8555-555555555555',
+            scope: 'global',
+            target: { ruleId: 'test/secret-marker' },
+            action: 'block',
+            enabled: true,
+          },
+          {
+            id: '66666666-6666-4666-8666-666666666666',
+            scope: 'global',
+            target: { ruleId: 'test/pii-marker' },
+            action: 'log',
+            enabled: true,
+          },
+        ]),
+      ),
+      settings(),
+    );
+    // One input trips both a Block detection and a Monitor detection → block wins.
+    const result = await rt.processText('SECRET_MARKER and PII_MARKER together');
+    expect(result.action).toBe('block');
+    expect(result.text).toBeNull();
+    await rt.close();
+  });
 });
 
 describe('rules pull', () => {

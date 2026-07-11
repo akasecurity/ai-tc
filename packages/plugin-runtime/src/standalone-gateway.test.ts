@@ -528,4 +528,9 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     expect(result.action).toBe('redact');
     expect(result.text).not.toContain('ZZTOP');
   });
+
+  it('warns (text intact) when the detection is explicitly set to Warn', async () => {
+    await seed('warn');
+    expect(await decide()).toEqual({ action: 'warn', text: 'deploy with ZZTOP now' });
+  });
 });

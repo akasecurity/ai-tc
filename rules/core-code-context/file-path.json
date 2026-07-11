@@ -1,13 +1,17 @@
 {
   "specVersion": 1,
   "id": "core-code-context/file-path",
-  "name": "Absolute file path",
+  "name": "User home / identity-bearing file path",
   "category": "code_context",
   "severity": "low",
   "matcher": {
     "type": "regex",
-    "pattern": "/(?:etc|var|usr|opt|home|root|tmp|srv|mnt|bin|sbin|lib|proc|dev|boot)(?:/[A-Za-z0-9_.-]+)+|[A-Za-z]:\\\\(?:[A-Za-z0-9_.-]+\\\\?)+",
+    "pattern": "(?:/home/[^/\\s:]+|/Users/[^/\\s:]+|/root)(?:/[^\\s:]+)+|[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+(?:\\\\[A-Za-z0-9_.-]+)+",
     "flags": "g"
   },
-  "examples": ["/var/log/app.log", "/home/user/config.json", "C:\\Users\\admin\\config.yml"]
+  "examples": [
+    "/home/user/.ssh/id_rsa",
+    "/Users/jane/projects/acme/secrets.env",
+    "C:\\Users\\admin\\config.yml"
+  ]
 }

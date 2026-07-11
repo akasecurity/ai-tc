@@ -22,7 +22,7 @@ import { useState } from 'react';
 
 import { AnalyticsIcon, ChevronDownIcon } from '../shared/icons.tsx';
 import { WidgetError } from '../shared/widget-state.tsx';
-import { costLabel, formatUsd, tokenLabel } from './format.ts';
+import { formatCostTotal, formatUsd, tokenLabel } from './format.ts';
 
 function HeaderIcon() {
   return (
@@ -123,7 +123,7 @@ export function ActivityTokenUsageView({
   }
 
   const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
-  const cost = costLabel(summary.estimatedCostUsd, summary.costIsPartial);
+  const cost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
 
   return (
     <Card className="mb-3.5 shrink-0 overflow-hidden shadow-sm">

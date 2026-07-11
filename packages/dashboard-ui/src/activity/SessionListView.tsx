@@ -7,6 +7,7 @@
 import type { ActivitySessionSummary, Harness } from '@akasecurity/schema';
 import { cn, Skeleton } from '@akasecurity/ui-kit';
 
+import { relativeTime } from '../lib/relativeTime.ts';
 import {
   BranchIcon,
   ClockIcon,
@@ -18,7 +19,7 @@ import {
 import { Provider } from '../shared/Provider.tsx';
 import { WidgetError } from '../shared/widget-state.tsx';
 import { Metric, StatusDot } from './atoms.tsx';
-import { durationLabel, groupSessionsByDay, startLabel } from './format.ts';
+import { durationLabel, groupSessionsByDay } from './format.ts';
 import { HarnessSelect } from './HarnessSelect.tsx';
 
 function SessionRow({
@@ -62,7 +63,16 @@ function SessionRow({
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="text-xs font-semibold text-text-2">{startLabel(session.startedAt)}</span>
+        {/* Relative time is "now"-relative + the tooltip is locale-formatted, so
+            server and client HTML legitimately differ — suppress the hydration
+            warning rather than freeze it to the server's clock/locale. */}
+        <span
+          className="text-xs font-semibold text-text-2"
+          title={new Date(session.startedAt).toLocaleString()}
+          suppressHydrationWarning
+        >
+          {relativeTime(session.startedAt)}
+        </span>
         <Metric icon={ClockIcon}>
           {durationLabel(session.startedAt, session.endedAt, session.status)}
         </Metric>

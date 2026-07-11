@@ -145,6 +145,85 @@ describe('createPluginRuntime — decisions from the pulled bundle (DEFAULT_ACTI
   });
 });
 
+// A ruleId-targeted policy is how the standalone gateway carries a detection's
+// per-detection Monitor/Warn/Redact/Block assignment (installed_packs.policy_id)
+// into enforcement. It must win over both the category default and an explicit
+// category policy — otherwise "set this detection to Monitor" never takes effect.
+describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () => {
+  function bundleWithPolicies(policies: PolicyBundle['policies']): PolicyBundle {
+    return { ...bundle(), policies };
+  }
+
+  it('downgrades a would-be block to log when the rule is set to Monitor', async () => {
+    const rt = createPluginRuntime(
+      fakeGateway(
+        bundleWithPolicies([
+          {
+            id: '11111111-1111-4111-8111-111111111111',
+            scope: 'global',
+            target: { ruleId: 'test/secret-marker' },
+            action: 'log',
+            enabled: true,
+          },
+        ]),
+      ),
+      settings(),
+    );
+    // Without the ruleId policy this secret would block (DEFAULT_ACTIONS).
+    expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
+      action: 'log',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    await rt.close();
+  });
+
+  it('a ruleId policy beats an explicit category policy for the same category', async () => {
+    const rt = createPluginRuntime(
+      fakeGateway(
+        bundleWithPolicies([
+          {
+            id: '22222222-2222-4222-8222-222222222222',
+            scope: 'global',
+            target: { category: 'secret' },
+            action: 'block',
+            enabled: true,
+          },
+          {
+            id: '33333333-3333-4333-8333-333333333333',
+            scope: 'global',
+            target: { ruleId: 'test/secret-marker' },
+            action: 'log',
+            enabled: true,
+          },
+        ]),
+      ),
+      settings(),
+    );
+    expect((await rt.processText('deploy with SECRET_MARKER now')).action).toBe('log');
+    await rt.close();
+  });
+
+  it('falls back to the category default when the ruleId policy is disabled', async () => {
+    const rt = createPluginRuntime(
+      fakeGateway(
+        bundleWithPolicies([
+          {
+            id: '44444444-4444-4444-8444-444444444444',
+            scope: 'global',
+            target: { ruleId: 'test/secret-marker' },
+            action: 'log',
+            enabled: false,
+          },
+        ]),
+      ),
+      settings(),
+    );
+    // Disabled → ignored → secret blocks via DEFAULT_ACTIONS.
+    expect((await rt.processText('deploy with SECRET_MARKER now')).action).toBe('block');
+    await rt.close();
+  });
+});
+
 describe('rules pull', () => {
   it('detects with rules pulled from the bundle (not just bundled packs)', async () => {
     const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());

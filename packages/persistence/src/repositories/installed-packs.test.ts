@@ -242,6 +242,24 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  it('maps each rule to its pack policy (unassigned ⇒ monitor/log, assigned ⇒ its action)', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
+      pack('core-pii', '2.0.0', ['core-pii/email']),
+    ]);
+    // secrets left unassigned (NULL policy_id); core-pii explicitly set to block.
+    db.installedPacks.setPolicy('aka', 'core-pii', 'block');
+
+    const snapshot = db.installedPacks.installedRuleset();
+    // Unassigned pack → the monitor-by-default posture the UI shows (log).
+    expect(snapshot.ruleActions.get('secrets/aws')).toBe('log');
+    expect(snapshot.ruleActions.get('secrets/gh')).toBe('log');
+    // Explicit Block → block.
+    expect(snapshot.ruleActions.get('core-pii/email')).toBe('block');
+    db.close();
+  });
+
   it('counts JSON-level corruption (malformed / non-array rules_json) as invalid', () => {
     // The display-tolerant parseRules silently returns [] for these — at scan
     // time that would masquerade as "no rules" and let the ladder authorize an

@@ -1,0 +1,4 @@
+# All text files check out with LF on every platform. The DDL drift guard
+# (sqlite-ddl.test.ts), the installer checksum self-check, and prettier all
+# byte-compare committed text, so checkout EOLs must be deterministic.
+* text=auto eol=lf

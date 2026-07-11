@@ -1,0 +1,39 @@
+{
+  "name": "@akasecurity/web-ui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint app middleware.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@akasecurity/dashboard-ui": "workspace:*",
+    "@akasecurity/detections": "workspace:*",
+    "@akasecurity/local-ops": "workspace:*",
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "@akasecurity/ui-kit": "workspace:*",
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource-variable/space-grotesk": "^5.2.10",
+    "next": "^15.2.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@tailwindcss/postcss": "^4.1.13",
+    "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.0.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

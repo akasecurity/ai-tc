@@ -1,0 +1,79 @@
+site_name: AI Traffic Control
+site_description: Intercept, inspect, and govern AI prompts and responses from your AI coding tools — entirely on your machine
+site_url: !ENV [DOCS_SITE_URL, 'http://localhost:8000']
+repo_name: akasecurity/ai-tc
+repo_url: https://github.com/akasecurity/ai-tc
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: '(prefers-color-scheme: light)'
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: '(prefers-color-scheme: dark)'
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quickstart: getting-started/quickstart.md
+      - CLI (aka): getting-started/cli.md
+      - Detection Exceptions: cli/exceptions.md
+      - Configuration: getting-started/configuration.md
+  - Architecture:
+      - System Overview: architecture/overview.md
+      - Detection Engine: architecture/detection-engine.md
+  - Plugin Guide:
+      - Claude Code: plugin/claude-code.md
+  - Detection Rules:
+      - Writing Rules: rules/writing-rules.md
+      - Built-in Rules: rules/built-in.md
+      - Publishing: rules/publishing.md
+  - Deployment:
+      - Local / Single-Node: deployment/local.md

@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/akasecurity/ai-tc/security/advisories/new
+    about: >-
+      Please do not report security vulnerabilities in public issues. Use GitHub's
+      private vulnerability reporting, or email [REDACTED:PII] — see SECURITY.md.

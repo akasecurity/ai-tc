@@ -1,0 +1,43 @@
+{
+  "name": "@akasecurity/plugin-claude-code",
+  "version": "0.0.2-alpha.9",
+  "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akasecurity/ai-tc.git",
+    "directory": "plugins/claude-code"
+  },
+  "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/claude-code",
+  "files": [
+    ".claude-plugin",
+    "hooks",
+    "commands",
+    "scripts"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepack": "tsup"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/scanner": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "@types/node": "^25.9.3",
+    "eslint": "^9.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

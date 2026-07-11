@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+@import '@akasecurity/ui-kit/theme.css';
+
+/* Shared packages ship class names in their SOURCE (no pre-built CSS), so Tailwind
+   must scan them or their utilities get purged. The web-ui consumes BOTH ui-kit
+   primitives and the dashboard-ui composites directly, so scan both. */
+@source '../../packages/ui-kit/src';
+@source '../../packages/dashboard-ui/src';

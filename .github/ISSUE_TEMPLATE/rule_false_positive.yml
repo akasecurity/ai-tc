@@ -1,0 +1,47 @@
+name: Detection rule false positive / false negative
+description: A built-in rule fires on harmless content, or misses content it should catch.
+labels: ['detection-rules']
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Never paste a real secret or real personal data** — including one that was
+        correctly detected. Build a fabricated sample with the same shape (same prefix,
+        length, and character classes) that reproduces the behavior.
+  - type: input
+    id: rule
+    attributes:
+      label: Rule and pack
+      description: The rule id and pack, as shown in the finding (or `aka detections`).
+      placeholder: secrets/github-pat
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - False positive (fires on harmless content)
+        - False negative (misses content it should catch)
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Fabricated sample that reproduces it
+      description: A minimal, fabricated snippet — this often becomes a fixture in the fix PR.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should the rule have done with this sample, and why?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `aka --version`, and the pack version if known.

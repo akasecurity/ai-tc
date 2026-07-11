@@ -20,10 +20,22 @@ import { HARNESS_IDS } from './meta.ts';
 export function HarnessSelect({
   value,
   onChange,
+  options,
 }: {
   value: Harness[];
   onChange: (next: Harness[]) => void;
+  /** Harnesses to offer — defaults to the full enum. Callers pass the harnesses
+   * that actually have data so the menu isn't padded with unused ones. Rendered
+   * in the canonical HARNESS_IDS order regardless of the passed order. */
+  options?: Harness[];
 }) {
+  // Offer the present harnesses, but ALWAYS keep an already-selected one visible
+  // even if it dropped out of the current range's facets — otherwise narrowing
+  // the range after selecting a harness would leave no checkbox to uncheck it
+  // (only "All harnesses" could clear it).
+  const available = options
+    ? HARNESS_IDS.filter((id) => options.includes(id) || value.includes(id))
+    : HARNESS_IDS;
   const all = value.length === 0;
   const first = value[0];
   const label = all
@@ -34,8 +46,8 @@ export function HarnessSelect({
 
   function toggle(id: Harness) {
     const next = value.includes(id) ? value.filter((x) => x !== id) : [...value, id];
-    // Everything selected individually reads the same as "All".
-    onChange(next.length === HARNESS_IDS.length ? [] : next);
+    // Selecting every AVAILABLE harness reads the same as "All".
+    onChange(next.length === available.length ? [] : next);
   }
 
   return (
@@ -76,7 +88,7 @@ export function HarnessSelect({
           All harnesses
         </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
-        {HARNESS_IDS.map((id) => (
+        {available.map((id) => (
           <DropdownMenuCheckboxItem
             key={id}
             checked={value.includes(id)}

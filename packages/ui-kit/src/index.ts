@@ -15,6 +15,7 @@ export {
 } from './card.tsx';
 export {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   type DialogContentProps,

@@ -6,6 +6,19 @@
 // stored — the `≥` lower-bound marker carries that when pricing is unknown.
 
 /**
+ * Compact token magnitude with SI-style roll-up: `12.3k`, `4.5M`, `1.2B` — 1000k
+ * rolls to 1M, 1000M to 1B (rather than the old always-`k` form that printed an
+ * unreadable "4464193.1k"). Under 1000 prints the exact integer. Negative-safe.
+ */
+export function formatTokenCount(n: number): string {
+  const abs = Math.abs(n);
+  if (abs < 1_000) return String(n);
+  if (abs < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
+  if (abs < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
+}
+
+/**
  * USD with adaptive precision: a clean total reads at 2 dp, a sub-10¢ estimate
  * needs 4 so it isn't rounded to $0.00.
  */

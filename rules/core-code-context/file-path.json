@@ -6,7 +6,7 @@
   "severity": "low",
   "matcher": {
     "type": "regex",
-    "pattern": "(?:/home/[^/\\s:]+|/Users/[^/\\s:]+|/root)(?:/[^\\s:]+)+|[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+(?:\\\\[A-Za-z0-9_.-]+)+",
+    "pattern": "(?:/home|/Users)/[A-Za-z0-9_.@-]+(?:/[A-Za-z0-9_.@+-]+)*|/root(?:/[A-Za-z0-9_.@+-]+)+|[A-Za-z]:\\\\[Uu]sers\\\\[A-Za-z0-9_.-]+(?:\\\\[A-Za-z0-9_.-]+)*",
     "flags": "g"
   },
   "examples": [

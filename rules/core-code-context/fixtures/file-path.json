@@ -15,6 +15,33 @@
     "shouldMatch": true
   },
   {
+    "label": "lowercase windows drive and users dir",
+    "text": "path c:\\users\\bob\\docs",
+    "shouldMatch": true
+  },
+  {
+    "label": "bare home dir is identity-bearing",
+    "text": "home dir is /Users/jane",
+    "shouldMatch": true
+  },
+  {
+    "label": "root-owned file path",
+    "text": "key in /root/.ssh/id_rsa",
+    "shouldMatch": true
+  },
+  {
+    "label": "span stops at pipe, not swallowing shell syntax",
+    "text": "cat /home/user/notes.txt|head -5",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 4, "end": 24 }]
+  },
+  {
+    "label": "span stops at closing paren",
+    "text": "(see /Users/jane/x)",
+    "shouldMatch": true,
+    "expectedSpans": [{ "start": 5, "end": 18 }]
+  },
+  {
     "label": "temp scratch path (false positive)",
     "text": "awk '/x/' /tmp/praxen_home.html | sed -n '1p'",
     "shouldMatch": false
@@ -27,6 +54,21 @@
   {
     "label": "log path (false positive)",
     "text": "tail -f /var/log/app.log",
+    "shouldMatch": false
+  },
+  {
+    "label": "bare /root reveals no identity",
+    "text": "cd /root && ls",
+    "shouldMatch": false
+  },
+  {
+    "label": "bare /home web route",
+    "text": "navigate to /home to see the dashboard",
+    "shouldMatch": false
+  },
+  {
+    "label": "lowercase users URL path stays case-sensitive",
+    "text": "GET /users/42/profile returned 200",
     "shouldMatch": false
   },
   {

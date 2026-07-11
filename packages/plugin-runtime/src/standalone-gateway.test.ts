@@ -397,7 +397,7 @@ describe('staleBinaryNotice (prevention P2)', () => {
   it('fires when a newer binary recorded the mirror, quoting both versions', async () => {
     // A newer CLI recorded the inventory…
     const newer = new StandaloneDataGateway(dir, [secretsPack], {
-      recordedBy: 'aka-cli@0.0.2-alpha.7',
+      recordedBy: 'aka-cli@0.0.2-alpha.8',
     });
     await newer.close();
     // …and a session running an older plugin generation asks.
@@ -405,7 +405,7 @@ describe('staleBinaryNotice (prevention P2)', () => {
     const notice = gateway.staleBinaryNotice('0.0.2-alpha.5');
     await gateway.close();
     expect(notice).toContain('v0.0.2-alpha.5');
-    expect(notice).toContain('aka-cli v0.0.2-alpha.7');
+    expect(notice).toContain('aka-cli v0.0.2-alpha.8');
     // A CLI recorded — a restart wouldn't clear it (the plugin stays behind), so
     // the call-to-action points at bringing the plugin up to match, not a restart.
     expect(notice).toContain('update the AKA plugin to match');
@@ -415,13 +415,13 @@ describe('staleBinaryNotice (prevention P2)', () => {
 
   it('keeps the "newer plugin" call-to-action when a newer PLUGIN recorded', async () => {
     const newer = new StandaloneDataGateway(dir, [secretsPack], {
-      recordedBy: 'plugin@0.0.2-alpha.7',
+      recordedBy: 'plugin@0.0.2-alpha.8',
     });
     await newer.close();
     const gateway = new StandaloneDataGateway(dir);
     const notice = gateway.staleBinaryNotice('0.0.2-alpha.5');
     await gateway.close();
-    expect(notice).toContain('plugin v0.0.2-alpha.7');
+    expect(notice).toContain('plugin v0.0.2-alpha.8');
     expect(notice).toContain('restart the session to pick up the newer plugin');
   });
 
@@ -430,7 +430,7 @@ describe('staleBinaryNotice (prevention P2)', () => {
       recordedBy: 'plugin@0.0.2-alpha.6',
     });
     expect(first.staleBinaryNotice('0.0.2-alpha.6')).toBeNull(); // same generation
-    expect(first.staleBinaryNotice('0.0.2-alpha.7')).toBeNull(); // even newer
+    expect(first.staleBinaryNotice('0.0.2-alpha.8')).toBeNull(); // even newer
     await first.close();
 
     const fresh = mkdtempSync(join(tmpdir(), 'aka-standalone-fresh-'));

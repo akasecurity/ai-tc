@@ -29,7 +29,13 @@ export function HarnessSelect({
    * in the canonical HARNESS_IDS order regardless of the passed order. */
   options?: Harness[];
 }) {
-  const available = options ? HARNESS_IDS.filter((id) => options.includes(id)) : HARNESS_IDS;
+  // Offer the present harnesses, but ALWAYS keep an already-selected one visible
+  // even if it dropped out of the current range's facets — otherwise narrowing
+  // the range after selecting a harness would leave no checkbox to uncheck it
+  // (only "All harnesses" could clear it).
+  const available = options
+    ? HARNESS_IDS.filter((id) => options.includes(id) || value.includes(id))
+    : HARNESS_IDS;
   const all = value.length === 0;
   const first = value[0];
   const label = all

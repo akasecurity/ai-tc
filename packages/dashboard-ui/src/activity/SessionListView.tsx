@@ -108,6 +108,7 @@ export function SessionListView({
   query,
   onQuery,
   harness,
+  harnessOptions,
   onHarness,
   isLoading,
   error,
@@ -119,6 +120,8 @@ export function SessionListView({
   query: string;
   onQuery: (q: string) => void;
   harness: Harness[];
+  /** Harnesses to offer in the filter — omitted shows the full enum. */
+  harnessOptions?: Harness[];
   onHarness: (next: Harness[]) => void;
   isLoading: boolean;
   error: string | null;
@@ -142,7 +145,11 @@ export function SessionListView({
             className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
           />
         </div>
-        <HarnessSelect value={harness} onChange={onHarness} />
+        <HarnessSelect
+          value={harness}
+          onChange={onHarness}
+          {...(harnessOptions ? { options: harnessOptions } : {})}
+        />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2" aria-busy={isLoading}>
         {error ? (

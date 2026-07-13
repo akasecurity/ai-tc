@@ -12,12 +12,50 @@ export const KeywordMatcher = z.object({
   caseSensitive: z.boolean().default(false),
 });
 
-export const RegexMatcher = z.object({
-  type: z.literal('regex'),
-  pattern: z.string(),
-  flags: z.string().default('gi'),
-  captureGroup: z.number().int().nonnegative().optional(),
-});
+// Rejects patterns before they ever reach the engine or the publish pipeline.
+// `g`/`y` are stripped so exec() always starts at index 0, independent of a
+// shared regex's mutable `lastIndex`.
+function isValidRegex(pattern: string, flags: string): boolean {
+  try {
+    new RegExp(pattern, flags);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A whole-match pattern that can match the empty string (e.g. "\d*", "a?",
+// "(?:)") re-matches at the same index forever under the schema-default "g"
+// flag unless the caller advances past it — the engine's RegexMatcher does
+// that defensively, but rejecting the pattern here stops it from ever being
+// published or bundled. Scoped to whole-match only: a captureGroup rule may
+// legitimately use "*"/"?" around its capture (e.g. `key=(\w*)`), since the
+// overall match still requires the literal "key=" to advance.
+function matchesEmptyString(pattern: string, flags: string): boolean {
+  try {
+    const re = new RegExp(pattern, flags.replace(/[gy]/g, ''));
+    return re.exec('')?.[0].length === 0;
+  } catch {
+    return false;
+  }
+}
+
+export const RegexMatcher = z
+  .object({
+    type: z.literal('regex'),
+    pattern: z.string(),
+    flags: z.string().default('gi'),
+    captureGroup: z.number().int().nonnegative().optional(),
+  })
+  .refine((v) => isValidRegex(v.pattern, v.flags), {
+    message: 'pattern/flags do not form a valid JavaScript regular expression',
+    path: ['pattern'],
+  })
+  .refine((v) => v.captureGroup !== undefined || !matchesEmptyString(v.pattern, v.flags), {
+    message:
+      'a whole-match regex that can match the empty string (e.g. "\\d*", "a?", "(?:)") can hang the matcher — scope the quantifier to a captureGroup, or require at least one character',
+    path: ['pattern'],
+  });
 
 export const ValidatorMatcher = z.object({
   type: z.literal('validator'),

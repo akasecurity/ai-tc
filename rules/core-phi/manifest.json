@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "core-phi",
   "name": "Protected Health Information",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "rules": [
     "mrn",
     "hipaa-identifier",

@@ -32,7 +32,7 @@ The manifest is intentionally minimal. `name` becomes the command namespace, so 
 ```json
 {
   [REDACTED:PII]aka",
-  "version": "0.0.2-alpha.9",
+  "version": "0.1.0",
   "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code",
   "author": { [REDACTED:PII]AKA Security" }
 }

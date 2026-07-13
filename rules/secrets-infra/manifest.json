@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "secrets-infra",
   "name": "Infrastructure Secrets",
-  "version": "1.4.0",
+  "version": "0.1.0",
   "rules": [
     "ssh-private-key",
     "db-connection-string",

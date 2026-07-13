@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "code-flaws",
   "name": "Code Security Flaws",
-  "version": "1.1.0",
+  "version": "0.1.0",
   "description": "Detects common insecure code patterns (OWASP Top 10 and related) across Python, JS/TS, Java, Ruby, .NET and more.",
   "rules": [
     "sql-inject-concat",

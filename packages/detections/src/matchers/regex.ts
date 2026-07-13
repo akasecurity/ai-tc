@@ -2,6 +2,13 @@ import type { Rule, Span } from '@akasecurity/schema';
 
 import type { Matcher } from '../types.ts';
 
+// An absolute per-scan match ceiling. A whole-match pattern that can match the
+// empty string (e.g. "\d*") re-matches at the same index forever unless
+// `lastIndex` is advanced — the `g`-flag loop below now does that — but this
+// ceiling stays as a second backstop against any other way a rule ends up
+// looping (a huge text, an unexpected zero-width edge case in a future engine).
+const MAX_MATCHES_PER_RULE = 10_000;
+
 export class RegexMatcher implements Matcher {
   match(text: string, rule: Rule): Span[] {
     if (rule.matcher.type !== 'regex') return [];
@@ -16,11 +23,16 @@ export class RegexMatcher implements Matcher {
 
     while ((m = re.exec(text)) !== null) {
       const group = captureGroup != null ? m[captureGroup] : m[0];
-      if (!group) continue;
-      const groupIndices = captureGroup != null ? m.indices?.[captureGroup] : undefined;
-      const start = groupIndices ? groupIndices[0] : m.index;
-      spans.push({ start, end: start + group.length });
-      if (!flags.includes('g')) break;
+      // A zero-length match (e.g. "\d*" matching "") never advances `lastIndex`
+      // on its own, so a `g`-flag loop that just re-runs `exec` at the same
+      // index hangs forever. Bump it past the empty match before continuing.
+      if (m[0].length === 0) re.lastIndex++;
+      if (group && spans.length < MAX_MATCHES_PER_RULE) {
+        const groupIndices = captureGroup != null ? m.indices?.[captureGroup] : undefined;
+        const start = groupIndices ? groupIndices[0] : m.index;
+        spans.push({ start, end: start + group.length });
+      }
+      if (!flags.includes('g') || spans.length >= MAX_MATCHES_PER_RULE) break;
     }
     return spans;
   }

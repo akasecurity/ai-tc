@@ -55,7 +55,7 @@ Promote any detection from monitor to warn, redact, or block from the dashboard,
 
 ```bash
 /plugin marketplace add akasecurity/marketplace
-/plugin install aka@akasecurity
+/plugin install ai-tc@akasecurity
 ```
 
 Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and nothing leaves your machine to scan it.

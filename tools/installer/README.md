@@ -36,7 +36,7 @@ node tools/installer/install.mjs --plugin claude-code  # prints the marketplace 
 
 ## What it does
 
-1. **Ensures Node 26+** (the shell layer checks `node` exists; `install.mjs` checks the version).
+1. **Ensures Node 24+** (the shell layer checks `node` exists; `install.mjs` checks the version).
 2. **Cleans up `~/.npmrc` if needed** — the packages install from the **public npm
    registry** with no auth and no registry override; if an earlier installer release
    left an `@akasecurity` → `npm.pkg.github.com` scope mapping in `~/.npmrc`, it is

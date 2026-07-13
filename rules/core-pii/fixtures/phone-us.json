@@ -28,5 +28,20 @@
     "label": "bare digit run is not a phone number",
     "text": "order 41555512340 shipped",
     "shouldMatch": false
+  },
+  {
+    "label": "phone-shaped number without phone context",
+    "text": "Tracking number: 555-123-4567",
+    "shouldMatch": false
+  },
+  {
+    "label": "mobile label corroborates",
+    "text": "Mobile: 555-123-4567",
+    "shouldMatch": true
+  },
+  {
+    "label": "contact label corroborates",
+    "text": "Please reach out — contact 555-123-4567 anytime",
+    "shouldMatch": true
   }
 ]

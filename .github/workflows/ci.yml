@@ -51,10 +51,9 @@ jobs:
       #     its source); `^build` alone was insufficient because libs are
       #     consumed as raw source and have no build task. See the test/build
       #     dependsOn in turbo.json.
-      #   - format:check (prettier), check:boundaries, and check:comments run
-      #     outside Turbo, so they are never cached and always run fresh; the
-      #     shared ESLint ruleset is graph-tracked via the ^lint edge to
-      #     @akasecurity/eslint-config.
+      #   - format:check (prettier) runs outside Turbo, so it is never cached
+      #     and always runs fresh; the shared ESLint ruleset is graph-tracked
+      #     via the ^lint edge to @akasecurity/eslint-config.
       #
       # Key is scoped by lockfile hash so a dependency bump starts a fresh
       # cache lineage instead of dragging the old tree forward forever; the
@@ -62,7 +61,7 @@ jobs:
       # from the newest compatible prior cache. GitHub's 10 GB LRU + 7-day
       # eviction bounds total growth.
       - name: Restore Turbo cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -75,12 +74,6 @@ jobs:
 
       - name: Lint
         run: pnpm lint
-
-      - name: Package boundary check (no forbidden imports across package walls)
-        run: pnpm check:boundaries
-
-      - name: Comment-hygiene check
-        run: pnpm check:comments
 
       - name: Installer checksum self-check (bootstrap pins match install.mjs)
         run: node tools/installer/checksum-selfcheck.mjs

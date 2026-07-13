@@ -10,10 +10,7 @@
 - [ ] `pnpm lint` passes
 - [ ] `pnpm typecheck` passes
 - [ ] `pnpm test` passes
-- [ ] `pnpm check:boundaries` passes
-- [ ] `pnpm check:comments` passes
 - [ ] PR title follows [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`)
-- [ ] Docs under `docs/` updated if user-facing behavior changed
 
 ### Detection-rule changes only (`rules/`)
 

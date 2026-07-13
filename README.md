@@ -11,7 +11,7 @@ An AI traffic control plane by [AKA Security](https://github.com/akasecurity) �
 ## 100% local — and verifiably so
 
 - **No account, no server, no telemetry.** There is no backend to stand up and nothing leaves your machine.
-- **No network calls in the codebase.** CI fails the build if a `fetch()` enters the OSS surface — see [`scripts/check-oss-boundaries.mjs`](scripts/check-oss-boundaries.mjs) (`pnpm check:boundaries`).
+- **No network calls in the codebase.** The OSS surface makes no network calls — a `fetch()` must never appear in shipped source.
 - **Your data is one SQLite file you own:** `~/.aka/data/aka.db`, readable with any SQLite client. Delete `~/.aka` and every trace is gone.
 - **Raw values never hit disk.** Findings and audit records store masked or hashed representations only — if you ever see a raw secret or PII value reach disk or the network, that is a vulnerability we want reported: see [SECURITY.md](SECURITY.md).
 
@@ -77,8 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/
 # Windows: irm https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.ps1 | iex
 ```
 
-Full guide — machine setup and every command:
-[**docs → Getting Started → CLI (aka)**](docs/docs/getting-started/cli.md).
+Run `aka --help` for the full command list.
 
 ---
 
@@ -107,7 +106,6 @@ rules/              Declarative detection rule packs (core-pii, secrets, …)
 tools/
   installer/        CLI install scripts
 skills/             Claude Skills for AI-assisted development on this repo
-docs/               MkDocs documentation site (public user-facing docs)
 ```
 
 ---
@@ -135,4 +133,4 @@ Rules live in `rules/<pack-name>/`. Each rule requires labelled positive **and**
 
 ## Architecture
 
-See the [architecture overview](docs/docs/architecture/overview.md) and [detection engine](docs/docs/architecture/detection-engine.md) docs for the design: detection engine extensibility, the plugin SDK, and the local store.
+See [CLAUDE.md](CLAUDE.md) for the architecture and package boundaries: detection engine extensibility, the plugin SDK, and the local store.

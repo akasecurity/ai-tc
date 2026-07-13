@@ -125,7 +125,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'code-flaws',
     name: 'Code Security Flaws',
-    version: '1.1.0',
+    version: '0.1.0',
     rawRules: [
       codeFlawsSqlInjectConcat,
       codeFlawsSqlInjectConcatDot,
@@ -161,7 +161,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-code-context',
     name: 'Code Context',
-    version: '1.1.0',
+    version: '0.1.0',
     rawRules: [
       coreCodeContextInternalIp,
       coreCodeContextLocalhostRef,
@@ -176,7 +176,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-financial',
     name: 'Financial Information',
-    version: '1.1.0',
+    version: '0.1.0',
     rawRules: [
       coreFinancialCreditCard,
       coreFinancialIban,
@@ -191,7 +191,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-phi',
     name: 'Protected Health Information',
-    version: '1.0.0',
+    version: '0.1.0',
     rawRules: [
       corePhiMrn,
       corePhiHipaaIdentifier,
@@ -206,7 +206,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'core-pii',
     name: 'Core PII',
-    version: '2.1.0',
+    version: '0.1.0',
     rawRules: [
       corePiiEmail,
       corePiiSsn,
@@ -227,7 +227,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets',
     name: 'Secrets & Credentials',
-    version: '2.2.0',
+    version: '0.1.0',
     rawRules: [
       secretsAwsAccessKey,
       secretsAwsSecretKey,
@@ -255,7 +255,7 @@ export const BUNDLED_PACKS: readonly BundledPack[] = [
   {
     packId: 'secrets-infra',
     name: 'Infrastructure Secrets',
-    version: '1.4.0',
+    version: '0.1.0',
     rawRules: [
       secretsInfraSshPrivateKey,
       secretsInfraDbConnectionString,

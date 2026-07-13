@@ -1,6 +1,6 @@
 {
   "name": "aka",
-  "version": "0.0.2-alpha.9",
+  "version": "0.1.0",
   "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code. Detection runs locally; events are recorded to a local SQLite store on your machine.",
   "homepage": "https://github.com/akasecurity/ai-tc",
   "author": { "name": "AKA Security" }

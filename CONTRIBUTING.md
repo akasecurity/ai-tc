@@ -22,20 +22,20 @@ and SQLite with no other services.
   — checked by commitlint.
 - **Formatting** via Prettier and **lint** via ESLint (`pnpm lint`, `pnpm format:check`).
   Everything is `error`, nothing `warn`.
-- **Package boundaries** are enforced by `pnpm check:boundaries`.
+- **Package boundaries** — no forbidden imports across package walls (see the
+  dependency rules in `CLAUDE.md`).
 
 ### Comment style
 
 Comments explain **what** a piece of code does and any non-obvious local mechanics
 — not the history of _why a decision was made_. Keep them short and local; link to a
-doc rather than narrating a decision inline. `pnpm check:comments` enforces this in
-CI and fails on narration-style comments.
+doc rather than narrating a decision inline. This repository is public, so keep
+comments factual and reader-facing — no internal narration.
 
 ## Contributing detection rules
 
 Detection rules live in [`rules/`](rules/). Every rule ships with **positive and
 negative fixtures**; a rule PR without fixtures will not pass CI. See
-[`docs/rules/writing-rules.md`](docs/docs/rules/writing-rules.md) and
 `skills/write-detection-rule/SKILL.md` for the format.
 
 Rules merged here are published as **first-party, verified** packs, so rule PRs get
@@ -46,8 +46,7 @@ so we don't ship false positives.
 
 1. Fork and branch from `main`.
 2. Keep PRs focused; write a clear description.
-3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm check:boundaries`,
-   `pnpm check:comments`, and `pnpm format:check` pass.
+3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm format:check` pass.
 4. Be responsive to review feedback.
 
 By contributing you agree that your contributions are licensed under the

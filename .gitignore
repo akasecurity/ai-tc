@@ -6,7 +6,6 @@ coverage
 .env
 .env.*
 !.env.example
-docs/site
 *.tsbuildinfo
 
 .idea/
@@ -19,9 +18,6 @@ plugins/claude-code/scripts/
 
 # Per-developer Claude Code settings (plugin enablement etc.) stay local.
 .claude/settings.local.json
-
-# Optional local pattern overlay for scripts/check-comment-hygiene.mjs — never committed.
-scripts/comment-hygiene.local.json
 
 # local agent-tooling state — not product code
 .wolf/

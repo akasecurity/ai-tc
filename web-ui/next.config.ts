@@ -26,7 +26,7 @@ const nextConfig: NextConfig = {
   // loopback Host check in middleware.ts, which covers any port.
   experimental: {
     serverActions: {
-      allowedOrigins: ['localhost:4319', '[REDACTED:PII]:4319', '[::1]:4319'],
+      allowedOrigins: ['localhost:4319', '127.0.0.1:4319', '[::1]:4319'],
     },
   },
   // Lint is run by the monorepo's own eslint (pnpm lint), not by `next build`.

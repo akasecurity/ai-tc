@@ -8,18 +8,15 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "turbo run build --filter=!@akasecurity/docs",
-    "build:docs": "turbo run build --filter=@akasecurity/docs",
+    "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "check:boundaries": "node scripts/check-oss-boundaries.mjs",
     "test": "turbo run test",
     "clean": "turbo run clean && rm -rf node_modules",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "setup": "pnpm install && lefthook install",
-    "check:comments": "node scripts/check-comment-hygiene.mjs"
+    "setup": "pnpm install && lefthook install"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

@@ -11,4 +11,3 @@
 # Release + supply-chain surfaces.
 /.github/workflows/     @akasecurity/maintainers
 /tools/installer/       @akasecurity/maintainers
-/scripts/               @akasecurity/maintainers

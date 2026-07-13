@@ -21,7 +21,7 @@
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
     "@commitlint/cli": "^21.0.2",
-    "@commitlint/config-conventional": "^19.0.0",
+    "@commitlint/config-conventional": "^21.2.0",
     "eslint": "^9.0.0",
     "lefthook": "^2.1.9",
     "prettier": "^3.5.0",

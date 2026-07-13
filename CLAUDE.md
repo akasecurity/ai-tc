@@ -38,14 +38,13 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source; `pnpm check:boundaries` fails on one. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 
-## Package dependency rules (enforced in CI by `pnpm check:boundaries`)
+## Package dependency rules
 
 The store-reading packages read the local SQLite store directly through
 `@akasecurity/persistence`; they never reach for an HTTP client or an ORM at the app layer.
-`scripts/check-oss-boundaries.mjs` (`pnpm check:boundaries`, run in CI before typecheck)
-scans every package source root and fails on a forbidden import.
+Keep these package boundaries intact — a forbidden import across a package wall is a defect.
 
 ```
 @akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
@@ -78,16 +77,15 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 ```
 
-**Cross-cutting rules (all enforced by `pnpm check:boundaries` / ESLint):**
+**Cross-cutting rules:**
 
 - No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (the plugin's provider resolution, the CLI spawning the dashboard).
 - No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 
-## Comment & string hygiene (enforced by `pnpm check:comments`)
+## Comment & string hygiene
 
-This repository is **public**. `scripts/check-comment-hygiene.mjs` (`pnpm check:comments`)
-scans shipped source and fails CI on internal narration that must not appear in public code:
+This repository is **public**. Shipped source must not contain internal narration:
 design-doc/section/ADR/PR citations, team-member names, or other internal narration.
 **Comments explain _what_ the code does, never the _why_ behind an internal decision.**
 Keep prose factual and reader-facing; if you need to record rationale, put it in a commit
@@ -141,9 +139,7 @@ plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained n
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
-docs/                 the MkDocs Material user-facing docs site
 skills/               agent skills (e.g. write-detection-rule)
-scripts/              CI gate scripts (check-oss-boundaries.mjs, check-comment-hygiene.mjs)
 ```
 
 ## Adding a new workspace package
@@ -153,7 +149,6 @@ scripts/              CI gate scripts (check-oss-boundaries.mjs, check-comment-h
 3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
 4. Export from `src/index.ts`
 5. Add `"lint"` and `"typecheck"` scripts
-6. If the package ships source, add its `src` root to `scripts/check-oss-boundaries.mjs` and `scripts/check-comment-hygiene.mjs`
 
 ## Commit messages
 
@@ -208,32 +203,13 @@ and run `aka init` again. There is **no demo/sample data anywhere** (removed by 
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
 `packages/persistence/src/test-fixtures/` (imported by `*.test.ts` only — never shipped).
-Full command set: [`deployment/local.md`](docs/docs/deployment/local.md).
 
 ## Documentation
 
 This repository is **public** (open source). Keep internal documentation out of it:
 planning docs, decision records, roadmaps, and design docs are maintainer-internal and
-do not belong in this tree. Only public user-facing docs (`docs/`) and agent conventions
-(`CLAUDE.md`, `skills/`) belong here.
-
-`docs/` is a MkDocs Material site. **Update the relevant page whenever you add or change a feature:**
-
-| Change type           | Doc page to update                                           |
-| --------------------- | ------------------------------------------------------------ |
-| New CLI command       | `docs/docs/getting-started/cli.md`                           |
-| New config / env var  | `docs/docs/getting-started/configuration.md`                 |
-| New detection rule    | `docs/docs/rules/built-in.md` (or a new page for a new pack) |
-| New rule format field | `docs/docs/rules/writing-rules.md`                           |
-| New plugin hook       | `docs/docs/plugin/claude-code.md`                            |
-| Architecture change   | `docs/docs/architecture/overview.md`                         |
-
-Run the docs locally:
-
-```bash
-pip install -r docs/requirements.txt
-pnpm --filter @akasecurity/docs dev   # serves at http://localhost:8000
-```
+do not belong in this tree. Only agent conventions (`CLAUDE.md`, `skills/`) and the
+top-level contributor docs (`README.md`, `CONTRIBUTING.md`) belong here.
 
 ## Testing
 

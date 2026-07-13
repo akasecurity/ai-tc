@@ -9,5 +9,9 @@
     "pattern": "(?<!\\d)(?:\\+?1[-.\\s]?)?(?:\\([2-9]\\d{2}\\)[-.\\s]?|[2-9]\\d{2}[-.\\s])\\d{3}[-.\\s]\\d{4}(?!\\d)",
     "flags": "g"
   },
+  "requiresNearby": {
+    "labels": ["phone", "call", "mobile", "cell", "tel", "telephone", "contact", "fax", "dial"],
+    "windowChars": 160
+  },
   "examples": ["(555) 123-4567", "+1-555-123-4567"]
 }

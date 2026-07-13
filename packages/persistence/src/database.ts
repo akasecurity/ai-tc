@@ -50,7 +50,7 @@ export type { InventoryContext, InventoryFacets, ResolvedInventory } from '@akas
 
 /**
  * The local SQLite store under <dir>/aka.db — the writer of events/findings
- * for the plugin/CLI. Uses the Node 26 builtin node:sqlite (no native dep,
+ * for the plugin/CLI. Uses the Node 24+ builtin node:sqlite (no native dep,
  * tsup-bundleable), applies the canonical schema from @akasecurity/schema on
  * open, and seeds default per-category policies. The repositories are bound to
  * this open handle. Single-node: one machine, one owner, one store.

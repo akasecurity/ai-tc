@@ -63,7 +63,7 @@ export default defineConfig({
   },
   format: ['esm'],
   platform: 'node',
-  target: 'node26',
+  target: 'node24',
   outDir: 'scripts',
   splitting: false,
   // Hook scripts must be self-contained: the user's machine has no node_modules

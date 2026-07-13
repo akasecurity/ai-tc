@@ -36,7 +36,7 @@ export default defineConfig({
   entry: { cli: 'src/cli.ts' },
   format: ['esm'],
   platform: 'node',
-  target: 'node26',
+  target: 'node24',
   outDir: 'dist',
   splitting: false,
   clean: true,

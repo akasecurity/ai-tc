@@ -2,7 +2,7 @@
   "specVersion": 1,
   "id": "core-code-context",
   "name": "Code Context",
-  "version": "1.1.0",
+  "version": "0.1.0",
   "rules": [
     "internal-ip",
     "localhost-ref",

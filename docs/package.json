@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/docs",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "python3 -m mkdocs serve --dev-addr 0.0.0.0:8000",

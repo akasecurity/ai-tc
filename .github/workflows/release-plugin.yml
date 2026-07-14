@@ -94,7 +94,7 @@ jobs:
       - name: Smoke-test built scripts (self-contained, fail-open)
         run: |
           cd plugins/claude-code
-          for f in user-prompt-submit pre-tool-use post-tool-use sync; do
+          for f in session-start user-prompt-submit pre-tool-use post-tool-use stop; do
             test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
           done
           # The hooks run on the user's machine with no node_modules; junk input

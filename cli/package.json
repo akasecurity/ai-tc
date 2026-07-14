@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ink": "^6.0.0",
+    "ink": "^7.1.0",
     "next": "^15.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

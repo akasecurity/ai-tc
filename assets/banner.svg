@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1B2530"/>
+      <stop offset="1" stop-color="#232F3E"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="6" rx="3" fill="#00E0B8"/>
+  <!-- AKA logo mark -->
+  <g transform="translate(72,96) scale(0.72)" fill="#00E0B8">
+    <circle cx="61.07" cy="20.37" r="20.37"/>
+    <path d="M0 88.666 A40.746 40.746 0 0 1 81.492 88.666 Z"/>
+    <path d="M81.492 88.666 A40.746 40.746 0 0 1 0 88.666 Z" fill-opacity="0.55"/>
+    <circle cx="20.42" cy="157.05" r="20.37" fill-opacity="0.55"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="190" y="132" font-family="ui-monospace, 'Geist Mono', monospace" font-weight="700" fill="#F6F8F9"><tspan font-size="46">AI Traffic Control</tspan> <tspan font-size="28" font-weight="500" fill="#7DF8E2">(ai-tc)</tspan></text>
+  <text x="192" y="178" font-size="24" font-weight="400" fill="#B0C7E2">Intercept, inspect, and govern AI prompts and responses.</text>
+  <!-- Pills -->
+  <g font-size="17" font-weight="600">
+    <g transform="translate(192,210)">
+      <rect width="150" height="40" rx="20" fill="#00E0B8" fill-opacity="0.12" stroke="#00E0B8" stroke-opacity="0.5"/>
+      <text x="75" y="26" text-anchor="middle" fill="#7DF8E2">detect</text>
+    </g>
+    <g transform="translate(360,210)">
+      <rect width="180" height="40" rx="20" fill="#6AD9FF" fill-opacity="0.12" stroke="#6AD9FF" stroke-opacity="0.5"/>
+      <text x="90" y="26" text-anchor="middle" fill="#A0E7FF">enforce policy</text>
+    </g>
+    <g transform="translate(558,210)">
+      <rect width="150" height="40" rx="20" fill="#8A98FF" fill-opacity="0.14" stroke="#8A98FF" stroke-opacity="0.5"/>
+      <text x="75" y="26" text-anchor="middle" fill="#C3CBFF">audit</text>
+    </g>
+  </g>
+  <text x="192" y="288" font-family="ui-monospace, 'Geist Mono', monospace" font-size="15" fill="#6B7D8F">Open source  ·  Claude Code plugin  ·  local-first, zero backend required</text>
+</svg>

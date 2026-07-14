@@ -1,136 +1,72 @@
+<p align="center"><img src="assets/banner.svg" alt="AI Traffic Control (ai-tc): intercept, inspect, and govern AI prompts and responses. Open source, Claude Code plugin, local-first." width="100%"></p>
+
 # AI Traffic Control
 
-An AI traffic control plane by [AKA Security](https://github.com/akasecurity) — intercept, inspect, and govern prompts and responses from AI coding tools. Built as a Claude Code plugin plus a local-first `aka` CLI — detection and storage run entirely on your machine.
+AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught and kept on your machine, not sent to a model or a third party.
 
-> **Status:** Alpha — APIs may change; the local store schema is migrated automatically on upgrade.
+![Open source](https://img.shields.io/badge/Open_source-232F3E?style=flat-square)
+![Local](https://img.shields.io/badge/Local-232F3E?style=flat-square)
+![Claude Code + Claude Desktop](https://img.shields.io/badge/Claude_Code_+_Claude_Desktop-232F3E?style=flat-square)
+[![akasecurity.io](https://img.shields.io/badge/akasecurity.io-00E0B8?style=flat-square&labelColor=232F3E)](https://akasecurity.io)
 
-> **Naming:** the product is **AI Traffic Control** (`ai-tc`). The CLI binary, the plugin id, and the `~/.aka` home directory are named `aka` after AKA Security, the company behind the project.
+## How it works
 
----
+Every event in a session runs through one control point before it takes effect:
 
-## 100% local — and verifiably so
+```
+prompt · tool call · response · file read   →   ai-tc policy engine   →   monitor · warn · redact · block · exception
+```
 
-- **No account, no server, no telemetry.** There is no backend to stand up and nothing leaves your machine.
-- **No network calls in the codebase.** The OSS surface makes no network calls — a `fetch()` must never appear in shipped source.
-- **Your data is one SQLite file you own:** `~/.aka/data/aka.db`, readable with any SQLite client. Delete `~/.aka` and every trace is gone.
-- **Raw values never hit disk.** Findings and audit records store masked or hashed representations only — if you ever see a raw secret or PII value reach disk or the network, that is a vulnerability we want reported: see [SECURITY.md](SECURITY.md).
+Prompts and tool inputs are checked before they reach the model; tool outputs and file reads are checked after it responds. Each event is scanned against your installed rule packs, every match becomes a finding (rule id, category, severity, matched span), and policy decides the outcome. Everything is logged.
 
----
+Detection is mostly regex, patterns shaped like an AWS access key, an email address, or a bank routing number, which covers most secrets and PII since they have a predictable shape. A smaller set of rules match on keyword, and some regex matches run through a validator, such as a Luhn checksum for card numbers or a Shannon-entropy check for high-entropy secrets, to cut false positives.
 
-## What it does
+### Policy outcomes
 
-- **Intercepts** prompts and responses in Claude Code (and later Claude Desktop, Cursor, …) via hooks
-- **Scans** for PII, credentials, financial data, and OWASP code findings using a declarative rule engine
-- **Takes action** — warn, redact, or block — before content reaches the LLM
-- **Logs** every event to a local SQLite store at `~/.aka/data/aka.db` — no backend required
-- **Surfaces** findings as formatted slash-command output (`/aka:health`, `/aka:findings`, …), and optionally in a local web dashboard
+A finding resolves to one of five outcomes:
 
----
+| Outcome       | What happens                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Monitor**   | Logged only. Every rule ships active here, so nothing is enforced until you promote it.                            |
+| **Warn**      | Surfaces a warning in the session; the content still goes through unchanged.                                       |
+| **Redact**    | The matched value is replaced in place before it reaches the model. Tool inputs and outputs only, not prompt text. |
+| **Block**     | The prompt or tool call is stopped, with a message explaining what fired.                                          |
+| **Exception** | A manually granted, exact-value override that lets one specific match through despite its rule's policy.           |
 
-## Quick start
+Promote any detection from monitor to warn, redact, or block from the dashboard, per rule or per category.
 
-**Claude Code plugin (default):** in the Claude Code terminal CLI, run `/plugin marketplace add akasecurity/ai-tc` then `/plugin install aka@ai-tc`, then `/aka:setup` to choose your installation type and redaction handling. Detection runs locally and persists to `~/.aka/data/aka.db`; view it with the `/aka:health`, `/aka:findings`, `/aka:recommend`, and `/aka:audit` slash commands, or `/aka:dashboard` to open the full web dashboard in your browser.
+## Key concepts
 
-**Full local dashboard (opt-in):** the `aka` CLI ships an OSS web dashboard over the
-_same_ `~/.aka/data/aka.db` — no backend, no Docker, no auth. See
-[The `aka` CLI](#the-aka-cli-local-first-no-docker) below.
+| Term          | What it is                                                                                           |
+| ------------- | ---------------------------------------------------------------------------------------------------- |
+| **Event**     | A prompt, response, tool call, or file read captured from an agent session.                          |
+| **Finding**   | A rule match produced by the detection engine against an event.                                      |
+| **Rule**      | A JSON file describing what to detect: a keyword list, a regex pattern, or a validator.              |
+| **Rule pack** | A directory of rules and their fixtures with a `manifest.json`.                                      |
+| **Policy**    | The decision about what to do when a rule or category fires.                                         |
+| **Plugin**    | The harness extension that intercepts sessions. One package, used by Claude Code and Claude Desktop. |
 
-**Dev environment (one command):**
+## Install
+
+`ai-tc` installs as a plugin through the AKA marketplace.
+
+### Claude Code
+
+In Claude Code:
 
 ```bash
-git clone https://github.com/akasecurity/ai-tc.git
-cd ai-tc
-pnpm setup          # install dependencies + git hooks
-pnpm dev            # turbo watch across the workspaces
+/plugin marketplace add akasecurity/marketplace
+/plugin install ai-tc@akasecurity
 ```
 
----
+### Claude Desktop
 
-## The `aka` CLI (local-first, no Docker)
+Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and nothing leaves your machine to scan it.
 
-The `aka` CLI runs detection, the local store, and the dashboard **entirely on your
-machine** — it reads/writes the same `~/.aka/data/aka.db` the plugin uses.
+## Docs
 
-**Requirements:** Node.js 24 or newer (the store uses the built-in `node:sqlite` — no
-native dependency).
+Full documentation, architecture, and the built-in detection catalog live at **[akasecurity.github.io/ai-tc-docs](https://akasecurity.github.io/ai-tc-docs/)**.
 
-```bash
-# 1. Install the CLI.
-npm install -g @akasecurity/cli
-
-# 2. Set up your machine + scan.
-aka init                 # scaffold ~/.aka (settings + local SQLite store)
-aka scan .               # scan for secrets / sensitive data (raw secrets never hit disk)
-aka stats                # findings + enforcement aggregates
-
-# 3. Open the local dashboard, or install an agent plugin.
-aka dashboard            # local web UI at http://localhost:4319/security (no backend, no auth)
-aka tui                  # interactive terminal dashboard
-aka plugins install claude-code   # prints how to add the ai-tc marketplace in Claude Code
-```
-
-Or use the bootstrap one-liner, which checks your Node version and installs `aka`
-from the public npm registry:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.sh | sh
-# Windows: irm https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.ps1 | iex
-```
-
-Run `aka --help` for the full command list.
-
----
-
-## Repo layout
-
-```
-packages/
-  eslint-config/    Shared flat ESLint config (strict type-checked, boundary rules)
-  schema/           Zod contracts + Drizzle-defined SQLite local store + rule registry — THE source of truth
-  persistence/      Local SQLite adapter for the ~/.aka store + read/view ports (node:sqlite)
-  detections/       Pure detection engine: scan() / redact(), rule registry
-  extract/          Content extraction helpers (CSV, …)
-  local-ops/        Shared CLI/web-ui operations: scan pipeline, update/apply, plugin registry
-  dashboard-ui/     Bundler-agnostic presentational dashboard views (props-driven)
-  ui-kit/           AKA design system components
-  plugin-sdk/       Shared plugin engine: local SQLite store, capture orchestration, action resolution, onboarding
-  plugin-runtime/   Hook runtime built on the plugin SDK
-  scanner/          Worktree source scanner (node:fs)
-
-cli/                The `aka` CLI — bundles the web-ui for `aka dashboard`
-web-ui/             OSS Next.js dashboard (reads the local SQLite store)
-plugins/
-  claude-code/      Claude Code hooks adapter
-
-rules/              Declarative detection rule packs (core-pii, secrets, …)
-tools/
-  installer/        CLI install scripts
-skills/             Claude Skills for AI-assisted development on this repo
-```
-
----
-
-## Development
-
-```bash
-pnpm install        # install all workspaces
-pnpm dev            # turbo: watch mode across the workspaces
-pnpm lint           # ESLint across all workspaces
-pnpm typecheck      # tsc --noEmit across all workspaces
-pnpm test           # Vitest across all workspaces
-pnpm build          # production build (CLI + web-ui + plugin)
-```
-
-Lint, typecheck, and format run automatically on staged files via Lefthook pre-commit hooks.
-
----
-
-## Contributing detection rules
-
-Rules live in `rules/<pack-name>/`. Each rule requires labelled positive **and** negative fixtures — CI rejects rule PRs without them. See [skills/write-detection-rule/SKILL.md](skills/write-detection-rule/SKILL.md) for the full rule format and contribution contract, and [CONTRIBUTING.md](CONTRIBUTING.md) for the general contribution guide.
-
----
-
-## Architecture
-
-See [CLAUDE.md](CLAUDE.md) for the architecture and package boundaries: detection engine extensibility, the plugin SDK, and the local store.
+- [How it works](https://akasecurity.github.io/ai-tc-docs/getting-started/how-it-works/)
+- [Architecture overview](https://akasecurity.github.io/ai-tc-docs/architecture/overview/)
+- [Writing rules](https://akasecurity.github.io/ai-tc-docs/rules/writing-rules/)

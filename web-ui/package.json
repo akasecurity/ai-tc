@@ -27,13 +27,13 @@
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@tailwindcss/postcss": "^4.1.13",
+    "@tailwindcss/postcss": "^4.3.2",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.0.0",
-    "tailwindcss": "^4.1.13",
+    "tailwindcss": "^4.3.2",
     "typescript": "^5.8.0",
-    "typescript-eslint": "^8.0.0"
+    "typescript-eslint": "^8.64.0"
   }
 }

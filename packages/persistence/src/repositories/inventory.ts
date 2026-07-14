@@ -61,8 +61,7 @@ export class SqliteInventoryRepository {
   // The full row, for round-trip assertions.
   findById(id: string): InventoryRow | undefined {
     const row = this.db.prepare('SELECT * FROM inventory WHERE id = :id').get({ id }) as
-      | InventoryRow
-      | undefined;
+      InventoryRow | undefined;
     return row;
   }
 

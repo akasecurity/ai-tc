@@ -203,8 +203,7 @@ export class StandaloneDataGateway implements DataGateway {
   //     "detect nothing" (that is expressed by disabling packs, handled above);
   //   - otherwise → the enabled packs' validated rules, marked complete.
   private installedScanRules():
-    | { rules: Rule[]; ruleActions: Map<string, ActionTaken>; complete: true }
-    | undefined {
+    { rules: Rule[]; ruleActions: Map<string, ActionTaken>; complete: true } | undefined {
     try {
       const snapshot = this.db.installedPacks.installedRuleset();
       if (snapshot.installedPacks === 0) return undefined;

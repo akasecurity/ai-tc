@@ -271,20 +271,18 @@ export class SqliteSharesRepository implements SharesReadPort {
       .map((d) => ({ dest: d, endpoints: endpointsByDest.get(d.id) ?? [] }))
       .map(({ dest, endpoints }) => ({ summary: buildSummary(dest, endpoints), endpoints }))
       .filter(({ summary }) => summary.review.needsReview)
-      .map(
-        ({ summary, endpoints }): ReviewDestination => ({
-          id: summary.id,
-          kind: summary.kind,
-          name: summary.name,
-          host: summary.host,
-          trust: summary.trust,
-          status: summary.status,
-          review: summary.review,
-          topDataClass: topDataClass(endpoints.map((e) => e.dataClass)),
-          callSiteCount: summary.callSiteCount,
-          lastSeen: summary.lastSeen,
-        }),
-      )
+      .map(({ summary, endpoints }): ReviewDestination => ({
+        id: summary.id,
+        kind: summary.kind,
+        name: summary.name,
+        host: summary.host,
+        trust: summary.trust,
+        status: summary.status,
+        review: summary.review,
+        topDataClass: topDataClass(endpoints.map((e) => e.dataClass)),
+        callSiteCount: summary.callSiteCount,
+        lastSeen: summary.lastSeen,
+      }))
       .sort((a, b) => {
         const rankDiff =
           reviewSeverityRank(a.review.reasons) - reviewSeverityRank(b.review.reasons);

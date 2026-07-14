@@ -44,8 +44,7 @@ export class SqliteSourceProjectRepository {
 
   findById(id: string): SourceProjectRow | undefined {
     return this.db.prepare('SELECT * FROM source_project WHERE id = :id').get({ id }) as
-      | SourceProjectRow
-      | undefined;
+      SourceProjectRow | undefined;
   }
 
   // Distinct project names — a filter facet, served from the source_project

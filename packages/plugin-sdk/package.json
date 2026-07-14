@@ -16,7 +16,7 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "ignore": "^7.0.5",
+    "ignore": "^7.0.6",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -24,6 +24,6 @@
     "@types/node": "^26.1.1",
     "eslint": "^9.0.0",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.10"
   }
 }

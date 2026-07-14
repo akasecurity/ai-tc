@@ -16,8 +16,7 @@ import { sourceProjectId } from './ids.ts';
 // tables/columns their DDL is safely re-runnable, so applyMigrations handles
 // them per statement instead.
 type EvidenceObject =
-  | { kind: 'table'; name: string }
-  | { kind: 'column'; table: string; name: string };
+  { kind: 'table'; name: string } | { kind: 'column'; table: string; name: string };
 
 function evidenceObjects(sql: string): EvidenceObject[] {
   const objects: EvidenceObject[] = [];

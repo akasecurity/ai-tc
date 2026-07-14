@@ -176,8 +176,7 @@ export class SqliteAuditEventsRepository {
 
   findById(id: string): AuditEventRow | undefined {
     return this.db.prepare('SELECT * FROM audit_events WHERE id = :id').get({ id }) as
-      | AuditEventRow
-      | undefined;
+      AuditEventRow | undefined;
   }
 
   // Read the `provider` snapshotted onto a session root's attributes.

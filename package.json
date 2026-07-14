@@ -20,12 +20,12 @@
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@commitlint/cli": "^21.0.2",
+    "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
     "eslint": "^9.0.0",
-    "lefthook": "^2.1.9",
-    "prettier": "^3.5.0",
-    "turbo": "^2.9.18",
+    "lefthook": "^2.1.10",
+    "prettier": "^3.9.5",
+    "turbo": "^2.10.5",
     "typescript": "^5.8.0"
   },
   "pnpm": {

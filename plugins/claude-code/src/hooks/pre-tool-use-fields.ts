@@ -51,13 +51,29 @@ const STATIC_FIELDS: Record<string, readonly ScannableField[]> = {
   Task: [{ path: ['prompt'], executable: false }],
 };
 
-// Bounds on the MCP walk. A tool result can be arbitrarily large and the hook
+// Bounds on the MCP walk. A tool payload can be arbitrarily large and the hook
 // has a 10s budget: past these limits it scans what fits and lets the rest
 // through, which degrades to "some coverage" rather than a timeout — and a
-// timed-out hook fails open, allowing everything unscanned.
+// timed-out hook fails open, allowing the whole call unscanned, including the
+// leaves that WERE flagged. Partial coverage beats none, so these err low.
+//
+// The leaf COUNT bound is the one that protects the budget. Cost is per leaf,
+// not per byte: pre-tool-use.ts awaits one runtime.capture() per field, in
+// sequence. The char bounds alone leave that unbounded — five million
+// one-char leaves sit exactly at MCP_MAX_TOTAL_CHARS while costing five
+// million detection passes. That is both a robustness gap (a legitimate bulk
+// payload) and an evasion path (pad the arguments with cheap leaves until the
+// hook times out and everything is allowed).
+//
+// 2000 is measured, not guessed: a capture of a benign leaf costs ~0.04ms and
+// one carrying a finding ~0.19ms (the full mask + event + ledger write), so
+// the worst case is ~0.4s of scanning — an order of magnitude of headroom on
+// slower hardware. Real payloads sit far below it (a chat post is tens of
+// leaves; a 100-record bulk write with 5 fields each is 500).
 const MCP_MAX_DEPTH = 6;
 const MCP_MAX_LEAF_CHARS = 1_000_000;
 const MCP_MAX_TOTAL_CHARS = 5_000_000;
+const MCP_MAX_LEAF_COUNT = 2_000;
 
 /**
  * Every string leaf of an MCP tool's arguments, bounded by depth and size.
@@ -76,7 +92,7 @@ function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
   let remaining = MCP_MAX_TOTAL_CHARS;
 
   const walk = (node: unknown, path: PathSegment[], depth: number): void => {
-    if (remaining <= 0 || depth > MCP_MAX_DEPTH) return;
+    if (remaining <= 0 || depth > MCP_MAX_DEPTH || fields.length >= MCP_MAX_LEAF_COUNT) return;
     if (typeof node === 'string') {
       if (node === '' || node.length > MCP_MAX_LEAF_CHARS) return;
       remaining -= node.length;

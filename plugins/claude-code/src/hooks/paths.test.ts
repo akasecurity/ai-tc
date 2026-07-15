@@ -89,10 +89,36 @@ describe('replaceAtPath', () => {
     expect(replaceAtPath('scalar', ['a'], 'masked')).toBe('scalar');
   });
 
-  it('writes a __proto__ segment as an own property, not the prototype', () => {
+  it('never grafts a missing key on — a spurious key is a shape slip', () => {
+    // The object branch must guard its key the way the array branch guards its
+    // index. Ungurded, this returns { content: 'x', missing: undefined }: the
+    // payload now carries a key the tool's schema doesn't declare, Claude Code
+    // rejects the shape, and it runs the ORIGINAL unredacted arguments — the
+    // exact failure this module exists to prevent.
+    //
+    // toStrictEqual, not toEqual: toEqual ignores undefined-valued keys and so
+    // passes even when the key was grafted on.
+    expect(replaceAtPath({ content: 'x' }, ['missing', 'deeper'], 'v')).toStrictEqual({
+      content: 'x',
+    });
+    expect(replaceAtPath({ content: 'x' }, ['missing'], 'v')).toStrictEqual({ content: 'x' });
+    expect(Object.hasOwn(replaceAtPath({ a: 1 }, ['b'], 'v') as object, 'b')).toBe(false);
+  });
+
+  it('does not reach the prototype through a __proto__ segment', () => {
+    // No own '__proto__' key ⇒ nothing to replace, so the payload is unchanged
+    // and the prototype is untouched either way.
     const out = replaceAtPath({}, ['__proto__'], 'masked') as Record<string, unknown>;
-    expect(Object.hasOwn(out, '__proto__')).toBe(true);
     expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // JSON can carry a literal own '__proto__' key. Replacing it writes an own
+    // property (computed keys don't trigger the prototype setter), so the
+    // value is masked and the prototype still isn't touched.
+    const carrier = JSON.parse('{"__proto__": "secret"}') as Record<string, unknown>;
+    const masked = replaceAtPath(carrier, ['__proto__'], 'masked') as Record<string, unknown>;
+    expect(Object.hasOwn(masked, '__proto__')).toBe(true);
+    expect(masked.__proto__).toBe('masked');
+    expect(Object.getPrototypeOf(masked)).toBe(Object.prototype);
   });
 });

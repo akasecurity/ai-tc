@@ -139,6 +139,34 @@ describe('scannableInputFields — MCP tools', () => {
     });
     expect(fields).toEqual([{ path: ['small'], executable: true }]);
   });
+
+  it('bounds the leaf COUNT, not just total size', () => {
+    // Cost is per leaf — pre-tool-use.ts awaits one capture() per field, in
+    // sequence — so the char bounds alone leave it unbounded: a million
+    // one-char leaves is only a megabyte, far under MCP_MAX_TOTAL_CHARS, but a
+    // million detection passes. The hook would time out, and a timed-out
+    // PreToolUse fails open and allows the WHOLE call unscanned, flagged
+    // leaves included. Truncating keeps enforcement on what was scanned.
+    const many = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_, i) => [`k${String(i)}`, 'x']),
+    );
+    const fields = scannableInputFields('mcp__x__y', many);
+    expect(fields).toHaveLength(2_000);
+  });
+
+  it('caps a padded payload rather than letting it exhaust the budget', () => {
+    // The evasion shape: bury the secret behind enough cheap leaves that the
+    // scan never reaches it. It stays unscanned either way — the fix is that
+    // the hook returns in bounded time instead of timing out into a
+    // fail-open allow of everything.
+    const padded: Record<string, unknown> = Object.fromEntries(
+      Array.from({ length: 10_000 }, (_, i) => [`pad${String(i)}`, 'x']),
+    );
+    padded.zzz_secret = 'deploy key here';
+    const fields = scannableInputFields('mcp__x__y', padded);
+    expect(fields).toHaveLength(2_000);
+    expect(fields.every((f) => f.executable)).toBe(true);
+  });
 });
 
 describe('scannableInputFields — tools with no coverage', () => {

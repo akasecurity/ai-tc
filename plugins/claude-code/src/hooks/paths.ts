@@ -59,7 +59,15 @@ export function replaceAtPath(root: unknown, path: readonly PathSegment[], value
   }
 
   const record = root as Record<string, unknown>;
-  // Computed keys create own properties, so a '__proto__' segment can't reach
-  // the prototype setter the way a literal `{ __proto__: x }` would.
+  // Symmetric with the array branch's range check. Without it a path that
+  // doesn't resolve grafts the missing key on — replaceAtPath({a:1},
+  // ['missing','deeper']) would return { a: 1, missing: undefined } — and a
+  // payload carrying a key the tool's schema doesn't declare is a shape
+  // mismatch, which Claude Code answers by falling back to the ORIGINAL
+  // unredacted arguments. Also what keeps a '__proto__' segment from grafting
+  // onto an object that has no such own key; where one genuinely exists (JSON
+  // can carry it), the computed key below writes an own property rather than
+  // reaching the prototype setter a literal `{ __proto__: x }` would.
+  if (!Object.hasOwn(record, head)) return root;
   return { ...record, [head]: replaceAtPath(record[head], rest, value) };
 }

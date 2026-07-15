@@ -148,13 +148,9 @@ export interface LocalDatabase {
   // real scanned/ingested rows. Idempotent + fail-open; invoked by the web-ui
   // bootstrap, not the plugin's hot path.
   purgeSampleData(): void;
-  // Run `fn` inside a single SQLite transaction on this handle: BEGIN, then
-  // COMMIT on resolve or ROLLBACK on throw (the rejection propagates). Lets a
-  // caller make several repository writes atomic (e.g. a posture overwrite +
-  // suppression inserts). A repository that manages its own inner transaction
-  // (see exceptions.ts's collision-retry) detects the open outer transaction
-  // via db.isTransaction and skips its own BEGIN — node:sqlite forbids nested
-  // BEGIN. Do not call this from inside another transaction.
+  // Runs `fn` inside a single SQLite transaction on this handle: BEGIN, then
+  // COMMIT on resolve or ROLLBACK on throw (the rejection propagates). Do not
+  // call this from inside another transaction.
   transaction<T>(fn: () => Promise<T> | T): Promise<T>;
   close(): void;
 }
@@ -360,10 +356,8 @@ export function openLocalDatabase(dir: string): LocalDatabase {
       db.exec('COMMIT');
       return result;
     } catch (err) {
-      // A failed statement leaves the transaction open (SQLite aborts the
-      // statement, not the txn), so ROLLBACK is required to discard the
-      // partial work; guard it so a rollback failure never masks the
-      // original error.
+      // ROLLBACK discards any partial writes from this transaction. A
+      // rollback failure here does not replace the original error.
       try {
         db.exec('ROLLBACK');
       } catch {

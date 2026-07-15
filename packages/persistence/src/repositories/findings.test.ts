@@ -537,6 +537,35 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
     expect(facets.action.map((f) => f.value).sort()).toEqual(['blocked', 'redacted']);
   });
 
+  // The search text is the one aggregate that grows with the store, so it is
+  // fetched ONLY for a request carrying a q. These pin both sides of that
+  // switch: a q still reaches a buried instance, and no q still lists/counts.
+  it('matches a buried instance on file path, and still filters when q finds nothing', async () => {
+    seedBulk();
+
+    // src/f0.ts belongs to the oldest instance — thousands of rows outside the
+    // newest-200 preview.
+    expect((await db.findings.listGroupedFindings({ q: 'src/f0.ts' })).items).toHaveLength(1);
+    expect((await db.findings.listGroupedFindings({ q: 'no-such-repo' })).items).toEqual([]);
+    expect((await db.findings.listGroupedFindings({ q: 'no-such-repo' })).totals).toEqual({
+      findings: 0,
+      groups: 0,
+    });
+  });
+
+  it('counts and lists identically whether or not a q is supplied', async () => {
+    seedBulk();
+
+    const withoutQ = await db.findings.listGroupedFindings({});
+    // 'acme' matches every instance's repo, so the filtered set is the whole
+    // store — the q path must agree with the no-q path it skips the fetch on.
+    const withQ = await db.findings.listGroupedFindings({ q: 'acme' });
+
+    expect(withQ.totals).toEqual(withoutQ.totals);
+    expect(withQ.items.map((g) => g.id)).toEqual(withoutQ.items.map((g) => g.id));
+    expect(withQ.items[0]?.providers).toEqual(withoutQ.items[0]?.providers);
+  });
+
   it('keeps a group whose instances all sit outside the newest page of rows', async () => {
     // A second rule whose only finding is older than every bulk row: under the
     // old whole-store row cap the newest 2000 rows were all bulk-rule's, so

@@ -270,7 +270,10 @@ export class SqliteFindingsRepository
    * rule is ever restated in SQL.
    */
   listGroupedFindings(query: ListGroupedFindingsQuery): Promise<ListGroupedFindingsResponse> {
-    const aggregates = this.groupAggregates();
+    // The search text is the one aggregate column whose size tracks the store
+    // rather than the rule count, so fetch it only for a request that can use
+    // it (see groupAggregates).
+    const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '');
 
     const rows = this.db
       .prepare(
@@ -351,9 +354,24 @@ export class SqliteFindingsRepository
    * deriveFindingStatus consumes. Aggregating the status INPUTS rather than a
    * status keeps the classifier itself in @akasecurity/schema, where
    * severitySummary's SQL and this query can't drift apart on what 'resolved'
-   * means (see resolution-sql.ts).
+   * means (see resolution-sql.ts). Each of those sets is bounded by an enum, so
+   * a group's row stays small however many findings it holds.
+   *
+   * `withSearchText` is the exception, and the one column here that does NOT
+   * stay small: the group's distinct repos/filePaths, whose size tracks how many
+   * distinct paths a rule fired across — for a rule hitting mostly-unique paths
+   * that is a string proportional to the store (~8MB over 200k distinct paths,
+   * and buildHaystack lowercases a second copy). It buys `q` the ability to
+   * match an instance outside the preview, which searching the preview alone
+   * would silently lose, so it is fetched only when the request actually
+   * carries a `q`.
    */
-  private groupAggregates(): Map<string, FindingGroupAggregate> {
+  private groupAggregates(withSearchText: boolean): Map<string, FindingGroupAggregate> {
+    const searchTextColumns = withSearchText
+      ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
+           group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files`
+      : `, NULL AS repos, NULL AS files`;
+
     const rows = this.db
       .prepare(
         `SELECT f.rule_id AS rule_id,
@@ -365,9 +383,8 @@ export class SqliteFindingsRepository
                   e.kind || '${TUPLE_SEP}' ||
                   (CASE WHEN f.finding_key IS NULL THEN '' ELSE 'k' END) || '${TUPLE_SEP}' ||
                   coalesce(latest.status, '')
-                )) AS status_inputs,
-                group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
-                group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files
+                )) AS status_inputs
+                ${searchTextColumns}
            FROM findings f
            JOIN events e ON e.id = f.event_id
            LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
@@ -396,7 +413,12 @@ export class SqliteFindingsRepository
           latestDetectedAt: epochMillisToIso(r.latest_at),
           // Free text only — joined and substring-matched, so group_concat's
           // commas need no unpicking (a repo/path containing one still matches).
-          searchText: [r.repos ?? '', r.files ?? ''].filter((s) => s !== '').join(' '),
+          // Left undefined (not '') when unfetched, so buildFindingGroups can
+          // tell "no q this request" from "a group with no repo/file at all"
+          // and skip priming a haystack nothing will read.
+          ...(withSearchText
+            ? { searchText: [r.repos ?? '', r.files ?? ''].filter((s) => s !== '').join(' ') }
+            : {}),
         },
       ]),
     );

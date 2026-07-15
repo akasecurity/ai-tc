@@ -242,6 +242,15 @@ export interface FindingGroupAggregate {
    * Instance-level free text (the group's distinct repos/files) across ALL
    * instances, folded into the search haystack so `q` still matches a group
    * whose only hit sits outside the preview.
+   *
+   * REQUIRED whenever the caller goes on to filter by `q`: left out, the
+   * haystack falls back to the preview and a `q` matching only a buried
+   * instance silently misses. Omit it only for a request with no `q` — it is
+   * the one aggregate whose size tracks the store rather than the rule count.
+   *
+   * Instance IDs are deliberately NOT included (repos/files only). A `q` that
+   * is a raw finding id therefore reaches only the preview's instances, unlike
+   * the row path, which folds every instance's id into the haystack.
    */
   searchText?: string;
 }
@@ -255,6 +264,11 @@ export interface BuildGroupsOptions {
    * ruleId → whole-group folds (see FindingGroupAggregate). Absent for a
    * ruleId ⇒ every fold is derived from that group's rows, which are then
    * assumed complete.
+   *
+   * MUTUALLY EXCLUSIVE with `overrides`: the aggregate folds an action set the
+   * store computed over rows the overrides were never applied to, so
+   * `aggregateAction` and the action filter would honor the stored actions
+   * while `instances[].action` honors the overrides. Pass one or the other.
    */
   aggregates?: Map<string, FindingGroupAggregate>;
 }
@@ -312,11 +326,17 @@ export function buildFindingGroups(
         ruleRows[0]?.occurredAt ?? new Date(0).toISOString(),
       );
 
-    // providers: dedup preserving order of first occurrence — newest-first from
-    // the rows, or the aggregate's own order when the store supplied one.
+    // providers: from the rows, dedup preserving order of first occurrence
+    // (newest-first). An aggregate's sourceTools arrive in whatever order the
+    // store's own dedup produced, which need not be stable between identical
+    // requests — several tools can also fold onto one provider ('api') — so
+    // sort after mapping. Callers render these in array order; a set that
+    // reshuffles per request would flap the chips.
     const seenProviders = new Set<string>();
     const providers = (
-      agg ? agg.sourceTools.map(toApiProvider) : instances.map((i) => i.provider)
+      agg
+        ? [...new Set(agg.sourceTools.map(toApiProvider))].sort()
+        : instances.map((i) => i.provider)
     ).filter((p) => {
       if (seenProviders.has(p)) return false;
       seenProviders.add(p);
@@ -370,9 +390,13 @@ export function buildFindingGroups(
     // Prime the whole-group caches while the aggregate is in hand: `instances`
     // is only a preview, so neither the free text nor the action set can be
     // recovered from the built group alone (see groupHaystack / groupActions).
+    // A store that skips searchText (no `q` to answer) leaves the haystack cold
+    // rather than priming one from the preview that nothing will read.
     if (agg) {
-      haystackCache.set(group, buildHaystack(group, agg.searchText));
       actionsCache.set(group, [...actionSet]);
+      if (agg.searchText !== undefined) {
+        haystackCache.set(group, buildHaystack(group, agg.searchText));
+      }
     }
 
     groups.push(group);

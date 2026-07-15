@@ -29,12 +29,15 @@ export interface ScanSummary {
 // ±chars of surrounding text captured around a match span for the triage sink.
 const CONTEXT_RADIUS = 120;
 
-// Redact every OTHER finding's raw value that overlaps this context window,
-// leaving only the current finding's own match legible (it is already exposed
-// verbatim via TriageHit.rawMatch, so nothing is lost by leaving it in place).
-// Falls back to a blunt string-level redaction if the guarded mask can't
-// verify full removal (e.g. two findings sharing identical raw text) —
-// scanning a user's history must never throw on a pathological input.
+// Redact every OTHER finding's raw value that overlaps this context window.
+// The normal (span-based) path leaves the current finding's own match
+// legible, since it masks only the other findings' precise character ranges.
+// The fallback below is a blunt string-level redaction used only if the
+// guarded mask can't verify full removal — scanning a user's history must
+// never throw on a pathological input — and, unlike the normal path, it
+// cannot tell the current finding's own match apart from an identical raw
+// value belonging to another finding, so it may redact both; that is a safe
+// (over-redaction) failure mode, never a leak.
 function redactOverlapping(
   rawContext: string,
   contextStart: number,
@@ -152,6 +155,10 @@ export async function scanHistory(
           const otherFindings = result.findings.filter((other) => other !== finding);
           const hit = buildTriageHit(message.text, finding, otherFindings);
           try {
+            // onHit is a synchronous void callback (see its parameter type on
+            // scanHistory below) — this try/catch guards a synchronous throw
+            // only. A caller must not pass an async function here; an
+            // unhandled rejection from one would not be caught by this block.
             onHit(hit);
           } catch {
             // A misbehaving onHit sink must not abort the rest of the sweep —

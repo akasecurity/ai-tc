@@ -11,8 +11,11 @@ import { BuiltinPolicyId } from './policy.ts';
 // interactive session or a stored exceptions row, a consumer must run it
 // through the `@akasecurity/plugin-sdk` raw-egress guardrails
 // (`assertRawFree` / `maskContextSlice` in `raw-egress.ts`) — the same
-// boundary check already used for other isolated-process output. This schema
-// intentionally omits `.meta({ id })`: no API route references it, and an
+// boundary check already used for other isolated-process output.
+// `maskContextSlice` takes its span/offset coordinates as call arguments, not
+// from this type — a consumer derives them itself (e.g. by locating a raw
+// value's position within `context` directly) rather than reading them off a
+// `TriageHit`. This schema intentionally omits `.meta({ id })`: no API route references it, and an
 // unrouted id would still register in Zod's global registry and leak an
 // orphan component into the generated OpenAPI client.
 // id/valueFingerprint/keyVersion are set by the --triage sink

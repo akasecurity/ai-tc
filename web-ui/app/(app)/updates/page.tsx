@@ -16,6 +16,8 @@ import { UpdatesClient } from './UpdatesClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Updates' };
+
 // Latest-version lookups by component id from the passive-notice cache — page
 // load never touches the network; "Check now" refreshes the cache via npm.
 function cachedLatestById(cache: UpdateCache | null): Map<string, string | null> {

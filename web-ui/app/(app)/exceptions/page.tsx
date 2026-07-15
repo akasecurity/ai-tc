@@ -9,6 +9,8 @@ export const runtime = 'nodejs';
 // Reads the local store on every request — never statically prerendered.
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Exceptions' };
+
 export default async function ExceptionsPage({
   searchParams,
 }: {

@@ -22,6 +22,8 @@ export const runtime = 'nodejs';
 // Reads the local store on every request — never statically prerendered.
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Security' };
+
 // Resolve the ISO date bucket to a short axis label, exactly as the dashboard's
 // useFindingsTimeseries hook does (UTC so the label matches the bucket).
 const bucketLabel = new Intl.DateTimeFormat('en-US', {

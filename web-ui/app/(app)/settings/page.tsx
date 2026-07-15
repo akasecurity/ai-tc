@@ -6,6 +6,8 @@ import { SettingsClient } from './SettingsClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Settings' };
+
 export default function SettingsPage() {
   const settings = readWorkspaceSettings();
 

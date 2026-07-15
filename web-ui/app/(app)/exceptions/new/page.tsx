@@ -6,6 +6,8 @@ import { NewExceptionClient } from './NewExceptionClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'New Exception' };
+
 export default function NewExceptionPage() {
   // Rule options come from the installed snapshot (the scan authority) — the
   // same enabled rules the add action verifies against.

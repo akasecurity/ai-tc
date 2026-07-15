@@ -14,6 +14,8 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Detections' };
+
 // Reads the local store's installed detections + stats for the URL's filter/search,
 // resolves the selected detail, then hands off to the client shell for the
 // interactive master/detail + rule inspector. List state lives in the URL so this

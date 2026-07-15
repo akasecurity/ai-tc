@@ -159,14 +159,14 @@ const STATUS_PRECEDENCE: readonly FindingStatus[] = ['open', 'handled', 'dismiss
 
 /**
  * Fold a group's instance statuses into a single group-level status using
- * open-dominates precedence (see STATUS_PRECEDENCE). Instances lacking a
- * status are ignored; if NO instance carries a status, returns undefined
- * (never fabricates a status for legacy rows).
+ * open-dominates precedence (see STATUS_PRECEDENCE). Statuses that are absent
+ * are ignored; if NO instance carries a status, returns undefined (never
+ * fabricates a status for legacy rows).
  */
-function deriveGroupStatus(instances: FindingInstance[]): FindingStatus | undefined {
-  const statuses = new Set(
-    instances.map((i) => i.status).filter((s): s is FindingStatus => s !== undefined),
-  );
+function foldGroupStatus(
+  instanceStatuses: (FindingStatus | undefined)[],
+): FindingStatus | undefined {
+  const statuses = new Set(instanceStatuses.filter((s): s is FindingStatus => s !== undefined));
   if (statuses.size === 0) return undefined;
   for (const candidate of STATUS_PRECEDENCE) {
     if (statuses.has(candidate)) return candidate;
@@ -209,17 +209,63 @@ export function deriveFindingStatus(row: {
   return 'open';
 }
 
+/**
+ * A group's folds computed over ALL of its instances by the caller's store
+ * (SQL-side aggregation), for stores too large to group row-by-row in memory.
+ *
+ * When an aggregate is supplied for a ruleId, `rows` may carry only a bounded
+ * PREVIEW of that group's newest instances: the preview still populates
+ * `instances`, but every fold that must see the whole group — instanceCount,
+ * providers, aggregateAction, status, latestDetectedAt, and the free-text
+ * haystack — is derived from the aggregate instead.
+ *
+ * The raw DB values are passed through UNMAPPED (sourceTools, actionsTaken,
+ * statusInputs) and translated here by the same mappers the row path uses, so
+ * SQL never restates an enum mapping and the two paths cannot drift.
+ */
+export interface FindingGroupAggregate {
+  /** Exact instance count across ALL instances, not just the preview. */
+  instanceCount: number;
+  /** Distinct raw event.sourceTool values across ALL instances. */
+  sourceTools: string[];
+  /** Distinct raw findings.action_taken values across ALL instances. */
+  actionsTaken: string[];
+  /** deriveFindingStatus inputs, one per distinct combination in the group. */
+  statusInputs: {
+    kind: string;
+    findingKey: string | null;
+    latestResolutionStatus: string | null;
+  }[];
+  /** Max occurredAt (ISO) across ALL instances. */
+  latestDetectedAt: string;
+  /**
+   * Instance-level free text (the group's distinct repos/files) across ALL
+   * instances, folded into the search haystack so `q` still matches a group
+   * whose only hit sits outside the preview.
+   */
+  searchText?: string;
+}
+
 export interface BuildGroupsOptions {
   /** findingId → DB action override. Absent ⇒ no overrides. */
   overrides?: Map<string, string>;
   /** ruleId → pack display name. Absent ⇒ detection.name is null. */
   packNames?: Map<string, string>;
+  /**
+   * ruleId → whole-group folds (see FindingGroupAggregate). Absent for a
+   * ruleId ⇒ every fold is derived from that group's rows, which are then
+   * assumed complete.
+   */
+  aggregates?: Map<string, FindingGroupAggregate>;
 }
 
 /**
  * Group GroupableFindingRow[] by ruleId into FindingGroup[]. Rows are expected
  * newest-first (that order is preserved into each group's instances). An
  * override in `opts.overrides` takes precedence over the row's actionTaken.
+ *
+ * With `opts.aggregates`, `rows` may carry only a bounded preview of each
+ * group's newest instances — see FindingGroupAggregate.
  */
 export function buildFindingGroups(
   rows: GroupableFindingRow[],
@@ -227,6 +273,7 @@ export function buildFindingGroups(
 ): FindingGroup[] {
   const overrides = opts.overrides;
   const packNames = opts.packNames;
+  const aggregates = opts.aggregates;
 
   // Collect rows per ruleId, preserving order (rows arrive newest-first).
   const byRuleId = new Map<string, GroupableFindingRow[]>();
@@ -253,24 +300,34 @@ export function buildFindingGroups(
       };
     });
 
+    // Every fold below reads the whole group: from the store's aggregate when
+    // one is supplied (the rows are then only a preview), else from the rows.
+    const agg = aggregates?.get(ruleId);
+
     // latestDetectedAt: ISO strings sort lexically, so string max works.
-    const latestDetectedAt = ruleRows.reduce<string>(
-      (max, r) => (r.occurredAt > max ? r.occurredAt : max),
-      ruleRows[0]?.occurredAt ?? new Date(0).toISOString(),
-    );
+    const latestDetectedAt =
+      agg?.latestDetectedAt ??
+      ruleRows.reduce<string>(
+        (max, r) => (r.occurredAt > max ? r.occurredAt : max),
+        ruleRows[0]?.occurredAt ?? new Date(0).toISOString(),
+      );
 
-    // providers: dedup preserving order of first occurrence.
+    // providers: dedup preserving order of first occurrence — newest-first from
+    // the rows, or the aggregate's own order when the store supplied one.
     const seenProviders = new Set<string>();
-    const providers = instances
-      .map((i) => i.provider)
-      .filter((p) => {
-        if (seenProviders.has(p)) return false;
-        seenProviders.add(p);
-        return true;
-      });
+    const providers = (
+      agg ? agg.sourceTools.map(toApiProvider) : instances.map((i) => i.provider)
+    ).filter((p) => {
+      if (seenProviders.has(p)) return false;
+      seenProviders.add(p);
+      return true;
+    });
 
-    // aggregateAction: uniform → value; mixed → null.
-    const actionSet = new Set(instances.map((i) => i.action));
+    // The group's distinct actions, then aggregateAction: uniform → value;
+    // mixed → null.
+    const actionSet = new Set(
+      agg ? agg.actionsTaken.map(toApiAction) : instances.map((i) => i.action),
+    );
     const aggregateAction = actionSet.size === 1 ? ([...actionSet][0] ?? null) : null;
 
     const severity = (ruleRows[0]?.severity ?? 'low') as Severity;
@@ -290,9 +347,11 @@ export function buildFindingGroups(
       contextPrefix: '', // empty (pending privacy review)
     };
 
-    const status = deriveGroupStatus(instances);
+    const status = foldGroupStatus(
+      agg ? agg.statusInputs.map(deriveFindingStatus) : instances.map((i) => i.status),
+    );
 
-    groups.push({
+    const group: FindingGroup = {
       id: ruleId,
       category: apiCategory,
       subtype: ruleId, // human label comes with pack metadata later
@@ -300,13 +359,23 @@ export function buildFindingGroups(
       match,
       detection,
       policy,
-      instanceCount: instances.length,
+      instanceCount: agg?.instanceCount ?? instances.length,
       providers,
       aggregateAction,
       latestDetectedAt,
       instances,
       status,
-    });
+    };
+
+    // Prime the whole-group caches while the aggregate is in hand: `instances`
+    // is only a preview, so neither the free text nor the action set can be
+    // recovered from the built group alone (see groupHaystack / groupActions).
+    if (agg) {
+      haystackCache.set(group, buildHaystack(group, agg.searchText));
+      actionsCache.set(group, [...actionSet]);
+    }
+
+    groups.push(group);
   }
 
   return groups;
@@ -331,11 +400,15 @@ export interface FindingFilterOptions {
 // are collected with the request that produced them (no cross-request leak).
 const haystackCache = new WeakMap<FindingGroup, string>();
 
-function groupHaystack(g: FindingGroup): string {
-  const cached = haystackCache.get(g);
-  if (cached !== undefined) return cached;
-  // subtype, category, maskedMatch, policy name, id, and each instance's repo/file/id.
-  const haystack = [
+/**
+ * The searchable text of a group: subtype, category, maskedMatch, policy name,
+ * id, and each instance's repo/file/id. `extra` carries whole-group instance
+ * text for stores whose `instances` is only a preview (see
+ * FindingGroupAggregate.searchText) — buildFindingGroups primes the cache with
+ * it, so this stays the ONE definition of what `q` matches.
+ */
+function buildHaystack(g: FindingGroup, extra?: string): string {
+  return [
     g.subtype,
     g.category,
     g.match.maskedValue,
@@ -344,11 +417,32 @@ function groupHaystack(g: FindingGroup): string {
     ...g.instances.map((i) => i.repo),
     ...g.instances.map((i) => i.file),
     ...g.instances.map((i) => i.id),
+    ...(extra === undefined ? [] : [extra]),
   ]
     .join(' ')
     .toLowerCase();
+}
+
+function groupHaystack(g: FindingGroup): string {
+  const cached = haystackCache.get(g);
+  if (cached !== undefined) return cached;
+  const haystack = buildHaystack(g);
   haystackCache.set(g, haystack);
   return haystack;
+}
+
+// The group's distinct actions. Cached (and, for preview-backed groups, primed
+// by buildFindingGroups from the store's aggregate) for the same reasons as
+// haystackCache: filtering runs several times per request, and `g.instances`
+// may hold only a preview of the group.
+const actionsCache = new WeakMap<FindingGroup, FindingAction[]>();
+
+function groupActions(g: FindingGroup): FindingAction[] {
+  const cached = actionsCache.get(g);
+  if (cached !== undefined) return cached;
+  const actions = [...new Set(g.instances.map((i) => i.action))];
+  actionsCache.set(g, actions);
+  return actions;
 }
 
 export function applyFindingFilters(
@@ -371,7 +465,7 @@ export function applyFindingFilters(
   // Action: keep groups where at least one instance has a matching action.
   if (opts.actions && opts.actions.length > 0) {
     const actionSet = new Set(opts.actions);
-    filtered = filtered.filter((g) => g.instances.some((i) => actionSet.has(i.action)));
+    filtered = filtered.filter((g) => groupActions(g).some((a) => actionSet.has(a)));
   }
 
   if (opts.subtype && opts.subtype.length > 0) {
@@ -448,8 +542,7 @@ export function computeFindingFacets(
   });
   const actionMap = new Map<string, number>();
   for (const g of forAction) {
-    const actionSet = new Set(g.instances.map((i) => i.action));
-    for (const a of actionSet) actionMap.set(a, (actionMap.get(a) ?? 0) + 1);
+    for (const a of groupActions(g)) actionMap.set(a, (actionMap.get(a) ?? 0) + 1);
   }
 
   const forSubtype = applyFindingFilters(allGroups, {

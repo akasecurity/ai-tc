@@ -426,3 +426,100 @@ describe('SqliteFindingsRepository.healthSummary — resolution lifecycle', () =
     expect(summary.bySeverity.critical).toBe(1);
   });
 });
+
+// A store larger than any one group's instance PREVIEW. listGroupedFindings
+// aggregates the group-wide numbers SQL-side, so every count/fold below must
+// reflect ALL instances even though `instances` only ever carries the newest
+// PREVIEW_INSTANCES_PER_GROUP of them. BULK is deliberately > the 2000-row read
+// cap this path used to impose, under which totals saturated at exactly 2000.
+const BULK = 2600;
+
+// One rule, BULK instances, all on claude-code/block except the explicit
+// oddities the tests below pin. Timestamps ascend so `i` doubles as a recency
+// rank: instance 0 is the OLDEST and sits far outside the newest-200 preview.
+function seedBulk(opts: { ruleId?: string } = {}): void {
+  const ruleId = opts.ruleId ?? 'bulk-rule';
+  for (let i = 0; i < BULK; i++) {
+    record({
+      occurredAt: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
+      // The lone cursor instance is the oldest row in the store...
+      sourceTool: i === 0 ? 'cursor' : 'claude-code',
+      ruleId,
+      severity: 'critical',
+      // ...as is the lone redacted one.
+      actionTaken: i === 0 ? 'redact' : 'block',
+      repo: i === 0 ? 'acme/ancient' : 'acme/api',
+      filePath: `src/f${String(i)}.ts`,
+    });
+  }
+}
+
+describe('SqliteFindingsRepository.listGroupedFindings — stores larger than the preview', () => {
+  it('counts every instance rather than saturating at the old 2000-row cap', async () => {
+    seedBulk();
+
+    const res = await db.findings.listGroupedFindings({});
+
+    expect(res.totals).toEqual({ findings: BULK, groups: 1 });
+    expect(res.items[0]?.instanceCount).toBe(BULK);
+  });
+
+  it('caps the instances preview without capping the count', async () => {
+    seedBulk();
+
+    const group = (await db.findings.listGroupedFindings({})).items[0];
+
+    // The preview is bounded and holds the NEWEST instances...
+    expect(group?.instances.length).toBeLessThan(BULK);
+    expect(group?.instances[0]?.file).toBe(`src/f${String(BULK - 1)}.ts`);
+    // ...while the count beside it still speaks for the whole group.
+    expect(group?.instanceCount).toBe(BULK);
+  });
+
+  it('folds providers, actions and latest over instances outside the preview', async () => {
+    seedBulk();
+
+    const group = (await db.findings.listGroupedFindings({})).items[0];
+
+    // The cursor/redact instance is the oldest row, far outside the preview —
+    // only the SQL aggregate can still see it.
+    expect(new Set(group?.providers)).toEqual(new Set(['claudecode', 'cursor']));
+    expect(group?.aggregateAction).toBeNull(); // block + redact → Mixed
+    expect(group?.latestDetectedAt).toBe(
+      new Date(Date.UTC(2026, 0, 1) + (BULK - 1) * 60_000).toISOString(),
+    );
+  });
+
+  it('filters and facets on an instance outside the preview', async () => {
+    seedBulk();
+
+    // Provider, action and free-text all match ONLY the oldest instance.
+    expect((await db.findings.listGroupedFindings({ provider: ['cursor'] })).items).toHaveLength(1);
+    expect((await db.findings.listGroupedFindings({ action: ['redacted'] })).items).toHaveLength(1);
+    expect((await db.findings.listGroupedFindings({ q: 'acme/ancient' })).items).toHaveLength(1);
+
+    const facets = (await db.findings.listGroupedFindings({})).facets;
+    expect(facets.provider.map((f) => f.value).sort()).toEqual(['claudecode', 'cursor']);
+    expect(facets.action.map((f) => f.value).sort()).toEqual(['blocked', 'redacted']);
+  });
+
+  it('keeps a group whose instances all sit outside the newest page of rows', async () => {
+    // A second rule whose only finding is older than every bulk row: under the
+    // old whole-store row cap the newest 2000 rows were all bulk-rule's, so
+    // this group vanished from the list and its findings from the totals.
+    record({
+      occurredAt: '2025-01-01T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'buried-rule',
+      severity: 'low',
+      repo: 'acme/buried',
+      filePath: 'old.ts',
+    });
+    seedBulk();
+
+    const res = await db.findings.listGroupedFindings({});
+
+    expect(res.items.map((g) => g.id).sort()).toEqual(['bulk-rule', 'buried-rule']);
+    expect(res.totals).toEqual({ findings: BULK + 1, groups: 2 });
+  });
+});

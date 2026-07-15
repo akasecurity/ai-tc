@@ -11,16 +11,25 @@ interface Choice<T extends string> {
   description: string;
 }
 
-const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
+// The global handling preference (settings.policy) no longer drives runtime
+// enforcement — per-category Policies do (see the Policies page). It is kept as
+// a stored default, so this copy describes a leaning, not a guaranteed effect,
+// and points to where enforcement is actually decided.
+export const HANDLING_SECTION_DESCRIPTION =
+  'Your default leaning for sensitive detections. What actually happens per detection is ' +
+  'governed by the per-category Policies, not this global default.';
+
+export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
   {
     value: 'redact',
     label: 'Redact',
-    description: 'Sensitive values are replaced before they reach the model (recommended).',
+    description:
+      'Lean toward replacing sensitive values before they reach the model (recommended).',
   },
   {
     value: 'warn',
     label: 'Warn only',
-    description: 'Detections are recorded and warned about, but nothing is altered.',
+    description: 'Lean toward surfacing detections rather than redacting them by default.',
   },
 ];
 
@@ -106,10 +115,7 @@ export function WorkspaceSettingsFormView({
     <div className="flex max-w-2xl flex-col gap-6">
       <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>Sensitive-data handling</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">
-          What the plugin does when a detection fires in a prompt or file write. Takes effect on the
-          next hook — no restart needed.
-        </p>
+        <p className="mb-3 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</p>
         <ChoiceGroup name="policy" choices={POLICY_CHOICES} value={policy} onChange={setPolicy} />
       </section>
 

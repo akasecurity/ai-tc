@@ -1,0 +1,97 @@
+name: Release binaries
+
+# Builds the self-contained `aka` Single Executable Application for each OS/arch,
+# archives it with its sidecars, and attaches the archives + SHA256SUMS to a GitHub
+# Release. The result needs no Node.js installed. SEA has no cross-compilation, so each
+# target builds on its own runner; a final job gathers the archives and cuts the Release.
+#
+# Release flow: bump cli/package.json, then push a tag `bin-v<version>` (e.g. bin-v0.8.1).
+# Or run via workflow_dispatch for a dry run (build + archive, no Release).
+
+on:
+  push:
+    tags:
+      - 'bin-v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: darwin-arm64 }
+          - { os: macos-13, target: darwin-x64 }
+          - { os: ubuntu-24.04, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-2022, target: win32-x64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # build:sea (ESM bundle) → bundle:web-ui (standalone sidecar) → package:sea
+      # (binary + self-verify via --version) → archive:sea (tarball/zip + sha256).
+      - run: pnpm --filter @akasecurity/cli build:sea
+      - run: pnpm --filter @akasecurity/cli bundle:web-ui
+      - run: pnpm --filter @akasecurity/cli package:sea
+      - run: pnpm --filter @akasecurity/cli archive:sea
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aka-${{ matrix.target }}
+          path: |
+            cli/sea-dist/aka-*.tar.gz
+            cli/sea-dist/aka-*.zip
+            cli/sea-dist/aka-*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Gather · Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fail fast on a version mismatch before touching the Release.
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#bin-v}"
+          pkg=$(node -p "require('./cli/package.json').version")
+          echo "tag=$tag  package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Version mismatch — tag bin-v$tag must equal cli/package.json ($pkg)"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate SHA256SUMS
+        run: |
+          cd dist
+          cat aka-*.sha256 > SHA256SUMS
+          rm -f aka-*.sha256
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: |
+            dist/aka-*.tar.gz
+            dist/aka-*.zip
+            dist/SHA256SUMS
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'bin-v0.') }}

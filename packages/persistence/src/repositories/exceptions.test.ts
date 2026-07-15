@@ -269,6 +269,43 @@ describe('SqliteExceptionsRepository', () => {
       expect(old?.revokedAt).not.toBeNull();
     });
 
+    it('defers to an outer transaction: a throw after the retry rolls back both the revoke and the insert', async () => {
+      // A maxUses:1 grant, consumed once, occupies the partial-index slot as
+      // a terminal (not active) row.
+      const first = input({ scope: 'once', maxUses: 1 });
+      const created = await repo.create(first);
+      expect(await repo.consume(created.id)).toBe(true);
+
+      const colliding = input({
+        ruleId: first.ruleId,
+        valueFingerprint: first.valueFingerprint,
+        keyVersion: first.keyVersion,
+        scope: 'once',
+        maxUses: 1,
+      });
+
+      // BEGIN/ROLLBACK on the same handle the repo is bound to.
+      db.exec('BEGIN');
+      try {
+        await expect(
+          (async () => {
+            await repo.create(colliding);
+            throw new Error('outer rollback');
+          })(),
+        ).rejects.toThrow('outer rollback');
+      } finally {
+        db.exec('ROLLBACK');
+      }
+
+      // Both the supersede UPDATE and the retry INSERT rolled back.
+      const all = await repo.list({ includeTerminal: true });
+      expect(all.map((e) => e.id)).toEqual([created.id]);
+      expect(all[0]?.revokedAt).toBeNull();
+      expect(all[0]?.revokeReason).toBeNull();
+      expect(all[0]?.useCount).toBe(1);
+      expect(all[0]?.maxUses).toBe(1);
+    });
+
     it('rejects a provider condition (no capture fact carries one yet)', async () => {
       await expect(repo.create(input({ conditions: { provider: 'anthropic' } }))).rejects.toThrow(
         /provider conditions are not supported/,

@@ -6,6 +6,8 @@ import { ScanClient } from './ScanClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Scan' };
+
 export default function ScanPage() {
   const ruleset = db().installedPacks.installedRuleset();
 

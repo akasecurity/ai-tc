@@ -13,7 +13,7 @@ the machine — there is no account, no network hop, and no backend to stand up.
 
 - **Language:** TypeScript strict mode, ESM everywhere (`"type": "module"`)
 - **Monorepo:** pnpm workspaces + Turborepo
-- **Runtime:** Node.js 24+ (the CLI and plugin hooks use the built-in `node:sqlite` — no native dependency); CI tests on the current release line
+- **Runtime:** Node.js 24+ (the CLI and plugin hooks use the built-in `node:sqlite` — no native dependency); `.nvmrc`, CI, and `@types/node` all track the Active LTS line, matching the `engines` floor
 - **Local store:** SQLite via `node:sqlite`, wrapped by `@akasecurity/persistence`; the schema is defined with Drizzle in `@akasecurity/schema`
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)

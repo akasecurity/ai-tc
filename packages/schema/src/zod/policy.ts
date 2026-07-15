@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ExceptionBundleEntry } from './exception.ts';
-import type { ActionTaken, DetectionCategory } from './finding.ts';
+import type { ActionTaken, DetectionCategory, Severity } from './finding.ts';
 import {
   ActionTaken as ActionTakenSchema,
   DetectionCategory as DetectionCategorySchema,
@@ -76,26 +76,6 @@ export const PolicyBundle = z
   .meta({ id: 'PolicyBundle' });
 export type PolicyBundle = z.infer<typeof PolicyBundle>;
 
-// The per-CATEGORY enforcement FALLBACK (axis 1). Used when no more-specific
-// policy applies to a finding's rule. It is NOT the per-pack default — an
-// unassigned PACK resolves to DEFAULT_PACK_POLICY_ID ('monitor'), not to its
-// category's action here. Precedence at enforcement (both surfaces): a per-rule
-// policy (synthesized from the pack's policy_id, or an explicit ruleId policy)
-// wins over a per-category policy, which wins over this fallback. So a category
-// with `secret: 'block'` here still logs-only if its pack is set to Monitor.
-export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = {
-  secret: 'block',
-  pii: 'redact',
-  financial: 'redact',
-  phi: 'redact',
-  code_context: 'warn',
-  code_flaw: 'warn',
-  custom: 'warn',
-  // Config-posture findings only observe today (they land in
-  // inspection_findings, outside the live-capture enforcement path).
-  config: 'warn',
-};
-
 // Enforcement-coverage denominators use this, NOT DEFAULT_ACTIONS: 'config'
 // findings only observe (see above), so a config policy can never be "covered"
 // by enforcement and would permanently drag the coverage % down. Derived by
@@ -103,6 +83,34 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = {
 export const OBSERVE_ONLY_CATEGORIES: readonly DetectionCategory[] = ['config'];
 export const ENFORCEABLE_CATEGORIES: readonly DetectionCategory[] =
   DetectionCategorySchema.options.filter((c) => !OBSERVE_ONLY_CATEGORIES.includes(c));
+
+// Highest static severity each category's rules can emit (from the bundled rule
+// packs). Used ONLY by the cold-start severity floor below — NOT per-instance risk.
+export const CATEGORY_PEAK_SEVERITY: Record<DetectionCategory, Severity> = {
+  secret: 'critical',
+  financial: 'critical', // core-financial/credit-card
+  code_flaw: 'critical',
+  pii: 'high',
+  phi: 'high',
+  custom: 'high', // user-defined; conservative
+  code_context: 'low',
+  config: 'low', // observe-only; floors to monitor regardless
+};
+
+// Cold-start floor: with NO evidence to judge genuineness, a category whose
+// rules can emit critical/high must at least surface (warn); low/medium-only or
+// observe-only categories log (monitor).
+export function severityFloorPolicy(category: DetectionCategory): 'warn' | 'monitor' {
+  if (OBSERVE_ONLY_CATEGORIES.includes(category)) return 'monitor';
+  const peak = CATEGORY_PEAK_SEVERITY[category];
+  return peak === 'critical' || peak === 'high' ? 'warn' : 'monitor';
+}
+
+export function severityFloorPosture(): Record<DetectionCategory, 'warn' | 'monitor'> {
+  const out = {} as Record<DetectionCategory, 'warn' | 'monitor'>;
+  for (const c of DetectionCategorySchema.options) out[c] = severityFloorPolicy(c);
+  return out;
+}
 
 // ─── M1: Built-in policy catalog (read-only) ────────────────────────────────
 
@@ -154,6 +162,30 @@ const BUILTIN_POLICY_SPECS: Record<
   },
 };
 
+// Maps the palette BuiltinPolicyId (monitor/warn/redact/block) to the ActionTaken
+// enum actually stored on policies.action (warn/redact/block/allow/log).
+// monitor -> log; warn/redact/block are identity. Derived from
+// BUILTIN_POLICY_SPECS so the mapping can never drift from the catalog.
+export function builtinPolicyToAction(id: BuiltinPolicyId): ActionTaken {
+  return BUILTIN_POLICY_SPECS[id].action;
+}
+
+// The per-CATEGORY enforcement FALLBACK (axis 1). Used when no more-specific
+// policy applies to a finding's rule. It is NOT the per-pack default — an
+// unassigned PACK resolves to DEFAULT_PACK_POLICY_ID ('monitor'), not to its
+// category's action here. Precedence at enforcement (both surfaces): a per-rule
+// policy (synthesized from the pack's policy_id, or an explicit ruleId policy)
+// wins over a per-category policy, which wins over this fallback. So a category
+// floored to `warn` here still only logs if its pack is set to Monitor.
+//
+// Cold-start seed = the severity floor (observe-first), routed through the
+// single catalog mapper so the monitor->log translation lives in exactly one
+// place (builtinPolicyToAction). severityFloorPolicy returns 'warn'|'monitor',
+// both valid BuiltinPolicyId, so this is total over every DetectionCategory.
+export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fromEntries(
+  DetectionCategorySchema.options.map((c) => [c, builtinPolicyToAction(severityFloorPolicy(c))]),
+) as Record<DetectionCategory, ActionTaken>;
+
 // Locked catalog of the 4 built-in policy archetypes — the single source of truth
 // for the local policy-catalog read port. Each entry's `id` is derived from
 // its record key, never re-declared.
@@ -166,6 +198,20 @@ export const BUILTIN_POLICIES: Record<
   BuiltinPolicyId,
   { id: BuiltinPolicyId; name: string; description: string; action: ActionTaken }
 >;
+
+// The "Actively redact" onboarding preset: a per-category built-in policy id
+// for every detection category, written as real policy rows via
+// applyCategoryPosture.
+export const FULL_ENFORCEMENT_POSTURE: Record<DetectionCategory, BuiltinPolicyId> = {
+  secret: 'block',
+  pii: 'redact',
+  financial: 'redact',
+  phi: 'redact',
+  code_flaw: 'warn',
+  custom: 'warn',
+  code_context: 'warn',
+  config: 'warn',
+};
 
 // The default built-in policy for a PACK ("detection") that has no explicit
 // assignment (installed_packs.policy_id IS NULL). The whole product treats an

@@ -6,36 +6,8 @@
 import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk';
 
 import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
-
-// Which tool_input fields carry user-authored text worth scanning, and whether
-// that text EXECUTES. `executable` marks text the host acts on directly (a
-// shell command, a URL to fetch): masking inside it doesn't remove the
-// sensitive value from what happens — it CHANGES what happens, because the
-// spliced-in `[REDACTED:…]` placeholder runs as a different command (a masked
-// SQL predicate matches different rows, a masked URL requests a different
-// resource; see the incident pinned in pre-tool-use-decision.test.ts).
-// Write/Edit content and the WebFetch analysis prompt are data handed onward —
-// the masked form IS the intended end state — so in-place redaction is correct
-// there and only there.
-// TODO: extend per-tool coverage (MultiEdit, NotebookEdit, MCP tools).
-export interface ScannableField {
-  field: string;
-  executable: boolean;
-}
-
-export const SCANNABLE_FIELDS: Record<string, readonly ScannableField[]> = {
-  Bash: [{ field: 'command', executable: true }],
-  Write: [{ field: 'content', executable: false }],
-  Edit: [{ field: 'new_string', executable: false }],
-  // WebFetch is the classic exfil channel: a secret spliced into the fetched
-  // URL leaves the machine before any post-hook can see it. The URL executes
-  // (it IS the request), so redact escalates to deny; the prompt is text
-  // handed to the fetch-analysis model and redacts in place like Write/Edit.
-  WebFetch: [
-    { field: 'url', executable: true },
-    { field: 'prompt', executable: false },
-  ],
-};
+import { replaceAtPath } from './paths.ts';
+import type { ScannableField } from './pre-tool-use-fields.ts';
 
 // One scanned field: its spec plus the runtime's decision for the field text.
 export interface ScannedField {
@@ -105,8 +77,16 @@ export function decidePreToolUse(
     } else if (action === 'redact') {
       for (const finding of result.findings) redactedRules.add(finding.ruleId);
       if (result.blockedReferences) redactedReferences.push(...result.blockedReferences);
-      updatedInput ??= { ...toolInput };
-      if (result.text !== null) updatedInput[spec.field] = result.text;
+      // Rebuilt through the path so a nested leaf (MultiEdit's
+      // edits[i].new_string) lands in place with its siblings — and its array
+      // spine — intact. Each pass folds into the previous result, so two
+      // flagged fields of one payload both survive into the emitted input.
+      if (result.text !== null) {
+        updatedInput = replaceAtPath(updatedInput ?? toolInput, spec.path, result.text) as Record<
+          string,
+          unknown
+        >;
+      }
     } else if (action === 'warn') {
       for (const finding of result.findings) warnedRules.add(finding.ruleId);
     }

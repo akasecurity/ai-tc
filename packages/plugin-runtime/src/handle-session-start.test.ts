@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, type PluginConfig } from '@akasecurity/plugin-sdk';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleSessionStart } from './handle-session-start.ts';
 import { StandaloneDataGateway } from './standalone-gateway.ts';
@@ -365,6 +365,69 @@ describe('handleSessionStart (standalone)', () => {
       .get() as { pid: string; path: string; access: string };
     expect(override).toMatchObject({ pid: canonical?.id, path: 'secret.ts', access: 'blocked' });
     db.close();
+  });
+});
+
+describe('handleSessionStart — warn-era enforcement cap', () => {
+  function warnConfig(dataDir: string): PluginConfig {
+    const base = config(dataDir);
+    return { ...base, settings: { ...base.settings, policy: 'warn' } };
+  }
+
+  it('surfaces the stderr disclosure once when rows are actually capped', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await handleSessionStart(start('s1'), warnConfig(dir));
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(true);
+
+    stderrSpy.mockClear();
+    await handleSessionStart(start('s2'), warnConfig(dir));
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+    stderrSpy.mockRestore();
+  });
+
+  it('stays silent for a redact-era store', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+    stderrSpy.mockRestore();
+  });
+
+  it('is fail-open: a thrown cap never breaks the session, stays silent, and does not skip later steps', async () => {
+    writeFileSync(join(cwd, 'main.ts'), '');
+    const capSpy = vi
+      .spyOn(StandaloneDataGateway.prototype, 'capWarnEraEnforcement')
+      .mockImplementation(() => {
+        throw new Error('boom');
+      });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      await expect(handleSessionStart(start('s1'), warnConfig(dir))).resolves.toEqual({
+        staleBinaryNotice: null,
+      });
+      expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+
+      const db = open();
+      expect(
+        db.prepare("SELECT id FROM audit_events WHERE event_type = 'session'").get(),
+      ).toMatchObject({ id: 's1' });
+      // The project-file inventory pass (a later step in the same guarded
+      // block) still ran — the cap's own catch, not the outer one, is what
+      // keeps subsequent steps isolated from a cap failure.
+      expect(count(db, 'project_file')).toBe(1);
+      db.close();
+    } finally {
+      capSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
   });
 });
 

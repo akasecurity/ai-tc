@@ -30,6 +30,8 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Activity' };
+
 // Reads the local store's reconstructed harness sessions — today stats + the
 // filtered session list — for the URL's search/harness/range, resolves the
 // selected session detail, then hands off to the client shell for the interactive

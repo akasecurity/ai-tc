@@ -181,6 +181,17 @@ export function FindingsTableView({
                         ))}
                       </TableRow>
                     ))}
+                  {/* `instances` is the newest slice of a large group, not all
+                      of it — say so rather than ending the rows silently. */}
+                  {expanded && group.instances.length < group.instanceCount && (
+                    <TableRow className="bg-surface-2/50 hover:bg-surface-2/50">
+                      <TableCell />
+                      <TableCell colSpan={columns.length} className="text-xs text-text-3">
+                        Showing the {group.instances.length} most recent of {group.instanceCount}{' '}
+                        locations.
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </Fragment>
               );
             })}

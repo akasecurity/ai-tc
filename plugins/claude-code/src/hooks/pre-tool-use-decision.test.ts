@@ -18,6 +18,7 @@
 // out of the test source the moment an agent writes it — which happened while
 // authoring this very file, rewriting the fixtures AND inverting a
 // `not.toContain(<ip>)` assertion into `not.toContain('[REDACTED:PII]')`.
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,20 +28,17 @@ import { createPluginRuntime } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import type { PreToolUseOutput, ScannableField } from './pre-tool-use-decision.ts';
-import {
-  decidePreToolUse,
-  EXECUTABLE_REDACT_NOTE,
-  SCANNABLE_FIELDS,
-} from './pre-tool-use-decision.ts';
+import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
+import { decidePreToolUse, EXECUTABLE_REDACT_NOTE } from './pre-tool-use-decision.ts';
+import type { ScannableField } from './pre-tool-use-fields.ts';
 
 const IP = ['45', '79', '142', '6'].join('.');
 const EMAIL = ['user1', 'example.com'].join('@');
 
-const BASH_COMMAND: ScannableField = { field: 'command', executable: true };
-const WRITE_CONTENT: ScannableField = { field: 'content', executable: false };
-const WEBFETCH_URL: ScannableField = { field: 'url', executable: true };
-const WEBFETCH_PROMPT: ScannableField = { field: 'prompt', executable: false };
+const BASH_COMMAND: ScannableField = { path: ['command'], executable: true };
+const WRITE_CONTENT: ScannableField = { path: ['content'], executable: false };
+const WEBFETCH_URL: ScannableField = { path: ['url'], executable: true };
+const WEBFETCH_PROMPT: ScannableField = { path: ['prompt'], executable: false };
 
 type Finding = CaptureResult['findings'][number];
 
@@ -81,21 +79,8 @@ function denyReason(output: PreToolUseOutput | null): string {
   return decision.permissionDecisionReason;
 }
 
-describe('SCANNABLE_FIELDS', () => {
-  it('marks Bash command + WebFetch url as executable and Write/Edit/prompt as stored', () => {
-    // The executable flag is the whole fix — flipping one silently reopens
-    // in-place rewriting of command/URL text (or breaks stored-text redaction).
-    expect(SCANNABLE_FIELDS).toEqual({
-      Bash: [{ field: 'command', executable: true }],
-      Write: [{ field: 'content', executable: false }],
-      Edit: [{ field: 'new_string', executable: false }],
-      WebFetch: [
-        { field: 'url', executable: true },
-        { field: 'prompt', executable: false },
-      ],
-    });
-  });
-});
+// The per-tool field map moved to pre-tool-use-fields.ts; its executable-flag
+// guard lives in pre-tool-use-fields.test.ts alongside it.
 
 describe('decidePreToolUse — redact on executable text escalates to deny', () => {
   const COMMAND = `psql -c "DELETE FROM share_destination WHERE host = '${IP}';"`;
@@ -127,7 +112,7 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
       ],
     };
     const output = decidePreToolUse('Bash', { command: COMMAND }, [
-      { spec: { field: 'other', executable: true }, result: blocked },
+      { spec: { path: ['other'], executable: true }, result: blocked },
       { spec: BASH_COMMAND, result: redactResult(COMMAND, 'core-pii/ip-address', IP) },
     ]);
 
@@ -259,10 +244,13 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
 });
 
 // ─── End-to-end incident regression, through the REAL runtime ───────────────
-// Real bundled rule packs, real DEFAULT_ACTIONS (no explicit policies in the
-// bundle), real redact splice — then the decision module must turn it into a
-// deny. If a rule or default action changes out from under this, the
-// precondition assertions say which half moved.
+// Real bundled rule packs, a real redact splice — then the decision module
+// must turn it into a deny. The cold-start category floor no longer resolves
+// pii to redact by default, so this fixture pins the incident's actual
+// enforcement posture explicitly: a `pii` category policy set to `redact`,
+// exactly as an operator's own policy would. If a rule or the redact action
+// changes out from under this, the precondition assertions say which half
+// moved.
 
 function settings(): WorkspaceSettings {
   return {
@@ -276,7 +264,15 @@ function settings(): WorkspaceSettings {
 function bundle(): PolicyBundle {
   return {
     version: 'test',
-    policies: [],
+    policies: [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'pii' },
+        action: 'redact',
+        enabled: true,
+      },
+    ],
     rules: [],
     customKeywords: [],
     fetchedAt: new Date().toISOString(),

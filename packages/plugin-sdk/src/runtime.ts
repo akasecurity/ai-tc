@@ -22,6 +22,11 @@ import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from
 import { registerBundledPacks } from './rule-packs.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
 
+// Global handling-mode ceiling: when true, settings.policy === 'warn' caps
+// every block/redact decision down to warn. Disabled — per-category policy
+// rows are the sole authority over block/redact/warn/log.
+const ENFORCEMENT_CEILING_ENABLED = false as boolean;
+
 // Worst-first ordering for collapsing multiple findings into one decision.
 const ACTION_PRIORITY: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
 
@@ -182,7 +187,7 @@ export function createPluginRuntime(
     // A per-rule policy — the per-detection Monitor/Warn/Redact/Block assignment
     // the standalone gateway synthesizes from installed_packs.policy_id — wins
     // over the category default, so a detection set to Monitor actually stops
-    // enforcing rather than falling through to DEFAULT_ACTIONS (secret → block).
+    // enforcing rather than falling through to DEFAULT_ACTIONS (secret → warn).
     // O(1) via the indexes built in ensureInitialized.
     const byRule = ruleActionIndex.get(ruleId);
     if (byRule !== undefined) return byRule;
@@ -210,9 +215,15 @@ export function createPluginRuntime(
       if (ACTION_PRIORITY.indexOf(action) < ACTION_PRIORITY.indexOf(worst)) worst = action;
     }
 
-    // The handling policy is the global override (the onboarding "handling"
-    // choice): in 'warn' mode we never block or rewrite, only surface a warning.
-    if (policyMode === 'warn' && (worst === 'block' || worst === 'redact')) {
+    // Legacy global ceiling (disabled by default — ENFORCEMENT_CEILING_ENABLED
+    // above): when enabled, the onboarding "handling" choice caps block/redact
+    // down to warn. Per-category policies are the sole enforcement authority
+    // while it's off.
+    if (
+      ENFORCEMENT_CEILING_ENABLED &&
+      policyMode === 'warn' &&
+      (worst === 'block' || worst === 'redact')
+    ) {
       return { action: 'warn', text, findings };
     }
 
@@ -253,9 +264,10 @@ export function createPluginRuntime(
     const excepted = new Set<MatchResult>();
     const exceptionIds: string[] = [];
     try {
-      // In 'warn' handling mode nothing is ever blocked/redacted, so there is
-      // no enforcement to bypass — evaluating would only burn use budgets.
-      if (policyMode === 'warn') return { excepted, exceptionIds };
+      // Legacy global ceiling (disabled by default). When enabled, 'warn'
+      // handling mode blocks/redacts nothing, so there is no enforcement to
+      // bypass — evaluating would only burn use budgets.
+      if (ENFORCEMENT_CEILING_ENABLED && policyMode === 'warn') return { excepted, exceptionIds };
       const enforced = findings.filter((f) => {
         const action = resolveAction(f.ruleId, f.category);
         return action === 'block' || action === 'redact';

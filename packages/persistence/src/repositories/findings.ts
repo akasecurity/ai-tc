@@ -4,6 +4,7 @@ import type {
   ActionTaken,
   DayActivity,
   DetectedFindingWithKey,
+  FindingGroupAggregate,
   FindingStatus,
   FindingView,
   GroupableFindingRow,
@@ -25,12 +26,43 @@ import {
 } from '@akasecurity/schema';
 
 import type { DashboardViews, FindingsReadPort, GroupedFindingsView } from '../ports.ts';
-import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resolution-sql.ts';
+import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
-// Upper bound on rows pulled into memory for grouping — a 2k cap. Above it the
-// grouped view undercounts; the fix is SQL-side aggregation (tracked tech-debt),
-// not a bigger buffer.
-const GROUP_ROW_CAP = 2000;
+// How many of each group's newest instances listGroupedFindings materializes.
+// Group-wide numbers (instanceCount, providers, actions, status, latest, search
+// text) are aggregated SQL-side over EVERY instance and handed to
+// buildFindingGroups, so this bounds only the per-group `instances` PREVIEW the
+// table expands — never a count. Rows crossing into JS stay flat at
+// (distinct rule_ids × this) however large the store grows; SQLite still scans
+// the table to count, so time grows with it while memory does not.
+const PREVIEW_INSTANCES_PER_GROUP = 200;
+
+// group_concat's list separator. SQLite allows a custom separator only when the
+// aggregate has a single argument, and DISTINCT already claims that slot, so the
+// default ',' is what the aggregate queries below emit.
+const CONCAT_SEP = ',';
+// Separates the fields of one encoded deriveFindingStatus input tuple. Both this
+// and CONCAT_SEP are absent from the enum values being encoded (event.kind,
+// finding_resolution.status).
+const TUPLE_SEP = '|';
+
+function splitConcat(value: string | null): string[] {
+  return value === null || value === '' ? [] : value.split(CONCAT_SEP);
+}
+
+// One groupAggregates() row: the whole-group folds for a single rule_id. The
+// group_concat columns are null when the group has no non-null value for that
+// column (e.g. events whose metadata carries no repo).
+interface FindingAggregateRowJoined {
+  rule_id: string;
+  instance_count: number;
+  latest_at: number;
+  source_tools: string | null;
+  actions_taken: string | null;
+  status_inputs: string | null;
+  repos: string | null;
+  files: string | null;
+}
 
 interface FindingGroupRowJoined {
   id: string;
@@ -225,22 +257,50 @@ export class SqliteFindingsRepository
    * applies the requested filters, and sorts by severity then recency. Filtering
    * and faceting run in JS via the shared @akasecurity/schema helpers. `totals`
    * reflect the full filtered set; `items` is the requested
-   * page (default 100); no cursor (nextCursor is always null).
+   * page (default 50); no cursor (nextCursor is always null).
+   *
+   * Two reads, neither of which materializes a row per finding:
+   *   1. one aggregate row per rule_id, folding EVERY instance into the numbers
+   *      the group and the filters need (count, providers, actions, statuses,
+   *      latest, search text);
+   *   2. each group's newest PREVIEW_INSTANCES_PER_GROUP instances, which
+   *      populate `instances` for the table's expanded rows.
+   * The aggregates carry raw DB values and are translated by the same
+   * @akasecurity/schema mappers the row path uses, so no enum mapping or status
+   * rule is ever restated in SQL.
    */
   listGroupedFindings(query: ListGroupedFindingsQuery): Promise<ListGroupedFindingsResponse> {
+    // The search text is the one aggregate column whose size tracks the store
+    // rather than the rule count, so fetch it only for a request that can use
+    // it (see groupAggregates).
+    const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '');
+
     const rows = this.db
       .prepare(
-        `SELECT f.id, f.rule_id, f.category, f.severity, f.masked_match,
-                f.action_taken, f.confidence, e.occurred_at, e.source_tool,
-                json_extract(e.metadata, '$.repo') AS repo,
-                json_extract(e.metadata, '$.filePath') AS file,
-                e.kind AS kind, f.finding_key AS finding_key,
-                ${latestResolutionStatusSql('f')} AS latest_status
-         FROM findings f JOIN events e ON e.id = f.event_id
-         ORDER BY e.occurred_at DESC, f.id DESC
-         LIMIT :cap`,
+        `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
+                occurred_at, source_tool, repo, file, kind, finding_key, latest_status
+         FROM (
+           SELECT f.id AS id, f.rule_id AS rule_id, f.category AS category,
+                  f.severity AS severity, f.masked_match AS masked_match,
+                  f.action_taken AS action_taken, f.confidence AS confidence,
+                  e.occurred_at AS occurred_at, e.source_tool AS source_tool,
+                  json_extract(e.metadata, '$.repo') AS repo,
+                  json_extract(e.metadata, '$.filePath') AS file,
+                  e.kind AS kind, f.finding_key AS finding_key,
+                  latest.status AS latest_status,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY f.rule_id
+                    ORDER BY e.occurred_at DESC, f.id DESC
+                  ) AS rn
+             FROM findings f
+             JOIN events e ON e.id = f.event_id
+             LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+               ON latest.finding_key = f.finding_key
+         )
+         WHERE rn <= :cap
+         ORDER BY occurred_at DESC, id DESC`,
       )
-      .all({ cap: GROUP_ROW_CAP }) as unknown as FindingGroupRowJoined[];
+      .all({ cap: PREVIEW_INSTANCES_PER_GROUP }) as unknown as FindingGroupRowJoined[];
 
     const groupable: GroupableFindingRow[] = rows.map((r) => ({
       id: r.id,
@@ -259,7 +319,7 @@ export class SqliteFindingsRepository
 
     // No overrides/pack names in OSS: detection.name is null, policy is
     // synthesized from category (both unused by the OSS views).
-    const allGroups = buildFindingGroups(groupable);
+    const allGroups = buildFindingGroups(groupable, { aggregates });
 
     const filterOpts = {
       severity: query.severity,
@@ -282,6 +342,86 @@ export class SqliteFindingsRepository
     const items = sorted.slice(0, limit);
 
     return Promise.resolve({ totals, facets, items, nextCursor: null });
+  }
+
+  /**
+   * One row per rule_id, folding EVERY instance of the group into the values
+   * buildFindingGroups cannot recover from a preview. Bounded by the number of
+   * distinct rule_ids (the installed packs' rules), not by the store's size.
+   *
+   * The per-instance sets ride back as group_concat lists of RAW DB values —
+   * source_tool, action_taken, and the (kind, has-key, latest-status) triples
+   * deriveFindingStatus consumes. Aggregating the status INPUTS rather than a
+   * status keeps the classifier itself in @akasecurity/schema, where
+   * severitySummary's SQL and this query can't drift apart on what 'resolved'
+   * means (see resolution-sql.ts). Each of those sets is bounded by an enum, so
+   * a group's row stays small however many findings it holds.
+   *
+   * `withSearchText` is the exception, and the one column here that does NOT
+   * stay small: the group's distinct repos/filePaths, whose size tracks how many
+   * distinct paths a rule fired across — for a rule hitting mostly-unique paths
+   * that is a string proportional to the store (~8MB over 200k distinct paths,
+   * and buildHaystack lowercases a second copy). It buys `q` the ability to
+   * match an instance outside the preview, which searching the preview alone
+   * would silently lose, so it is fetched only when the request actually
+   * carries a `q`.
+   */
+  private groupAggregates(withSearchText: boolean): Map<string, FindingGroupAggregate> {
+    const searchTextColumns = withSearchText
+      ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
+           group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files`
+      : `, NULL AS repos, NULL AS files`;
+
+    const rows = this.db
+      .prepare(
+        `SELECT f.rule_id AS rule_id,
+                count(*) AS instance_count,
+                max(e.occurred_at) AS latest_at,
+                group_concat(DISTINCT e.source_tool) AS source_tools,
+                group_concat(DISTINCT f.action_taken) AS actions_taken,
+                group_concat(DISTINCT (
+                  e.kind || '${TUPLE_SEP}' ||
+                  (CASE WHEN f.finding_key IS NULL THEN '' ELSE 'k' END) || '${TUPLE_SEP}' ||
+                  coalesce(latest.status, '')
+                )) AS status_inputs
+                ${searchTextColumns}
+           FROM findings f
+           JOIN events e ON e.id = f.event_id
+           LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+             ON latest.finding_key = f.finding_key
+          GROUP BY f.rule_id`,
+      )
+      .all() as unknown as FindingAggregateRowJoined[];
+
+    return new Map(
+      rows.map((r) => [
+        r.rule_id,
+        {
+          instanceCount: r.instance_count,
+          sourceTools: splitConcat(r.source_tools),
+          actionsTaken: splitConcat(r.actions_taken),
+          statusInputs: splitConcat(r.status_inputs).map((tuple) => {
+            const [kind = '', keyMarker = '', latestStatus = ''] = tuple.split(TUPLE_SEP);
+            return {
+              // deriveFindingStatus only distinguishes null from non-null here,
+              // so the marker stands in for the key itself (never rendered).
+              kind,
+              findingKey: keyMarker === '' ? null : keyMarker,
+              latestResolutionStatus: latestStatus === '' ? null : latestStatus,
+            };
+          }),
+          latestDetectedAt: epochMillisToIso(r.latest_at),
+          // Free text only — joined and substring-matched, so group_concat's
+          // commas need no unpicking (a repo/path containing one still matches).
+          // Left undefined (not '') when unfetched, so buildFindingGroups can
+          // tell "no q this request" from "a group with no repo/file at all"
+          // and skip priming a haystack nothing will read.
+          ...(withSearchText
+            ? { searchText: [r.repos ?? '', r.files ?? ''].filter((s) => s !== '').join(' ') }
+            : {}),
+        },
+      ]),
+    );
   }
 
   healthSummary(): Promise<HealthSummary> {

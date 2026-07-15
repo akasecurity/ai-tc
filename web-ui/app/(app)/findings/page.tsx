@@ -10,6 +10,8 @@ import { FindingsClient } from './FindingsClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Findings' };
+
 // Reads the local store's grouped findings for the URL's filters, then hands off
 // to the client shell for the interactive table + detail sheet. Filters live in
 // the URL so this re-runs (server-side) on every filter/search change.

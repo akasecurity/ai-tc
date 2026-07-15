@@ -74,7 +74,7 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: async () => ({
       version: 'test',
-      policies: [],
+      policies: await db.policies.readPolicies(),
       rules: [],
       exceptions: await db.exceptions.activeBundleEntries(loadOrCreateFingerprintKey(dir).version),
       customKeywords: [],
@@ -127,6 +127,10 @@ describe('aka exception add → enforcement full loop', () => {
 
     const db = openLocalDatabase(dir);
     try {
+      // The cold-start floor no longer resolves secret to block by default, so
+      // pin an explicit enforcing policy — this test's whole point is proving
+      // the exception downgrades a real enforcement, not a bare warn.
+      db.policies.upsertCategoryAction('secret', 'block');
       const grants = await db.exceptions.list();
       expect(grants).toHaveLength(1);
       const grant = grants[0];
@@ -204,6 +208,10 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
 
     const db = openLocalDatabase(dir);
     try {
+      // The cold-start floor no longer resolves secret to block by default, so
+      // pin an explicit enforcing policy — this test's whole point is proving
+      // the exception downgrades a real enforcement, not a bare warn.
+      db.policies.upsertCategoryAction('secret', 'block');
       const grant = (await db.exceptions.list())[0];
       expect(grant?.ruleId).toBe(RULE_ID);
       expect(grant?.createdVia).toBe('cli-approve');

@@ -220,6 +220,66 @@ describe('read surfaces', () => {
   });
 });
 
+describe('transaction', () => {
+  it('commits every write inside fn atomically', async () => {
+    const db = openLocalDatabase(dir);
+    db.policies.upsertCategoryAction('secret', 'warn');
+    await db.transaction(() => {
+      db.policies.upsertCategoryAction('secret', 'block');
+      db.policies.upsertCategoryAction('pii', 'block');
+    });
+    expect(db.policies.getCategoryAction('secret')).toBe('block');
+    expect(db.policies.getCategoryAction('pii')).toBe('block');
+    db.close();
+  });
+
+  it('rolls back every write inside fn on throw', async () => {
+    const db = openLocalDatabase(dir);
+    db.policies.upsertCategoryAction('secret', 'warn');
+    await expect(
+      db.transaction(() => {
+        db.policies.upsertCategoryAction('secret', 'block');
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(db.policies.getCategoryAction('secret')).toBe('warn');
+    db.close();
+  });
+
+  it('rolls back a nested exceptions.create() collision-retry when the outer fn throws', async () => {
+    const db = openLocalDatabase(dir);
+    const grant = {
+      ruleId: 'aws-access-key-id',
+      category: 'secret' as const,
+      valueFingerprint: 'a'.repeat(64),
+      keyVersion: 1,
+      maskedValue: 'AKIA******Q',
+      scope: 'once' as const,
+      expiresAt: null,
+      maxUses: 1,
+      justification: 'test grant',
+      conditions: null,
+      createdBy: 'alice',
+      createdVia: 'cli-approve' as const,
+    };
+    const created = await db.exceptions.create(grant);
+    expect(await db.exceptions.consume(created.id)).toBe(true);
+
+    await expect(
+      db.transaction(async () => {
+        await db.exceptions.create(grant);
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    const all = await db.exceptions.list({ includeTerminal: true });
+    expect(all.map((e) => e.id)).toEqual([created.id]);
+    expect(all[0]?.revokedAt).toBeNull();
+    expect(all[0]?.useCount).toBe(1);
+    db.close();
+  });
+});
+
 describe('store hygiene', () => {
   it('does not write the WAL/SHM secret to a separate plaintext copy', () => {
     const db = openLocalDatabase(dir);

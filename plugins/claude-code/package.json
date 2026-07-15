@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-claude-code",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -35,7 +35,7 @@
     "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/scanner": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "@types/node": "^26.1.1",
+    "@types/node": "^24.13.3",
     "eslint": "^9.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",

@@ -8,6 +8,13 @@ import { ExceptionDetailClient } from './ExceptionDetailClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  // Short prefix keeps the tab title readable while still telling two open
+  // exception tabs apart (matches the page's own id-prefix lookup).
+  return { title: `Exception ${id.slice(0, 8)}` };
+}
+
 export default async function ExceptionDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 

@@ -9,7 +9,11 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 export const metadata: Metadata = {
-  title: 'AI Traffic Control',
+  title: {
+    // Per-page titles fill %s; pages without their own title fall back to `default`.
+    template: '%s · AI Traffic Control',
+    default: 'AI Traffic Control',
+  },
   description:
     'AI Traffic Control (ai-tc) by AKA Security — local-first security dashboard (open source).',
 };

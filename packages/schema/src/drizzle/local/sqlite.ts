@@ -27,7 +27,10 @@ export const events = sqliteTable(
   {
     id: text(COL.id).primaryKey(),
     sourceTool: text(COL.sourceTool).notNull(),
-    kind: text(COL.kind, { enum: ['prompt', 'response', 'code_change'] }).notNull(),
+    // Drizzle's `enum` is a TypeScript-level narrowing only — it emits no SQL
+    // CHECK — so widening this list needs no migration: stores written by an
+    // older build accept a 'tool_use' row as-is.
+    kind: text(COL.kind, { enum: ['prompt', 'response', 'code_change', 'tool_use'] }).notNull(),
     occurredAt: integer(COL.occurredAt).notNull(),
     contentHash: text(COL.contentHash).notNull(),
     content: text(COL.content).notNull(),
@@ -313,6 +316,7 @@ export const auditEvents = sqliteTable(
         'prompt',
         'response',
         'code_change',
+        'tool_use',
         'config_scan',
       ],
     }).notNull(),

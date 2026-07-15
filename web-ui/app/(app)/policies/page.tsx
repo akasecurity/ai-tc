@@ -6,6 +6,8 @@ import { PoliciesClient } from './PoliciesClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Policies' };
+
 // Reads the local store's built-in policy catalog (stats + list + the selected
 // detail) and hands off to the client shell for the interactive master/detail.
 // Selection lives in the URL (?id) so this Server Component re-queries the detail

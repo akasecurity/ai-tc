@@ -162,7 +162,7 @@ export function filterGroupsByStatus(
  * filter that promised to narrow the view down to one status.
  *
  * Never returns empty for a group `filterGroupsByStatus` already deemed
- * visible: `deriveGroupStatus` (findings-group-build.ts) only ever assigns a
+ * visible: `foldGroupStatus` (findings-group-build.ts) only ever assigns a
  * group's status to a candidate value when at least one instance actually
  * carries it, so a group whose status equals `status` is guaranteed to have
  * at least one matching instance.

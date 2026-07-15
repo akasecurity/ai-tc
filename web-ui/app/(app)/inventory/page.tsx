@@ -14,6 +14,8 @@ import { InventoryClient } from './InventoryClient';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Inventory' };
+
 // The local model has no enforcement-event source yet, so the HarnessOverview
 // "recent blocks" list is a fixed empty constant (no port method pretending to be
 // a live query — see InventoryReadPort). Populate when a real scanner lands.

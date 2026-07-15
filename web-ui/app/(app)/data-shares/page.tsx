@@ -7,6 +7,8 @@ import { type DataSharesSearchParams, parseQuery, parseSelection } from './filte
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+export const metadata = { title: 'Data Shares' };
+
 // Reads the local store's outbound-egress register (stats + grouped destinations +
 // the needs-review strip) for the URL's search term, resolves the selected
 // destination detail, then hands off to the client shell for the interactive

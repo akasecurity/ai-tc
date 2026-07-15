@@ -399,6 +399,36 @@ describe('handleSessionStart — warn-era enforcement cap', () => {
     expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
     stderrSpy.mockRestore();
   });
+
+  it('is fail-open: a thrown cap never breaks the session, stays silent, and does not skip later steps', async () => {
+    writeFileSync(join(cwd, 'main.ts'), '');
+    const capSpy = vi
+      .spyOn(StandaloneDataGateway.prototype, 'capWarnEraEnforcement')
+      .mockImplementation(() => {
+        throw new Error('boom');
+      });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      await expect(handleSessionStart(start('s1'), warnConfig(dir))).resolves.toEqual({
+        staleBinaryNotice: null,
+      });
+      expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+
+      const db = open();
+      expect(
+        db.prepare("SELECT id FROM audit_events WHERE event_type = 'session'").get(),
+      ).toMatchObject({ id: 's1' });
+      // The project-file inventory pass (a later step in the same guarded
+      // block) still ran — the cap's own catch, not the outer one, is what
+      // keeps subsequent steps isolated from a cap failure.
+      expect(count(db, 'project_file')).toBe(1);
+      db.close();
+    } finally {
+      capSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
 });
 
 describe('handleSessionStart stale-session notice (return value)', () => {

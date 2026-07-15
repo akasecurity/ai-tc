@@ -288,11 +288,10 @@ export class StandaloneDataGateway implements DataGateway {
     return this.db.exceptions.sweepTerminal(retentionMs);
   }
 
-  // The warn-era enforcement cap (upgrade migration), standalone-only store
-  // maintenance invoked from SessionStart, not part of the DataGateway port.
-  // Delegates to persistence's run-once cap so the raw sqlite handle stays
-  // private to the gateway. Returns the number of block/redact rows capped to
-  // warn (0 for a redact-era store or an already-capped one).
+  // The warn-era enforcement cap, standalone-only store maintenance invoked
+  // from SessionStart, not part of the DataGateway port. Returns the number
+  // of block/redact rows capped to warn (0 for a redact-policy store or an
+  // already-capped one).
   capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number } {
     const { capped } = capWarnEraEnforcementOnce(this.db, policyMode, this.dataDir);
     return { capped };

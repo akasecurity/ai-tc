@@ -110,9 +110,9 @@ export async function handleSessionStart(
         } catch {
           // best-effort
         }
-        // The warn-era enforcement cap (upgrade migration): a warn-era user
-        // who upgrades but never re-runs /aka:setup is caught here. A
-        // redact-era store is a no-op; the cap is marker-guarded run-once.
+        // The warn-era enforcement cap: caps existing block/redact category
+        // rows to warn once for a warn-policy store. A redact-policy store
+        // is a no-op.
         try {
           const { capped } = gateway.capWarnEraEnforcement(config.settings.policy);
           if (capped > 0) {

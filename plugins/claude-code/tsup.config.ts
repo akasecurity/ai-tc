@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { defineConfig } from 'tsup';
@@ -56,6 +56,8 @@ export default defineConfig({
     // /aka:dashboard — launches the web dashboard via the `aka` CLI
     dashboard: 'src/dashboard.ts',
     onboard: 'src/onboard.ts',
+    // /aka:setup FP-writeback adapter (reads a backfill --triage stream)
+    'apply-suppressions': 'src/apply-suppressions.ts',
     intro: 'src/intro.ts',
     firstrun: 'src/firstrun.ts',
     backfill: 'src/backfill.ts',
@@ -70,5 +72,9 @@ export default defineConfig({
   noExternal: [/^@akasecurity\//, 'zod'],
   onSuccess: async () => {
     normalizeSqliteSpecifier('scripts');
+    // Ship the locked triage rubric next to apply-suppressions.js. runJudge's
+    // default path (eval/prompt.md) is not in the package `files`, so the adapter
+    // reads scripts/triage-rubric.md at runtime — copied here from the single source.
+    copyFileSync('eval/prompt.md', join('scripts', 'triage-rubric.md'));
   },
 });

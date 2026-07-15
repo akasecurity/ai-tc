@@ -17,6 +17,8 @@ export type {
 export { collectFiles, scanPathIntoStore } from './fs-scan.ts';
 export type { AgentPlugin } from './registry.ts';
 export { AGENT_PLUGINS, findAgent, pluginRef } from './registry.ts';
+export type { Reinvocation } from './self-exec.ts';
+export { isSea, reinvokeArgv } from './self-exec.ts';
 export { compareSemver, isNewer } from './semver.ts';
 export {
   cachePath,

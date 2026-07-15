@@ -3,10 +3,10 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { cliRecordedBy } from '@akasecurity/local-ops';
+import { cliRecordedBy, isSea, reinvokeArgv } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
 
@@ -14,6 +14,13 @@ import { openUrl } from '../lib/open-url.ts';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
+
+// The package root that ships the bundled web-ui. Under a plain-node launch it is
+// one level above dist/ (this module's dir). A SEA binary has no source dir, so it
+// is the directory holding the executable, where release packaging places web-ui/.
+function pkgBase(): string {
+  return isSea() ? dirname(process.execPath) : join(here, '..');
+}
 
 // Is the port free to bind? Lets us print a friendly message instead of forwarding
 // Next's raw EADDRINUSE (after which the readiness regex never fires and the
@@ -98,9 +105,10 @@ export async function runDashboard(argv: string[]): Promise<void> {
   // Bundled standalone server ships under <package>/web-ui/ (dist/ is one level
   // under the package root). Next's monorepo standalone keeps the app nested
   // (web-ui/server.js) alongside a bundled node_modules, so check both.
+  const base = pkgBase();
   const bundledServer = [
-    join(here, '..', 'web-ui', 'server.js'),
-    join(here, '..', 'web-ui', 'web-ui', 'server.js'),
+    join(base, 'web-ui', 'server.js'),
+    join(base, 'web-ui', 'web-ui', 'server.js'),
   ].find((p) => existsSync(p));
   if (bundledServer) {
     launchStandalone(bundledServer, port, shouldOpen, url);
@@ -142,10 +150,19 @@ export async function runDashboard(argv: string[]): Promise<void> {
 }
 
 // Run the prebuilt Next standalone server (a plain Node server that reads PORT
-// from the environment). Inheriting the parent env is required so the child sees
-// PATH etc.; PORT/HOSTNAME are overridden for this launch.
+// from the environment). A SEA binary cannot spawn `server.js` as a script — it
+// would re-run the embedded CLI main — so route through the hidden
+// `__dashboard-server` subcommand, which requires the server IN-PROCESS in the
+// child. On plain node the effect is identical: a child process serving the
+// dashboard, with browser-open + signal forwarding handled by onReadyOpen.
 function launchStandalone(serverJs: string, port: string, shouldOpen: boolean, url: string): void {
-  const child = spawn(process.execPath, [serverJs], {
+  const reinvoke = reinvokeArgv('__dashboard-server', ['--server-js', serverJs]);
+  if (!reinvoke) {
+    process.stderr.write('aka dashboard: cannot resolve the CLI entry to launch the server.\n');
+    process.exitCode = 1;
+    return;
+  }
+  const child = spawn(reinvoke.command, reinvoke.args, {
     cwd: dirname(serverJs),
     stdio: ['inherit', 'pipe', 'inherit'],
     // Inherit the parent env so the child server sees PATH etc.; PORT/HOSTNAME tell
@@ -154,6 +171,26 @@ function launchStandalone(serverJs: string, port: string, shouldOpen: boolean, u
     env: { ...process.env, PORT: port, HOSTNAME: '127.0.0.1' },
   });
   onReadyOpen(child, shouldOpen, url, `Starting the AKA dashboard at ${url}\n`);
+}
+
+// The hidden `__dashboard-server` command: boot the prebuilt Next standalone server
+// IN-PROCESS. Spawned by launchStandalone with cwd = the server's dir and PORT/HOSTNAME
+// already in the env (the server's only bind inputs). Loading it in-process — rather
+// than running it as a child script — is what lets a SEA binary (which cannot exec an
+// arbitrary script) serve the dashboard; on plain node the behavior is unchanged.
+// Next's standalone server.js is an ESM module with no `require.main` guard: importing
+// it evaluates its top level, which starts the server (kept alive by its listen socket).
+// A dynamic import by file URL resolves without relying on this module's on-disk
+// location — which a SEA does not have.
+export async function runDashboardServer(argv: string[]): Promise<void> {
+  const { values } = parseArgs({ args: argv, options: { 'server-js': { type: 'string' } } });
+  const serverJs = values['server-js'];
+  if (serverJs === undefined || serverJs === '') {
+    process.stderr.write('aka __dashboard-server: --server-js <path> is required\n');
+    process.exitCode = 1;
+    return;
+  }
+  await import(pathToFileURL(serverJs).href);
 }
 
 // Pipe a child server's stdout through, open the browser once it reports ready,

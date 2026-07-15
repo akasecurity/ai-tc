@@ -10,7 +10,7 @@
       "name": "aka",
       "source": {
         "source": "npm",
-        "package": "@akasecurity/plugin-claude-code"
+        "package": "@akasecurity/ai-tc-claude-code"
       },
       "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code. Local detection with inline warn/redact/block policies; every event is recorded to a local SQLite store on your machine.",
       "author": {

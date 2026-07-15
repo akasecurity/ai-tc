@@ -8,8 +8,8 @@ function views(map: Record<string, string | null>): (pkg: string) => string | nu
 }
 
 const CLI = '@akasecurity/cli';
-const PLUGIN = '@akasecurity/plugin-claude-code';
-const REF = 'aka@ai-tc';
+const PLUGIN = '@akasecurity/ai-tc-claude-code';
+const REF = 'ai-tc@akasecurity';
 
 describe('gatherReport', () => {
   it('flags a CLI update when the registry is ahead of the installed version', () => {

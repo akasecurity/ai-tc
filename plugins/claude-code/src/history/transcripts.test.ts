@@ -253,6 +253,71 @@ describe('iterateHistory', () => {
   });
 });
 
+// Self-contamination guard: the backfill must never re-scan AKA's OWN setup
+// session (whose transcript carries the wizard's masked posture/values), or a
+// self-scan loop records the masked values as fresh "findings" on the next
+// backfill. Two id-based / time-window bounds (never a content heuristic): skip
+// the *.jsonl whose basename is the current session id, and drop messages at/after
+// the setup-start cutoff.
+describe('iterateHistory self-contamination guard', () => {
+  let root: string;
+  const now = Date.parse('2026-06-25T00:00:00.000Z');
+  const msg = (ts: string, text: string): string =>
+    JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: text } });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-guard-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('excludes the transcript whose basename matches excludeSessionId, keeps other sessions', () => {
+    const projectDir = join(root, '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    // The current session's file (its own masked wizard output) and a real,
+    // unrelated pre-install session — both well within the window.
+    writeFileSync(
+      join(projectDir, 'aka-setup-abc.jsonl'),
+      msg('2026-06-20T10:00:00.000Z', 'current session masked posture'),
+    );
+    writeFileSync(
+      join(projectDir, 'other-xyz.jsonl'),
+      msg('2026-06-20T10:00:00.000Z', 'real pre-install history'),
+    );
+
+    // Without exclusion: both sessions are scanned (baseline sanity).
+    const all = [...iterateHistory({ dir: root, windowDays: 365, now })].map((m) => m.text);
+    expect(all).toContain('current session masked posture');
+    expect(all).toContain('real pre-install history');
+
+    // With exclusion: the current session's file is skipped entirely; a user's
+    // genuine history is still fully scanned.
+    const guarded = [
+      ...iterateHistory({ dir: root, windowDays: 365, now, excludeSessionId: 'aka-setup-abc' }),
+    ].map((m) => m.text);
+    expect(guarded).toEqual(['real pre-install history']);
+  });
+
+  it('drops messages at/after the setup-start cutoff (beforeMs), keeps older ones', () => {
+    const projectDir = join(root, '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, 's.jsonl'),
+      [
+        msg('2026-06-20T10:00:00.000Z', 'pre-install leak'),
+        msg('2026-06-23T10:00:00.000Z', 'post-install wizard output'),
+      ].join('\n'),
+    );
+
+    const cutoff = Date.parse('2026-06-22T00:00:00.000Z'); // setup-start
+    const bounded = [...iterateHistory({ dir: root, windowDays: 365, now, beforeMs: cutoff })].map(
+      (m) => m.text,
+    );
+    expect(bounded).toEqual(['pre-install leak']);
+  });
+});
+
 // The real `usage` shape from a transcript — kept verbatim so the parser's
 // passthrough of the whole bag is exercised, not a trimmed stand-in.
 const REAL_USAGE = {

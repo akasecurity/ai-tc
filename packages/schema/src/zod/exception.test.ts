@@ -47,6 +47,12 @@ describe('DetectionException', () => {
     }
   });
 
+  it('accepts setup-triage as a createdVia provenance', () => {
+    expect(
+      DetectionException.safeParse({ ...validException, createdVia: 'setup-triage' }).success,
+    ).toBe(true);
+  });
+
   it('rejects an empty justification (every grant carries its reason)', () => {
     expect(DetectionException.safeParse({ ...validException, justification: '' }).success).toBe(
       false,

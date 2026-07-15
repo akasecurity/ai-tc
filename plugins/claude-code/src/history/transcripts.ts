@@ -48,9 +48,12 @@ function extractText(content: unknown): string {
 }
 
 // Parse one transcript file's contents (newline-delimited JSON). `sinceMs` drops
-// records older than the retention window. Malformed lines are skipped, never
-// thrown — a truncated/partial transcript must not abort the scan.
-export function parseTranscript(jsonl: string, sinceMs = 0): ScannedMessage[] {
+// records older than the retention window; `beforeMs` (when set) is an UPPER bound
+// that drops records at/after it — the setup-start cutoff, so the wizard's own
+// (masked) output, written during onboarding, is never fed back into the scan.
+// Malformed lines are skipped, never thrown — a truncated/partial transcript must
+// not abort the scan.
+export function parseTranscript(jsonl: string, sinceMs = 0, beforeMs = Infinity): ScannedMessage[] {
   const out: ScannedMessage[] = [];
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
@@ -71,6 +74,10 @@ export function parseTranscript(jsonl: string, sinceMs = 0): ScannedMessage[] {
     const occurredMs = Date.parse(occurredAt);
     if (Number.isNaN(occurredMs)) continue;
     if (sinceMs > 0 && occurredMs < sinceMs) continue;
+    // Setup-start upper bound: drop anything at/after the cutoff so a re-run
+    // backfill never re-scans post-install messages — the wizard's own masked
+    // output among them. Default Infinity keeps normal scans unbounded.
+    if (occurredMs >= beforeMs) continue;
     const message = rec.message;
     if (!isRecord(message)) continue;
     const text = extractText(message.content);
@@ -468,6 +475,11 @@ export interface HistoryWalkOptions {
   dir?: string; // override the transcripts root (tests)
   windowDays?: number; // retention window; default 30
   now?: number; // clock injection (tests); default Date.now()
+  // Self-contamination guard (secret-scan path only). Both are OFF by default, so
+  // a normal user's full pre-install history is still scanned; they engage only
+  // for AKA's OWN setup session.
+  excludeSessionId?: string; // skip the *.jsonl whose basename is this session id
+  beforeMs?: number; // setup-start upper bound: drop messages at/after this ms
 }
 
 // Shared fail-open file walk: yield each project transcript's full contents exactly
@@ -475,7 +487,12 @@ export interface HistoryWalkOptions {
 // dir, or file so one bad file can't abort the sweep. Reads one file at a time to
 // bound memory. The record walkers below each layer their own parser on top; the
 // time window is applied inside those parsers, not here.
-function* iterateFileContents(dir: string): Generator<string> {
+//
+// `excludeSessionId`, when set, skips the transcript whose basename is that session
+// id (Claude Code names each file `<sessionId>.jsonl`) — the guard that keeps AKA's
+// own setup session out of the scan. An id-only match (never file contents), so a
+// normal user's history is unaffected.
+function* iterateFileContents(dir: string, excludeSessionId?: string): Generator<string> {
   let projects: string[];
   try {
     projects = readdirSync(dir, { withFileTypes: true })
@@ -494,6 +511,9 @@ function* iterateFileContents(dir: string): Generator<string> {
       continue;
     }
     for (const file of files) {
+      // Skip AKA's own session: the file basename (minus `.jsonl`) IS the session id.
+      if (excludeSessionId !== undefined && file.slice(0, -'.jsonl'.length) === excludeSessionId)
+        continue;
       let content: string;
       try {
         content = readFileSync(join(projectDir, file), 'utf8');
@@ -518,8 +538,9 @@ function windowStartMs(opts: Pick<HistoryWalkOptions, 'windowDays' | 'now'>): nu
 // abort the onboarding scan. Reads one file at a time to bound memory.
 export function* iterateHistory(opts: HistoryWalkOptions = {}): Generator<ScannedMessage> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir()))
-    yield* parseTranscript(content, sinceMs);
+  const beforeMs = opts.beforeMs ?? Infinity;
+  for (const content of iterateFileContents(opts.dir ?? transcriptsDir(), opts.excludeSessionId))
+    yield* parseTranscript(content, sinceMs, beforeMs);
 }
 
 // Lazily walk every project's transcripts under the root and yield each

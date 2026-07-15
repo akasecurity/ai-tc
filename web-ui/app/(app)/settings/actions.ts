@@ -6,8 +6,10 @@ import { revalidatePath } from 'next/cache';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
 // ~/.aka/settings/settings.json through the same shared writer (atomic
-// tmp+rename, schema-validated merge). The plugin re-reads settings on every
-// hook, so a save takes effect on the next capture — no restart.
+// tmp+rename, schema-validated merge). historicalAccess is read live on each
+// hook. The policy field is a stored default only — per-category policies (not
+// this global toggle) govern runtime enforcement, so changing it does not alter
+// what the plugin does when a detection fires.
 
 export interface SaveSettingsResult {
   ok: boolean;

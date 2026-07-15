@@ -18,6 +18,7 @@ import {
   renderFindings,
   renderFirstRun,
   renderHealth,
+  renderPosture,
   renderRecommend,
   renderSetupIntro,
   renderStatusLine,
@@ -166,8 +167,17 @@ describe('pure renderers', () => {
   it('audit: decision log with action and source', () => {
     const out = strip(renderAudit([finding({ actionTaken: 'redact' })]));
     expect(out).toContain('Recent decisions (1)');
-    expect(out).toContain('redact');
+    expect(out).toContain('redacted');
     expect(out).toContain('claude-code/prompt');
+  });
+
+  it('audit: action column shows past-tense labels, never the raw DB action', () => {
+    const out = strip(
+      renderAudit([finding({ actionTaken: 'log' }), finding({ actionTaken: 'redact' })]),
+    );
+    expect(out).toContain('monitored');
+    expect(out).toContain('redacted');
+    expect(out).not.toMatch(/\blog\b/);
   });
 
   it('exceptions: masked rows, relative expiry, use budget, CLI how-to footer', () => {
@@ -270,7 +280,10 @@ describe('pure renderers', () => {
     const out = strip(
       renderFirstRun({
         commands: ['/health', '/recommend', '/findings', '/audit'],
-        handling: 'Active redaction enabled',
+        posture: renderPosture([
+          { category: 'secret', action: 'redact' },
+          { category: 'code_context', action: 'log' },
+        ]),
         health: 72,
         findings: 142,
         recommendations: 6,
@@ -278,6 +291,11 @@ describe('pure renderers', () => {
     );
     expect(out).toContain('AKA Security installed');
     expect(out).toContain('/health · /recommend · /findings · /audit');
+    expect(out).toContain('Posture');
+    expect(out).toContain('secret');
+    expect(out).toContain('redact');
+    // 'log' (ActionTaken) surfaces to the user as 'monitor'.
+    expect(out).toContain('monitor');
     expect(out).toContain('Health 72/100');
     expect(out).toContain('Findings 142');
     expect(out).toContain('Recommendations 6');
@@ -288,7 +306,6 @@ describe('pure renderers', () => {
     const out = strip(
       renderFirstRun({
         commands: ['/health'],
-        handling: 'Active redaction enabled',
         health: 100,
         findings: 0,
         recommendations: 0,
@@ -302,7 +319,6 @@ describe('pure renderers', () => {
     const out = strip(
       renderFirstRun({
         commands: ['/health'],
-        handling: 'Active redaction enabled',
         health: 80,
         findings: 2,
         recommendations: 2,
@@ -369,6 +385,34 @@ describe('pure renderers', () => {
   });
 });
 
+describe('renderPosture', () => {
+  it('lists each category with its action, aligned', () => {
+    const out = renderPosture([
+      { category: 'secret', action: 'warn' },
+      { category: 'code_context', action: 'log' },
+    ]);
+    expect(out).toContain('secret');
+    expect(out).toContain('warn');
+    expect(out).toContain('code_context');
+    // 'log' (ActionTaken) surfaces to the user as 'monitor'
+    expect(out).toContain('monitor');
+    expect(out).not.toMatch(/\blog\b/);
+  });
+
+  it('orders rows canonically regardless of input order', () => {
+    // Rows arrive in whatever order the store returned them; the card must
+    // render in the schema's canonical category order so it stays stable.
+    const out = renderPosture([
+      { category: 'code_context', action: 'monitor' },
+      { category: 'secret', action: 'warn' },
+      { category: 'pii', action: 'warn' },
+      { category: 'financial', action: 'monitor' },
+    ]);
+    const order = out.split('\n').map((line) => line.trim().split(/\s+/)[0]);
+    expect(order).toEqual(['pii', 'financial', 'secret', 'code_context']);
+  });
+});
+
 describe('runQuery — against a seeded standalone gateway', () => {
   let dir: string;
 
@@ -413,8 +457,8 @@ describe('runQuery — against a seeded standalone gateway', () => {
 
       expect(strip(await runQuery('health', gateway))).toContain('Setup health');
       // The bundled secrets pack is unassigned → Monitor by default, so the
-      // decision renders as 'log' (the finding is still recorded and masked).
-      expect(strip(await runQuery('audit', gateway))).toContain('log');
+      // decision renders as 'monitored' (the finding is still recorded and masked).
+      expect(strip(await runQuery('audit', gateway))).toContain('monitored');
       expect(strip(await runQuery('recommend', gateway))).toContain(
         'Rotate the exposed credentials',
       );

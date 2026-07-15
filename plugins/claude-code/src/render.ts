@@ -14,6 +14,7 @@ import type {
 } from '@akasecurity/plugin-sdk';
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
 import type { DetectionException, DetectionListItem } from '@akasecurity/schema';
+import { DetectionCategory, toApiAction } from '@akasecurity/schema';
 
 import {
   bar,
@@ -69,6 +70,41 @@ function empty(message: string): string {
   return message;
 }
 
+// ActionTaken (the DB enum: warn|redact|block|allow|log) -> the user-facing
+// palette label the wizard uses (monitor|warn|redact|block|allow). Only 'log'
+// differs (-> 'monitor'); everything else is identity. Kept local to the
+// render surface so the DB vocabulary never leaks into the first-run screen.
+const ACTION_LABEL: Record<string, string> = {
+  log: 'monitor',
+  warn: 'warn',
+  redact: 'redact',
+  block: 'block',
+  allow: 'allow',
+};
+
+// Canonical category order for the posture card, from the schema enum. Rows
+// come out of the store in DB order; rendering in this fixed order keeps the
+// card stable regardless of how the caller read them. An unknown category (a
+// custom rule's) sorts after the known ones, in its incoming order.
+const CATEGORY_ORDER: readonly string[] = DetectionCategory.options;
+function categoryRank(category: string): number {
+  const i = CATEGORY_ORDER.indexOf(category);
+  return i === -1 ? CATEGORY_ORDER.length : i;
+}
+
+// Compact, aligned per-category posture block for the first-run screen: one
+// row per category, its stored action translated to the palette label. Rows
+// are rendered in the canonical category order above so the card is stable.
+// Pure (no I/O) so it unit-tests without a DB; the caller (firstrun.ts)
+// supplies rows read from the policies store.
+export function renderPosture(rows: { category: string; action: string }[]): string {
+  const width = Math.max(0, ...rows.map((r) => r.category.length));
+  return [...rows]
+    .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
+    .map((r) => `  ${r.category.padEnd(width)}  ${ACTION_LABEL[r.action] ?? r.action}`)
+    .join('\n');
+}
+
 const RULE_WIDTH = 64;
 
 // The setup-intro "card" the /aka:setup wizard shows first.
@@ -111,11 +147,15 @@ export function healthScore(summary: HealthSummary): number {
 }
 
 // The "First run" completion screen. Commands,
-// handling, findings and recommendations are real; `health` is the derived score
+// posture, findings and recommendations are real; `health` is the derived score
 // above. The host's input box and window chrome are not the plugin's to draw.
 export interface FirstRunSummary {
   commands: string[];
-  handling: string;
+  // Per-category posture block (renderPosture's output) — the wizard's
+  // per-category policy read, one row per category. Optional/omittable: the
+  // read lives inside firstrun's fail-open try/catch, so a store that can't
+  // be read yet just hides the section rather than breaking the card.
+  posture?: string;
   health: number;
   findings: number;
   recommendations: number;
@@ -139,24 +179,27 @@ export function topFindings(findings: FindingView[], limit = 10): FindingView[] 
 export function renderFirstRun(s: FirstRunSummary): string {
   const heading = '✓ AKA Security installed';
 
-  const details = defList([
-    ['Commands', s.commands.join(' · ')],
-    ['Handling', s.handling],
-  ]);
+  const details = defList([['Commands', s.commands.join(' · ')]]);
 
   const stats = `Health ${String(s.health)}/100   Findings ${String(s.findings)}   Recommendations ${String(s.recommendations)}`;
 
-  const lines = [
-    heading,
-    '',
-    indent(details),
+  const lines = [heading, '', indent(details)];
+
+  // Per-category posture — hidden when unreadable (fail-open upstream leaves
+  // it undefined/empty) so the card degrades gracefully instead of showing an
+  // empty section.
+  if (s.posture !== undefined && s.posture.length > 0) {
+    lines.push('', indent('Posture'), '', indent(s.posture));
+  }
+
+  lines.push(
     '',
     indent('─'.repeat(RULE_WIDTH)),
     '',
     indent('First scan complete'),
     '',
     indent(stats),
-  ];
+  );
 
   // Top findings — a compact, severity-ranked glance at what the first scan
   // caught. Hidden on a clean scan so the card stays a tidy success state.
@@ -166,7 +209,7 @@ export function renderFirstRun(s: FirstRunSummary): string {
       `${severityGlyph(f.severity)} ${f.severity}`,
       f.category,
       f.ruleId,
-      f.actionTaken,
+      toApiAction(f.actionTaken),
       f.maskedMatch,
     ]);
     lines.push(
@@ -205,7 +248,7 @@ export function renderFindings(
     `${severityGlyph(f.severity)} ${f.severity}`,
     f.category,
     f.ruleId,
-    f.actionTaken,
+    toApiAction(f.actionTaken),
     f.maskedMatch,
   ]);
   const heading =
@@ -564,7 +607,7 @@ export function renderAudit(findings: FindingView[]): string {
   }
   const rows = findings.map((f) => [
     shortTime(f.occurredAt),
-    f.actionTaken,
+    toApiAction(f.actionTaken),
     f.ruleId,
     f.category,
     // Join only the parts that are present so a finding missing sourceTool/kind

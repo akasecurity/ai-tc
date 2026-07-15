@@ -20,4 +20,5 @@ export * from './rule-test.ts';
 export * from './security.ts';
 export * from './shares.ts';
 export * from './shares-access.ts';
+export * from './triage.ts';
 export * from './updates.ts';

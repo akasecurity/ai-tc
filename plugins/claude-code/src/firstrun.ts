@@ -3,7 +3,7 @@
  *
  *   node scripts/firstrun.js
  *
- * Handling (from settings), findings (real count) and recommendations (same
+ * Posture (per-category policy), findings (real count) and recommendations (same
  * count /recommend renders) are read live; the Health score is derived (see
  * render.healthScore — a documented heuristic, not stored data). Resolves the
  * same data gateway the read commands use, so the numbers match what /health
@@ -11,16 +11,14 @@
  *
  * Fail-open: an unreadable store prints a friendly note.
  */
+import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import { readPostureBlock } from './posture.ts';
 import { fenced } from './present.ts';
 import { buildRecommendations, healthScore, renderFirstRun, topFindings } from './render.ts';
 
-const HANDLING: Record<string, string> = {
-  redact: 'Active redaction enabled',
-  warn: 'Warn-only enabled',
-};
 // The read surfaces this build registers.
 const COMMANDS = ['/health', '/recommend', '/findings', '/audit'];
 
@@ -36,11 +34,19 @@ try {
     // the card's count never disagrees with what that screen lists.
     const recommendations = buildRecommendations(findings).length;
 
+    // Per-category posture — the wizard's policy write, read straight from the
+    // local store so the card shows what's actually enforced, not the single
+    // settings.policy string. readPostureBlock owns its own catch: a
+    // policies-read fault degrades to '' so the card omits only the Posture
+    // section (see renderFirstRun), rather than collapsing into the outer
+    // fail-open note below.
+    const postureBlock = await readPostureBlock(openLocalDatabase(cfg.dataDir));
+
     process.stdout.write(
       `${fenced(
         renderFirstRun({
           commands: COMMANDS,
-          handling: HANDLING[cfg.settings.policy] ?? cfg.settings.policy,
+          posture: postureBlock,
           health: healthScore(summary),
           findings: summary.findings,
           recommendations,

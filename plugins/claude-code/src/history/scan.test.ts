@@ -4,9 +4,11 @@ import { join } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
+import type { TriageHit } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { scanHistory } from './scan.ts';
+import { buildTriageHit, scanHistory } from './scan.ts';
 
 // In standalone mode the effective ruleset is the store's INSTALLED snapshot
 // (seeded from bundledDetections() by resolveDataGateway), not ad-hoc packs
@@ -133,5 +135,164 @@ describe('scanHistory', () => {
     } finally {
       await gateway.close();
     }
+  });
+});
+
+describe('buildTriageHit', () => {
+  it('slices the correct context window and carries safeMaskedMatch(rawMatch) as maskedMatch', () => {
+    const text = `padding before the leak ${BACKFILL_SECRET} padding after the leak`;
+    const start = text.indexOf(BACKFILL_SECRET);
+    const end = start + BACKFILL_SECRET.length;
+    const finding = {
+      ruleId: 'secrets/aws-access-key',
+      category: 'secret' as const,
+      severity: 'critical' as const,
+      rawMatch: BACKFILL_SECRET,
+      span: { start, end },
+      confidence: 0.9,
+    };
+
+    const hit = buildTriageHit(text, finding);
+
+    expect(hit.context).toBe(
+      text.slice(Math.max(0, start - 120), Math.min(text.length, end + 120)),
+    );
+    expect(hit.maskedMatch).toBe(safeMaskedMatch(BACKFILL_SECRET));
+    expect(hit.rawMatch).toBe(BACKFILL_SECRET);
+  });
+
+  it('never sets maskedMatch to the raw value, even for a single-char-local-part email', () => {
+    const rawMatch = 'a@test.com';
+    const finding = {
+      ruleId: 'core-pii/email',
+      category: 'pii' as const,
+      severity: 'medium' as const,
+      rawMatch,
+      span: { start: 0, end: rawMatch.length },
+      confidence: 0.9,
+    };
+
+    const hit = buildTriageHit(rawMatch, finding);
+
+    expect(hit.maskedMatch).not.toBe(rawMatch);
+  });
+
+  it("redacts another finding's raw value inside the context window, keeping its own match legible", () => {
+    const otherSecret = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
+    const text = `${otherSecret} close by, then ${BACKFILL_SECRET} is the real leak`;
+    const otherStart = text.indexOf(otherSecret);
+    const start = text.indexOf(BACKFILL_SECRET);
+    const finding = {
+      ruleId: 'secrets/aws-access-key',
+      category: 'secret' as const,
+      severity: 'critical' as const,
+      rawMatch: BACKFILL_SECRET,
+      span: { start, end: start + BACKFILL_SECRET.length },
+      confidence: 0.9,
+    };
+    const other = {
+      rawMatch: otherSecret,
+      span: { start: otherStart, end: otherStart + otherSecret.length },
+    };
+
+    const hit = buildTriageHit(text, finding, [other]);
+
+    expect(hit.context).toContain(BACKFILL_SECRET);
+    expect(hit.context).not.toContain(otherSecret);
+  });
+});
+
+describe('scanHistory — onHit sink', () => {
+  let dir: string;
+  let transcripts: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-scan-onhit-data-'));
+    transcripts = mkdtempSync(join(tmpdir(), 'aka-scan-onhit-tx-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(transcripts, { recursive: true, force: true });
+  });
+
+  it('is called exactly once per finding, with context sliced from the correct message', async () => {
+    const otherSecret = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
+    seedTranscripts(transcripts, BACKFILL_SECRET);
+
+    const otherProjectDir = join(transcripts, '-Users-me-other-project');
+    mkdirSync(otherProjectDir, { recursive: true });
+    writeFileSync(
+      join(otherProjectDir, 'session.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-06-21T12:00:00.000Z',
+        message: { role: 'user', content: `here is another key ${otherSecret}` },
+      }),
+    );
+
+    const hits: TriageHit[] = [];
+    await scanHistory(
+      config(dir, 'full'),
+      { dir: transcripts, windowDays: 30, now: NOW },
+      (hit) => {
+        hits.push(hit);
+      },
+    );
+
+    expect(hits).toHaveLength(2);
+    for (const hit of hits) {
+      expect(hit.context).toContain(hit.rawMatch);
+    }
+    const backfillHit = hits.find((h) => h.rawMatch === BACKFILL_SECRET);
+    const otherHit = hits.find((h) => h.rawMatch === otherSecret);
+    expect(backfillHit?.context).not.toContain(otherSecret);
+    expect(otherHit?.context).not.toContain(BACKFILL_SECRET);
+  });
+
+  it('redacts a neighboring secret from context when two findings share one message', async () => {
+    const otherSecret = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
+    const projectDir = join(transcripts, '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, 'session.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        timestamp: LEAK_TS,
+        message: { role: 'user', content: `key one ${BACKFILL_SECRET} and key two ${otherSecret}` },
+      }),
+    );
+
+    const hits: TriageHit[] = [];
+    await scanHistory(
+      config(dir, 'full'),
+      { dir: transcripts, windowDays: 30, now: NOW },
+      (hit) => {
+        hits.push(hit);
+      },
+    );
+
+    expect(hits).toHaveLength(2);
+    const backfillHit = hits.find((h) => h.rawMatch === BACKFILL_SECRET);
+    const otherHit = hits.find((h) => h.rawMatch === otherSecret);
+    // Each hit's own match stays legible, but its neighbor's raw value never does.
+    expect(backfillHit?.context).toContain(BACKFILL_SECRET);
+    expect(backfillHit?.context).not.toContain(otherSecret);
+    expect(otherHit?.context).toContain(otherSecret);
+    expect(otherHit?.context).not.toContain(BACKFILL_SECRET);
+  });
+
+  it('keeps scanning the rest of the history when the onHit sink throws', async () => {
+    seedTranscripts(transcripts, BACKFILL_SECRET);
+
+    const summary = await scanHistory(
+      config(dir, 'full'),
+      { dir: transcripts, windowDays: 30, now: NOW },
+      () => {
+        throw new Error('sink exploded');
+      },
+    );
+
+    // The throw is contained — the sweep still records the finding normally.
+    expect(summary.findings).toBe(1);
+    expect(summary.scanned).toBe(2);
   });
 });

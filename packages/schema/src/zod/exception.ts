@@ -61,7 +61,7 @@ export const DetectionException = z.object({
   justification: z.string().min(1),
   conditions: ExceptionConditions.nullable(),
   createdBy: z.string(),
-  createdVia: z.enum(['cli-approve', 'cli-add', 'web-approve', 'web-add', 'api']),
+  createdVia: z.enum(['cli-approve', 'cli-add', 'web-approve', 'web-add', 'api', 'setup-triage']),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   // Revocation is terminal and retained — consumed/expired/revoked rows are

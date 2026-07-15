@@ -228,7 +228,7 @@ export const exceptions = sqliteTable(
     conditions: text(COL.conditions),
     createdBy: text(COL.createdBy).notNull(),
     createdVia: text(COL.createdVia, {
-      enum: ['cli-approve', 'cli-add', 'web-approve', 'web-add', 'api'],
+      enum: ['cli-approve', 'cli-add', 'web-approve', 'web-add', 'api', 'setup-triage'],
     }).notNull(),
     createdAt: integer(COL.createdAt).notNull(),
     updatedAt: integer(COL.updatedAt).notNull(),

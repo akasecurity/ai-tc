@@ -38,6 +38,7 @@ export const VIA_LABEL: Record<DetectionException['createdVia'], string> = {
   'web-approve': 'Web approve',
   'web-add': 'Web add',
   api: 'API',
+  'setup-triage': 'Setup triage',
 };
 
 /** The scope answers the grant forms offer; resolved server-side via scopeFromAnswer. */

@@ -158,6 +158,8 @@ function viaLabel(via: DetectionException['createdVia']): string {
       return 'web add';
     case 'api':
       return 'api';
+    case 'setup-triage':
+      return 'setup triage';
   }
 }
 

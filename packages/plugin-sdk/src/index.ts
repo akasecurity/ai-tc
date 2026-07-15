@@ -42,6 +42,8 @@ export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.t
 export { providerFromModelId, resolveProvider } from './provider.ts';
 export type { EgressHit } from './raw-egress.ts';
 export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
+export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
+export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,

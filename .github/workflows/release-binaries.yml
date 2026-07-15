@@ -94,3 +94,11 @@ jobs:
             dist/SHA256SUMS
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'bin-v0.') }}
+
+      # The install one-liners fetch install.sh/install.ps1 from the `bin-latest` tag,
+      # so a successful release moves it to this commit (mirrors cli-latest).
+      - name: Point bin-latest at this release
+        if: github.event_name == 'push'
+        run: |
+          git tag -f bin-latest
+          git push -f origin bin-latest

@@ -32,9 +32,7 @@ describe('applyCategoryPosture', () => {
 
   it('skips a category whose value is undefined, even though the static type disallows it', () => {
     const writer = fakeWriter();
-    // A caller assembling this map dynamically (e.g. from partial model
-    // output) can produce a present key with an undefined value at runtime
-    // even though Partial<Record<...>> says every present value is set.
+    // A present key with an undefined value.
     const posture = { secret: undefined } as unknown as Partial<
       Record<DetectionCategory, BuiltinPolicyId>
     >;

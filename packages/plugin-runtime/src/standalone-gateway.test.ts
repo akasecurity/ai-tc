@@ -449,6 +449,38 @@ describe('staleBinaryNotice (prevention P2)', () => {
   });
 });
 
+describe('capWarnEraEnforcement (warn-era migration)', () => {
+  it('caps a pre-existing block category row to warn for a warn-era store', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const gateway = new StandaloneDataGateway(dir);
+    const result = gateway.capWarnEraEnforcement('warn');
+    await gateway.close();
+
+    expect(result).toEqual({ capped: 1 });
+    const check = openLocalDatabase(dir);
+    expect(check.policies.getCategoryAction('secret')).toBe('warn');
+    check.close();
+  });
+
+  it('leaves a redact-era store untouched', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const gateway = new StandaloneDataGateway(dir);
+    const result = gateway.capWarnEraEnforcement('redact');
+    await gateway.close();
+
+    expect(result).toEqual({ capped: 0 });
+    const check = openLocalDatabase(dir);
+    expect(check.policies.getCategoryAction('secret')).toBe('block');
+    check.close();
+  });
+});
+
 // End-to-end for the reported bug: a detection's per-detection policy
 // (installed_packs.policy_id — what the OSS Detections page writes) must drive
 // the runtime's enforcement decision, not the seeded per-category defaults. The

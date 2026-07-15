@@ -85,3 +85,4 @@ export { SqliteSharesRepository } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
 export { applyOnboarding, readWorkspaceSettings } from './settings.ts';
+export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';

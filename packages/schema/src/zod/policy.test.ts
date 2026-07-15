@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DetectionCategory } from './finding.ts';
-import { DEFAULT_ACTIONS } from './policy.ts';
+import { DEFAULT_ACTIONS, FULL_ENFORCEMENT_POSTURE } from './policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
   it('never hard-enforces (block) or silently rewrites payloads (redact) before onboarding', () => {
@@ -24,5 +24,26 @@ describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
     expect(DEFAULT_ACTIONS.custom).toBe('warn');
     expect(DEFAULT_ACTIONS.code_context).toBe('log');
     expect(DEFAULT_ACTIONS.config).toBe('log');
+  });
+});
+
+describe('FULL_ENFORCEMENT_POSTURE — the "Actively redact" onboarding preset', () => {
+  it('pins the pre-severity-floor enforcement mapping', () => {
+    expect(FULL_ENFORCEMENT_POSTURE).toEqual({
+      secret: 'block',
+      pii: 'redact',
+      financial: 'redact',
+      phi: 'redact',
+      code_flaw: 'warn',
+      custom: 'warn',
+      code_context: 'warn',
+      config: 'warn',
+    });
+  });
+
+  it('assigns a value to every detection category', () => {
+    expect(new Set(Object.keys(FULL_ENFORCEMENT_POSTURE))).toEqual(
+      new Set(DetectionCategory.options),
+    );
   });
 });

@@ -60,7 +60,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub Release + move the cli-latest tag
-      id-token: write # OIDC trusted publishing to npm — no long-lived token
     steps:
       - uses: actions/checkout@v7
 
@@ -127,14 +126,15 @@ jobs:
           fi
           echo "✓ published CLI boots the bundled dashboard and serves /security"
 
-      # Publishes via npm OIDC trusted publishing: with `id-token: write` and a
-      # trusted publisher configured on npm for this repo + workflow, no
-      # NODE_AUTH_TOKEN/NPM_TOKEN is used, and provenance is attached automatically.
-      - name: Publish to npm (OIDC trusted publishing)
+      # Publishes with the NPM_TOKEN automation token (2FA-bypass), matching the
+      # plugin release. OIDC trusted publishing is deferred until the npm-side
+      # trusted-publisher config for @akasecurity/cli is in place — then restore
+      # `id-token: write` above and swap this back to NPM_CONFIG_PROVENANCE.
+      - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: pnpm --filter @akasecurity/cli publish --no-git-checks
         env:
-          NPM_CONFIG_PROVENANCE: 'true'
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # The install one-liners fetch the bootstrap scripts from the `cli-latest`
       # tag, so a successful publish must move it to this release commit.

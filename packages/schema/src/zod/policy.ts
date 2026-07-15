@@ -136,7 +136,7 @@ export const BUILTIN_ORDER: readonly BuiltinPolicyId[] = KNOWN_BUILTIN_IDS;
 // `Record<BuiltinPolicyId, …>` constraint forces this to stay exhaustive with
 // KNOWN_BUILTIN_IDS, so adding a builtin is a single coordinated edit (id set +
 // this spec) rather than three synchronized literals.
-export const BUILTIN_POLICY_SPECS: Record<
+const BUILTIN_POLICY_SPECS: Record<
   BuiltinPolicyId,
   { name: string; description: string; action: ActionTaken }
 > = {

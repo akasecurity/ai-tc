@@ -44,12 +44,18 @@ export const SCRUBBED_NOTES = '[notes withheld: model text referenced a raw dete
 // -------------------------------------------------------------------------
 
 // The --triage stream terminator (mirrors backfill.ts's triageSentinel). Its
-// presence is the ONLY proof the stream was not truncated mid-scan.
-type TriageStatus = 'complete' | 'skipped:no-consent' | 'skipped:attached';
+// presence is the ONLY proof the stream was not truncated mid-scan. The status
+// set MUST stay in lockstep with backfill.ts's producer TriageStatus — a value
+// one side emits and the other doesn't is a silent skew (see isKnownStatus).
+type TriageStatus = 'complete' | 'skipped:no-consent';
+const TRIAGE_STATUSES = ['complete', 'skipped:no-consent'] as const;
+
+// `status` is only shape-checked (string) here; parseTriageStream validates it
+// against TRIAGE_STATUSES via isKnownStatus and fails loud on anything else.
 interface Sentinel {
   done: true;
   count: number;
-  status: TriageStatus;
+  status: string;
 }
 
 function isSentinel(v: unknown): v is Sentinel {
@@ -60,6 +66,10 @@ function isSentinel(v: unknown): v is Sentinel {
     typeof (v as { count?: unknown }).count === 'number' &&
     typeof (v as { status?: unknown }).status === 'string'
   );
+}
+
+function isKnownStatus(status: string): status is TriageStatus {
+  return (TRIAGE_STATUSES as readonly string[]).includes(status);
 }
 
 // Parse a completed `backfill --triage` stream into validated TriageHits. The
@@ -84,6 +94,17 @@ export function parseTriageStream(text: string): { hits: TriageHit[]; status: Tr
   }
   if (!isSentinel(tail)) {
     throw new Error('triage stream has no completion sentinel — refusing a truncated stream');
+  }
+  // A sentinel-shaped line whose status we don't recognise (a version-skewed or
+  // corrupted producer) must fail LOUD — never be quietly converted into a clean
+  // zero-hit "skip", which would tell the user their history was cleanly triaged
+  // when the scan's outcome was in fact never understood. The status value is not
+  // interpolated into the message: it is the producer's own field, kept out of
+  // the error to hold the raw-free line.
+  if (!isKnownStatus(tail.status)) {
+    throw new Error(
+      'triage stream sentinel carries an unrecognized status — refusing to treat it as a clean scan',
+    );
   }
   const hitLines = lines.slice(0, -1);
   if (tail.status !== 'complete') {

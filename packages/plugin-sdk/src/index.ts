@@ -40,6 +40,8 @@ export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from
 export { resolveProjectFiles } from './project-files.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';
+export type { EgressHit } from './raw-egress.ts';
+export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,
@@ -64,6 +66,7 @@ export type {
   CaptureInput,
   CaptureResult,
 } from './types.ts';
+export { maskMatch } from '@akasecurity/detections';
 // The read-time token cost/rollup logic moved to `@akasecurity/schema` (pure, no
 // Node-API deps) so the OSS Activity surfaces + CLI/TUI can price tokens without
 // importing the plugin SDK. Re-exported here so existing plugin/runtime callers

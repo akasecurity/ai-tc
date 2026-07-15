@@ -86,7 +86,7 @@ export function FindingDetailView({
             <span className="font-display text-base font-semibold">{finding.subtype}</span>
             <span className="text-xs text-text-3">
               {grouped
-                ? `${String(finding.instances.length)} locations · ${String(providerCount)} tool${providerCount > 1 ? 's' : ''}`
+                ? `${String(finding.instanceCount)} locations · ${String(providerCount)} tool${providerCount > 1 ? 's' : ''}`
                 : `${category} · ${instance.repo} · detected ${relativeTime(instance.detectedAt)}`}
             </span>
           </div>
@@ -96,7 +96,7 @@ export function FindingDetailView({
         <MatchedContent
           code={finding.match.contextPrefix}
           snippet={finding.match.maskedValue}
-          file={grouped ? `${String(finding.instances.length)} files` : instance.file}
+          file={grouped ? `${String(finding.instanceCount)} files` : instance.file}
         />
 
         {grouped ? (
@@ -113,6 +113,13 @@ export function FindingDetailView({
                 />
               ))}
             </div>
+            {/* `instances` is the newest slice of a large group, not all of it. */}
+            {finding.instances.length < finding.instanceCount && (
+              <p className="pt-2 text-xs text-text-3">
+                Showing the {finding.instances.length} most recent of {finding.instanceCount}{' '}
+                locations.
+              </p>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">

@@ -37,7 +37,7 @@ body:
     attributes:
       label: Environment
       description: OS + Node.js version (`node --version`).
-      placeholder: macOS 15 / Node 26.1.0
+      placeholder: macOS 15 / Node 24.13.0
     validations:
       required: true
   - type: textarea

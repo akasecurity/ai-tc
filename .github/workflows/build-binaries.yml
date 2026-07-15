@@ -1,0 +1,47 @@
+name: Build binaries
+
+# Builds the self-contained `aka` Single Executable Application for each supported
+# OS/arch and uploads it as a workflow artifact. No publishing here — the release
+# workflow (later PR) attaches these to a GitHub Release. SEA has no cross-compilation,
+# so each target builds on its own runner.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cli/**'
+      - 'web-ui/**'
+      - 'packages/**'
+      - '.github/workflows/build-binaries.yml'
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: darwin-arm64 }
+          - { os: macos-13, target: darwin-x64 }
+          - { os: ubuntu-24.04, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-2022, target: win32-x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Build the ESM bundle, the standalone web-ui sidecar, then package + self-verify
+      # the binary (package:sea runs the binary's `--version` and fails if it can't boot).
+      - run: pnpm --filter @akasecurity/cli build:sea
+      - run: pnpm --filter @akasecurity/cli bundle:web-ui
+      - run: pnpm --filter @akasecurity/cli package:sea
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aka-${{ matrix.target }}
+          path: cli/sea-dist/aka-${{ matrix.target }}/
+          if-no-files-found: error

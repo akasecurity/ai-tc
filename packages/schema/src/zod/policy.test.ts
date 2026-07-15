@@ -5,6 +5,10 @@ import { DEFAULT_ACTIONS, FULL_ENFORCEMENT_POSTURE } from './policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
   it('never hard-enforces (block) or silently rewrites payloads (redact) before onboarding', () => {
+    // A fresh store with no per-category policy falls back to these. None may
+    // block or redact on its own — the cold-start floor only ever surfaces
+    // (warn) or logs. This guards against a category quietly regaining an
+    // enforcing default and hard-acting on an un-onboarded machine.
     for (const [category, action] of Object.entries(DEFAULT_ACTIONS)) {
       expect(action, `${category} cold-start action`).not.toBe('block');
       expect(action, `${category} cold-start action`).not.toBe('redact');

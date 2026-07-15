@@ -187,8 +187,8 @@ describe('scanPathIntoStore', () => {
       scanPathIntoStore(db, root, { rules: RULES, ruleActions: new Map() });
       const findings = await db.findings.recentFindings({ limit: 10 });
       const recorded = findings.find((f) => f.ruleId === 'test/aws-key');
-      // DEFAULT_ACTIONS.secret = 'block'
-      expect(recorded?.actionTaken).toBe('block');
+      // DEFAULT_ACTIONS.secret = 'warn'
+      expect(recorded?.actionTaken).toBe('warn');
     } finally {
       db.close();
     }

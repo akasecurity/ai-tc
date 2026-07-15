@@ -82,12 +82,17 @@ export type PolicyBundle = z.infer<typeof PolicyBundle>;
 // category's action here. Precedence at enforcement (both surfaces): a per-rule
 // policy (synthesized from the pack's policy_id, or an explicit ruleId policy)
 // wins over a per-category policy, which wins over this fallback. So a category
-// with `secret: 'block'` here still logs-only if its pack is set to Monitor.
+// with `secret: 'warn'` here still logs-only if its pack is set to Monitor.
+//
+// Cold start is observe-first: a fresh store with no per-category policy never
+// hard-enforces (block) or silently rewrites payloads (redact) on its own. Every
+// enforceable category falls back to `warn` — surface the finding, modify
+// nothing — until the user chooses a stronger action.
 export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = {
-  secret: 'block',
-  pii: 'redact',
-  financial: 'redact',
-  phi: 'redact',
+  secret: 'warn',
+  pii: 'warn',
+  financial: 'warn',
+  phi: 'warn',
   code_context: 'warn',
   code_flaw: 'warn',
   custom: 'warn',

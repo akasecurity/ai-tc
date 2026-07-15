@@ -178,10 +178,10 @@ function launchStandalone(serverJs: string, port: string, shouldOpen: boolean, u
 // already in the env (the server's only bind inputs). Loading it in-process — rather
 // than running it as a child script — is what lets a SEA binary (which cannot exec an
 // arbitrary script) serve the dashboard; on plain node the behavior is unchanged.
-// Next's standalone server.js is an ESM module with no `require.main` guard: importing
-// it evaluates its top level, which starts the server (kept alive by its listen socket).
-// A dynamic import by file URL resolves without relying on this module's on-disk
-// location — which a SEA does not have.
+// The Next standalone server.js has no main-module guard, so evaluating its top level
+// starts the server (kept alive by its listen socket). Dynamic import() boots it whether
+// Next emits it as ESM or CommonJS, and — unlike require or a script path — resolves by
+// file URL without relying on this module's on-disk location, which a SEA does not have.
 export async function runDashboardServer(argv: string[]): Promise<void> {
   const { values } = parseArgs({ args: argv, options: { 'server-js': { type: 'string' } } });
   const serverJs = values['server-js'];

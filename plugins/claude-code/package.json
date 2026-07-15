@@ -1,7 +1,8 @@
 {
-  "name": "@akasecurity/plugin-claude-code",
-  "version": "0.8.0",
+  "name": "@akasecurity/ai-tc-claude-code",
+  "version": "0.8.1",
   "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code",
+  "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",

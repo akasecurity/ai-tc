@@ -77,7 +77,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build plugin (Turbo)
-        run: pnpm turbo run build --filter=@akasecurity/plugin-claude-code
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-claude-code
 
       - name: Verify tag matches manifest versions
         if: github.event_name == 'push'
@@ -103,11 +103,11 @@ jobs:
           echo "fail-open OK"
 
       - name: Pack tarball (release asset)
-        run: pnpm --filter @akasecurity/plugin-claude-code pack --pack-destination "$RUNNER_TEMP"
+        run: pnpm --filter @akasecurity/ai-tc-claude-code pack --pack-destination "$RUNNER_TEMP"
 
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
-        run: pnpm --filter @akasecurity/plugin-claude-code publish --no-git-checks
+        run: pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

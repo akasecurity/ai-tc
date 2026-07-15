@@ -29,10 +29,10 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     sourceTool: 'claude-code',
     description:
       'Hooks Claude Code sessions to detect + redact sensitive data in prompts, responses, and file writes.',
-    npmPackage: '@akasecurity/plugin-claude-code',
-    pluginName: 'aka',
-    marketplace: 'ai-tc',
-    marketplaceSource: 'akasecurity/ai-tc',
+    npmPackage: '@akasecurity/ai-tc-claude-code',
+    pluginName: 'ai-tc',
+    marketplace: 'akasecurity',
+    marketplaceSource: 'akasecurity/marketplace',
   },
 ];
 

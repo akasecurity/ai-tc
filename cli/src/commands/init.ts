@@ -1,8 +1,14 @@
 import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 
-import { cliRecordedBy } from '@akasecurity/local-ops';
+import {
+  cliRecordedBy,
+  findAgent,
+  installedPluginVersions,
+  pluginRef,
+} from '@akasecurity/local-ops';
 import { DATA_FILE_MODE, openLocalDatabase } from '@akasecurity/persistence';
 import {
   bundledDetections,
@@ -14,13 +20,19 @@ import {
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
+import { runPlugins } from './plugins.ts';
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
 // applies migrations, and seeds the default per-category policies). Idempotent:
-// re-running re-applies no migration and re-seeds nothing.
+// re-running re-applies no migration and re-seeds nothing. Also checks for the
+// Claude Code plugin — the default install path — and offers to add it via the
+// marketplace when it's missing, so a CLI-first install ends up with both.
 export async function runInit(argv: string[]): Promise<void> {
-  const { values } = parseArgs({ args: argv, options: HOME_OPTION });
+  const { values } = parseArgs({
+    args: argv,
+    options: { ...HOME_OPTION, yes: { type: 'boolean', short: 'y' } },
+  });
   const home = homeBase(values.home);
 
   ensureDataDirSync(home);
@@ -68,4 +80,47 @@ export async function runInit(argv: string[]): Promise<void> {
         ? `  ⬆ ${String(updatesAvailable)} detection pack update(s) available — review with \`aka detections\`, apply with \`aka detections update --all\`\n`
         : ''),
   );
+
+  await offerPluginInstall(values.yes === true);
+}
+
+// The CLI alone only scans on demand (`aka scan`) — it doesn't see live agent
+// traffic. The Claude Code plugin is what does, so a CLI-first install (no
+// plugin yet) is offered the marketplace route here, mirroring the reverse
+// offer /aka:setup makes for the CLI after a plugin-first install.
+async function offerPluginInstall(autoYes: boolean): Promise<void> {
+  const agent = findAgent('claude-code');
+  const ref = agent ? pluginRef(agent) : undefined;
+  if (!agent || !ref) return;
+  if (installedPluginVersions().has(ref)) return;
+
+  const out = process.stdout;
+  if (!autoYes) {
+    if (!process.stdin.isTTY) {
+      out.write(
+        `\nNo Claude Code plugin detected. Install it via the marketplace:\n` +
+          `  /plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
+          `  /plugin install ${ref}\n` +
+          `Or re-run \`aka init --yes\` to install it automatically.\n`,
+      );
+      return;
+    }
+    if (
+      !(await confirm(`\nInstall the AKA Claude Code plugin now (via the marketplace)? [y/N] `))
+    ) {
+      out.write('Skipped. Install anytime with `aka plugins install claude-code`.\n');
+      return;
+    }
+  }
+  await runPlugins(['install', 'claude-code']);
+}
+
+async function confirm(question: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(question)).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
 }

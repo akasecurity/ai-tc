@@ -18,8 +18,9 @@ export interface ScannableResponseField {
 }
 
 // Which fields of each tool's structured response carry text the model will
-// see. Mirrors SCANNABLE_FIELDS in pre-tool-use; extend per-tool as the
-// PostToolUse matcher grows.
+// see. Mirrors the PreToolUse input map in pre-tool-use-fields.ts
+// (scannableInputFields / STATIC_FIELDS); extend per-tool as the PostToolUse
+// matcher grows.
 const RESPONSE_TEXT_PATHS: Record<string, PathSegment[][]> = {
   Read: [['file', 'content']],
   Bash: [['stdout'], ['stderr']],

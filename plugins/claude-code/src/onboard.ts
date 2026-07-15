@@ -75,40 +75,41 @@ try {
       `historicalAccess=${settings.historicalAccess}. ` +
       `Settings saved to ~/.aka/settings/settings.json.\n`,
   );
-  // Caps any existing block/redact category rows to warn once when this
-  // store's chosen handling is 'warn'. Failure here does not fail the
-  // settings write above.
+  // Post-settings store maintenance, all best-effort: a failure here never
+  // fails the settings write above. One store handle serves both the warn-era
+  // cap and the redact posture write.
   try {
     const dataDir = loadConfig().dataDir;
     const db = openLocalDatabase(dataDir);
     try {
-      const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
-      if (capped > 0) {
-        process.stdout.write(
-          `AKA: kept ${String(capped)} existing block/redact categories at warn ` +
-            `(the global "warn only" handling was retired). Confirm per-category ` +
-            `enforcement in this setup.\n`,
-        );
+      // Caps any existing block/redact category rows to warn once when this
+      // store's chosen handling is 'warn'.
+      try {
+        const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
+        if (capped > 0) {
+          process.stdout.write(
+            `AKA: kept ${String(capped)} existing block/redact categories at warn ` +
+              `(the global "warn only" handling was retired). Confirm per-category ` +
+              `enforcement in this setup.\n`,
+          );
+        }
+      } catch {
+        // Best-effort: a failed cap never blocks setup.
+      }
+      // A --policy redact flag writes FULL_ENFORCEMENT_POSTURE as real
+      // per-category policy rows. --policy warn requires no additional write.
+      if (rawPolicy === 'redact') {
+        try {
+          applyCategoryPosture(FULL_ENFORCEMENT_POSTURE, db.policies, 'overwrite');
+        } catch {
+          // Best-effort: a failed write leaves the existing posture in place.
+        }
       }
     } finally {
       db.close();
     }
   } catch {
-    // Best-effort: see comment above.
-  }
-  // A --policy redact flag writes FULL_ENFORCEMENT_POSTURE as real
-  // per-category policy rows. --policy warn requires no additional write.
-  if (rawPolicy === 'redact') {
-    try {
-      const db = openLocalDatabase(loadConfig().dataDir);
-      try {
-        applyCategoryPosture(FULL_ENFORCEMENT_POSTURE, db.policies, 'overwrite');
-      } finally {
-        db.close();
-      }
-    } catch {
-      // Best-effort: a failed write here leaves the existing posture in place.
-    }
+    // Best-effort: could not open the store.
   }
 } catch (err) {
   fail(err instanceof Error ? err.message : 'could not write settings.json');

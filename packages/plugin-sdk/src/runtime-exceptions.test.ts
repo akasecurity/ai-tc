@@ -17,9 +17,11 @@ import { fingerprintValue, loadOrCreateFingerprintKey } from './fingerprint.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
-// Markers resolved by DEFAULT_ACTIONS (secret: block, pii: redact) when the
-// bundle carries no explicit policy. Unique to this file so they never collide
-// with other suites' packs or with the real bundled rules.
+// The cold-start floor no longer resolves a bare category to block/redact, so
+// tests that need to exercise exception-consumption or the blocked-detections
+// ledger inject an explicit enforcing Policy per test, targeting these markers'
+// ruleIds. Unique to this file so they never collide with other suites' packs
+// or with the real bundled rules.
 registerRulePack('exception-test-pack', [
   {
     specVersion: 1,
@@ -159,7 +161,17 @@ describe('exception evaluation — downgrade to allow', () => {
   it('downgrades a matched block to allow, stamps metadata.exceptionIds, records the finding as allow', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const text = 'deploy with EX_SECRET_MARKER now';
@@ -210,7 +222,24 @@ describe('exception evaluation — downgrade to allow', () => {
   it('mixed capture: the excepted value passes while an unexcepted finding still enforces', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/pii-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.capture({
@@ -242,7 +271,17 @@ describe('exception evaluation — downgrade to allow', () => {
   it('consumes once per unique (rule, value) pair and downgrades every span', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.capture({
@@ -263,7 +302,17 @@ describe('exception evaluation — fail secure', () => {
   it('still blocks when consume returns false', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
-    const gw = fakeGateway(bundle([ex]), { consume: () => Promise.resolve(false) });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b, { consume: () => Promise.resolve(false) });
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.processText('EX_SECRET_MARKER');
@@ -275,7 +324,17 @@ describe('exception evaluation — fail secure', () => {
   it('still blocks when consume throws', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
-    const gw = fakeGateway(bundle([ex]), { consume: () => Promise.reject(new Error('locked')) });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b, { consume: () => Promise.reject(new Error('locked')) });
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.processText('EX_SECRET_MARKER');
@@ -289,7 +348,17 @@ describe('exception evaluation — fail secure', () => {
       valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER'),
       keyVersion: key.version + 1,
     });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     expect((await rt.processText('EX_SECRET_MARKER')).action).toBe('block');
@@ -300,18 +369,29 @@ describe('exception evaluation — fail secure', () => {
   it('never matches an expired entry or an exhausted use budget', async () => {
     const key = loadOrCreateFingerprintKey(dir);
     const fp = fingerprintValue(key, 'EX_SECRET_MARKER');
+    const secretBlockPolicy = {
+      id: randomUUID(),
+      scope: 'global' as const,
+      target: { ruleId: 'ex/secret-marker' },
+      action: 'block' as const,
+      enabled: true,
+    };
     const expired = entry({
       valueFingerprint: fp,
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     });
-    const gwExpired = fakeGateway(bundle([expired]));
+    const bExpired = bundle([expired]);
+    bExpired.policies = [secretBlockPolicy];
+    const gwExpired = fakeGateway(bExpired);
     const rtExpired = createPluginRuntime(gwExpired, settings(), { dataDir: dir });
     expect((await rtExpired.processText('EX_SECRET_MARKER')).action).toBe('block');
     expect(gwExpired.consumed).toHaveLength(0);
     await rtExpired.close();
 
     const exhausted = entry({ valueFingerprint: fp, maxUses: 1, useCount: 1 });
-    const gwExhausted = fakeGateway(bundle([exhausted]));
+    const bExhausted = bundle([exhausted]);
+    bExhausted.policies = [secretBlockPolicy];
+    const gwExhausted = fakeGateway(bExhausted);
     const rtExhausted = createPluginRuntime(gwExhausted, settings(), { dataDir: dir });
     expect((await rtExhausted.processText('EX_SECRET_MARKER')).action).toBe('block');
     expect(gwExhausted.consumed).toHaveLength(0);
@@ -320,7 +400,17 @@ describe('exception evaluation — fail secure', () => {
 
   it('skips evaluation entirely without a dataDir', async () => {
     const ex = entry({ valueFingerprint: 'irrelevant' });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings());
     expect((await rt.processText('EX_SECRET_MARKER')).action).toBe('block');
     expect(gw.consumed).toHaveLength(0);
@@ -335,7 +425,17 @@ describe('exception evaluation — conditions', () => {
       valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER'),
       conditions: { repo: 'org/payments' },
     });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.capture({
@@ -355,7 +455,17 @@ describe('exception evaluation — conditions', () => {
       valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER'),
       conditions: { repo: 'org/payments' },
     });
-    const gw = fakeGateway(bundle([ex]));
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const mismatch = await rt.capture({
@@ -391,7 +501,17 @@ describe('no exceptions in the bundle — behavior unchanged, zero footprint', (
   });
 
   it('the first block mints the key so its ledger row is approvable', async () => {
-    const gw = fakeGateway(bundle());
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const blocked = await rt.processText('EX_SECRET_MARKER');
@@ -413,7 +533,17 @@ describe('no exceptions in the bundle — behavior unchanged, zero footprint', (
 describe('blocked-detections ledger', () => {
   it('capture: a block records one ledger row per unique pair and returns its reference', async () => {
     const key = loadOrCreateFingerprintKey(dir); // key exists → ledger active
-    const gw = fakeGateway(bundle());
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.capture({
@@ -443,7 +573,17 @@ describe('blocked-detections ledger', () => {
 
   it('processText: a block records a ledger row too (no event write, null provenance)', async () => {
     loadOrCreateFingerprintKey(dir);
-    const gw = fakeGateway(bundle());
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });
 
     const result = await rt.processText('run with EX_SECRET_MARKER');
@@ -465,7 +605,17 @@ describe('blocked-detections ledger', () => {
 
   it('a failing ledger write never affects the decision', async () => {
     loadOrCreateFingerprintKey(dir);
-    const gw = fakeGateway(bundle(), {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b, {
       recordBlocked: () => Promise.reject(new Error('disk full')),
     });
     const rt = createPluginRuntime(gw, settings(), { dataDir: dir });

@@ -1,27 +1,40 @@
 /**
  * Onboarding writer invoked by the `/aka:setup` wizard — the only command that
- * mutates settings.json. The wizard (commands/setup.md) collects the answers
- * conversationally, then runs:
+ * mutates settings.json and the policies store. The wizard (commands/setup.md)
+ * collects the answers conversationally, then runs:
  *
- *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only>
+ *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only> \
+ *     --posture <json> --floor
  *
  * Each flag is optional and additive: omit one and its current value (or the
  * default) is kept, so a later wizard step is one more flag with no rewrite.
  * Validation lives in @akasecurity/schema (SimpleDetectionPolicy/HistoricalAccess);
  * persistence + the onboardedAt stamp live in the SDK's applyOnboarding. Pure
  * adapter glue.
+ *
+ * `--posture <json>` writes the wizard's per-category model calibration
+ * (validated by ./onboard-posture.ts); `--floor` writes the severity-floor
+ * fallback instead (`severityFloorPosture()`) when the backfill was too thin to
+ * calibrate from. Both go straight to the policies store via applyCategoryPosture,
+ * separate from the settings.json answers above. `--posture` overwrites existing
+ * category rows (confirmed calibration) while `--floor` only fills gaps;
+ * `--recalibrate` forces an overwrite on the floor write. `--floor` and
+ * `--posture` are mutually exclusive.
  */
 import { capWarnEraEnforcementOnce, openLocalDatabase } from '@akasecurity/persistence';
-import { applyCategoryPosture, applyOnboarding, loadConfig } from '@akasecurity/plugin-sdk';
-import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
-  FULL_ENFORCEMENT_POSTURE,
-  HistoricalAccess,
-  SimpleDetectionPolicy,
-} from '@akasecurity/schema';
+  applyCategoryPosture,
+  applyOnboarding,
+  loadConfig,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
+import type { WorkspaceSettings } from '@akasecurity/schema';
+import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+
+import { parsePosture } from './onboard-posture.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
-// positionals are ignored — the wizard only ever passes the two it knows.
+// positionals are ignored — the wizard only ever passes the ones it knows.
 function parseFlags(argv: string[]): Map<string, string> {
   const flags = new Map<string, string>();
   for (let i = 0; i < argv.length; i++) {
@@ -64,26 +77,33 @@ if (rawHistorical !== undefined) {
   else answers.historicalAccess = parsed.data;
 }
 
-if (Object.keys(answers).length === 0) {
-  fail('nothing to save — pass --policy and/or --historical');
+const rawPosture = flags.get('posture');
+const useFloor = process.argv.includes('--floor');
+const recalibrate = process.argv.includes('--recalibrate');
+
+// --floor (the severity-floor fallback) and --posture (a confirmed calibration)
+// are two different writes for the same store — passing both is ambiguous, so
+// reject it before touching anything.
+if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
+
+if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
+  fail('nothing to save — pass --policy, --historical, --posture and/or --floor');
 }
 
-try {
-  const settings = applyOnboarding(answers);
-  process.stdout.write(
-    `AKA configured: policy=${settings.policy}, ` +
-      `historicalAccess=${settings.historicalAccess}. ` +
-      `Settings saved to ~/.aka/settings/settings.json.\n`,
-  );
-  // Post-settings store maintenance, all best-effort: a failure here never
-  // fails the settings write above. One store handle serves both the warn-era
-  // cap and the redact posture write.
+if (Object.keys(answers).length > 0) {
   try {
-    const dataDir = loadConfig().dataDir;
-    const db = openLocalDatabase(dataDir);
+    const settings = applyOnboarding(answers);
+    process.stdout.write(
+      `AKA configured: policy=${settings.policy}, ` +
+        `historicalAccess=${settings.historicalAccess}. ` +
+        `Settings saved to ~/.aka/settings/settings.json.\n`,
+    );
+    // Caps any existing block/redact category rows to warn once when this
+    // store's chosen handling is 'warn'. Failure here does not fail the
+    // settings write above.
     try {
-      // Caps any existing block/redact category rows to warn once when this
-      // store's chosen handling is 'warn'.
+      const dataDir = loadConfig().dataDir;
+      const db = openLocalDatabase(dataDir);
       try {
         const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
         if (capped > 0) {
@@ -93,26 +113,44 @@ try {
               `enforcement in this setup.\n`,
           );
         }
-      } catch {
-        // Best-effort: a failed cap never blocks setup.
+      } finally {
+        db.close();
       }
-      // A --policy redact flag writes FULL_ENFORCEMENT_POSTURE as real
-      // per-category policy rows. --policy warn requires no additional write.
-      if (rawPolicy === 'redact') {
-        try {
-          applyCategoryPosture(FULL_ENFORCEMENT_POSTURE, db.policies, 'overwrite');
-        } catch {
-          // Best-effort: a failed write leaves the existing posture in place.
-        }
-      }
+    } catch {
+      // Best-effort: see comment above.
+    }
+  } catch (err) {
+    fail(err instanceof Error ? err.message : 'could not write settings.json');
+  }
+}
+
+// The wizard's per-category posture (its model calibration, or the
+// severity-floor fallback on a too-thin backfill) — written straight to the
+// policies store, separate from the settings.json answers above.
+if (rawPosture !== undefined || useFloor) {
+  try {
+    let posture;
+    if (useFloor) posture = severityFloorPosture();
+    else if (rawPosture !== undefined) posture = parsePosture(rawPosture);
+    else fail('--posture requires a JSON value');
+    // --posture is a user-confirmed calibration, so it overwrites any existing
+    // category rows; --floor is the fallback and only fills gaps (never
+    // downgrades a calibrated posture) unless --recalibrate forces an overwrite.
+    const mode = rawPosture !== undefined || recalibrate ? 'overwrite' : 'fill-gaps';
+    const db = openLocalDatabase(loadConfig().dataDir);
+    try {
+      applyCategoryPosture(posture, db.policies, mode);
+      const categoryCount = Object.keys(posture).length;
+      process.stdout.write(
+        `AKA per-category posture saved (${String(categoryCount)} categories` +
+          `${useFloor ? ', severity floor' : ''}).\n`,
+      );
     } finally {
       db.close();
     }
-  } catch {
-    // Best-effort: could not open the store.
+  } catch (err) {
+    fail(err instanceof Error ? err.message : 'could not save per-category posture');
   }
-} catch (err) {
-  fail(err instanceof Error ? err.message : 'could not write settings.json');
 }
 
 // Explicit success exit, matching the other adapter entry scripts (query.js,

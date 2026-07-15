@@ -22,6 +22,13 @@ import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from
 import { registerBundledPacks } from './rule-packs.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
 
+// Legacy global enforcement ceiling — superseded by per-category policies.
+// Disabled: per-category policy rows are the sole authority over
+// block/redact/warn/log. Kept as a named, reversible flag rather than deleted
+// outright so re-enabling it (if a future regression demands it) is a
+// one-line revert, not a re-derivation.
+const ENFORCEMENT_CEILING_ENABLED = false as boolean;
+
 // Worst-first ordering for collapsing multiple findings into one decision.
 const ACTION_PRIORITY: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
 
@@ -210,9 +217,15 @@ export function createPluginRuntime(
       if (ACTION_PRIORITY.indexOf(action) < ACTION_PRIORITY.indexOf(worst)) worst = action;
     }
 
-    // The handling policy is the global override (the onboarding "handling"
-    // choice): in 'warn' mode we never block or rewrite, only surface a warning.
-    if (policyMode === 'warn' && (worst === 'block' || worst === 'redact')) {
+    // Legacy global ceiling (disabled by default — ENFORCEMENT_CEILING_ENABLED
+    // above): when enabled, the onboarding "handling" choice caps block/redact
+    // down to warn. Per-category policies are the sole enforcement authority
+    // while it's off.
+    if (
+      ENFORCEMENT_CEILING_ENABLED &&
+      policyMode === 'warn' &&
+      (worst === 'block' || worst === 'redact')
+    ) {
       return { action: 'warn', text, findings };
     }
 
@@ -253,9 +266,10 @@ export function createPluginRuntime(
     const excepted = new Set<MatchResult>();
     const exceptionIds: string[] = [];
     try {
-      // In 'warn' handling mode nothing is ever blocked/redacted, so there is
-      // no enforcement to bypass — evaluating would only burn use budgets.
-      if (policyMode === 'warn') return { excepted, exceptionIds };
+      // Legacy global ceiling (disabled by default). When enabled, 'warn'
+      // handling mode blocks/redacts nothing, so there is no enforcement to
+      // bypass — evaluating would only burn use budgets.
+      if (ENFORCEMENT_CEILING_ENABLED && policyMode === 'warn') return { excepted, exceptionIds };
       const enforced = findings.filter((f) => {
         const action = resolveAction(f.ruleId, f.category);
         return action === 'block' || action === 'redact';

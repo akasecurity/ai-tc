@@ -136,7 +136,7 @@ describe('createPluginRuntime — decisions from the pulled bundle (DEFAULT_ACTI
     await rt.close();
   });
 
-  it('warn mode downgrades block/redact to warn and leaves text intact', async () => {
+  it('per-category policy still hard-enforces under settings.policy warn (ceiling retired)', async () => {
     const rt = createPluginRuntime(
       fakeGateway({
         ...bundle(),
@@ -152,10 +152,9 @@ describe('createPluginRuntime — decisions from the pulled bundle (DEFAULT_ACTI
       }),
       settings('warn'),
     );
-    expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
-      action: 'warn',
-      text: 'deploy with SECRET_MARKER now',
-    });
+    const result = await rt.processText('deploy with SECRET_MARKER now');
+    expect(result.action).toBe('block');
+    expect(result.text).toBeNull();
     await rt.close();
   });
 });

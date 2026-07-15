@@ -23,7 +23,7 @@
 export interface BaseEventRow<TTime = number> {
   id: string;
   sourceTool: string;
-  kind: 'prompt' | 'response' | 'code_change';
+  kind: 'prompt' | 'response' | 'code_change' | 'tool_use';
   occurredAt: TTime;
   contentHash: string;
   content: string;
@@ -124,6 +124,7 @@ export interface BaseAuditEventRow<TTime = number> {
     | 'prompt'
     | 'response'
     | 'code_change'
+    | 'tool_use'
     | 'config_scan';
   hostId: string | null;
   harnessId: string | null;

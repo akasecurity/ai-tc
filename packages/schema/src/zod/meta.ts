@@ -43,6 +43,11 @@ export const AuditEventType = z
     'prompt',
     'response',
     'code_change',
+    // The events.kind of a scanned tool call, widened in to keep this a
+    // superset. Narrower than 'tool_call' above and not a duplicate of it:
+    // 'tool_call' is the reconciler's structural row for every call, while
+    // 'tool_use' exists only where a hook enforced against the arguments.
+    'tool_use',
     // One row per config-inventory scan, hung off the session root. It is the
     // fact the posture inspection findings reference (findings require an
     // audit_event_id), and its started_at is the "scanned Nm ago" the read

@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
-export const EventKind = z.enum(['prompt', 'response', 'code_change']).meta({ id: 'EventKind' });
+// 'tool_use' is the enforcement record for a tool call whose arguments were
+// scanned before it ran (a Bash command, a WebFetch url, an MCP payload) —
+// text the tool acts on rather than durable content it authors, which stays
+// 'code_change'. Distinct from audit_events' 'tool_call', the reconciler's
+// post-hoc structural row: a tool_use event exists because the hook made a
+// block/redact/warn decision, so the two never describe the same fact.
+export const EventKind = z
+  .enum(['prompt', 'response', 'code_change', 'tool_use'])
+  .meta({ id: 'EventKind' });
 export type EventKind = z.infer<typeof EventKind>;
 
 export const SourceTool = z

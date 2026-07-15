@@ -54,3 +54,26 @@ describe('upsertCategoryAction', () => {
     expect(row.enabled).toBe(1);
   });
 });
+
+describe('capCategoryActions', () => {
+  it('caps block/redact rows to warn, leaves warn/log rows untouched, returns the changed count', () => {
+    repo.upsertCategoryAction('secret', 'block');
+    repo.upsertCategoryAction('financial', 'redact');
+    repo.upsertCategoryAction('code_flaw', 'warn');
+    repo.upsertCategoryAction('config', 'log');
+
+    const changed = repo.capCategoryActions();
+
+    expect(changed).toBe(2);
+    expect(repo.getCategoryAction('secret')).toBe('warn');
+    expect(repo.getCategoryAction('financial')).toBe('warn');
+    expect(repo.getCategoryAction('code_flaw')).toBe('warn');
+    expect(repo.getCategoryAction('config')).toBe('log');
+  });
+
+  it('is a no-op when no category is set to block/redact', () => {
+    repo.upsertCategoryAction('secret', 'warn');
+    expect(repo.capCategoryActions()).toBe(0);
+    expect(repo.getCategoryAction('secret')).toBe('warn');
+  });
+});

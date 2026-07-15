@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, type PluginConfig } from '@akasecurity/plugin-sdk';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleSessionStart } from './handle-session-start.ts';
 import { StandaloneDataGateway } from './standalone-gateway.ts';
@@ -365,6 +365,39 @@ describe('handleSessionStart (standalone)', () => {
       .get() as { pid: string; path: string; access: string };
     expect(override).toMatchObject({ pid: canonical?.id, path: 'secret.ts', access: 'blocked' });
     db.close();
+  });
+});
+
+describe('handleSessionStart — warn-era enforcement cap', () => {
+  function warnConfig(dataDir: string): PluginConfig {
+    const base = config(dataDir);
+    return { ...base, settings: { ...base.settings, policy: 'warn' } };
+  }
+
+  it('surfaces the stderr disclosure once when rows are actually capped', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await handleSessionStart(start('s1'), warnConfig(dir));
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(true);
+
+    stderrSpy.mockClear();
+    await handleSessionStart(start('s2'), warnConfig(dir));
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+    stderrSpy.mockRestore();
+  });
+
+  it('stays silent for a redact-era store', async () => {
+    const seed = openLocalDatabase(dir);
+    seed.policies.upsertCategoryAction('secret', 'block');
+    seed.close();
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await handleSessionStart(start('s1'), config(dir)); // policy: 'redact'
+    expect(stderrSpy.mock.calls.some(([msg]) => String(msg).includes('warn only'))).toBe(false);
+    stderrSpy.mockRestore();
   });
 });
 

@@ -6,6 +6,7 @@ import type {
   ResolutionInput,
 } from '@akasecurity/persistence';
 import {
+  capWarnEraEnforcementOnce,
   compareBinaryVersions,
   inspectionFindingId,
   openLocalDatabase,
@@ -38,6 +39,7 @@ import type {
   ResolvedInventory,
   Rule,
   SessionTokenReport,
+  SimpleDetectionPolicy,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -284,6 +286,16 @@ export class StandaloneDataGateway implements DataGateway {
   // not part of the DataGateway port. Active grants are never touched.
   sweepTerminalExceptions(retentionMs: number): Promise<number> {
     return this.db.exceptions.sweepTerminal(retentionMs);
+  }
+
+  // The warn-era enforcement cap (upgrade migration), standalone-only store
+  // maintenance invoked from SessionStart, not part of the DataGateway port.
+  // Delegates to persistence's run-once cap so the raw sqlite handle stays
+  // private to the gateway. Returns the number of block/redact rows capped to
+  // warn (0 for a redact-era store or an already-capped one).
+  capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number } {
+    const { capped } = capWarnEraEnforcementOnce(this.db, policyMode, this.dataDir);
+    return { capped };
   }
 
   // One project-file scan → the local project_file tree (one transaction inside

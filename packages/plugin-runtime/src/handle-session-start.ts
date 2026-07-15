@@ -110,6 +110,21 @@ export async function handleSessionStart(
         } catch {
           // best-effort
         }
+        // The warn-era enforcement cap (upgrade migration): a warn-era user
+        // who upgrades but never re-runs /aka:setup is caught here. A
+        // redact-era store is a no-op; the cap is marker-guarded run-once.
+        try {
+          const { capped } = gateway.capWarnEraEnforcement(config.settings.policy);
+          if (capped > 0) {
+            process.stderr.write(
+              'AKA: the global "warn only" handling was retired; your existing ' +
+                'block/redact categories were kept at warn. Re-run /aka:setup to ' +
+                'adopt per-category enforcement.\n',
+            );
+          }
+        } catch {
+          // Fail-open: a failed cap drops the migration, never the session.
+        }
         // The project-file inventory pass (the Inventory page's file tree),
         // standalone-only like the sweep. Guarded separately: a walk bug must
         // never take the session root or config scan down with it.

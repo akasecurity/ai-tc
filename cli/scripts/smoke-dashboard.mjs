@@ -64,5 +64,12 @@ try {
   process.exitCode = 1;
 } finally {
   if (child) child.kill('SIGKILL');
-  rmSync(home, { recursive: true, force: true });
+  // Best-effort teardown: on Windows the just-killed server can still hold handles
+  // on the temp store for a moment, so retry — and never let a cleanup EPERM mask the
+  // smoke result (the OS temp dir is reclaimed by the runner regardless).
+  try {
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    // ignore — temp dir, reclaimed by the OS/runner
+  }
 }

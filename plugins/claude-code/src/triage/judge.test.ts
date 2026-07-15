@@ -104,4 +104,35 @@ describe('runJudge', () => {
 
     expect(rec.perCategory[0]?.action).toBe('block');
   });
+
+  it('re-throws a spawn failure as raw-free metadata (execFileSync puts the prompt in .message)', () => {
+    // execFileSync throws an error whose .message is `Command failed: claude … <argv>`,
+    // and argv carries the raw hits in the prompt. Simulate that exact shape and
+    // assert the raw value never rides the re-thrown error out to the parent stderr.
+    const spawn = (argv: readonly string[]): string => {
+      const err = new Error(`Command failed: claude ${argv.join(' ')}`) as Error & {
+        status?: number;
+        stdout?: string;
+        stderr?: string;
+      };
+      err.status = 1;
+      err.stdout = `partial output leaking ${hit.rawMatch}`;
+      err.stderr = 'boom';
+      throw err;
+    };
+    try {
+      runJudge([hit], { spawn, loadRubric: () => 'RUBRIC' });
+      throw new Error('expected runJudge to throw');
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).not.toContain(hit.rawMatch);
+      expect(message).not.toContain('export KEY=');
+      // still useful: it names the failure + surfaces the raw-free exit status
+      expect(message).toContain('judge subprocess failed');
+      expect(message).toContain('exit 1');
+      // and the raw-bearing spawn error is NOT chained as `cause` — a future
+      // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
+      expect((err as Error).cause).toBeUndefined();
+    }
+  });
 });

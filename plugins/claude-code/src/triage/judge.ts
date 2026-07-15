@@ -96,6 +96,20 @@ export function spawnClaude(argv: readonly string[], env: NodeJS.ProcessEnv): st
   });
 }
 
+// Raw-free description of a spawn failure. An execFileSync error's `.message`
+// echoes the FULL argv — which carries the raw hits in the prompt — plus the
+// captured stdout/stderr; none of it may cross back to the parent command. We
+// surface ONLY the non-content metadata (exit status / signal / node error
+// code), never `.message`, `.stdout`, or `.stderr`.
+function spawnFailureMeta(err: unknown): string {
+  const e = err as { status?: number | null; signal?: string | null; code?: string };
+  const parts: string[] = [];
+  if (typeof e.status === 'number') parts.push(`exit ${String(e.status)}`);
+  if (typeof e.signal === 'string' && e.signal) parts.push(`signal ${e.signal}`);
+  if (typeof e.code === 'string' && e.code) parts.push(e.code);
+  return parts.length > 0 ? parts.join(', ') : 'unknown error';
+}
+
 // -------------------------------------------------------------------------
 // runJudge
 // -------------------------------------------------------------------------
@@ -122,7 +136,21 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json', fullPrompt] as const;
   const env = judgeEnv();
   try {
-    return parseVerdict(deps.spawn(argv, env));
+    // The spawn is isolated from the parse: a spawn failure (execFileSync) throws
+    // an error whose `.message` embeds the full argv — i.e. the raw hits in the
+    // prompt — plus captured stdout/stderr. Re-throw it as raw-free metadata so
+    // nothing raw can ride the error out to the parent command's stderr.
+    let stdout: string;
+    try {
+      stdout = deps.spawn(argv, env);
+    } catch (err) {
+      // Deliberately NOT chaining `err` as `cause`: the execFileSync error carries
+      // the raw prompt in .message/.stdout/.stderr, and attaching it would re-expose
+      // exactly what this throw exists to strip. Only raw-free metadata is surfaced.
+      // eslint-disable-next-line preserve-caught-error -- caught error carries raw; see above
+      throw new Error(`claude -p judge subprocess failed (${spawnFailureMeta(err)})`);
+    }
+    return parseVerdict(stdout);
   } finally {
     if (process.platform === 'darwin' && env.CLAUDE_CONFIG_DIR) {
       rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });

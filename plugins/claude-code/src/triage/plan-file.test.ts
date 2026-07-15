@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { RawEgressError } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
@@ -137,4 +137,48 @@ describe('deletePlanFile', () => {
       deletePlanFile(path);
     }).not.toThrow();
   });
+
+  it('removes a preview-minted plan AND its now-empty dedicated temp dir', () => {
+    const plan = planTriageWriteback([hit()], rec());
+    const path = writePlanFile(plan, {}, [RAW]);
+    cleanup.push(path);
+    deletePlanFile(path);
+    // the dedicated mkdtemp dir writePlanFile minted held only this file, so it
+    // is gone too — no lingering empty directory behind
+    expect(existsSync(dirname(path))).toBe(false);
+  });
+
+  it('NEVER deletes siblings when --plan points at a shared directory', () => {
+    // The confirm path takes --plan <path> from user argv. If a valid plan lives
+    // in a directory holding OTHER files, deletePlanFile must remove only the plan
+    // file — the old `rmSync(dirname, { recursive })` would have wiped the lot.
+    const dir = mkdtempSync(join(tmpdir(), 'aka-shared-'));
+    cleanup.push(join(dir, 'x'));
+    const planPath = join(dir, 'setup-plan.json');
+    const plan = planTriageWriteback([hit()], rec());
+    writeFileSync(planPath, JSON.stringify(readPlanFileDoc(plan)));
+    const sibling = join(dir, 'precious.txt');
+    writeFileSync(sibling, 'do not delete me');
+
+    deletePlanFile(planPath);
+
+    expect(existsSync(planPath)).toBe(false);
+    expect(existsSync(sibling)).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+  });
 });
+
+// Serialize a plan the way writePlanFile would, for the shared-dir test (which
+// must place the file itself rather than let writePlanFile mint a temp dir).
+function readPlanFileDoc(plan: TriageWritebackPlan) {
+  return {
+    version: PLAN_FILE_VERSION,
+    token: 'test-token',
+    posture: plan.posture,
+    entries: plan.entries,
+    showcase: plan.showcase,
+    join: plan.join,
+    notes: plan.notes,
+    current: {},
+  };
+}

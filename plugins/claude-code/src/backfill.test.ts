@@ -178,6 +178,52 @@ describe('runBackfill — triage mode', () => {
       expect(stderr.some((line) => line.includes('EPIPE'))).toBe(true);
     },
   );
+
+  it('forwards the self-contamination guard (beforeMs + excludeSessionId) into scanHistory', async () => {
+    const { io } = fakeIo();
+    const scanHistory = vi.fn(() => Promise.resolve(zeroSummary()));
+    const guard = { beforeMs: 1_700_000_000_000, excludeSessionId: 'session_abc' };
+    const deps = baseDeps({ triage: true, io, scanHistory, guard });
+
+    await runBackfill(deps);
+
+    // The scan must actually RECEIVE the guard — the whole point of the finding is
+    // that runBackfill used to pass {} and the guard did nothing in production.
+    expect(scanHistory).toHaveBeenCalledWith(expect.anything(), guard, expect.any(Function));
+  });
+
+  it('defaults the scan opts to {} when no guard is provided', async () => {
+    const { io } = fakeIo();
+    const scanHistory = vi.fn(() => Promise.resolve(zeroSummary()));
+    const deps = baseDeps({ triage: true, io, scanHistory });
+
+    await runBackfill(deps);
+
+    expect(scanHistory).toHaveBeenCalledWith(expect.anything(), {}, expect.any(Function));
+  });
+
+  it('never leaks a raw value to stderr when an enriched hit fails validation', async () => {
+    const { io, stderr, failed } = fakeIo();
+    const raw = 'AKIAIOSFODNN7EXAMPLE';
+    // A hit that is invalid AFTER enrichment (bad severity) but still carries raw
+    // in context: TriageHit validation fails, and the error must not echo the raw.
+    const badHit = { ...fixtureHit(raw), severity: 'NOT_A_SEVERITY' } as unknown as TriageHit;
+    const scanHistory = vi.fn((_config, _opts, onHit?: (hit: TriageHit) => void) => {
+      try {
+        onHit?.(badHit);
+      } catch {
+        // scanHistory's real isolation
+      }
+      return Promise.resolve(zeroSummary());
+    });
+    const deps = baseDeps({ triage: true, io, scanHistory });
+
+    await runBackfill(deps);
+
+    expect(failed()).toBe(true);
+    expect(stderr.join('')).not.toContain(raw);
+    expect(stderr.some((l) => l.includes('history scan failed'))).toBe(true);
+  });
 });
 
 describe('runBackfill — human mode (unchanged)', () => {

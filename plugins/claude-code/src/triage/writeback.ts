@@ -73,7 +73,15 @@ export function parseTriageStream(text: string): { hits: TriageHit[]; status: Tr
   if (last === undefined) {
     throw new Error('triage stream is empty (no sentinel): treating as truncated, not zero-hit');
   }
-  const tail: unknown = JSON.parse(last);
+  // The stream lines carry RAW hit values; a JSON.parse failure echoes the
+  // offending line in its SyntaxError, so never let that error propagate — a
+  // truncated last line is exactly the (raw-bearing) case we must not leak.
+  let tail: unknown;
+  try {
+    tail = JSON.parse(last);
+  } catch {
+    throw new Error('triage stream final line is not valid JSON — refusing a truncated stream');
+  }
   if (!isSentinel(tail)) {
     throw new Error('triage stream has no completion sentinel — refusing a truncated stream');
   }
@@ -93,7 +101,22 @@ export function parseTriageStream(text: string): { hits: TriageHit[]; status: Tr
       `triage stream count ${String(tail.count)} !== ${String(hitLines.length)} hit lines seen`,
     );
   }
-  const hits = hitLines.map((l) => TriageHit.parse(JSON.parse(l)));
+  // Both JSON.parse (raw line in a SyntaxError) and TriageHit.parse (raw value
+  // in a ZodError) would echo raw content on failure. Report only the line index
+  // and a raw-free reason so a malformed hit can never leak through the error.
+  const hits = hitLines.map((l, i) => {
+    let obj: unknown;
+    try {
+      obj = JSON.parse(l);
+    } catch {
+      throw new Error(`triage stream hit line ${String(i)} is not valid JSON`);
+    }
+    const parsed = TriageHit.safeParse(obj);
+    if (!parsed.success) {
+      throw new Error(`triage stream hit line ${String(i)} failed TriageHit validation`);
+    }
+    return parsed.data;
+  });
   return { hits, status: 'complete' };
 }
 

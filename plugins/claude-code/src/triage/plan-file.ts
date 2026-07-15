@@ -18,9 +18,9 @@
  * LOUDLY rather than persisting a secret to a temp file.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import { assertRawFree } from '@akasecurity/plugin-sdk';
 import { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
@@ -139,11 +139,22 @@ export function readPlanFile(path: string): PersistedPlan {
   return PersistedPlanSchema.parse(json);
 }
 
-// Remove the plan file AND its dedicated temp dir after a successful apply
-// (design: "deleted after apply"). writePlanFile mints a fresh 0700 dir per plan
-// holding only this file, so removing the parent dir leaves no lingering empty
-// mkdtemp directory behind. force + recursive so a double-confirm or an
-// already-gone path never throws.
+// Remove the plan file after a successful apply (design: "deleted after apply"),
+// then clean up its dedicated temp dir — but ONLY the file itself is removed
+// unconditionally. The confirm path takes `--plan <path>` from user argv, so the
+// parent directory is NOT ours to delete: we rmdir it only when it is a dir
+// writePlanFile actually minted (an `aka-plan-*` mkdtemp) AND now empty. A
+// user-supplied path in any other directory therefore never loses its parent or
+// its neighbours — the old `rmSync(dirname, { recursive })` would have wiped the
+// lot. `force` on the file unlink so an already-gone path is idempotent (`path`
+// is always a validated file here — readPlanFile rejects a directory upstream).
 export function deletePlanFile(path: string): void {
-  rmSync(dirname(path), { recursive: true, force: true });
+  rmSync(path, { force: true });
+  const dir = dirname(path);
+  if (!basename(dir).startsWith('aka-plan-')) return;
+  try {
+    rmdirSync(dir);
+  } catch {
+    // Already gone, or (defensively) not empty — leave the directory be.
+  }
 }

@@ -61,6 +61,13 @@ export interface BackfillDeps {
     onHit?: (hit: TriageHit) => void,
   ) => Promise<ScanSummary>;
   reconcileHistory: (config: PluginConfig) => Promise<unknown>;
+  // Self-contamination guard threaded into the scan: `beforeMs` drops any
+  // transcript message written at/after the backfill started (so a re-run never
+  // re-ingests the wizard's own in-progress session), and `excludeSessionId`
+  // skips AKA's OWN session transcript by id when the host exposes it. Injected
+  // (not read from the environment here) so runBackfill stays pure + testable;
+  // the CLI wiring at the bottom of this file computes the real values.
+  guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs'>;
 }
 
 export async function runBackfill(deps: BackfillDeps): Promise<void> {
@@ -106,7 +113,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
     let onHitError: unknown;
     const summary = await deps.scanHistory(
       cfg,
-      {},
+      deps.guard ?? {},
       triage
         ? (hit) => {
             if (onHitError !== undefined) return;
@@ -117,7 +124,16 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
                 valueFingerprint: fpKey ? fingerprintValue(fpKey, hit.rawMatch) : undefined,
                 keyVersion: fpKey?.version,
               };
-              io.stdout(JSON.stringify(TriageHit.parse(enriched)) + '\n');
+              // Validate WITHOUT letting a ZodError carry the raw hit value: on a
+              // shape mismatch the error message would echo rawMatch/context, and
+              // it is rethrown to the outer catch which writes it to stderr. Emit
+              // a raw-free error at the source instead. A raw-free io.stdout error
+              // (e.g. EPIPE) still propagates verbatim for diagnostics.
+              const validated = TriageHit.safeParse(enriched);
+              if (!validated.success) {
+                throw new Error('enriched triage hit failed TriageHit validation');
+              }
+              io.stdout(JSON.stringify(validated.data) + '\n');
               count += 1;
             } catch (err) {
               onHitError = err;
@@ -150,6 +166,10 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
     }
   } catch (err) {
     if (triage) {
+      // The raw vector on this path — a ZodError over an enriched (raw-bearing)
+      // hit — is neutralised at its source in the onHit sink above, so every error
+      // reaching here (config/fs faults, an io.stdout EPIPE) is raw-free and its
+      // message is safe (and useful) to surface on the machine channel.
       io.stderr(`aka backfill --triage: history scan failed: ${String(err)}\n`);
       io.fail();
     } else {
@@ -163,6 +183,15 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
 // Guard so importing the exported helpers in tests never runs the CLI.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const triage = process.argv.includes('--triage');
+  // Self-contamination guard values (see BackfillDeps.guard). `beforeMs` is this
+  // run's start: every real pre-install message predates it, so it drops only
+  // what is written at/after the scan begins — the wizard's own in-progress
+  // session. `excludeSessionId` is best-effort: the host only exposes
+  // CLAUDE_CODE_BRIDGE_SESSION_ID while a Remote Control connection is active, so
+  // the id-skip is belt-and-suspenders on top of the always-on timestamp cutoff.
+  const startedAt = Date.now();
+  // eslint-disable-next-line n/no-process-env -- host session id for the self-contamination guard
+  const sessionId = process.env.CLAUDE_CODE_BRIDGE_SESSION_ID;
   await runBackfill({
     triage,
     io: {
@@ -175,6 +204,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     loadConfig,
     scanHistory,
     reconcileHistory,
+    guard: {
+      beforeMs: startedAt,
+      ...(sessionId ? { excludeSessionId: sessionId } : {}),
+    },
   });
   // process.exit() does not flush a buffered async stdout write on darwin, so a
   // large --triage stream's trailing sentinel could be dropped; drain first.

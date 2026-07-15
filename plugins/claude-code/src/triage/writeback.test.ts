@@ -85,6 +85,31 @@ describe('parseTriageStream', () => {
       '\n';
     expect(() => parseTriageStream(stream)).toThrow(/count/i);
   });
+
+  it('never leaks the raw value when the final (sentinel) line is truncated JSON', () => {
+    // A crash mid-write leaves a partial last line carrying raw context. JSON.parse
+    // would echo it in a SyntaxError — assert the thrown message stays raw-free.
+    const stream = `{"rawMatch":"${RAW}","context":"export KEY=${RAW}`; // truncated, no newline/sentinel
+    try {
+      parseTriageStream(stream);
+      throw new Error('expected parseTriageStream to throw');
+    } catch (err) {
+      expect((err as Error).message).not.toContain(RAW);
+    }
+  });
+
+  it('never leaks the raw value when a hit line fails JSON/TriageHit validation', () => {
+    const badHit = `{"ruleId":"x","rawMatch":"${RAW}","context":"${RAW}","severity":"NOT_A_SEVERITY"}`;
+    const stream =
+      badHit + '\n' + JSON.stringify({ done: true, count: 1, status: 'complete' }) + '\n';
+    try {
+      parseTriageStream(stream);
+      throw new Error('expected parseTriageStream to throw');
+    } catch (err) {
+      expect((err as Error).message).not.toContain(RAW);
+      expect((err as Error).message).toMatch(/hit line 0/);
+    }
+  });
 });
 
 // ----------------------------------------------------------------------------

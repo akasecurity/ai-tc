@@ -182,7 +182,7 @@ export function createPluginRuntime(
     // A per-rule policy — the per-detection Monitor/Warn/Redact/Block assignment
     // the standalone gateway synthesizes from installed_packs.policy_id — wins
     // over the category default, so a detection set to Monitor actually stops
-    // enforcing rather than falling through to DEFAULT_ACTIONS (secret → block).
+    // enforcing rather than falling through to DEFAULT_ACTIONS (secret → warn).
     // O(1) via the indexes built in ensureInitialized.
     const byRule = ruleActionIndex.get(ruleId);
     if (byRule !== undefined) return byRule;

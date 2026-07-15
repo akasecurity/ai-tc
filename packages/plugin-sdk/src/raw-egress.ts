@@ -24,6 +24,10 @@ const MIN_RAW_LEN = 4;
 
 // Mask a context window: redact every hit overlapping the slice, with each
 // span rebased to the slice's own start, then verify no raw value survives.
+// `sliceStart` and each hit's `span` are whatever coordinate space the caller
+// chooses (e.g. offsets into the original source text, or offsets into the
+// slice itself with sliceStart 0) — this function carries no state between
+// calls, so nothing needs to be persisted alongside the slice to reuse it.
 export function maskContextSlice(
   slice: string,
   sliceStart: number,

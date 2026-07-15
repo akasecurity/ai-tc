@@ -2,15 +2,16 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
+import type { Policy, PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from './data-gateway.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
-// Markers resolved by DEFAULT_ACTIONS (secret: block, pii: redact) when the
-// bundle carries no explicit policy. Registered into the global bundled packs.
+// Markers resolved by DEFAULT_ACTIONS (secret: warn, pii: warn — the observe-first
+// cold-start floor) when the bundle carries no explicit policy. Registered into the
+// global bundled packs.
 registerRulePack('test-pack', [
   {
     specVersion: 1,
@@ -48,10 +49,22 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
   return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'session-only' };
 }
 
-function bundle(rules: Rule[] = []): PolicyBundle {
+// An explicit secret→block policy for the enforcement-mechanics tests below that
+// need a blocking finding. Pinning it — rather than leaning on the DEFAULT_ACTIONS
+// fallback, which cold-starts at 'warn' — keeps those tests exercising the
+// block/mask path regardless of the category default.
+const BLOCK_SECRET: Policy = {
+  id: '55555555-5555-4555-8555-555555555555',
+  scope: 'global',
+  target: { category: 'secret' },
+  action: 'block',
+  enabled: true,
+};
+
+function bundle(rules: Rule[] = [], policies: Policy[] = []): PolicyBundle {
   return {
     version: 'test',
-    policies: [],
+    policies,
     rules,
     customKeywords: [],
     fetchedAt: new Date().toISOString(),
@@ -117,26 +130,28 @@ describe('createPluginRuntime — decisions from the pulled bundle (DEFAULT_ACTI
     await rt.close();
   });
 
-  it('blocks secrets by default', async () => {
+  it('warns on secrets by default (observe-first cold-start floor)', async () => {
     const rt = createPluginRuntime(fakeGateway(bundle()), settings());
     const result = await rt.processText('deploy with SECRET_MARKER now');
-    expect(result.action).toBe('block');
-    expect(result.text).toBeNull();
+    expect(result.action).toBe('warn');
+    expect(result.text).toBe('deploy with SECRET_MARKER now');
     expect(result.findings.map((f) => f.ruleId)).toContain('test/secret-marker');
     await rt.close();
   });
 
-  it('redacts PII by default', async () => {
+  it('warns on PII by default (observe-first cold-start floor)', async () => {
     const rt = createPluginRuntime(fakeGateway(bundle()), settings());
     expect(await rt.processText('contact PII_MARKER please')).toMatchObject({
-      action: 'redact',
-      text: 'contact [REDACTED:PII] please',
+      action: 'warn',
+      text: 'contact PII_MARKER please',
     });
     await rt.close();
   });
 
-  it('warn mode downgrades block/redact to warn and leaves text intact', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle()), settings('warn'));
+  it('warn mode downgrades an explicit block/redact to warn and leaves text intact', async () => {
+    // Explicit block policy — the cold-start default is already 'warn', so the
+    // downgrade needs a would-be-block finding to actually exercise the ceiling.
+    const rt = createPluginRuntime(fakeGateway(bundle([], [BLOCK_SECRET])), settings('warn'));
     expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
       action: 'warn',
       text: 'deploy with SECRET_MARKER now',
@@ -154,7 +169,7 @@ describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () 
     return { ...bundle(), policies };
   }
 
-  it('downgrades a would-be block to log when the rule is set to Monitor', async () => {
+  it('downgrades a detection to log when the rule is set to Monitor', async () => {
     const rt = createPluginRuntime(
       fakeGateway(
         bundleWithPolicies([
@@ -169,7 +184,8 @@ describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () 
       ),
       settings(),
     );
-    // Without the ruleId policy this secret would block (DEFAULT_ACTIONS).
+    // Without the ruleId policy this secret would warn (DEFAULT_ACTIONS); the
+    // Monitor assignment takes it down to log.
     expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
       action: 'log',
       text: 'deploy with SECRET_MARKER now',
@@ -218,8 +234,8 @@ describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () 
       ),
       settings(),
     );
-    // Disabled → ignored → secret blocks via DEFAULT_ACTIONS.
-    expect((await rt.processText('deploy with SECRET_MARKER now')).action).toBe('block');
+    // Disabled → ignored → secret warns via DEFAULT_ACTIONS.
+    expect((await rt.processText('deploy with SECRET_MARKER now')).action).toBe('warn');
     await rt.close();
   });
 
@@ -255,7 +271,7 @@ describe('createPluginRuntime — per-detection (ruleId-targeted) policies', () 
 
 describe('rules pull', () => {
   it('detects with rules pulled from the bundle (not just bundled packs)', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE])), settings());
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_RULE], [BLOCK_SECRET])), settings());
     const result = await rt.processText('ship PULLED_MARKER today');
     expect(result.action).toBe('block');
     expect(result.findings.map((f) => f.ruleId)).toContain('pulled/secret-marker');
@@ -265,7 +281,7 @@ describe('rules pull', () => {
 
 describe('rulesComplete — the bundle rules replace the compiled-in packs', () => {
   it('scans ONLY the bundle rules when the bundle marks them complete', async () => {
-    const complete = { ...bundle([PULLED_RULE]), rulesComplete: true };
+    const complete = { ...bundle([PULLED_RULE], [BLOCK_SECRET]), rulesComplete: true };
     const rt = createPluginRuntime(fakeGateway(complete), settings());
     // The bundled test-pack marker is NOT in the complete ruleset → passes through.
     expect(await rt.processText('deploy with SECRET_MARKER now')).toMatchObject({
@@ -289,7 +305,7 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
   });
 
   it('keeps bundled packs when rulesComplete is absent (historical composition)', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle([])), settings());
+    const rt = createPluginRuntime(fakeGateway(bundle([], [BLOCK_SECRET])), settings());
     const result = await rt.processText('deploy with SECRET_MARKER now');
     expect(result.action).toBe('block');
     await rt.close();
@@ -298,7 +314,7 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
 
 describe('capture', () => {
   it('records the event + masked findings and returns the same decision', async () => {
-    const gw = fakeGateway(bundle());
+    const gw = fakeGateway(bundle([], [BLOCK_SECRET]));
     const rt = createPluginRuntime(gw, settings());
     const result = await rt.capture({
       kind: 'prompt',

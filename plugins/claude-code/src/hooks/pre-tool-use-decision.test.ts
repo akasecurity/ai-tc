@@ -24,7 +24,7 @@ import { join } from 'node:path';
 
 import type { CaptureResult, DataGateway } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime } from '@akasecurity/plugin-sdk';
-import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
+import type { Policy, PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput, ScannableField } from './pre-tool-use-decision.ts';
@@ -259,9 +259,11 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
 });
 
 // ─── End-to-end incident regression, through the REAL runtime ───────────────
-// Real bundled rule packs, real DEFAULT_ACTIONS (no explicit policies in the
-// bundle), real redact splice — then the decision module must turn it into a
-// deny. If a rule or default action changes out from under this, the
+// Real bundled rule packs and the real redact splice, with explicit enforcing
+// policies (secret→block, pii→redact) pinning the actions — the cold-start
+// DEFAULT_ACTIONS floor is 'warn', so these deny-path tests set the enforcing
+// baseline directly rather than leaning on the default. The decision module must
+// then turn the redact into a deny. If a rule changes out from under this, the
 // precondition assertions say which half moved.
 
 function settings(): WorkspaceSettings {
@@ -273,10 +275,28 @@ function settings(): WorkspaceSettings {
   };
 }
 
+// The enforcing baseline the deny-path tests need (see the comment above).
+const ENFORCING_POLICIES: Policy[] = [
+  {
+    id: '7b000000-0000-4000-8000-000000000001',
+    scope: 'global',
+    target: { category: 'secret' },
+    action: 'block',
+    enabled: true,
+  },
+  {
+    id: '7b000000-0000-4000-8000-000000000002',
+    scope: 'global',
+    target: { category: 'pii' },
+    action: 'redact',
+    enabled: true,
+  },
+];
+
 function bundle(): PolicyBundle {
   return {
     version: 'test',
-    policies: [],
+    policies: ENFORCING_POLICIES,
     rules: [],
     customKeywords: [],
     fetchedAt: new Date().toISOString(),

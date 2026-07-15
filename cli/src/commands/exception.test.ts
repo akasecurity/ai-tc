@@ -13,6 +13,7 @@ import {
   loadOrCreateFingerprintKey,
   registerBundledPacks,
 } from '@akasecurity/plugin-sdk';
+import type { Policy } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -50,6 +51,17 @@ function scriptedIo(stdin = ''): Prompter & { output: () => string } {
   };
 }
 
+// The store carries no per-category policy, so this enforcement + exception loop
+// needs an explicit secret→block policy: the cold-start DEFAULT_ACTIONS floor is
+// 'warn', which is never enforced and so is never subject to an exception.
+const BLOCK_SECRET: Policy = {
+  id: '8c000000-0000-4000-8000-000000000001',
+  scope: 'global',
+  target: { category: 'secret' },
+  action: 'block',
+  enabled: true,
+};
+
 // Minimal DataGateway over the REAL local store + REAL key file, so the test
 // proves the CLI and the enforcement path agree on dataDir/key co-location.
 function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
@@ -74,7 +86,7 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: async () => ({
       version: 'test',
-      policies: [],
+      policies: [BLOCK_SECRET],
       rules: [],
       exceptions: await db.exceptions.activeBundleEntries(loadOrCreateFingerprintKey(dir).version),
       customKeywords: [],

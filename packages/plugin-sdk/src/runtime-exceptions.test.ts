@@ -7,6 +7,7 @@ import type { BlockedDetectionInput } from '@akasecurity/persistence';
 import type {
   EventMetadata,
   ExceptionBundleEntry,
+  Policy,
   PolicyBundle,
   WorkspaceSettings,
 } from '@akasecurity/schema';
@@ -17,9 +18,11 @@ import { fingerprintValue, loadOrCreateFingerprintKey } from './fingerprint.ts';
 import { registerRulePack } from './rule-packs.ts';
 import { createPluginRuntime } from './runtime.ts';
 
-// Markers resolved by DEFAULT_ACTIONS (secret: block, pii: redact) when the
-// bundle carries no explicit policy. Unique to this file so they never collide
-// with other suites' packs or with the real bundled rules.
+// Two markers driven by explicit enforcing policies (secret→block, pii→redact,
+// applied via bundle() below) so these exception/ledger tests exercise the
+// enforcement path regardless of the DEFAULT_ACTIONS cold-start floor (now 'warn').
+// Unique to this file so they never collide with other suites' packs or the real
+// bundled rules.
 registerRulePack('exception-test-pack', [
   {
     specVersion: 1,
@@ -45,10 +48,30 @@ function settings(): WorkspaceSettings {
   return { specVersion: 1, runMode: 'standalone', policy: 'redact', historicalAccess: 'full' };
 }
 
+// The enforcing policies that put the two markers on the block/redact path
+// (see the pack comment above) — pinned so the tests do not depend on the
+// category default.
+const ENFORCING_POLICIES: Policy[] = [
+  {
+    id: '6a000000-0000-4000-8000-000000000001',
+    scope: 'global',
+    target: { category: 'secret' },
+    action: 'block',
+    enabled: true,
+  },
+  {
+    id: '6a000000-0000-4000-8000-000000000002',
+    scope: 'global',
+    target: { category: 'pii' },
+    action: 'redact',
+    enabled: true,
+  },
+];
+
 function bundle(exceptions?: ExceptionBundleEntry[]): PolicyBundle {
   return {
     version: 'test',
-    policies: [],
+    policies: ENFORCING_POLICIES,
     rules: [],
     ...(exceptions ? { exceptions } : {}),
     customKeywords: [],

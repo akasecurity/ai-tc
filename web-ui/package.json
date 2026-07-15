@@ -28,7 +28,7 @@
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
     "@tailwindcss/postcss": "^4.3.2",
-    "@types/node": "^26.1.1",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.0.0",

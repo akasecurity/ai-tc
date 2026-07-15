@@ -24,10 +24,10 @@ $RawBase = if ($env:AKA_INSTALL_RAW_BASE) { $env:AKA_INSTALL_RAW_BASE } else {
 # it runs. Regenerate after editing install.mjs:  shasum -a 256 tools/installer/install.mjs
 # (node tools/installer/checksum-selfcheck.mjs verifies this pin in CI.)
 # (Get-FileHash returns upper-case hex, but PowerShell string -ne is case-insensitive.)
-$ExpectedMjsSha256 = 'd2b81f1ee46c6988cbf8b0586d542533a78ae9d24b445ad1ef1d2ab79ffb9314'
+$ExpectedMjsSha256 = '83ae1559a0668ada357a5d327d5e1fab1443b0c03c3abfd6594ca7fc83fb2198'
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Write-Error 'aka: Node.js 26+ is required but was not found. Install it from https://nodejs.org and re-run.'
+  Write-Error 'aka: Node.js 24+ is required but was not found. Install it from https://nodejs.org and re-run.'
   exit 1
 }
 

@@ -32,11 +32,15 @@ function fail(m) {
   process.exit(1);
 }
 
-function requireNode26() {
+// Minimum Node major the CLI runs on. Must match the `engines.node` floor that
+// @akasecurity/cli publishes, and the Node version the shell entrypoints name.
+const MIN_NODE_MAJOR = 24;
+
+function requireNode() {
   const major = Number(process.versions.node.split('.')[0]);
-  if (Number.isNaN(major) || major < 26) {
+  if (Number.isNaN(major) || major < MIN_NODE_MAJOR) {
     fail(
-      `Node 26+ is required (found ${process.versions.node}). Install it from https://nodejs.org and re-run.`,
+      `Node ${MIN_NODE_MAJOR}+ is required (found ${process.versions.node}). Install it from https://nodejs.org and re-run.`,
     );
   }
 }
@@ -93,7 +97,7 @@ function main() {
     args: process.argv.slice(2),
     options: { plugin: { type: 'string' }, cli: { type: 'boolean' } },
   });
-  requireNode26();
+  requireNode();
   cleanupLegacyNpmrc();
   if (values.plugin) {
     installPlugin(values.plugin);

@@ -33,7 +33,17 @@ Every rule is a JSON file named `<rule-name>.json` inside a pack directory:
 { "type": "regex", "pattern": "\\bAKIA[A-Z0-9]{16}\\b", "flags": "g" }
 ```
 
-`captureGroup` (integer) extracts a subgroup as the matching span.
+`captureGroup` (integer) extracts a subgroup as the matching span. `flags` defaults to `gi`.
+
+**A whole-match pattern must not be able to match the empty string.** `Rule.parse` rejects
+`\d*`, `a?`, `(?:)` and the like: under `g` (part of the `gi` default) a zero-length match never
+advances the scan position, so the rule would re-match at the same index forever. Require at
+least one character — `\d+`, not `\d*`. The schema enforces this on every whole-match regex rule
+whatever its flags, so dropping `g` is not a way around it.
+
+The check is scoped to the whole match only, so a `captureGroup` rule may still use `*` or `?`
+around its capture: `key=(\w*)` is valid, because the overall match still needs the literal
+`key=` to advance.
 
 ### Optional gating fields
 

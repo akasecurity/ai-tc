@@ -76,4 +76,25 @@ describe('capCategoryActions', () => {
     expect(repo.capCategoryActions()).toBe(0);
     expect(repo.getCategoryAction('secret')).toBe('warn');
   });
+
+  it('leaves a global rule-targeted block/redact policy untouched', () => {
+    repo.upsertCategoryAction('secret', 'block');
+    db.prepare(
+      `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
+       VALUES (:id, 'global', :target, 'block', 1, :now, :now)`,
+    ).run({
+      id: 'rule-targeted-row',
+      target: JSON.stringify({ ruleId: 'secrets/aws-access-key' }),
+      now: Date.now(),
+    });
+
+    const changed = repo.capCategoryActions();
+
+    expect(changed).toBe(1); // only the category row
+    expect(repo.getCategoryAction('secret')).toBe('warn');
+    const ruleRow = db
+      .prepare('SELECT action FROM policies WHERE id = :id')
+      .get({ id: 'rule-targeted-row' }) as { action: string };
+    expect(ruleRow.action).toBe('block');
+  });
 });

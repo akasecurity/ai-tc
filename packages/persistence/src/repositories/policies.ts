@@ -94,15 +94,15 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
       .run({ id: randomUUID(), target: JSON.stringify({ category }), action, now });
   }
 
-  // Cap every global category policy currently set to block/redact down to
-  // warn. Used once by the warn-era upgrade migration (see warn-era-cap.ts) —
-  // never called from the hot enforcement path. Returns the number of rows
-  // changed.
+  // Caps every global per-category policy currently set to block/redact down
+  // to warn (see warn-era-cap.ts). Rule-targeted policies are untouched.
+  // Returns the number of rows changed.
   capCategoryActions(): number {
     const info = this.db
       .prepare(
         `UPDATE policies SET action='warn', updated_at=:now
-         WHERE scope='global' AND action IN ('block','redact')`,
+         WHERE scope='global' AND action IN ('block','redact')
+           AND json_extract(target,'$.category') IS NOT NULL`,
       )
       .run({ now: Date.now() });
     return Number(info.changes);

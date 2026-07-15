@@ -26,10 +26,10 @@ RAW_BASE="${AKA_INSTALL_RAW_BASE:-https://raw.githubusercontent.com/akasecurity/
 # install.mjs is rejected even if the pinned ref is somehow moved. Regenerate after
 # editing install.mjs with:  shasum -a 256 tools/installer/install.mjs
 # (node tools/installer/checksum-selfcheck.mjs verifies this pin in CI.)
-EXPECTED_MJS_SHA256="d2b81f1ee46c6988cbf8b0586d542533a78ae9d24b445ad1ef1d2ab79ffb9314"
+EXPECTED_MJS_SHA256="83ae1559a0668ada357a5d327d5e1fab1443b0c03c3abfd6594ca7fc83fb2198"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "aka: Node.js 26+ is required but was not found." >&2
+  echo "aka: Node.js 24+ is required but was not found." >&2
   echo "aka: install it from https://nodejs.org (or your version manager) and re-run." >&2
   exit 1
 fi

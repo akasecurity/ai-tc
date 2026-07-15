@@ -42,8 +42,6 @@ export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.t
 export { providerFromModelId, resolveProvider } from './provider.ts';
 export type { EgressHit } from './raw-egress.ts';
 export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
-export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
-export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,
@@ -60,6 +58,8 @@ export {
 } from './rule-packs.ts';
 export type { CaptureOptions, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
+export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
+export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';
 export type {
   AkaPluginAdapter,

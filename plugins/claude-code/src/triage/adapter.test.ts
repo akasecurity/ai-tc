@@ -120,7 +120,7 @@ describe('runApply — preview persists a plan and writes nothing', () => {
     // preview is read-only: no posture upsert, no exception created
     expect(db.posture).toEqual({});
     expect(db.created).toEqual([]);
-    // the §5.7 showcase renders in the preview: per-category counts + reasoning
+    // the showcase renders in the preview: per-category counts + reasoning
     const blob = out.join('');
     expect(blob).toContain('1 false-positive');
     expect(blob).toContain('canonical fake AWS example key');

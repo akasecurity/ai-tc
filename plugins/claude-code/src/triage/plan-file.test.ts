@@ -61,7 +61,7 @@ describe('plan-file round-trip', () => {
     expect(back.current).toEqual(current);
     // the join survives too, so the confirm step could re-render the gate
     expect(back.join).toEqual(plan.join);
-    // the §5.7 showcase round-trips (raw-free: reasoning + counts + enums)
+    // the showcase round-trips (raw-free: reasoning + counts + enums)
     expect(back.showcase).toEqual(plan.showcase);
     expect(back.showcase).toHaveLength(1);
     expect(back.showcase[0]).toMatchObject({ category: 'secret', action: 'warn' });

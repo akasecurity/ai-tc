@@ -28,6 +28,8 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsup",
+    "build:sea": "tsup --config tsup.sea.config.ts",
+    "smoke:sea": "node scripts/smoke-sea.mjs",
     "bundle:web-ui": "node scripts/bundle-web-ui.mjs",
     "prepack": "tsup && node scripts/bundle-web-ui.mjs",
     "lint": "eslint src test",

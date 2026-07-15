@@ -30,6 +30,7 @@
     "build": "tsup",
     "build:sea": "tsup --config tsup.sea.config.ts",
     "smoke:sea": "node scripts/smoke-sea.mjs",
+    "smoke:dashboard": "node scripts/smoke-dashboard.mjs",
     "package:sea": "node scripts/package-sea.mjs",
     "bundle:web-ui": "node scripts/bundle-web-ui.mjs",
     "prepack": "tsup && node scripts/bundle-web-ui.mjs",

@@ -41,6 +41,9 @@ jobs:
       - run: pnpm --filter @akasecurity/cli build:sea
       - run: pnpm --filter @akasecurity/cli bundle:web-ui
       - run: pnpm --filter @akasecurity/cli package:sea
+      # Boot the packaged binary's dashboard in-process and assert it serves HTTP 200 —
+      # covers the Next standalone server.js import path that `--version` never exercises.
+      - run: pnpm --filter @akasecurity/cli smoke:dashboard
       - uses: actions/upload-artifact@v4
         with:
           name: aka-${{ matrix.target }}

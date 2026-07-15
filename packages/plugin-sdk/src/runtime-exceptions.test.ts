@@ -43,8 +43,8 @@ registerRulePack('exception-test-pack', [
   },
 ]);
 
-function settings(): WorkspaceSettings {
-  return { specVersion: 1, runMode: 'standalone', policy: 'redact', historicalAccess: 'full' };
+function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
+  return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'full' };
 }
 
 function bundle(exceptions?: ExceptionBundleEntry[]): PolicyBundle {
@@ -624,5 +624,30 @@ describe('blocked-detections ledger', () => {
     await rt.close();
     expect(result.action).toBe('block');
     expect(result.blockedReferences).toBeUndefined();
+  });
+});
+
+describe('exception evaluation under settings.policy warn', () => {
+  it('still evaluates and consumes an active grant (the global ceiling no longer short-circuits it)', async () => {
+    const key = loadOrCreateFingerprintKey(dir);
+    const ex = entry({ valueFingerprint: fingerprintValue(key, 'EX_SECRET_MARKER') });
+    const b = bundle([ex]);
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'ex/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings('warn'), { dataDir: dir });
+
+    const result = await rt.processText('deploy with EX_SECRET_MARKER now');
+    await rt.close();
+
+    expect(gw.consumed).toEqual([ex.id]);
+    expect(result.action).toBe('log');
   });
 });

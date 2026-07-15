@@ -22,11 +22,9 @@ import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from
 import { registerBundledPacks } from './rule-packs.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
 
-// Legacy global enforcement ceiling — superseded by per-category policies.
-// Disabled: per-category policy rows are the sole authority over
-// block/redact/warn/log. Kept as a named, reversible flag rather than deleted
-// outright so re-enabling it (if a future regression demands it) is a
-// one-line revert, not a re-derivation.
+// Global handling-mode ceiling: when true, settings.policy === 'warn' caps
+// every block/redact decision down to warn. Disabled — per-category policy
+// rows are the sole authority over block/redact/warn/log.
 const ENFORCEMENT_CEILING_ENABLED = false as boolean;
 
 // Worst-first ordering for collapsing multiple findings into one decision.

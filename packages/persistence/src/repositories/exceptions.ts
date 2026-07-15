@@ -213,7 +213,11 @@ export class SqliteExceptionsRepository {
       // consumed/expired grant holds the slot until swept. Supersede a
       // terminal collider and retry, inside one transaction so two concurrent
       // creates cannot both claim the freed slot.
-      this.db.exec('BEGIN IMMEDIATE');
+      // Skip our own BEGIN/COMMIT/ROLLBACK when already nested inside an
+      // outer db.transaction() — node:sqlite forbids nested BEGIN, and an
+      // outer rollback already covers this retry's work on throw.
+      const nested = this.db.isTransaction;
+      if (!nested) this.db.exec('BEGIN IMMEDIATE');
       try {
         const superseded = this.db
           .prepare(
@@ -238,9 +242,9 @@ export class SqliteExceptionsRepository {
           throw new DuplicateActiveExceptionError(input.ruleId);
         }
         this.insertExceptionRow(id, input, now);
-        this.db.exec('COMMIT');
+        if (!nested) this.db.exec('COMMIT');
       } catch (retryErr) {
-        this.db.exec('ROLLBACK');
+        if (!nested) this.db.exec('ROLLBACK');
         throw retryErr;
       }
     }

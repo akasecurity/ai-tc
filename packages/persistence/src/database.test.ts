@@ -220,6 +220,33 @@ describe('read surfaces', () => {
   });
 });
 
+describe('transaction', () => {
+  it('commits every write inside fn atomically', async () => {
+    const db = openLocalDatabase(dir);
+    db.policies.upsertCategoryAction('secret', 'warn');
+    await db.transaction(() => {
+      db.policies.upsertCategoryAction('secret', 'block');
+      db.policies.upsertCategoryAction('pii', 'block');
+    });
+    expect(db.policies.getCategoryAction('secret')).toBe('block');
+    expect(db.policies.getCategoryAction('pii')).toBe('block');
+    db.close();
+  });
+
+  it('rolls back every write inside fn on throw', async () => {
+    const db = openLocalDatabase(dir);
+    db.policies.upsertCategoryAction('secret', 'warn');
+    await expect(
+      db.transaction(() => {
+        db.policies.upsertCategoryAction('secret', 'block');
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(db.policies.getCategoryAction('secret')).toBe('warn');
+    db.close();
+  });
+});
+
 describe('store hygiene', () => {
   it('does not write the WAL/SHM secret to a separate plaintext copy', () => {
     const db = openLocalDatabase(dir);

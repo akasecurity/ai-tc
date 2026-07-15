@@ -269,6 +269,45 @@ describe('SqliteExceptionsRepository', () => {
       expect(old?.revokedAt).not.toBeNull();
     });
 
+    it('defers to an outer transaction: a throw after the retry rolls back both the revoke and the insert', async () => {
+      // Same terminal-collider setup as the budget-exhausted supersede test
+      // above: a maxUses:1 grant, consumed once, occupies the partial-index
+      // slot as a TERMINAL (not active) row.
+      const first = input({ scope: 'once', maxUses: 1 });
+      const created = await repo.create(first);
+      expect(await repo.consume(created.id)).toBe(true);
+
+      const colliding = input({
+        ruleId: first.ruleId,
+        valueFingerprint: first.valueFingerprint,
+        keyVersion: first.keyVersion,
+        scope: 'once',
+        maxUses: 1,
+      });
+
+      // Drive an outer transaction directly on the same handle the repo is
+      // bound to — the same BEGIN/COMMIT/ROLLBACK boundary db.transaction()
+      // opens on a LocalDatabase.
+      db.exec('BEGIN');
+      try {
+        await expect(
+          (async () => {
+            await repo.create(colliding);
+            throw new Error('outer rollback');
+          })(),
+        ).rejects.toThrow('outer rollback');
+      } finally {
+        db.exec('ROLLBACK');
+      }
+
+      // The outer rollback must undo BOTH the collision-retry's supersede
+      // UPDATE and its retry INSERT — createSync detected db.isTransaction
+      // and skipped its own BEGIN/COMMIT, so only the outer boundary applies.
+      const all = await repo.list({ includeTerminal: true });
+      expect(all.map((e) => e.id)).toEqual([created.id]);
+      expect(all[0]?.revokedAt).toBeNull();
+    });
+
     it('rejects a provider condition (no capture fact carries one yet)', async () => {
       await expect(repo.create(input({ conditions: { provider: 'anthropic' } }))).rejects.toThrow(
         /provider conditions are not supported/,

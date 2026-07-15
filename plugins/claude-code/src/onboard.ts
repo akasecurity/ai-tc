@@ -11,9 +11,14 @@
  * persistence + the onboardedAt stamp live in the SDK's applyOnboarding. Pure
  * adapter glue.
  */
-import { applyOnboarding } from '@akasecurity/plugin-sdk';
+import { capWarnEraEnforcementOnce, openLocalDatabase } from '@akasecurity/persistence';
+import { applyCategoryPosture, applyOnboarding, loadConfig } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+import {
+  FULL_ENFORCEMENT_POSTURE,
+  HistoricalAccess,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
 // positionals are ignored — the wizard only ever passes the two it knows.
@@ -70,6 +75,41 @@ try {
       `historicalAccess=${settings.historicalAccess}. ` +
       `Settings saved to ~/.aka/settings/settings.json.\n`,
   );
+  // Caps any existing block/redact category rows to warn once when this
+  // store's chosen handling is 'warn'. Failure here does not fail the
+  // settings write above.
+  try {
+    const dataDir = loadConfig().dataDir;
+    const db = openLocalDatabase(dataDir);
+    try {
+      const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
+      if (capped > 0) {
+        process.stdout.write(
+          `AKA: kept ${String(capped)} existing block/redact categories at warn ` +
+            `(the global "warn only" handling was retired). Confirm per-category ` +
+            `enforcement in this setup.\n`,
+        );
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Best-effort: see comment above.
+  }
+  // A --policy redact flag writes FULL_ENFORCEMENT_POSTURE as real
+  // per-category policy rows. --policy warn requires no additional write.
+  if (rawPolicy === 'redact') {
+    try {
+      const db = openLocalDatabase(loadConfig().dataDir);
+      try {
+        applyCategoryPosture(FULL_ENFORCEMENT_POSTURE, db.policies, 'overwrite');
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Best-effort: a failed write here leaves the existing posture in place.
+    }
+  }
 } catch (err) {
   fail(err instanceof Error ? err.message : 'could not write settings.json');
 }

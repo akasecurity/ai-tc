@@ -199,6 +199,20 @@ export const BUILTIN_POLICIES: Record<
   { id: BuiltinPolicyId; name: string; description: string; action: ActionTaken }
 >;
 
+// The "Actively redact" onboarding preset: a per-category built-in policy id
+// for every detection category, written as real policy rows via
+// applyCategoryPosture.
+export const FULL_ENFORCEMENT_POSTURE: Record<DetectionCategory, BuiltinPolicyId> = {
+  secret: 'block',
+  pii: 'redact',
+  financial: 'redact',
+  phi: 'redact',
+  code_flaw: 'warn',
+  custom: 'warn',
+  code_context: 'warn',
+  config: 'warn',
+};
+
 // The default built-in policy for a PACK ("detection") that has no explicit
 // assignment (installed_packs.policy_id IS NULL). The whole product treats an
 // unassigned detection as Monitor (log-only): the dashboards render it

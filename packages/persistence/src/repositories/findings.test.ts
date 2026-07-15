@@ -434,23 +434,57 @@ describe('SqliteFindingsRepository.healthSummary — resolution lifecycle', () =
 // cap this path used to impose, under which totals saturated at exactly 2000.
 const BULK = 2600;
 
-// One rule, BULK instances, all on claude-code/block except the explicit
-// oddities the tests below pin. Timestamps ascend so `i` doubles as a recency
-// rank: instance 0 is the OLDEST and sits far outside the newest-200 preview.
+/**
+ * One rule, BULK in-flight instances, all on claude-code/block except the
+ * explicit oddities the tests below pin. Timestamps ascend so `i` doubles as a
+ * recency rank: instance 0 is the OLDEST and sits far outside the preview.
+ *
+ * Written over a raw handle in ONE transaction rather than through
+ * recordCapture, which commits per call — BULK commits costs minutes on a
+ * cold CI filesystem and starves the workers beside it. These are read-path
+ * fixtures; the `record` helper above still covers the real write path.
+ */
 function seedBulk(opts: { ruleId?: string } = {}): void {
   const ruleId = opts.ruleId ?? 'bulk-rule';
-  for (let i = 0; i < BULK; i++) {
-    record({
-      occurredAt: new Date(Date.UTC(2026, 0, 1) + i * 60_000).toISOString(),
-      // The lone cursor instance is the oldest row in the store...
-      sourceTool: i === 0 ? 'cursor' : 'claude-code',
-      ruleId,
-      severity: 'critical',
+  const raw = new DatabaseSync(join(dir, DB_FILENAME));
+  try {
+    raw.exec('PRAGMA busy_timeout = 5000');
+    const insertEvent = raw.prepare(
+      `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
+       VALUES (?, ?, 'prompt', ?, ?, 'x', ?)`,
+    );
+    const insertFinding = raw.prepare(
+      `INSERT INTO findings (id, event_id, rule_id, category, severity, span_start, span_end,
+                             masked_match, action_taken, confidence, finding_key, first_detected_at)
+       VALUES (?, ?, ?, 'secret', 'critical', 0, 1, 'masked', ?, 0.9, NULL, ?)`,
+    );
+    raw.exec('BEGIN');
+    for (let i = 0; i < BULK; i++) {
+      const eventId = `bulk-e-${String(i)}`;
+      const occurredAt = Date.UTC(2026, 0, 1) + i * 60_000;
+      insertEvent.run(
+        eventId,
+        // The lone cursor instance is the oldest row in the store...
+        i === 0 ? 'cursor' : 'claude-code',
+        occurredAt,
+        `hash-${String(i)}`,
+        JSON.stringify({
+          repo: i === 0 ? 'acme/ancient' : 'acme/api',
+          filePath: `src/f${String(i)}.ts`,
+        }),
+      );
       // ...as is the lone redacted one.
-      actionTaken: i === 0 ? 'redact' : 'block',
-      repo: i === 0 ? 'acme/ancient' : 'acme/api',
-      filePath: `src/f${String(i)}.ts`,
-    });
+      insertFinding.run(
+        `bulk-f-${String(i)}`,
+        eventId,
+        ruleId,
+        i === 0 ? 'redact' : 'block',
+        occurredAt,
+      );
+    }
+    raw.exec('COMMIT');
+  } finally {
+    raw.close();
   }
 }
 

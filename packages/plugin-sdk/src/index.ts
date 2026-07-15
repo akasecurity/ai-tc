@@ -35,6 +35,8 @@ export { resolveInventoryContext } from './inventory-resolver.ts';
 export type { ScanFinding } from './mask.ts';
 export { maskText, scanText } from './mask.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
+export type { PostureChange } from './posture.ts';
+export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export { resolveProjectFiles } from './project-files.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';

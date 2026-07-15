@@ -13,7 +13,6 @@ import {
   loadOrCreateFingerprintKey,
   registerBundledPacks,
 } from '@akasecurity/plugin-sdk';
-import type { Policy } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -51,17 +50,6 @@ function scriptedIo(stdin = ''): Prompter & { output: () => string } {
   };
 }
 
-// The store carries no per-category policy, so this enforcement + exception loop
-// needs an explicit secret→block policy: the cold-start DEFAULT_ACTIONS floor is
-// 'warn', which is never enforced and so is never subject to an exception.
-const BLOCK_SECRET: Policy = {
-  id: '8c000000-0000-4000-8000-000000000001',
-  scope: 'global',
-  target: { category: 'secret' },
-  action: 'block',
-  enabled: true,
-};
-
 // Minimal DataGateway over the REAL local store + REAL key file, so the test
 // proves the CLI and the enforcement path agree on dataDir/key co-location.
 function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
@@ -86,7 +74,7 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
     facets: () => Promise.resolve({ hosts: [], harnesses: [], osVersions: [], projects: [] }),
     getPolicyBundle: async () => ({
       version: 'test',
-      policies: [BLOCK_SECRET],
+      policies: await db.policies.readPolicies(),
       rules: [],
       exceptions: await db.exceptions.activeBundleEntries(loadOrCreateFingerprintKey(dir).version),
       customKeywords: [],
@@ -139,6 +127,10 @@ describe('aka exception add → enforcement full loop', () => {
 
     const db = openLocalDatabase(dir);
     try {
+      // The cold-start floor no longer resolves secret to block by default, so
+      // pin an explicit enforcing policy — this test's whole point is proving
+      // the exception downgrades a real enforcement, not a bare warn.
+      db.policies.upsertCategoryAction('secret', 'block');
       const grants = await db.exceptions.list();
       expect(grants).toHaveLength(1);
       const grant = grants[0];
@@ -216,6 +208,10 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
 
     const db = openLocalDatabase(dir);
     try {
+      // The cold-start floor no longer resolves secret to block by default, so
+      // pin an explicit enforcing policy — this test's whole point is proving
+      // the exception downgrades a real enforcement, not a bare warn.
+      db.policies.upsertCategoryAction('secret', 'block');
       const grant = (await db.exceptions.list())[0];
       expect(grant?.ruleId).toBe(RULE_ID);
       expect(grant?.createdVia).toBe('cli-approve');

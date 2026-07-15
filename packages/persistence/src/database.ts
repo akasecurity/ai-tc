@@ -148,6 +148,10 @@ export interface LocalDatabase {
   // real scanned/ingested rows. Idempotent + fail-open; invoked by the web-ui
   // bootstrap, not the plugin's hot path.
   purgeSampleData(): void;
+  // Runs `fn` inside a single SQLite transaction on this handle: BEGIN, then
+  // COMMIT on resolve or ROLLBACK on throw (the rejection propagates). Do not
+  // call this from inside another transaction.
+  transaction<T>(fn: () => Promise<T> | T): Promise<T>;
   close(): void;
 }
 
@@ -345,6 +349,24 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     }
   }
 
+  async function transaction<T>(fn: () => Promise<T> | T): Promise<T> {
+    db.exec('BEGIN');
+    try {
+      const result = await fn();
+      db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      // ROLLBACK discards any partial writes from this transaction. A
+      // rollback failure here does not replace the original error.
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // already rolled back / no open transaction
+      }
+      throw err;
+    }
+  }
+
   function reconcileWorktreeProjects(
     canonicalId: string,
     headRoot: string,
@@ -446,6 +468,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     purgeSampleData: () => {
       purgeSampleData(db);
     },
+    transaction,
     close: () => {
       db.close();
     },

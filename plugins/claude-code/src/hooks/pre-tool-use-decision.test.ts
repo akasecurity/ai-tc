@@ -18,13 +18,14 @@
 // out of the test source the moment an agent writes it — which happened while
 // authoring this very file, rewriting the fixtures AND inverting a
 // `not.toContain(<ip>)` assertion into `not.toContain('[REDACTED:PII]')`.
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { CaptureResult, DataGateway } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime } from '@akasecurity/plugin-sdk';
-import type { Policy, PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
+import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput, ScannableField } from './pre-tool-use-decision.ts';
@@ -259,12 +260,13 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
 });
 
 // ─── End-to-end incident regression, through the REAL runtime ───────────────
-// Real bundled rule packs and the real redact splice, with explicit enforcing
-// policies (secret→block, pii→redact) pinning the actions — the cold-start
-// DEFAULT_ACTIONS floor is 'warn', so these deny-path tests set the enforcing
-// baseline directly rather than leaning on the default. The decision module must
-// then turn the redact into a deny. If a rule changes out from under this, the
-// precondition assertions say which half moved.
+// Real bundled rule packs, a real redact splice — then the decision module
+// must turn it into a deny. The cold-start category floor no longer resolves
+// pii to redact by default, so this fixture pins the incident's actual
+// enforcement posture explicitly: a `pii` category policy set to `redact`,
+// exactly as an operator's own policy would. If a rule or the redact action
+// changes out from under this, the precondition assertions say which half
+// moved.
 
 function settings(): WorkspaceSettings {
   return {
@@ -275,28 +277,18 @@ function settings(): WorkspaceSettings {
   };
 }
 
-// The enforcing baseline the deny-path tests need (see the comment above).
-const ENFORCING_POLICIES: Policy[] = [
-  {
-    id: '7b000000-0000-4000-8000-000000000001',
-    scope: 'global',
-    target: { category: 'secret' },
-    action: 'block',
-    enabled: true,
-  },
-  {
-    id: '7b000000-0000-4000-8000-000000000002',
-    scope: 'global',
-    target: { category: 'pii' },
-    action: 'redact',
-    enabled: true,
-  },
-];
-
 function bundle(): PolicyBundle {
   return {
     version: 'test',
-    policies: ENFORCING_POLICIES,
+    policies: [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'pii' },
+        action: 'redact',
+        enabled: true,
+      },
+    ],
     rules: [],
     customKeywords: [],
     fetchedAt: new Date().toISOString(),

@@ -1,5 +1,5 @@
 ---
-description: Set up the AKA Control Plane plugin — redaction handling and historical access
+description: Set up the AKA Control Plane plugin — sensitive-data handling and historical access
 ---
 
 # AKA setup wizard
@@ -33,10 +33,13 @@ Ask these two questions (a single AskUserQuestion call with both is fine):
 
 **Sensitive-data handling** — "When AKA detects sensitive data on its way to a model, it should:"
 
-- **Actively redact** → `redact` _(recommended)_ — replace secrets with safe
-  placeholders before the request is sent.
-- **Warn only** → `warn` — flag the request and let the user decide; nothing is
-  modified automatically. (Either mode can be changed per-project later.)
+List **Warn only** as the first (top) option:
+
+- **Warn only** → `warn` _(recommended)_ — flag the request and let the user
+  decide; nothing is modified automatically.
+- **Actively redact** → `redact` — replace secrets with safe placeholders before
+  the request is sent. Redaction rewrites the real payload, so opt in only when
+  you want that. (Either mode can be changed per-project later.)
 
 **Historical & memory access** — "Secrets often leak before AKA is installed. May I also review your temp files, agent memory & prior conversation transcripts?"
 

@@ -38,11 +38,27 @@ const DEFAULT_RUBRIC_PATH = join(TRIAGE_DIR, '..', '..', 'eval', 'prompt.md');
 // shared parser. A missing/errored result is a hard failure, never a silent
 // pass — the caller must not act on a verdict we could not read.
 export function parseVerdict(stdout: string): TriageRecommendation {
-  const envelope = JSON.parse(stdout) as { result?: string; is_error?: boolean };
-  if (envelope.is_error || typeof envelope.result !== 'string') {
-    throw new Error(`claude -p returned no usable result: ${stdout.slice(0, 500)}`);
+  // Never echo the subprocess output in an error: it may carry a raw hit the
+  // model failed to strip, and this error propagates to the parent command's
+  // stderr — outside the isolated judge process. Every failure reports only
+  // raw-free metadata (the flags/types that failed), never the content.
+  let envelope: { result?: string; is_error?: boolean };
+  try {
+    envelope = JSON.parse(stdout) as { result?: string; is_error?: boolean };
+  } catch {
+    throw new Error('claude -p returned a non-JSON envelope');
   }
-  return parseRecommendation(envelope.result);
+  if (envelope.is_error || typeof envelope.result !== 'string') {
+    throw new Error(
+      `claude -p returned no usable result (is_error=${String(envelope.is_error === true)}, ` +
+        `result type=${typeof envelope.result})`,
+    );
+  }
+  try {
+    return parseRecommendation(envelope.result);
+  } catch {
+    throw new Error('claude -p returned an unparseable TriageRecommendation');
+  }
 }
 
 // -------------------------------------------------------------------------

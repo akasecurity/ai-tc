@@ -35,6 +35,25 @@ describe('parseVerdict', () => {
   it('throws when the envelope reports an error', () => {
     expect(() => parseVerdict(JSON.stringify({ is_error: true, result: 'boom' }))).toThrow();
   });
+
+  it('never echoes the subprocess output in a failure (raw stays inside the judge)', () => {
+    const raw = 'AKIAIOSFODNN7EXAMPLE';
+    // A malformed envelope, a non-JSON envelope, and an unparseable result — all
+    // carrying the raw value. None of the thrown messages may contain it.
+    const cases = [
+      JSON.stringify({ is_error: true, result: `failed near ${raw}` }),
+      `not json at all ${raw}`,
+      JSON.stringify({ is_error: false, result: `no fence here, just ${raw}` }),
+    ];
+    for (const stdout of cases) {
+      try {
+        parseVerdict(stdout);
+        throw new Error('expected parseVerdict to throw');
+      } catch (err) {
+        expect((err as Error).message).not.toContain(raw);
+      }
+    }
+  });
 });
 
 describe('judgeEnv', () => {

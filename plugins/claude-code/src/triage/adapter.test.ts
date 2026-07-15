@@ -127,6 +127,45 @@ describe('runApply — preview persists a plan and writes nothing', () => {
   });
 });
 
+describe('runApply — preview is a raw-free egress boundary by construction', () => {
+  const previewThrowing = async (runJudge: () => never): Promise<unknown> => {
+    const db = fakeDb();
+    try {
+      await runApply({
+        argv: [],
+        readStream: () => streamText(),
+        runJudge,
+        openDb: db.open,
+        now: () => 0,
+        createdBy: () => 'tester',
+        stdout: vi.fn(),
+        stderr: vi.fn(),
+      });
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  };
+
+  it('withholds a raw value that a downstream throw interpolated into its message', async () => {
+    const thrown = await previewThrowing(() => {
+      // A future/unexpected throw that echoes a raw hit value — the exact leak the
+      // boundary must contain regardless of which throw site produced it.
+      throw new Error(`judge blew up near ${RAW} — export KEY=${RAW}`);
+    });
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).not.toContain(RAW);
+    expect((thrown as Error).message).toMatch(/withheld/i);
+  });
+
+  it('passes a raw-free error message through unchanged (keeps useful diagnostics)', async () => {
+    const thrown = await previewThrowing(() => {
+      throw new Error('claude -p judge subprocess failed (exit 1)');
+    });
+    expect((thrown as Error).message).toBe('claude -p judge subprocess failed (exit 1)');
+  });
+});
+
 describe('runApply — confirm applies the persisted plan without re-judging', () => {
   it('applies exactly the previewed posture + entries and never reads the stream or judge', async () => {
     // 1. Preview writes a real plan file.
@@ -345,6 +384,155 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
     expect(db.created).toEqual([]);
     expect(db.closed).toBe(1);
     expect(err.join('')).toMatch(/failed/i);
+  });
+});
+
+describe('runApply — confirm rejects a plan stale against the current store (drift gate)', () => {
+  const previewWith = async (posture: Record<string, ActionTaken>): Promise<string> => {
+    const db = fakeDb();
+    Object.assign(db.posture, posture);
+    const out: string[] = [];
+    await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => verdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    const path = planPathFromStdout(out);
+    written.push(path);
+    return path;
+  };
+
+  it('exits non-zero and writes NOTHING when a planned category drifted since preview', async () => {
+    // Preview snapshots `secret: block`; between preview and confirm the store
+    // changes it to `redact` (a CLI/web-ui edit) — applying the stale plan would
+    // silently act against a store the user never reviewed.
+    const path = await previewWith({ secret: 'block' });
+    const confirmDb = fakeDb();
+    confirmDb.posture.secret = 'redact';
+    const err: string[] = [];
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: confirmDb.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: vi.fn(),
+      stderr: (s) => err.push(s),
+    });
+    expect(code).toBe(1);
+    expect(err.join('')).toMatch(/store changed/i);
+    expect(err.join('')).toContain('secret');
+    // fail loud, NO write, handle closed exactly once
+    expect(confirmDb.posture).toEqual({ secret: 'redact' });
+    expect(confirmDb.created).toEqual([]);
+    expect(confirmDb.closed).toBe(1);
+  });
+
+  it('applies the plan when the store still matches the preview snapshot', async () => {
+    const path = await previewWith({ secret: 'block' });
+    const confirmDb = fakeDb();
+    confirmDb.posture.secret = 'block'; // unchanged since preview
+    const out: string[] = [];
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: confirmDb.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    expect(out.join('')).toMatch(/applied/i);
+    // no drift → the write proceeded: one suppression row AND the posture overwrite
+    expect(confirmDb.created).toHaveLength(1);
+    expect(confirmDb.posture).toEqual({ secret: 'warn' });
+  });
+
+  it('treats a category ADDED to the store since preview as drift (undefined → value)', async () => {
+    // Preview saw NO row for `secret` (plan.current omits it); by confirm a row
+    // exists. This is the asymmetric case: current[secret] is undefined, the store
+    // now returns a value — it must count as drift, not be silently overwritten.
+    const path = await previewWith({});
+    const confirmDb = fakeDb();
+    confirmDb.posture.secret = 'block'; // row added after preview
+    const err: string[] = [];
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: confirmDb.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: vi.fn(),
+      stderr: (s) => err.push(s),
+    });
+    expect(code).toBe(1);
+    expect(err.join('')).toMatch(/store changed/i);
+    expect(confirmDb.created).toEqual([]);
+    expect(confirmDb.posture).toEqual({ secret: 'block' }); // untouched
+  });
+
+  it('fails loud (no write) if the drift read itself throws', async () => {
+    const path = await previewWith({ secret: 'block' });
+    // A store whose getCategoryAction throws — the drift gate must fail closed,
+    // not fall through to the write.
+    const created: unknown[] = [];
+    let closed = 0;
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: () => ({
+        policies: {
+          getCategoryAction: () => {
+            throw new Error('db read blew up');
+          },
+          upsertCategoryAction: () => {
+            created.push('posture');
+          },
+        },
+        exceptions: {
+          create: () => {
+            created.push('exception');
+            return Promise.resolve();
+          },
+        },
+        close: () => {
+          closed++;
+        },
+      }),
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: vi.fn(),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(1);
+    expect(created).toEqual([]);
+    expect(closed).toBe(1);
   });
 });
 

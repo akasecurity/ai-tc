@@ -17,7 +17,6 @@
  * before anything touches disk: a leaked raw value fails the write
  * LOUDLY rather than persisting a secret to a temp file.
  */
-import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -63,14 +62,11 @@ const JoinEntrySchema = z.object({
 
 // Bump when the on-disk shape changes; readPlanFile rejects any other version so
 // a stale file from an older plugin can never be replayed against newer apply
-// logic.
-export const PLAN_FILE_VERSION = 2;
+// logic. v3 dropped the unverified `token` field.
+export const PLAN_FILE_VERSION = 3;
 
 export const PersistedPlanSchema = z.object({
   version: z.literal(PLAN_FILE_VERSION),
-  // Opaque marker minted at persist time and carried through to confirm — a
-  // this-run integrity tag, not a security secret (the human gate is the guard).
-  token: z.string().min(1),
   // partialRecord (not record): a posture only covers the categories present in
   // the evidence, so an exhaustive-key record would reject every real plan.
   posture: z.partialRecord(DetectionCategory, BuiltinPolicyId),
@@ -78,8 +74,9 @@ export const PersistedPlanSchema = z.object({
   showcase: z.array(ShowcaseCategorySchema),
   join: z.array(JoinEntrySchema),
   notes: z.string(),
-  // The store's per-category action at preview time, retained so the confirm
-  // step can re-render the exact downgrade view without re-reading the DB.
+  // The store's per-category action at preview time. The downgrade view is
+  // rendered from it at PREVIEW (renderPosturePlan); confirm reads it back ONLY to
+  // compare against the live store and reject a stale plan (runConfirm's drift gate).
   current: z.partialRecord(DetectionCategory, ActionTaken),
 });
 export type PersistedPlan = z.infer<typeof PersistedPlanSchema>;
@@ -89,11 +86,9 @@ export type PersistedPlan = z.infer<typeof PersistedPlanSchema>;
 export function serializePlan(
   plan: TriageWritebackPlan,
   current: PersistedPlan['current'],
-  token: string,
 ): string {
   const doc: PersistedPlan = {
     version: PLAN_FILE_VERSION,
-    token,
     posture: plan.posture,
     entries: plan.entries,
     showcase: plan.showcase,
@@ -105,9 +100,8 @@ export function serializePlan(
 }
 
 export interface WritePlanDeps {
-  // Injectable for tests; default mints a fresh 0700 temp dir / random token.
+  // Injectable for tests; default mints a fresh 0700 temp dir.
   mkTempDir?: () => string;
-  mkToken?: () => string;
 }
 
 // Persist the resolved raw-free plan to a fresh temp file and return its path.
@@ -120,8 +114,7 @@ export function writePlanFile(
   rawValues: readonly string[],
   deps: WritePlanDeps = {},
 ): string {
-  const token = (deps.mkToken ?? (() => randomBytes(16).toString('hex')))();
-  const serialized = serializePlan(plan, current, token);
+  const serialized = serializePlan(plan, current);
   // Throws RawEgressError if any raw value survived into the document.
   assertRawFree(serialized, rawValues);
   const dir = (deps.mkTempDir ?? (() => mkdtempSync(join(tmpdir(), 'aka-plan-'))))();

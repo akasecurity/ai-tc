@@ -72,6 +72,14 @@ describe('parseTriageStream', () => {
     expect(status).toBe('skipped:no-consent');
   });
 
+  it('fails LOUD on an unrecognized sentinel status instead of silently skipping', () => {
+    // A version-skewed / corrupted producer emits a status this consumer does not
+    // know. It must NOT be treated as a clean zero-hit skip (which would tell the
+    // user their history was cleanly triaged when the outcome was never understood).
+    const stream = JSON.stringify({ done: true, count: 0, status: 'skipped:new-reason' }) + '\n';
+    expect(() => parseTriageStream(stream)).toThrow(/unrecognized status/i);
+  });
+
   it('throws on a truncated stream (no sentinel) rather than treating it as empty', () => {
     const stream = JSON.stringify(hit()) + '\n';
     expect(() => parseTriageStream(stream)).toThrow(/truncat|sentinel/i);

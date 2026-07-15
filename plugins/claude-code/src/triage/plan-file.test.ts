@@ -54,7 +54,6 @@ describe('plan-file round-trip', () => {
 
     const back = readPlanFile(path);
     expect(back.version).toBe(PLAN_FILE_VERSION);
-    expect(back.token).toMatch(/\S/);
     expect(back.posture).toEqual(plan.posture);
     expect(back.entries).toEqual(plan.entries);
     expect(back.notes).toBe(plan.notes);
@@ -173,7 +172,6 @@ describe('deletePlanFile', () => {
 function readPlanFileDoc(plan: TriageWritebackPlan) {
   return {
     version: PLAN_FILE_VERSION,
-    token: 'test-token',
     posture: plan.posture,
     entries: plan.entries,
     showcase: plan.showcase,

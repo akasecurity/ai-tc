@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { Policy as PolicyType } from '@akasecurity/schema';
+import type { ActionTaken, DetectionCategory, Policy as PolicyType } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS, Policy } from '@akasecurity/schema';
 
 import type { PoliciesReadPort } from '../ports.ts';
@@ -75,5 +75,34 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
     } catch {
       this.db.exec('ROLLBACK');
     }
+  }
+
+  // Insert-or-update the single global per-category policy row, keyed on the
+  // existing uq_policies_scope_target unique index (scope, target). `action`
+  // uses the SAME vocabulary seedDefaults writes (DEFAULT_ACTIONS' ActionTaken
+  // values), so the runtime's resolveAction reads rows written by either path
+  // identically. On conflict, only `action`/`updated_at` change — `id`,
+  // `enabled`, and `created_at` are left exactly as they were.
+  upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
+         VALUES (:id, 'global', :target, :action, 1, :now, :now)
+         ON CONFLICT(scope, target) DO UPDATE SET action = excluded.action, updated_at = excluded.updated_at`,
+      )
+      .run({ id: randomUUID(), target: JSON.stringify({ category }), action, now });
+  }
+
+  // Read the current action for a single global per-category policy row, mirroring
+  // upsertCategoryAction's category-lookup predicate. Returns undefined when no
+  // row exists yet, so callers can distinguish an unset category from a set one.
+  getCategoryAction(category: DetectionCategory): ActionTaken | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT action FROM policies WHERE scope='global' AND json_extract(target,'$.category') = :category`,
+      )
+      .get({ category }) as { action: ActionTaken } | undefined;
+    return row?.action;
   }
 }

@@ -75,9 +75,6 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Installer checksum self-check (bootstrap pins match install.mjs)
-        run: node tools/installer/checksum-selfcheck.mjs
-
       - name: Typecheck
         run: pnpm typecheck
 

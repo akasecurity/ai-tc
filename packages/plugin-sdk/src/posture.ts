@@ -8,14 +8,10 @@ interface PolicyWriter {
   upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void;
 }
 
-// Persist a per-category posture (the wizard's model calibration, or
-// severityFloorPosture() on a thin backfill) into the policies table, mapping
-// the {monitor,warn,redact,block} palette to ActionTaken before writing.
-// 'fill-gaps' (default) never replaces a category that already has a policy
-// row, so a re-run with the severity floor can never downgrade a calibrated
-// posture. 'overwrite' is the explicit path (a confirmed --posture
-// calibration, or --recalibrate) — callers that use it are expected to have
-// already run detectPostureChanges and surfaced any downgrade/re-enable.
+// Persists a per-category posture into the policies table, mapping the
+// {monitor,warn,redact,block} palette to ActionTaken before writing.
+// 'fill-gaps' (default) skips any category that already has a policy row.
+// 'overwrite' replaces the row regardless.
 export function applyCategoryPosture(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   repo: PolicyWriter,
@@ -29,9 +25,7 @@ export function applyCategoryPosture(
   }
 }
 
-// Worst-to-best action rank (index 0 = strongest). Mirrors runtime.ts's
-// ACTION_PRIORITY sense, kept as its own local copy so posture.ts has no
-// dependency on runtime.ts.
+// Worst-to-best action rank (index 0 = strongest).
 const ACTION_RANK: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
 
 export interface PostureChange {
@@ -41,13 +35,10 @@ export interface PostureChange {
   kind: 'downgrade' | 're-enable';
 }
 
-// Given a proposed posture and each affected category's current (action,
-// enabled) state, return every change that WEAKENS enforcement: lowering the
-// action, and/or flipping a disabled category back to enabled. A caller uses
-// this to decide whether to prompt before calling
-// applyCategoryPosture(mode='overwrite') — it never writes anything itself.
-// A category that is both a downgrade AND a re-enable is reported once, as
-// 'downgrade' (the caller only needs one reason to prompt).
+// Returns every change a proposed posture would make that weakens
+// enforcement: lowering an existing category's action, or re-enabling a
+// disabled category. A category that is both is reported once, as
+// 'downgrade'. Writes nothing.
 export function detectPostureChanges(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   existing: Partial<Record<DetectionCategory, { action: ActionTaken; enabled: boolean }>>,

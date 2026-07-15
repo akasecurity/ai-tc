@@ -1,6 +1,5 @@
+import type { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
 import { describe, expect, it, vi } from 'vitest';
-
-import type { ActionTaken, DetectionCategory } from '@akasecurity/schema';
 
 import { applyCategoryPosture, detectPostureChanges } from './posture.ts';
 
@@ -31,9 +30,15 @@ describe('applyCategoryPosture', () => {
     expect(writer.store.get('secret')).toBe('warn');
   });
 
-  it('skips a category with no policyId in the posture map', () => {
+  it('skips a category whose value is undefined, even though the static type disallows it', () => {
     const writer = fakeWriter();
-    applyCategoryPosture({}, writer, 'overwrite');
+    // A caller assembling this map dynamically (e.g. from partial model
+    // output) can produce a present key with an undefined value at runtime
+    // even though Partial<Record<...>> says every present value is set.
+    const posture = { secret: undefined } as unknown as Partial<
+      Record<DetectionCategory, BuiltinPolicyId>
+    >;
+    applyCategoryPosture(posture, writer, 'overwrite');
     expect(writer.upsertCategoryAction).not.toHaveBeenCalled();
   });
 });

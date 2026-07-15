@@ -81,15 +81,15 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   // existing uq_policies_scope_target unique index (scope, target). `action`
   // uses the SAME vocabulary seedDefaults writes (DEFAULT_ACTIONS' ActionTaken
   // values), so the runtime's resolveAction reads rows written by either path
-  // identically. On conflict, only `action`/`updated_at` change — `id`,
-  // `enabled`, and `created_at` are left exactly as they were.
+  // identically. On conflict, `action`, `enabled`, and `updated_at` are updated;
+  // `id` and `created_at` are left exactly as they were.
   upsertCategoryAction(category: DetectionCategory, action: ActionTaken): void {
     const now = Date.now();
     this.db
       .prepare(
         `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
          VALUES (:id, 'global', :target, :action, 1, :now, :now)
-         ON CONFLICT(scope, target) DO UPDATE SET action = excluded.action, updated_at = excluded.updated_at`,
+         ON CONFLICT(scope, target) DO UPDATE SET action = excluded.action, enabled = 1, updated_at = excluded.updated_at`,
       )
       .run({ id: randomUUID(), target: JSON.stringify({ category }), action, now });
   }

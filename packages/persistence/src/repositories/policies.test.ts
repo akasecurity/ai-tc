@@ -39,4 +39,18 @@ describe('upsertCategoryAction', () => {
     expect(repo.getCategoryAction('secret')).toBe('block');
     expect(repo.getCategoryAction('pii')).toBeUndefined();
   });
+
+  it('re-enables a previously-disabled category row on upsert', () => {
+    repo.upsertCategoryAction('secret', 'block');
+    db.prepare(
+      `UPDATE policies SET enabled = 0 WHERE scope = 'global' AND json_extract(target, '$.category') = 'secret'`,
+    ).run();
+    repo.upsertCategoryAction('secret', 'warn');
+    const row = db
+      .prepare(
+        `SELECT enabled FROM policies WHERE scope = 'global' AND json_extract(target, '$.category') = 'secret'`,
+      )
+      .get() as { enabled: number };
+    expect(row.enabled).toBe(1);
+  });
 });

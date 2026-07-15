@@ -18,6 +18,7 @@
 // out of the test source the moment an agent writes it — which happened while
 // authoring this very file, rewriting the fixtures AND inverting a
 // `not.toContain(<ip>)` assertion into `not.toContain('[REDACTED:PII]')`.
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -259,10 +260,13 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
 });
 
 // ─── End-to-end incident regression, through the REAL runtime ───────────────
-// Real bundled rule packs, real DEFAULT_ACTIONS (no explicit policies in the
-// bundle), real redact splice — then the decision module must turn it into a
-// deny. If a rule or default action changes out from under this, the
-// precondition assertions say which half moved.
+// Real bundled rule packs, a real redact splice — then the decision module
+// must turn it into a deny. The cold-start category floor no longer resolves
+// pii to redact by default, so this fixture pins the incident's actual
+// enforcement posture explicitly: a `pii` category policy set to `redact`,
+// exactly as an operator's own policy would. If a rule or the redact action
+// changes out from under this, the precondition assertions say which half
+// moved.
 
 function settings(): WorkspaceSettings {
   return {
@@ -276,7 +280,15 @@ function settings(): WorkspaceSettings {
 function bundle(): PolicyBundle {
   return {
     version: 'test',
-    policies: [],
+    policies: [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'pii' },
+        action: 'redact',
+        enabled: true,
+      },
+    ],
     rules: [],
     customKeywords: [],
     fetchedAt: new Date().toISOString(),

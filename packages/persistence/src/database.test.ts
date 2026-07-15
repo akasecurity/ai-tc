@@ -245,6 +245,39 @@ describe('transaction', () => {
     expect(db.policies.getCategoryAction('secret')).toBe('warn');
     db.close();
   });
+
+  it('rolls back a nested exceptions.create() collision-retry when the outer fn throws', async () => {
+    const db = openLocalDatabase(dir);
+    const grant = {
+      ruleId: 'aws-access-key-id',
+      category: 'secret' as const,
+      valueFingerprint: 'a'.repeat(64),
+      keyVersion: 1,
+      maskedValue: 'AKIA******Q',
+      scope: 'once' as const,
+      expiresAt: null,
+      maxUses: 1,
+      justification: 'test grant',
+      conditions: null,
+      createdBy: 'alice',
+      createdVia: 'cli-approve' as const,
+    };
+    const created = await db.exceptions.create(grant);
+    expect(await db.exceptions.consume(created.id)).toBe(true);
+
+    await expect(
+      db.transaction(async () => {
+        await db.exceptions.create(grant);
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+
+    const all = await db.exceptions.list({ includeTerminal: true });
+    expect(all.map((e) => e.id)).toEqual([created.id]);
+    expect(all[0]?.revokedAt).toBeNull();
+    expect(all[0]?.useCount).toBe(1);
+    db.close();
+  });
 });
 
 describe('store hygiene', () => {

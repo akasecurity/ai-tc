@@ -39,7 +39,9 @@ function RuleCard({ rule, onOpen }: { rule: DetectionRule; onOpen: () => void })
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-text">{rule.name}</span>
+            <span className="truncate text-sm font-semibold text-text" title={rule.name}>
+              {rule.name}
+            </span>
             <span className="text-xs text-text-3">
               {CATEGORY_LABEL[rule.category] || rule.category}
             </span>

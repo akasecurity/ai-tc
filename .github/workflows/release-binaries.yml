@@ -14,6 +14,11 @@ on:
       - 'bin-v*'
   workflow_dispatch:
 
+# Least privilege: the build fan-out only reads the repo and uploads artifacts, so the
+# default token is read-only. Only the release job below is granted contents: write.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.target }}
@@ -33,7 +38,9 @@ jobs:
           version: 10.30.1
       - uses: actions/setup-node@v6
         with:
-          node-version: 26
+          # The SEA embeds whichever Node packages it — pin the shipped runtime to the
+          # repo's Active LTS (matches .nvmrc), not Current, so releases are deterministic.
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # build:sea (ESM bundle) → bundle:web-ui (standalone sidecar) → package:sea

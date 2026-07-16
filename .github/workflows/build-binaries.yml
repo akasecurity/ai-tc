@@ -33,7 +33,10 @@ jobs:
           version: 10.30.1
       - uses: actions/setup-node@v6
         with:
-          node-version: 26
+          # The SEA embeds whichever Node packages it, so pin the shipped runtime to
+          # the repo's Active LTS (matches .nvmrc) rather than Current — the artifact
+          # must not depend on who built it.
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Build the ESM bundle, the standalone web-ui sidecar, then package + self-verify
@@ -41,9 +44,37 @@ jobs:
       - run: pnpm --filter @akasecurity/cli build:sea
       - run: pnpm --filter @akasecurity/cli bundle:web-ui
       - run: pnpm --filter @akasecurity/cli package:sea
+      # Exercise the packaged binary against a real SQLite store: `init` + `stats` prove
+      # the store read/write path that `package:sea`'s `--version` self-check never touches.
+      - run: pnpm --filter @akasecurity/cli smoke:sea
       # Boot the packaged binary's dashboard in-process and assert it serves HTTP 200 —
       # covers the Next standalone server.js import path that `--version` never exercises.
       - run: pnpm --filter @akasecurity/cli smoke:dashboard
+      # Prove the archive layout on every target — this is the only place the Windows
+      # Compress-Archive zip path is exercised before a real release depends on it.
+      # archive:sea emits aka-<version>-<triple>.(tar.gz|zip); extract it and confirm it
+      # roots at aka-<triple>/ with the binary inside. Nothing is published here.
+      - run: pnpm --filter @akasecurity/cli archive:sea
+      - name: Verify archive layout (unix)
+        if: runner.os != 'Windows'
+        working-directory: cli/sea-dist
+        run: |
+          mkdir -p _roundtrip
+          tar -xzf aka-*-${{ matrix.target }}.tar.gz -C _roundtrip
+          test -f "_roundtrip/aka-${{ matrix.target }}/aka" \
+            || { echo "::error::archive did not root at aka-${{ matrix.target }}/aka"; exit 1; }
+      - name: Verify archive layout (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: cli/sea-dist
+        run: |
+          $zip = Get-ChildItem "aka-*-${{ matrix.target }}.zip" | Select-Object -First 1
+          New-Item -ItemType Directory -Force _roundtrip | Out-Null
+          Expand-Archive -Path $zip.FullName -DestinationPath _roundtrip -Force
+          if (-not (Test-Path "_roundtrip/aka-${{ matrix.target }}/aka.exe")) {
+            Write-Error "archive did not root at aka-${{ matrix.target }}/aka.exe"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: aka-${{ matrix.target }}

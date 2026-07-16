@@ -8,11 +8,10 @@
 // never fires on a garbage version string.
 //
 // INTENTIONAL boundary-forced copy of the comparator in
-// `cli/src/lib/semver.ts` (same semantics, same tests): persistence may
-// not import from an app, the CLI may not be imported by the plugin, and the
-// packages that could host a shared copy either depend on persistence
-// (local-ops) or must stay I/O-free (detections). Mirror any semantic change
-// in both places.
+// `packages/local-ops/src/semver.ts` (same semantics, same tests): the packages
+// that could host a shared copy either depend on persistence (local-ops, so
+// importing it here would cycle) or must stay I/O-free (detections). Mirror any
+// semantic change in both places.
 
 interface Parsed {
   core: [number, number, number];

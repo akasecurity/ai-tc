@@ -7,6 +7,7 @@ import {
   WorkspaceSettings as WorkspaceSettingsSchema,
 } from '@akasecurity/schema';
 
+import { parseJsonObject } from './internal/json.ts';
 import { defaultDataDir, settingsDir } from './local-layout.ts';
 import { DATA_FILE_MODE, ensureDataDirSync } from './paths.ts';
 
@@ -62,12 +63,11 @@ export function applyOnboarding(
 }
 
 function readJson(file: string): Record<string, unknown> | null {
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
-    return typeof parsed === 'object' && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : null;
+    text = readFileSync(file, 'utf8');
   } catch {
     return null;
   }
+  return parseJsonObject(text) ?? null;
 }

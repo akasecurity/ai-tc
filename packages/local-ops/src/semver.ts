@@ -6,10 +6,10 @@
 // the update check never nags on a garbage version string.
 //
 // TWIN: packages/persistence/src/semver.ts holds a boundary-forced copy of this
-// comparator (persistence may not import an app; the plugin may not import the
-// CLI). The two must stay semantically identical — mirror any change to the
+// comparator (this package depends on persistence, so persistence cannot import
+// it back). The two must stay semantically identical — mirror any change to the
 // ordering rules or the parse grammar in both files, and in both test suites
-// (this one and packages/persistence/src/semver.test.ts).
+// (this one and packages/persistence/test/semver.test.ts).
 
 interface Parsed {
   core: [number, number, number];

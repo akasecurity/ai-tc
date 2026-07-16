@@ -188,7 +188,7 @@ function LocationRow({ instance, onClick }: { instance: FindingInstance; onClick
       className="flex items-center cursor-pointer gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-left transition-colors hover:bg-surface-2"
     >
       <Provider id={instance.provider} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="text-xs font-medium text-text">{instance.repo}</span>
         <span className="font-mono text-label text-text-3 wrap-break-word">
           {instanceLocationLabel(instance)}

@@ -296,7 +296,9 @@ function HarnessTreeRow(props: InventoryNavProps & { h: HarnessSummary }) {
         >
           <Provider id={h.id} size={28} />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-text">{h.label}</div>
+            <div className="truncate text-sm font-semibold text-text" title={h.label}>
+              {h.label}
+            </div>
             <div className="mt-px text-xs text-text-3">
               {h.kind} · {h.assetCount} assets
             </div>
@@ -458,14 +460,18 @@ function ProjectNavRow({
           className="size-2 shrink-0 rounded-full"
           style={{ background: langColor(p.language) }}
         />
-        <span className="truncate text-sm font-semibold text-text">{p.name}</span>
+        <span className="truncate text-sm font-semibold text-text" title={p.name}>
+          {p.name}
+        </span>
         <span className="ml-auto shrink-0">
           <VisBadge v={p.visibility} />
         </span>
       </div>
       <div className="mb-2 flex items-center gap-1.5 font-mono text-xs text-text-3">
-        <Ico name="repo" className="size-3" />
-        {p.repo}
+        <Ico name="repo" className="size-3 shrink-0" />
+        <span className="truncate" title={p.repo}>
+          {p.repo}
+        </span>
       </div>
       <div className="flex items-center gap-2.5">
         <AccessBar counts={c} />
@@ -518,8 +524,12 @@ function AssetNavRow({
         <Ico name={tile.icon} className="size-3.5" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate font-mono text-xs font-semibold text-text">{it.name}</div>
-        <div className="mt-0.5 truncate font-mono text-label text-text-3">{it.sub}</div>
+        <div className="truncate font-mono text-xs font-semibold text-text" title={it.name}>
+          {it.name}
+        </div>
+        <div className="mt-0.5 truncate font-mono text-label text-text-3" title={it.sub}>
+          {it.sub}
+        </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         {trust && <TrustPill value={trust} />}

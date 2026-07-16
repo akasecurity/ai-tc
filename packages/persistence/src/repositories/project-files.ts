@@ -3,6 +3,8 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { ProjectFilesScan } from '@akasecurity/schema';
 
+import { getRow } from '../internal/rows.ts';
+
 /**
  * Writer for the real project-file inventory (the Inventory page's file tree).
  * One scan replaces the project's tree: every walked file is upserted (existing
@@ -42,7 +44,7 @@ export class SqliteProjectFilesRepository {
     // The prune keys on `updated_at < stamp`, so the stamp must be STRICTLY
     // newer than every stored row's — two scans inside one clock millisecond
     // would otherwise leave vanished files behind. Monotonic, not wall-clock.
-    const { maxStamp } = this.maxStampStmt.get({ projectId }) as { maxStamp: number };
+    const maxStamp = getRow<{ maxStamp: number }>(this.maxStampStmt, { projectId })?.maxStamp ?? 0;
     const stamp = Math.max(now, maxStamp + 1);
     for (const file of scan.files) {
       this.upsertStmt.run({

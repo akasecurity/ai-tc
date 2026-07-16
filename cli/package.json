@@ -35,7 +35,7 @@
     "archive:sea": "node scripts/archive-sea.mjs",
     "bundle:web-ui": "node scripts/bundle-web-ui.mjs",
     "prepack": "tsup && node scripts/bundle-web-ui.mjs",
-    "lint": "eslint src",
+    "lint": "eslint src test",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

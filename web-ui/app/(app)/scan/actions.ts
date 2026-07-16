@@ -4,7 +4,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 
-import { scanPathIntoStore } from '@akasecurity/local-ops';
+import { recordProjectInventory, scanPathIntoStore } from '@akasecurity/local-ops';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -54,8 +54,12 @@ export async function runScan(path: string): Promise<ScanResult> {
     ruleActions: ruleset.ruleActions,
     sourceTool: 'cli',
   });
+  // Keep the Inventory page's project + file tree fresh for the repo just
+  // scanned (fail-open, no-op outside a git repo).
+  recordProjectInventory(db(), target);
   revalidatePath('/findings');
   revalidatePath('/security');
+  revalidatePath('/inventory');
   return { ok: true, scanned: result.scanned, findings: result.findings };
 }
 

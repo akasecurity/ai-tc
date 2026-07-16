@@ -136,6 +136,10 @@ export interface GroupableFindingRow {
   sourceTool: string;
   repo: string;
   file: string;
+  // Host tool that produced the scanned text (event metadata's toolName).
+  // Optional/absent when the event carries none (legacy rows and non-tool
+  // captures); file-attributed tool captures carry it alongside `file`.
+  toolName?: string;
   // Lifecycle status (see FindingStatus in finding.ts). Stored 1:1 with the
   // FindingStatus values (no DB↔API translation, unlike actionTaken/category —
   // see resolutions.ts). Optional/absent for legacy rows that predate the
@@ -239,9 +243,9 @@ export interface FindingGroupAggregate {
   /** Max occurredAt (ISO) across ALL instances. */
   latestDetectedAt: string;
   /**
-   * Instance-level free text (the group's distinct repos/files) across ALL
-   * instances, folded into the search haystack so `q` still matches a group
-   * whose only hit sits outside the preview.
+   * Instance-level free text (the group's distinct repos/files/toolNames)
+   * across ALL instances, folded into the search haystack so `q` still matches
+   * a group whose only hit sits outside the preview.
    *
    * REQUIRED whenever the caller goes on to filter by `q`: left out, the
    * haystack falls back to the preview and a `q` matching only a buried
@@ -307,6 +311,7 @@ export function buildFindingGroups(
         provider: toApiProvider(r.sourceTool),
         repo: r.repo,
         file: r.file,
+        ...(r.toolName === undefined ? {} : { toolName: r.toolName }),
         action: toApiAction(effectiveDbAction),
         detectedAt: r.occurredAt,
         confidence: r.confidence,
@@ -426,8 +431,11 @@ const haystackCache = new WeakMap<FindingGroup, string>();
 
 /**
  * The searchable text of a group: subtype, category, maskedMatch, policy name,
- * id, and each instance's repo/file/id. `extra` carries whole-group instance
- * text for stores whose `instances` is only a preview (see
+ * id, and each instance's repo/file/toolName/id. A toolName is folded as its
+ * display label ("via Bash") so a `q` for it matches exactly what the
+ * Locations column shows — the bare name alone would collide with file paths
+ * (q "Read" hitting every README). `extra` carries whole-group instance text
+ * for stores whose `instances` is only a preview (see
  * FindingGroupAggregate.searchText) — buildFindingGroups primes the cache with
  * it, so this stays the ONE definition of what `q` matches.
  */
@@ -440,6 +448,7 @@ function buildHaystack(g: FindingGroup, extra?: string): string {
     g.id,
     ...g.instances.map((i) => i.repo),
     ...g.instances.map((i) => i.file),
+    ...g.instances.map((i) => (i.toolName ? `via ${i.toolName}` : '')),
     ...g.instances.map((i) => i.id),
     ...(extra === undefined ? [] : [extra]),
   ]

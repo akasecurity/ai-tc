@@ -10,6 +10,10 @@ import type {
   TrustLevel,
 } from '@akasecurity/schema';
 
+import { parseJsonObject } from '../internal/json.ts';
+import { allRows } from '../internal/rows.ts';
+import { latestConfigScan } from './config-scan.ts';
+
 /**
  * Read side of the Skills & Hooks config inventory. Everything here is DERIVED
  * at read time — statuses come from the latest scan's open posture findings and
@@ -30,7 +34,7 @@ export class SqliteConfigInventoryRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   report(): ConfigInventoryReport {
-    const scan = this.latestScan();
+    const scan = latestConfigScan(this.db);
     if (!scan) {
       return {
         scannedAt: null,
@@ -42,24 +46,26 @@ export class SqliteConfigInventoryRepository {
       };
     }
 
-    const rows = this.db
-      .prepare(
+    const rows = allRows<InventoryReadRow>(
+      this.db.prepare(
         `SELECT id, object_type AS objectType, title, location, attributes FROM inventory
           WHERE object_type IN ('skill', 'hook', 'mcp_server', 'config_file') AND last_seen >= :startedAt
           ORDER BY object_type, title`,
-      )
-      .all({ startedAt: scan.started_at }) as unknown as InventoryReadRow[];
+      ),
+      { startedAt: scan.started_at },
+    );
 
     // The latest scan's posture findings, joined to their definition for the
     // rule id + human name. Empty when no posture rules have recorded findings.
-    const findings = this.db
-      .prepare(
+    const findings = allRows<FindingReadRow>(
+      this.db.prepare(
         `SELECT f.masked_match AS maskedMatch, d.rule_id AS ruleId, d.name AS name
            FROM inspection_findings f
            JOIN inspection_definitions d ON d.id = f.inspection_definition_id
           WHERE f.audit_event_id = :scanId`,
-      )
-      .all({ scanId: scan.id }) as unknown as FindingReadRow[];
+      ),
+      { scanId: scan.id },
+    );
 
     const skills: SkillInventoryItem[] = [];
     const hooks: HookInventoryItem[] = [];
@@ -93,9 +99,9 @@ export class SqliteConfigInventoryRepository {
   // schema note); an override whose asset is gone simply never matches. A row
   // with an out-of-vocabulary trust value is ignored rather than guessed at.
   private trustOverrides(): Map<string, TrustLevel> {
-    const rows = this.db
-      .prepare('SELECT asset_id AS assetId, trust FROM mcp_trust_override')
-      .all() as { assetId: string; trust: string }[];
+    const rows = allRows<{ assetId: string; trust: string }>(
+      this.db.prepare('SELECT asset_id AS assetId, trust FROM mcp_trust_override'),
+    );
     const map = new Map<string, TrustLevel>();
     for (const row of rows) {
       if (row.trust === 'known-good' || row.trust === 'risky' || row.trust === 'unapproved') {
@@ -103,16 +109,6 @@ export class SqliteConfigInventoryRepository {
       }
     }
     return map;
-  }
-
-  private latestScan(): ScanRow | undefined {
-    return this.db
-      .prepare(
-        `SELECT id, started_at, attributes FROM audit_events
-          WHERE event_type = 'config_scan'
-          ORDER BY started_at DESC, id DESC LIMIT 1`,
-      )
-      .get() as ScanRow | undefined;
   }
 }
 
@@ -275,34 +271,16 @@ function buildTopics(
 }
 
 function countScanErrors(attributes: string | null): number {
-  if (!attributes) return 0;
-  try {
-    const parsed: unknown = JSON.parse(attributes);
-    const errors = (parsed as Record<string, unknown> | null)?.errors;
-    return typeof errors === 'number' ? errors : 0;
-  } catch {
-    return 0;
-  }
+  const errors = parseJsonObject(attributes)?.errors;
+  return typeof errors === 'number' ? errors : 0;
 }
 
 function parseBag(raw: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
-  } catch {
-    // corrupt bag → undefined
-  }
-  return undefined;
+  return parseJsonObject(raw);
 }
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
-}
-
-interface ScanRow {
-  id: string;
-  started_at: number;
-  attributes: string | null;
 }
 
 interface InventoryReadRow {

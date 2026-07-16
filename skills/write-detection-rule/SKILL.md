@@ -116,7 +116,7 @@ Two optional fixture fields (schema: `RuleFixture` in `packages/schema/src/zod/r
    rewrites `packages/plugin-sdk/src/bundled-packs.generated.ts` from the `rules/` tree — that
    generated module is how packs reach the shipped plugin and CLI (rule JSON is inlined at
    build time; there is no runtime pack download). The drift test
-   `packages/plugin-sdk/src/rule-packs.test.ts` fails CI if you forget this step.
+   `packages/plugin-sdk/test/rule-packs.test.ts` fails CI if you forget this step.
 
 ## Severity guide
 

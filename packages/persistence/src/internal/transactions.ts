@@ -18,8 +18,10 @@ let savepointSeq = 0;
  * transaction owns the final COMMIT/ROLLBACK. An error unwinds only this
  * envelope's own work (ROLLBACK TO) and rethrows, leaving the caller's
  * transaction open — the envelope never commits or rolls back a transaction it
- * did not begin. `mode` is ignored while nested; the open transaction already
- * holds its lock.
+ * did not begin. Some SQLite failures (disk full, an OR ROLLBACK conflict
+ * clause) roll back the caller's whole transaction themselves, savepoint
+ * included; the error still rethrows, with `db.isTransaction` already false.
+ * `mode` is ignored while nested; the open transaction already holds its lock.
  */
 export function withTransaction(
   db: DatabaseSync,
@@ -63,20 +65,28 @@ export function withTransaction(
 }
 
 /**
- * `withTransaction` with every error swallowed: returns `true` when the work
+ * `withTransaction` with errors swallowed: returns `true` when the work
  * committed (or, while nested, was released into the caller's transaction),
  * `false` on any failure. A failure persists nothing either way — while nested,
  * the SAVEPOINT rewind keeps a partial write out of the caller's transaction.
+ * One exception: a failure that rolled back the caller's whole transaction
+ * (disk full, an OR ROLLBACK conflict clause) rethrows instead, so the
+ * transaction's owner cannot keep writing in autocommit unaware.
  */
 export function failOpenTransaction(
   db: DatabaseSync,
   fn: () => void,
   mode: 'DEFERRED' | 'IMMEDIATE' = 'DEFERRED',
 ): boolean {
+  const nested = db.isTransaction;
   try {
     withTransaction(db, fn, mode);
     return true;
-  } catch {
+  } catch (error) {
+    // Swallowing an error that destroyed the caller's transaction would leave
+    // the caller issuing durable autocommit statements it believes are still
+    // guarded; that failure belongs to the transaction's owner.
+    if (!db.isTransaction && nested) throw error;
     return false;
   }
 }

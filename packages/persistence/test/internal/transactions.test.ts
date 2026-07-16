@@ -119,6 +119,26 @@ describe('withTransaction', () => {
     assertNoOpenTransaction();
   });
 
+  it('rethrows while nested even when the statement forced a full rollback', () => {
+    db.prepare('INSERT INTO t (id, v) VALUES (?, ?)').run(1, 'seed');
+    db.exec('BEGIN');
+    db.prepare('INSERT INTO t (v) VALUES (?)').run('outer');
+    let caught: unknown;
+    try {
+      withTransaction(db, () => {
+        db.prepare('INSERT OR ROLLBACK INTO t (id, v) VALUES (?, ?)').run(1, 'dup');
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    // OR ROLLBACK unwound the caller's whole transaction itself, savepoint
+    // included: the outer row is gone and no transaction is left open.
+    expect(db.isTransaction).toBe(false);
+    expect(rowCount()).toBe(1);
+    assertNoOpenTransaction();
+  });
+
   it('nests re-entrantly: each envelope unwinds to its own savepoint', () => {
     db.exec('BEGIN');
     withTransaction(db, () => {
@@ -200,6 +220,22 @@ describe('failOpenTransaction', () => {
     expect(db.isTransaction).toBe(true);
     expect(rowCount()).toBe(1);
     db.exec('COMMIT');
+    expect(rowCount()).toBe(1);
+    assertNoOpenTransaction();
+  });
+
+  it('rethrows while nested when the failure destroyed the caller’s transaction', () => {
+    db.prepare('INSERT INTO t (id, v) VALUES (?, ?)').run(1, 'seed');
+    db.exec('BEGIN');
+    db.prepare('INSERT INTO t (v) VALUES (?)').run('outer');
+    expect(() =>
+      failOpenTransaction(db, () => {
+        db.prepare('INSERT OR ROLLBACK INTO t (id, v) VALUES (?, ?)').run(1, 'dup');
+      }),
+    ).toThrow();
+    // Swallowing here would leave the caller issuing durable autocommit
+    // statements it believes are still inside its own transaction.
+    expect(db.isTransaction).toBe(false);
     expect(rowCount()).toBe(1);
     assertNoOpenTransaction();
   });

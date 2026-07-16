@@ -48,9 +48,10 @@ function storedProjects(dir: string): { url: string; name: string | null }[] {
 function storedFiles(dir: string): { path: string; origin: string }[] {
   const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
   try {
-    return raw
-      .prepare('SELECT path, origin FROM project_file ORDER BY path')
-      .all() as unknown as { path: string; origin: string }[];
+    return raw.prepare('SELECT path, origin FROM project_file ORDER BY path').all() as unknown as {
+      path: string;
+      origin: string;
+    }[];
   } finally {
     raw.close();
   }

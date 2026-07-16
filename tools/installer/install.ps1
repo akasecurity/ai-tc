@@ -7,6 +7,9 @@
 # (default %LOCALAPPDATA%\aka), AKA_INSTALL_REF (bin-v<version>, default = latest
 # bin-v* release), AKA_DOWNLOAD_BASE + AKA_VERSION (fetch from a local/mirror base).
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 renders an Invoke-WebRequest progress bar that throttles large
+# downloads (the ~46 MB archive crawls); silencing it restores full speed.
+$ProgressPreference = 'SilentlyContinue'
 
 $Repo = if ($env:AKA_INSTALL_REPO) { $env:AKA_INSTALL_REPO } else { 'akasecurity/ai-tc' }
 $InstallDir = if ($env:AKA_INSTALL_DIR) { $env:AKA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'aka' }
@@ -67,13 +70,28 @@ try {
   $exe = Join-Path $binroot 'aka.exe'
   if (-not (Test-Path $exe)) { Write-Error 'aka: binary missing after extract.'; exit 1 }
 
-  # The binary needs its sidecars, so put the whole directory on the user PATH.
+  # Point a stable `current` junction at this version's binroot so the user PATH holds
+  # ONE entry that survives upgrades (mirrors install.sh's ~/.local/bin/aka symlink).
+  # process.execPath follows the junction, so the binary still resolves its sidecars.
+  $current = Join-Path $InstallDir 'current'
+  # Remove only the old junction link, never recurse into its target — on Windows
+  # PowerShell 5.1 `Remove-Item -Recurse` on a junction can delete the target's contents.
+  if (Test-Path $current) { [System.IO.Directory]::Delete($current) }
+  New-Item -ItemType Junction -Path $current -Target $binroot | Out-Null
+
+  # Rebuild the user PATH with exactly one aka entry: drop any prior entry under
+  # $InstallDir (version-specific binroots leaked by earlier installs) and prepend the
+  # stable junction. Without this, every upgrade left a dead binroot on PATH forever.
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-  if ($userPath -notlike "*$binroot*") {
-    [Environment]::SetEnvironmentVariable('Path', "$binroot;$userPath", 'User')
-    Write-Host "aka: added $binroot to your PATH (open a new terminal to pick it up)."
+  $kept = @($userPath -split ';' | Where-Object {
+      $_ -and -not $_.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase)
+    })
+  $newPath = (@($current) + $kept) -join ';'
+  if ($newPath -ne $userPath) {
+    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+    Write-Host "aka: $current is on your PATH (open a new terminal to pick it up)."
   }
-  $ver = (& $exe --version)
+  $ver = (& (Join-Path $current 'aka.exe') --version)
   Write-Host "aka: $ver ready — run 'aka init' to set up your local store."
 }
 finally {

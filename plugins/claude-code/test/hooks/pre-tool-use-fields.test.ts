@@ -10,7 +10,11 @@
 // pre-tool-use-decision.test.ts) or breaks stored-text redaction.
 import { describe, expect, it } from 'vitest';
 
-import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-use-fields.ts';
+import {
+  inputEventKind,
+  inputFilePath,
+  scannableInputFields,
+} from '../../src/hooks/pre-tool-use-fields.ts';
 
 describe('scannableInputFields — the tools that execute their text', () => {
   it('marks Bash command and WebFetch url executable, and the prompts stored', () => {

@@ -1,7 +1,7 @@
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { buildJoinEntries } from './join-file.ts';
+import { buildJoinEntries } from '../../src/triage/join-file.ts';
 
 const hit = (over: Partial<TriageHit>): TriageHit => ({
   ruleId: 'core-secret/aws',

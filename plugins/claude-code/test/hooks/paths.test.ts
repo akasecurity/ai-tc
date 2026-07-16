@@ -7,7 +7,7 @@
 // became scannable.
 import { describe, expect, it } from 'vitest';
 
-import { replaceAtPath, stringAtPath } from './paths.ts';
+import { replaceAtPath, stringAtPath } from '../../src/hooks/paths.ts';
 
 describe('stringAtPath', () => {
   it('reads a nested string through objects and arrays', () => {

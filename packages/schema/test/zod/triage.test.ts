@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { TriageCategoryRec, TriageHit, TriagePolicy, TriageRecommendation } from './triage.ts';
+import {
+  TriageCategoryRec,
+  TriageHit,
+  TriagePolicy,
+  TriageRecommendation,
+} from '../../src/zod/triage.ts';
 
 const validHit = {
   ruleId: 'secrets/aws-access-key',

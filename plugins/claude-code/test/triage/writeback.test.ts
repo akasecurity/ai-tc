@@ -6,7 +6,7 @@ import {
   performTriageWriteback,
   planTriageWriteback,
   SCRUBBED_NOTES,
-} from './writeback.ts';
+} from '../../src/triage/writeback.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);

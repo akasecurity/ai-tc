@@ -6,9 +6,9 @@ import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BackfillDeps, BackfillIo } from './backfill.ts';
-import { runBackfill, triageSentinel } from './backfill.ts';
-import type { ScanSummary } from './history/scan.ts';
+import type { BackfillDeps, BackfillIo } from '../src/backfill.ts';
+import { runBackfill, triageSentinel } from '../src/backfill.ts';
+import type { ScanSummary } from '../src/history/scan.ts';
 
 // --triage mode mints a real fingerprint key file via
 // @akasecurity/plugin-sdk's loadOrCreateFingerprintKey, so each test gets its

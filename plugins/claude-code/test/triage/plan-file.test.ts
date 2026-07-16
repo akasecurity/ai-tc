@@ -6,8 +6,13 @@ import { RawEgressError } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { deletePlanFile, PLAN_FILE_VERSION, readPlanFile, writePlanFile } from './plan-file.ts';
-import { planTriageWriteback, type TriageWritebackPlan } from './writeback.ts';
+import {
+  deletePlanFile,
+  PLAN_FILE_VERSION,
+  readPlanFile,
+  writePlanFile,
+} from '../../src/triage/plan-file.ts';
+import { planTriageWriteback, type TriageWritebackPlan } from '../../src/triage/writeback.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);

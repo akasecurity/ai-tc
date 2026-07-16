@@ -25,8 +25,8 @@ import { createPluginRuntime } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { inputEventKind } from './pre-tool-use-fields.ts';
-import { openGatewayOrNull } from './store-health.ts';
+import { inputEventKind } from '../../src/hooks/pre-tool-use-fields.ts';
+import { openGatewayOrNull } from '../../src/hooks/store-health.ts';
 
 const IP = ['45', '79', '142', '6'].join('.');
 

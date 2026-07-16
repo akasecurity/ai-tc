@@ -10,8 +10,8 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { runApply } from './adapter.ts';
-import { readPlanFile, writePlanFile } from './plan-file.ts';
+import { runApply } from '../../src/triage/adapter.ts';
+import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);

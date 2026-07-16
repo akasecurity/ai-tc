@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parsePosture } from './onboard-posture.ts';
+import { parsePosture } from '../src/onboard-posture.ts';
 
 describe('parsePosture', () => {
   it('accepts a valid per-category palette map', () => {

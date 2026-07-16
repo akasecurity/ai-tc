@@ -1,9 +1,13 @@
 import type { SuppressionEntry } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
-import type { JoinEntry } from './join-file.ts';
-import type { ShowcaseCategory } from './writeback.ts';
+import {
+  renderPosturePlan,
+  renderShowcase,
+  renderSuppressionGate,
+} from '../../src/triage/gate-display.ts';
+import type { JoinEntry } from '../../src/triage/join-file.ts';
+import type { ShowcaseCategory } from '../../src/triage/writeback.ts';
 
 const FP_A = 'ab'.repeat(32);
 const FP_B = 'cd'.repeat(32);

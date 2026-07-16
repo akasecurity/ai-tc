@@ -1,8 +1,8 @@
 import type { TriageCategoryRec, TriageRecommendation } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import type { JoinEntry } from './join-file.ts';
-import { resolveSuppressions } from './resolve.ts';
+import type { JoinEntry } from '../../src/triage/join-file.ts';
+import { resolveSuppressions } from '../../src/triage/resolve.ts';
 
 const FP = 'ab'.repeat(32);
 

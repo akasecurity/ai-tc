@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ExceptionWriter } from './suppressions.ts';
-import { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
+import type { ExceptionWriter } from '../src/suppressions.ts';
+import { applySetupTriageSuppressions, THIRTY_DAYS_MS } from '../src/suppressions.ts';
 
 type CreateArg = Parameters<ExceptionWriter['create']>[0];
 

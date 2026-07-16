@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { judgeEnv, parseVerdict, runJudge } from './judge.ts';
+import { judgeEnv, parseVerdict, runJudge } from '../../src/triage/judge.ts';
 
 // A `claude -p --output-format json` envelope with `result` set to `text`.
 const envelope = (text: string): string => JSON.stringify({ result: text, is_error: false });

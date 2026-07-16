@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
+import {
+  assertRawFree,
+  maskContextSlice,
+  RawEgressError,
+  safeMaskedMatch,
+} from '../src/raw-egress.ts';
 
 describe('maskContextSlice', () => {
   it('rebases a span onto a slice with a nonzero start', () => {

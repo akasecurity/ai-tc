@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { HANDLING_SECTION_DESCRIPTION, POLICY_CHOICES } from './WorkspaceSettingsFormView.tsx';
+import {
+  HANDLING_SECTION_DESCRIPTION,
+  POLICY_CHOICES,
+} from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
 // The global handling toggle (settings.policy) no longer drives runtime
 // enforcement — per-category Policies do. Guard against the copy regressing to

@@ -1,7 +1,7 @@
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { describe, expect, it } from 'vitest';
 
-import { readPostureBlock } from './posture.ts';
+import { readPostureBlock } from '../src/posture.ts';
 
 // A minimal LocalDatabase stand-in: only the policies read + close() that
 // readPostureBlock touches. Cast through unknown since the real interface has

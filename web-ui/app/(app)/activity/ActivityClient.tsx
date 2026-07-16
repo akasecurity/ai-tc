@@ -96,6 +96,10 @@ export function ActivityClient({
           tokenReport={tokenReport}
           isLoading={false}
           error={null}
+          // Tool chips deep-link to the findings page scoped to that tool —
+          // `q` matches the instance location label ("via Bash") of findings
+          // captured from that tool's input/output.
+          toolHref={(toolName) => `/findings?q=${encodeURIComponent(`via ${toolName}`)}`}
         />
       </Card>
     </div>

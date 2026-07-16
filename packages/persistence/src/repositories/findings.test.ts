@@ -41,7 +41,9 @@ afterEach(() => {
 });
 
 // Record one event + one finding. Distinct `occurredAt` (ISO) keeps ordering
-// deterministic; repo/filePath ride in the event metadata (extracted in SQL).
+// deterministic; repo/filePath/toolName ride in the event metadata (extracted
+// in SQL). filePath is omittable to model tool-output captures, which carry a
+// toolName instead.
 function record(opts: {
   occurredAt: string;
   sourceTool: IngestEvent['sourceTool'];
@@ -50,10 +52,15 @@ function record(opts: {
   severity?: Severity;
   actionTaken?: ActionTaken;
   repo: string;
-  filePath: string;
+  filePath?: string;
+  toolName?: string;
 }): void {
   const id = randomUUID();
-  const metadata: EventMetadata = { repo: opts.repo, filePath: opts.filePath };
+  const metadata: EventMetadata = {
+    repo: opts.repo,
+    ...(opts.filePath === undefined ? {} : { filePath: opts.filePath }),
+    ...(opts.toolName === undefined ? {} : { toolName: opts.toolName }),
+  };
   const event: IngestEvent = {
     id,
     sourceTool: opts.sourceTool,
@@ -157,6 +164,28 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
     expect(res.items).toEqual([]);
     expect(res.totals).toEqual({ findings: 0, groups: 0 });
     expect(res.nextCursor).toBeNull();
+  });
+
+  it('carries tool attribution for captures with no filePath and matches q on it', async () => {
+    record({
+      occurredAt: '2026-01-04T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'env-kv',
+      severity: 'high',
+      actionTaken: 'log',
+      repo: 'acme/api',
+      toolName: 'Bash',
+    });
+
+    const res = await db.findings.listGroupedFindings({});
+    const instance = res.items[0]?.instances[0];
+    expect(instance?.file).toBe('');
+    expect(instance?.toolName).toBe('Bash');
+
+    expect(
+      (await db.findings.listGroupedFindings({ q: 'via bash' })).items.map((g) => g.id),
+    ).toEqual(['env-kv']);
+    expect((await db.findings.listGroupedFindings({ q: 'via webfetch' })).items).toEqual([]);
   });
 });
 

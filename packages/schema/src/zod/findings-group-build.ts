@@ -137,7 +137,8 @@ export interface GroupableFindingRow {
   repo: string;
   file: string;
   // Host tool that produced the scanned text (event metadata's toolName).
-  // Optional/absent when the event carries none (file-attributed and legacy rows).
+  // Optional/absent when the event carries none (legacy rows and non-tool
+  // captures); file-attributed tool captures carry it alongside `file`.
   toolName?: string;
   // Lifecycle status (see FindingStatus in finding.ts). Stored 1:1 with the
   // FindingStatus values (no DB↔API translation, unlike actionTaken/category —

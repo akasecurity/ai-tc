@@ -102,7 +102,9 @@ export function FindingDetailView({
         <MatchedContent
           code={finding.match.contextPrefix}
           snippet={finding.match.maskedValue}
-          file={grouped ? `${String(finding.instanceCount)} files` : instanceLocationLabel(instance)}
+          file={
+            grouped ? `${String(finding.instanceCount)} locations` : instanceLocationLabel(instance)
+          }
         />
 
         {grouped ? (

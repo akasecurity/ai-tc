@@ -161,7 +161,12 @@ function DetailBody({
             {toolTotal(session.tools)} tool calls
           </span>
           {tools.map((t) => (
-            <ToolChip key={t.name} name={t.name} n={t.n} {...(toolHref ? { href: toolHref(t.name) } : {})} />
+            <ToolChip
+              key={t.name}
+              name={t.name}
+              n={t.n}
+              {...(toolHref ? { href: toolHref(t.name) } : {})}
+            />
           ))}
         </div>
       </div>

@@ -29,7 +29,8 @@ async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   if (!input) return;
 
-  const toolName = getString(input, 'tool_name') ?? 'tool';
+  const rawToolName = getString(input, 'tool_name');
+  const toolName = rawToolName ?? 'tool';
   // Field name differs across Claude Code versions; accept both — and when the
   // preferred field carries no scannable text (e.g. a structured shape this
   // matcher doesn't know), fall back to the other, which the old string-only
@@ -45,7 +46,11 @@ async function main(): Promise<void> {
   // Per-hook metadata layering (see shared.ts): Read carries the file being
   // read on tool_input.file_path — without it, extension-scoped rules never
   // apply to Read output and the recorded event has no file attribution.
+  // The tool NAME is stamped too (never its arguments or output — metadata is
+  // stored unredacted), so findings on file-less tool output (Bash, WebFetch…)
+  // still carry a display location.
   const metadata = baseMetadata(input) ?? {};
+  if (rawToolName) metadata.toolName = rawToolName;
   const rawToolInput = input.tool_input;
   const filePath =
     typeof rawToolInput === 'object' && rawToolInput !== null

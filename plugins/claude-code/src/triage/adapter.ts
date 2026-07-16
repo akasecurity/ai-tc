@@ -15,7 +15,7 @@
  * All IO (stream read, judge spawn, DB, clock, stdout/stderr) is injected so this
  * is unit-testable with fakes; the script wires the real implementations.
  */
-import type { ExceptionWriter } from '@akasecurity/plugin-sdk';
+import { assertRawFree, type ExceptionWriter } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   DetectionCategory,
@@ -96,44 +96,72 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     return 0;
   }
 
-  const rec = deps.runJudge(hits);
-  const plan = planTriageWriteback(hits, rec);
-
-  // Read the store's current per-category action for the downgrade view.
-  // Read-only; retained in the plan file so confirm needn't re-read the DB.
-  const current: Partial<Record<DetectionCategory, ActionTaken>> = {};
-  const db = deps.openDb();
-  try {
-    for (const category of Object.keys(plan.posture) as DetectionCategory[]) {
-      const action = db.policies.getCategoryAction(category);
-      if (action !== undefined) current[category] = action;
-    }
-  } finally {
-    db.close();
-  }
-
-  deps.stdout(renderPosturePlan(plan.posture, current) + '\n\n');
-  deps.stdout(renderShowcase(plan.showcase) + '\n\n');
-  deps.stdout(renderSuppressionGate(plan.entries, plan.join) + '\n');
-  if (plan.skipped.length > 0) {
-    deps.stdout(
-      `\nSkipped (fail-secure): ${plan.skipped
-        .map((s) => `${s.category} — ${s.reason}`)
-        .join('; ')}\n`,
-    );
-  }
-  deps.stdout(`\nNotes: ${plan.notes}\n`);
-
-  // Persist the EXACT resolved raw-free plan the user is about to approve. The
-  // backstop (assertRawFree over the serialized doc) runs inside write().
+  // Preview egress boundary: everything below handles the raw hits, so any error
+  // it throws is scrubbed against the raw values before it can leave this process.
+  // A message that echoed a raw value is withheld wholesale; a clean one passes
+  // through unchanged. This is what lets the top-level apply-suppressions catch
+  // safely print err.message — the guarantee is enforced here, not by auditing
+  // every current throw site (a future throw is covered too). The scrub inherits
+  // assertRawFree's MIN_RAW_LEN floor (values shorter than 4 chars are not
+  // matched) — the same containment bound used at every other raw-egress
+  // checkpoint (plan-file backstop, reasoning/notes checks), not a weaker one.
   const rawValues = hits.map((h) => h.rawMatch);
-  const planPath = planIO.write(plan, current, rawValues);
-  deps.stdout(`\nPlan saved to: ${planPath}\n`);
-  deps.stdout(
-    `Re-run with: apply-suppressions.js --confirmed --plan ${planPath}\n` +
-      `(applies this exact plan — no re-scan, no re-judge; the file is deleted after apply)\n`,
-  );
-  return 0;
+  try {
+    const rec = deps.runJudge(hits);
+    const plan = planTriageWriteback(hits, rec);
+
+    // Read the store's current per-category action for the downgrade view.
+    // Read-only; retained in the plan file so confirm needn't re-read the DB.
+    const current: Partial<Record<DetectionCategory, ActionTaken>> = {};
+    const db = deps.openDb();
+    try {
+      for (const category of Object.keys(plan.posture) as DetectionCategory[]) {
+        const action = db.policies.getCategoryAction(category);
+        if (action !== undefined) current[category] = action;
+      }
+    } finally {
+      db.close();
+    }
+
+    deps.stdout(renderPosturePlan(plan.posture, current) + '\n\n');
+    deps.stdout(renderShowcase(plan.showcase) + '\n\n');
+    deps.stdout(renderSuppressionGate(plan.entries, plan.join) + '\n');
+    if (plan.skipped.length > 0) {
+      deps.stdout(
+        `\nSkipped (fail-secure): ${plan.skipped
+          .map((s) => `${s.category} — ${s.reason}`)
+          .join('; ')}\n`,
+      );
+    }
+    deps.stdout(`\nNotes: ${plan.notes}\n`);
+
+    // Persist the EXACT resolved raw-free plan the user is about to approve. The
+    // backstop (assertRawFree over the serialized doc) runs inside write().
+    const planPath = planIO.write(plan, current, rawValues);
+    deps.stdout(`\nPlan saved to: ${planPath}\n`);
+    deps.stdout(
+      `Re-run with: apply-suppressions.js --confirmed --plan ${planPath}\n` +
+        `(applies this exact plan — no re-scan, no re-judge; the file is deleted after apply)\n`,
+    );
+    return 0;
+  } catch (err) {
+    const original = err instanceof Error ? err.message : String(err);
+    // assertRawFree returns `original` when it holds no raw value, or throws
+    // RawEgressError when it does — in which case the whole message is withheld.
+    let safe: string;
+    try {
+      safe = assertRawFree(original, rawValues);
+    } catch {
+      safe =
+        'apply-suppressions preview failed (message withheld: it referenced a raw detected value)';
+    }
+    // Deliberately NOT chaining `err` as `cause`: the caught error is the very
+    // thing being scrubbed — its message/stack may carry the raw value, and a
+    // cause would re-expose it via util.inspect/loggers. Only the scrubbed
+    // message crosses this boundary.
+    // eslint-disable-next-line preserve-caught-error -- caught error may carry raw; see above
+    throw new Error(safe);
+  }
 }
 
 // CONFIRM: apply the persisted plan VERBATIM. No stream read, no judge. Any
@@ -169,6 +197,44 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
     closed = true;
     db.close();
   };
+
+  // Store-drift gate. The plan was approved against the per-category actions the
+  // preview captured in `plan.current`. If the store changed since (a CLI edit, a
+  // web-ui save, another wizard run), applying the plan blindly could turn an
+  // approved non-downgrade into a SILENT downgrade — the exact case the preview's
+  // renderPosturePlan WARNING exists to surface. Re-read each planned category and
+  // compare; on drift, fail loud with no write so the wizard routes to the floor
+  // fallback and the user re-previews against the store they can actually see.
+  // undefined (no row) compares equal on both sides, so an added/removed row
+  // counts as drift too. The read is same-process, immediately before the
+  // transactional write below; a concurrent edit landing in the sub-millisecond
+  // gap between them is an accepted residual window for this local single-user
+  // store, not covered here.
+  try {
+    const drifted: DetectionCategory[] = [];
+    for (const category of Object.keys(plan.posture) as DetectionCategory[]) {
+      if (db.policies.getCategoryAction(category) !== plan.current[category]) {
+        drifted.push(category);
+      }
+    }
+    if (drifted.length > 0) {
+      closeOnce();
+      deps.stderr(
+        `AKA apply-suppressions failed: the detection store changed since this plan was previewed ` +
+          `(${drifted.join(', ')}). Refusing to apply a stale plan — re-run /aka:setup to review ` +
+          `against the current store.\n`,
+      );
+      return 1;
+    }
+  } catch (err) {
+    closeOnce();
+    deps.stderr(
+      `AKA apply-suppressions failed: could not verify the plan against the current store ` +
+        `(${err instanceof Error ? err.message : 'read error'}). Refusing to apply.\n`,
+    );
+    return 1;
+  }
+
   try {
     const res = await performTriageWriteback(
       // The write only reads posture + entries; join/showcase/notes/skipped are

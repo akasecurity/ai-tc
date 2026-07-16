@@ -4,6 +4,7 @@ import type { InventoryInput, InventoryObjectType } from '@akasecurity/schema';
 import { toInventoryRow } from '@akasecurity/schema';
 
 import { inventoryId } from '../ids.ts';
+import { allRows, bindParams, getRow } from '../internal/rows.ts';
 
 /**
  * Inventory (existence) dimension writer/reader, bound to one open DB + local
@@ -45,36 +46,37 @@ export class SqliteInventoryRepository {
   upsert(input: InventoryInput, now: number = Date.now()): string {
     const id = inventoryId(input.objectType, input.identityKey);
     const row = toInventoryRow(input, id, now);
-    this.upsertStmt.run({
-      id: row.id,
-      objectType: row.objectType,
-      location: row.location ?? null,
-      title: row.title ?? null,
-      hostId: row.hostId ?? null,
-      attributes: row.attributes,
-      firstSeen: row.firstSeen,
-      lastSeen: row.lastSeen,
-    });
+    this.upsertStmt.run(
+      bindParams({
+        id: row.id,
+        objectType: row.objectType,
+        location: row.location,
+        title: row.title,
+        hostId: row.hostId,
+        attributes: row.attributes,
+        firstSeen: row.firstSeen,
+        lastSeen: row.lastSeen,
+      }),
+    );
     return id;
   }
 
   // The full row, for round-trip assertions.
   findById(id: string): InventoryRow | undefined {
-    const row = this.db.prepare('SELECT * FROM inventory WHERE id = :id').get({ id }) as
-      InventoryRow | undefined;
-    return row;
+    return getRow<InventoryRow>(this.db.prepare('SELECT * FROM inventory WHERE id = :id'), { id });
   }
 
   // Distinct titles for an object_type — a filter facet (e.g. hostnames),
   // served from the object_type index, never from audit_events.
   distinctTitles(objectType: InventoryObjectType): string[] {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ title: string }>(
+      this.db.prepare(
         `SELECT DISTINCT title FROM inventory
          WHERE object_type = :objectType AND title IS NOT NULL
          ORDER BY title`,
-      )
-      .all({ objectType }) as unknown as { title: string }[];
+      ),
+      { objectType },
+    );
     return rows.map((r) => r.title);
   }
 
@@ -82,13 +84,13 @@ export class SqliteInventoryRepository {
   // over the generated column, never from the audit fact (confirm via EXPLAIN
   // QUERY PLAN).
   osVersions(): string[] {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ value: string }>(
+      this.db.prepare(
         `SELECT DISTINCT os_version AS value FROM inventory
          WHERE object_type = 'host' AND os_version IS NOT NULL
          ORDER BY value`,
-      )
-      .all() as unknown as { value: string }[];
+      ),
+    );
     return rows.map((r) => r.value);
   }
 }

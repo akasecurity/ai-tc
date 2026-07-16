@@ -4,6 +4,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ActionTaken, DetectionCategory, Policy as PolicyType } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS, Policy } from '@akasecurity/schema';
 
+import { allRows, countScalar, intToBool, mapRowsTolerant } from '../internal/rows.ts';
+import { failOpenTransaction } from '../internal/transactions.ts';
 import type { PoliciesReadPort } from '../ports.ts';
 
 interface PolicyRow {
@@ -25,29 +27,22 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   constructor(private readonly db: DatabaseSync) {}
 
   readPolicies(): Promise<PolicyType[]> {
-    const rows = this.db.prepare('SELECT * FROM policies').all() as unknown as PolicyRow[];
-    const policies: PolicyType[] = [];
-    for (const row of rows) {
-      try {
-        // JSON columns re-enter as unknown and are validated by Policy.parse.
-        const target: unknown = JSON.parse(row.target);
-        const customKeywords: unknown = row.custom_keywords
-          ? JSON.parse(row.custom_keywords)
-          : undefined;
-        policies.push(
-          Policy.parse({
-            id: row.id,
-            scope: row.scope,
-            target,
-            action: row.action,
-            enabled: row.enabled === 1,
-            customKeywords,
-          }),
-        );
-      } catch {
-        // Skip a malformed/foreign policy row rather than failing the read.
-      }
-    }
+    const rows = allRows<PolicyRow>(this.db.prepare('SELECT * FROM policies'));
+    const policies = mapRowsTolerant(rows, (row) => {
+      // JSON columns re-enter as unknown and are validated by Policy.parse.
+      const target: unknown = JSON.parse(row.target);
+      const customKeywords: unknown = row.custom_keywords
+        ? JSON.parse(row.custom_keywords)
+        : undefined;
+      return Policy.parse({
+        id: row.id,
+        scope: row.scope,
+        target,
+        action: row.action,
+        enabled: intToBool(row.enabled),
+        customKeywords,
+      });
+    });
     return Promise.resolve(policies);
   }
 
@@ -55,14 +50,13 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
   // detection-type config exists from first run. Only when the table is empty,
   // so a user's edits are never clobbered.
   seedDefaults(): void {
-    const count = (this.db.prepare('SELECT count(*) AS c FROM policies').get() as { c: number }).c;
+    const count = countScalar(this.db, 'SELECT count(*) AS n FROM policies');
     if (count > 0) return;
     const stmt = this.db.prepare(
       `INSERT INTO policies (id, scope, target, action, enabled, created_at, updated_at)
        VALUES (:id, 'global', :target, :action, 1, :now, :now)`,
     );
-    this.db.exec('BEGIN');
-    try {
+    failOpenTransaction(this.db, () => {
       for (const [category, action] of Object.entries(DEFAULT_ACTIONS)) {
         stmt.run({
           id: randomUUID(),
@@ -71,10 +65,7 @@ export class SqlitePoliciesRepository implements PoliciesReadPort {
           now: Date.now(),
         });
       }
-      this.db.exec('COMMIT');
-    } catch {
-      this.db.exec('ROLLBACK');
-    }
+    });
   }
 
   // Insert-or-update the single global per-category policy row, keyed on the

@@ -1,5 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { withTransaction } from './internal/transactions.ts';
+
 /**
  * True when any of the three sample-seeded domains still has legacy rows.
  * Lets purgeSampleData bail out before opening a write transaction — the
@@ -33,8 +35,7 @@ export function purgeSampleData(db: DatabaseSync): void {
   try {
     if (!hasLegacySampleRows(db)) return;
 
-    db.exec('BEGIN');
-    try {
+    withTransaction(db, () => {
       // Data Shares (children first).
       db.exec(
         `DELETE FROM share_call_site WHERE endpoint_id IN (
@@ -88,12 +89,7 @@ export function purgeSampleData(db: DatabaseSync): void {
         value TEXT NOT NULL
       )`);
       db.exec("DELETE FROM app_meta WHERE key LIKE 'sample_seeded:%'");
-
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
+    });
   } catch {
     // Fail-open: a locked/corrupt DB leaves the store untouched.
   }

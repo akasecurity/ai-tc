@@ -53,7 +53,9 @@ export function AssetDetail({
           <Ico name={tile.icon} className="size-4.5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-sm font-semibold text-text">{asset.name}</div>
+          <div className="truncate font-mono text-sm font-semibold text-text" title={asset.name}>
+            {asset.name}
+          </div>
           <div className="mt-px text-xs text-text-3">{typeLabel}</div>
         </div>
         {onClose && (

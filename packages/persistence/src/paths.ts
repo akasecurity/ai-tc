@@ -23,11 +23,16 @@ export function ensureDataDirSync(dir: string): void {
   }
 }
 
+// The -wal/-shm sidecar files SQLite keeps next to a database file in WAL mode.
+export function walSidecars(file: string): string[] {
+  return [`${file}-wal`, `${file}-shm`];
+}
+
 // 0600 on the DB and its WAL sidecars — they hold prompt/file content and masked
 // findings. Best-effort: a no-op where POSIX modes don't apply, and the sidecars
 // may not exist yet.
 export function tightenPerms(file: string): void {
-  for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+  for (const path of [file, ...walSidecars(file)]) {
     try {
       chmodSync(path, DATA_FILE_MODE);
     } catch {

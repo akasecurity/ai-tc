@@ -51,10 +51,12 @@ Keep these package boundaries intact — a forbidden import across a package wal
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O — NO fetch client, NO Drizzle)
-@akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections
+@akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
+                     @akasecurity/plugin-sdk (repo-identity + project-file walkers only)
                      (shared CLI/web-ui operations: update report + apply via npm/claude
-                     child processes, the agent-plugin registry, the fs scan pipeline;
-                     network ONLY via package-manager shell-outs — no fetch)
+                     child processes, the agent-plugin registry, the fs scan pipeline,
+                     the project-inventory pass; network ONLY via package-manager
+                     shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types)
                      (bundler-agnostic presentational views; props-driven, no data fetching)

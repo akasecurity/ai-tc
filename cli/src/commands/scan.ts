@@ -1,7 +1,8 @@
+import { statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 
-import type { ScanPathResult } from '@akasecurity/local-ops';
-import { scanPathIntoStore } from '@akasecurity/local-ops';
+import type { ProjectInventoryResult, ScanPathResult } from '@akasecurity/local-ops';
+import { recordProjectInventory, scanPathIntoStore } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
 import { Severity } from '@akasecurity/schema';
@@ -18,13 +19,24 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // CI surface (both opt-in; the default text output and exit-0 behavior are
 // unchanged):
 //   --format json         machine-readable result on stdout (findings carry the
-//                         masked match + span, never the raw secret)
+//                         masked match + span, never the raw secret; `inventory`
+//                         reports the project row + file tree recorded for the
+//                         repo containing the target, null outside a git repo)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
 
 // Severity.options is ordered most→least severe; lower index = more severe.
 function severityRank(s: Severity): number {
   return Severity.options.indexOf(s);
+}
+
+// The text-mode summary of what the project-inventory pass recorded. A zero
+// count means the walk recorded nothing (the stored tree, if any, was left
+// untouched); a truncated walk stored a partial view that never prunes.
+export function renderInventoryLine(inv: ProjectInventoryResult): string {
+  if (inv.fileCount === 0) return `Inventory: ${inv.name} · file tree unchanged`;
+  const partial = inv.truncated ? ' (partial walk)' : '';
+  return `Inventory: ${inv.name} · ${String(inv.fileCount)} project file(s) recorded${partial}`;
 }
 
 export function runScan(argv: string[]): void {
@@ -39,6 +51,16 @@ export function runScan(argv: string[]): void {
   });
   const home = homeBase(values.home);
   const target = positionals[0] ?? '.';
+
+  // Validate the target exists before touching the store (the web-ui action
+  // does the same) — a mistyped path must error, not report an empty scan.
+  try {
+    statSync(target);
+  } catch {
+    process.stderr.write(`aka scan: no such file or directory: ${target}\n`);
+    process.exitCode = 1;
+    return;
+  }
 
   const format = values.format ?? 'text';
   if (format !== 'text' && format !== 'json') {
@@ -64,6 +86,7 @@ export function runScan(argv: string[]): void {
   const db = openLocalDatabase(dataDir(home));
 
   let result: ScanPathResult;
+  let inventory: ProjectInventoryResult | null;
   try {
     // Evaluate the bundled packs via the process-global registry, but resolve each
     // finding's action from the installed snapshot's per-pack policy (ruleActions)
@@ -71,6 +94,9 @@ export function runScan(argv: string[]): void {
     // snapshot fall back to the per-category default.
     const { ruleActions } = db.installedPacks.installedRuleset();
     result = scanPathIntoStore(db, target, { ruleActions, sourceTool: 'cli' });
+    // Keep the Inventory page's project + file tree fresh for the repo just
+    // scanned (fail-open, no-op outside a git repo).
+    inventory = recordProjectInventory(db, target);
   } finally {
     db.close();
   }
@@ -89,13 +115,22 @@ export function runScan(argv: string[]): void {
         confidence: d.confidence,
       })),
     );
+    const inventoryJson = inventory
+      ? {
+          name: inventory.name,
+          url: inventory.url,
+          fileCount: inventory.fileCount,
+          truncated: inventory.truncated,
+        }
+      : null;
     process.stdout.write(
-      `${JSON.stringify({ target, scanned: result.scanned, findings }, null, 2)}\n`,
+      `${JSON.stringify({ target, scanned: result.scanned, findings, inventory: inventoryJson }, null, 2)}\n`,
     );
   } else {
     process.stdout.write(
       `Scanned ${String(result.scanned)} file(s) under ${target} · ${String(result.findings)} finding(s) recorded\n`,
     );
+    if (inventory) process.stdout.write(`${renderInventoryLine(inventory)}\n`);
   }
 
   if (failOn !== undefined) {

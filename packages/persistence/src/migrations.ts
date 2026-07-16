@@ -2,57 +2,22 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
 
+import {
+  columnNames,
+  evidenceExists,
+  type EvidenceObject,
+  evidenceObjects,
+  indexExists,
+  schemaObjectExists,
+} from './db/migrations/introspection.ts';
 import { sourceProjectId } from './ids.ts';
+import { withTransaction } from './internal/transactions.ts';
+import { akaWarn } from './internal/warn.ts';
 
 // --- migration-DDL introspection --------------------------------------------
 // drizzle's generated SQLite DDL is rigidly formatted — backtick-quoted
 // identifiers, one statement per `--> statement-breakpoint` — which is what
 // makes the light parsing below safe.
-
-// A schema object whose EXISTENCE proves its migration already ran: tables and
-// ADDed columns. Indexes are deliberately NOT evidence — divergent stores have
-// gained columns without their index (the ensureTokenUsageColumns backfill
-// adds the 0001 token columns but not `idx_audit_session_type`) — and unlike
-// tables/columns their DDL is safely re-runnable, so applyMigrations handles
-// them per statement instead.
-type EvidenceObject =
-  { kind: 'table'; name: string } | { kind: 'column'; table: string; name: string };
-
-function evidenceObjects(sql: string): EvidenceObject[] {
-  const objects: EvidenceObject[] = [];
-  for (const m of sql.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?`([^`]+)`/g)) {
-    // drizzle's table-recreate creates a transient `__new_<table>` that is
-    // renamed away before the migration ends — it can never prove the
-    // migration ran (a recreate-only migration probes as never-applied and
-    // would replay on every unledgered reconcile), and a LEFTOVER __new_ table
-    // from an interrupted out-of-band push would falsely adopt it. Not
-    // evidence, either way.
-    if (m[1] !== undefined && !m[1].startsWith('__new_')) {
-      objects.push({ kind: 'table', name: m[1] });
-    }
-  }
-  for (const m of sql.matchAll(/ALTER TABLE `([^`]+)` ADD (?:COLUMN )?`([^`]+)`/g)) {
-    if (m[1] !== undefined && m[2] !== undefined) {
-      objects.push({ kind: 'column', table: m[1], name: m[2] });
-    }
-  }
-  return objects;
-}
-
-function evidenceExists(db: DatabaseSync, object: EvidenceObject): boolean {
-  if (object.kind === 'column') {
-    // table_xinfo, NOT table_info: generated columns are invisible to table_info,
-    // so probing with it would call every token-usage column missing. PRAGMA can't
-    // be parameterized; the table name comes from our own committed DDL constant.
-    // A missing table yields an empty row set — the column counts as absent.
-    const columns = db.prepare(`PRAGMA table_xinfo(${object.table})`).all() as { name: string }[];
-    return columns.some((c) => c.name === object.name);
-  }
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1")
-    .get(object.name);
-  return row !== undefined;
-}
 
 function describeObject(object: EvidenceObject): string {
   return object.kind === 'column'
@@ -75,13 +40,6 @@ function splitStatements(sql: string): string[] {
 function createdIndexName(statement: string): string | undefined {
   const body = statement.replace(/^(?:\s*--[^\n]*\n?)+/, '').trimStart();
   return /^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?`([^`]+)`/.exec(body)?.[1];
-}
-
-function indexExists(db: DatabaseSync, name: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1")
-    .get(name);
-  return row !== undefined;
 }
 
 // Apply the canonical migrations the store hasn't yet, tracking applied
@@ -129,7 +87,7 @@ export function applyMigrations(db: DatabaseSync): void {
     if (present.length > 0 && present.length < evidence.length) {
       const missing = evidence.filter((o) => !present.includes(o));
       const message =
-        `[aka] sqlite migration ${migration.tag} has no ledger row, but the store ` +
+        `sqlite migration ${migration.tag} has no ledger row, but the store ` +
         `already has ${present.map(describeObject).join(', ')} while missing ` +
         `${missing.map(describeObject).join(', ')} — the schema diverged from the ` +
         `migration history; refusing to replay or skip.`;
@@ -137,8 +95,8 @@ export function applyMigrations(db: DatabaseSync): void {
       // not depend on it propagating — write stderr first (the same channel as
       // the foreign-lineage reset in openLocalDatabase) so a plugin session
       // still shows WHY the store stopped persisting.
-      process.stderr.write(`${message}\n`);
-      throw new Error(message);
+      akaWarn(message);
+      throw new Error(`[aka] ${message}`);
     }
 
     // Already applied: every table/column this migration creates exists, so it
@@ -176,38 +134,33 @@ export function applyMigrations(db: DatabaseSync): void {
     // a crash can't strand a half-recorded migration.
     if (wantsFkOff) db.exec('PRAGMA foreign_keys = OFF');
     try {
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        for (const statement of statements) {
-          const indexName = createdIndexName(statement);
-          if (indexName === undefined) {
-            if (alreadyApplied) continue;
-          } else if (indexExists(db, indexName)) {
-            continue;
+      withTransaction(
+        db,
+        () => {
+          for (const statement of statements) {
+            const indexName = createdIndexName(statement);
+            if (indexName === undefined) {
+              if (alreadyApplied) continue;
+            } else if (indexExists(db, indexName)) {
+              continue;
+            }
+            db.exec(statement);
           }
-          db.exec(statement);
-        }
-        // With enforcement suspended, prove the migration left referential
-        // integrity intact before committing — the same check drizzle's own
-        // runner performs around a recreate.
-        if (wantsFkOff && !alreadyApplied) {
-          const violations = db.prepare('PRAGMA foreign_key_check').all();
-          if (violations.length > 0) {
-            throw new Error(
-              `[aka] sqlite migration ${migration.tag} left ${String(violations.length)} foreign-key violation(s); rolling back.`,
-            );
+          // With enforcement suspended, prove the migration left referential
+          // integrity intact before committing — the same check drizzle's own
+          // runner performs around a recreate.
+          if (wantsFkOff && !alreadyApplied) {
+            const violations = db.prepare('PRAGMA foreign_key_check').all();
+            if (violations.length > 0) {
+              throw new Error(
+                `[aka] sqlite migration ${migration.tag} left ${String(violations.length)} foreign-key violation(s); rolling back.`,
+              );
+            }
           }
-        }
-        record.run(migration.tag, Date.now());
-        db.exec('COMMIT');
-      } catch (error) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {
-          // Some SQLite errors abort the transaction themselves.
-        }
-        throw error;
-      }
+          record.run(migration.tag, Date.now());
+        },
+        'IMMEDIATE',
+      );
     } finally {
       if (wantsFkOff) db.exec('PRAGMA foreign_keys = ON');
     }
@@ -290,8 +243,7 @@ export const TOKEN_USAGE_COLUMNS: readonly { name: string; ddl: string }[] = [
 // the ADD would fail with "duplicate column name". Idempotent, like
 // ensureSyncedAtColumn.
 function ensureTokenUsageColumns(db: DatabaseSync): void {
-  const columns = db.prepare('PRAGMA table_xinfo(audit_events)').all() as { name: string }[];
-  const existing = new Set(columns.map((c) => c.name));
+  const existing = new Set(columnNames(db, 'audit_events', { includeGenerated: true }));
   for (const column of TOKEN_USAGE_COLUMNS) {
     if (!existing.has(column.name)) {
       db.exec(column.ddl);
@@ -371,45 +323,40 @@ export function reconcileSourceProjectIds(db: DatabaseSync): void {
     }));
     const deleteLegacy = db.prepare('DELETE FROM source_project WHERE id = ?');
 
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      for (const { row, canonicalId } of legacy) {
-        // The FIRST writer for this url keeps name/attributes; every later fold
-        // only widens the observation window (min first_seen, max last_seen). A
-        // real canonical row, if one exists, is that first writer and so keeps its
-        // name/attributes — the same Type-1 overwrite-to-latest the upsert uses
-        // (the canonical row is the current plugin's write). With no canonical row
-        // and several legacy rows, the last_seen-DESC ordering makes the newest
-        // sighting the first writer, so the winner is deterministic.
-        foldProject.run(
-          canonicalId,
-          row.url,
-          row.name,
-          row.attributes,
-          row.firstSeen,
-          row.lastSeen,
-        );
-        repointAudit.run(canonicalId, row.id);
-        for (const { dropCollisions, repoint } of pathTables) {
-          dropCollisions.run(row.id, canonicalId);
-          repoint.run(canonicalId, row.id);
+    withTransaction(
+      db,
+      () => {
+        for (const { row, canonicalId } of legacy) {
+          // The FIRST writer for this url keeps name/attributes; every later fold
+          // only widens the observation window (min first_seen, max last_seen). A
+          // real canonical row, if one exists, is that first writer and so keeps its
+          // name/attributes — the same Type-1 overwrite-to-latest the upsert uses
+          // (the canonical row is the current plugin's write). With no canonical row
+          // and several legacy rows, the last_seen-DESC ordering makes the newest
+          // sighting the first writer, so the winner is deterministic.
+          foldProject.run(
+            canonicalId,
+            row.url,
+            row.name,
+            row.attributes,
+            row.firstSeen,
+            row.lastSeen,
+          );
+          repointAudit.run(canonicalId, row.id);
+          for (const { dropCollisions, repoint } of pathTables) {
+            dropCollisions.run(row.id, canonicalId);
+            repoint.run(canonicalId, row.id);
+          }
+          repointCallSite.run(canonicalId, row.id);
+          deleteLegacy.run(row.id);
         }
-        repointCallSite.run(canonicalId, row.id);
-        deleteLegacy.run(row.id);
-      }
-      db.exec('COMMIT');
-    } catch (error) {
-      try {
-        db.exec('ROLLBACK');
-      } catch {
-        // Some SQLite errors abort the transaction themselves.
-      }
-      throw error;
-    }
+      },
+      'IMMEDIATE',
+    );
   } catch (error) {
     // Same channel as the applier's loud paths — visible in a plugin session even
     // though the failure is swallowed.
-    process.stderr.write(`[aka] source_project id reconcile failed: ${String(error)}\n`);
+    akaWarn(`source_project id reconcile failed: ${String(error)}`);
   }
 }
 
@@ -424,12 +371,8 @@ export function reconcileSourceProjectIds(db: DatabaseSync): void {
 // A fresh/empty db (no `events` table yet) is NOT foreign — the normal migration
 // path creates the tenant-free tables.
 export function isForeignSqliteLineage(db: DatabaseSync): boolean {
-  const tenantsTable = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tenants' LIMIT 1")
-    .get();
-  if (tenantsTable !== undefined) return true;
-  const eventsColumns = db.prepare('PRAGMA table_info(events)').all() as { name: string }[];
-  return eventsColumns.some((c) => c.name === 'tenant_id');
+  if (schemaObjectExists(db, 'table', 'tenants')) return true;
+  return columnNames(db, 'events').includes('tenant_id');
 }
 
 // `synced_at` is an additive, plugin-local bookkeeping column that existing
@@ -438,8 +381,7 @@ export function isForeignSqliteLineage(db: DatabaseSync): boolean {
 // created it. Guarded by table_info so it is applied exactly once per table,
 // idempotently.
 function ensureSyncedAtColumn(db: DatabaseSync, table: 'events' | 'audit_events'): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  if (!columns.some((c) => c.name === 'synced_at')) {
+  if (!columnNames(db, table).includes('synced_at')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN synced_at integer`);
   }
 }

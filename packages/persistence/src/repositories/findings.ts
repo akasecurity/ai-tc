@@ -25,6 +25,7 @@ import {
   toFindingRow,
 } from '@akasecurity/schema';
 
+import { allRows, countScalar } from '../internal/rows.ts';
 import type { DashboardViews, FindingsReadPort, GroupedFindingsView } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
@@ -225,15 +226,16 @@ export class SqliteFindingsRepository
 
   recentFindings(opts?: { limit?: number }): Promise<FindingView[]> {
     const limit = opts?.limit ?? 50;
-    const rows = this.db
-      .prepare(
+    const rows = allRows<FindingRowJoined>(
+      this.db.prepare(
         `SELECT f.id, f.event_id, f.rule_id, f.category, f.severity, f.masked_match,
                 f.action_taken, f.confidence, e.occurred_at, e.source_tool, e.kind
          FROM findings f JOIN events e ON e.id = f.event_id
          ORDER BY e.occurred_at DESC, f.rowid DESC
          LIMIT :limit`,
-      )
-      .all({ limit }) as unknown as FindingRowJoined[];
+      ),
+      { limit },
+    );
     return Promise.resolve(
       rows.map((r) => ({
         id: r.id,
@@ -275,8 +277,8 @@ export class SqliteFindingsRepository
     // it (see groupAggregates).
     const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '');
 
-    const rows = this.db
-      .prepare(
+    const rows = allRows<FindingGroupRowJoined>(
+      this.db.prepare(
         `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
                 occurred_at, source_tool, repo, file, kind, finding_key, latest_status
          FROM (
@@ -299,8 +301,9 @@ export class SqliteFindingsRepository
          )
          WHERE rn <= :cap
          ORDER BY occurred_at DESC, id DESC`,
-      )
-      .all({ cap: PREVIEW_INSTANCES_PER_GROUP }) as unknown as FindingGroupRowJoined[];
+      ),
+      { cap: PREVIEW_INSTANCES_PER_GROUP },
+    );
 
     const groupable: GroupableFindingRow[] = rows.map((r) => ({
       id: r.id,
@@ -425,14 +428,14 @@ export class SqliteFindingsRepository
   }
 
   healthSummary(): Promise<HealthSummary> {
-    const total = (this.db.prepare('SELECT count(*) AS c FROM findings').get() as { c: number }).c;
+    const total = countScalar(this.db, 'SELECT count(*) AS n FROM findings');
     const byAction = Object.fromEntries(ACTION_TAKEN_KEYS.map((a) => [a, 0])) as Record<
       ActionTaken,
       number
     >;
-    const grouped = this.db
-      .prepare('SELECT action_taken, count(*) AS c FROM findings GROUP BY action_taken')
-      .all() as { action_taken: string; c: number }[];
+    const grouped = allRows<{ action_taken: string; c: number }>(
+      this.db.prepare('SELECT action_taken, count(*) AS c FROM findings GROUP BY action_taken'),
+    );
     for (const row of grouped) {
       if (row.action_taken in byAction) byAction[row.action_taken as ActionTaken] = row.c;
     }
@@ -448,16 +451,16 @@ export class SqliteFindingsRepository
     // fix. In-flight/legacy rows carry finding_key NULL, never join a
     // resolution row, and so always count.
     const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
-    const sevRows = this.db
-      .prepare(
+    const sevRows = allRows<{ severity: string; c: number }>(
+      this.db.prepare(
         `SELECT f.severity AS severity, count(*) AS c
          FROM findings f
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
          WHERE latest.status IS NULL OR latest.status != 'resolved'
          GROUP BY f.severity`,
-      )
-      .all() as { severity: string; c: number }[];
+      ),
+    );
     for (const row of sevRows) {
       if (row.severity in bySeverity) bySeverity[row.severity as keyof typeof bySeverity] = row.c;
     }
@@ -467,12 +470,12 @@ export class SqliteFindingsRepository
     // policy would otherwise inflate the numerator against a shrunken
     // denominator (or drag every store's % down if counted in both).
     const categories = ENFORCEABLE_CATEGORIES;
-    const enabledRows = this.db
-      .prepare(
+    const enabledRows = allRows<{ category: string }>(
+      this.db.prepare(
         `SELECT DISTINCT json_extract(target, '$.category') AS category
          FROM policies WHERE enabled = 1 AND json_extract(target, '$.category') IS NOT NULL`,
-      )
-      .all() as { category: string }[];
+      ),
+    );
     const enabled = new Set(enabledRows.map((r) => r.category));
     const coverage =
       categories.length === 0
@@ -484,18 +487,19 @@ export class SqliteFindingsRepository
 
   activityByDay(days = 7): Promise<DayActivity[]> {
     const since = startOfUtcDay(Date.now()) - (days - 1) * DAY_MS;
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      day: string;
+      action: string;
+      c: number;
+    }>(
+      this.db.prepare(
         `SELECT date(e.occurred_at / 1000, 'unixepoch') AS day, f.action_taken AS action, count(*) AS c
          FROM findings f JOIN events e ON e.id = f.event_id
          WHERE e.occurred_at >= :since
          GROUP BY day, f.action_taken`,
-      )
-      .all({ since }) as {
-      day: string;
-      action: string;
-      c: number;
-    }[];
+      ),
+      { since },
+    );
 
     // Pre-fill every day in the window so the read surface can draw a continuous
     // bar chart even on days with no activity.

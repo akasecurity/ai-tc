@@ -127,7 +127,7 @@ When adding a **new reusable component** to `@akasecurity/ui-kit`, follow the sh
 See `skills/write-detection-rule/SKILL.md`. A rule PR without fixtures is rejected by CI.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
-legacy-writers suite (`packages/persistence/src/repositories/legacy-writers.test.ts`) — it
+legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it
 replays frozen SQL from already-shipped binaries, which app-level guards cannot reach.
 
 ## Repository layout

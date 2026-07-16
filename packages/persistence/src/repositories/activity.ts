@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import type {
   ActivitySession,
@@ -26,8 +26,10 @@ import {
   SessionStatus,
 } from '@akasecurity/schema';
 
+import { parseJsonObject, safeJson } from '../internal/json.ts';
+import { allRows, countScalar, getRow, intToBool, mapRowsTolerant } from '../internal/rows.ts';
+import { containsPattern, placeholders } from '../internal/sql-text.ts';
 import type { ActivityReadPort } from '../ports.ts';
-import { escapeLikePattern, placeholders } from './sql-utils.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -130,22 +132,17 @@ function encodeCursor(payload: SessionCursor): string {
 }
 
 function decodeCursor(cursor: string): SessionCursor | null {
-  try {
-    const parsed: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-    if (
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      'startedAtMs' in parsed &&
-      'id' in parsed &&
-      typeof (parsed as { startedAtMs: unknown }).startedAtMs === 'number' &&
-      typeof (parsed as { id: unknown }).id === 'string'
-    ) {
-      return parsed as SessionCursor;
-    }
-    return null;
-  } catch {
-    return null;
+  const parsed = parseJsonObject(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (
+    parsed !== undefined &&
+    'startedAtMs' in parsed &&
+    'id' in parsed &&
+    typeof parsed.startedAtMs === 'number' &&
+    typeof parsed.id === 'string'
+  ) {
+    return parsed as unknown as SessionCursor;
   }
+  return null;
 }
 
 // DB event_type → contract AuditEventKind. `tool_call` renames to `tool`; the
@@ -170,17 +167,8 @@ const DB_EVENT_TYPE_TO_KIND: Partial<Record<string, AuditEventKind>> = {
  * missing or malformed value — never throws on a legacy-shaped row. */
 function safeParseStringArray(raw: string | null): string[] {
   if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-/** A raw json_extract boolean comes back as 1/0 (or null); normalize to bool. */
-function toBool(raw: unknown): boolean {
-  return raw === 1 || raw === true;
+  const parsed = safeJson<unknown>(raw, null);
+  return Array.isArray(parsed) ? (parsed as string[]) : [];
 }
 
 /** Validate a raw harness attribute against the enum, defaulting to `claudecode`
@@ -304,8 +292,8 @@ function buildAuditEvent(row: TimelineRow): AuditEvent | null {
     severity: severityParsed?.success ? severityParsed.data : null,
     link: linkParsed?.success ? linkParsed.data : null,
     targetId: row.target_id,
-    internal: toBool(row.internal),
-    flagged: toBool(row.flagged),
+    internal: intToBool(row.internal),
+    flagged: intToBool(row.flagged),
   };
 }
 
@@ -352,14 +340,12 @@ export class SqliteActivityRepository implements ActivityReadPort {
     const window = todayWindow(tz ?? defaultTimeZone(), this.now());
     const { startMs, endMs } = window;
 
-    const sessionsToday = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM audit_events
+    const sessionsToday = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM audit_events
            WHERE ${SESSION_ROOT} AND started_at >= ? AND started_at < ?`,
-        )
-        .get(startMs, endMs) as { n: number }
-    ).n;
+      [startMs, endMs],
+    );
 
     // liveNow — open sessions still recently active (tz-independent, no day
     // boundary). "Open" alone is not enough: the local store never stamps
@@ -370,10 +356,9 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // long-running event — a subagent, a build, a 35-min tool call — keeps the
     // session live off its end time, not its start.
     const liveThreshold = this.now() - LIVE_ACTIVITY_WINDOW_MS;
-    const liveNow = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM audit_events s
+    const liveNow = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM audit_events s
            WHERE s.event_type = 'session' AND s.ended_at IS NULL
              AND max(
                s.started_at,
@@ -382,18 +367,15 @@ export class SqliteActivityRepository implements ActivityReadPort {
                  s.started_at
                )
              ) >= ?`,
-        )
-        .get(liveThreshold) as { n: number }
-    ).n;
+      [liveThreshold],
+    );
 
-    const toolCallsToday = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM audit_events
+    const toolCallsToday = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM audit_events
            WHERE event_type = 'tool_call' AND started_at >= ? AND started_at < ?`,
-        )
-        .get(startMs, endMs) as { n: number }
-    ).n;
+      [startMs, endMs],
+    );
 
     // Counts inspection_findings ONLY (transcript- and scan-derived rows keyed
     // to audit_events). Live-capture findings are a separate store
@@ -403,25 +385,21 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // then re-detected in the persisted transcript), so a naive union would
     // double-count it. The Activity page's number is therefore narrower than
     // the security pages' by design.
-    const findingsToday = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM inspection_findings f
+    const findingsToday = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM inspection_findings f
            JOIN audit_events e ON e.id = f.audit_event_id
            WHERE e.started_at >= ? AND e.started_at < ?`,
-        )
-        .get(startMs, endMs) as { n: number }
-    ).n;
+      [startMs, endMs],
+    );
 
-    const egressToday = (
-      this.db
-        .prepare(
-          `SELECT count(DISTINCT json_extract(attributes, '$.destination')) AS n
+    const egressToday = countScalar(
+      this.db,
+      `SELECT count(DISTINCT json_extract(attributes, '$.destination')) AS n
            FROM audit_events
            WHERE event_type = 'share' AND started_at >= ? AND started_at < ?`,
-        )
-        .get(startMs, endMs) as { n: number }
-    ).n;
+      [startMs, endMs],
+    );
 
     return Promise.resolve({ sessionsToday, liveNow, toolCallsToday, findingsToday, egressToday });
   }
@@ -453,7 +431,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
     params.push(toMs);
 
     if (query.q) {
-      const pattern = `%${escapeLikePattern(query.q)}%`;
+      const pattern = containsPattern(query.q);
       conditions.push(
         `(content LIKE ? ESCAPE '\\'
           OR json_extract(attributes, '$.project') LIKE ? ESCAPE '\\'
@@ -476,8 +454,8 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     // Fetch one extra row to detect a next page without a separate COUNT.
     const limit = query.limit;
-    const rows = this.db
-      .prepare(
+    const rows = allRows<SessionRootRow>(
+      this.db.prepare(
         `SELECT id,
                 json_extract(attributes, '$.harness') AS harness,
                 content AS title,
@@ -491,8 +469,9 @@ export class SqliteActivityRepository implements ActivityReadPort {
          WHERE ${conditions.join(' AND ')}
          ORDER BY started_at DESC, id DESC
          LIMIT ?`,
-      )
-      .all(...(params as never[]), limit + 1) as unknown as SessionRootRow[];
+      ),
+      [...(params as SQLInputValue[]), limit + 1],
+    );
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
@@ -515,8 +494,16 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   getSession(sessionId: string): Promise<ActivitySession | null> {
-    const rootRow = this.db
-      .prepare(
+    const rootRow = getRow<
+      SessionRootRow & {
+        host: string | null;
+        cwd: string | null;
+        models: string | null;
+        version: string | null;
+        files: string | null;
+      }
+    >(
+      this.db.prepare(
         `SELECT id,
                 json_extract(attributes, '$.harness') AS harness,
                 content AS title,
@@ -534,32 +521,31 @@ export class SqliteActivityRepository implements ActivityReadPort {
          FROM audit_events
          WHERE id = ? AND event_type = 'session'
          LIMIT 1`,
-      )
-      .get(sessionId) as
-      | (SessionRootRow & {
-          host: string | null;
-          cwd: string | null;
-          models: string | null;
-          version: string | null;
-          files: string | null;
-        })
-      | undefined;
+      ),
+      [sessionId],
+    );
 
     if (!rootRow) return Promise.resolve(null);
 
-    const timelineRows = this.db
-      .prepare(
+    const timelineRows = allRows<TimelineRow>(
+      this.db.prepare(
         `SELECT ${TIMELINE_COLUMNS}
          FROM audit_events
          WHERE id = ? OR root_session_id = ?
          ORDER BY started_at ASC, id ASC`,
-      )
-      .all(sessionId, sessionId) as unknown as TimelineRow[];
+      ),
+      [sessionId, sessionId],
+    );
 
     const events = timelineRows.map(buildAuditEvent).filter((e): e is AuditEvent => e !== null);
 
-    const tokenRow = this.db
-      .prepare(
+    const tokenRow = getRow<{
+      input: number;
+      output: number;
+      cache_creation: number;
+      cache_read: number;
+    }>(
+      this.db.prepare(
         `SELECT
            coalesce(sum(input_tokens), 0) AS input,
            coalesce(sum(output_tokens), 0) AS output,
@@ -567,58 +553,55 @@ export class SqliteActivityRepository implements ActivityReadPort {
            coalesce(sum(cache_read_input_tokens), 0) AS cache_read
          FROM audit_events
          WHERE root_session_id = ? AND event_type = 'llm_call'`,
-      )
-      .get(sessionId) as {
-      input: number;
-      output: number;
-      cache_creation: number;
-      cache_read: number;
-    };
+      ),
+      [sessionId],
+    ) ?? { input: 0, output: 0, cache_creation: 0, cache_read: 0 };
 
-    const primaryModel = this.db
-      .prepare(
+    const primaryModel = getRow<{ model: string | null; provider: string | null }>(
+      this.db.prepare(
         `SELECT model, provider FROM audit_events
          WHERE root_session_id = ? AND event_type = 'llm_call'
          ORDER BY started_at ASC, id ASC
          LIMIT 1`,
-      )
-      .get(sessionId) as { model: string | null; provider: string | null } | undefined;
+      ),
+      [sessionId],
+    );
 
     // Tool grouping keys off the canonical `tool_name` (what the reconciler
     // writes) and falls back to the fixtures' legacy `tool` key — the read side
     // reading only `$.tool` was why real reconciled sessions showed "0 tool calls".
-    const toolRows = this.db
-      .prepare(
+    const toolRows = allRows<{ tool: string | null; n: number }>(
+      this.db.prepare(
         `SELECT coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool')) AS tool,
                 count(*) AS n
          FROM audit_events
          WHERE root_session_id = ? AND event_type = 'tool_call'
          GROUP BY coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool'))`,
-      )
-      .all(sessionId) as { tool: string | null; n: number }[];
+      ),
+      [sessionId],
+    );
 
     // Models used — the DISTINCT models across this session's `llm_call` leaves
     // (a run can switch models / spawn subagents). Derived here rather than read
     // off the root's `$.models` attribute: the live capture path stores no
     // `models` on the root, and this recovers the list for pre-enrichment rows.
     // Falls back to the root attribute when no leaves exist (fixture rows).
-    const modelRows = this.db
-      .prepare(
+    const modelRows = allRows<{ model: string }>(
+      this.db.prepare(
         `SELECT DISTINCT model FROM audit_events
          WHERE root_session_id = ? AND event_type = 'llm_call' AND model IS NOT NULL AND model <> ''
          ORDER BY model`,
-      )
-      .all(sessionId) as { model: string }[];
+      ),
+      [sessionId],
+    );
     const derivedModels = modelRows.map((r) => r.model);
 
-    const commits = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM audit_events
+    const commits = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM audit_events
            WHERE root_session_id = ? AND event_type = 'commit'`,
-        )
-        .get(sessionId) as { n: number }
-    ).n;
+      [sessionId],
+    );
 
     // `rollupsFor` already computes this session's last descendant activity
     // (folding each event's ended_at); toSummary maxes it with the root's own
@@ -699,9 +682,10 @@ export class SqliteActivityRepository implements ActivityReadPort {
       `SELECT DISTINCT coalesce(json_extract(attributes, '$.harness'), 'claudecode') AS harness
          FROM audit_events WHERE ${SESSION_ROOT}${where}`,
     );
-    const rows = (fromMs === undefined ? stmt.all() : stmt.all(fromMs)) as {
-      harness: string | null;
-    }[];
+    const rows = allRows<{ harness: string | null }>(
+      stmt,
+      fromMs === undefined ? undefined : [fromMs],
+    );
     const seen = new Set<HarnessType>();
     for (const row of rows) seen.add(toHarness(row.harness));
     return Promise.resolve([...seen]);
@@ -725,27 +709,26 @@ export class SqliteActivityRepository implements ActivityReadPort {
       conditions.push('started_at >= ?');
       params.push(opts.fromMs);
     }
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ sessionId: string | null; attributes: string }>(
+      this.db.prepare(
         `SELECT root_session_id AS sessionId, attributes
            FROM audit_events
           WHERE ${conditions.join(' AND ')}`,
-      )
-      .all(...(params as never[])) as { sessionId: string | null; attributes: string }[];
+      ),
+      params as SQLInputValue[],
+    );
 
-    const leaves: LlmCallLeaf[] = [];
-    for (const row of rows) {
-      if (row.sessionId === null) continue;
-      try {
-        leaves.push({
-          sessionId: row.sessionId,
-          attributes: JSON.parse(row.attributes) as LlmCallAttributes,
-        });
-      } catch {
-        // Corrupt attribute blob → skip this leaf (best-effort read).
-      }
-    }
-    return leaves;
+    // A leaf with no root session can't be attributed and is dropped; a leaf
+    // whose attributes blob is unparseable is skipped (best-effort read).
+    return mapRowsTolerant(
+      rows.filter(
+        (row): row is { sessionId: string; attributes: string } => row.sessionId !== null,
+      ),
+      (row) => ({
+        sessionId: row.sessionId,
+        attributes: JSON.parse(row.attributes) as LlmCallAttributes,
+      }),
+    );
   }
 
   /**
@@ -765,26 +748,28 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // Most recent descendant activity per session (each event's later of
     // start/end — see LAST_ACTIVITY_EXPR); the caller maxes this with the root's
     // own started_at to decide liveness (see resolveLifecycle).
-    const lastActivityRows = this.db
-      .prepare(
+    const lastActivityRows = allRows<{ id: string | null; m: number | null }>(
+      this.db.prepare(
         `SELECT root_session_id AS id, max(${LAST_ACTIVITY_EXPR}) AS m FROM audit_events
          WHERE root_session_id IN (${inClause})
          GROUP BY root_session_id`,
-      )
-      .all(...(sessionIds as never[])) as { id: string | null; m: number | null }[];
+      ),
+      sessionIds,
+    );
     for (const row of lastActivityRows) {
       if (row.id === null) continue;
       const entry = result.get(row.id);
       if (entry && row.m !== null) entry.lastActivityMs = row.m;
     }
 
-    const turnsRows = this.db
-      .prepare(
+    const turnsRows = allRows<{ id: string | null; n: number }>(
+      this.db.prepare(
         `SELECT root_session_id AS id, count(*) AS n FROM audit_events
          WHERE root_session_id IN (${inClause}) AND event_type = 'prompt'
          GROUP BY root_session_id`,
-      )
-      .all(...(sessionIds as never[])) as { id: string | null; n: number }[];
+      ),
+      sessionIds,
+    );
     for (const row of turnsRows) {
       if (row.id === null) continue;
       const entry = result.get(row.id);
@@ -796,16 +781,17 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // `llm_call` leaves — one turn per user prompt. Take the max of the two so
     // fixture rows (which seed `prompt` events) and real reconciled rows (which
     // carry `run_key`) both report correctly, and a session with neither reads 0.
-    const runKeyRows = this.db
-      .prepare(
+    const runKeyRows = allRows<{ id: string | null; n: number }>(
+      this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.run_key')) AS n
          FROM audit_events
          WHERE root_session_id IN (${inClause}) AND event_type = 'llm_call'
            AND json_extract(attributes, '$.run_key') IS NOT NULL
          GROUP BY root_session_id`,
-      )
-      .all(...(sessionIds as never[])) as { id: string | null; n: number }[];
+      ),
+      sessionIds,
+    );
     for (const row of runKeyRows) {
       if (row.id === null) continue;
       const entry = result.get(row.id);
@@ -816,29 +802,31 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // todayStats.findingsToday (see the comment there): live-capture findings
     // (findings ⋈ events) are excluded to avoid double-counting a value both
     // enforced live and re-detected in the session's persisted transcript.
-    const findingsRows = this.db
-      .prepare(
+    const findingsRows = allRows<{ id: string | null; n: number }>(
+      this.db.prepare(
         `SELECT e.root_session_id AS id, count(*) AS n FROM inspection_findings f
          JOIN audit_events e ON e.id = f.audit_event_id
          WHERE e.root_session_id IN (${inClause})
          GROUP BY e.root_session_id`,
-      )
-      .all(...(sessionIds as never[])) as { id: string | null; n: number }[];
+      ),
+      sessionIds,
+    );
     for (const row of findingsRows) {
       if (row.id === null) continue;
       const entry = result.get(row.id);
       if (entry) entry.findings = row.n;
     }
 
-    const sharesRows = this.db
-      .prepare(
+    const sharesRows = allRows<{ id: string | null; n: number }>(
+      this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.destination')) AS n
          FROM audit_events
          WHERE root_session_id IN (${inClause}) AND event_type = 'share'
          GROUP BY root_session_id`,
-      )
-      .all(...(sessionIds as never[])) as { id: string | null; n: number }[];
+      ),
+      sessionIds,
+    );
     for (const row of sharesRows) {
       if (row.id === null) continue;
       const entry = result.get(row.id);

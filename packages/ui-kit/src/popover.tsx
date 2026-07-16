@@ -23,6 +23,7 @@ export function PopoverContent({
   className,
   align = 'start',
   sideOffset = 6,
+  collisionPadding = 8,
   ...props
 }: PopoverContentProps) {
   return (
@@ -30,8 +31,9 @@ export function PopoverContent({
       <PopoverPrimitive.Content
         align={align}
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          'z-50 min-w-32 rounded-lg border border-border bg-surface p-1 shadow-lg outline-none',
+          'z-50 max-h-(--radix-popover-content-available-height) min-w-32 overflow-y-auto rounded-lg border border-border bg-surface p-1 shadow-lg outline-none',
           className,
         )}
         {...props}

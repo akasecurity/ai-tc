@@ -51,9 +51,11 @@ function downloadSession(session: ActivitySession): void {
 function DetailBody({
   session,
   tokenReport,
+  toolHref,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
+  toolHref?: (toolName: string) => string;
 }) {
   const harness = PROVIDERS[session.harness];
   const tools = toolEntries(session.tools);
@@ -159,7 +161,12 @@ function DetailBody({
             {toolTotal(session.tools)} tool calls
           </span>
           {tools.map((t) => (
-            <ToolChip key={t.name} name={t.name} n={t.n} />
+            <ToolChip
+              key={t.name}
+              name={t.name}
+              n={t.n}
+              {...(toolHref ? { href: toolHref(t.name) } : {})}
+            />
           ))}
         </div>
       </div>
@@ -234,6 +241,7 @@ export function SessionDetailView({
   isLoading,
   error,
   tokenReport,
+  toolHref,
 }: {
   session: ActivitySession | null;
   isLoading: boolean;
@@ -243,6 +251,9 @@ export function SessionDetailView({
    * that omits it (e.g. until cost is available) leaves the
    * band/breakdown hidden. */
   tokenReport?: SessionTokenReport | null;
+  /** Href for a tool chip (e.g. the findings page filtered to that tool).
+   * Optional: omitted, the chips render as plain text. */
+  toolHref?: (toolName: string) => string;
 }) {
   if (error) {
     return (
@@ -268,5 +279,11 @@ export function SessionDetailView({
       </div>
     );
   }
-  return <DetailBody session={session} tokenReport={tokenReport ?? null} />;
+  return (
+    <DetailBody
+      session={session}
+      tokenReport={tokenReport ?? null}
+      {...(toolHref ? { toolHref } : {})}
+    />
+  );
 }

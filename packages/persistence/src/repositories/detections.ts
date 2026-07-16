@@ -10,6 +10,9 @@ import type {
 } from '@akasecurity/schema';
 import { buildDetectionsList, rowToDetectionDetail, splitDetectionId } from '@akasecurity/schema';
 
+import { safeJson } from '../internal/json.ts';
+import { allRows, countScalar, getRow, intToBool } from '../internal/rows.ts';
+import { placeholders } from '../internal/sql-text.ts';
 import type { DetectionsReadPort } from '../ports.ts';
 
 const DAY_MS = 86_400_000;
@@ -44,12 +47,7 @@ interface DetailRow {
 // Exported so the installed-packs repo shares one JSON-tolerance policy for its
 // per-pack rule counts (no drift between the Detections and Policies pages).
 export function parseRules(rulesJson: string): Rule[] {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(rulesJson);
-  } catch {
-    return [];
-  }
+  const raw = safeJson<unknown>(rulesJson, []);
   if (!Array.isArray(raw)) return [];
   const rules: Rule[] = [];
   for (const entry of raw) {
@@ -102,13 +100,13 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
   ) {}
 
   listDetections(query: ListDetectionsQuery): Promise<ListDetectionsResponse> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<SummaryRow>(
+      this.db.prepare(
         `SELECT namespace, pack_id AS packId, version, name, enabled, policy_id AS policyId,
                 rules_json AS rulesJson
          FROM installed_packs`,
-      )
-      .all() as unknown as SummaryRow[];
+      ),
+    );
     const available = this.availableByPack();
 
     const summaries: DetectionSummaryInput[] = rows.map((r) => {
@@ -118,7 +116,7 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
         packId: r.packId,
         version: r.version,
         name: r.name,
-        enabled: r.enabled === 1,
+        enabled: intToBool(r.enabled),
         // Count rules in JS via the tolerant parse rather than SQL json_array_length,
         // which THROWS "malformed JSON" on a corrupt/foreign rules_json and would
         // crash the whole list. This also keeps ruleCount identical to the detail
@@ -137,12 +135,12 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
   // available_packs keyed by the "namespace/packId" slug (one read per list /
   // detail call; the table is a handful of rows).
   private availableByPack(): Map<string, AvailableRow> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ namespace: string; packId: string; version: string; rulesJson: string }>(
+      this.db.prepare(
         `SELECT namespace, pack_id AS packId, version, rules_json AS rulesJson
          FROM available_packs`,
-      )
-      .all() as { namespace: string; packId: string; version: string; rulesJson: string }[];
+      ),
+    );
     return new Map(rows.map((r) => [`${r.namespace}/${r.packId}`, r]));
   }
 
@@ -150,15 +148,15 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
     // Read installed_packs ONCE and derive every stat in JS. SQL json_array_length
     // would throw on a malformed/foreign rules_json (the JS parse is tolerant), and
     // a single scan also removes the second pass the rule-id union used to make.
-    const rows = this.db
-      .prepare('SELECT enabled, rules_json AS rulesJson FROM installed_packs')
-      .all() as unknown as { enabled: number; rulesJson: string }[];
+    const rows = allRows<{ enabled: number; rulesJson: string }>(
+      this.db.prepare('SELECT enabled, rules_json AS rulesJson FROM installed_packs'),
+    );
 
     let rules = 0;
     let active = 0;
     const ruleIds = new Set<string>();
     for (const r of rows) {
-      if (r.enabled === 1) active += 1;
+      if (intToBool(r.enabled)) active += 1;
       const parsed = parseRules(r.rulesJson);
       rules += parsed.length;
       // Union of rule ids for the 30-day findings count (skip any without one).
@@ -180,14 +178,15 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
     if (!parts) return Promise.resolve(null);
     const { namespace, packId } = parts;
 
-    const row = this.db
-      .prepare(
+    const row = getRow<DetailRow>(
+      this.db.prepare(
         `SELECT namespace, pack_id AS packId, version, name, enabled, policy_id AS policyId,
                 rules_json AS rulesJson, updated_at AS updatedAt
          FROM installed_packs
          WHERE namespace = ? AND pack_id = ?`,
-      )
-      .get(namespace, packId) as unknown as DetailRow | undefined;
+      ),
+      [namespace, packId],
+    );
     if (!row) return Promise.resolve(null);
 
     const rules = parseRules(row.rulesJson);
@@ -219,7 +218,7 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
           packId: row.packId,
           version: row.version,
           name: row.name,
-          enabled: row.enabled === 1,
+          enabled: intToBool(row.enabled),
           rules,
           updatedAt: new Date(row.updatedAt),
           policyId: row.policyId,
@@ -236,14 +235,13 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
     // WHERE rule_id IN () is invalid SQL and the answer is always 0.
     if (ruleIds.length === 0) return 0;
     const since = this.now() - 30 * DAY_MS;
-    const placeholders = ruleIds.map(() => '?').join(', ');
-    const row = this.db
-      .prepare(
-        `SELECT count(*) AS c
+    const inClause = placeholders(ruleIds.length);
+    return countScalar(
+      this.db,
+      `SELECT count(*) AS n
          FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.occurred_at >= ? AND f.rule_id IN (${placeholders})`,
-      )
-      .get(since, ...ruleIds) as { c: number };
-    return row.c;
+         WHERE e.occurred_at >= ? AND f.rule_id IN (${inClause})`,
+      [since, ...ruleIds],
+    );
   }
 }

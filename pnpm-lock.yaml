@@ -223,6 +223,9 @@ importers:
       '@akasecurity/persistence':
         specifier: workspace:*
         version: link:../persistence
+      '@akasecurity/plugin-sdk':
+        specifier: workspace:*
+        version: link:../plugin-sdk
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../schema

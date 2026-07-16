@@ -64,7 +64,11 @@ async function main(): Promise<void> {
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
 
   const kind = inputEventKind(toolName);
+  // The tool NAME rides in the metadata (never its arguments — metadata is
+  // stored unredacted), so findings on file-less captures (a Bash command, an
+  // MCP payload) still carry a display location.
   const metadata = baseMetadata(input) ?? {};
+  if (toolName) metadata.toolName = toolName;
   const filePath = inputFilePath(toolInput);
   if (filePath) metadata.filePath = filePath;
 

@@ -1,5 +1,8 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
+import { allRows } from '../internal/rows.ts';
+import { failOpenTransaction } from '../internal/transactions.ts';
+
 // One recorded scan of one file: its identity on disk (path), the cheap change
 // signals (mtime, content hash), and the ruleset it was scanned under.
 export interface ScanLedgerEntry {
@@ -48,37 +51,27 @@ export class SqliteScanLedgerRepository {
   // Previously scanned files under THIS ruleset, keyed by path. Rows from an
   // older ruleset are simply absent, which reads as "never scanned".
   entriesForRuleset(rulesetHash: string): Map<string, ScanLedgerState> {
-    const rows = this.readStmt.all({ rulesetHash }) as unknown as {
-      path: string;
-      mtime: string;
-      contentHash: string;
-    }[];
+    const rows = allRows<{ path: string; mtime: string; contentHash: string }>(this.readStmt, {
+      rulesetHash,
+    });
     return new Map(rows.map((r) => [r.path, { mtime: r.mtime, contentHash: r.contentHash }]));
   }
 
   upsertEntries(entries: ScanLedgerEntry[]): void {
     if (entries.length === 0) return;
     const scannedAt = Date.now();
-    try {
-      this.db.exec('BEGIN');
-      try {
-        for (const entry of entries) {
-          this.upsertStmt.run({
-            path: entry.path,
-            mtime: entry.mtime,
-            contentHash: entry.contentHash,
-            rulesetHash: entry.rulesetHash,
-            scannedAt,
-          });
-        }
-        this.db.exec('COMMIT');
-      } catch (err) {
-        this.db.exec('ROLLBACK');
-        throw err;
+    // Fail-open: losing scan bookkeeping only costs a rescan next run; it must
+    // never abort the scan itself (mirrors recordCapture/upsertPacks).
+    failOpenTransaction(this.db, () => {
+      for (const entry of entries) {
+        this.upsertStmt.run({
+          path: entry.path,
+          mtime: entry.mtime,
+          contentHash: entry.contentHash,
+          rulesetHash: entry.rulesetHash,
+          scannedAt,
+        });
       }
-    } catch {
-      // Fail-open: losing scan bookkeeping only costs a rescan next run; it must
-      // never abort the scan itself (mirrors recordCapture/upsertPacks).
-    }
+    });
   }
 }

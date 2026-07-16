@@ -3,6 +3,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import { FindingStatus, ResolutionMethod } from '@akasecurity/schema';
 
+import { allRows, getRow } from '../internal/rows.ts';
 import { latestResolutionStatusSql } from './resolution-sql.ts';
 
 // What a caller supplies to record one disposition of a finding. `status`/
@@ -146,7 +147,7 @@ export class SqliteResolutionsRepository {
 
   /** The newest disposition recorded for a finding key, or undefined if none. */
   latestByKey(key: string): Resolution | undefined {
-    const row = this.latestStmt.get({ findingKey: key }) as unknown as ResolutionRow | undefined;
+    const row = getRow<ResolutionRow>(this.latestStmt, { findingKey: key });
     if (!row) return undefined;
     return {
       // Safe narrows: insertResolution enum-parses both columns on every write,
@@ -164,7 +165,7 @@ export class SqliteResolutionsRepository {
    * the CLI) surfaces for that file.
    */
   openAtRestKeysForPath(path: string): string[] {
-    const rows = this.openAtRestStmt.all({ path }) as unknown as FindingKeyRow[];
+    const rows = allRows<FindingKeyRow>(this.openAtRestStmt, { path });
     return rows.map((r) => r.finding_key);
   }
 
@@ -176,7 +177,7 @@ export class SqliteResolutionsRepository {
    * resolution row (see scan.ts).
    */
   resolvedAtRestKeysForPath(path: string): string[] {
-    const rows = this.resolvedAtRestStmt.all({ path }) as unknown as FindingKeyRow[];
+    const rows = allRows<FindingKeyRow>(this.resolvedAtRestStmt, { path });
     return rows.map((r) => r.finding_key);
   }
 }

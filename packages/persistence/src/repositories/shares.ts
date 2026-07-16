@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import type {
   CallSite,
@@ -29,8 +29,10 @@ import {
   topDataClass,
 } from '@akasecurity/schema';
 
+import { safeJson } from '../internal/json.ts';
+import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
+import { containsPattern, placeholders } from '../internal/sql-text.ts';
 import type { SharesReadPort } from '../ports.ts';
-import { escapeLikePattern, placeholders } from './sql-utils.ts';
 
 // Section order for the grouped listing — provider → internal → ip.
 const KIND_ORDER: DestinationKind[] = ['provider', 'internal', 'ip'];
@@ -79,12 +81,7 @@ interface CallSiteRow {
 }
 
 function parseNetwork(networkJson: string | null): ShareDestinationSummary['network'] {
-  if (!networkJson) return null;
-  try {
-    return JSON.parse(networkJson) as ShareDestinationSummary['network'];
-  } catch {
-    return null;
-  }
+  return safeJson<ShareDestinationSummary['network']>(networkJson, null);
 }
 
 function toEndpointSummary(row: EndpointRow): EndpointSummary {
@@ -194,35 +191,41 @@ export class SqliteSharesRepository implements SharesReadPort {
   constructor(private readonly db: DatabaseSync) {}
 
   stats(): Promise<SharesStats> {
-    const scalar = (sql: string): number =>
-      (this.db.prepare(sql).get() as { n: number } | undefined)?.n ?? 0;
-
-    const destinations = scalar('SELECT count(*) AS n FROM share_destination');
-    const endpoints = scalar('SELECT count(*) AS n FROM share_endpoint');
-    const callSites = scalar('SELECT count(*) AS n FROM share_call_site');
-    const insecure = scalar(
+    const destinations = countScalar(this.db, 'SELECT count(*) AS n FROM share_destination');
+    const endpoints = countScalar(this.db, 'SELECT count(*) AS n FROM share_endpoint');
+    const callSites = countScalar(this.db, 'SELECT count(*) AS n FROM share_call_site');
+    const insecure = countScalar(
+      this.db,
       "SELECT count(DISTINCT destination_id) AS n FROM share_endpoint WHERE transport = 'http'",
     );
-    const needsReview = scalar(
+    const needsReview = countScalar(
+      this.db,
       `SELECT count(DISTINCT d.id) AS n
        FROM share_destination d
        LEFT JOIN share_endpoint e ON e.destination_id = d.id AND e.transport = 'http'
        WHERE d.trust IN ('unverified', 'ip') OR e.id IS NOT NULL`,
     );
 
-    const byKind: SharesStats['byKind'] = { provider: 0, internal: 0, ip: 0 };
-    for (const row of this.db
-      .prepare('SELECT kind, count(*) AS n FROM share_destination GROUP BY kind')
-      .all() as { kind: DestinationKind; n: number }[]) {
-      byKind[row.kind] = row.n;
-    }
+    const kindCounts = countBy(
+      this.db,
+      'SELECT kind AS k, count(*) AS n FROM share_destination GROUP BY kind',
+    );
+    const byKind: SharesStats['byKind'] = {
+      provider: kindCounts.get('provider') ?? 0,
+      internal: kindCounts.get('internal') ?? 0,
+      ip: kindCounts.get('ip') ?? 0,
+    };
 
-    const byTrust: SharesStats['byTrust'] = { recognized: 0, internal: 0, unverified: 0, ip: 0 };
-    for (const row of this.db
-      .prepare('SELECT trust, count(*) AS n FROM share_destination GROUP BY trust')
-      .all() as { trust: ShareTrustLevel; n: number }[]) {
-      byTrust[row.trust] = row.n;
-    }
+    const trustCounts = countBy(
+      this.db,
+      'SELECT trust AS k, count(*) AS n FROM share_destination GROUP BY trust',
+    );
+    const byTrust: SharesStats['byTrust'] = {
+      recognized: trustCounts.get('recognized') ?? 0,
+      internal: trustCounts.get('internal') ?? 0,
+      unverified: trustCounts.get('unverified') ?? 0,
+      ip: trustCounts.get('ip') ?? 0,
+    };
 
     return Promise.resolve({
       destinations,
@@ -390,7 +393,7 @@ export class SqliteSharesRepository implements SharesReadPort {
 
     let sql: string;
     if (q) {
-      const pattern = `%${escapeLikePattern(q)}%`;
+      const pattern = containsPattern(q);
       conditions.push(
         `(d.name LIKE ? ESCAPE '\\' OR d.category LIKE ? ESCAPE '\\' OR e.url LIKE ? ESCAPE '\\'
           OR c.project LIKE ? ESCAPE '\\' OR c.file LIKE ? ESCAPE '\\')`,
@@ -411,40 +414,31 @@ export class SqliteSharesRepository implements SharesReadPort {
              ORDER BY d.created_at ASC, d.id ASC`;
     }
 
-    const rows = this.db.prepare(sql).all(...(params as never[])) as Parameters<
-      typeof this.mapDestRow
-    >[0][];
+    const rows = allRows<Parameters<typeof this.mapDestRow>[0]>(
+      this.db.prepare(sql),
+      params as SQLInputValue[],
+    );
     return rows.map((r) => this.mapDestRow(r));
   }
 
   private fetchDestinationById(destinationId: string): DestRow | null {
-    const row = this.db
-      .prepare(
+    const row = getRow<Parameters<typeof this.mapDestRow>[0]>(
+      this.db.prepare(
         `SELECT d.id, d.kind, d.name, d.host, d.category, d.trust, d.note,
                 d.network_json AS networkJson, d.last_seen AS lastSeenMs,
                 o.decision AS overrideDecision
          FROM share_destination d
          LEFT JOIN egress_decision_override o ON o.destination_id = d.id
          WHERE d.id = ?`,
-      )
-      .get(destinationId) as Parameters<typeof this.mapDestRow>[0] | undefined;
+      ),
+      [destinationId],
+    );
     return row ? this.mapDestRow(row) : null;
   }
 
   private fetchEndpoints(destinationIds: string[]): EndpointRow[] {
     if (destinationIds.length === 0) return [];
-    const rows = this.db
-      .prepare(
-        `SELECT e.id, e.destination_id AS destinationId, e.method, e.transport, e.url,
-                e.template, e.data_class AS dataClass, e.last_seen AS lastSeenMs,
-                count(c.id) AS callSiteCount
-         FROM share_endpoint e
-         LEFT JOIN share_call_site c ON c.endpoint_id = e.id
-         WHERE e.destination_id IN (${placeholders(destinationIds.length)})
-         GROUP BY e.id
-         ORDER BY e.created_at ASC, e.id ASC`,
-      )
-      .all(...(destinationIds as never[])) as {
+    const rows = allRows<{
       id: string;
       destinationId: string;
       method: string;
@@ -454,7 +448,19 @@ export class SqliteSharesRepository implements SharesReadPort {
       dataClass: string;
       lastSeenMs: number;
       callSiteCount: number;
-    }[];
+    }>(
+      this.db.prepare(
+        `SELECT e.id, e.destination_id AS destinationId, e.method, e.transport, e.url,
+                e.template, e.data_class AS dataClass, e.last_seen AS lastSeenMs,
+                count(c.id) AS callSiteCount
+         FROM share_endpoint e
+         LEFT JOIN share_call_site c ON c.endpoint_id = e.id
+         WHERE e.destination_id IN (${placeholders(destinationIds.length)})
+         GROUP BY e.id
+         ORDER BY e.created_at ASC, e.id ASC`,
+      ),
+      destinationIds,
+    );
     return rows.map((r) => ({
       id: r.id,
       destinationId: r.destinationId,
@@ -481,15 +487,7 @@ export class SqliteSharesRepository implements SharesReadPort {
 
   private fetchCallSites(endpointIds: string[]): CallSiteRow[] {
     if (endpointIds.length === 0) return [];
-    const rows = this.db
-      .prepare(
-        `SELECT id, endpoint_id AS endpointId, project, file, line, snippet, dynamic, vendored,
-                project_id AS projectId
-         FROM share_call_site
-         WHERE endpoint_id IN (${placeholders(endpointIds.length)})
-         ORDER BY created_at ASC, id ASC`,
-      )
-      .all(...(endpointIds as never[])) as {
+    const rows = allRows<{
       id: string;
       endpointId: string;
       project: string;
@@ -499,7 +497,16 @@ export class SqliteSharesRepository implements SharesReadPort {
       dynamic: number;
       vendored: number;
       projectId: string | null;
-    }[];
+    }>(
+      this.db.prepare(
+        `SELECT id, endpoint_id AS endpointId, project, file, line, snippet, dynamic, vendored,
+                project_id AS projectId
+         FROM share_call_site
+         WHERE endpoint_id IN (${placeholders(endpointIds.length)})
+         ORDER BY created_at ASC, id ASC`,
+      ),
+      endpointIds,
+    );
     return rows.map((r) => ({
       id: r.id,
       endpointId: r.endpointId,

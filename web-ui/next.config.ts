@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
     '@akasecurity/persistence',
     '@akasecurity/detections',
     '@akasecurity/local-ops',
+    '@akasecurity/plugin-sdk',
   ],
   // Self-contained server bundle (.next/standalone/.../server.js) so `aka dashboard`
   // — and the packaged @akasecurity/cli — can launch the web-ui without a full

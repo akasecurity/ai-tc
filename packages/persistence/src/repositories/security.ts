@@ -20,6 +20,7 @@ import type {
   TopSourcesResponse,
 } from '@akasecurity/schema';
 
+import { allRows } from '../internal/rows.ts';
 import type { SecurityViews } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
@@ -140,8 +141,13 @@ export class SqliteSecurityRepository implements SecurityViews {
   // finding — its rn = 1 filter is also what makes the LEFT JOIN safe against
   // double-counting a key that accumulated several append-only rows.
   severitySummary(): Promise<SeveritySummaryResponse> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      severity: string;
+      count: number;
+      caught: number;
+      open_at_rest: number;
+    }>(
+      this.db.prepare(
         `SELECT f.severity AS severity,
                 COUNT(*) AS count,
                 SUM(CASE
@@ -161,13 +167,8 @@ export class SqliteSecurityRepository implements SecurityViews {
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
          GROUP BY f.severity`,
-      )
-      .all() as unknown as {
-      severity: string;
-      count: number;
-      caught: number;
-      open_at_rest: number;
-    }[];
+      ),
+    );
 
     // Bucket semantics (mirrors the CASEs above): in-flight is born caught;
     // trackable at-rest is caught only when its latest resolution is
@@ -276,8 +277,14 @@ export class SqliteSecurityRepository implements SecurityViews {
     const now = this.now();
     const windowStart = startOfUtcDay(now) - (lenDays - 1) * DAY_MS;
 
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      first_detected_at: number;
+      severity: string;
+      latest_status: string | null;
+      latest_method: string | null;
+      latest_resolved_at: number | null;
+    }>(
+      this.db.prepare(
         // first_detected_at is the PRESERVED first-detection time (set once on a
         // finding's INSERT, never overwritten on the re-detection upsert), so MTTR
         // measures from first sighting — not the latest re-scan's event, whose
@@ -317,14 +324,9 @@ export class SqliteSecurityRepository implements SecurityViews {
         // latest-wins + status/method + window gate stays in JS below,
         // dialect-agnostic. Without this, a
         // 7d request evaluated the store's entire trackable-findings history.
-      )
-      .all({ windowStart }) as unknown as {
-      first_detected_at: number;
-      severity: string;
-      latest_status: string | null;
-      latest_method: string | null;
-      latest_resolved_at: number | null;
-    }[];
+      ),
+      { windowStart },
+    );
 
     // Sum + count per `${bucketIndex}:${severity}`, so the mean is computed
     // once at the end rather than materializing every raw MTTR.
@@ -374,8 +376,8 @@ export class SqliteSecurityRepository implements SecurityViews {
     // Rank repos by findings in the window. metadata.repo is extracted in SQL via
     // json_extract (mirrors the events repo's JSON handling); rows without a repo
     // are excluded. Ranked + sliced in SQL — tie-break on repo for a stable order.
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ repo: string; c: number }>(
+      this.db.prepare(
         `SELECT json_extract(e.metadata, '$.repo') AS repo, count(*) AS c
          FROM findings f JOIN events e ON e.id = f.event_id
          WHERE e.occurred_at >= :from AND e.occurred_at < :to
@@ -384,8 +386,9 @@ export class SqliteSecurityRepository implements SecurityViews {
          GROUP BY repo
          ORDER BY c DESC, repo
          LIMIT :limit`,
-      )
-      .all({ from, to: now, limit }) as { repo: string; c: number }[];
+      ),
+      { from, to: now, limit },
+    );
 
     const items: TopSource[] = rows.map((r) => ({
       id: `repo_${r.repo}`,
@@ -410,8 +413,15 @@ export class SqliteSecurityRepository implements SecurityViews {
   // resolutions.ts's openAtRestStmt accessor. Ordered by resolved_at DESC,
   // capped at `limit`.
   recentlyResolved(limit = 20): Promise<RecentlyResolvedResponse> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      finding_key: string;
+      rule_id: string;
+      severity: Severity;
+      path: string | null;
+      first_detected_at: number;
+      latest_resolved_at: number;
+    }>(
+      this.db.prepare(
         `SELECT f.finding_key AS finding_key,
                 f.rule_id AS rule_id,
                 f.severity AS severity,
@@ -446,15 +456,9 @@ export class SqliteSecurityRepository implements SecurityViews {
            ) IS NOT NULL
          ORDER BY latest_resolved_at DESC
          LIMIT :limit`,
-      )
-      .all({ limit }) as unknown as {
-      finding_key: string;
-      rule_id: string;
-      severity: Severity;
-      path: string | null;
-      first_detected_at: number;
-      latest_resolved_at: number;
-    }[];
+      ),
+      { limit },
+    );
 
     const items: ResolvedFeedItem[] = rows.map((r) => ({
       findingKey: r.finding_key,
@@ -474,18 +478,19 @@ export class SqliteSecurityRepository implements SecurityViews {
   // epoch-millis timestamp. occurred_at is an INTEGER column, so the bounds stay
   // numeric and the JS aggregations bucket/split on ms directly.
   private findingsInRange(fromMs: number, toMs: number): FindingTimeRow[] {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      occurred_at: number;
+      severity: string;
+      action_taken: string;
+    }>(
+      this.db.prepare(
         `SELECT e.occurred_at AS occurred_at, f.severity AS severity, f.action_taken AS action_taken
          FROM findings f JOIN events e ON e.id = f.event_id
          WHERE e.occurred_at >= :from AND e.occurred_at < :to
          ORDER BY e.occurred_at`,
-      )
-      .all({ from: fromMs, to: toMs }) as unknown as {
-      occurred_at: number;
-      severity: string;
-      action_taken: string;
-    }[];
+      ),
+      { from: fromMs, to: toMs },
+    );
     return rows.map((r) => ({
       occurredAt: r.occurred_at,
       severity: r.severity,

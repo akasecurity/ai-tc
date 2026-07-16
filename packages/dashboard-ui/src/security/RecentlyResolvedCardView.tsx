@@ -72,7 +72,9 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-semibold text-text">{item.ruleId}</span>
+          <span className="truncate text-sm font-semibold text-text" title={item.ruleId}>
+            {item.ruleId}
+          </span>
           <span className="ml-auto shrink-0 text-xs text-text-3">
             {relativeTime(item.resolvedAt)}
           </span>
@@ -80,7 +82,9 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
         <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-3">
           <span className="shrink-0">{SEVERITY_META[item.severity].label}</span>
           <span className="shrink-0 text-border-strong">·</span>
-          <span className="truncate font-mono">{item.path}</span>
+          <span className="truncate font-mono" title={item.path}>
+            {item.path}
+          </span>
         </div>
       </div>
     </div>

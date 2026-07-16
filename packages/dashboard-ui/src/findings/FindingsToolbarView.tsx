@@ -3,6 +3,7 @@
 import type { FindingFacets, FindingProvider } from '@akasecurity/schema';
 import { Button, cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
 
+import { numberFormat } from '../security/widget-shared.tsx';
 import { CheckIcon, ChevronDownIcon, SearchIcon, SlidersIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import {
@@ -137,9 +138,9 @@ export function FindingsToolbarView({
       />
       <span className="h-6 bg-border w-px" />
       <span className="text-sm text-text-3">
-        <span className="font-semibold text-text">{findingCount}</span> finding
+        <span className="font-semibold text-text">{numberFormat.format(findingCount)}</span> finding
         {findingCount === 1 ? '' : 's'} ·{' '}
-        <span className="font-semibold text-text">{typeCount}</span> type
+        <span className="font-semibold text-text">{numberFormat.format(typeCount)}</span> type
         {typeCount === 1 ? '' : 's'}
       </span>
     </div>
@@ -180,7 +181,7 @@ function MultiSelectFilter({
         )}
         <ChevronDownIcon className="size-3.5" />
       </PopoverTrigger>
-      <PopoverContent className="min-w-52">
+      <PopoverContent className="min-w-52 max-h-80">
         {options.map((opt) => {
           const checked = selected.includes(opt.value);
           return (

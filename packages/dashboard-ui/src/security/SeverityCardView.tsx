@@ -73,7 +73,7 @@ export function SeverityCardView({
         <CardHeading>
           <CardTitle>{resolutionMode ? 'By severity' : 'Open by severity'}</CardTitle>
           <CardDescription>
-            {isLoading ? 'Loading…' : error ? '—' : `${String(total)} findings`}
+            {isLoading ? 'Loading…' : error ? '—' : `${numberFormat.format(total)} findings`}
           </CardDescription>
         </CardHeading>
       </CardHeader>

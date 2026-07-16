@@ -26,7 +26,7 @@ export function EnforcementCardView({
         <div className="flex justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-text">Enforcement actions</div>
-            <div className="mt-0.5 text-xs text-text-3">All users · {rangeLabel.toLowerCase()}</div>
+            <div className="mt-0.5 text-xs text-text-3">{rangeLabel.toLowerCase()}</div>
           </div>
           <div className="text-right">
             {isLoading ? (

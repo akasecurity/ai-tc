@@ -49,7 +49,9 @@ function DetectionRow({
                 (d.enabled ? 'bg-ok ring-3 ring-ok-fill' : 'bg-border-strong')
               }
             />
-            <span className="truncate text-sm font-semibold text-text">{d.name}</span>
+            <span className="truncate text-sm font-semibold text-text" title={d.name}>
+              {d.name}
+            </span>
           </div>
           <div className="font-mono text-xs text-text-3">v{d.version}</div>
         </div>

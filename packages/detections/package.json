@@ -18,7 +18,7 @@
     "@akasecurity/eslint-config": "workspace:*",
     "@akasecurity/extract": "workspace:*",
     "@types/node": "^24.13.3",
-    "eslint": "^9.0.0",
+    "eslint": "^10.7.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   }

@@ -34,7 +34,7 @@ export function ExceptionsTableView({
     );
   }
   return (
-    <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+    <div className="overflow-x-auto rounded-xl border border-border bg-surface p-4">
       <Table>
         <TableHeader>
           <TableRow>

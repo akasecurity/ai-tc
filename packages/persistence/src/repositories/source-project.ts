@@ -4,6 +4,7 @@ import type { SourceProjectInput } from '@akasecurity/schema';
 import { toSourceProjectRow } from '@akasecurity/schema';
 
 import { sourceProjectId } from '../ids.ts';
+import { allRows, bindParams, getRow } from '../internal/rows.ts';
 
 /**
  * Source/Project (the "what code/data" axis) writer/reader. Content-addressed by
@@ -31,32 +32,38 @@ export class SqliteSourceProjectRepository {
   upsert(input: SourceProjectInput, now: number = Date.now()): string {
     const id = sourceProjectId(input.url);
     const row = toSourceProjectRow(input, id, now);
-    this.upsertStmt.run({
-      id: row.id,
-      url: row.url ?? null,
-      name: row.name ?? null,
-      attributes: row.attributes,
-      firstSeen: row.firstSeen,
-      lastSeen: row.lastSeen,
-    });
+    this.upsertStmt.run(
+      bindParams({
+        id: row.id,
+        url: row.url,
+        name: row.name,
+        attributes: row.attributes,
+        firstSeen: row.firstSeen,
+        lastSeen: row.lastSeen,
+      }),
+    );
     return id;
   }
 
   findById(id: string): SourceProjectRow | undefined {
-    return this.db.prepare('SELECT * FROM source_project WHERE id = :id').get({ id }) as
-      SourceProjectRow | undefined;
+    return getRow<SourceProjectRow>(
+      this.db.prepare('SELECT * FROM source_project WHERE id = :id'),
+      {
+        id,
+      },
+    );
   }
 
   // Distinct project names — a filter facet, served from the source_project
   // table, never from the audit fact table.
   distinctNames(): string[] {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ name: string }>(
+      this.db.prepare(
         `SELECT DISTINCT name FROM source_project
          WHERE name IS NOT NULL
          ORDER BY name`,
-      )
-      .all() as unknown as { name: string }[];
+      ),
+    );
     return rows.map((r) => r.name);
   }
 }

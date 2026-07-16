@@ -10,6 +10,9 @@ import {
   Rule,
 } from '@akasecurity/schema';
 
+import { safeJson } from '../internal/json.ts';
+import { allRows, boolToInt, countBy, getRow, intToBool } from '../internal/rows.ts';
+import { withTransaction } from '../internal/transactions.ts';
 import type { InstalledPacksReadPort } from '../ports.ts';
 import { compareBinaryVersions, isParseableBinaryVersion } from '../semver.ts';
 import { parseRules } from './detections.ts';
@@ -113,12 +116,7 @@ function isMirrorDowngrade(
 // rule without a string id simply contributes no ids to the coverage set).
 function ruleIdsOf(rulesJson: string): Set<string> {
   const ids = new Set<string>();
-  let raw: unknown;
-  try {
-    raw = JSON.parse(rulesJson);
-  } catch {
-    return ids;
-  }
+  const raw = safeJson<unknown>(rulesJson, []);
   if (!Array.isArray(raw)) return ids;
   for (const entry of raw) {
     if (entry && typeof entry === 'object') {
@@ -244,47 +242,46 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       // BEGIN IMMEDIATE takes the write lock up front, so mirrorState() reads
       // the same snapshot the writes commit against — the guard can't act on a
       // stale mirror another process has already advanced.
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const mirror = this.mirrorState();
-        let behind = false;
-        for (const row of rows) {
-          const params = {
-            id: randomUUID(),
-            namespace: row.namespace,
-            packId: row.packId,
-            version: row.version,
-            name: row.name,
-            rulesJson: row.rulesJson,
-            now,
-          };
-          const stored = mirror.get(`${row.namespace}/${row.packId}`);
-          // Refresh the mirror only when this binary's snapshot is not a
-          // downgrade of what's recorded. A missing row is always written (new
-          // pack); an older/narrower one is left as-is. Either way the pack is
-          // still install-if-absent below (additive), and a newer binary flags
-          // the update later.
-          if (stored === undefined || !isMirrorDowngrade(row, stored)) {
-            this.upsertAvailableStmt.run({
-              ...params,
+      withTransaction(
+        this.db,
+        () => {
+          const mirror = this.mirrorState();
+          let behind = false;
+          for (const row of rows) {
+            const params = {
               id: randomUUID(),
-              recordedBy: meta?.recordedBy ?? null,
-            });
-          } else {
-            behind = true;
+              namespace: row.namespace,
+              packId: row.packId,
+              version: row.version,
+              name: row.name,
+              rulesJson: row.rulesJson,
+              now,
+            };
+            const stored = mirror.get(`${row.namespace}/${row.packId}`);
+            // Refresh the mirror only when this binary's snapshot is not a
+            // downgrade of what's recorded. A missing row is always written (new
+            // pack); an older/narrower one is left as-is. Either way the pack is
+            // still install-if-absent below (additive), and a newer binary flags
+            // the update later.
+            if (stored === undefined || !isMirrorDowngrade(row, stored)) {
+              this.upsertAvailableStmt.run({
+                ...params,
+                id: randomUUID(),
+                recordedBy: meta?.recordedBy ?? null,
+              });
+            } else {
+              behind = true;
+            }
+            this.insertMissingStmt.run(params);
           }
-          this.insertMissingStmt.run(params);
-        }
-        // Prune available rows for packs this binary no longer ships — a stale
-        // mirror row would otherwise keep offering a bogus "update". Skipped
-        // when this binary is BEHIND the mirror anywhere: an older binary's
-        // narrower inventory must not delete the newer binary's records.
-        if (!behind) this.pruneAvailable(rows.map((r) => `${r.namespace}/${r.packId}`));
-        this.db.exec('COMMIT');
-      } catch (err) {
-        this.db.exec('ROLLBACK');
-        throw err;
-      }
+          // Prune available rows for packs this binary no longer ships — a stale
+          // mirror row would otherwise keep offering a bogus "update". Skipped
+          // when this binary is BEHIND the mirror anywhere: an older binary's
+          // narrower inventory must not delete the newer binary's records.
+          if (!behind) this.pruneAvailable(rows.map((r) => `${r.namespace}/${r.packId}`));
+        },
+        'IMMEDIATE',
+      );
     } catch {
       // Fail-open: dropping inventory bookkeeping never breaks a session. BEGIN
       // stays inside the try (mirrors recordCapture) so a failed BEGIN/ROLLBACK
@@ -295,11 +292,11 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   // The mirror's current (namespace/packId → {version, ruleIds}) map — the
   // input to the downgrade guard. Read INSIDE the write transaction.
   private mirrorState(): Map<string, { version: string; ruleIds: Set<string> }> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ namespace: string; packId: string; version: string; rulesJson: string }>(
+      this.db.prepare(
         `SELECT namespace, pack_id AS packId, version, rules_json AS rulesJson FROM available_packs`,
-      )
-      .all() as { namespace: string; packId: string; version: string; rulesJson: string }[];
+      ),
+    );
     return new Map(
       rows.map((r) => [
         `${r.namespace}/${r.packId}`,
@@ -312,9 +309,9 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   // (keys joined with '/', matching the detection id slug encoding — packId may
   // itself contain '/', but namespace may not, so the join is unambiguous).
   private pruneAvailable(keep: string[]): void {
-    const rows = this.db
-      .prepare(`SELECT namespace, pack_id AS packId FROM available_packs`)
-      .all() as { namespace: string; packId: string }[];
+    const rows = allRows<{ namespace: string; packId: string }>(
+      this.db.prepare(`SELECT namespace, pack_id AS packId FROM available_packs`),
+    );
     const keepSet = new Set(keep);
     const del = this.db.prepare(`DELETE FROM available_packs WHERE namespace = ? AND pack_id = ?`);
     for (const r of rows) {
@@ -343,18 +340,18 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     // would break the gate contract (the caller's COMMIT/ROLLBACK, not ours,
     // would decide when the gate closes). Assert the precondition explicitly
     // so a future composed caller gets a contract error, not SQLite's opaque
-    // nested-BEGIN throw. BEGIN also stays OUTSIDE the try below: if it ever
-    // throws, nothing of ours is open and no ROLLBACK runs — a caller's outer
-    // transaction can never be collaterally rolled back from here.
+    // nested-BEGIN throw.
     if (this.db.isTransaction) {
       throw new Error('applyUpdate must not be called inside an open transaction');
     }
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      this.db.exec('UPDATE _pack_write_gate SET open = 1 WHERE id = 1');
-      const res = this.db
-        .prepare(
-          `UPDATE installed_packs SET
+    let changed = false;
+    withTransaction(
+      this.db,
+      () => {
+        this.db.exec('UPDATE _pack_write_gate SET open = 1 WHERE id = 1');
+        const res = this.db
+          .prepare(
+            `UPDATE installed_packs SET
              version = (SELECT a.version FROM available_packs a
                         WHERE a.namespace = :namespace AND a.pack_id = :packId),
              name = (SELECT a.name FROM available_packs a
@@ -365,19 +362,14 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
            WHERE namespace = :namespace AND pack_id = :packId
              AND EXISTS (SELECT 1 FROM available_packs a
                          WHERE a.namespace = :namespace AND a.pack_id = :packId)`,
-        )
-        .run({ namespace, packId, now: Date.now() });
-      this.db.exec('UPDATE _pack_write_gate SET open = 0 WHERE id = 1');
-      this.db.exec('COMMIT');
-      return Number(res.changes) > 0;
-    } catch (err) {
-      try {
-        this.db.exec('ROLLBACK');
-      } catch {
-        // Some SQLite errors abort the transaction themselves.
-      }
-      throw err;
-    }
+          )
+          .run({ namespace, packId, now: Date.now() });
+        this.db.exec('UPDATE _pack_write_gate SET open = 0 WHERE id = 1');
+        changed = Number(res.changes) > 0;
+      },
+      'IMMEDIATE',
+    );
+    return changed;
   }
 
   /**
@@ -392,11 +384,11 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * JSON-level failure therefore counts as invalid.
    */
   installedRuleset(): InstalledRuleset {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ enabled: number; policyId: string | null; rulesJson: string }>(
+      this.db.prepare(
         `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson FROM installed_packs`,
-      )
-      .all() as { enabled: number; policyId: string | null; rulesJson: string }[];
+      ),
+    );
 
     const out: InstalledRuleset = {
       installedPacks: rows.length,
@@ -406,7 +398,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       ruleActions: new Map(),
     };
     for (const row of rows) {
-      if (row.enabled !== 1) continue;
+      if (!intToBool(row.enabled)) continue;
       out.enabledPacks += 1;
       // The whole pack shares one policy; each of its valid rules inherits it.
       const action = policyIdToAction(row.policyId);
@@ -443,11 +435,11 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * running max would mask a genuinely-newer parseable stamp.
    */
   newestRecordedBinary(): { binary: string; version: string } | null {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{ recordedBy: string }>(
+      this.db.prepare(
         `SELECT DISTINCT recorded_by AS recordedBy FROM available_packs WHERE recorded_by IS NOT NULL`,
-      )
-      .all() as { recordedBy: string }[];
+      ),
+    );
     let newest: { binary: string; version: string } | null = null;
     for (const row of rows) {
       const at = row.recordedBy.lastIndexOf('@');
@@ -463,19 +455,15 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   }
 
   counts(): Promise<InstalledPackCounts> {
-    const row = this.db
-      .prepare(
+    const row = getRow<InstalledPackCounts>(
+      this.db.prepare(
         `SELECT count(*) AS packs,
                 coalesce(sum(json_array_length(rules_json)), 0) AS rules,
                 coalesce(sum(enabled), 0) AS enabled
          FROM installed_packs`,
-      )
-      .get() as {
-      packs: number;
-      rules: number;
-      enabled: number;
-    };
-    return Promise.resolve(row);
+      ),
+    );
+    return Promise.resolve(row ?? { packs: 0, rules: 0, enabled: 0 });
   }
 
   // ─── Policy-catalog reads ────────────────────────────────────────────────────
@@ -490,39 +478,38 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * attributed to Monitor, matching the Detections views.
    */
   countsByPolicyId(): Map<string, number> {
-    const rows = this.db
-      .prepare(
-        `SELECT coalesce(policy_id, '${DEFAULT_POLICY_ID}') AS pid, count(*) AS n
+    return countBy(
+      this.db,
+      `SELECT coalesce(policy_id, '${DEFAULT_POLICY_ID}') AS k, count(*) AS n
          FROM installed_packs
-         GROUP BY pid`,
-      )
-      .all() as { pid: string; n: number }[];
-    return new Map(rows.map((r) => [r.pid, r.n]));
+         GROUP BY k`,
+    );
   }
 
   /** The detections governed by a built-in policy — one UsedByItem per pack. */
   listByPolicyId(policyId: string): UsedByItem[] {
     // Coalesce so the Monitor detail lists the same NULL-policy packs its count
     // includes (and the Detections views tag as Monitor).
-    const rows = this.db
-      .prepare(
-        `SELECT namespace, pack_id AS packId, name, enabled, rules_json AS rulesJson
-         FROM installed_packs
-         WHERE coalesce(policy_id, '${DEFAULT_POLICY_ID}') = ?
-         ORDER BY name ASC`,
-      )
-      .all(policyId) as {
+    const rows = allRows<{
       namespace: string;
       packId: string;
       name: string;
       enabled: number;
       rulesJson: string;
-    }[];
+    }>(
+      this.db.prepare(
+        `SELECT namespace, pack_id AS packId, name, enabled, rules_json AS rulesJson
+         FROM installed_packs
+         WHERE coalesce(policy_id, '${DEFAULT_POLICY_ID}') = ?
+         ORDER BY name ASC`,
+      ),
+      [policyId],
+    );
     return rows.map((r) => ({
       id: `${r.namespace}/${r.packId}`,
       name: r.name,
       ruleCount: parseRules(r.rulesJson).length,
-      enabled: r.enabled === 1,
+      enabled: intToBool(r.enabled),
     }));
   }
 
@@ -560,7 +547,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
         `UPDATE installed_packs SET enabled = :enabled, updated_at = :now
          WHERE namespace = :namespace AND pack_id = :packId`,
       )
-      .run({ enabled: enabled ? 1 : 0, now: Date.now(), namespace, packId });
+      .run({ enabled: boolToInt(enabled), now: Date.now(), namespace, packId });
     return Number(res.changes) > 0;
   }
 
@@ -568,12 +555,12 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   // incoming inventory's signature to skip the write entirely when the running
   // binary's inventory hasn't changed since the last record.
   private storedSignature(): string {
-    const rows = this.signatureStmt.all() as {
+    const rows = allRows<{
       namespace: string;
       packId: string;
       version: string;
       rulesJson: string;
-    }[];
+    }>(this.signatureStmt);
     return inventorySignature(rows);
   }
 }

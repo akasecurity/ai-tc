@@ -21,6 +21,12 @@ export const EventMetadata = z
     sessionId: z.string().optional(),
     repo: z.string().optional(),
     filePath: z.string().optional(),
+    // The host tool whose input/output was scanned (e.g. 'Bash', 'WebFetch'),
+    // set by the tool-scanning hooks. The tool NAME only — never the tool's
+    // arguments or output, which can carry the very value a finding masked
+    // (metadata is stored unredacted). Gives findings on non-file captures a
+    // display location ("via Bash") when no filePath exists.
+    toolName: z.string().optional(),
     // Set (true) by the worktree scanner when the file is excluded by the
     // repo's .gitignore. Gitignored files ARE still scanned — local scratch and
     // generated code can leak real secrets — but the provenance is recorded so

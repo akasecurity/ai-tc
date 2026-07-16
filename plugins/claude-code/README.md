@@ -13,17 +13,23 @@ This package is distributed through the **Claude Code plugin marketplace**, not 
 
 ```text
 /plugin marketplace add akasecurity/marketplace
-/plugin install aka@akasecurity
+/plugin install ai-tc@akasecurity
 ```
 
-Or let the `aka` CLI do it for you:
+Or let the `aka` CLI install the plugin for you:
 
 ```bash
 npm install -g @akasecurity/cli
 aka plugins install claude-code
 ```
 
-Then run `aka init` to scaffold the local store, and `aka dashboard` to view findings.
+Either way, finish onboarding by running `/aka:setup` from inside Claude Code:
+
+```text
+/aka:setup
+```
+
+If you installed via the CLI, `aka init` scaffolds the local store and `aka dashboard` views findings.
 
 ## What it registers
 

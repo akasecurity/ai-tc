@@ -7,13 +7,14 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "lint": "eslint src",
+    "lint": "eslint src test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "ignore": "^7.0.6"
   },

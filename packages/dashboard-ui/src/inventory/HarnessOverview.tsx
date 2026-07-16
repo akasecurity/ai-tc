@@ -115,9 +115,7 @@ export function HarnessOverview({
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-semibold text-text">{x.title}</div>
-                      <div className="mt-0.5 truncate font-mono text-xs text-text-3">
-                        {x.detail}
-                      </div>
+                      <div className="mt-0.5 font-mono text-xs text-text-3">{x.detail}</div>
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
                       <Badge variant={m.tone}>{m.label}</Badge>

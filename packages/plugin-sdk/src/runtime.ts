@@ -198,6 +198,19 @@ export function createPluginRuntime(
     return fallback ?? 'log';
   }
 
+  // The action that applies to ONE finding: an excepted finding's action is
+  // 'allow' — its grant was already consumed — and every other finding resolves
+  // through its own rule/category policy. This is per-finding, unlike `decide`'s
+  // worst-first collapse across the whole capture: a capture that mixes a
+  // blocked secret with a warned code-context match applies 'block' to the
+  // former and 'warn' to the latter.
+  function actionForFinding(
+    finding: MatchResult,
+    excepted?: ReadonlySet<MatchResult>,
+  ): ActionTaken {
+    return excepted?.has(finding) ? 'allow' : resolveAction(finding.ruleId, finding.category);
+  }
+
   function decide(
     findings: MatchResult[],
     text: string,
@@ -205,9 +218,7 @@ export function createPluginRuntime(
   ): CaptureResult {
     if (findings.length === 0) return { action: 'log', text, findings: [] };
 
-    // An excepted finding's action is 'allow' — its grant was already consumed.
-    const actionFor = (finding: MatchResult): ActionTaken =>
-      excepted?.has(finding) ? 'allow' : resolveAction(finding.ruleId, finding.category);
+    const actionFor = (finding: MatchResult): ActionTaken => actionForFinding(finding, excepted);
 
     let worst: ActionTaken = 'log';
     for (const finding of findings) {
@@ -458,8 +469,9 @@ export function createPluginRuntime(
       const findingKeyFingerprintKey = isAtRest ? keyForLedger() : null;
       const findingKeyFpCache = new Map<MatchResult, string>();
       // Mask the real secret here — the raw value never reaches the gateway/DB.
-      // An excepted finding is still recorded, with the action that actually
-      // applied to it ('allow'), so the findings table stays the one
+      // Every finding is recorded with the action that actually applied to IT —
+      // its own policy resolution, or 'allow' when a grant excepted it — not the
+      // capture's collapsed decision, so the findings table stays the one
       // enforcement audit trail.
       const findings: DetectedFindingWithKey[] = decision.findings.map((match) => {
         const maskedMatch = maskMatch(match.rawMatch);
@@ -485,7 +497,7 @@ export function createPluginRuntime(
           severity: match.severity,
           span: match.span,
           maskedMatch,
-          actionTaken: excepted.has(match) ? 'allow' : decision.action,
+          actionTaken: actionForFinding(match, excepted),
           confidence: match.confidence,
           ...(findingKey ? { findingKey } : {}),
         };

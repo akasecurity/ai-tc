@@ -180,7 +180,7 @@ function MultiSelectFilter({
         )}
         <ChevronDownIcon className="size-3.5" />
       </PopoverTrigger>
-      <PopoverContent className="min-w-52">
+      <PopoverContent className="min-w-52 max-h-80">
         {options.map((opt) => {
           const checked = selected.includes(opt.value);
           return (

@@ -4,6 +4,7 @@ import type { ClassifiedDataInput } from '@akasecurity/schema';
 import { toClassifiedDataRow } from '@akasecurity/schema';
 
 import { classifiedDataId } from '../ids.ts';
+import { bindParams } from '../internal/rows.ts';
 
 /**
  * Classified data (a small CLASS dimension keyed by class only — `aws_key`,
@@ -25,12 +26,14 @@ export class SqliteClassifiedDataRepository {
   upsert(input: ClassifiedDataInput): string {
     const id = classifiedDataId(input.class);
     const row = toClassifiedDataRow(input, id);
-    this.insertStmt.run({
-      id: row.id,
-      class: row.class,
-      label: row.label ?? null,
-      attributes: row.attributes ?? null,
-    });
+    this.insertStmt.run(
+      bindParams({
+        id: row.id,
+        class: row.class,
+        label: row.label,
+        attributes: row.attributes,
+      }),
+    );
     return id;
   }
 }

@@ -3,6 +3,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import type { IngestEvent } from '@akasecurity/schema';
 import { toEventRow } from '@akasecurity/schema';
 
+import { allRows, bindParams } from '../internal/rows.ts';
 import type { EventsReadPort } from '../ports.ts';
 
 /**
@@ -23,16 +24,17 @@ export class SqliteEventsRepository implements EventsReadPort {
 
   insertEvent(event: IngestEvent): void {
     const row = toEventRow(event);
-    this.insertStmt.run({
-      id: row.id,
-      sourceTool: row.sourceTool,
-      kind: row.kind,
-      occurredAt: row.occurredAt,
-      contentHash: row.contentHash,
-      content: row.content,
-      // exactOptionalPropertyTypes: the column is nullable, never undefined.
-      metadata: row.metadata ?? null,
-    });
+    this.insertStmt.run(
+      bindParams({
+        id: row.id,
+        sourceTool: row.sourceTool,
+        kind: row.kind,
+        occurredAt: row.occurredAt,
+        contentHash: row.contentHash,
+        content: row.content,
+        metadata: row.metadata,
+      }),
+    );
   }
 
   // Every recorded event's content hash — the historical backfill loads this once
@@ -41,9 +43,9 @@ export class SqliteEventsRepository implements EventsReadPort {
   // Async (Promise.resolve over synchronous node:sqlite) so it satisfies the
   // async EventsReadPort contract.
   contentHashes(): Promise<Set<string>> {
-    const rows = this.db.prepare('SELECT content_hash FROM events').all() as unknown as {
-      content_hash: string;
-    }[];
+    const rows = allRows<{ content_hash: string }>(
+      this.db.prepare('SELECT content_hash FROM events'),
+    );
     return Promise.resolve(new Set(rows.map((r) => r.content_hash)));
   }
 }

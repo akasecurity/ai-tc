@@ -15,7 +15,10 @@ import {
   isoToEpochMillis,
 } from '@akasecurity/schema';
 
-import { escapeLikePattern } from './sql-utils.ts';
+import { allRows, getRow, mapRowsTolerant } from '../internal/rows.ts';
+import { escapeLikePattern } from '../internal/sql-text.ts';
+import { isUniqueConstraintError } from '../internal/sqlite-errors.ts';
+import { withTransaction } from '../internal/transactions.ts';
 
 // What the caller supplies to grant an exception; the repo mints the id and
 // stamps created_at/updated_at, and a fresh grant always starts unused.
@@ -79,18 +82,6 @@ export class AmbiguousExceptionIdError extends Error {
     );
     this.name = 'AmbiguousExceptionIdError';
   }
-}
-
-// node:sqlite surfaces constraint violations as ERR_SQLITE_ERROR carrying the
-// SQLite extended result code; 2067 is SQLITE_CONSTRAINT_UNIQUE.
-const SQLITE_CONSTRAINT_UNIQUE = 2067;
-
-function isUniqueConstraintError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    ((err as { errcode?: number }).errcode === SQLITE_CONSTRAINT_UNIQUE ||
-      err.message.includes('UNIQUE constraint failed'))
-  );
 }
 
 interface ExceptionRow {
@@ -213,14 +204,12 @@ export class SqliteExceptionsRepository {
       // consumed/expired grant holds the slot until swept. Supersede a
       // terminal collider and retry, inside one transaction so two concurrent
       // creates cannot both claim the freed slot.
-      // Skip this method's own BEGIN/COMMIT/ROLLBACK when already inside an
-      // outer transaction.
-      const nested = this.db.isTransaction;
-      if (!nested) this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const superseded = this.db
-          .prepare(
-            `UPDATE exceptions
+      withTransaction(
+        this.db,
+        () => {
+          const superseded = this.db
+            .prepare(
+              `UPDATE exceptions
                 SET revoked_at = :now, revoked_by = :revokedBy,
                     revoke_reason = 'superseded by a new grant for the same value',
                     updated_at = :now
@@ -228,30 +217,31 @@ export class SqliteExceptionsRepository {
                 AND key_version = :keyVersion AND revoked_at IS NULL
                 AND ((expires_at IS NOT NULL AND expires_at <= :now)
                   OR (max_uses IS NOT NULL AND use_count >= max_uses))`,
-          )
-          .run({
-            now,
-            revokedBy: input.createdBy,
-            ruleId: input.ruleId,
-            valueFingerprint: input.valueFingerprint,
-            keyVersion: input.keyVersion,
-          });
-        if (Number(superseded.changes) !== 1) {
-          // Nothing terminal to free — the collider is genuinely active.
-          throw new DuplicateActiveExceptionError(input.ruleId);
-        }
-        this.insertExceptionRow(id, input, now);
-        if (!nested) this.db.exec('COMMIT');
-      } catch (retryErr) {
-        if (!nested) this.db.exec('ROLLBACK');
-        throw retryErr;
-      }
+            )
+            .run({
+              now,
+              revokedBy: input.createdBy,
+              ruleId: input.ruleId,
+              valueFingerprint: input.valueFingerprint,
+              keyVersion: input.keyVersion,
+            });
+          if (Number(superseded.changes) !== 1) {
+            // Nothing terminal to free — the collider is genuinely active.
+            throw new DuplicateActiveExceptionError(input.ruleId);
+          }
+          this.insertExceptionRow(id, input, now);
+        },
+        'IMMEDIATE',
+      );
     }
     // Read the row back so the returned shape goes through the same
     // column↔contract mapping as every other read.
-    const row = this.db
-      .prepare('SELECT * FROM exceptions WHERE id = :id')
-      .get({ id }) as unknown as ExceptionRow;
+    const row = getRow<ExceptionRow>(this.db.prepare('SELECT * FROM exceptions WHERE id = :id'), {
+      id,
+    });
+    if (row === undefined) {
+      throw new Error('exception row not found immediately after insert');
+    }
     return parseExceptionRow(row);
   }
 
@@ -293,17 +283,11 @@ export class SqliteExceptionsRepository {
    */
   list(opts?: { includeTerminal?: boolean }): Promise<DetectionExceptionType[]> {
     const where = opts?.includeTerminal ? '' : `WHERE ${ACTIVE_PREDICATE}`;
-    const rows = this.db
-      .prepare(`SELECT * FROM exceptions ${where} ORDER BY created_at DESC, rowid DESC`)
-      .all(opts?.includeTerminal ? {} : { now: Date.now() }) as unknown as ExceptionRow[];
-    const exceptions: DetectionExceptionType[] = [];
-    for (const row of rows) {
-      try {
-        exceptions.push(parseExceptionRow(row));
-      } catch {
-        // Skip a malformed/foreign exception row rather than failing the read.
-      }
-    }
+    const rows = allRows<ExceptionRow>(
+      this.db.prepare(`SELECT * FROM exceptions ${where} ORDER BY created_at DESC, rowid DESC`),
+      opts?.includeTerminal ? {} : { now: Date.now() },
+    );
+    const exceptions = mapRowsTolerant(rows, parseExceptionRow);
     return Promise.resolve(exceptions);
   }
 
@@ -317,9 +301,12 @@ export class SqliteExceptionsRepository {
     // The prefix is matched LITERALLY: ids are UUIDs, so an unescaped %/_
     // (e.g. `aka exception show %`) would wildcard-match an arbitrary row or
     // trip the ambiguity error instead of finding nothing.
-    const rows = this.db
-      .prepare(String.raw`SELECT * FROM exceptions WHERE id LIKE :pattern ESCAPE '\' LIMIT 2`)
-      .all({ pattern: `${escapeLikePattern(prefix)}%` }) as unknown as ExceptionRow[];
+    const rows = allRows<ExceptionRow>(
+      this.db.prepare(
+        String.raw`SELECT * FROM exceptions WHERE id LIKE :pattern ESCAPE '\' LIMIT 2`,
+      ),
+      { pattern: `${escapeLikePattern(prefix)}%` },
+    );
     // Ids are equal-length UUIDs, so a full id can never also be a strict
     // prefix of another — no exact-match tiebreak is needed: >1 hit is
     // genuinely ambiguous.
@@ -370,33 +357,27 @@ export class SqliteExceptionsRepository {
    * a different (rotated-away) key never match, so they are excluded at read.
    */
   activeBundleEntries(keyVersion: number, now = Date.now()): Promise<ExceptionBundleEntryType[]> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<ExceptionRow>(
+      this.db.prepare(
         `SELECT * FROM exceptions
           WHERE key_version = :keyVersion AND ${ACTIVE_PREDICATE}
           ORDER BY created_at DESC, rowid DESC`,
-      )
-      .all({ keyVersion, now }) as unknown as ExceptionRow[];
-    const entries: ExceptionBundleEntryType[] = [];
-    for (const row of rows) {
-      try {
-        const conditions: unknown = row.conditions === null ? null : JSON.parse(row.conditions);
-        entries.push(
-          ExceptionBundleEntry.parse({
-            id: row.id,
-            ruleId: row.rule_id,
-            valueFingerprint: row.value_fingerprint,
-            keyVersion: row.key_version,
-            expiresAt: row.expires_at === null ? null : epochMillisToIso(row.expires_at),
-            maxUses: row.max_uses,
-            useCount: row.use_count,
-            conditions,
-          }),
-        );
-      } catch {
-        // Skip a malformed/foreign exception row rather than failing the read.
-      }
-    }
+      ),
+      { keyVersion, now },
+    );
+    const entries = mapRowsTolerant(rows, (row) => {
+      const conditions: unknown = row.conditions === null ? null : JSON.parse(row.conditions);
+      return ExceptionBundleEntry.parse({
+        id: row.id,
+        ruleId: row.rule_id,
+        valueFingerprint: row.value_fingerprint,
+        keyVersion: row.key_version,
+        expiresAt: row.expires_at === null ? null : epochMillisToIso(row.expires_at),
+        maxUses: row.max_uses,
+        useCount: row.use_count,
+        conditions,
+      });
+    });
     return Promise.resolve(entries);
   }
 
@@ -425,13 +406,14 @@ export class SqliteExceptionsRepository {
 
   /** Blocked detections within the window (default: the 30-minute TTL), newest-first. */
   recentBlocked(windowMs = BLOCKED_DETECTIONS_TTL_MS): Promise<BlockedDetection[]> {
-    const rows = this.db
-      .prepare(
+    const rows = allRows<BlockedDetectionRow>(
+      this.db.prepare(
         `SELECT * FROM blocked_detections
           WHERE blocked_at > :cutoff
           ORDER BY blocked_at DESC, rowid DESC`,
-      )
-      .all({ cutoff: Date.now() - windowMs }) as unknown as BlockedDetectionRow[];
+      ),
+      { cutoff: Date.now() - windowMs },
+    );
     return Promise.resolve(
       rows.map((row) => ({
         reference: row.reference,

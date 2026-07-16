@@ -33,7 +33,10 @@ jobs:
           version: 10.30.1
       - uses: actions/setup-node@v6
         with:
-          node-version: 26
+          # The SEA embeds whichever Node packages it, so pin the shipped runtime to
+          # the repo's Active LTS (matches .nvmrc) rather than Current — the artifact
+          # must not depend on who built it.
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Build the ESM bundle, the standalone web-ui sidecar, then package + self-verify
@@ -41,6 +44,9 @@ jobs:
       - run: pnpm --filter @akasecurity/cli build:sea
       - run: pnpm --filter @akasecurity/cli bundle:web-ui
       - run: pnpm --filter @akasecurity/cli package:sea
+      # Exercise the packaged binary against a real SQLite store: `init` + `stats` prove
+      # the store read/write path that `package:sea`'s `--version` self-check never touches.
+      - run: pnpm --filter @akasecurity/cli smoke:sea
       # Boot the packaged binary's dashboard in-process and assert it serves HTTP 200 —
       # covers the Next standalone server.js import path that `--version` never exercises.
       - run: pnpm --filter @akasecurity/cli smoke:dashboard

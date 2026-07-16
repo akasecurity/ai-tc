@@ -284,4 +284,27 @@ describe('recordProjectInventory', () => {
       raw.close();
     }
   });
+
+  it('folds a legacy ghost project row minted for a worktree checkout path', () => {
+    initRepo(root, REMOTE_URL);
+    writeFileSync(join(root, 'app.ts'), 'export {};\n');
+
+    const db = openLocalDatabase(store);
+    try {
+      // A ghost row the pre-worktree-fix resolver minted: url = a checkout
+      // path under the head repo's worktree convention, never a remote.
+      db.sourceProject.upsert({
+        url: `${root.split('\\').join('/')}/.claude/worktrees/wt-branch`,
+        name: 'wt-branch',
+        attributes: {},
+      });
+      recordProjectInventory(db, root);
+    } finally {
+      db.close();
+    }
+
+    // The scan's self-heal sweep folded the ghost into the canonical row —
+    // the same sweep SessionStart runs, so scan-only repos heal too.
+    expect(storedProjects(store)).toEqual([{ url: REMOTE_URL, name: 'ai-tc' }]);
+  });
 });

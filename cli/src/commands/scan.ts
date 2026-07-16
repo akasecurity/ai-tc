@@ -52,16 +52,6 @@ export function runScan(argv: string[]): void {
   const home = homeBase(values.home);
   const target = positionals[0] ?? '.';
 
-  // Validate the target exists before touching the store (the web-ui action
-  // does the same) — a mistyped path must error, not report an empty scan.
-  try {
-    statSync(target);
-  } catch {
-    process.stderr.write(`aka scan: no such file or directory: ${target}\n`);
-    process.exitCode = 1;
-    return;
-  }
-
   const format = values.format ?? 'text';
   if (format !== 'text' && format !== 'json') {
     process.stderr.write(`aka scan: invalid --format '${format}' (expected text or json)\n`);
@@ -80,6 +70,17 @@ export function runScan(argv: string[]): void {
       return;
     }
     failOn = parsed.data;
+  }
+
+  // Flags validated, now the target: it must exist before touching the store
+  // (the web-ui action does the same) — a mistyped path must error, not
+  // report an empty scan.
+  try {
+    statSync(target);
+  } catch {
+    process.stderr.write(`aka scan: no such file or directory: ${target}\n`);
+    process.exitCode = 1;
+    return;
   }
 
   registerBundledPacks();

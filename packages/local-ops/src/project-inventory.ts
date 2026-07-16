@@ -2,7 +2,12 @@ import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { LocalDatabase } from '@akasecurity/persistence';
-import { resolveProjectFiles, resolveRepoIdentity } from '@akasecurity/plugin-sdk';
+import {
+  resolveHeadRoot,
+  resolveProjectFiles,
+  resolveRepoIdentity,
+  resolveWorktreeRoot,
+} from '@akasecurity/plugin-sdk';
 
 // The project-inventory pass shared by `aka scan` and the web-ui's Scan page:
 // resolve the git repo containing the scan target, upsert its source_project
@@ -62,6 +67,15 @@ export function recordProjectInventory(
     // row above still stands, and the stored tree is left untouched.
     const scan = resolveProjectFiles(abs);
     if (scan) db.recordProjectFiles(sourceProjectId, scan);
+
+    // Self-heal ghost projects the pre-worktree-fix resolver minted for
+    // checkout paths — the same sweep SessionStart runs, so a repo that is
+    // only ever scanned folds its ghosts into the canonical row too.
+    const headRoot = resolveHeadRoot(abs);
+    const worktreeRoot = resolveWorktreeRoot(abs);
+    if (headRoot && worktreeRoot) {
+      db.reconcileWorktreeProjects(sourceProjectId, headRoot, worktreeRoot);
+    }
 
     return {
       projectId: sourceProjectId,

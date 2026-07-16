@@ -9,7 +9,13 @@ import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { ChevronLeftIcon, ChevronRightIcon, EyeOffIcon, KeyIcon } from '../shared/icons.tsx';
 import { Provider } from '../shared/Provider.tsx';
 import { ActionTag } from './ActionTag.tsx';
-import { CATEGORY_ICON_FALLBACK, CATEGORY_LABEL, categoryStyle, type Selection } from './meta.ts';
+import {
+  CATEGORY_ICON_FALLBACK,
+  CATEGORY_LABEL,
+  categoryStyle,
+  instanceLocationLabel,
+  type Selection,
+} from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
 
 /** Human-readable confidence band + score for an instance's 0–1 confidence. */
@@ -96,7 +102,9 @@ export function FindingDetailView({
         <MatchedContent
           code={finding.match.contextPrefix}
           snippet={finding.match.maskedValue}
-          file={grouped ? `${String(finding.instanceCount)} files` : instance.file}
+          file={
+            grouped ? `${String(finding.instanceCount)} locations` : instanceLocationLabel(instance)
+          }
         />
 
         {grouped ? (
@@ -130,7 +138,9 @@ export function FindingDetailView({
               <span className="font-mono text-xs wrap-break-word">{instance.repo}</span>
             </MetaItem>
             <MetaItem label="Location">
-              <span className="font-mono text-xs wrap-break-word">{instance.file}</span>
+              <span className="font-mono text-xs wrap-break-word">
+                {instanceLocationLabel(instance)}
+              </span>
             </MetaItem>
             <MetaItem label="Action taken">
               <ActionTag action={instance.action} />
@@ -180,7 +190,9 @@ function LocationRow({ instance, onClick }: { instance: FindingInstance; onClick
       <Provider id={instance.provider} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="text-xs font-medium text-text">{instance.repo}</span>
-        <span className="font-mono text-label text-text-3 wrap-break-word">{instance.file}</span>
+        <span className="font-mono text-label text-text-3 wrap-break-word">
+          {instanceLocationLabel(instance)}
+        </span>
       </div>
       <ActionTag action={instance.action} />
       <ChevronRightIcon className="size-4 shrink-0 text-text-3" />

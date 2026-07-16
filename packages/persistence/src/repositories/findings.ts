@@ -63,6 +63,7 @@ interface FindingAggregateRowJoined {
   status_inputs: string | null;
   repos: string | null;
   files: string | null;
+  tool_names: string | null;
 }
 
 interface FindingGroupRowJoined {
@@ -77,6 +78,7 @@ interface FindingGroupRowJoined {
   source_tool: string;
   repo: string | null;
   file: string | null;
+  tool_name: string | null;
   // Status-derivation inputs — mirrors SqliteSecurityRepository.severitySummary's
   // atRest/latest-resolution-wins predicate (see deriveInstanceStatus below).
   kind: string;
@@ -254,8 +256,8 @@ export class SqliteFindingsRepository
   }
 
   /**
-   * Grouped findings for the dashboard — joins findings⋈events (repo/file
-   * from event metadata), groups by ruleId, computes per-filter-excluded facets,
+   * Grouped findings for the dashboard — joins findings⋈events (repo/file/
+   * toolName from event metadata), groups by ruleId, computes per-filter-excluded facets,
    * applies the requested filters, and sorts by severity then recency. Filtering
    * and faceting run in JS via the shared @akasecurity/schema helpers. `totals`
    * reflect the full filtered set; `items` is the requested
@@ -280,7 +282,7 @@ export class SqliteFindingsRepository
     const rows = allRows<FindingGroupRowJoined>(
       this.db.prepare(
         `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
-                occurred_at, source_tool, repo, file, kind, finding_key, latest_status
+                occurred_at, source_tool, repo, file, tool_name, kind, finding_key, latest_status
          FROM (
            SELECT f.id AS id, f.rule_id AS rule_id, f.category AS category,
                   f.severity AS severity, f.masked_match AS masked_match,
@@ -288,6 +290,7 @@ export class SqliteFindingsRepository
                   e.occurred_at AS occurred_at, e.source_tool AS source_tool,
                   json_extract(e.metadata, '$.repo') AS repo,
                   json_extract(e.metadata, '$.filePath') AS file,
+                  json_extract(e.metadata, '$.toolName') AS tool_name,
                   e.kind AS kind, f.finding_key AS finding_key,
                   latest.status AS latest_status,
                   ROW_NUMBER() OVER (
@@ -317,6 +320,7 @@ export class SqliteFindingsRepository
       sourceTool: r.source_tool,
       repo: r.repo ?? '',
       file: r.file ?? '',
+      ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
       status: deriveInstanceStatus(r),
     }));
 
@@ -370,10 +374,13 @@ export class SqliteFindingsRepository
    * carries a `q`.
    */
   private groupAggregates(withSearchText: boolean): Map<string, FindingGroupAggregate> {
+    // Tool names ride as their display label ("via Bash") to mirror
+    // buildHaystack — see its doc for why the bare name is not searched.
     const searchTextColumns = withSearchText
       ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
-           group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files`
-      : `, NULL AS repos, NULL AS files`;
+           group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files,
+           group_concat(DISTINCT 'via ' || json_extract(e.metadata, '$.toolName')) AS tool_names`
+      : `, NULL AS repos, NULL AS files, NULL AS tool_names`;
 
     const rows = this.db
       .prepare(
@@ -420,7 +427,11 @@ export class SqliteFindingsRepository
           // tell "no q this request" from "a group with no repo/file at all"
           // and skip priming a haystack nothing will read.
           ...(withSearchText
-            ? { searchText: [r.repos ?? '', r.files ?? ''].filter((s) => s !== '').join(' ') }
+            ? {
+                searchText: [r.repos ?? '', r.files ?? '', r.tool_names ?? '']
+                  .filter((s) => s !== '')
+                  .join(' '),
+              }
             : {}),
         },
       ]),

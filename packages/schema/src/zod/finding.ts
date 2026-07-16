@@ -168,6 +168,12 @@ export const FindingInstance = z
     provider: FindingProvider,
     repo: z.string(),
     file: z.string(),
+    // Host tool that produced the scanned text (event metadata's toolName).
+    // Present whenever the capturing hook recorded one — including
+    // file-attributed captures (views prefer `file`); its display value is
+    // the location fallback ("via Bash") when no filePath exists. Absent for
+    // legacy rows and non-tool captures (prompts, worktree scans).
+    toolName: z.string().optional(),
     // Effective action: override.action ?? actionTaken, translated to FindingAction.
     action: FindingAction,
     detectedAt: z.iso.datetime(),

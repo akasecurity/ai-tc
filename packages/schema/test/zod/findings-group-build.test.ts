@@ -113,6 +113,42 @@ const rows: GroupableFindingRow[] = [
   },
 ];
 
+// A finding captured from tool output (no filePath, only tool attribution).
+const toolAttributedRows: GroupableFindingRow[] = [
+  {
+    id: 'i4',
+    ruleId: 'env-kv',
+    category: 'secret',
+    severity: 'high',
+    maskedMatch: 'API_KEY=…',
+    actionTaken: 'log',
+    confidence: 0.9,
+    occurredAt: '2026-01-04T00:00:00.000Z',
+    sourceTool: 'claude-code',
+    repo: 'acme/api',
+    file: '',
+    toolName: 'Bash',
+  },
+];
+
+describe('buildFindingGroups tool attribution', () => {
+  it('carries toolName onto the instance', () => {
+    const groups = buildFindingGroups(toolAttributedRows);
+    expect(groups[0]?.instances[0]?.toolName).toBe('Bash');
+  });
+
+  it('leaves toolName undefined when the row has none', () => {
+    const groups = buildFindingGroups(rows);
+    expect(groups[0]?.instances[0]?.toolName).toBeUndefined();
+  });
+
+  it('matches q against an instance tool label ("via Bash")', () => {
+    const groups = buildFindingGroups(toolAttributedRows);
+    expect(applyFindingFilters(groups, { q: 'via bash' })).toHaveLength(1);
+    expect(applyFindingFilters(groups, { q: 'via webfetch' })).toHaveLength(0);
+  });
+});
+
 describe('buildFindingGroups', () => {
   const groups = buildFindingGroups(rows);
   const awsKey = groups.find((g) => g.id === 'aws-key');

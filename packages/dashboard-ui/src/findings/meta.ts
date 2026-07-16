@@ -102,6 +102,17 @@ export const ACTION_META: Record<
   },
 };
 
+/**
+ * Display label for an instance's location: the file path when the capture
+ * had one, else the producing tool ("via Bash") for file-less captures
+ * (prompts, tool output), else an em dash.
+ */
+export function instanceLocationLabel(instance: FindingInstance): string {
+  if (instance.file) return instance.file;
+  if (instance.toolName) return `via ${instance.toolName}`;
+  return '—';
+}
+
 /** The findings table's column identity + header, in display order. */
 export interface FindingColumn {
   id: 'severity' | 'subtype' | 'sources' | 'locations' | 'action' | 'status' | 'latest';

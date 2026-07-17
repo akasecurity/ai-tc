@@ -151,13 +151,20 @@ describe('the probe battery itself', () => {
   // Without this, the suite above passes trivially if the probes stop being
   // adversarial (a refactor drops the terminator, shrinks the lengths, …) —
   // 101 green tests that check nothing.
+  //
+  // A pattern belongs here only if it blows the budget on an early SHORT probe.
+  // The assertion is a lower bound on time, so the case runs for as long as the
+  // pattern is slow, and how slow is hardware-dependent: `(.*a){20}$` costs
+  // ~1.2s on one machine and over 5s on the Windows runner, where it exceeded
+  // the test timeout. It proved nothing the two below do not, so it is not
+  // worth a multi-second case. Add a pattern here only after checking what its
+  // first matching probe costs.
   it.each([
     ['nested quantifier', '^(a+)+$'],
     ['adjacent quantifiers in a quantified group', '(x+x+)+y'],
-    ['bounded repetition of an ambiguous body', '(.*a){20}$'],
   ])('catches a catastrophic pattern the schema admits: %s', (_label, pattern) => {
     const parsed = parseRegexRule(pattern);
-    // These require at least one character, so `matchesEmptyString` lets them
+    // Both require at least one character, so `matchesEmptyString` lets them
     // through. Nothing analyses pattern complexity — this suite is the only
     // thing standing between one of these and `rules/`.
     expect(parsed.success).toBe(true);

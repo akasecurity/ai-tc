@@ -71,7 +71,7 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
       await runFirstRun({
         argv,
         gateway,
-        readPosture: () => readPostureBlock(openLocalDatabase(cfg.dataDir)),
+        readPosture: () => readPostureBlock(() => openLocalDatabase(cfg.dataDir)),
         stdout: (s) => out.push(s),
       });
     } finally {
@@ -109,6 +109,42 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     expect(readFrameJsonBlock(blob)).toBeUndefined();
   });
 
+  it('omits only the Posture section (rest of the card renders) when opening the posture store throws', async () => {
+    const cfg = config(dir);
+    await handleCapture(
+      { kind: 'prompt', sourceTool: 'claude-code', text: `here is a key ${AWS_EXAMPLE_KEY}` },
+      cfg,
+    );
+    const gateway = resolveDataGateway(cfg);
+    const out: string[] = [];
+    try {
+      await runFirstRun({
+        argv: ['--surfaced', '2'],
+        gateway,
+        // The posture opener throws (unopenable store). It degrades identically
+        // to a read fault: only the Posture section is hidden.
+        readPosture: () =>
+          readPostureBlock(() => {
+            throw new Error('cannot open database');
+          }),
+        stdout: (s) => out.push(s),
+      });
+    } finally {
+      await gateway.close();
+    }
+    const blob = out.join('');
+
+    // The rest of the install card still renders over the live gateway…
+    expect(blob).toContain('installed');
+    expect(blob).toContain('First scan complete');
+    expect(blob).toContain('Findings');
+    // …and the handoff payload is still emitted.
+    expect(SetupHandoffOffer.safeParse(readFrameJsonBlock(blob)).success).toBe(true);
+    // …but the Posture section is omitted, not collapsed into the fail-open note.
+    expect(blob).not.toContain('Posture');
+    expect(blob).not.toContain("I couldn't read the local store");
+  });
+
   it('carries no raw detected value into the emitted frame block', async () => {
     const blob = await seedAndRun(['--surfaced', '2']);
     expect(blob).toContain('<<<AKA_FRAME_JSON');
@@ -140,7 +176,7 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
       await runFirstRun({
         argv: [],
         gateway,
-        readPosture: () => readPostureBlock(openLocalDatabase(cfg.dataDir)),
+        readPosture: () => readPostureBlock(() => openLocalDatabase(cfg.dataDir)),
         stdout: (s) => out.push(s),
       });
     } finally {

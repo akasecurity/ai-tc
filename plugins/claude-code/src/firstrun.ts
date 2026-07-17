@@ -33,7 +33,7 @@ try {
     await runFirstRunFailOpen({
       argv: process.argv.slice(2),
       gateway,
-      readPosture: () => readPostureBlock(openLocalDatabase(cfg.dataDir)),
+      readPosture: () => readPostureBlock(() => openLocalDatabase(cfg.dataDir)),
       stdout: (s) => process.stdout.write(s),
     });
   } finally {

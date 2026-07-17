@@ -65,10 +65,10 @@ export interface BackfillDeps {
   // drops any transcript message written at/after the backfill started (so a re-run
   // never re-ingests the wizard's own in-progress session), and `excludeSessionId`
   // skips AKA's OWN session transcript by id when the host exposes it. `dir`
-  // overrides the transcript root (the wizard's ~/.aka override threads a throwaway
-  // ~/.claude here). Injected (not read from the environment here) so runBackfill
-  // stays pure + testable; the CLI wiring at the bottom of this file computes the
-  // real values.
+  // overrides the transcript root; it is supplied only by the journey harness/tests
+  // to scan a throwaway ~/.claude in isolation — no production call site passes it.
+  // Injected (not read from the environment here) so runBackfill stays pure +
+  // testable; the CLI wiring at the bottom of this file computes the real values.
   guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
 }
 

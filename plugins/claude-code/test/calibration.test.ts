@@ -93,6 +93,23 @@ describe('frameCalibration', () => {
     expect(copy).not.toContain('161');
   });
 
+  it('omits the kind parenthetical entirely when nothing surfaced (all suppressed)', () => {
+    const allSuppressed: CalibrationPreview = {
+      categories: [
+        { category: 'pii', genuineCount: 0, fpCount: 8, egress: false },
+        { category: 'config', genuineCount: 0, fpCount: 2, egress: false },
+      ],
+      posture: preview.posture,
+    };
+    const { frame, copy } = frameCalibration(allSuppressed);
+    expect(frame.surfacedCategories).toEqual([]);
+    expect(frame.counts).toEqual({ total: 10, important: 0, routine: 10 });
+    expect(copy).toBe('Calibrated. 10 notifications, 0 important. 10 routine, 0 that matter');
+    // No dangling empty parenthetical.
+    expect(copy).not.toContain('()');
+    expect(copy).not.toContain('matter (');
+  });
+
   it("derives the 'that matter (…)' kind from the surfaced categories, not a fixed label", () => {
     const piiSurfaced: CalibrationPreview = {
       categories: [

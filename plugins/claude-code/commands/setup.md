@@ -175,11 +175,10 @@ false positives shown above?"
 - **Yes, apply** _(recommended)_ — write the posture and suppressions exactly as
   previewed.
 
-Offer **only** the "Yes, apply" option for now. (TODO: add an "Adjust a category"
-option — an override loop over the recommended posture — once that flow is built;
-until then a user who wants a different posture re-runs `/aka:setup` or edits it
-in the dashboard.) Do **not** proceed to step 5 until the user has explicitly
-confirmed.
+Offer **only** the "Yes, apply" option for now. An "Adjust a category" option —
+an override loop over the recommended posture — arrives in a follow-up; until
+then a user who wants a different posture re-runs `/aka:setup` or edits it in the
+dashboard. Do **not** proceed to step 5 until the user has explicitly confirmed.
 
 ## 5. Write the posture and suppressions
 

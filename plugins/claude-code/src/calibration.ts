@@ -50,9 +50,12 @@ export function frameCalibration(preview: CalibrationPreview): CalibrationResult
   };
 
   const kind = surfacedCategories.map((c) => SURFACED_KIND_LABEL[c]).join(', ');
+  // Omit the kind parenthetical entirely when nothing surfaced, so an
+  // all-suppressed run reads 'M that matter' rather than 'M that matter ()'.
+  const parenthetical = kind ? ` (${kind})` : '';
   const copy =
     `Calibrated. ${String(total)} notifications, ${String(important)} important. ` +
-    `${String(routine)} routine, ${String(important)} that matter (${kind})`;
+    `${String(routine)} routine, ${String(important)} that matter${parenthetical}`;
 
   return { frame, copy };
 }

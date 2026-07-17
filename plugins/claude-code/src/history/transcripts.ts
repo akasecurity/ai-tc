@@ -23,9 +23,9 @@ export interface ScannedMessage {
 }
 
 // Where Claude Code writes its per-project, per-session transcripts. `home`
-// overrides the OS home root (the wizard's ~/.aka override threads its parent dir
-// here so the journey harness scans a throwaway ~/.claude); omitted on every real
-// run, falling back to the OS home.
+// overrides the OS home root; it is supplied only by the journey harness/tests to
+// scan a throwaway ~/.claude in isolation — no production call site passes it, so
+// every real run falls back to the OS home.
 export function transcriptsDir(home?: string): string {
   return join(home ?? homedir(), '.claude', 'projects');
 }

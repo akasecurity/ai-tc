@@ -6,13 +6,19 @@ import { TriageCategoryRec } from './triage.ts';
 
 // The calibration counts shown at the calibrated-result frame ('Calibrated. N
 // notifications, M important. (N−M) routine, M that matter'). `important` counts
-// the surfaced findings, `routine` the suppressed ones, `total` their sum; the
-// sum equality is enforced by the emitter, not this schema.
-export const CalibrationCounts = z.object({
-  total: z.number().int().nonnegative(),
-  important: z.number().int().nonnegative(),
-  routine: z.number().int().nonnegative(),
-});
+// the surfaced findings, `routine` the suppressed ones, `total` their sum. The
+// sum equality (`total === important + routine`) is enforced by the schema's
+// refinement, so a frame whose counts do not add up fails validation.
+export const CalibrationCounts = z
+  .object({
+    total: z.number().int().nonnegative(),
+    important: z.number().int().nonnegative(),
+    routine: z.number().int().nonnegative(),
+  })
+  .refine((c) => c.total === c.important + c.routine, {
+    message: 'total must equal important + routine',
+    path: ['total'],
+  });
 export type CalibrationCounts = z.infer<typeof CalibrationCounts>;
 
 // One kind of finding present in the scanned history, counted and tagged on the

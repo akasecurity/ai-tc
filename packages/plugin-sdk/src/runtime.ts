@@ -204,11 +204,26 @@ export function createPluginRuntime(
   // worst-first collapse across the whole capture: a capture that mixes a
   // blocked secret with a warned code-context match applies 'block' to the
   // former and 'warn' to the latter.
+  //
+  // The legacy global ceiling is applied HERE so this stays the single
+  // definition of the action that actually applied: when it is enabled, 'warn'
+  // handling mode floors block/redact to warn. `decide`'s aggregate collapse and
+  // the findings audit trail both resolve through this function, so neither can
+  // record a stronger action than the capture actually took.
   function actionForFinding(
     finding: MatchResult,
     excepted?: ReadonlySet<MatchResult>,
   ): ActionTaken {
-    return excepted?.has(finding) ? 'allow' : resolveAction(finding.ruleId, finding.category);
+    if (excepted?.has(finding)) return 'allow';
+    const action = resolveAction(finding.ruleId, finding.category);
+    if (
+      ENFORCEMENT_CEILING_ENABLED &&
+      policyMode === 'warn' &&
+      (action === 'block' || action === 'redact')
+    ) {
+      return 'warn';
+    }
+    return action;
   }
 
   function decide(
@@ -220,22 +235,13 @@ export function createPluginRuntime(
 
     const actionFor = (finding: MatchResult): ActionTaken => actionForFinding(finding, excepted);
 
+    // `worst` already reflects the legacy global ceiling: actionForFinding caps
+    // block/redact to warn when it is enabled, so the collapse inherits the cap
+    // and never needs to re-apply it here.
     let worst: ActionTaken = 'log';
     for (const finding of findings) {
       const action = actionFor(finding);
       if (ACTION_PRIORITY.indexOf(action) < ACTION_PRIORITY.indexOf(worst)) worst = action;
-    }
-
-    // Legacy global ceiling (disabled by default — ENFORCEMENT_CEILING_ENABLED
-    // above): when enabled, the onboarding "handling" choice caps block/redact
-    // down to warn. Per-category policies are the sole enforcement authority
-    // while it's off.
-    if (
-      ENFORCEMENT_CEILING_ENABLED &&
-      policyMode === 'warn' &&
-      (worst === 'block' || worst === 'redact')
-    ) {
-      return { action: 'warn', text, findings };
     }
 
     if (worst === 'block') return { action: 'block', text: null, findings };
@@ -355,8 +361,11 @@ export function createPluginRuntime(
       if (!key) return references;
       const seen = new Set<string>();
       for (const finding of decision.findings) {
-        const action = resolveAction(finding.ruleId, finding.category);
-        if ((action !== 'block' && action !== 'redact') || excepted.has(finding)) continue;
+        // The same per-finding resolution the findings write uses, so the ledger
+        // and the findings table agree by construction on what was enforced
+        // (excepted findings resolve to 'allow' and are skipped here).
+        const action = actionForFinding(finding, excepted);
+        if (action !== 'block' && action !== 'redact') continue;
         const fp = fingerprintOf(key, finding, fpCache);
         const pair = `${finding.ruleId}:${fp}`;
         if (seen.has(pair)) continue;

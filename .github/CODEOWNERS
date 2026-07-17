@@ -9,9 +9,11 @@
 /packages/              @pmontiel-git @suhailsalim @Vaishnav-OM
 /plugins/               @pmontiel-git @suhailsalim @Vaishnav-OM
 /cli/                   @pmontiel-git @suhailsalim @Vaishnav-OM
-/web-ui/                @venuverse
-/packages/dashboard-ui/ @venuverse
-/packages/ui-kit/       @venuverse
+# UI surfaces: the UI owner, plus a senior so UI PRs authored BY the UI owner
+# still auto-request a reviewer (GitHub never requests the PR author).
+/web-ui/                @venuverse @pmontiel-git
+/packages/dashboard-ui/ @venuverse @pmontiel-git
+/packages/ui-kit/       @venuverse @pmontiel-git
 
 # Detection rules are published as first-party verified packs under the `aka`
 # namespace when merged, so /rules is a supply-chain trust boundary — every rule

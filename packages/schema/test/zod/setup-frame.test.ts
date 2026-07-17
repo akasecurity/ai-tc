@@ -44,7 +44,9 @@ describe('CalibrationCounts', () => {
     expect(CalibrationCounts.safeParse({ total: 1.5, important: 0, routine: 0 }).success).toBe(
       false,
     );
-    expect(CalibrationCounts.safeParse({ total: 0, important: -1, routine: 0 }).success).toBe(false);
+    expect(CalibrationCounts.safeParse({ total: 0, important: -1, routine: 0 }).success).toBe(
+      false,
+    );
   });
 
   it('rejects a missing member', () => {

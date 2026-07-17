@@ -4,6 +4,7 @@ import {
   CalibrationCounts,
   CalibrationFindingKind,
   CalibrationFrame,
+  SetupHandoffOffer,
 } from '../../src/zod/setup-frame.ts';
 
 // A populated example frame: 161 total notifications, 3 important (surfaced),
@@ -51,6 +52,18 @@ describe('CalibrationCounts', () => {
 
   it('rejects a missing member', () => {
     expect(CalibrationCounts.safeParse({ total: 1, important: 1 }).success).toBe(false);
+  });
+
+  it('accepts counts whose total equals important + routine', () => {
+    expect(CalibrationCounts.safeParse({ total: 161, important: 3, routine: 158 }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects counts whose total does not equal important + routine', () => {
+    expect(CalibrationCounts.safeParse({ total: 160, important: 3, routine: 158 }).success).toBe(
+      false,
+    );
   });
 });
 
@@ -120,5 +133,37 @@ describe('CalibrationFrame', () => {
     const { counts, ...rest } = populatedFrame;
     void counts;
     expect(CalibrationFrame.safeParse(rest).success).toBe(false);
+  });
+});
+
+describe('SetupHandoffOffer', () => {
+  const openDashboard = { id: 'open-dashboard', label: 'Open dashboard' };
+  const notNow = { id: 'not-now', label: 'Not now' };
+
+  it('parses the fixed two-entry offer (open-dashboard then not-now)', () => {
+    expect(
+      SetupHandoffOffer.safeParse({ worthALook: 3, options: [openDashboard, notNow] }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a dropped option (only one entry)', () => {
+    expect(SetupHandoffOffer.safeParse({ worthALook: 3, options: [openDashboard] }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects reordered options (not-now before open-dashboard)', () => {
+    expect(
+      SetupHandoffOffer.safeParse({ worthALook: 3, options: [notNow, openDashboard] }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an extra option beyond the fixed tuple', () => {
+    expect(
+      SetupHandoffOffer.safeParse({
+        worthALook: 3,
+        options: [openDashboard, notNow, { id: 'not-now', label: 'Later' }],
+      }).success,
+    ).toBe(false);
   });
 });

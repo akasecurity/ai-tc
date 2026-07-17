@@ -32,6 +32,7 @@
     "smoke:sea": "node scripts/smoke-sea.mjs",
     "smoke:dashboard": "node scripts/smoke-dashboard.mjs",
     "package:sea": "node scripts/package-sea.mjs",
+    "archive:sea": "node scripts/archive-sea.mjs",
     "bundle:web-ui": "node scripts/bundle-web-ui.mjs",
     "prepack": "tsup && node scripts/bundle-web-ui.mjs",
     "lint": "eslint src test",

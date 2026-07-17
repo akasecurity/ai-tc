@@ -72,7 +72,9 @@ describe('frameCalibration', () => {
 
   it("templates the 'Calibrated.' copy exactly over the preview values", () => {
     const { copy } = frameCalibration(preview);
-    expect(copy).toBe('Calibrated. 161 notifications, 3 important. 158 routine, 3 that matter (live keys)');
+    expect(copy).toBe(
+      'Calibrated. 161 notifications, 3 important. 158 routine, 3 that matter (live keys)',
+    );
   });
 
   it('templates over a different preview — the numbers follow the input', () => {
@@ -85,7 +87,9 @@ describe('frameCalibration', () => {
     };
     const { frame, copy } = frameCalibration(other);
     expect(frame.counts).toEqual({ total: 10, important: 2, routine: 8 });
-    expect(copy).toBe('Calibrated. 10 notifications, 2 important. 8 routine, 2 that matter (live keys)');
+    expect(copy).toBe(
+      'Calibrated. 10 notifications, 2 important. 8 routine, 2 that matter (live keys)',
+    );
     expect(copy).not.toContain('161');
   });
 
@@ -98,7 +102,9 @@ describe('frameCalibration', () => {
       posture: preview.posture,
     };
     const { copy } = frameCalibration(piiSurfaced);
-    expect(copy).toBe('Calibrated. 24 notifications, 4 important. 20 routine, 4 that matter (personal data)');
+    expect(copy).toBe(
+      'Calibrated. 24 notifications, 4 important. 20 routine, 4 that matter (personal data)',
+    );
     expect(copy).not.toContain('live keys');
   });
 });

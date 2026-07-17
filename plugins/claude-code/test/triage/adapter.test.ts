@@ -8,7 +8,10 @@ import type {
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
-import { CalibrationFrame, DetectionCategory as DetectionCategorySchema } from '@akasecurity/schema';
+import {
+  CalibrationFrame,
+  DetectionCategory as DetectionCategorySchema,
+} from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
@@ -271,7 +274,9 @@ describe('runApply — confirm persists the full recommended 8-pack posture', ()
     expect(code).toBe(0);
     // The whole 8-pack lands — not just the evidence-derived category. This is
     // the "recommended posture" the user confirmed, persisted verbatim.
-    expect(Object.keys(confirmDb.posture).sort()).toEqual([...DetectionCategorySchema.options].sort());
+    expect(Object.keys(confirmDb.posture).sort()).toEqual(
+      [...DetectionCategorySchema.options].sort(),
+    );
     // Evidence overrides the floor for its category; the floor fills every other pack.
     expect(confirmDb.posture.secret).toBe('redact');
     expect(confirmDb.posture.code_context).toBe('log'); // monitor floor -> log action

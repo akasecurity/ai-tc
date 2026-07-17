@@ -290,9 +290,7 @@ describe('pure renderers', () => {
       "Most of it I handle quietly; I only notify you when it's worth your call.",
     );
     // Leads into the calibration handoff that hands off to the scan offer.
-    expect(out).toContain(
-      "let's calibrate your notifications based on what Claude's been up to",
-    );
+    expect(out).toContain("let's calibrate your notifications based on what Claude's been up to");
     // No internal narration (design-doc / decision citations) leaks into the copy.
     expect(out).not.toMatch(/Decision|design doc|ADR/i);
     // The whole card, so a copy regression is caught as a snapshot diff.

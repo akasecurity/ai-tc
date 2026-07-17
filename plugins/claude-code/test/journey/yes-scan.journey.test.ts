@@ -30,9 +30,9 @@ import {
 
 // The real installed plugin version, so the provenance assertion tracks the
 // shipped manifest instead of a hardcoded literal.
-const MANIFEST = JSON.parse(
-  readFileSync(`${PLUGIN_ROOT}/.claude-plugin/plugin.json`, 'utf8'),
-) as { version: string };
+const MANIFEST = JSON.parse(readFileSync(`${PLUGIN_ROOT}/.claude-plugin/plugin.json`, 'utf8')) as {
+  version: string;
+};
 
 // Reading the per-category posture the confirm write established, straight from
 // the store the scripts wrote to (the honest final-state seam).
@@ -99,9 +99,7 @@ describe('Yes-scan happy path, end-to-end', () => {
     // intro run, back-to-back, before the scan offer. This asserts the wiring
     // (the copy itself is unit-owned in render.test.ts).
     expect(intro).toContain('I watch out for Claude as it works.');
-    expect(intro).toContain(
-      "let's calibrate your notifications based on what Claude's been up to",
-    );
+    expect(intro).toContain("let's calibrate your notifications based on what Claude's been up to");
   });
 
   it('preview: leads with the real-count headline and the condensed recommended posture', () => {
@@ -132,7 +130,9 @@ describe('Yes-scan happy path, end-to-end', () => {
     });
     // The previewed posture is the full recommended 8-pack, so the
     // confirm write has all 8 to establish.
-    expect(Object.keys(calibrationFrame.posture).sort()).toEqual([...DetectionCategory.options].sort());
+    expect(Object.keys(calibrationFrame.posture).sort()).toEqual(
+      [...DetectionCategory.options].sort(),
+    );
     // Nothing raw crosses the isolated-judge boundary into the preview stdout.
     expect(preview).not.toContain(SURFACED_KEY);
     expect(preview).not.toContain(ROUTINE_KEY);
@@ -147,9 +147,9 @@ describe('Yes-scan happy path, end-to-end', () => {
   });
 
   it('final store: settings.json records the consent and all 8 packs hold a valid posture', () => {
-    const settings = JSON.parse(
-      readFileSync(journey.settingsPath, 'utf8'),
-    ) as { historicalAccess?: string };
+    const settings = JSON.parse(readFileSync(journey.settingsPath, 'utf8')) as {
+      historicalAccess?: string;
+    };
     expect(settings.historicalAccess).toBe('full');
 
     const posture = readPosture(journey.storeDir);

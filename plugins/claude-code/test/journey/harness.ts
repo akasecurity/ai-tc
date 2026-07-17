@@ -146,7 +146,10 @@ export class SetupJourney {
   corruptStore(): void {
     rmSync(this.storeDir, { recursive: true, force: true });
     mkdirSync(this.storeDir, { recursive: true });
-    writeFileSync(join(this.storeDir, 'aka.db'), 'AKA corrupt-store fixture — not a database\n'.repeat(64));
+    writeFileSync(
+      join(this.storeDir, 'aka.db'),
+      'AKA corrupt-store fixture — not a database\n'.repeat(64),
+    );
   }
 
   private run(script: string, args: string[], input?: string): StepResult {

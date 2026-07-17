@@ -35,9 +35,7 @@ export function frameCalibration(preview: CalibrationPreview): CalibrationResult
   const surfacedCategories = preview.categories
     .filter((c) => c.genuineCount > 0)
     .map((c) => c.category);
-  const routineCategories = preview.categories
-    .filter((c) => c.fpCount > 0)
-    .map((c) => c.category);
+  const routineCategories = preview.categories.filter((c) => c.fpCount > 0).map((c) => c.category);
 
   const findingKinds = preview.categories
     .filter((c) => c.genuineCount + c.fpCount > 0)

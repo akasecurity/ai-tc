@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { dataDir } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
+import { reinvokeArgv } from './self-exec.ts';
 import { gatherReportLive, isRecord } from './updates.ts';
 
 // Passive-notice cache: a small JSON file next to the local store so a command can
@@ -75,10 +76,10 @@ export function refreshCache(home: string): void {
 // Fire a detached `aka __update-refresh --home <home>` that outlives this process,
 // so the NEXT command sees a fresh cache. Zero latency on the current command.
 function triggerBackgroundRefresh(home: string): void {
-  const entry = process.argv[1];
-  if (!entry) return;
+  const reinvoke = reinvokeArgv('__update-refresh', ['--home', home]);
+  if (!reinvoke) return;
   try {
-    spawn(process.execPath, [entry, '__update-refresh', '--home', home], {
+    spawn(reinvoke.command, reinvoke.args, {
       detached: true,
       stdio: 'ignore',
     }).unref();

@@ -1,10 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { scan } from '../../src/index.ts';
+import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
 
 // scan() is synchronous and runs on the hook path. A rule that backtracks
 // catastrophically cannot be interrupted — the fail-open catch in the plugin
@@ -12,31 +10,26 @@ import { scan } from '../../src/index.ts';
 // letting the call through UNSCANNED. So a slow rule is a detection bypass, not
 // just a stall.
 //
-// This gate binds the rules in this repository only. A rule reaching the engine
-// at runtime from a pulled or custom pack is not covered by it.
+// SCOPE. This gate binds the rules in this repository only, and within them it
+// proves "no bundled rule backtracks on the inputs the battery constructs" —
+// not "no bundled rule can ReDoS at all". The battery mixes two probe sources:
+//   1. a FIXED lowercase-and-digit alphabet (below), plus
+//   2. per-rule DERIVED probes built from each pattern's own literal prefix and
+//      character classes (`derivedProbes`), so a rule gated behind a literal
+//      like `ghp_(...)+$` — the shape the real secret rules here use — is
+//      actually exercised past its prefix on its own alphabet.
+// Residual gaps, all documented rather than silently covered: backtracking that
+// needs a literal (non-class) character the pattern repeats; polynomial blowup
+// reachable only on a non-lowercase alphabet (the fixed polynomial tier is
+// lowercase-and-digit); and any rule that arrives at runtime from a pulled or
+// custom pack, which this suite never sees.
 const BUDGET_MS = 100;
 
-const RULES_DIR = resolve(__dirname, '../../../../rules');
+const bundled = discoverBundledRuleFiles().map(({ packDirAbs, ruleFile }) =>
+  loadRule(packDirAbs, ruleFile),
+);
 
-function loadBundledRules(): Rule[] {
-  const rules: Rule[] = [];
-  for (const packDir of readdirSync(RULES_DIR, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name)) {
-    const manifestPath = resolve(RULES_DIR, packDir, 'manifest.json');
-    if (!existsSync(manifestPath)) continue;
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { rules: string[] };
-    for (const ruleFile of manifest.rules) {
-      const raw: unknown = JSON.parse(
-        readFileSync(resolve(RULES_DIR, packDir, `${ruleFile}.json`), 'utf-8'),
-      );
-      rules.push(Rule.parse(raw));
-    }
-  }
-  return rules;
-}
-
-// Two probe tiers, because the two failure modes need opposite inputs.
+// Two FIXED probe tiers, because the two failure modes need opposite inputs.
 //
 // Exponential backtracking blows up on SHORT input — 26 chars is already
 // seconds — so a long probe would hang the run instead of failing it. Each
@@ -69,18 +62,96 @@ const POLYNOMIAL_PROBES = ['abc-', 'a.', 'a ', 'a=', 'x', '0', 'a@', 'a/', 'ab']
   (unit) => unit.repeat(10_000).slice(0, 40_000) + '!',
 );
 
-// Exponential probes run FIRST and the walk stops at the first over-budget
-// probe. Both halves of that matter: a pattern that backtracks catastrophically
-// at 26 chars takes geological time on a 40KB probe, so reaching the polynomial
-// tier at all would hang the run instead of failing it — for a bad rule here,
-// and for the self-test below that deliberately supplies one.
-const PROBES = [...EXPONENTIAL_PROBES, ...POLYNOMIAL_PROBES];
+// The literal prefix a pattern requires before its first variable construct.
+// A rule like `ghp_([A-Za-z0-9]+)+$` fails at the literal `ghp_` for every
+// probe that does not start with it, so its catastrophic tail is unreachable
+// unless the probe is prefixed. Anchors and boundaries are skipped; a `\d`,
+// `\w`, `.` etc. ends the prefix.
+function literalPrefix(pattern: string): string {
+  let prefix = '';
+  let i = 0;
+  if (pattern[i] === '^') i++;
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === undefined) break;
+    if (c === '\\') {
+      const next = pattern[i + 1];
+      if (next === 'b' || next === 'B') {
+        i += 2;
+        continue;
+      }
+      if (next === undefined || /[dDwWsSnrtfv.]/.test(next)) break;
+      prefix += next;
+      i += 2;
+      continue;
+    }
+    if ('([{.*+?|)]}^$'.includes(c)) break;
+    prefix += c;
+    i++;
+  }
+  return prefix;
+}
+
+// One representative character per character class / shorthand the pattern uses,
+// so a probe run is made of characters the pattern's repeated group actually
+// consumes. Falls back to 'a' when the pattern names no class.
+function fuelChars(pattern: string): string[] {
+  const fuel = new Set<string>();
+  for (const m of pattern.matchAll(/\[\^?([^\]]+)\]/g)) {
+    const body = m[1];
+    if (body === undefined) continue;
+    const range = /([A-Za-z0-9])-[A-Za-z0-9]/.exec(body);
+    const rangeStart = range?.[1];
+    if (rangeStart !== undefined) fuel.add(rangeStart);
+    else {
+      const literal = body.replace(/\\/g, '')[0];
+      if (literal !== undefined && literal !== '^') fuel.add(literal);
+    }
+  }
+  if (pattern.includes('\\w')) fuel.add('a');
+  if (pattern.includes('\\d')) fuel.add('0');
+  if (pattern.includes('\\s')) fuel.add(' ');
+  if (/(?<!\\)\./.test(pattern)) fuel.add('a');
+  if (fuel.size === 0) fuel.add('a');
+  return [...fuel];
+}
+
+// Adversarial inputs derived from the pattern itself: `<prefix><fuel×N><term>`,
+// where `term` is a character the fuel class does not contain, forcing the
+// repeated group to fail and backtrack. Exponential-scale only (26/28 chars) —
+// a long derived probe would false-positive on rules that are linear-but-slow
+// on a big input of their own alphabet (e.g. stack-trace at ~800ms on 40KB).
+function derivedProbes(pattern: string): string[] {
+  const prefix = literalPrefix(pattern);
+  const fuel = fuelChars(pattern);
+  const terminators = ['!', '#', '~', '\n'];
+  const probes: string[] = [];
+  for (const f of fuel) {
+    for (const term of terminators) {
+      if (term === f) continue;
+      for (const len of [26, 28]) probes.push(prefix + f.repeat(len) + term);
+    }
+  }
+  return probes;
+}
+
+// Fixed short probes and per-rule derived probes run FIRST (both cheap on a safe
+// rule, budget-blowing on a bad one); the fixed 40KB polynomial tier runs last.
+// The ordering matters: a pattern that backtracks catastrophically on a short
+// probe takes geological time on a 40KB one, so it must fail on a short probe
+// before the polynomial tier is ever reached — for a bundled rule here and for
+// the self-test below that deliberately supplies one. `scan()` cannot be
+// interrupted mid-exec, so the walk stops at the first over-budget probe.
+function probesFor(rule: Rule): string[] {
+  const derived = rule.matcher.type === 'regex' ? derivedProbes(rule.matcher.pattern) : [];
+  return [...derived, ...EXPONENTIAL_PROBES, ...POLYNOMIAL_PROBES];
+}
 
 /** The slowest probe against `rule`, in ms; stops early once one blows the budget. */
 function worstProbeMs(rule: Rule): { ms: number; probe: string } {
   let ms = 0;
   let probe = '';
-  for (const text of PROBES) {
+  for (const text of probesFor(rule)) {
     const start = performance.now();
     scan(text, [rule]);
     const elapsed = performance.now() - start;
@@ -92,8 +163,6 @@ function worstProbeMs(rule: Rule): { ms: number; probe: string } {
   }
   return { ms, probe };
 }
-
-const bundled = loadBundledRules();
 
 describe('bundled rules survive adversarial input', () => {
   it('discovers every bundled rule', () => {
@@ -145,6 +214,24 @@ describe('the schema rejects catastrophic patterns that can match empty', () => 
     const parsed = parseRegexRule(pattern);
     expect(parsed.success).toBe(false);
   });
+
+  it('but a captureGroup re-opens every one of them', () => {
+    // The refine is `captureGroup !== undefined || !matchesEmptyString(...)`,
+    // so setting a captureGroup skips the empty-string check entirely — and the
+    // schema comment explicitly invites `*`/`?` around a capture. So the "assert
+    // the schema, not a probe" note above holds ONLY while captureGroup is
+    // absent; with one, these shapes parse and the probe battery becomes the
+    // only defence again.
+    const parsed = Rule.safeParse({
+      specVersion: 1,
+      id: 'test-pack/evil',
+      name: 'evil',
+      category: 'custom',
+      severity: 'low',
+      matcher: { type: 'regex', pattern: '(a*)*$', flags: 'g', captureGroup: 1 },
+    });
+    expect(parsed.success).toBe(true);
+  });
 });
 
 describe('the probe battery itself', () => {
@@ -170,5 +257,39 @@ describe('the probe battery itself', () => {
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     expect(worstProbeMs(parsed.data).ms).toBeGreaterThan(BUDGET_MS);
+  });
+
+  // The fixed lowercase-and-digit alphabet cannot see these: a literal prefix
+  // (`ghp_`, `eyJ`) gates the catastrophic tail, or the vulnerable class is
+  // uppercase-only (`[B-Z]`). They are the exact shape the real secret rules in
+  // this repo use, and each one runs for seconds on a tailored input — past the
+  // hook's 10s timeout for the JWT case. `derivedProbes` is what closes them.
+  it.each([
+    ['github-PAT-shaped literal prefix', 'ghp_([A-Za-z0-9]+)+$'],
+    ['AWS-key-shaped literal prefix', 'AKIA([A-Z0-9]+)+$'],
+    ['uppercase-only class, no prefix', '\\b([B-Z]+)+#'],
+    ['JWT-shaped literal prefix', 'eyJ([A-Za-z0-9_-]+)+\\.'],
+  ])('catches an alphabet-specific catastrophic pattern: %s', (_label, pattern) => {
+    const parsed = parseRegexRule(pattern);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(worstProbeMs(parsed.data).ms).toBeGreaterThan(BUDGET_MS);
+  });
+
+  it('the fixed alphabet alone would miss the alphabet-specific patterns', () => {
+    // Pins WHY the per-rule derivation is load-bearing: without it, a
+    // github-PAT-shaped rule sails through in microseconds. If a refactor makes
+    // the fixed probes somehow cover these, this test fails loudly and the
+    // derivation can be reconsidered — it should not silently become redundant.
+    const parsed = parseRegexRule('ghp_([A-Za-z0-9]+)+$');
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    let worstFixed = 0;
+    for (const text of [...EXPONENTIAL_PROBES, ...POLYNOMIAL_PROBES]) {
+      const start = performance.now();
+      scan(text, [parsed.data]);
+      worstFixed = Math.max(worstFixed, performance.now() - start);
+    }
+    expect(worstFixed).toBeLessThan(BUDGET_MS);
   });
 });

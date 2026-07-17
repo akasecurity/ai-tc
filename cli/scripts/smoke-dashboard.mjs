@@ -17,7 +17,8 @@ const outDir = join(cliDir, 'sea-dist', `aka-${platform}-${arch}`);
 const exe = join(outDir, platform === 'win32' ? 'aka.exe' : 'aka');
 const serverJs = join(outDir, 'web-ui', 'web-ui', 'server.js');
 if (!existsSync(exe)) throw new Error(`missing ${exe} — run \`pnpm package:sea\` first`);
-if (!existsSync(serverJs)) throw new Error(`missing ${serverJs} — run \`pnpm bundle:web-ui\` then \`package:sea\``);
+if (!existsSync(serverJs))
+  throw new Error(`missing ${serverJs} — run \`pnpm bundle:web-ui\` then \`package:sea\``);
 
 const PORT = 41847;
 const HOST = '127.0.0.1';
@@ -60,7 +61,9 @@ try {
   if (status !== 200) throw new Error(`dashboard /security returned ${status ?? 'no response'}`);
   process.stdout.write(`sea-dashboard-smoke: OK (/security -> ${status})\n`);
 } catch (err) {
-  process.stderr.write(`sea-dashboard-smoke: FAIL — ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(
+    `sea-dashboard-smoke: FAIL — ${err instanceof Error ? err.message : String(err)}\n`,
+  );
   process.exitCode = 1;
 } finally {
   if (child) child.kill('SIGKILL');

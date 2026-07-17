@@ -1,5 +1,6 @@
 import type { Rule } from '@akasecurity/schema';
 
+import { escapeRegExp } from './escape-regexp.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
 import type { MatchResult, RulePack } from './types.ts';
@@ -62,9 +63,6 @@ interface Candidate {
 }
 
 // Escape regex metacharacters so a label is matched literally.
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 // Pass 2 helper: is `candidate` corroborated by another signal within its
 // rule's proximity window? Looks for (a) another match in one of `categories`

@@ -91,15 +91,32 @@ describe('KeywordMatcher', () => {
 
   it('advances past a self-overlapping keyword instead of re-matching it', () => {
     const matcher = new KeywordMatcher();
-    // A self-overlapping keyword ("aa" in "aaa") yields the leading occurrence
-    // only. redact() masks that span either way, and no bundled keyword
-    // overlaps itself, so this pins the traversal, not a detection requirement.
+    // The `g`-advance keeps only the leading occurrence of a self-overlapping
+    // keyword ("aa" in "aaa"). Four bundled keywords do self-overlap with a
+    // 1-char border — "todo-secret", "shipping address", and the two name-field
+    // keywords in core-pii/name — so on a contrived doubled input the change is
+    // observable: "shipping addresshipping address" now yields one span, where
+    // the old traversal yielded two. Accepted because the un-redacted remainder
+    // is the keyword's own tail, never a third-party secret, and `g`-advance is
+    // the correct regex semantics. Verified below.
     expect(matcher.match('aaa', keywordRule(['aa']))).toEqual([{ start: 0, end: 2 }]);
   });
 
-  it('folds case by code point, not code unit', () => {
-    // "ß" and "ẞ" are one code unit each but fold to each other only under the
-    // regex `u` flag; a code-unit comparison reports no match.
+  it('drops the overlapping second match of a self-bordering bundled keyword', () => {
+    const matcher = new KeywordMatcher();
+    // Pins the real behaviour the comment above describes: the surviving text is
+    // the keyword's own suffix ("hipping address"), not leaked third-party data.
+    const spans = matcher.match(
+      'shipping addresshipping address',
+      keywordRule(['shipping address']),
+    );
+    expect(spans).toEqual([{ start: 0, end: 16 }]);
+  });
+
+  it('folds "ß"/"ẞ" under the u flag, which a plain i regex would drop', () => {
+    // "ß" and "ẞ" fold to each other under the regex `u` flag but not under a
+    // plain `i` regex. The old case-folded-copy matcher folded them too (via
+    // toLowerCase), so `u` is what keeps parity here rather than adding folding.
     expect(slices('the ẞ here', keywordRule(['ß']))).toEqual(['ẞ']);
     expect(slices('the ß here', keywordRule(['ẞ']))).toEqual(['ß']);
   });

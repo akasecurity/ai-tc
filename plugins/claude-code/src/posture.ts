@@ -9,8 +9,8 @@ import { renderPosture } from './render.ts';
 // Best-effort by design: this OWNS the catch so a policies-read fault degrades
 // to '' — renderFirstRun then hides only the Posture section instead of letting
 // the throw propagate to firstrun's outer fail-open handler and collapse the
-// entire card into the "AKA could not read your data yet…" note. Always closes
-// the handle it was given, on both paths.
+// entire card into the store-unavailable note. Always closes the handle it was
+// given, on both paths.
 export async function readPostureBlock(
   db: Pick<LocalDatabase, 'policies' | 'close'>,
 ): Promise<string> {

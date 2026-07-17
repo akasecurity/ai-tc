@@ -163,7 +163,9 @@ export function DirectoryBrowser({ onSelect }: { onSelect: (path: string) => voi
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-2"
                   >
                     <Ico name="folder" className="size-4 shrink-0 text-primary" />
-                    <span className="truncate text-text">{entry.name}</span>
+                    <span className="truncate text-text" title={entry.name}>
+                      {entry.name}
+                    </span>
                   </button>
                 ))}
               {!loading && !error && entries.length === 0 && (

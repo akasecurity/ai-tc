@@ -85,7 +85,9 @@ export function PublisherTag({ publisher, kind }: { publisher: string; kind: Pub
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5 text-xs font-semibold text-text-2">
       <Icon aria-hidden focusable={false} className="size-3.5 shrink-0" style={{ color: fg }} />
-      <span className="truncate">{publisher}</span>
+      <span className="truncate" title={publisher}>
+        {publisher}
+      </span>
       {m.verified && (
         <span title={m.label} className="text-[10px] font-bold" style={{ color: fg }}>
           ✓

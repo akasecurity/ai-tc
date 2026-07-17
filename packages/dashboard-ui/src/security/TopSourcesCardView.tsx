@@ -22,7 +22,7 @@ export interface TopSourcesView {
 
 export function TopSourcesCardView({ items, isLoading, error }: TopSourcesView) {
   return (
-    <Card className="flex flex-col shadow-sm">
+    <Card className="flex flex-col shadow-sm min-w-0">
       <CardHeader>
         <CardIcon>
           <TargetIcon aria-hidden focusable={false} className="size-4" />
@@ -60,17 +60,18 @@ function SourceRow({ source }: { source: TopSource }) {
       >
         <Icon aria-hidden focusable={false} className="size-3.5" />
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between">
-          {/* `name` is a repo slug (mono reads well) or a user's email (mono looks
-              off and truncates awkwardly) — only monospace the repo slug. */}
-          <span className={cn('truncate text-sm text-text', !isUser && 'font-mono')}>
-            {source.name}
-          </span>
-          <span className="text-sm font-bold text-text">
-            {numberFormat.format(source.findingsCount)}
-          </span>
-        </div>
+      <div className="min-w-0 flex-1 flex items-center justify-between gap-2">
+        {/* `name` is a repo slug (mono reads well) or a user's email (mono looks
+            off and truncates awkwardly) — only monospace the repo slug. */}
+        <span
+          className={cn('truncate text-sm text-text', !isUser && 'font-mono')}
+          title={source.name}
+        >
+          {source.name}
+        </span>
+        <span className="text-sm font-bold text-text shrink-0">
+          {numberFormat.format(source.findingsCount)}
+        </span>
       </div>
     </div>
   );

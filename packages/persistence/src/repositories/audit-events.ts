@@ -4,6 +4,9 @@ import type { AuditEventInput, LlmCallInput, ToolCallInput } from '@akasecurity/
 import { isoToEpochMillis, toAuditEventRow } from '@akasecurity/schema';
 
 import { llmCallId, toolCallId } from '../ids.ts';
+import { parseJsonObject } from '../internal/json.ts';
+import { allRows, bindParams, getRow } from '../internal/rows.ts';
+import { withTransaction } from '../internal/transactions.ts';
 
 /**
  * Audit event (timeline) fact writer, bound to one open DB + local identity. The
@@ -67,34 +70,29 @@ export class SqliteAuditEventsRepository {
   // the caller fails open and drops the whole pass — recovered idempotently on the
   // next pass. Nesting-safe is NOT needed: the reconciler is the sole caller.
   runInTransaction(fn: () => void): void {
-    this.db.exec('BEGIN');
-    try {
-      fn();
-      this.db.exec('COMMIT');
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
+    withTransaction(this.db, fn);
   }
 
   insertAuditEvent(input: AuditEventInput): void {
     const row = toAuditEventRow(input);
-    this.insertStmt.run({
-      id: row.id,
-      parentId: row.parentId ?? null,
-      rootSessionId: row.rootSessionId ?? null,
-      eventType: row.eventType,
-      hostId: row.hostId ?? null,
-      harnessId: row.harnessId ?? null,
-      sourceProjectId: row.sourceProjectId ?? null,
-      startedAt: row.startedAt,
-      endedAt: row.endedAt ?? null,
-      severity: row.severity ?? null,
-      priority: row.priority ?? null,
-      content: row.content ?? null,
-      contentHash: row.contentHash ?? null,
-      attributes: row.attributes ?? null,
-    });
+    this.insertStmt.run(
+      bindParams({
+        id: row.id,
+        parentId: row.parentId,
+        rootSessionId: row.rootSessionId,
+        eventType: row.eventType,
+        hostId: row.hostId,
+        harnessId: row.harnessId,
+        sourceProjectId: row.sourceProjectId,
+        startedAt: row.startedAt,
+        endedAt: row.endedAt,
+        severity: row.severity,
+        priority: row.priority,
+        content: row.content,
+        contentHash: row.contentHash,
+        attributes: row.attributes,
+      }),
+    );
   }
 
   // Insert one transcript-derived `llm_call` leaf. Unlike `insertAuditEvent`
@@ -114,22 +112,24 @@ export class SqliteAuditEventsRepository {
     const startedAt = isoToEpochMillis(input.startedAt);
     if (!Number.isFinite(startedAt)) return;
     const id = llmCallId(input.sessionId, input.messageId);
-    this.upsertLlmCallStmt.run({
-      id,
-      parentId: input.parentId,
-      rootSessionId: input.rootSessionId,
-      eventType: 'llm_call',
-      hostId: null,
-      harnessId: null,
-      sourceProjectId: null,
-      startedAt,
-      endedAt: null,
-      severity: null,
-      priority: null,
-      content: null,
-      contentHash: null,
-      attributes: JSON.stringify(input.attributes),
-    });
+    this.upsertLlmCallStmt.run(
+      bindParams({
+        id,
+        parentId: input.parentId,
+        rootSessionId: input.rootSessionId,
+        eventType: 'llm_call',
+        hostId: null,
+        harnessId: null,
+        sourceProjectId: null,
+        startedAt,
+        endedAt: null,
+        severity: null,
+        priority: null,
+        content: null,
+        contentHash: null,
+        attributes: JSON.stringify(input.attributes),
+      }),
+    );
   }
 
   // Insert one transcript-derived `tool_call` leaf. Like `insertLlmCall` the id is
@@ -156,27 +156,30 @@ export class SqliteAuditEventsRepository {
     const startedAt = isoToEpochMillis(input.startedAt);
     if (!Number.isFinite(startedAt)) return;
     const id = toolCallId(input.sessionId, input.toolUseId);
-    this.insertStmt.run({
-      id,
-      parentId: input.parentId,
-      rootSessionId: input.rootSessionId,
-      eventType: 'tool_call',
-      hostId: null,
-      harnessId: null,
-      sourceProjectId: null,
-      startedAt,
-      endedAt: null,
-      severity: null,
-      priority: null,
-      content: null,
-      contentHash: null,
-      attributes: JSON.stringify(input.attributes),
-    });
+    this.insertStmt.run(
+      bindParams({
+        id,
+        parentId: input.parentId,
+        rootSessionId: input.rootSessionId,
+        eventType: 'tool_call',
+        hostId: null,
+        harnessId: null,
+        sourceProjectId: null,
+        startedAt,
+        endedAt: null,
+        severity: null,
+        priority: null,
+        content: null,
+        contentHash: null,
+        attributes: JSON.stringify(input.attributes),
+      }),
+    );
   }
 
   findById(id: string): AuditEventRow | undefined {
-    return this.db.prepare('SELECT * FROM audit_events WHERE id = :id').get({ id }) as
-      AuditEventRow | undefined;
+    return getRow<AuditEventRow>(this.db.prepare('SELECT * FROM audit_events WHERE id = :id'), {
+      id,
+    });
   }
 
   // Read the `provider` snapshotted onto a session root's attributes.
@@ -187,15 +190,8 @@ export class SqliteAuditEventsRepository {
   sessionProvider(sessionId: string): string | undefined {
     const row = this.findById(sessionId);
     if (!row?.attributes) return undefined;
-    try {
-      const parsed: unknown = JSON.parse(row.attributes);
-      if (typeof parsed === 'object' && parsed !== null) {
-        const provider = (parsed as Record<string, unknown>).provider;
-        if (typeof provider === 'string') return provider;
-      }
-    } catch {
-      // A corrupt attributes blob → no provider; caller falls back to the heuristic.
-    }
+    const provider = parseJsonObject(row.attributes)?.provider;
+    if (typeof provider === 'string') return provider;
     return undefined;
   }
 
@@ -205,13 +201,13 @@ export class SqliteAuditEventsRepository {
   // is the leaf's session (the reconciler sets parent_id = root_session_id = sessionId);
   // rows whose attributes blob is NULL are skipped (nothing to roll up).
   llmCallLeaves(): { sessionId: string; attributes: string }[] {
-    return this.db
-      .prepare(
+    return allRows<{ sessionId: string; attributes: string }>(
+      this.db.prepare(
         `SELECT root_session_id AS sessionId, attributes
            FROM audit_events
           WHERE event_type = 'llm_call' AND attributes IS NOT NULL`,
-      )
-      .all() as { sessionId: string; attributes: string }[];
+      ),
+    );
   }
 }
 

@@ -16,8 +16,11 @@ import type {
 } from '@akasecurity/schema';
 import { isoToEpochMillis } from '@akasecurity/schema';
 
+import { escapeLikePattern } from './internal/sql-text.ts';
+import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
+import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
+import { DB_FILENAME, ensureDataDirSync, tightenPerms, walSidecars } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -39,7 +42,6 @@ import { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
 import { SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
 import { SqliteSourceProjectRepository } from './repositories/source-project.ts';
-import { escapeLikePattern } from './repositories/sql-utils.ts';
 import { purgeSampleData } from './sample-purge.ts';
 
 // InventoryContext / ResolvedInventory / InventoryFacets are the cross-mode
@@ -179,7 +181,7 @@ function openWithPragmas(file: string): DatabaseSync {
 function backupLegacyStore(file: string): string {
   const backup = `${file}.legacy.${String(Date.now())}.bak`;
   renameSync(file, backup);
-  for (const sidecar of [`${file}-wal`, `${file}-shm`]) {
+  for (const sidecar of walSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
   }
   return backup;
@@ -199,9 +201,9 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     db.close();
     const backup = backupLegacyStore(file);
     db = openWithPragmas(file);
-    process.stderr.write(
-      `[aka] Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
-        `${backup} and created a fresh store.\n`,
+    akaWarn(
+      `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
+        `${backup} and created a fresh store.`,
     );
   }
 
@@ -232,121 +234,88 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   policies.seedDefaults();
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
-    try {
-      db.exec('BEGIN');
-      try {
-        events.insertEvent(event);
-        // Scope dedup to the event's session so one sensitive value crossing
-        // several surfaces in one action (prompt → tool call) is recorded once.
-        const sessionId = event.metadata?.sessionId;
-        findings.insertFindings(detected, sessionId ? { sessionId } : {});
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
-      }
-    } catch {
-      // Fail-open: dropping telemetry is acceptable; breaking the host session
-      // is not. A locked/corrupt DB or a bad row leaves the session untouched.
-    }
+    // Fail-open: dropping telemetry is acceptable; breaking the host session
+    // is not. A locked/corrupt DB or a bad row leaves the session untouched.
+    failOpenTransaction(db, () => {
+      events.insertEvent(event);
+      // Scope dedup to the event's session so one sensitive value crossing
+      // several surfaces in one action (prompt → tool call) is recorded once.
+      const sessionId = event.metadata?.sessionId;
+      findings.insertFindings(detected, sessionId ? { sessionId } : {});
+    });
   }
 
   function ensureInventory(ctx: InventoryContext): ResolvedInventory {
     const resolved: ResolvedInventory = {};
-    try {
-      db.exec('BEGIN');
-      try {
-        const now = Date.now();
-        // Host first: harness/account rows link to it via the intra-inventory edge.
-        if (ctx.host) resolved.hostId = inventory.upsert(ctx.host, now);
-        if (ctx.harness) {
-          resolved.harnessId = inventory.upsert(linkHost(ctx.harness, resolved.hostId), now);
-        }
-        // The User/Account dimension. The local store has a single owner, so
-        // the account is a fixed 'local' identity.
-        resolved.accountId = inventory.upsert(
-          linkHost(
-            {
-              objectType: 'user',
-              identityKey: 'local',
-              attributes: { source: 'local' },
-            },
-            resolved.hostId,
-          ),
-          now,
-        );
-        if (ctx.project) resolved.sourceProjectId = sourceProject.upsert(ctx.project, now);
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
+    const committed = failOpenTransaction(db, () => {
+      const now = Date.now();
+      // Host first: harness/account rows link to it via the intra-inventory edge.
+      if (ctx.host) resolved.hostId = inventory.upsert(ctx.host, now);
+      if (ctx.harness) {
+        resolved.harnessId = inventory.upsert(linkHost(ctx.harness, resolved.hostId), now);
       }
-    } catch {
-      // Fail-open: inventory resolution must never break a session.
-      return {};
-    }
-    return resolved;
+      // The User/Account dimension. The local store has a single owner, so
+      // the account is a fixed 'local' identity.
+      resolved.accountId = inventory.upsert(
+        linkHost(
+          {
+            objectType: 'user',
+            identityKey: 'local',
+            attributes: { source: 'local' },
+          },
+          resolved.hostId,
+        ),
+        now,
+      );
+      if (ctx.project) resolved.sourceProjectId = sourceProject.upsert(ctx.project, now);
+    });
+    // Fail-open: inventory resolution must never break a session.
+    return committed ? resolved : {};
   }
 
   function recordConfigScan(record: ConfigScanRecord): void {
-    try {
-      db.exec('BEGIN');
-      try {
-        // The scan's own timestamp, not Date.now(): liveness on the read side is
-        // `last_seen >= scan.started_at`, so stamping the upserts with exactly
-        // the scan time makes "seen by this scan" true by construction — no
-        // wall-clock skew between building the record and writing it.
-        const now = isoToEpochMillis(record.scanEvent.startedAt);
-        for (const item of record.items) inventory.upsert(item, now);
-        auditEvents.insertAuditEvent(record.scanEvent);
-        // Definitions first, keyed by (ruleId, version), so each finding can
-        // resolve its content-addressed definition id without the caller ever
-        // minting one (the natural-key boundary — see ConfigPostureFindingInput).
-        const definitionIds = new Map<string, string>();
-        for (const def of record.definitions ?? []) {
-          definitionIds.set(`${def.ruleId}@${def.version}`, inspectionDefinitions.upsert(def));
-        }
-        for (const finding of record.findings ?? []) {
-          const definitionId = definitionIds.get(`${finding.ruleId}@${finding.version}`);
-          // A finding whose definition isn't in the record is a caller bug;
-          // skipping it keeps the write untorn rather than failing the scan.
-          if (!definitionId) continue;
-          inspectionFindings.insertFinding({
-            id: randomUUID(),
-            auditEventId: record.scanEvent.id,
-            inspectionDefinitionId: definitionId,
-            span: finding.span,
-            maskedMatch: finding.maskedMatch,
-            actionTaken: finding.actionTaken,
-            confidence: finding.confidence,
-          });
-        }
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
+    // Fail-open: dropping a scan is acceptable; breaking the session is not.
+    failOpenTransaction(db, () => {
+      // The scan's own timestamp, not Date.now(): liveness on the read side is
+      // `last_seen >= scan.started_at`, so stamping the upserts with exactly
+      // the scan time makes "seen by this scan" true by construction — no
+      // wall-clock skew between building the record and writing it.
+      const now = isoToEpochMillis(record.scanEvent.startedAt);
+      for (const item of record.items) inventory.upsert(item, now);
+      auditEvents.insertAuditEvent(record.scanEvent);
+      // Definitions first, keyed by (ruleId, version), so each finding can
+      // resolve its content-addressed definition id without the caller ever
+      // minting one (the natural-key boundary — see ConfigPostureFindingInput).
+      const definitionIds = new Map<string, string>();
+      for (const def of record.definitions ?? []) {
+        definitionIds.set(`${def.ruleId}@${def.version}`, inspectionDefinitions.upsert(def));
       }
-    } catch {
-      // Fail-open: dropping a scan is acceptable; breaking the session is not.
-    }
+      for (const finding of record.findings ?? []) {
+        const definitionId = definitionIds.get(`${finding.ruleId}@${finding.version}`);
+        // A finding whose definition isn't in the record is a caller bug;
+        // skipping it keeps the write untorn rather than failing the scan.
+        if (!definitionId) continue;
+        inspectionFindings.insertFinding({
+          id: randomUUID(),
+          auditEventId: record.scanEvent.id,
+          inspectionDefinitionId: definitionId,
+          span: finding.span,
+          maskedMatch: finding.maskedMatch,
+          actionTaken: finding.actionTaken,
+          confidence: finding.confidence,
+        });
+      }
+    });
   }
 
   function recordProjectFiles(projectId: string, scan: ProjectFilesScan): void {
     // An empty scan is a failed/irrelevant walk, never "the project has no
     // files" — writing it would prune the whole stored tree. Drop it.
     if (scan.files.length === 0) return;
-    try {
-      db.exec('BEGIN');
-      try {
-        projectFiles.replaceForProject(projectId, scan, Date.now());
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
-      }
-    } catch {
-      // Fail-open: dropping a scan is acceptable; breaking the session is not.
-    }
+    // Fail-open: dropping a scan is acceptable; breaking the session is not.
+    failOpenTransaction(db, () => {
+      projectFiles.replaceForProject(projectId, scan, Date.now());
+    });
   }
 
   async function transaction<T>(fn: () => Promise<T> | T): Promise<T> {
@@ -401,8 +370,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
           patternWin: `${escapeLikePattern(headPosix.split('/').join('\\'))}\\\\.claude\\\\worktrees\\\\%`,
         }) as { id: string }[];
       if (stale.length === 0) return;
-      db.exec('BEGIN');
-      try {
+      withTransaction(db, () => {
         for (const { id } of stale) {
           db.prepare(
             'UPDATE audit_events SET source_project_id = :canonicalId WHERE source_project_id = :id',
@@ -419,11 +387,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
           db.prepare('DELETE FROM project_file WHERE project_id = :id').run({ id });
           db.prepare('DELETE FROM source_project WHERE id = :id').run({ id });
         }
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        throw err;
-      }
+      });
     } catch {
       // Fail-open: a locked store leaves the ghost rows for the next session.
     }

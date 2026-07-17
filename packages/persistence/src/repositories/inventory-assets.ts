@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import type {
   AccessCounts,
@@ -7,7 +7,6 @@ import type {
   AssetDetail,
   AssetGroup,
   AssetSummary,
-  AssetType,
   ConfigFileInventoryItem,
   FileDetail,
   FileSummary,
@@ -33,9 +32,12 @@ import type {
 } from '@akasecurity/schema';
 import { HarnessId as HarnessIdSchema } from '@akasecurity/schema';
 
+import { safeJson } from '../internal/json.ts';
+import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
+import { containsPattern, escapeLikePattern, likeAny, placeholders } from '../internal/sql-text.ts';
 import type { InventoryReadPort } from '../ports.ts';
 import { SqliteConfigInventoryRepository } from './config-inventory.ts';
-import { escapeLikePattern, placeholders } from './sql-utils.ts';
+import { latestConfigScan } from './config-scan.ts';
 
 // ─── Raw row shapes (post-projection, JS-normalised) ─────────────────────────
 
@@ -129,17 +131,6 @@ const EMPTY_PROJECT_AGG: ProjectAggregate = {
   accessCounts: { open: 0, approved: 0, blocked: 0, total: 0 },
   findingsCount: 0,
 };
-
-// ─── JSON helpers ────────────────────────────────────────────────────────────
-
-function safeJson<T>(s: string | null | undefined, fallback: T): T {
-  if (s == null) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
 
 // Extra per-project fields (visibility/language/policyDefault) + the harness↔project/
 // session linkage are carried in the shared inventory/source_project tables'
@@ -423,56 +414,55 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   // ─── stats ─────────────────────────────────────────────────────────────────
 
   getInventoryStats(): Promise<InventoryStats> {
-    const byType: InventoryStats['byType'] = { project: 0, skill: 0, mcp: 0, hook: 0, config: 0 };
-    for (const r of this.db
-      .prepare('SELECT asset_type AS t, count(*) AS n FROM inventory_asset GROUP BY asset_type')
-      .all() as { t: AssetType; n: number }[]) {
-      if (r.t in byType) byType[r.t] = r.n;
-    }
-    byType.project = (
-      this.db
-        .prepare(`SELECT count(*) AS n FROM source_project WHERE ${WORKTREE_CHECKOUT_FILTER}`)
-        .get() as { n: number }
-    ).n;
+    const typeCounts = countBy(
+      this.db,
+      'SELECT asset_type AS k, count(*) AS n FROM inventory_asset GROUP BY asset_type',
+    );
+    const byType: InventoryStats['byType'] = {
+      project: 0,
+      skill: typeCounts.get('skill') ?? 0,
+      mcp: typeCounts.get('mcp') ?? 0,
+      hook: typeCounts.get('hook') ?? 0,
+      config: typeCounts.get('config') ?? 0,
+    };
+    byType.project = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM source_project WHERE ${WORKTREE_CHECKOUT_FILTER}`,
+    );
 
-    const mcpTrust: InventoryStats['mcpTrust'] = { 'known-good': 0, risky: 0, unapproved: 0 };
-    for (const r of this.db
-      .prepare(
-        `SELECT coalesce(o.trust, a.trust) AS trust, count(*) AS n
+    const mcpTrustCounts = countBy(
+      this.db,
+      `SELECT coalesce(o.trust, a.trust) AS k, count(*) AS n
          FROM inventory_asset a
          LEFT JOIN mcp_trust_override o ON o.asset_id = a.id
          WHERE a.asset_type = 'mcp' AND coalesce(o.trust, a.trust) IS NOT NULL
          GROUP BY coalesce(o.trust, a.trust)`,
-      )
-      .all() as { trust: TrustLevel; n: number }[]) {
-      if (r.trust in mcpTrust) mcpTrust[r.trust] = r.n;
-    }
+    );
+    const mcpTrust: InventoryStats['mcpTrust'] = {
+      'known-good': mcpTrustCounts.get('known-good') ?? 0,
+      risky: mcpTrustCounts.get('risky') ?? 0,
+      unapproved: mcpTrustCounts.get('unapproved') ?? 0,
+    };
 
     // Live harnesses only — hide a tool not seen within the recency window (sample
     // harnesses exempt; see HARNESS_LIVENESS_WINDOW_MS).
-    const harnesses = (
-      this.db
-        .prepare(
-          `SELECT count(*) AS n FROM inventory
+    const harnesses = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM inventory
            WHERE object_type = 'harness'
              AND (last_seen >= :liveSince OR json_extract(attributes, '$.provenance') = 'sample')`,
-        )
-        .get({ liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS }) as { n: number }
-    ).n;
+      { liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS },
+    );
 
     // Attention: assets with ≥1 flag + projects with ≥1 finding.
-    const flaggedAssets = (
-      this.db
-        .prepare("SELECT count(*) AS n FROM inventory_asset WHERE flags_json <> '[]'")
-        .get() as { n: number }
-    ).n;
-    const flaggedProjects = (
-      this.db
-        .prepare(
-          `SELECT count(DISTINCT project_id) AS n FROM project_file WHERE findings_count > 0`,
-        )
-        .get() as { n: number }
-    ).n;
+    const flaggedAssets = countScalar(
+      this.db,
+      "SELECT count(*) AS n FROM inventory_asset WHERE flags_json <> '[]'",
+    );
+    const flaggedProjects = countScalar(
+      this.db,
+      `SELECT count(DISTINCT project_id) AS n FROM project_file WHERE findings_count > 0`,
+    );
 
     // Fold in the real scanned skills/hooks/MCP servers (meta table) — byType
     // counts, their flagged (posture-attention) rows, and the projected MCP
@@ -804,14 +794,15 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   // ─── raw fetchers ────────────────────────────────────────────────────────────
 
   private fetchHarnessRows(): HarnessRow[] {
-    return this.db
-      .prepare(
+    return allRows<HarnessRow>(
+      this.db.prepare(
         `SELECT id, title, attributes, harness_version AS harnessVersion
          FROM inventory
          WHERE object_type = 'harness'
            AND (last_seen >= :liveSince OR json_extract(attributes, '$.provenance') = 'sample')`,
-      )
-      .all({ liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS }) as unknown as HarnessRow[];
+      ),
+      { liveSince: Date.now() - HARNESS_LIVENESS_WINDOW_MS },
+    );
   }
 
   // Every harness's assets in ONE grouped query, keyed by harness inventory id —
@@ -822,12 +813,12 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
     const params: unknown[] = [...harnessInvIds];
     let where = `ha.harness_id IN (${placeholders(harnessInvIds.length)})`;
     if (q) {
-      const pat = `%${escapeLikePattern(q)}%`;
-      where += " AND (a.name LIKE ? ESCAPE '\\' OR a.sub LIKE ? ESCAPE '\\')";
+      const pat = containsPattern(q);
+      where += ` AND ${likeAny(['a.name', 'a.sub'])}`;
       params.push(pat, pat);
     }
-    const rows = this.db
-      .prepare(
+    const rows = allRows<Record<string, unknown>>(
+      this.db.prepare(
         `SELECT ha.harness_id AS harnessInvId, a.id, a.asset_type AS assetType, a.name, a.sub,
                 a.description, a.flags_json AS flagsJson, a.meta_json AS metaJson, a.trust,
                 a.tools_json AS toolsJson, coalesce(o.trust, a.trust) AS effectiveTrust
@@ -836,8 +827,9 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
          LEFT JOIN mcp_trust_override o ON o.asset_id = a.id
          WHERE ${where}
          ORDER BY a.name ASC`,
-      )
-      .all(...(params as never[])) as Record<string, unknown>[];
+      ),
+      params as SQLInputValue[],
+    );
     for (const raw of rows) {
       const harnessInvId = raw.harnessInvId as string;
       const [asset] = this.mapAssetRows([raw]);
@@ -857,14 +849,14 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       params.push(...types);
     }
     if (q) {
-      const pat = `%${escapeLikePattern(q)}%`;
-      conditions.push("(a.name LIKE ? ESCAPE '\\' OR a.sub LIKE ? ESCAPE '\\')");
+      const pat = containsPattern(q);
+      conditions.push(likeAny(['a.name', 'a.sub']));
       params.push(pat, pat);
     }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const sampleRows = this.mapAssetRows(
-      this.db
-        .prepare(
+      allRows<Record<string, unknown>>(
+        this.db.prepare(
           `SELECT a.id, a.asset_type AS assetType, a.name, a.sub, a.description,
                   a.flags_json AS flagsJson, a.meta_json AS metaJson, a.trust,
                   a.tools_json AS toolsJson, coalesce(o.trust, a.trust) AS effectiveTrust
@@ -872,8 +864,9 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
            LEFT JOIN mcp_trust_override o ON o.asset_id = a.id
            ${where}
            ORDER BY a.name ASC`,
-        )
-        .all(...(params as never[])),
+        ),
+        params as SQLInputValue[],
+      ),
     );
     // Merge in the real scanned skills/hooks (meta table), honouring the same
     // type/query filters the SQL applied to inventory_asset.
@@ -889,16 +882,17 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
 
   private fetchAssetById(assetId: string): AssetRow | null {
     const rows = this.mapAssetRows(
-      this.db
-        .prepare(
+      allRows<Record<string, unknown>>(
+        this.db.prepare(
           `SELECT a.id, a.asset_type AS assetType, a.name, a.sub, a.description,
                   a.flags_json AS flagsJson, a.meta_json AS metaJson, a.trust,
                   a.tools_json AS toolsJson, coalesce(o.trust, a.trust) AS effectiveTrust
            FROM inventory_asset a
            LEFT JOIN mcp_trust_override o ON o.asset_id = a.id
            WHERE a.id = ?`,
-        )
-        .all(assetId),
+        ),
+        [assetId],
+      ),
     );
     // Fall back to the projected real skills/hooks (meta table) when the id isn't
     // an inventory_asset row.
@@ -963,13 +957,7 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   }
 
   private latestConfigScanId(): string | null {
-    const row = this.db
-      .prepare(
-        `SELECT id FROM audit_events WHERE event_type = 'config_scan'
-         ORDER BY started_at DESC, id DESC LIMIT 1`,
-      )
-      .get() as { id: string } | undefined;
-    return row?.id ?? null;
+    return latestConfigScan(this.db)?.id ?? null;
   }
 
   private fetchProjects(q: string | undefined): ProjectRow[] {
@@ -977,21 +965,22 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
                WHERE ${WORKTREE_CHECKOUT_FILTER}`;
     const params: unknown[] = [];
     if (q) {
-      const pat = `%${escapeLikePattern(q)}%`;
-      sql += " AND (name LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')";
+      const pat = containsPattern(q);
+      sql += ` AND ${likeAny(['name', 'url'])}`;
       params.push(pat, pat);
     }
     sql += ' ORDER BY name ASC';
-    return this.db.prepare(sql).all(...(params as never[])) as unknown as ProjectRow[];
+    return allRows<ProjectRow>(this.db.prepare(sql), params as SQLInputValue[]);
   }
 
   private fetchProjectById(projectId: string): ProjectRow | null {
     return (
-      (this.db
-        .prepare(
+      getRow<ProjectRow>(
+        this.db.prepare(
           'SELECT id, url, name, attributes, last_seen AS lastSeen FROM source_project WHERE id = ?',
-        )
-        .get(projectId) as unknown as ProjectRow | undefined) ?? null
+        ),
+        [projectId],
+      ) ?? null
     );
   }
 
@@ -999,12 +988,13 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   private fetchProjectsByIds(projectIds: string[]): Map<string, ProjectRow> {
     const map = new Map<string, ProjectRow>();
     if (projectIds.length === 0) return map;
-    const rows = this.db
-      .prepare(
+    const rows = allRows<ProjectRow>(
+      this.db.prepare(
         `SELECT id, url, name, attributes, last_seen AS lastSeen
          FROM source_project WHERE id IN (${placeholders(projectIds.length)})`,
-      )
-      .all(...(projectIds as never[])) as unknown as ProjectRow[];
+      ),
+      projectIds,
+    );
     for (const r of rows) map.set(r.id, r);
     return map;
   }
@@ -1016,8 +1006,13 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   private projectAggregates(projectIds: string[]): Map<string, ProjectAggregate> {
     const map = new Map<string, ProjectAggregate>();
     if (projectIds.length === 0) return map;
-    const rows = this.db
-      .prepare(
+    const rows = allRows<{
+      projectId: string;
+      eff: AccessLevel;
+      n: number;
+      findings: number;
+    }>(
+      this.db.prepare(
         `SELECT f.project_id AS projectId,
                 coalesce(o.access, f.default_access) AS eff,
                 count(*) AS n,
@@ -1026,13 +1021,9 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
          LEFT JOIN file_access_override o ON o.project_id = f.project_id AND o.path = f.path
          WHERE f.project_id IN (${placeholders(projectIds.length)})
          GROUP BY f.project_id, eff`,
-      )
-      .all(...(projectIds as never[])) as {
-      projectId: string;
-      eff: AccessLevel;
-      n: number;
-      findings: number;
-    }[];
+      ),
+      projectIds,
+    );
     for (const r of rows) {
       let agg = map.get(r.projectId);
       if (!agg) {
@@ -1073,46 +1064,55 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
   private fetchProjectFilesUnder(projectId: string, prefix: string): ProjectFileRow[] {
     if (prefix === '') {
       return this.mapFileRows(
-        this.db.prepare(this.fileSelect('f.project_id = ? ORDER BY f.path ASC')).all(projectId),
+        allRows<Record<string, unknown>>(
+          this.db.prepare(this.fileSelect('f.project_id = ? ORDER BY f.path ASC')),
+          [projectId],
+        ),
       );
     }
     return this.mapFileRows(
-      this.db
-        .prepare(
+      allRows<Record<string, unknown>>(
+        this.db.prepare(
           this.fileSelect("f.project_id = ? AND f.path LIKE ? ESCAPE '\\' ORDER BY f.path ASC"),
-        )
-        .all(projectId, `${escapeLikePattern(prefix)}/%`),
+        ),
+        [projectId, `${escapeLikePattern(prefix)}/%`],
+      ),
     );
   }
 
   private fetchProjectFilesSearch(projectId: string, q: string): ProjectFileRow[] {
-    const pat = `%${escapeLikePattern(q)}%`;
+    const pat = containsPattern(q);
     return this.mapFileRows(
-      this.db
-        .prepare(
+      allRows<Record<string, unknown>>(
+        this.db.prepare(
           this.fileSelect(
             "f.project_id = ? AND (f.path LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY f.path ASC",
           ),
-        )
-        .all(projectId, pat, pat),
+        ),
+        [projectId, pat, pat],
+      ),
     );
   }
 
   private fetchProjectFilesBlocked(projectId: string): ProjectFileRow[] {
     return this.mapFileRows(
-      this.db
-        .prepare(
+      allRows<Record<string, unknown>>(
+        this.db.prepare(
           this.fileSelect(
             "f.project_id = ? AND coalesce(o.access, f.default_access) = 'blocked' AND f.blocked_at IS NOT NULL",
           ),
-        )
-        .all(projectId),
+        ),
+        [projectId],
+      ),
     );
   }
 
   private fetchProjectFile(projectId: string, path: string): ProjectFileRow | null {
     const rows = this.mapFileRows(
-      this.db.prepare(this.fileSelect('f.project_id = ? AND f.path = ?')).all(projectId, path),
+      allRows<Record<string, unknown>>(
+        this.db.prepare(this.fileSelect('f.project_id = ? AND f.path = ?')),
+        [projectId, path],
+      ),
     );
     return rows[0] ?? null;
   }

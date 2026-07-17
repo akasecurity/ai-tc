@@ -40,16 +40,31 @@ export function Metric({ icon: Icon, children }: { icon: IconComponent; children
   );
 }
 
-/** A tool-call chip: glyph + tool name + tabular count. */
-export function ToolChip({ name, n }: { name: string; n: number }) {
+/** A tool-call chip: glyph + tool name + tabular count. With `href` it renders
+ * as a link (e.g. to the findings page filtered to that tool). */
+export function ToolChip({ name, n, href }: { name: string; n: number; href?: string }) {
   const Icon = TOOL_META[name] ?? TOOL_ICON_FALLBACK;
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 py-0.5 px-2 text-xs font-semibold text-text-2">
+  const content = (
+    <>
       <Icon aria-hidden focusable={false} className="size-3 text-text-3" />
       {name}
       <span className="tabular-nums text-text">{n}</span>
-    </span>
+    </>
   );
+  const className =
+    'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2 py-0.5 px-2 text-xs font-semibold text-text-2';
+  if (href) {
+    return (
+      <a
+        href={href}
+        title={`Findings captured via ${name}`}
+        className={cn(className, 'transition-colors hover:bg-surface-3 hover:text-text')}
+      >
+        {content}
+      </a>
+    );
+  }
+  return <span className={className}>{content}</span>;
 }
 
 /** A wrap of small chips for a multi-valued meta field (branches, models). */

@@ -19,6 +19,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { CalibrationFrame, DetectionCategory, SetupHandoffOffer } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { renderCategoriesTuned, STORE_UNAVAILABLE_NOTE } from '../../src/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import {
   planPathFromPreview,
@@ -140,10 +141,25 @@ describe('Yes-scan happy path, end-to-end', () => {
 
   it('apply: the ACTUAL writer confirms the floor-overlaid 8-pack', () => {
     // The applying confirmation from apply-suppressions.js --confirmed — the
-    // spine writer, not onboard.js --posture.
-    expect(confirm).toContain('✓ 8 categories tuned');
+    // spine writer, not onboard.js --posture. The tuned count is derived from the
+    // posture the run actually wrote (read back from the store) and rendered with
+    // the shipped helper, so the assertion carries no hardcoded count.
+    const categoriesTuned = Object.values(readPosture(journey.storeDir)).filter(Boolean).length;
+    expect(confirm).toContain(renderCategoriesTuned(categoriesTuned));
     expect(confirm).toContain('✓ 1 routine dismissed');
     expect(confirm).toMatch(/Ready:/);
+  });
+
+  it('happy path: no store-unavailable fail-open note leaks into the fail-open frames', () => {
+    // The two frames that degrade to the fail-open note on an unreadable store —
+    // the calibration preview's downgrade read and the first-run card's stats read —
+    // read cleanly the whole way here, so the note must be absent: a regression that
+    // spuriously renders it on a healthy store fails here instead of passing the
+    // positive-only assertions. The confirm write is deliberately excluded — it fails
+    // SECURE to stderr on a store fault and has no fail-open note path, so asserting
+    // its absence there is vacuous.
+    expect(preview).not.toContain(STORE_UNAVAILABLE_NOTE);
+    expect(firstRun).not.toContain(STORE_UNAVAILABLE_NOTE);
   });
 
   it('final store: settings.json records the consent and all 8 packs hold a valid posture', () => {

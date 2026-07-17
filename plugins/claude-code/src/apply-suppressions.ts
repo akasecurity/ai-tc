@@ -55,8 +55,9 @@ function loadRubric(): string {
 }
 
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
   const code = await runApply({
-    argv: process.argv.slice(2),
+    argv,
     // fd 0 = stdin; the wizard pipes `backfill.js --triage` into this on preview.
     // Called only on the preview path — the confirm path never reads a stream.
     readStream: (streamPath) =>

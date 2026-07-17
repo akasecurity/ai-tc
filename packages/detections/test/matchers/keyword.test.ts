@@ -89,6 +89,13 @@ describe('KeywordMatcher', () => {
     ]);
   });
 
+  it('caps total matches at MAX_MATCHES_PER_RULE instead of growing unbounded', () => {
+    const matcher = new KeywordMatcher();
+    const text = 'a'.repeat(20_000);
+    const spans = matcher.match(text, keywordRule(['a']));
+    expect(spans.length).toBe(10_000);
+  });
+
   it('advances past a self-overlapping keyword instead of re-matching it', () => {
     const matcher = new KeywordMatcher();
     // The `g`-advance keeps only the leading occurrence of a self-overlapping

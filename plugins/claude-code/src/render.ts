@@ -13,9 +13,15 @@ import type {
   SessionTokenReport,
 } from '@akasecurity/plugin-sdk';
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
-import type { DetectionException, DetectionListItem } from '@akasecurity/schema';
+import type {
+  BuiltinPolicyId,
+  DetectionException,
+  DetectionListItem,
+  SetupHandoffOffer,
+} from '@akasecurity/schema';
 import { DetectionCategory, toApiAction } from '@akasecurity/schema';
 
+import { NAME } from './identity.ts';
 import {
   bar,
   defList,
@@ -28,6 +34,15 @@ import {
   table,
   wrapText,
 } from './present.ts';
+
+// The fail-open note shown when the local store can't be READ (missing / corrupt
+// / locked db) mid-wizard: the calibration and first-run frames print this instead
+// of throwing, so a store fault never breaks the Claude session.
+// TODO: the found-nothing / empty-store case (a store that reads fine but holds
+// nothing) is a separate path with its own copy, landing later — keep it distinct
+// from this store-unavailable read-failure note; do not conflate the two.
+export const STORE_UNAVAILABLE_NOTE =
+  "I couldn't read the local store right now. AKA stays fail-open — your Claude session is unaffected, and it populates as you use Claude Code.";
 
 const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -105,33 +120,94 @@ export function renderPosture(rows: { category: string; action: string }[]): str
     .join('\n');
 }
 
+// The condensed recommended-posture view for the calibrated-result frame: one
+// compact row per pack showing the level AKA recommends, in canonical category
+// order. This is the recommend-and-confirm glance — distinct from the start-light
+// branch's full 8×4 level table, which lays every level out per pack. Pure (no
+// I/O); the caller hands in the recommended posture (severityFloorPosture()),
+// whose palette levels (monitor/warn/redact/block) render verbatim.
+export function renderRecommendedPosture(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const rows = (Object.keys(posture) as DetectionCategory[]).map((category) => ({
+    category,
+    level: posture[category] ?? '',
+  }));
+  const width = Math.max(0, ...rows.map((r) => r.category.length));
+  return rows
+    .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
+    .map((r) => `  ${r.category.padEnd(width)}  ${r.level}`)
+    .join('\n');
+}
+
+// The read commands the applying-confirmation "Ready" line points at once
+// calibration is applied. Written in the plugin's `/aka:<command>` namespace — the only form
+// that resolves when typed — so the call-to-action never names a command the
+// user can't actually invoke.
+// TODO: derive this from the plugin command registry once one is available.
+const READY_COMMANDS = ['/aka:health', '/aka:findings', '/aka:recommend'] as const;
+
+// The "tuned" segment — the count of posture categories the writer
+// wrote, threaded from the real write (never a literal). Single-sourced here so
+// onboard.ts's posture-write confirmation and the composed applying-confirmation
+// line read identically.
+export function renderCategoriesTuned(categoriesTuned: number): string {
+  const noun = categoriesTuned === 1 ? 'category' : 'categories';
+  return `✓ ${String(categoriesTuned)} ${noun} tuned`;
+}
+
+// The /aka:setup wizard's applying confirmation, shown once the
+// calibration takes effect: '✓ K categories tuned · ✓ N routine dismissed ·
+// Ready: …'. Both counts are threaded from the real apply result (the posture
+// writer's category count and the apply-suppressions result's written count),
+// never a literal. When nothing routine was dismissed (N === 0) the middle
+// segment is honest empty-state copy rather than a fabricated '✓ 0 routine
+// dismissed'. Pure (no I/O) so it unit-tests without a DB.
+export function renderApplied(categoriesTuned: number, dismissed: number): string {
+  const routine =
+    dismissed > 0 ? `✓ ${String(dismissed)} routine dismissed` : 'no routine to dismiss';
+  const ready = `Ready: ${READY_COMMANDS.join(' · ')}`;
+  return `${renderCategoriesTuned(categoriesTuned)} · ${routine} · ${ready}`;
+}
+
 const RULE_WIDTH = 64;
 
 // The setup-intro "card" the /aka:setup wizard shows first.
-// Factual fields (version, repository, publisher) are read from the plugin
-// manifest by the intro script; the descriptive copy (name, tagline, adds) is
-// product wording the script supplies. Pure here so it renders without any I/O.
+// Factual fields (version, repository) are read from the plugin manifest by the
+// intro script; the display copy (name, tagline, one-liner) comes from the
+// identity constant. Pure here so it renders without any I/O.
 export interface PluginMeta {
   name: string;
   tagline: string;
+  oneLiner: string;
   repository: string;
   version: string;
-  publisher: string;
-  adds: string;
 }
 
 export function renderSetupIntro(meta: PluginMeta): string {
   const heading = `● Found ${meta.name} — ${meta.tagline}`;
 
-  const details = defList([
-    ['Repository', meta.repository],
-    ['Version', `${meta.version} · ${meta.publisher}`],
-    ['Adds', meta.adds],
-  ]);
+  // The ' · verified' badge is appended here once the provenance check lands.
+  const provenance = `v${meta.version} · ${meta.repository}`;
 
-  const ask = "Before installing I'll ask two quick questions to tailor the setup.";
+  return [heading, '', indent(meta.oneLiner), '', indent(provenance)].join('\n');
+}
 
-  return [heading, '', indent(details), '', indent(ask)].join('\n');
+// The "What I do" card the /aka:setup wizard shows after the intro. Static
+// explanatory copy — no data to template, so it takes no arguments. Pure here so
+// it renders without any I/O and unit-tests as a plain string. The closing line
+// hands off to the scan offer that calibrates the notifications.
+export function renderWhatIDo(): string {
+  return [
+    '● I watch out for Claude as it works.',
+    '',
+    indent(
+      'As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.',
+    ),
+    indent("Most of it I handle quietly; I only notify you when it's worth your call."),
+    '',
+    indent("let's calibrate your notifications based on what Claude's been up to"),
+  ].join('\n');
 }
 
 // Derived posture score (0–100). HEURISTIC — we don't store a posture score, so
@@ -146,11 +222,10 @@ export function healthScore(summary: HealthSummary): number {
   return Math.round(100 * (0.6 * summary.coverage + 0.4 * handledRatio));
 }
 
-// The "First run" completion screen. Commands,
-// posture, findings and recommendations are real; `health` is the derived score
-// above. The host's input box and window chrome are not the plugin's to draw.
+// The "First run" completion screen. Posture, findings and
+// recommendations are real; `health` is the derived score above. The host's
+// input box and window chrome are not the plugin's to draw.
 export interface FirstRunSummary {
-  commands: string[];
   // Per-category posture block (renderPosture's output) — the wizard's
   // per-category policy read, one row per category. Optional/omittable: the
   // read lives inside firstrun's fail-open try/catch, so a store that can't
@@ -159,10 +234,22 @@ export interface FirstRunSummary {
   health: number;
   findings: number;
   recommendations: number;
+  // The surfaced/important count carried over from the calibration
+  // preview — drives the 'N worth a look' dashboard handoff. Rendered only when
+  // it is a positive count; the nothing-surfaced empty-state degradation is a
+  // separate screen handled elsewhere, so 0/undefined just omits the line here.
+  worthALook?: number;
   // Highest-severity findings from the first scan, ranked + capped by topFindings.
   // Omitted (or empty) on a clean scan — the section is hidden then.
   topFindings?: FindingView[];
 }
+
+// The commands the installed-summary "Try" line points at — the dashboard and the
+// working-tree scan, both shipped in this plugin's `/aka:<command>` namespace
+// (the only form that resolves when typed). Hardcoded to the current command
+// set so the call-to-action never names a command the user cannot invoke.
+// TODO: derive this from the plugin command registry once one is available.
+const TRY_COMMANDS = ['/aka:dashboard', '/aka:scan'] as const;
 
 // Rank findings for the install card's "Top findings" list: most severe first,
 // then most recent within a severity, capped to `limit`. Pure so the first-run
@@ -176,14 +263,28 @@ export function topFindings(findings: FindingView[], limit = 10): FindingView[] 
     .slice(0, limit);
 }
 
+// The handoff-offer payload: the 'M worth a look' count the installed
+// summary hands to its dashboard question, plus the two fixed offer options.
+// `worthALook` is the surfaced/important count the caller carries over from the
+// calibration preview (a real store-derived value) — this builder
+// never invents it. The prompt layer (setup.md) issues the AskUserQuestion; this
+// is the structured payload a harness reads to assert the offer.
+export function buildHandoffOffer(worthALook: number): SetupHandoffOffer {
+  return {
+    worthALook,
+    options: [
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ],
+  };
+}
+
 export function renderFirstRun(s: FirstRunSummary): string {
-  const heading = '✓ AKA Security installed';
+  const heading = `✓ ${NAME} installed — calibrated to this machine`;
 
-  const details = defList([['Commands', s.commands.join(' · ')]]);
+  const stats = `Health ${String(s.health)}/100 · Findings ${String(s.findings)} · Recommendations ${String(s.recommendations)}`;
 
-  const stats = `Health ${String(s.health)}/100   Findings ${String(s.findings)}   Recommendations ${String(s.recommendations)}`;
-
-  const lines = [heading, '', indent(details)];
+  const lines = [heading, '', indent(stats), '', indent(`Try: ${TRY_COMMANDS.join(' · ')}`)];
 
   // Per-category posture — hidden when unreadable (fail-open upstream leaves
   // it undefined/empty) so the card degrades gracefully instead of showing an
@@ -192,14 +293,7 @@ export function renderFirstRun(s: FirstRunSummary): string {
     lines.push('', indent('Posture'), '', indent(s.posture));
   }
 
-  lines.push(
-    '',
-    indent('─'.repeat(RULE_WIDTH)),
-    '',
-    indent('First scan complete'),
-    '',
-    indent(stats),
-  );
+  lines.push('', indent('─'.repeat(RULE_WIDTH)), '', indent('First scan complete'));
 
   // Top findings — a compact, severity-ranked glance at what the first scan
   // caught. Hidden on a clean scan so the card stays a tidy success state.
@@ -225,7 +319,18 @@ export function renderFirstRun(s: FirstRunSummary): string {
     );
   }
 
-  lines.push('', indent('Opening your health dashboard… run /health anytime'));
+  // Dashboard handoff — the 'N worth a look' offer over the real surfaced count,
+  // pairing the AskUserQuestion the prompt layer issues (Open dashboard / Not
+  // now). Shown only when something surfaced; the nothing-surfaced degradation
+  // is a separate frame, so a 0/absent count just omits the line here.
+  if (s.worthALook !== undefined && s.worthALook > 0) {
+    lines.push(
+      '',
+      indent(`${String(s.worthALook)} worth a look — see them in the browser?`),
+      indent('Open dashboard · Not now'),
+    );
+  }
+
   return lines.join('\n');
 }
 

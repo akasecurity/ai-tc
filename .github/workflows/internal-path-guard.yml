@@ -1,0 +1,36 @@
+name: Internal-path guard
+
+# Fails if a maintainer-internal working directory is ever committed to this
+# public repository. These paths hold planning and orchestration artifacts kept
+# out of the public tree; a pull request must never introduce them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Reject internal-only paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for internal-only paths
+        run: |
+          hits="$(git ls-files -- internal/plans docs/superpowers tools/flightcrew)"
+          if [ -n "$hits" ]; then
+            echo "::error::Internal-only paths must not be committed to this public repository:"
+            echo "$hits" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "OK — no internal-only paths present."

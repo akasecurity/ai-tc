@@ -18,11 +18,6 @@ import type {
 
 import { renderPostureGrid, renderRecommendedPosture } from './render.ts';
 
-// Shown beneath the calibrated-result headline when the scan surfaced findings
-// but none of them are on the egress-kind axis (an at-rest exposure, not an
-// outbound leak). Suppressed the moment any finding kind is an egress kind.
-const HONEST_POSITIVE_LINE = "Good news: nothing looks like it's actually gone wrong recently.";
-
 // Plain-English kind of a surfaced category, for the 'M that matter (…)'
 // parenthetical. Presentation-only — not a persisted contract.
 const SURFACED_KIND_LABEL: Record<DetectionCategory, string> = {
@@ -66,11 +61,11 @@ export function frameCalibration(preview: CalibrationPreview): CalibrationResult
     `Calibrated. ${String(total)} notifications, ${String(important)} important. ` +
     `${String(routine)} routine, ${String(important)} that matter${parenthetical}`;
 
-  // Populated calibrated-result path only: append the honest-positive line when
-  // the scan surfaced finding kinds and none of them are on the egress axis. The
-  // empty-store copies own their own strings and never reach this branch.
-  const noEgress = findingKinds.length > 0 && findingKinds.every((k) => !k.egress);
-  const copy = noEgress ? `${headline}\n${HONEST_POSITIVE_LINE}` : headline;
+  // The frame carries the finding kinds (incl. the egress axis) for downstream
+  // consumers; the calibrated headline is the copy. A positive observation over
+  // these findings is an evidence-grounded intelligence-layer output, not a
+  // static line here — it renders only when the evidence honestly supports it.
+  const copy = headline;
 
   return { frame, copy };
 }

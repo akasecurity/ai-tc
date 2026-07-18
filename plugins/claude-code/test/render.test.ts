@@ -425,6 +425,36 @@ describe('pure renderers', () => {
       expect(out).not.toContain('Top findings');
     });
 
+    it('nothing surfaced — stats degrade to an honest empty-state, no fabricated count, card stays tidy', () => {
+      // No scan surfaced anything: no worthALook, an empty store (0 findings /
+      // recommendations), a clean scan (no top findings). The card degrades
+      // honestly — the numeric stats triple becomes explicit empty-state copy
+      // rather than a bare 'Findings 0 · Recommendations 0' scan tally, and the
+      // dashboard handoff is withheld (never a fabricated '0 worth a look').
+      const out = strip(
+        renderFirstRun({
+          posture: renderPosture([{ category: 'secret', action: 'redact' }]),
+          health: 40,
+          findings: 0,
+          recommendations: 0,
+          topFindings: [],
+          // worthALook intentionally omitted — nothing surfaced.
+        }),
+      );
+
+      // No fabricated dashboard handoff and no bare numeric scan tally.
+      expect(out).not.toContain('worth a look');
+      expect(out).not.toContain('Findings 0');
+      expect(out).not.toContain('Recommendations 0');
+      // Instead, an explicit honest empty-state line.
+      expect(out).toContain("you're starting clean");
+      // The card still reads as a tidy success state: installed heading + posture.
+      expect(out).toContain('installed — calibrated to this machine');
+      expect(out).toContain('Posture');
+      expect(out).toContain('secret');
+      expect(out).toContain('redact');
+    });
+
     it('lists the top findings table when the scan caught something', () => {
       const out = populated({
         topFindings: [
@@ -767,10 +797,10 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
     expect(row('pii')).toEqual(['pii', 'warn', 'warn']);
   });
 
-  it('carries the -WL adjust copy and the shared re-tune hint', () => {
+  it('carries the adjust copy and the shared re-tune hint', () => {
     const out = renderAdjustConfirm(recommended, chosen);
     expect(out).toContain("I'll keep the rest as recommended");
-    // the re-tune pointer to the deep-tuning surface is single-sourced.
+    // The re-tune pointer to the deep-tuning surface is single-sourced.
     expect(out).toContain(RE_TUNE_HINT);
   });
 

@@ -128,9 +128,10 @@ it.
      node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<json>'
      ```
 
-     Either write prints only `✓ K categories tuned` — which is the honest
-     confirmation here, because nothing was scanned or suppressed. Show that line
-     to the user; do **not** invent a dismissed count or any calibration counts.
+     Either write prints only `✓ K categories tuned` (the `--floor` write appends
+     ` (severity floor)`) — which is the honest confirmation here, because nothing
+     was scanned or suppressed. Show that line to the user; do **not** invent a
+     dismissed count or any calibration counts.
 
   4. **Rejoin the spine at the installed summary (step 6).** Continue to step 6
      to show the installed summary and hand off to the dashboard, using honest
@@ -168,8 +169,12 @@ frame** — a single JSON block delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_
 carrying the raw-free calibration counts and categories. Do **not** show this block
 to the user (it is additive to the human copy above). Capture its `counts.important`
 value — the **surfaced count** — and pass it to the first-run summary in step 6 as
-`--surfaced <count>`. If the calibration could not complete (either fallback branch
-below), no frame block is emitted and there is no surfaced count to carry over.
+`--surfaced <count>` — but **only when the preview also printed a `Plan saved to:`
+path** (a real calibrated plan to confirm in step 4). The `Plan saved to:` line is
+the completion signal: a preview that omits it did not calibrate a plan you can
+confirm. The fallback branches below carry no surfaced count; the scan-ran-clean
+empty state (a scan that completed but surfaced nothing) emits a zero-count frame
+but **no plan path**, so it too routes to the floor branch below rather than step 4.
 
 Everything you show the user in step 4 comes from **this command's output**. You
 never read the raw finding values yourself — do not echo, quote, or reconstruct
@@ -190,12 +195,18 @@ conservative severity floor (high-impact categories at `warn`, observe-only at
 `monitor`) instead of a calibrated posture, and it can be re-run any time with
 `/aka:setup`.
 
-**Nothing to calibrate.** If the adapter reports there were no triage hits to
-review (an empty or intentionally-skipped scan), there's no evidence to
-calibrate from: take the same floor branch (`onboard.js --floor`), tell the
-user the scan found nothing to calibrate from, and skip to step 6.
+**Nothing to calibrate.** A scan that **completes but surfaces nothing** prints
+the honest **scan-ran-clean** card — `Calibrated. I looked at Claude's recent
+activity — nothing needs your attention…` over the recommended posture — with a
+zero-count calibration frame (its `counts.important` is `0`) and **no `Plan saved
+to:` path**. An empty or intentionally-skipped scan instead prints `No triage hits
+to review …`. In either case there's no evidence to calibrate from and no plan to
+confirm: show the card the adapter printed, take the floor branch
+(`onboard.js --floor`), tell the user the scan found nothing to calibrate from, and
+skip to step 6 (with **no `--surfaced`**, the floor-fallback rule there — nothing
+was surfaced to carry over). Do **not** continue to step 4.
 
-Otherwise continue to step 4.
+Otherwise (the preview printed a `Plan saved to:` path) continue to step 4.
 
 ## 4. Show the calibrated result and get explicit confirmation — before any write
 
@@ -208,12 +219,13 @@ printed and show it in full:
    have screamed about). Show it verbatim; never substitute a demo number.
 2. **The recommended posture.** The condensed one-row-per-pack recommended view
    the card printed — the level AKA would set for each category. Show it in full.
-   - **Surface every downgrade — this is not optional.** The preview flags any
-     category whose action would be **LOWERED** from a stronger existing setting
-     (e.g. an existing `block`/`redact` dropping to `warn`/`monitor`) and prints
-     a `WARNING` line summarizing them. Call these out prominently: a user who
-     hardened a category must **explicitly approve weakening it** before applying.
-     Never let an enforcement downgrade through without the user having seen it.
+   - **Surface the downgrades the preview flags — this is not optional.** For the
+     recommended posture it is about to write, the preview compares each category
+     against its stored setting and flags any that would be **LOWERED** from a
+     stronger existing one (e.g. an existing `block`/`redact` dropping to
+     `warn`/`monitor`), printing a `WARNING` line summarizing them. Call these out
+     prominently: a user who hardened a category must **explicitly approve weakening
+     it** before applying.
 3. **The false positives to be suppressed (the human gate).** The masked value,
    rule, and masked context for each detection the writeback would suppress —
    the routine noise being dismissed. This is the checkpoint that stops a genuine
@@ -266,11 +278,15 @@ recommended.
    base with the user's overrides overlaid — so a changed pack reads as a different
    `yours` value and every untouched pack repeats its recommended level.
 
-3. **Surface any downgrade — the same downgrade rule as the confirm gate above.**
-   If any pack the user picked **LOWERS** enforcement below its current setting (or
-   below the recommended level), call it out and get explicit approval before
-   saving. Never let an enforcement downgrade through without the user having seen
-   it.
+3. **Show the packs the user lowered relative to the recommendation.** The
+   adjust-confirm table lays each changed pack's `yours` level beside its
+   `recommended` level, so a pack set below the recommendation reads as a visible
+   change — point those out so the choice is deliberate. This fork does **not**
+   re-compare the user's picks against the stored posture: the store-state
+   downgrade warning is enforced upstream at the step-4 evidence gate over the
+   recommended base, and the overlay below writes **only** the packs the user
+   changed, so a pack hardened out of band and left untouched here is never
+   downgraded.
 
 4. **Save or back out.** Use **AskUserQuestion** with **N** the number of packs
    the user changed and **M** the number kept as recommended (`M = 8 − N`), both
@@ -377,9 +393,11 @@ monospace that Markdown would otherwise collapse).
 
 Pass the **surfaced count** captured from step 3's calibration frame
 (`counts.important`) as `--surfaced <count>` — this is the 'N worth a look' figure
-the script emits in its own machine-readable handoff payload. If the
-calibration fell back to the floor (no frame was emitted in step 3), **omit
-`--surfaced` entirely** — the script then withholds that payload rather than
+the script emits in its own machine-readable handoff payload — but only when step 3
+carried a surfaced count forward (it printed a `Plan saved to:` path). If the
+calibration fell back to the floor (no plan path in step 3 — a fallback branch, or
+the scan-ran-clean empty state whose zero-count frame carries nothing to look at),
+**omit `--surfaced` entirely** — the script then withholds that payload rather than
 fabricating a count.
 
 When `--surfaced` is passed, the script appends that handoff payload as a single

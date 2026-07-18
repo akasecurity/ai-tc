@@ -24,7 +24,7 @@ import type {
   TriageRecommendation,
 } from '@akasecurity/schema';
 
-import { frameCalibration } from '../calibration.ts';
+import { frameCalibration, frameEmptyState } from '../calibration.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
@@ -97,6 +97,14 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
 
   const { hits, status } = parseTriageStream(streamText);
   if (hits.length === 0) {
+    if (status === 'complete') {
+      // A scan ran and surfaced nothing: render the honest scan-ran-clean empty
+      // state over the recommended posture, plus its zero-count CalibrationFrame.
+      const empty = frameEmptyState('scan-clean', severityFloorPosture());
+      deps.stdout(`${empty.copy}\n\n`);
+      deps.stdout(frameJsonBlock(empty.frame));
+      return 0;
+    }
     deps.stdout(`No triage hits to review (${status}). Nothing to suppress.\n`);
     return 0;
   }

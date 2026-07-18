@@ -109,6 +109,33 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     expect(readFrameJsonBlock(blob)).toBeUndefined();
   });
 
+  it('degrades honestly over an empty store (no scanned findings) — omits the handoff payload, no fabricated count', async () => {
+    // No capture seeded: the store holds no scanned findings (the no-scan /
+    // found-nothing state). Running with no --surfaced must degrade honestly.
+    const cfg = config(dir);
+    const gateway = resolveDataGateway(cfg);
+    const out: string[] = [];
+    try {
+      await runFirstRun({
+        argv: [],
+        gateway,
+        readPosture: () => readPostureBlock(() => openLocalDatabase(cfg.dataDir)),
+        stdout: (s) => out.push(s),
+      });
+    } finally {
+      await gateway.close();
+    }
+    const blob = out.join('');
+
+    // The install card still renders as a tidy success state…
+    expect(blob).toContain('installed');
+    // …with an honest empty-state stats line, never a fabricated scan tally…
+    expect(blob).toContain("you're starting clean");
+    expect(blob).not.toContain('worth a look');
+    // …and the machine-readable handoff payload is withheld, never fabricated.
+    expect(readFrameJsonBlock(blob)).toBeUndefined();
+  });
+
   it('omits only the Posture section (rest of the card renders) when opening the posture store throws', async () => {
     const cfg = config(dir);
     await handleCapture(

@@ -79,7 +79,7 @@ export class SetupJourney {
   // Seed a prior Claude Code transcript under the temp home carrying two leaked
   // AWS keys, timestamped inside the retention window but before the scan starts,
   // so the backfill has real history to calibrate from.
-  seedTranscript(): void {
+  seedTranscript(): string {
     const projectDir = join(this.home, '.claude', 'projects', '-Users-me-project');
     mkdirSync(projectDir, { recursive: true });
     const surfacedTs = new Date(Date.now() - 3 * DAY_MS).toISOString();
@@ -96,7 +96,9 @@ export class SetupJourney {
         message: { role: 'user', content: `and an example placeholder ${ROUTINE_KEY}` },
       }),
     ];
-    writeFileSync(join(projectDir, 'session.jsonl'), lines.join('\n'));
+    const transcriptPath = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptPath, lines.join('\n'));
+    return transcriptPath;
   }
 
   // The kickoff intro card.
@@ -161,6 +163,14 @@ export class SetupJourney {
   // The installed summary + handoff-offer payload.
   firstRun(surfaced: number): StepResult {
     return this.run('firstrun.js', ['--surfaced', String(surfaced)]);
+  }
+
+  // The installed summary on the no-scan leg — firstrun.js with NO --surfaced
+  // count. The Not-now leg ran no scan, so there is no surfaced count to thread:
+  // the store-derived stats and the 'N worth a look' handoff degrade to the honest
+  // empty-state and no handoff payload is emitted.
+  firstRunNoScan(): StepResult {
+    return this.run('firstrun.js', []);
   }
 
   // Replace the store the scripts read with an unreadable one, so the next

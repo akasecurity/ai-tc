@@ -27,6 +27,13 @@ import { renderAdjustConfirm, renderStartLight } from './render.ts';
 
 const argv = process.argv.slice(2);
 
+// Matches the other adapter scripts (onboard.js): a malformed argument prints a
+// clean one-line reason and exits non-zero, never a raw uncaught stack.
+function fail(message: string): never {
+  process.stdout.write(`AKA setup failed: ${message}\n`);
+  process.exit(1);
+}
+
 function jsonArg(flag: string): string | undefined {
   const i = argv.indexOf(flag);
   return i === -1 ? undefined : argv[i + 1];
@@ -48,9 +55,14 @@ function recommendedPosture() {
   return raw === undefined ? severityFloorPosture() : parsePosture(raw);
 }
 
-const card = argv.includes('--adjust-confirm')
-  ? renderAdjustConfirm(recommendedPosture(), parsePosture(postureArg()))
-  : renderStartLight(severityFloorPosture());
+let card: string;
+try {
+  card = argv.includes('--adjust-confirm')
+    ? renderAdjustConfirm(recommendedPosture(), parsePosture(postureArg()))
+    : renderStartLight(severityFloorPosture());
+} catch (err) {
+  fail(err instanceof Error ? err.message : 'could not render the posture card');
+}
 
 // One Markdown code fence so the wizard can echo the card verbatim (space-aligned
 // monospace collapses without the fence).

@@ -16,9 +16,9 @@ const forkSection = setupMd.slice(forkStart, forkEnd === -1 ? undefined : forkEn
 
 // The prompt-authored 0.3 scan-offer copy lives in commands/setup.md, so a
 // regression is otherwise only visible in the manual walkthrough. These guards
-// pin the verbatim -WL strings the wizard shows at the scan offer.
+// pin the verbatim strings the wizard shows at the scan offer.
 describe('setup.md 0.3 scan-offer copy', () => {
-  it('carries the -WL scope disclosure verbatim', () => {
+  it('carries the scope disclosure verbatim', () => {
     expect(setupMd).toContain(
       "A retroactive scan of recent activity — transcripts, temp files, agent memory — tunes the notifications we'll review next.",
     );
@@ -79,7 +79,7 @@ describe('setup.md 0.4b adjust reroute branch', () => {
     );
   });
 
-  it('carries the -WL save options verbatim', () => {
+  it('carries the save options verbatim', () => {
     expect(forkSection).toContain('Save adjusted — N changed, M as recommended');
     expect(forkSection).toContain('Back to recommended');
   });

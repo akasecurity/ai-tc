@@ -37,10 +37,10 @@ import {
 
 // The fail-open note shown when the local store can't be READ (missing / corrupt
 // / locked db) mid-wizard: the calibration and first-run frames print this instead
-// of throwing, so a store fault never breaks the Claude session.
-// TODO: the found-nothing / empty-store case (a store that reads fine but holds
-// nothing) is a separate path with its own copy, landing later — keep it distinct
-// from this store-unavailable read-failure note; do not conflate the two.
+// of throwing, so a store fault never breaks the Claude session. This is the
+// store-UNAVAILABLE (read-failure) path only. The found-nothing / empty-store case
+// (a store that reads fine but holds nothing) is a distinct path with its own
+// honest copy — frameEmptyState in calibration.ts — not this note.
 export const STORE_UNAVAILABLE_NOTE =
   "I couldn't read the local store right now. AKA stays fail-open — your Claude session is unaffected, and it populates as you use Claude Code.";
 
@@ -218,7 +218,7 @@ export function renderStartLight(
 // three-column 'category │ recommended │ yours' table laying each pack's
 // recommended level beside the level the user chose, so a changed pack reads as
 // a different 'yours' value and the untouched packs repeat their recommended
-// level. Closes with the -WL adjust copy and the shared re-tune pointer at the
+// level. Closes with the adjust copy and the shared re-tune pointer at the
 // deep-tuning surface. Pure (no I/O); the caller hands in the recommended posture
 // (severityFloorPosture()) and the chosen map (that base with the user's
 // overrides overlaid), whose packs render in canonical category order.
@@ -341,8 +341,8 @@ export interface FirstRunSummary {
   recommendations: number;
   // The surfaced/important count carried over from the calibration
   // preview — drives the 'N worth a look' dashboard handoff. Rendered only when
-  // it is a positive count; the nothing-surfaced empty-state degradation is a
-  // separate screen handled elsewhere, so 0/undefined just omits the line here.
+  // it is a positive count; when nothing surfaced (0/undefined) the card omits
+  // the handoff line and its stats degrade to an honest empty-state.
   worthALook?: number;
   // Highest-severity findings from the first scan, ranked + capped by topFindings.
   // Omitted (or empty) on a clean scan — the section is hidden then.
@@ -387,7 +387,15 @@ export function buildHandoffOffer(worthALook: number): SetupHandoffOffer {
 export function renderFirstRun(s: FirstRunSummary): string {
   const heading = `✓ ${NAME} installed — calibrated to this machine`;
 
-  const stats = `Health ${String(s.health)}/100 · Findings ${String(s.findings)} · Recommendations ${String(s.recommendations)}`;
+  // Nothing-surfaced degradation: with no findings in the store the numeric
+  // Health/Findings/Recommendations triple would read as a scan tally over an
+  // empty result. The stats line becomes an honest empty-state instead — an
+  // explicit zero-state, never a fabricated count. (The dashboard handoff is
+  // withheld on the same nothing-surfaced footing below.)
+  const stats =
+    s.findings === 0
+      ? "Nothing needs your attention — you're starting clean."
+      : `Health ${String(s.health)}/100 · Findings ${String(s.findings)} · Recommendations ${String(s.recommendations)}`;
 
   const lines = [heading, '', indent(stats), '', indent(`Try: ${TRY_COMMANDS.join(' · ')}`)];
 
@@ -426,8 +434,8 @@ export function renderFirstRun(s: FirstRunSummary): string {
 
   // Dashboard handoff — the 'N worth a look' offer over the real surfaced count,
   // pairing the AskUserQuestion the prompt layer issues (Open dashboard / Not
-  // now). Shown only when something surfaced; the nothing-surfaced degradation
-  // is a separate frame, so a 0/absent count just omits the line here.
+  // now). Shown only when something surfaced; when nothing surfaced a 0/absent
+  // count omits the line entirely rather than fabricating a '0 worth a look'.
   if (s.worthALook !== undefined && s.worthALook > 0) {
     lines.push(
       '',

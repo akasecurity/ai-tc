@@ -49,6 +49,10 @@ describe('identity/description consistency guard', () => {
     expect(setupMd).not.toContain(STALE_SETUP_DESCRIPTION);
   });
 
+  it('setup.md body prose carries no phased-out product descriptor', () => {
+    expect(setupMd).not.toContain('AKA Control Plane');
+  });
+
   it.each(READMES)('%s prose carries the canonical name and tagline', (_label, relative) => {
     const readme = read(relative);
     expect(readme).toContain(NAME);
@@ -57,6 +61,12 @@ describe('identity/description consistency guard', () => {
 
   it.each(READMES)('%s carries no stale tagline variant', (_label, relative) => {
     expect(read(relative)).not.toContain(STALE_TAGLINE);
+  });
+
+  it('cli init plugin-offer copy carries the canonical name and tagline', () => {
+    const initSource = read('../../../cli/src/commands/init.ts');
+    expect(initSource).toContain(NAME);
+    expect(initSource).toContain(TAGLINE);
   });
 
   it('marketplace.json owner name equals the canonical NAME', () => {

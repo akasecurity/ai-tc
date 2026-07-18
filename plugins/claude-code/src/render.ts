@@ -19,7 +19,7 @@ import type {
   DetectionListItem,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
-import { DetectionCategory, toApiAction } from '@akasecurity/schema';
+import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
 
 import { NAME } from './identity.ts';
 import {
@@ -138,6 +138,111 @@ export function renderRecommendedPosture(
     .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
     .map((r) => `  ${r.category.padEnd(width)}  ${r.level}`)
     .join('\n');
+}
+
+// The full 8×4 posture matrix for the start-light branch: every pack laid out
+// against all four levels (monitor/warn/redact/block), the chosen level marked,
+// in canonical category order. This lays the whole choice space out per pack —
+// distinct from renderRecommendedPosture's condensed one-level-per-pack glance.
+// The level columns come from BUILTIN_ORDER (the schema's palette order), so the
+// DB action vocabulary (log/allow) never appears. Pure (no I/O); the caller
+// hands in the posture map (severityFloorPosture() for the recommended defaults).
+const GRID_MARK = '●';
+export function renderPostureGrid(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const packs = (Object.keys(posture) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rows = packs.map((category) => [
+    category,
+    ...BUILTIN_ORDER.map((level) => (posture[category] === level ? GRID_MARK : '')),
+  ]);
+  return indent(table(['Pack', ...BUILTIN_ORDER], rows));
+}
+
+// The re-tune hint that closes the start-light card and the applied frame,
+// pointing at the two surfaces that re-open calibration: the /aka:setup wizard
+// and the web-ui settings grid (the deep-tuning surface). Exported so the wizard
+// prose (setup.md) and the applied-frame copy single-source it instead of
+// repeating the string and letting the two drift.
+export const RE_TUNE_HINT = 'Re-tune anytime with /aka:setup or the dashboard';
+
+// Why each pack sits at its default: calm, plain-language reasons in the product
+// voice — "notifications" not alarms. The warn packs surface sensitive data for
+// the user's call; the monitor packs (code_context, config) watch quietly to keep
+// the noise down. Presentation copy only — not a persisted contract.
+const PACK_RATIONALE: Record<DetectionCategory, string> = {
+  secret: 'live credentials are the costliest thing to leak, so I bring them to you on sight.',
+  pii: 'personal data carries real obligations, so I surface it before it moves.',
+  financial: 'card and account numbers are sensitive by default, so these come to you.',
+  phi: 'health information is regulated wherever it lands, so I flag it for your call.',
+  code_context:
+    'proprietary code context is common and mostly benign, so I watch quietly and keep the record.',
+  code_flaw: 'an insecure pattern is worth a look before it ships, so I raise it.',
+  custom: 'your own policy matches start surfaced so nothing you care about slips by unseen.',
+  config:
+    'configuration values are noisy to flag, so I keep an eye on them without a notification.',
+};
+
+// The start-light card — frame 0.3b of the /aka:setup Not-now branch, shown when
+// the user declines the retroactive scan so they still leave setup calibrated.
+// Composes the full 8×4 grid (renderPostureGrid) seeded with the conservative
+// defaults, a per-pack rationale line explaining why each pack sits at its
+// default, and the re-tune hint. Pure (no I/O); the caller hands in the posture
+// map (severityFloorPosture() for the severity-floor defaults), whose packs render in
+// canonical category order.
+export function renderStartLight(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const packs = (Object.keys(posture) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rationale = packs.map(
+    (pack) => `  ${pack} — ${posture[pack] ?? ''}: ${PACK_RATIONALE[pack]}`,
+  );
+  return [
+    '● Start light — set your packs',
+    '',
+    indent('No history to calibrate from yet, so each pack starts at a conservative default.'),
+    '',
+    renderPostureGrid(posture),
+    '',
+    ...rationale,
+    '',
+    indent(RE_TUNE_HINT),
+  ].join('\n');
+}
+
+// The 0.4b adjust-confirm card of the /aka:setup Yes-path adjust loop: a
+// three-column 'category │ recommended │ yours' table laying each pack's
+// recommended level beside the level the user chose, so a changed pack reads as
+// a different 'yours' value and the untouched packs repeat their recommended
+// level. Closes with the -WL adjust copy and the shared re-tune pointer at the
+// deep-tuning surface. Pure (no I/O); the caller hands in the recommended posture
+// (severityFloorPosture()) and the chosen map (that base with the user's
+// overrides overlaid), whose packs render in canonical category order.
+export function renderAdjustConfirm(
+  recommended: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+  chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const packs = (Object.keys(recommended) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rows = packs.map((category) => [
+    category,
+    recommended[category] ?? '',
+    chosen[category] ?? recommended[category] ?? '',
+  ]);
+  return [
+    '● Adjust — set the packs you want, keep the rest',
+    '',
+    indent(table(['category', 'recommended', 'yours'], rows)),
+    '',
+    indent("I'll keep the rest as recommended."),
+    '',
+    indent(RE_TUNE_HINT),
+  ].join('\n');
 }
 
 // The read commands the applying-confirmation "Ready" line points at once

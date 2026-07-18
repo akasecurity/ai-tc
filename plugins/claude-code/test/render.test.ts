@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type { DetectionException } from '@akasecurity/schema';
+import type { BuiltinPolicyId, DetectionCategory, DetectionException } from '@akasecurity/schema';
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -19,6 +19,8 @@ import {
   buildHealthReport,
   buildRecommendations,
   healthScore,
+  RE_TUNE_HINT,
+  renderAdjustConfirm,
   renderApplied,
   renderAudit,
   renderCategoriesTuned,
@@ -27,8 +29,10 @@ import {
   renderFirstRun,
   renderHealth,
   renderPosture,
+  renderPostureGrid,
   renderRecommend,
   renderRecommendedPosture,
+  renderStartLight,
   renderStatusLine,
   renderWhatIDo,
   runQuery,
@@ -581,6 +585,214 @@ describe('renderRecommendedPosture — condensed recommended view', () => {
     expect(out).toContain('secret');
     expect(out).toContain('block');
     expect(out).toContain('redact');
+  });
+});
+
+describe('renderPostureGrid — full 8×4 posture matrix', () => {
+  // The eight packs, in the schema's canonical category order — the same order
+  // renderPosture/renderRecommendedPosture use, and the order the grid must lock.
+  const CANONICAL = [
+    'pii',
+    'financial',
+    'secret',
+    'phi',
+    'code_context',
+    'code_flaw',
+    'custom',
+    'config',
+  ];
+
+  it('lays every pack against all four levels, marks the chosen one, in canonical order', () => {
+    const out = renderPostureGrid(severityFloorPosture());
+
+    // Every pack renders, once, in canonical category order (header and rule
+    // lines excluded by keeping only rows whose first token is a known pack).
+    const packs = out
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter((tok): tok is string => tok !== undefined && CANONICAL.includes(tok));
+    expect(packs).toEqual(CANONICAL);
+
+    // All four level labels head the grid — palette vocabulary only, never the
+    // DB action forms 'log'/'allow' (the full grid lays out every level per pack,
+    // unlike renderRecommendedPosture's condensed one-level glance).
+    expect(out).toContain('MONITOR');
+    expect(out).toContain('WARN');
+    expect(out).toContain('REDACT');
+    expect(out).toContain('BLOCK');
+    expect(out).not.toMatch(/\blog\b/);
+    expect(out).not.toMatch(/\ballow\b/);
+
+    // The whole 8×4 grid, so a layout regression is caught as a snapshot diff.
+    // Feeding the default posture map, the mark sits in monitor for the observe-only
+    // packs (code_context, config) and in warn for the rest.
+    expect(out).toMatchInlineSnapshot(`
+      "  PACK           MONITOR   WARN   REDACT   BLOCK
+        ────────────   ───────   ────   ──────   ─────
+        pii                      ●                    
+        financial                ●                    
+        secret                   ●                    
+        phi                      ●                    
+        code_context   ●                              
+        code_flaw                ●                    
+        custom                   ●                    
+        config         ●                              "
+    `);
+  });
+});
+
+describe('renderStartLight — 0.3b start-light card', () => {
+  // The eight packs in canonical category order — the order the embedded grid and
+  // the per-pack rationale block must both follow.
+  const CANONICAL = [
+    'pii',
+    'financial',
+    'secret',
+    'phi',
+    'code_context',
+    'code_flaw',
+    'custom',
+    'config',
+  ];
+  const posture = severityFloorPosture();
+
+  it('leads with the start-light heading', () => {
+    expect(renderStartLight(posture)).toContain('Start light — set your packs');
+  });
+
+  it('embeds the full 8×4 default posture grid, composed from the shared primitive', () => {
+    // The card composes renderPostureGrid seeded with the default posture, so a grid
+    // layout regression surfaces here too, not only in renderPostureGrid's own test.
+    expect(renderStartLight(posture)).toContain(renderPostureGrid(posture));
+  });
+
+  it('carries a per-pack rationale line for every pack, never omitted or placeholdered', () => {
+    const out = renderStartLight(posture);
+    for (const pack of CANONICAL) {
+      // A rationale line names the pack, its default level, then a non-empty reason.
+      const line = out.split('\n').find((l) => l.trim().startsWith(`${pack} —`));
+      expect(line, `rationale line for ${pack}`).toBeTruthy();
+      const reason = (line ?? '').split(':').slice(1).join(':').trim();
+      expect(reason.length, `rationale text for ${pack}`).toBeGreaterThan(0);
+      expect(reason, `rationale for ${pack} is not a placeholder`).not.toMatch(
+        /todo|tbd|placeholder|…|xxx/i,
+      );
+    }
+  });
+
+  it('closes with the re-tune hint, single-sourced from RE_TUNE_HINT', () => {
+    // The exported constant is what setup.md and the applied-frame copy single-source.
+    expect(RE_TUNE_HINT).toBe('Re-tune anytime with /aka:setup or the dashboard');
+    expect(renderStartLight(posture)).toContain(RE_TUNE_HINT);
+  });
+
+  it('matches the whole-card snapshot so copy/layout regressions surface', () => {
+    expect(renderStartLight(posture)).toMatchInlineSnapshot(`
+      "● Start light — set your packs
+
+        No history to calibrate from yet, so each pack starts at a conservative default.
+
+        PACK           MONITOR   WARN   REDACT   BLOCK
+        ────────────   ───────   ────   ──────   ─────
+        pii                      ●                    
+        financial                ●                    
+        secret                   ●                    
+        phi                      ●                    
+        code_context   ●                              
+        code_flaw                ●                    
+        custom                   ●                    
+        config         ●                              
+
+        pii — warn: personal data carries real obligations, so I surface it before it moves.
+        financial — warn: card and account numbers are sensitive by default, so these come to you.
+        secret — warn: live credentials are the costliest thing to leak, so I bring them to you on sight.
+        phi — warn: health information is regulated wherever it lands, so I flag it for your call.
+        code_context — monitor: proprietary code context is common and mostly benign, so I watch quietly and keep the record.
+        code_flaw — warn: an insecure pattern is worth a look before it ships, so I raise it.
+        custom — warn: your own policy matches start surfaced so nothing you care about slips by unseen.
+        config — monitor: configuration values are noisy to flag, so I keep an eye on them without a notification.
+
+        Re-tune anytime with /aka:setup or the dashboard"
+    `);
+  });
+});
+
+describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
+  // The eight packs in canonical category order — the order the confirm table
+  // rows must follow, recommended and yours side by side on each.
+  const CANONICAL = [
+    'pii',
+    'financial',
+    'secret',
+    'phi',
+    'code_context',
+    'code_flaw',
+    'custom',
+    'config',
+  ];
+  const recommended = severityFloorPosture();
+  // The user's chosen posture: the recommended base with two packs overridden
+  // (secret warn→redact, config monitor→warn), the other six kept as recommended.
+  const chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>> = {
+    ...recommended,
+    secret: 'redact',
+    config: 'warn',
+  };
+
+  it("heads a three-column 'category │ recommended │ yours' table", () => {
+    // Built from present.ts table(), which uppercases the column headers.
+    const out = renderAdjustConfirm(recommended, chosen);
+    expect(out).toContain('CATEGORY');
+    expect(out).toContain('RECOMMENDED');
+    expect(out).toContain('YOURS');
+  });
+
+  it('lays one row per pack in canonical order, recommended beside yours', () => {
+    const out = renderAdjustConfirm(recommended, chosen);
+    const order = out
+      .split('\n')
+      .map((l) => l.trim().split(/\s+/)[0])
+      .filter((tok): tok is string => tok !== undefined && CANONICAL.includes(tok));
+    expect(order).toEqual(CANONICAL);
+
+    // Both columns are visible on every row: a changed pack shows a different
+    // 'yours' value, an unchanged pack repeats the recommended level.
+    const row = (pack: string): string[] =>
+      (out.split('\n').find((l) => l.trim().startsWith(`${pack} `)) ?? '').trim().split(/\s+/);
+    // secret: recommended warn, yours redact (changed).
+    expect(row('secret')).toEqual(['secret', 'warn', 'redact']);
+    // config: recommended monitor, yours warn (changed).
+    expect(row('config')).toEqual(['config', 'monitor', 'warn']);
+    // pii: unchanged — recommended and yours both warn, both columns present.
+    expect(row('pii')).toEqual(['pii', 'warn', 'warn']);
+  });
+
+  it('carries the -WL adjust copy and the shared re-tune hint', () => {
+    const out = renderAdjustConfirm(recommended, chosen);
+    expect(out).toContain("I'll keep the rest as recommended");
+    // the re-tune pointer to the deep-tuning surface is single-sourced.
+    expect(out).toContain(RE_TUNE_HINT);
+  });
+
+  it('matches the whole-card snapshot so copy/layout regressions surface', () => {
+    expect(renderAdjustConfirm(recommended, chosen)).toMatchInlineSnapshot(`
+      "● Adjust — set the packs you want, keep the rest
+
+        CATEGORY       RECOMMENDED   YOURS  
+        ────────────   ───────────   ───────
+        pii            warn          warn   
+        financial      warn          warn   
+        secret         warn          redact 
+        phi            warn          warn   
+        code_context   monitor       monitor
+        code_flaw      warn          warn   
+        custom         warn          warn   
+        config         monitor       warn   
+
+        I'll keep the rest as recommended.
+
+        Re-tune anytime with /aka:setup or the dashboard"
+    `);
   });
 });
 

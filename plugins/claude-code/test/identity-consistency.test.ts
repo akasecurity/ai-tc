@@ -59,12 +59,6 @@ describe('SCENARIO-0002 — identity/description consistency guard', () => {
     expect(read(relative)).not.toContain(STALE_TAGLINE);
   });
 
-  it('cli init plugin-offer copy carries the canonical name and tagline', () => {
-    const initSource = read('../../../cli/src/commands/init.ts');
-    expect(initSource).toContain(NAME);
-    expect(initSource).toContain(TAGLINE);
-  });
-
   it('marketplace.json owner name equals the canonical NAME', () => {
     const manifest = readManifest('../../../.claude-plugin/marketplace.json');
     expect(manifest.owner?.name).toBe(NAME);

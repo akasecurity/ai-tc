@@ -17,15 +17,13 @@ import {
   ensureDataDirSync,
   settingsDir,
 } from '@akasecurity/plugin-sdk';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import { defaultWorkspaceSettings, PRODUCT_NAME, PRODUCT_TAGLINE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { runPlugins } from './plugins.ts';
 
-// Canonical product name and tagline for the init plugin-offer copy — the same
-// identity the plugin presents, kept in lockstep by the identity-consistency guard.
-export const PRODUCT_NAME = 'AKA Security';
-export const PRODUCT_TAGLINE = 'We secure agent harnesses at the source.';
+// The init plugin-offer copy, built from the canonical product identity single-sourced
+// in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default

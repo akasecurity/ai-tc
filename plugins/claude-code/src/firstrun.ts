@@ -23,11 +23,14 @@ import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { runFirstRunFailOpen } from './firstrun-core.ts';
+import { parseHomeFlag } from './home-flag.ts';
 import { readPostureBlock } from './posture.ts';
 import { STORE_UNAVAILABLE_NOTE } from './render.ts';
 
 try {
-  const cfg = loadConfig();
+  // `--home` points the wizard at a throwaway ~/.aka home; absent on every real
+  // run, so loadConfig falls back to the default home.
+  const cfg = loadConfig(parseHomeFlag(process.argv.slice(2)));
   const gateway = resolveDataGateway(cfg);
   try {
     await runFirstRunFailOpen({

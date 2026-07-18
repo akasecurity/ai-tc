@@ -14,6 +14,7 @@
  *     error writes a diagnostic to stderr plus a non-zero exit — never a silent
  *     exit 0 with a partial stream.
  */
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -26,17 +27,24 @@ import {
 import { TriageHit } from '@akasecurity/schema';
 
 import { scanHistory, type ScanSummary } from './history/scan.ts';
-import { type HistoryWalkOptions } from './history/transcripts.ts';
+import { type HistoryWalkOptions, transcriptsDir } from './history/transcripts.ts';
 import { reconcileHistory } from './history/usage.ts';
+import { parseHomeFlag } from './home-flag.ts';
 import { fenced, indent } from './present.ts';
 
 // The trailing sentinel that terminates a --triage stream. Its presence (and
 // only its presence) tells the consumer the stream was not truncated:
-//   complete            — the scan ran to completion; count hits precede this.
+//   complete            — the scan ran to completion over history that was examined;
+//                         count hits precede this.
+//   complete:no-history — the scan ran to completion but the history set was empty
+//                         (no messages examined); still a completed, non-truncated
+//                         scan, distinguished so the empty-state copy can say why.
 //   skipped:no-consent  — consent wasn't 'full'; an empty-but-intentional scan.
 // A truncated stream has no sentinel, so it is never mistaken for a real
 // zero-finding scan (which ends in status:"complete","count":0).
-export type TriageStatus = 'complete' | 'skipped:no-consent';
+// The set MUST stay in lockstep with the writeback.ts TRIAGE_STATUSES set.
+export const TRIAGE_STATUSES = ['complete', 'complete:no-history', 'skipped:no-consent'] as const;
+export type TriageStatus = (typeof TRIAGE_STATUSES)[number];
 
 export function triageSentinel(count: number, status: TriageStatus): string {
   return JSON.stringify({ done: true, count, status }) + '\n';
@@ -156,7 +164,14 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
     }
 
     if (triage) {
-      io.stdout(triageSentinel(count, 'complete'));
+      // A completed scan that touched zero messages is a no-history run (a fresh
+      // machine with nothing to calibrate from), distinct from a scan that examined
+      // history and surfaced/kept nothing. A message already recorded on a prior run
+      // counts under skipped (dedup), not scanned, so a fully-deduped rescan of real
+      // history is NOT no-history — both counters must be zero.
+      const status: TriageStatus =
+        summary.scanned === 0 && summary.skipped === 0 ? 'complete:no-history' : 'complete';
+      io.stdout(triageSentinel(count, status));
     } else {
       const heading = '✓ Historical scan complete';
       const scope = `Scanned ${String(summary.scanned)} messages from the last ${String(summary.windowDays)} days of Claude Code history.`;
@@ -194,6 +209,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const startedAt = Date.now();
   // eslint-disable-next-line n/no-process-env -- host session id for the self-contamination guard
   const sessionId = process.env.CLAUDE_CODE_BRIDGE_SESSION_ID;
+  // The wizard's ~/.aka override; absent on every real run, so loadConfig and the
+  // transcript scan fall back to the OS home. The transcript root sits under the OS
+  // home, which is ~/.aka's parent — the inverse of defaultDataDir's
+  // join(homedir(), '.aka') — so its dirname recovers the OS home to scan.
+  const home = parseHomeFlag(process.argv.slice(2));
+  const transcriptRoot = home !== undefined ? transcriptsDir(dirname(home)) : undefined;
   await runBackfill({
     triage,
     io: {
@@ -203,12 +224,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         process.exitCode = 1;
       },
     },
-    loadConfig: () => loadConfig(),
+    loadConfig: () => loadConfig(home),
     scanHistory,
-    reconcileHistory: (cfg) => reconcileHistory(cfg),
+    reconcileHistory: (cfg) =>
+      reconcileHistory(cfg, transcriptRoot !== undefined ? { dir: transcriptRoot } : {}),
     guard: {
       beforeMs: startedAt,
       ...(sessionId ? { excludeSessionId: sessionId } : {}),
+      ...(transcriptRoot !== undefined ? { dir: transcriptRoot } : {}),
     },
   });
   // process.exit() does not flush a buffered async stdout write on darwin, so a

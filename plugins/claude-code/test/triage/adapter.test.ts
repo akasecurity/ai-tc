@@ -160,6 +160,36 @@ describe('runApply — preview renders the honest empty state on a clean scan', 
   });
 });
 
+describe('runApply — preview renders the no-history empty state on an empty-history scan', () => {
+  it('prints the no-history copy and a zero-count frame when the scan completes over no history', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () =>
+        `${JSON.stringify({ done: true, count: 0, status: 'complete:no-history' })}\n`,
+      runJudge: () => verdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const blob = out.join('');
+    // The honest no-history empty state, distinct from the scan-clean copy.
+    expect(blob).toContain('Nothing to calibrate from yet');
+    expect(blob).not.toContain('nothing needs your attention');
+    expect(blob).not.toContain('No triage hits to review');
+    // A zero-count CalibrationFrame is still emitted for downstream consumers.
+    const frame = CalibrationFrame.parse(readFrameJsonBlock(blob));
+    expect(frame.counts).toEqual({ total: 0, important: 0, routine: 0 });
+    // Preview stays read-only: no posture upsert, no exception created.
+    expect(db.posture).toEqual({});
+    expect(db.created).toEqual([]);
+  });
+});
+
 describe('runApply — preview is a raw-free egress boundary by construction', () => {
   const previewThrowing = async (runJudge: () => never): Promise<unknown> => {
     const db = fakeDb();

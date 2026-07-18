@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
@@ -16,6 +17,15 @@ import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
 const AWS_EXAMPLE_KEY = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
 // Composed for the same reason — a literal address would be redacted on write.
 const PII_EMAIL = ['jane.doe', 'example.com'].join('@');
+
+// The base names of the command files the shipped plugin registers (a `foo.md`
+// file is invoked as `/aka:foo`), read from disk so the Try line is checked
+// against the commands that actually resolve when typed.
+const REGISTERED = new Set(
+  readdirSync(fileURLToPath(new URL('../commands', import.meta.url)))
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => f.replace(/\.md$/, '')),
+);
 
 function config(dataDir: string): PluginConfig {
   return {
@@ -223,11 +233,18 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     // never a fixed 82/100 sample.
     expect(blob).toMatch(/Health \d+\/100/);
     expect(blob).not.toContain('82/100');
-    // The Try line names only commands the shipped plugin registers — never the
-    // not-yet-shipped rename targets.
-    expect(blob).toContain('Try:');
-    expect(blob).not.toContain('/aka:secretscan');
-    expect(blob).not.toContain('/aka:codescan');
+    // Every /aka: command the rendered Try line names is one the shipped plugin
+    // registers — a subset-of-registry check, not a hardcoded command snapshot.
+    const tryLine = blob.split('\n').find((l) => l.includes('Try:'));
+    expect(tryLine).toBeDefined();
+    const named = tryLine?.match(/\/aka:\S+/g) ?? [];
+    // The line actually names commands (a vacuous empty match must not pass).
+    expect(named.length).toBeGreaterThan(0);
+    for (const cmd of named) {
+      // Keep the whole token after `/aka:` intact — a malformed name (e.g. a
+      // trailing digit) then fails membership instead of truncating to a prefix.
+      expect(REGISTERED.has(cmd.slice('/aka:'.length))).toBe(true);
+    }
   });
 });
 

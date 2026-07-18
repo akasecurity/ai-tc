@@ -2,12 +2,14 @@ import type { ActionTaken, DetectionCategory, TriageHit } from '@akasecurity/sch
 import { severityFloorPosture } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { TRIAGE_STATUSES as PRODUCER_STATUSES } from '../../src/backfill.ts';
 import {
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
   recommendedPosture,
   SCRUBBED_NOTES,
+  TRIAGE_STATUSES as CONSUMER_STATUSES,
 } from '../../src/triage/writeback.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
@@ -72,6 +74,28 @@ describe('parseTriageStream', () => {
     const { hits, status } = parseTriageStream(stream);
     expect(hits).toEqual([]);
     expect(status).toBe('skipped:no-consent');
+  });
+
+  it('passes a complete:no-history sentinel through as zero hits (not an unknown status)', () => {
+    // A completed scan over an empty history set: recognized, no hits to act on,
+    // and the no-history status flows through so the adapter can branch on it.
+    const stream = JSON.stringify({ done: true, count: 0, status: 'complete:no-history' }) + '\n';
+    const { hits, status } = parseTriageStream(stream);
+    expect(hits).toEqual([]);
+    expect(status).toBe('complete:no-history');
+  });
+
+  it('fails LOUD on a nonzero count under a complete:no-history sentinel', () => {
+    // no-history is a zero-hit outcome by construction; a nonzero count is a
+    // corrupted stream and must not be silently accepted.
+    const stream = JSON.stringify({ done: true, count: 3, status: 'complete:no-history' }) + '\n';
+    expect(() => parseTriageStream(stream)).toThrow(/hits under a complete:no-history sentinel/i);
+  });
+
+  it('keeps the producer and consumer status sets in lockstep', () => {
+    // Every value one side knows, the other must too — a status the producer emits
+    // and the consumer rejects (or vice versa) is a silent skew.
+    expect([...CONSUMER_STATUSES].sort()).toEqual([...PRODUCER_STATUSES].sort());
   });
 
   it('fails LOUD on an unrecognized sentinel status instead of silently skipping', () => {

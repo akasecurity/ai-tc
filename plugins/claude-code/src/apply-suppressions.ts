@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import { parseHomeFlag } from './home-flag.ts';
 import { runApply } from './triage/adapter.ts';
 import { runJudge, spawnClaude } from './triage/judge.ts';
 
@@ -56,6 +57,9 @@ function loadRubric(): string {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  // `--home` points the wizard at a throwaway ~/.aka home; absent on every real
+  // run, so loadConfig falls back to the default home.
+  const home = parseHomeFlag(argv);
   const code = await runApply({
     argv,
     // fd 0 = stdin; the wizard pipes `backfill.js --triage` into this on preview.
@@ -64,7 +68,7 @@ async function main(): Promise<void> {
       streamPath !== undefined ? readFileSync(streamPath, 'utf8') : readFileSync(0, 'utf8'),
     runJudge: (hits) => runJudge(hits, { spawn: spawnClaude, loadRubric }),
     openDb: () => {
-      const db = openLocalDatabase(loadConfig().dataDir);
+      const db = openLocalDatabase(loadConfig(home).dataDir);
       return {
         policies: db.policies,
         exceptions: db.exceptions,

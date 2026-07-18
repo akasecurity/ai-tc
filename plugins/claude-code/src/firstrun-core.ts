@@ -17,6 +17,7 @@
  */
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 
+import { readRegisteredCommands } from './command-registry.ts';
 import { fenced } from './present.ts';
 import {
   buildHandoffOffer,
@@ -75,20 +76,28 @@ export async function runFirstRun(deps: FirstRunDeps): Promise<void> {
   // payload below; when no scan supplied one, both are omitted, never fabricated.
   const surfaced = parseSurfacedCount(deps.argv);
 
+  // The installed command registry, resolved at this I/O boundary and threaded
+  // into the pure renderer so the Try line's curated set is validated against the
+  // commands the plugin actually registers.
+  const registry = readRegisteredCommands();
+
   deps.stdout(
     `${fenced(
-      renderFirstRun({
-        posture: postureBlock,
-        health: healthScore(summary),
-        // The card's "Findings N" stat is the whole-store total — correct here.
-        findings: summary.findings,
-        recommendations,
-        // Only threaded when a scan supplied a count — never as an explicit
-        // undefined (exactOptionalPropertyTypes), so the card omits the handoff
-        // line rather than fabricating a zero.
-        ...(surfaced !== undefined ? { worthALook: surfaced } : {}),
-        topFindings: topFindings(findings),
-      }),
+      renderFirstRun(
+        {
+          posture: postureBlock,
+          health: healthScore(summary),
+          // The card's "Findings N" stat is the whole-store total — correct here.
+          findings: summary.findings,
+          recommendations,
+          // Only threaded when a scan supplied a count — never as an explicit
+          // undefined (exactOptionalPropertyTypes), so the card omits the handoff
+          // line rather than fabricating a zero.
+          ...(surfaced !== undefined ? { worthALook: surfaced } : {}),
+          topFindings: topFindings(findings),
+        },
+        registry,
+      ),
     )}\n`,
   );
 

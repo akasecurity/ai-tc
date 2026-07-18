@@ -96,6 +96,16 @@ describe('KeywordMatcher', () => {
     expect(spans.length).toBe(10_000);
   });
 
+  it('shares the cap across keywords, not per keyword', () => {
+    const matcher = new KeywordMatcher();
+    // "a" alone fills the ceiling exactly; the second keyword must not push past
+    // it. Pins the outer-loop guard specifically — without it the next keyword's
+    // first match slips through the inner break and the total overshoots to 10,001.
+    const text = 'a'.repeat(10_000) + 'b'.repeat(5_000);
+    const spans = matcher.match(text, keywordRule(['a', 'b']));
+    expect(spans.length).toBe(10_000);
+  });
+
   it('advances past a self-overlapping keyword instead of re-matching it', () => {
     const matcher = new KeywordMatcher();
     // The `g`-advance keeps only the leading occurrence of a self-overlapping

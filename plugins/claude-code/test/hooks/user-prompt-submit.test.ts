@@ -10,7 +10,7 @@ import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
 
 const CANONICAL_NUDGE =
   'AKA Security is installed but not calibrated — run /aka:setup to tune notifications to this machine (about a minute).';
-const STALE_D9 = 'choose your installation type';
+const STALE_INSTALL_NUDGE = 'choose your installation type';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/hooks -> plugins/claude-code
@@ -49,15 +49,15 @@ describe('ONBOARDING_NUDGE', () => {
     expect(ONBOARDING_NUDGE).toBe(CANONICAL_NUDGE);
   });
 
-  it('drops the stale D9 installation-type framing', () => {
-    expect(ONBOARDING_NUDGE).not.toContain(STALE_D9);
+  it('drops the stale installation-type framing', () => {
+    expect(ONBOARDING_NUDGE).not.toContain(STALE_INSTALL_NUDGE);
   });
 });
 
-describe('user-prompt-submit hook source (SCENARIO-0003)', () => {
-  it('no longer references the stale D9 installation-type string', () => {
-    // SCENARIO-0003 observable: no stale D9 string exists in the hook source.
-    expect(readFileSync(HOOK_SOURCE, 'utf8')).not.toContain(STALE_D9);
+describe('user-prompt-submit hook source', () => {
+  it('no longer references the stale installation-type string', () => {
+    // The stale installation-type string no longer exists in the hook source.
+    expect(readFileSync(HOOK_SOURCE, 'utf8')).not.toContain(STALE_INSTALL_NUDGE);
   });
 });
 
@@ -77,13 +77,13 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       // Proves the emit SITE carries the constant: a regression to any other copy
       // at the emit call fails here, which the constant-equality check cannot catch.
       expect(payload.systemMessage).toBe(ONBOARDING_NUDGE);
-      expect(run.stdout).not.toContain(STALE_D9);
+      expect(run.stdout).not.toContain(STALE_INSTALL_NUDGE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  it('falls back to allow and never throws when a store fault is injected (AC-2 fail-open)', () => {
+  it('falls back to allow and never throws when a store fault is injected (fail-open)', () => {
     const home = mkdtempSync(join(tmpdir(), 'aka-ups-failopen-'));
     try {
       // Injected fault: an unreadable store (not the SQLite header) so enforcement

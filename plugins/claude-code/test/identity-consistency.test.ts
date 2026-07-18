@@ -40,7 +40,7 @@ function readManifest(relative: string): Manifest {
   return JSON.parse(read(relative)) as Manifest;
 }
 
-describe('SCENARIO-0002 — identity/description consistency guard', () => {
+describe('identity/description consistency guard', () => {
   it('setup.md frontmatter description equals the canonical constant', () => {
     expect(frontmatterDescription(setupMd)).toBe(SETUP_DESCRIPTION);
   });

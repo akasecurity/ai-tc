@@ -1,25 +1,6 @@
-# Code owners for ai-tc. Every PR requests review from the owners of the paths it touches.
-
-# Default owner for everything not otherwise matched.
-*                       @akasecurity/maintainers
-
-# Component review routing. Non-UI components route to the rotation reviewers
-# (the senior seat is pruned by the PR opener based on working hours); UI
-# surfaces route to the UI owner. More-specific paths appear later so they win.
-/packages/              @pmontiel-git @suhailsalim @Vaishnav-OM
-/plugins/               @pmontiel-git @suhailsalim @Vaishnav-OM
-/cli/                   @pmontiel-git @suhailsalim @Vaishnav-OM
-# UI surfaces: the UI owner, plus a senior so UI PRs authored BY the UI owner
-# still auto-request a reviewer (GitHub never requests the PR author).
-/web-ui/                @venuverse @pmontiel-git
-/packages/dashboard-ui/ @venuverse @pmontiel-git
-/packages/ui-kit/       @venuverse @pmontiel-git
-
-# Detection rules are published as first-party verified packs under the `aka`
-# namespace when merged, so /rules is a supply-chain trust boundary — every rule
-# change requires maintainer + rules-review sign-off before it can be released.
-/rules/                 @akasecurity/maintainers @akasecurity/rules-reviewers @pmontiel-git @suhailsalim @Vaishnav-OM
-
-# Release + supply-chain surfaces.
-/.github/workflows/     @akasecurity/maintainers
-/tools/installer/       @akasecurity/maintainers
+# Code owners for ai-tc.
+#
+# Every PR requests review from the developers team. A single default owned by a
+# team that exists keeps routing simple and ensures a review is actually
+# requested (a per-path owner that GitHub cannot resolve requests no one).
+*   @akasecurity/developers

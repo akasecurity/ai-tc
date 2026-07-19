@@ -20,6 +20,10 @@ export interface ScannedMessage {
   kind: EventKind; // 'prompt' (a user turn) | 'response' (an assistant reply)
   text: string;
   occurredAt: string;
+  // The transcript file this message was read from, so a secret found in it can
+  // later be located and struck in place. Empty when the source path is unknown
+  // (e.g. a bare `parseTranscript` call in a unit test that passes no path).
+  filePath: string;
 }
 
 // Where Claude Code writes its per-project, per-session transcripts. `home`
@@ -56,7 +60,12 @@ function extractText(content: unknown): string {
 // (masked) output, written during onboarding, is never fed back into the scan.
 // Malformed lines are skipped, never thrown — a truncated/partial transcript must
 // not abort the scan.
-export function parseTranscript(jsonl: string, sinceMs = 0, beforeMs = Infinity): ScannedMessage[] {
+export function parseTranscript(
+  jsonl: string,
+  sinceMs = 0,
+  beforeMs = Infinity,
+  filePath = '',
+): ScannedMessage[] {
   const out: ScannedMessage[] = [];
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
@@ -85,7 +94,7 @@ export function parseTranscript(jsonl: string, sinceMs = 0, beforeMs = Infinity)
     if (!isRecord(message)) continue;
     const text = extractText(message.content);
     if (text.trim() === '') continue;
-    out.push({ kind: rec.type === 'user' ? 'prompt' : 'response', text, occurredAt });
+    out.push({ kind: rec.type === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
   }
   return out;
 }
@@ -495,7 +504,10 @@ export interface HistoryWalkOptions {
 // id (Claude Code names each file `<sessionId>.jsonl`) — the guard that keeps AKA's
 // own setup session out of the scan. An id-only match (never file contents), so a
 // normal user's history is unaffected.
-function* iterateFileContents(dir: string, excludeSessionId?: string): Generator<string> {
+function* iterateFileContents(
+  dir: string,
+  excludeSessionId?: string,
+): Generator<{ content: string; filePath: string }> {
   let projects: string[];
   try {
     projects = readdirSync(dir, { withFileTypes: true })
@@ -517,13 +529,14 @@ function* iterateFileContents(dir: string, excludeSessionId?: string): Generator
       // Skip AKA's own session: the file basename (minus `.jsonl`) IS the session id.
       if (excludeSessionId !== undefined && file.slice(0, -'.jsonl'.length) === excludeSessionId)
         continue;
+      const filePath = join(projectDir, file);
       let content: string;
       try {
-        content = readFileSync(join(projectDir, file), 'utf8');
+        content = readFileSync(filePath, 'utf8');
       } catch {
         continue;
       }
-      yield content;
+      yield { content, filePath };
     }
   }
 }
@@ -542,8 +555,11 @@ function windowStartMs(opts: Pick<HistoryWalkOptions, 'windowDays' | 'now'>): nu
 export function* iterateHistory(opts: HistoryWalkOptions = {}): Generator<ScannedMessage> {
   const sinceMs = windowStartMs(opts);
   const beforeMs = opts.beforeMs ?? Infinity;
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir(), opts.excludeSessionId))
-    yield* parseTranscript(content, sinceMs, beforeMs);
+  for (const { content, filePath } of iterateFileContents(
+    opts.dir ?? transcriptsDir(),
+    opts.excludeSessionId,
+  ))
+    yield* parseTranscript(content, sinceMs, beforeMs, filePath);
 }
 
 // Lazily walk every project's transcripts under the root and yield each
@@ -558,7 +574,7 @@ export function* iterateUsage(
   opts: Pick<HistoryWalkOptions, 'dir' | 'windowDays' | 'now'> = {},
 ): Generator<UsageRecord> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir()))
+  for (const { content } of iterateFileContents(opts.dir ?? transcriptsDir()))
     yield* parseTranscriptUsage(content, sinceMs);
 }
 
@@ -570,7 +586,7 @@ export function* iterateUsageAndToolCalls(
   opts: Pick<HistoryWalkOptions, 'dir' | 'windowDays' | 'now'> = {},
 ): Generator<{ usage: UsageRecord[]; toolCalls: ToolCallRecord[] }> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir())) {
+  for (const { content } of iterateFileContents(opts.dir ?? transcriptsDir())) {
     yield {
       usage: parseTranscriptUsage(content, sinceMs),
       toolCalls: parseTranscriptToolCalls(content, sinceMs),

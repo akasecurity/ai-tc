@@ -1,13 +1,13 @@
 /**
  * Posture-card emitter for the `/aka:setup` wizard's calibration frames. Two
- * modes, both pure copy (read no store, record no consent, write only the card
- * to stdout):
+ * modes:
  *
  *   node scripts/start-light.js
  *     Frame 0.3b — the Not-now branch's start-light card: the full 8×4 default posture
  *     matrix seeded with the conservative severity-floor defaults, a per-pack
- *     rationale, and the re-tune hint. The No-history branch touches no historical
- *     data by construction.
+ *     rationale, and the re-tune hint. Pure copy — reads no store, records no
+ *     consent, writes only the card to stdout. The No-history branch touches no
+ *     historical data by construction.
  *
  *   node scripts/start-light.js --adjust-confirm --posture '<json>' [--recommended '<json>']
  *     Frame 0.4b — the Yes-path adjust loop's confirm card: the
@@ -17,9 +17,19 @@
  *     recommended column is the --recommended map — the calibrated recommended
  *     posture the preview printed — so a pack calibration escalated shows its
  *     calibrated level, not the floor; it falls back to the severity floor when
- *     --recommended is omitted.
+ *     --recommended is omitted. This mode also does a best-effort READ of the
+ *     policies store's current per-category posture, so the confirm card can
+ *     warn when a pack would be lowered below its existing stored level — a
+ *     pack hardened out of band, even one with no findings this run (see
+ *     readExistingPosture below). Fail-open: a missing store, or any read
+ *     fault, degrades to no comparison rather than throwing.
  */
-import { severityFloorPosture } from '@akasecurity/plugin-sdk';
+import { existsSync } from 'node:fs';
+
+import { openLocalDatabase } from '@akasecurity/persistence';
+import { loadConfig, severityFloorPosture } from '@akasecurity/plugin-sdk';
+import type { ActionTaken, DetectionCategory } from '@akasecurity/schema';
+import { DetectionCategory as DetectionCategorySchema } from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
 import { fenced } from './present.ts';
@@ -55,10 +65,41 @@ function recommendedPosture() {
   return raw === undefined ? severityFloorPosture() : parsePosture(raw);
 }
 
+// Best-effort read of the policies store's current per-category posture, for
+// the 0.4b downgrade comparison. Fail-open by construction — this is the setup
+// wizard, so a store fault must degrade the card rather than break the
+// session: no store on disk yet, or any read error (missing/corrupt/locked
+// db), returns an empty map, which renders the confirm card exactly as it did
+// before this comparison existed. Never opens (and so never creates) a store
+// that doesn't already exist — a read-only confirm card should not have the
+// side effect of seeding one.
+function readExistingPosture(): Partial<
+  Record<DetectionCategory, { action: ActionTaken; enabled: boolean }>
+> {
+  const existing: Partial<Record<DetectionCategory, { action: ActionTaken; enabled: boolean }>> =
+    {};
+  try {
+    const config = loadConfig();
+    if (!existsSync(config.dbPath)) return existing;
+    const db = openLocalDatabase(config.dataDir);
+    try {
+      for (const category of DetectionCategorySchema.options) {
+        const action = db.policies.getCategoryAction(category);
+        if (action !== undefined) existing[category] = { action, enabled: true };
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    return {};
+  }
+  return existing;
+}
+
 let card: string;
 try {
   card = argv.includes('--adjust-confirm')
-    ? renderAdjustConfirm(recommendedPosture(), parsePosture(postureArg()))
+    ? renderAdjustConfirm(recommendedPosture(), parsePosture(postureArg()), readExistingPosture())
     : renderStartLight(severityFloorPosture());
 } catch (err) {
   fail(err instanceof Error ? err.message : 'could not render the posture card');

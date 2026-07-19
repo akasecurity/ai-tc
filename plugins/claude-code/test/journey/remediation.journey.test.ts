@@ -1,20 +1,22 @@
 /**
- * The secret-leak remediation chain, proven runnable by DIRECT invocation: a
- * findings set + a RemediationEntryContext and NO wizard state. This is the
- * entry-point-agnostic contract the pre-push and /aka:secretscan entries reuse.
+ * The secret-leak remediation chain, proven runnable end-to-end by DIRECT
+ * invocation: a findings set + a RemediationEntryContext and NO wizard state.
+ * This is the entry-point-agnostic contract the pre-push and /aka:secretscan
+ * entries reuse.
  *
- * The chain is driven end-to-end against a throwaway ~/.aka home seeded (NOT via
- * the wizard) with a secret-leak findings set: real transcript artifacts carrying
+ * The chain is driven against a throwaway ~/.aka home seeded (NOT via the
+ * wizard) with a secret-leak findings set: real transcript artifacts carrying
  * raw leaked keys plus a persisted calibration frame (the backfill's output) whose
  * masked per-finding summaries the loader reads. The drive wires the real DI core —
- * the findings loader, the batched-decision core, the decision layout formatter, the
- * option router bound to the real redaction mechanism, and the standing-posture writer —
- * over the real local store; no module is mocked.
+ * the findings loader, the batched-decision core, the decision layout formatter,
+ * the option router bound to the real redaction mechanism, the standing-posture
+ * writer, and the deliverable resolver — over the real local store and an
+ * isolated temp git repository; no module is mocked.
  *
- * This drives the chain's advanced spine (remediation decision → redaction → standing
- * posture); it does not assert the resolved deliverable. The resolved summary
- * and the rotation-checklist.md deliverable do not exist yet, so this harness
- * deliberately asserts only that spine, not the resolved deliverable.
+ * This drives the chain's FULL spine to closure: remediation decision → redaction
+ * → standing posture → the resolved deliverable (rotation-checklist.md written
+ * at a real repo root plus the resolved summary), asserting the rotation-checklist
+ * entries and the resolved summary compose from the same checklist-entry model.
  */
 import type {
   BatchedRemediation,
@@ -29,6 +31,7 @@ import type {
   StandingPostureResult,
   StandingSecretPostureStep,
 } from '../../src/remediation/posture.ts';
+import { renderChecklistMarkdown } from '../../src/remediation/rotation-checklist.ts';
 import { REMEDIATION_LEAK_RAW_KEYS, type RemediationDrive, SetupJourney } from './harness.ts';
 
 // The chaining line names one 'N more worth a look' figure; the count itself is
@@ -39,7 +42,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   let journey: SetupJourney;
   let drive: RemediationDrive;
 
-  // Captured once across the whole advanced spine run.
+  // Captured once across the whole spine run.
   let findings: MaskedSecretFinding[];
   let frame: CalibrationFrame;
   let decision: BatchedRemediation;
@@ -50,6 +53,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   let postureBaseline: string | undefined;
   let postureResult: StandingPostureResult;
   let postureAfter: string | undefined;
+  let deliverable: ReturnType<RemediationDrive['resolveDeliverable']>;
 
   beforeAll(() => {
     journey = new SetupJourney();
@@ -70,8 +74,8 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     layout = drive.renderLayout(findings, MORE_COUNT);
 
     // Step 2 — the user selects 'Redact + rotation checklist': the leaked keys are
-    // redacted in the transcript artifacts. The deliverable half does not exist yet,
-    // so the route records that a checklist was requested but writes none here.
+    // redacted in the transcript artifacts, and the route records the checklist
+    // request with the real redacted-key count.
     redactOutcome = drive.route('redact-rotation-checklist');
     transcriptsAfter = drive.transcriptContents();
 
@@ -84,9 +88,17 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     postureBaseline = drive.postureFromStore();
     postureResult = drive.writePosture('redact');
     postureAfter = drive.postureFromStore();
+
+    // Step 4 — the deliverable resolves end-to-end: rotation-checklist.md is
+    // written into an isolated temp git repository (never the ai-tc working tree)
+    // and the resolved summary is rendered from the same checklist-entry model,
+    // fed the route's real redacted-key count.
+    if (redactOutcome.kind !== 'redacted') throw new Error('expected a redacted outcome');
+    deliverable = drive.resolveDeliverable(redactOutcome.redactedKeys);
   }, 120_000);
 
   afterAll(() => {
+    drive.cleanup();
     journey.cleanup();
   });
 
@@ -185,16 +197,73 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     expect(postureAfter).toBe('redact');
   });
 
-  it('advanced, not closed: no rotation-checklist.md and no resolved summary are claimed here', () => {
-    // The deliverable half does not exist yet. The route
-    // records the checklist REQUEST but produces no deliverable, and this harness
-    // asserts no resolved-summary copy — the journey runs advanced, not closed.
+  it('step 4: rotation-checklist.md is written at the repo root, most-exposed-first, masked, with per-provider console paths', () => {
     if (redactOutcome.kind !== 'redacted') throw new Error('expected a redacted outcome');
     expect(redactOutcome.withRotationChecklist).toBe(true);
-    expect(drive.rotationChecklistExists()).toBe(false);
+
+    expect(deliverable.writeResult.status).toBe('written');
+    if (deliverable.writeResult.status !== 'written') return;
+    // Written at the repo root of the isolated temp git repository the drive
+    // created — never the ai-tc working tree.
+    expect(deliverable.writeResult.locationLabel).toBe('repo root');
+    expect(deliverable.writeResult.filePath).toBe(drive.rotationChecklistPath());
+
+    const written = drive.rotationChecklistContents();
+
+    // Three DISTINCT provider+masked-token entries — the fixture's three keys
+    // never collapse into one row. Every seeded entry has the same occurrence
+    // spread (1), so exposure age (oldest first) is the real order discriminator
+    // here, per the spread-then-age-then-provider/token ordering rule.
+    expect(deliverable.entries.map((e) => e.provider)).toEqual(['github', 'stripe', 'aws']);
+    for (const entry of deliverable.entries) {
+      expect(written).toContain(
+        `- [ ] ${entry.provider} — ${entry.maskedToken} — ${entry.consolePath}`,
+      );
+    }
+    // Each recognized-provider entry carries its own per-provider console path.
+    expect(written).toContain('dashboard.stripe.com');
+    expect(written).toContain('console.aws.amazon.com');
+    expect(written).toContain('github.com');
+
+    // No raw leaked key ever appears in the written checklist.
     for (const raw of REMEDIATION_LEAK_RAW_KEYS) {
-      // The raw keys never surface anywhere the harness rendered.
+      expect(written).not.toContain(raw);
+    }
+  });
+
+  it('step 4: the resolved summary reports real, independently derived redacted-key and transcript counts', () => {
+    expect(deliverable.summary).toContain('Leaked secrets — resolved');
+
+    // M (transcripts) is derived from the DISTINCT where.filePath values the
+    // seeded findings carry — not the key count (N=3) relabelled. The fixture
+    // spreads 3 keys across exactly 2 transcript artifacts (M != N), so this is a
+    // real, independent count.
+    const distinctTranscripts = new Set(findings.map((f) => f.where.filePath));
+    expect(distinctTranscripts.size).toBe(2);
+    expect(distinctTranscripts.size).not.toBe(findings.length);
+
+    expect(deliverable.summary).toContain(
+      `✓ Redacted 3 keys across ${String(distinctTranscripts.size)} transcripts`,
+    );
+    expect(deliverable.summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+  });
+
+  it('step 4: the inline checklist preview matches the written rotation-checklist.md entry-for-entry', () => {
+    const writtenMarkdown = drive.rotationChecklistContents();
+    // Both the file and the preview render from the SAME ordered
+    // RotationChecklistEntry[] through renderChecklistMarkdown.
+    expect(writtenMarkdown).toBe(renderChecklistMarkdown(deliverable.entries));
+
+    const previewLines = deliverable.summary
+      .split('\n')
+      .filter((line) => line.startsWith('- [ ] '));
+    expect(previewLines).toEqual(writtenMarkdown.trimEnd().split('\n'));
+
+    for (const raw of REMEDIATION_LEAK_RAW_KEYS) {
+      // The raw keys never surface anywhere the harness rendered — the layout,
+      // the written checklist, or the resolved summary.
       expect(layout).not.toContain(raw);
+      expect(deliverable.summary).not.toContain(raw);
     }
   });
 });

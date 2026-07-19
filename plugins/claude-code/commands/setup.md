@@ -166,15 +166,21 @@ it is deleted after a successful apply.)
 
 Alongside the human copy, the preview also emits a **machine-readable calibration
 frame** — a single JSON block delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>`
-carrying the raw-free calibration counts and categories. Do **not** show this block
-to the user (it is additive to the human copy above). Capture its `counts.important`
-value — the **surfaced count** — and pass it to the first-run summary in step 6 as
-`--surfaced <count>` — but **only when the preview also printed a `Plan saved to:`
-path** (a real calibrated plan to confirm in step 4). The `Plan saved to:` line is
-the completion signal: a preview that omits it did not calibrate a plan you can
-confirm. The fallback branches below carry no surfaced count; the scan-ran-clean
-empty state (a scan that completed but surfaced nothing) emits a zero-count frame
-but **no plan path**, so it too routes to the floor branch below rather than step 4.
+carrying the raw-free calibration counts and categories, plus (when the scan
+surfaced any) a `maskedFindings` array of raw-free secret-leak summaries. Do
+**not** show this block to the user (it is additive to the human copy above).
+Capture its `counts.important` value — the **surfaced count** — and pass it to the
+first-run summary in step 6 as `--surfaced <count>` — but **only when the preview
+also printed a `Plan saved to:` path** (a real calibrated plan to confirm in step
+4). The `Plan saved to:` line is the completion signal: a preview that omits it did
+not calibrate a plan you can confirm. The fallback branches below carry no
+surfaced count; the scan-ran-clean empty state (a scan that completed but
+surfaced nothing) emits a zero-count frame but **no plan path**, so it too routes
+to the floor branch below rather than step 4.
+
+Also **retain the block's full text verbatim** (not just the counts you read out
+of it) — step 6's "Review leaked keys" branch feeds this same text to the
+secret-leak remediation entry, which reads its own `maskedFindings` from it.
 
 Everything you show the user in step 4 comes from **this command's output**. You
 never read the raw finding values yourself — do not echo, quote, or reconstruct
@@ -278,15 +284,18 @@ recommended.
    base with the user's overrides overlaid — so a changed pack reads as a different
    `yours` value and every untouched pack repeats its recommended level.
 
-3. **Show the packs the user lowered relative to the recommendation.** The
-   adjust-confirm table lays each changed pack's `yours` level beside its
-   `recommended` level, so a pack set below the recommendation reads as a visible
-   change — point those out so the choice is deliberate. This fork does **not**
-   re-compare the user's picks against the stored posture: the store-state
-   downgrade warning is enforced upstream at the step-4 evidence gate over the
-   recommended base, and the overlay below writes **only** the packs the user
-   changed, so a pack hardened out of band and left untouched here is never
-   downgraded.
+3. **Show the packs the user lowered — relative to the recommendation and to the
+   stored posture.** The adjust-confirm table lays each changed pack's `yours`
+   level beside its `recommended` level, so a pack set below the recommendation
+   reads as a visible change — point those out so the choice is deliberate. The
+   card also re-compares each picked level against the **stored** posture and
+   surfaces an explicit downgrade approval for any pack being lowered below its
+   current level — including a pack hardened out of band that surfaced nothing
+   this run, which the step-4 evidence gate (scoped to packs with findings) does
+   not cover. When the stored posture can't be read the card renders without that
+   comparison rather than blocking. Untouched packs stay protected regardless: the
+   overlay below writes **only** the packs the user changed, so a pack hardened out
+   of band and left untouched here is never downgraded.
 
 4. **Save or back out.** Use **AskUserQuestion** with **N** the number of packs
    the user changed and **M** the number kept as recommended (`M = 8 − N`), both
@@ -435,6 +444,52 @@ Offer **Review leaked keys** exactly when the payload's `options` carry the
 `enter-remediation` entry (never otherwise); the **Open dashboard** / **Not now**
 handoff is always present. If the payload was withheld (the floor fallback, or
 nothing surfaced), skip this handoff question rather than inventing a count.
+
+**If they choose "Review leaked keys"** — run the secret-leak remediation entry's
+**present** mode, feeding it the calibration frame block you captured in step 3
+(the same text `maskedFindings` came from) on stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" <<'AKA_FRAME'
+<the <<<AKA_FRAME_JSON … AKA_FRAME_JSON>>> block captured in step 3, verbatim>
+AKA_FRAME
+```
+
+It prints the decision as human-facing text, then a machine-readable block
+delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>` carrying the same decision
+structured (do **not** show that block to the user). The human text has three
+parts, all of which you **show to the user verbatim, in order**:
+
+1. the templated count line ("N exposed secret keys found in old transcripts"),
+2. the fenced finding table (provider, masked token, where, state), and
+3. inside that same fence, a most-exposed-first recommendation line and a
+   secret-scan chaining line.
+
+Reproduce the count line and the whole fenced block exactly as printed — do not
+drop the recommendation or chaining lines, and do not paraphrase. Then issue an
+**AskUserQuestion** offering exactly these four options, in order (each option's
+label maps to the `--option` id shown in parentheses):
+
+- **Redact + rotation checklist** (`redact-rotation-checklist`)
+- **Redact only** (`redact-only`)
+- **Set 'secret' to redact** (`set-secret-redact`)
+- **Leave** (`leave`)
+
+Then run the entry's **route** mode with the chosen option's id (the id in
+parentheses above, e.g. **Leave** → `leave`), feeding it the SAME calibration
+frame block again on stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> <<'AKA_FRAME'
+<the same block>
+AKA_FRAME
+```
+
+Show its printed result verbatim — a redaction confirmation, a standing-posture
+confirmation, the resolved rotation-checklist summary, or (choosing "Leave") a
+plain note that nothing changed. This entry reads its findings from the
+calibration frame alone and holds no wizard state of its own, so it works
+identically from any caller.
 
 ## 7. Offer the AKA CLI + local dashboard (opt-in)
 

@@ -21,15 +21,7 @@
  * empty states).
  */
 import { execFileSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +46,7 @@ import {
   type RemediationRouteOutcome,
   routeRemediationOption,
 } from '../../src/remediation/chain.ts';
+import { resolveRemediationDeliverable } from '../../src/remediation/deliverable.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import {
   presentStandingSecretPosture,
@@ -262,6 +255,23 @@ export class SetupJourney {
     return new RemediationDrive(this.home, this.storeDir);
   }
 
+  // The PRODUCTION remediation entry's present mode — what
+  // `commands/setup.md` runs when the user chooses "Review leaked keys" at frame
+  // 0.6: the built `scripts/remediate.js`, fed the SAME calibration frame text
+  // apply-suppressions.js's preview emitted at frame 0.4 (the `frameText` a
+  // caller captured from `applyPreview()`'s stdout) on stdin. Prints the
+  // batched remediation decision.
+  remediationPresent(frameText: string): StepResult {
+    return this.run('remediate.js', [], frameText);
+  }
+
+  // The PRODUCTION remediation entry's route mode: routes the
+  // chosen remediation option through the built script, over the SAME calibration frame
+  // text as the present call above.
+  remediationRoute(frameText: string, option: RemediationOption): StepResult {
+    return this.run('remediate.js', ['--option', option], frameText);
+  }
+
   private run(script: string, args: string[], input?: string): StepResult {
     const env: NodeJS.ProcessEnv = {
       ...HOST_ENV,
@@ -334,20 +344,51 @@ process.stdout.write(JSON.stringify({ result, is_error: false }));
   }
 }
 
-// The raw AWS access-key ids the seeded transcript artifacts leak. Composed at
+// The raw leaked-key values the seeded transcript artifacts hold. Composed at
 // runtime so the repo's own secret scan does not flag this file (mirrors
 // SURFACED_KEY/ROUTINE_KEY and the remediation scenario fixtures). These are the
-// RAW values redaction strikes on disk; the finding table renders only the masked form.
+// RAW values redaction strikes on disk; the finding table renders only the masked
+// form. One entry per REMEDIATION_LEAK_FIXTURES row, in the same order.
 export const REMEDIATION_LEAK_RAW_KEYS: readonly string[] = [
-  ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
-  ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join(''),
-  ['AKIA', '2E7HTNXKP4LMKD9V'].join(''),
+  ['sk', '_live_', 'exampleRemediationStripeRawValue'].join(''),
+  ['AKIA', 'EXAMPLEREMEDIATIONAWSVALUE'].join(''),
+  ['ghp_', 'exampleRemediationGithubRawValue123456'].join(''),
 ];
 
-// The masked preview each seeded finding carries into the frame — a masked form of
-// a raw key, deliberately distinct from every raw value so the raw-free assertions
-// are real, not tautologies.
-const REMEDIATION_MASKED_TOKEN = 'AKIA****************';
+// One seeded leak's provider/masked-token identity, which of the two seeded
+// transcript artifacts it was found in, and its exposure age. Three keys are
+// spread across exactly TWO transcripts (M=2, N=3, M != N) so the resolved
+// summary's per-transcript count is genuinely independent of the redacted-key count, and
+// each leak gets a DISTINCT provider + masked token so buildChecklistEntries
+// (which groups by provider+maskedToken) produces three ordered entries rather
+// than one collapsed row.
+interface RemediationLeakFixture {
+  readonly provider: string;
+  readonly maskedToken: string;
+  readonly transcriptIndex: 0 | 1;
+  readonly observedAt: string;
+}
+
+const REMEDIATION_LEAK_FIXTURES: readonly RemediationLeakFixture[] = [
+  {
+    provider: 'stripe',
+    maskedToken: 'sk_live_…j9qx',
+    transcriptIndex: 0,
+    observedAt: '2026-05-01T00:00:00Z',
+  },
+  {
+    provider: 'aws',
+    maskedToken: 'AKIA…7y2k',
+    transcriptIndex: 0,
+    observedAt: '2026-06-01T00:00:00Z',
+  },
+  {
+    provider: 'github',
+    maskedToken: 'ghp_…c4rt',
+    transcriptIndex: 1,
+    observedAt: '2026-01-01T00:00:00Z',
+  },
+];
 
 // One seeded secret leak: the on-disk transcript artifact and the raw key it holds,
 // paired with the raw-free masked summary the calibration frame carries for it.
@@ -364,8 +405,11 @@ export interface SeededSecretLeak {
 // findings set NOT via the wizard — real transcript artifacts holding raw leaked
 // keys under the throwaway home, plus a persisted calibration frame (the backfill's
 // output) the loader reads — then wires the real DI core (findings loader,
-// batched-decision core, decision layout, option router bound to real redaction, and the
-// standing-posture writer) over the real local store. No module is mocked.
+// batched-decision core, decision layout, option router bound to real redaction,
+// the standing-posture writer, and the deliverable resolver) over the real local
+// store. No module is mocked. The deliverable resolver writes rotation-checklist.md
+// into an ISOLATED temporary git repository this drive creates and cleans up
+// (cleanup()) — never into the ai-tc working tree.
 export class RemediationDrive {
   readonly home: string;
   readonly storeDir: string;
@@ -377,6 +421,9 @@ export class RemediationDrive {
   // findings loader reads back — set by seedSecretLeaks().
   frame!: CalibrationFrame;
   private persistedFrame = '';
+  // The isolated temp git repository resolveDeliverable() writes into, set on
+  // first call and removed by cleanup().
+  private repoRoot: string | undefined;
 
   constructor(home: string, storeDir: string) {
     this.home = home;
@@ -384,29 +431,61 @@ export class RemediationDrive {
     this.transcriptRoot = transcriptsDir(home);
   }
 
-  // Seed three real transcript artifacts carrying raw leaked keys under the home,
-  // and persist a calibration frame (the backfill's output) whose masked per-finding
-  // summaries the loader reads. The frame ALSO records a pii finding, so the
-  // secret-only exclusion the chain enforces is observable over a mixed source.
+  // Removes the isolated temp git repository resolveDeliverable() created, if any.
+  cleanup(): void {
+    if (this.repoRoot !== undefined) {
+      rmSync(this.repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // Seed three real leaked keys spread across exactly TWO transcript artifacts
+  // under the home (REMEDIATION_LEAK_FIXTURES — one of the two artifacts holds two
+  // of the three keys), and persist a calibration frame (the backfill's output)
+  // whose masked per-finding summaries the loader reads. The frame ALSO records a
+  // pii finding, so the secret-only exclusion the chain enforces is observable
+  // over a mixed source.
   seedSecretLeaks(): void {
     const projectDir = join(this.transcriptRoot, '-Users-me-remediation');
     mkdirSync(projectDir, { recursive: true });
-    this.leaks = REMEDIATION_LEAK_RAW_KEYS.map((rawValue, i) => {
-      const filePath = join(projectDir, `session-${String(i)}.jsonl`);
-      writeFileSync(filePath, `{"content":"leaked ${rawValue} in an old prompt"}`);
+    const transcriptPaths: readonly [string, string] = [
+      join(projectDir, 'session-0.jsonl'),
+      join(projectDir, 'session-1.jsonl'),
+    ];
+
+    this.leaks = REMEDIATION_LEAK_FIXTURES.map((fixture, i) => {
+      const rawValue = REMEDIATION_LEAK_RAW_KEYS[i];
+      if (rawValue === undefined) {
+        throw new Error('REMEDIATION_LEAK_RAW_KEYS must carry one entry per fixture row');
+      }
+      const filePath = transcriptPaths[fixture.transcriptIndex];
       return {
         filePath,
         rawValue,
         finding: {
-          provider: 'aws',
-          maskedToken: REMEDIATION_MASKED_TOKEN,
+          provider: fixture.provider,
+          maskedToken: fixture.maskedToken,
           where: { filePath },
           // Validity is unverifiable under the no-network OSS constraint, so the
           // honest default is 'unknown' — never a blanket 'still valid'.
           state: 'unknown',
+          observedAt: fixture.observedAt,
         },
       };
     });
+
+    // Write each transcript artifact with every raw key assigned to it — one
+    // artifact carries two of the three leaked keys, since M (transcripts) !=
+    // N (keys) here.
+    const rawValuesByFile = new Map<string, string[]>();
+    for (const leak of this.leaks) {
+      const values = rawValuesByFile.get(leak.filePath) ?? [];
+      values.push(leak.rawValue);
+      rawValuesByFile.set(leak.filePath, values);
+    }
+    for (const [filePath, rawValues] of rawValuesByFile) {
+      const lines = rawValues.map((v) => `{"content":"leaked ${v} in an old prompt"}`);
+      writeFileSync(filePath, lines.join('\n'));
+    }
 
     // The calibration preview the backfill recorded: the surfaced secret findings
     // AND a pii (customer-data) hit, so "only the secret findings enter" is a real
@@ -457,14 +536,48 @@ export class RemediationDrive {
   // Route a chosen remediation option through the real router, with the real redaction
   // mechanism bound over the seeded raw targets (scoped to the transcript root) and
   // the real standing-posture writer bound for the shortcut path. The
-  // 'redact-rotation-checklist' route strikes the transcript artifacts; the
-  // deliverable half (the resolved summary / rotation-checklist.md) does not exist yet, so the route
-  // records the checklist request but writes no deliverable here.
+  // 'redact-rotation-checklist' route strikes the transcript artifacts and records
+  // the checklist request; the deliverable itself (rotation-checklist.md + the
+  // resolved summary) is resolved separately by resolveDeliverable(), called with
+  // this route's real redactedKeys count.
   route(option: RemediationOption): RemediationRouteOutcome {
     return routeRemediationOption(option, {
       redact: () => redactLeakedKeys(this.targets(), { artifactRoots: [this.transcriptRoot] }),
       setStandingRedactPosture: () => this.writePosture('redact'),
     });
+  }
+
+  // Resolve the deliverable end-to-end: composes the same ordered
+  // RotationChecklistEntry[] into both the written rotation-checklist.md and the
+  // resolved summary's inline preview. Writes into an ISOLATED temporary git
+  // repository created here (mkdtempSync + a bare `.git` marker so
+  // resolveRepo()/resolveWorktreeRoot() resolve a real repo root and the
+  // deliverable's location label is '(repo root)') — never into the ai-tc working
+  // tree. Call after routing 'redact-rotation-checklist', passing its real
+  // redactedKeys count; cleanup() removes the temp repo.
+  resolveDeliverable(redactedKeys: number): ReturnType<typeof resolveRemediationDeliverable> {
+    this.repoRoot = mkdtempSync(join(tmpdir(), 'aka-remediation-repo-'));
+    mkdirSync(join(this.repoRoot, '.git'));
+    return resolveRemediationDeliverable({
+      findings: this.leaks.map((l) => l.finding),
+      redactedKeys,
+      cwd: this.repoRoot,
+    });
+  }
+
+  // The rotation-checklist.md path written at the temp repo root by
+  // resolveDeliverable().
+  rotationChecklistPath(): string {
+    if (this.repoRoot === undefined) {
+      throw new Error('resolveDeliverable() has not written a checklist yet');
+    }
+    return join(this.repoRoot, 'rotation-checklist.md');
+  }
+
+  // The rotation-checklist.md contents written at the temp repo root by
+  // resolveDeliverable().
+  rotationChecklistContents(): string {
+    return readFileSync(this.rotationChecklistPath(), 'utf8');
   }
 
   // The current contents of each seeded transcript artifact, in seed order — read
@@ -499,12 +612,6 @@ export class RemediationDrive {
     } finally {
       db.close();
     }
-  }
-
-  // Whether a rotation-checklist.md deliverable landed at the throwaway home root —
-  // false through this iteration, since the deliverable writer does not exist yet.
-  rotationChecklistExists(): boolean {
-    return existsSync(join(this.home, 'rotation-checklist.md'));
   }
 
   // The redaction targets recovered from the seeded leaks: each finding's

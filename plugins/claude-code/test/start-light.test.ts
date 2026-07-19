@@ -3,8 +3,16 @@
  * Not-now branch. Runs the BUILT script the wizard actually shells out to and
  * asserts it prints the default-posture start-light card, fenced, doing no I/O beyond
  * writing to stdout (mirrors how the intro/firstrun scripts emit their cards).
+ *
+ * --adjust-confirm also does a best-effort read of the policies store for the
+ * downgrade comparison (see src/start-light.ts, test/start-light-adjust-downgrade.test.ts
+ * for that guard's own coverage). Every invocation here runs against a throwaway,
+ * always-empty ~/.aka home so this suite's assertions stay independent of
+ * whatever the real machine's store happens to hold.
  */
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,12 +39,21 @@ interface Run {
 }
 
 function runStartLight(args: string[] = []): Run {
+  // A fresh, empty home per call: no ~/.aka store exists, so --adjust-confirm's
+  // store read (readExistingPosture) always takes its no-store branch and every
+  // assertion below stays independent of the real machine's store.
+  const home = mkdtempSync(join(tmpdir(), 'aka-start-light-test-'));
   try {
-    const stdout = execFileSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+    const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
+      env: { HOME: home, USERPROFILE: home },
+      encoding: 'utf8',
+    });
     return { stdout, stderr: '', status: 0 };
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; status?: number };
     return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', status: e.status ?? 1 };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 }
 

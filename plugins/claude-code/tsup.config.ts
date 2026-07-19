@@ -64,6 +64,9 @@ export default defineConfig({
     firstrun: 'src/firstrun.ts',
     backfill: 'src/backfill.ts',
     filescan: 'src/filescan.ts',
+    // /aka:setup frame-0.6 "Review leaked keys" — the secret-leak remediation
+    // chain's production entry
+    remediate: 'src/remediation/entry.ts',
   },
   format: ['esm'],
   platform: 'node',

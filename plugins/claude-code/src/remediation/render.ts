@@ -7,10 +7,18 @@
  * registers. Pure formatter: the count and the registry are threaded in, so it
  * unit-tests without I/O.
  */
-import type { MaskedSecretFinding, SecretFindingState } from '@akasecurity/schema';
+import type {
+  MaskedSecretFinding,
+  RotationChecklistEntry,
+  SecretFindingState,
+} from '@akasecurity/schema';
 
 import { selectSecretScanContinuation } from '../command-registry.ts';
 import { table } from '../present.ts';
+import {
+  renderChecklistMarkdown,
+  renderRotationChecklistResolvedLine,
+} from './rotation-checklist.ts';
 
 // The verbatim recommendation line: redact, then rotate, most-exposed-first.
 const RECOMMENDATION_LINE = "I'd redact them and get you rotating, most-exposed first";
@@ -58,4 +66,28 @@ export function renderRemediationDecision(
 export function renderRedactionConfirmation(redactedKeys: number): string {
   const noun = redactedKeys === 1 ? 'key' : 'keys';
   return `✓ Redacted ${String(redactedKeys)} ${noun}`;
+}
+
+export function renderResolvedSummary(
+  input: {
+    readonly redactedKeys: number;
+    readonly findings: readonly MaskedSecretFinding[];
+    readonly entries: readonly RotationChecklistEntry[];
+  } & (
+    | { readonly location: string; readonly degradedNote?: never }
+    | { readonly location?: never; readonly degradedNote: string }
+  ),
+): string {
+  const transcriptCount = new Set(input.findings.map((finding) => finding.where.filePath)).size;
+  const transcriptNoun = transcriptCount === 1 ? 'transcript' : 'transcripts';
+  const redactionLine = `${renderRedactionConfirmation(input.redactedKeys)} across ${String(transcriptCount)} ${transcriptNoun}`;
+  const preview = renderChecklistMarkdown(input.entries).trimEnd();
+
+  return [
+    'Leaked secrets — resolved',
+    redactionLine,
+    input.degradedNote ?? renderRotationChecklistResolvedLine(input.location),
+    '',
+    preview,
+  ].join('\n');
 }

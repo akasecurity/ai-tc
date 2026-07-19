@@ -1,7 +1,8 @@
-import { MaskedSecretFinding } from '@akasecurity/schema';
+import { MaskedSecretFinding, type RotationChecklistEntry } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { renderRemediationDecision } from '../../src/remediation/render.ts';
+import { renderRemediationDecision, renderResolvedSummary } from '../../src/remediation/render.ts';
+import { renderChecklistMarkdown } from '../../src/remediation/rotation-checklist.ts';
 
 // The RAW_* constants are what the underlying leak actually contains; each
 // fixture's `maskedToken` is the masked preview of the SAME raw value (raw prefix
@@ -120,5 +121,76 @@ describe('renderRemediationDecision — decision layout', () => {
     // name a command the plugin does not register, so selection throws rather than
     // shipping an uninvokable call-to-action.
     expect(() => renderRemediationDecision([stripeFinding()], 1, ['/aka:dashboard'])).toThrow();
+  });
+});
+
+describe('renderResolvedSummary', () => {
+  const entries: readonly RotationChecklistEntry[] = [
+    {
+      provider: 'stripe',
+      maskedToken: MASKED_STRIPE,
+      consolePath: 'dashboard.stripe.com → Developers → API keys',
+      occurrenceSpread: 2,
+    },
+    {
+      provider: 'aws',
+      maskedToken: MASKED_AWS,
+      consolePath: 'console.aws.amazon.com → IAM → Security credentials',
+      occurrenceSpread: 1,
+    },
+  ];
+
+  it('renders real key and distinct-transcript counts independently with the dynamic location', () => {
+    const findings = [
+      stripeFinding(),
+      { ...stripeFinding(), maskedToken: 'sk_live_…2222' },
+      awsFinding(),
+    ];
+
+    const summary = renderResolvedSummary({
+      redactedKeys: 3,
+      findings,
+      location: 'repo root',
+      entries,
+    });
+
+    expect(summary).toContain('Leaked secrets — resolved');
+    expect(summary).toContain('✓ Redacted 3 keys across 2 transcripts');
+    expect(summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+
+    const threeTranscriptSummary = renderResolvedSummary({
+      redactedKeys: 3,
+      findings: [
+        ...findings,
+        { ...awsFinding(), where: { filePath: '/tmp/second-agent-dump.txt' } },
+      ],
+      location: 'repo root',
+      entries,
+    });
+    expect(threeTranscriptSummary).toContain('✓ Redacted 3 keys across 3 transcripts');
+  });
+
+  it('renders singular key and transcript nouns from a single-key fixture', () => {
+    const summary = renderResolvedSummary({
+      redactedKeys: 1,
+      findings: [stripeFinding()],
+      location: 'repo root',
+      entries: entries.slice(0, 1),
+    });
+
+    expect(summary).toContain('✓ Redacted 1 key across 1 transcript');
+  });
+
+  it('renders the inline preview entry-for-entry from the checklist file model', () => {
+    const summary = renderResolvedSummary({
+      redactedKeys: 3,
+      findings: [stripeFinding(), awsFinding()],
+      location: 'repo root',
+      entries,
+    });
+    const previewLines = summary.split('\n').filter((line) => line.startsWith('- [ ] '));
+    const fileLines = renderChecklistMarkdown(entries).trimEnd().split('\n');
+
+    expect(previewLines).toEqual(fileLines);
   });
 });

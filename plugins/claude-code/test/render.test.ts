@@ -860,6 +860,40 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
   });
 });
 
+describe('renderAdjustConfirm — downgrade guard against the existing store posture', () => {
+  const recommended = severityFloorPosture();
+  // The user leaves every pack at its recommended level — no explicit override
+  // for 'secret' at all, exercising the quiet-pack case: the pack surfaced no
+  // findings this run, so it never entered the recommended escalation, and the
+  // adjust table falls back to the plain floor default for it.
+  const chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>> = { ...recommended };
+
+  it('surfaces an explicit downgrade approval for a pack hardened out of band, even though the user never touched it', () => {
+    // The store holds 'secret' hardened to 'block' from an earlier, unrelated
+    // session — well above the 'warn' floor the adjust table would otherwise
+    // apply silently.
+    const existingStorePosture = { secret: { action: 'block' as const, enabled: true } };
+    const out = renderAdjustConfirm(recommended, chosen, existingStorePosture);
+    expect(out).toContain('secret');
+    expect(out).toContain('block');
+    expect(out).toContain('warn');
+    expect(out.toLowerCase()).toContain('downgrade');
+  });
+
+  it('does not warn when the chosen level matches or exceeds the existing store posture', () => {
+    const existingStorePosture = { secret: { action: 'warn' as const, enabled: true } };
+    const out = renderAdjustConfirm(recommended, chosen, existingStorePosture);
+    expect(out.toLowerCase()).not.toContain('downgrade');
+  });
+
+  it('omits the warning entirely when no existing store posture is supplied (unchanged behavior)', () => {
+    expect(renderAdjustConfirm(recommended, chosen)).toBe(
+      renderAdjustConfirm(recommended, chosen, {}),
+    );
+    expect(renderAdjustConfirm(recommended, chosen).toLowerCase()).not.toContain('downgrade');
+  });
+});
+
 describe('renderApplied — applying confirmation', () => {
   // The read-command files the shipped plugin registers — the real registry the
   // Ready line must not outrun. A command it names with no matching file would

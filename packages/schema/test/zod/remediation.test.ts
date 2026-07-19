@@ -4,7 +4,8 @@ import {
   MaskedSecretFinding,
   RemediationEntryContext,
   RemediationOption,
-} from '../../src/zod/remediation.ts';
+  RotationChecklistEntry,
+} from '../../src/zod/index.ts';
 
 // A raw-free per-finding summary: provider, a masked-only token (never the raw
 // key), the transcript artifact it was found in, and its still-valid state.
@@ -48,6 +49,42 @@ describe('MaskedSecretFinding', () => {
       MaskedSecretFinding.safeParse({ ...maskedFinding, where: { span: { start: 0, end: 1 } } })
         .success,
     ).toBe(false);
+  });
+
+  it('parses summaries with and without an observed-at exposure signal', () => {
+    expect(MaskedSecretFinding.safeParse(maskedFinding).success).toBe(true);
+    expect(
+      MaskedSecretFinding.safeParse({ ...maskedFinding, observedAt: '2026-07-19T12:30:00Z' })
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe('RotationChecklistEntry', () => {
+  const checklistEntry = {
+    provider: 'stripe',
+    maskedToken: 'sk_live_…4f2c',
+    consolePath: 'dashboard.stripe.com → Developers → API keys',
+    occurrenceSpread: 3,
+  };
+
+  it('parses a masked checklist entry', () => {
+    expect(RotationChecklistEntry.safeParse(checklistEntry).success).toBe(true);
+  });
+
+  it('rejects an entry carrying an unmodeled raw field', () => {
+    expect(
+      RotationChecklistEntry.safeParse({
+        ...checklistEntry,
+        rawToken: 'sk_live_EXAMPLE0000000000000000',
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([0, -1])('rejects occurrenceSpread %i', (occurrenceSpread) => {
+    expect(RotationChecklistEntry.safeParse({ ...checklistEntry, occurrenceSpread }).success).toBe(
+      false,
+    );
   });
 });
 

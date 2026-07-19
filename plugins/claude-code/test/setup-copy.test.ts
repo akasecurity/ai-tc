@@ -122,3 +122,50 @@ describe('setup.md branch-frame voice baseline (0.4b → 0.5 rejoin)', () => {
     expect(forkSection).toContain('✓ 8 categories tuned · ✓ N routine dismissed');
   });
 });
+
+// Frame 0.6's "Review leaked keys" branch is prompt-authored orchestration.
+// The offer itself was already wired, but choosing it must actually run the
+// secret-leak remediation chain rather than dead-ending. These guards pin the
+// routing so it can't silently regress back to an unwired option.
+describe('setup.md frame-0.6 "Review leaked keys" branch', () => {
+  it("routes to the remediation entry's present and route modes rather than leaving the option unwired", () => {
+    expect(setupMd).toContain('scripts/remediate.js');
+    expect(setupMd).toContain('scripts/remediate.js" --option');
+  });
+
+  it('feeds the entry the calibration frame block captured in step 3, not a fresh scan', () => {
+    expect(setupMd).toContain("Also **retain the block's full text verbatim**");
+    expect(setupMd).toContain('captured in step 3, verbatim');
+  });
+
+  it('offers exactly the four remediation-decision options in stable order, each mapped to its --option id', () => {
+    const idx = setupMd.indexOf('If they choose "Review leaked keys"');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
+    expect(section).toContain('**Redact + rotation checklist** (`redact-rotation-checklist`)');
+    expect(section).toContain('**Redact only** (`redact-only`)');
+    expect(section).toContain("**Set 'secret' to redact** (`set-secret-redact`)");
+    expect(section).toContain('**Leave** (`leave`)');
+  });
+
+  it('instructs showing the FULL remediation-decision layout — count line, table, recommendation and chaining lines — not just the table', () => {
+    const idx = setupMd.indexOf('If they choose "Review leaked keys"');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
+    // The count line, table, and the recommendation + chaining lines are all
+    // named as parts the agent must reproduce to the user verbatim — so the
+    // rendered decision is shown whole, never narrowed to the finding table.
+    expect(section).toContain('the templated count line');
+    expect(section).toContain('recommendation line');
+    expect(section).toContain('chaining line');
+    expect(section.replace(/\s+/g, ' ')).toContain(
+      'do not drop the recommendation or chaining lines',
+    );
+  });
+
+  it('composes with, and never replaces, the Open dashboard / Not now handoff', () => {
+    expect(setupMd).toContain(
+      'This composes with —\n  never replaces — the dashboard handoff below, so both stay reachable.',
+    );
+  });
+});

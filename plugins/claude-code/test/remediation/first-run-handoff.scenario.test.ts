@@ -199,7 +199,7 @@ describe('first-run handoff seam: calibration findings trigger (or skip) remedia
     // the remediation decision equals the surfaced live-key count (3) — NOT the broader display count (4).
     expect(entry.decision.secretCount).toBe(surfacedLiveKeys);
     expect(entry.decision.secretCount).toBe(offer.liveKeys);
-    expect(entry.decision.prompt).toContain('3 live keys are sitting in old transcripts');
+    expect(entry.decision.prompt).toContain('3 exposed secret keys found in old transcripts');
   });
 
   it('no-findings branch — only non-secret findings surfaced: no remediation offered; dashboard handoff only', async () => {

@@ -152,7 +152,7 @@ describe('batched four-option remediation decision (app-level: no case, secret-o
     if (decision.kind !== 'decision')
       throw new Error(`expected a decision, got '${decision.kind}'`);
     expect(decision.secretCount).toBe(3);
-    expect(decision.prompt).toContain('3 live keys are sitting in old transcripts');
+    expect(decision.prompt).toContain('3 exposed secret keys found in old transcripts');
     expect(decision.prompt.toLowerCase()).not.toContain('still valid');
 
     // Exactly the four options, in stable order — no more, no fewer.

@@ -150,5 +150,9 @@ export const SetupHandoffOffer = z
       message: 'the chain-entry option is present exactly when liveKeys > 0',
       path: ['options'],
     },
-  );
+  )
+  .refine((o) => (o.liveKeys ?? 0) <= o.worthALook, {
+    message: 'liveKeys is a subset of worthALook and cannot exceed it',
+    path: ['liveKeys'],
+  });
 export type SetupHandoffOffer = z.infer<typeof SetupHandoffOffer>;

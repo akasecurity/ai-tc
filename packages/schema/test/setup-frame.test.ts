@@ -81,6 +81,20 @@ describe('SetupHandoffOffer — the frame 0.6 handoff-offer payload', () => {
     ).toBe(false);
   });
 
+  it('rejects a payload whose liveKeys exceeds worthALook (liveKeys is a subset)', () => {
+    expect(
+      SetupHandoffOffer.safeParse({
+        worthALook: 3,
+        liveKeys: 5,
+        options: [
+          { id: 'enter-remediation', label: 'Review leaked keys' },
+          { id: 'open-dashboard', label: 'Open dashboard' },
+          { id: 'not-now', label: 'Not now' },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
   it('validates a plain offer with important-but-no-secret findings (worthALook > 0, no live keys → no chain entry)', () => {
     // The all-category surfaced count is positive but no live-key secret
     // surfaced, so no chain entry is offered — the count that gates remediation

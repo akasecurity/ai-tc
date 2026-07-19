@@ -113,7 +113,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     // One decision moment over the whole set; the count templates over the real
     // three findings with no unverifiable 'still valid' claim.
     expect(decision.secretCount).toBe(3);
-    expect(decision.prompt).toContain('3 live keys are sitting in old transcripts');
+    expect(decision.prompt).toContain('3 exposed secret keys found in old transcripts');
     expect(decision.prompt.toLowerCase()).not.toContain('still valid');
     // Exactly the four options, in stable order — no more, no fewer.
     expect(decision.options.map((o) => o.id)).toEqual([

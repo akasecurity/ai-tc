@@ -30,15 +30,13 @@ const REMEDIATION_OPTIONS: BatchedRemediationDecision['options'] = [
   { id: 'leave', label: 'Leave' },
 ];
 
-// The count copy, templated over the real number of secret findings. It
-// states the honest fact — N live keys sitting in old transcripts — and stops
-// there: the no-network OSS product cannot authenticate a key, so the copy makes
-// no 'still valid' claim it never verified. Each finding's actual validity state
-// (state:'unknown' by default) surfaces per-row in the finding table (render.ts).
+// The count copy, templated over the real number of secret findings. It names
+// the count and where the keys were found; it carries no status word, because the
+// finding's status is what the data holds (state:'unknown' by default) and surfaces
+// per-row in the finding table (render.ts).
 function countCopy(secretCount: number): string {
   const noun = secretCount === 1 ? 'key' : 'keys';
-  const verb = secretCount === 1 ? 'is' : 'are';
-  return `${secretCount.toString()} live ${noun} ${verb} sitting in old transcripts`;
+  return `${secretCount.toString()} exposed secret ${noun} found in old transcripts`;
 }
 
 // Build the batched remediation decision over the surfaced secret leaks. The

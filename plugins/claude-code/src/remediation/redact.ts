@@ -23,7 +23,7 @@
  * writes are best-effort per file: an unreadable or vanished artifact is skipped so
  * one bad file cannot abort the sweep of the rest.
  */
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import type { MaskedFindingLocation } from '@akasecurity/schema';
@@ -128,9 +128,19 @@ export function redactLeakedKeys(
       struckHere += 1;
     }
     if (struckHere === 0) continue;
+    // Write atomically: a full write to a sibling temp file, then rename over the
+    // original (rename is atomic on the same filesystem). A crash mid-write leaves
+    // the original transcript intact rather than truncated.
+    const tmpPath = `${filePath}.aka-redact.tmp`;
     try {
-      writeFileSync(filePath, content);
+      writeFileSync(tmpPath, content);
+      renameSync(tmpPath, filePath);
     } catch {
+      try {
+        rmSync(tmpPath, { force: true });
+      } catch {
+        // temp file may not exist — nothing to clean up
+      }
       continue; // write failed — don't count keys that were not persisted
     }
     // Count only after the rewrite is on disk, so the returned count reflects keys

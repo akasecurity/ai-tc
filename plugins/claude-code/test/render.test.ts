@@ -481,21 +481,44 @@ describe('pure renderers', () => {
     });
   });
 
-  it('buildHandoffOffer: handoff payload — the worth-a-look count + two options', () => {
-    const offer = buildHandoffOffer(3);
+  it('buildHandoffOffer: live-key branch — chain entry composed with the dashboard handoff', () => {
+    // 5 surfaced important findings, 3 of them live-key secrets.
+    const offer = buildHandoffOffer(5, 3);
     expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
-    // The count is whatever the caller derived from the store — echoed, not invented.
+    // Both counts are whatever the caller derived from the store — echoed, not invented.
+    expect(offer.worthALook).toBe(5);
+    expect(offer.liveKeys).toBe(3);
+    // A surfaced live-key count composes the chain-entry option AHEAD of — never
+    // in place of — the dashboard handoff.
+    expect(offer.options).toEqual([
+      { id: 'enter-remediation', label: 'Review leaked keys' },
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('buildHandoffOffer: important-but-no-secrets — surfaced findings without live keys offer no remediation', () => {
+    // 3 surfaced important findings, none of them live-key secrets: the gate is
+    // the live-key count, NOT the all-category surfaced count, so no chain entry.
+    const offer = buildHandoffOffer(3, 0);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
     expect(offer.worthALook).toBe(3);
+    // No live keys → no remediation offered, just the dashboard handoff.
     expect(offer.options).toEqual([
       { id: 'open-dashboard', label: 'Open dashboard' },
       { id: 'not-now', label: 'Not now' },
     ]);
   });
 
-  it('buildHandoffOffer: honest zero — a clean store carries a real 0, not a fabricated number', () => {
-    const offer = buildHandoffOffer(0);
+  it('buildHandoffOffer: honest zero — a clean store carries a real 0, plain dashboard handoff only', () => {
+    const offer = buildHandoffOffer(0, 0);
     expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
     expect(offer.worthALook).toBe(0);
+    // Nothing surfaced → no remediation offered, just the dashboard handoff.
+    expect(offer.options).toEqual([
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
   });
 
   it('topFindings: ranks by severity then recency, capped to the limit', () => {

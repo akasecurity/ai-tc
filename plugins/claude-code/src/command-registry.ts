@@ -40,3 +40,28 @@ export function selectRegisteredCommands(
   }
   return [...curated];
 }
+
+// The chaining line names a single secret-scan continuation command. It is
+// registered under one of two names — `/aka:secretscan` where the dedicated
+// secret-scan command exists, or `/aka:scan` otherwise — so the curated
+// candidates list both, most-specific first, and the selection resolves to
+// whichever name the installed plugin registers.
+const SECRET_SCAN_CONTINUATION = ['/aka:secretscan', '/aka:scan'] as const;
+
+// Select the chaining line's single secret-scan continuation command: resolve the
+// curated candidates against the installed registry, then validate the one that
+// resolves through selectRegisteredCommands so the line names a registered command
+// in either ship order. Throws when none is registered, so an absent continuation
+// fails the build rather than shipping a call-to-action the user cannot invoke.
+export function selectSecretScanContinuation(
+  registry: readonly string[] = readRegisteredCommands(),
+): string {
+  const curated = SECRET_SCAN_CONTINUATION.find((c) => registry.includes(c));
+  if (curated === undefined) {
+    throw new Error(
+      `No secret-scan continuation command registered in the installed plugin (looked for ${SECRET_SCAN_CONTINUATION.join(', ')})`,
+    );
+  }
+  const [selected = curated] = selectRegisteredCommands([curated], registry);
+  return selected;
+}

@@ -21,10 +21,49 @@
  * empty states).
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { openLocalDatabase } from '@akasecurity/persistence';
+import type {
+  ActionTaken,
+  BatchedRemediation,
+  BuiltinPolicyId,
+  CalibrationFrame,
+  CalibrationPreview,
+  MaskedSecretFinding,
+  RemediationEntryContext,
+  RemediationOption,
+} from '@akasecurity/schema';
+
+import { frameCalibration } from '../../src/calibration.ts';
+import { readRegisteredCommands } from '../../src/command-registry.ts';
+import { transcriptsDir } from '../../src/history/transcripts.ts';
+import {
+  presentBatchedRemediation,
+  type RemediationRouteOutcome,
+  routeRemediationOption,
+} from '../../src/remediation/chain.ts';
+import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
+import {
+  presentStandingSecretPosture,
+  type StandingPostureResult,
+  type StandingSecretPostureStep,
+  writeStandingSecretPosture,
+} from '../../src/remediation/posture.ts';
+import { type RedactionTarget, redactLeakedKeys } from '../../src/remediation/redact.ts';
+import { renderRemediationDecision } from '../../src/remediation/render.ts';
+import { frameJsonBlock } from '../../src/setup-frame-json.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/claude-code
@@ -180,9 +219,17 @@ export class SetupJourney {
     return this.run('apply-suppressions.js', ['--confirmed', '--plan', planPath]);
   }
 
-  // The installed summary + handoff-offer payload.
-  firstRun(surfaced: number): StepResult {
-    return this.run('firstrun.js', ['--surfaced', String(surfaced)]);
+  // The installed summary + handoff-offer payload. `liveKeys` is the surfaced
+  // live-key secret count (a subset of `surfaced`) that gates the remediation
+  // chain-entry offer; it defaults to 0 so a non-secret-only run offers no
+  // remediation.
+  firstRun(surfaced: number, liveKeys = 0): StepResult {
+    return this.run('firstrun.js', [
+      '--surfaced',
+      String(surfaced),
+      '--live-keys',
+      String(liveKeys),
+    ]);
   }
 
   // The installed summary on the no-scan leg — firstrun.js with NO --surfaced
@@ -205,6 +252,14 @@ export class SetupJourney {
       join(this.storeDir, 'aka.db'),
       'AKA corrupt-store fixture — not a database\n'.repeat(64),
     );
+  }
+
+  // A driver for the secret-leak remediation chain, bound to this throwaway
+  // home + store. The remediation chain is entry-point-agnostic — it takes a
+  // findings set plus an entry context and holds NO wizard state — so the drive
+  // seeds the findings directly and never runs a wizard script.
+  remediation(): RemediationDrive {
+    return new RemediationDrive(this.home, this.storeDir);
   }
 
   private run(script: string, args: string[], input?: string): StepResult {
@@ -276,6 +331,186 @@ process.stdout.write(JSON.stringify({ result, is_error: false }));
     const path = join(this.binDir, 'claude');
     writeFileSync(path, src);
     chmodSync(path, 0o755);
+  }
+}
+
+// The raw AWS access-key ids the seeded transcript artifacts leak. Composed at
+// runtime so the repo's own secret scan does not flag this file (mirrors
+// SURFACED_KEY/ROUTINE_KEY and the remediation scenario fixtures). These are the
+// RAW values redaction strikes on disk; the finding table renders only the masked form.
+export const REMEDIATION_LEAK_RAW_KEYS: readonly string[] = [
+  ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+  ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join(''),
+  ['AKIA', '2E7HTNXKP4LMKD9V'].join(''),
+];
+
+// The masked preview each seeded finding carries into the frame — a masked form of
+// a raw key, deliberately distinct from every raw value so the raw-free assertions
+// are real, not tautologies.
+const REMEDIATION_MASKED_TOKEN = 'AKIA****************';
+
+// One seeded secret leak: the on-disk transcript artifact and the raw key it holds,
+// paired with the raw-free masked summary the calibration frame carries for it.
+// Kept as one object per leak so the displayed row and the file redaction acts on
+// never drift.
+export interface SeededSecretLeak {
+  readonly filePath: string;
+  readonly rawValue: string;
+  readonly finding: MaskedSecretFinding;
+}
+
+// Drives the remediation chain by DIRECT invocation: a
+// findings set plus a RemediationEntryContext, no wizard state. It seeds the
+// findings set NOT via the wizard — real transcript artifacts holding raw leaked
+// keys under the throwaway home, plus a persisted calibration frame (the backfill's
+// output) the loader reads — then wires the real DI core (findings loader,
+// batched-decision core, decision layout, option router bound to real redaction, and the
+// standing-posture writer) over the real local store. No module is mocked.
+export class RemediationDrive {
+  readonly home: string;
+  readonly storeDir: string;
+  // The transcript artifact root the seeded leaks live under; redaction is scoped
+  // to it (transcriptsDir honors the throwaway home override).
+  readonly transcriptRoot: string;
+  leaks: SeededSecretLeak[] = [];
+  // The seeded calibration frame and its persisted (backfill-output) text the
+  // findings loader reads back — set by seedSecretLeaks().
+  frame!: CalibrationFrame;
+  private persistedFrame = '';
+
+  constructor(home: string, storeDir: string) {
+    this.home = home;
+    this.storeDir = storeDir;
+    this.transcriptRoot = transcriptsDir(home);
+  }
+
+  // Seed three real transcript artifacts carrying raw leaked keys under the home,
+  // and persist a calibration frame (the backfill's output) whose masked per-finding
+  // summaries the loader reads. The frame ALSO records a pii finding, so the
+  // secret-only exclusion the chain enforces is observable over a mixed source.
+  seedSecretLeaks(): void {
+    const projectDir = join(this.transcriptRoot, '-Users-me-remediation');
+    mkdirSync(projectDir, { recursive: true });
+    this.leaks = REMEDIATION_LEAK_RAW_KEYS.map((rawValue, i) => {
+      const filePath = join(projectDir, `session-${String(i)}.jsonl`);
+      writeFileSync(filePath, `{"content":"leaked ${rawValue} in an old prompt"}`);
+      return {
+        filePath,
+        rawValue,
+        finding: {
+          provider: 'aws',
+          maskedToken: REMEDIATION_MASKED_TOKEN,
+          where: { filePath },
+          // Validity is unverifiable under the no-network OSS constraint, so the
+          // honest default is 'unknown' — never a blanket 'still valid'.
+          state: 'unknown',
+        },
+      };
+    });
+
+    // The calibration preview the backfill recorded: the surfaced secret findings
+    // AND a pii (customer-data) hit, so "only the secret findings enter" is a real
+    // filter over a frame that genuinely records pii activity.
+    const preview: CalibrationPreview = {
+      categories: [
+        { category: 'secret', genuineCount: this.leaks.length, fpCount: 0, egress: false },
+        { category: 'pii', genuineCount: 1, fpCount: 0, egress: false },
+      ],
+      posture: {
+        secret: 'warn',
+        pii: 'warn',
+        financial: 'warn',
+        phi: 'warn',
+        code_flaw: 'warn',
+        custom: 'warn',
+        code_context: 'monitor',
+        config: 'monitor',
+      },
+    };
+    this.frame = frameCalibration(
+      preview,
+      this.leaks.map((l) => l.finding),
+    ).frame;
+    this.persistedFrame = frameJsonBlock(this.frame);
+  }
+
+  // Read the surfaced secret findings from the seeded backfill frame through
+  // the real loader (read, not synthesized). Exercises the frame's real read/parse
+  // boundary, the same one a store/read failure surfaces at.
+  loadFindings(): MaskedSecretFinding[] | undefined {
+    return loadSecretLeakFindings(() => this.persistedFrame);
+  }
+
+  // Present the batched remediation decision directly with the supplied entry
+  // context and no wizard state.
+  present(entryContext: RemediationEntryContext): BatchedRemediation {
+    return presentBatchedRemediation(this.loadFindings() ?? [], entryContext);
+  }
+
+  // The full decision layout over the masked findings, rendered against the REAL
+  // installed command registry so the chaining line names only a registered
+  // secret-scan continuation.
+  renderLayout(findings: readonly MaskedSecretFinding[], moreCount: number): string {
+    return renderRemediationDecision(findings, moreCount, readRegisteredCommands());
+  }
+
+  // Route a chosen remediation option through the real router, with the real redaction
+  // mechanism bound over the seeded raw targets (scoped to the transcript root) and
+  // the real standing-posture writer bound for the shortcut path. The
+  // 'redact-rotation-checklist' route strikes the transcript artifacts; the
+  // deliverable half (the resolved summary / rotation-checklist.md) does not exist yet, so the route
+  // records the checklist request but writes no deliverable here.
+  route(option: RemediationOption): RemediationRouteOutcome {
+    return routeRemediationOption(option, {
+      redact: () => redactLeakedKeys(this.targets(), { artifactRoots: [this.transcriptRoot] }),
+      setStandingRedactPosture: () => this.writePosture('redact'),
+    });
+  }
+
+  // The current contents of each seeded transcript artifact, in seed order — read
+  // after a redaction route to assert the leaked keys are no longer readable.
+  transcriptContents(): string[] {
+    return this.leaks.map((l) => readFileSync(l.filePath, 'utf8'));
+  }
+
+  // The standing-posture palette (Redact / Warn / Block / Monitor).
+  presentPosture(): StandingSecretPostureStep {
+    return presentStandingSecretPosture();
+  }
+
+  // Persist the chosen standing 'secret' posture to the REAL policies store via
+  // applyCategoryPosture. Opens the store fresh, writes, closes — so the
+  // durable read below runs on a separate connection.
+  writePosture(level: BuiltinPolicyId): StandingPostureResult {
+    const db = openLocalDatabase(this.storeDir);
+    try {
+      return writeStandingSecretPosture(level, db.policies);
+    } finally {
+      db.close();
+    }
+  }
+
+  // The 'secret' posture read back from the policies store on a FRESH connection,
+  // so the write's persistence is durable rather than a same-connection artifact.
+  postureFromStore(): ActionTaken | undefined {
+    const db = openLocalDatabase(this.storeDir);
+    try {
+      return db.policies.getCategoryAction('secret');
+    } finally {
+      db.close();
+    }
+  }
+
+  // Whether a rotation-checklist.md deliverable landed at the throwaway home root —
+  // false through this iteration, since the deliverable writer does not exist yet.
+  rotationChecklistExists(): boolean {
+    return existsSync(join(this.home, 'rotation-checklist.md'));
+  }
+
+  // The redaction targets recovered from the seeded leaks: each finding's
+  // where-found paired with the raw value redaction strikes on disk.
+  private targets(): RedactionTarget[] {
+    return this.leaks.map((l) => ({ where: l.finding.where, rawValue: l.rawValue }));
   }
 }
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { DetectionCategory } from './finding.ts';
 import { BuiltinPolicyId } from './policy.ts';
+import { MaskedSecretFinding } from './remediation.ts';
 import { TriageCategoryRec } from './triage.ts';
 
 // The calibration counts shown at the calibrated-result frame ('Calibrated. N
@@ -39,10 +40,12 @@ export type CalibrationFindingKind = z.infer<typeof CalibrationFindingKind>;
 // recommended per-category posture map.
 //
 // This shape is extended additively — existing fields are never reshaped, later
-// consumers only add fields. Two known extension points: masked per-finding
-// summaries are added here as an optional field by the finding-table consumer,
-// and an egress predicate is computed over `findingKinds` (its `egress` axis) by
-// the honest-positive-line consumer.
+// consumers only add fields. `maskedFindings` is the first such extension: an
+// optional array of raw-free per-finding summaries the finding table renders
+// from and the narration reads the same fields off of; kept `.optional()` so
+// zero-finding and pre-existing calibration frames still validate unchanged. The
+// other known extension point is the egress predicate computed over
+// `findingKinds` (its `egress` axis) by the honest-positive-line consumer.
 //
 // No `.meta({ id })` — no API route references this shape, matching the
 // TriageHit/TriageRecommendation convention (an unrouted id would still register
@@ -54,6 +57,7 @@ export const CalibrationFrame = z.object({
   surfacedCategories: z.array(DetectionCategory),
   findingKinds: z.array(CalibrationFindingKind),
   posture: z.record(DetectionCategory, BuiltinPolicyId),
+  maskedFindings: z.array(MaskedSecretFinding).optional(),
 });
 export type CalibrationFrame = z.infer<typeof CalibrationFrame>;
 
@@ -88,31 +92,63 @@ export const CalibrationResult = z.object({
 });
 export type CalibrationResult = z.infer<typeof CalibrationResult>;
 
-// One option of the installed-summary dashboard handoff: a stable id
-// the prompt layer routes on and the label it shows.
+// One option of the installed-summary frame 0.6 handoff: a stable id the prompt
+// layer routes on and the label it shows. `enter-remediation` is the live-key
+// branch's chain-entry option — offered only when the calibration scan surfaced
+// live-key secret findings.
 export const SetupHandoffOption = z.object({
-  id: z.enum(['open-dashboard', 'not-now']),
+  id: z.enum(['enter-remediation', 'open-dashboard', 'not-now']),
   label: z.string(),
 });
 export type SetupHandoffOption = z.infer<typeof SetupHandoffOption>;
 
-// The handoff-offer payload: the 'M worth a look' count the installed
-// summary templates into its dashboard handoff question, and the two offer
-// options. `worthALook` is the surfaced/important count from the calibration
-// preview — a real store-derived value, never fabricated. The
-// AskUserQuestion issuance itself lives in the prompt layer; this is the
-// structured payload a harness reads to assert the offer without observing the
-// interactive picker. No `.meta({ id })`, matching the CalibrationFrame
-// convention above (no API route references it).
+// The handoff-offer payload: the 'M worth a look' count the installed summary
+// templates into its frame 0.6 handoff question, and the offer options.
+// `worthALook` is the surfaced/important count from the calibration preview (the
+// sum across every detection category) — a real store-derived value, never
+// fabricated. `liveKeys` is the narrower surfaced live-key secret count that
+// gates the remediation chain-entry; it is a subset of `worthALook`, so a
+// calibration that surfaced only non-secret findings carries `worthALook > 0`
+// with `liveKeys` 0 (or absent) and offers no remediation. The AskUserQuestion
+// issuance itself lives in the prompt layer; this is the structured payload a
+// harness reads to assert the offer without observing the interactive picker. No
+// `.meta({ id })`, matching the CalibrationFrame convention above (no API route
+// references it).
 //
-// `options` is a fixed two-entry tuple — Open dashboard then Not now — so the
-// contract matches the producer exactly: a dropped, reordered, or extra option
-// fails validation, not just a non-array.
-export const SetupHandoffOffer = z.object({
-  worthALook: z.number().int().nonnegative(),
-  options: z.tuple([
-    SetupHandoffOption.extend({ id: z.literal('open-dashboard') }),
-    SetupHandoffOption.extend({ id: z.literal('not-now') }),
-  ]),
-});
+// `options` is one of two fixed tuples, extended additively so both branches
+// carry the same fixed-tuple discipline — a dropped, reordered, or extra option
+// fails validation, not just a non-array:
+//   - the no-findings branch: Open dashboard then Not now;
+//   - the live-key branch: the chain-entry option composed with — never
+//     replacing — that same dashboard handoff, so dashboard access stays
+//     reachable exactly as on the no-findings branch.
+//
+// `liveKeys` is optional so the pre-existing no-findings payload shape still
+// validates unchanged. A refinement ties the branch to that count: the
+// chain-entry option is present exactly when `liveKeys > 0`, so a composed offer
+// that dropped its live-key count, or a plain dashboard offer claiming surfaced
+// live keys, both fail validation (remediation is offered
+// exactly when live-key secrets surfaced, and never otherwise).
+const DashboardHandoffOptions = z.tuple([
+  SetupHandoffOption.extend({ id: z.literal('open-dashboard') }),
+  SetupHandoffOption.extend({ id: z.literal('not-now') }),
+]);
+const ComposedRemediationOptions = z.tuple([
+  SetupHandoffOption.extend({ id: z.literal('enter-remediation') }),
+  SetupHandoffOption.extend({ id: z.literal('open-dashboard') }),
+  SetupHandoffOption.extend({ id: z.literal('not-now') }),
+]);
+export const SetupHandoffOffer = z
+  .object({
+    worthALook: z.number().int().nonnegative(),
+    liveKeys: z.number().int().nonnegative().optional(),
+    options: z.union([DashboardHandoffOptions, ComposedRemediationOptions]),
+  })
+  .refine(
+    (o) => o.options.some((opt) => opt.id === 'enter-remediation') === (o.liveKeys ?? 0) > 0,
+    {
+      message: 'the chain-entry option is present exactly when liveKeys > 0',
+      path: ['options'],
+    },
+  );
 export type SetupHandoffOffer = z.infer<typeof SetupHandoffOffer>;

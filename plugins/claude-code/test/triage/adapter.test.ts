@@ -1,7 +1,7 @@
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { ExceptionWriter } from '@akasecurity/plugin-sdk';
+import { type ExceptionWriter, safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   DetectionCategory,
@@ -823,6 +823,167 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
     // The frame block itself never echoes the raw hit value.
     expect(blob).toContain('<<<AKA_FRAME_JSON');
     expect(JSON.stringify(readFrameJsonBlock(blob))).not.toContain(RAW);
+  });
+});
+
+describe('runApply — preview derives surfaced secret findings into the frame', () => {
+  // A verdict that keeps the secret hit GENUINE (not a false positive), so the
+  // hit surfaces as a MaskedSecretFinding instead of being suppressed.
+  const surfacedVerdict = (): TriageRecommendation => ({
+    perCategory: [
+      {
+        category: 'secret',
+        action: 'warn',
+        reasoning: 'a genuine live key in an old transcript',
+        genuineCount: 1,
+        fpCount: 0,
+        fpIds: [],
+      },
+    ],
+    notes: 'looks routine',
+  });
+
+  const previewFrame = async (h: TriageHit, v = surfacedVerdict()) => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () =>
+        `${JSON.stringify(h)}\n${JSON.stringify({ done: true, count: 1, status: 'complete' })}\n`,
+      runJudge: () => v,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const blob = out.join('');
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(blob));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    return { frame: parsed.data, blob };
+  };
+
+  it('emits the genuine secret leak as a masked per-finding summary the finding table reads', async () => {
+    const { frame } = await previewFrame(
+      hit({ id: '0', filePath: '~/.claude/transcripts/2026-07-01.jsonl' }),
+    );
+    // The frame the loader reads carries the REAL surfaced secret summary, derived
+    // from the hit — provider from the ruleId, masked token, where-found, and the
+    // honest 'unknown' validity state (no network to check a key on this machine).
+    expect(frame.maskedFindings).toEqual([
+      {
+        provider: 'aws',
+        maskedToken: safeMaskedMatch(RAW),
+        where: { filePath: '~/.claude/transcripts/2026-07-01.jsonl' },
+        state: 'unknown',
+      },
+    ]);
+  });
+
+  it('derives the summary from the hit, never a hardcoded value', async () => {
+    const a = await previewFrame(
+      hit({ id: '0', ruleId: 'secrets/stripe-live-key', filePath: '/tmp/a.txt' }),
+    );
+    expect(a.frame.maskedFindings?.[0]).toMatchObject({
+      provider: 'stripe',
+      where: { filePath: '/tmp/a.txt' },
+    });
+    // Change the input hit ⇒ the emitted summary follows it (no hardcode).
+    const b = await previewFrame(
+      hit({ id: '0', ruleId: 'secrets/github-pat', filePath: '/tmp/b.txt' }),
+    );
+    expect(b.frame.maskedFindings?.[0]).toMatchObject({
+      provider: 'github',
+      where: { filePath: '/tmp/b.txt' },
+    });
+  });
+
+  it('omits maskedFindings when the secret hit was suppressed as a false positive', async () => {
+    const suppressed = (): TriageRecommendation => ({
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'canonical fake AWS example key',
+          genuineCount: 0,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: 'looks routine',
+    });
+    const { frame } = await previewFrame(hit({ id: '0' }), suppressed());
+    // Nothing genuine surfaced ⇒ the optional field is omitted, not an empty theatre.
+    expect(frame.maskedFindings).toBeUndefined();
+  });
+
+  it('carries no raw secret value into the emitted summaries (masked only)', async () => {
+    const { frame } = await previewFrame(
+      hit({ id: '0', filePath: '~/.claude/transcripts/2026-07-01.jsonl' }),
+    );
+    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
+  });
+
+  it('surfaces only the genuine hit on a mixed stream — the FP stays dismissed and counts stay coherent', async () => {
+    // Two hits over the real preview seam: one genuine, one model-dismissed FP.
+    // The emitted frame must surface exactly the genuine hit and its maskedFindings
+    // length must equal the frame's important (genuine) count — no dismissed example
+    // key smuggled into the finding table, no count/finding divergence.
+    // Assembled at runtime so the source carries no contiguous key-shaped literal.
+    const OTHER = ['sk', 'live', '51H8xEXAMPLErawstripesecretVALUE0000'].join('_');
+    const genuine = hit({
+      id: '0',
+      ruleId: 'secrets/stripe-live-key',
+      rawMatch: OTHER,
+      context: `token=${OTHER}`,
+      valueFingerprint: 'cd'.repeat(32),
+      filePath: '~/.claude/transcripts/2026-07-01.jsonl',
+    });
+    const falsePositive = hit({ id: '1', filePath: '/tmp/agent-dump.txt' });
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () =>
+        `${JSON.stringify(genuine)}\n${JSON.stringify(falsePositive)}\n${JSON.stringify({ done: true, count: 2, status: 'complete' })}\n`,
+      runJudge: (): TriageRecommendation => ({
+        perCategory: [
+          {
+            category: 'secret',
+            action: 'warn',
+            reasoning: 'one genuine live key, one canonical fake AWS example key',
+            genuineCount: 1,
+            fpCount: 1,
+            fpIds: ['1'],
+          },
+        ],
+        notes: 'looks routine',
+      }),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    const frame = parsed.data;
+    // Exactly the genuine hit surfaces — the dismissed example key never does.
+    expect(frame.maskedFindings).toEqual([
+      {
+        provider: 'stripe',
+        maskedToken: safeMaskedMatch(OTHER),
+        where: { filePath: '~/.claude/transcripts/2026-07-01.jsonl' },
+        state: 'unknown',
+      },
+    ]);
+    // The remediation count and the frame's important (genuine) count agree.
+    expect(frame.maskedFindings).toHaveLength(frame.counts.important);
+    // No raw value from either hit rides into the emitted summaries.
+    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
+    expect(JSON.stringify(frame.maskedFindings)).not.toContain(OTHER);
   });
 });
 

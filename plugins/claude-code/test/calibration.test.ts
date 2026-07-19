@@ -1,12 +1,14 @@
 import {
   CalibrationFrame,
   type CalibrationPreview,
+  type MaskedSecretFinding,
   severityFloorPosture,
 } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { frameCalibration, frameEmptyState } from '../src/calibration.ts';
 import { renderPostureGrid, renderRecommendedPosture } from '../src/render.ts';
+import { frameJsonBlock, readFrameJsonBlock } from '../src/setup-frame-json.ts';
 
 // A backfill + apply-suppressions preview with 161 findings of which 3 are surfaced
 // (genuine live secret keys) and 158 are suppressed FPs. Every count is carried in
@@ -128,6 +130,67 @@ describe('frameCalibration', () => {
       'Calibrated. 24 notifications, 4 important. 20 routine, 4 that matter (personal data)',
     );
     expect(copy).not.toContain('live keys');
+  });
+});
+
+describe('frameCalibration — additive masked per-finding summaries', () => {
+  // Masked-only summaries — the same raw-free shape the finding table renders
+  // from and the finding-narration layer reads off of.
+  const masked: MaskedSecretFinding[] = [
+    {
+      provider: 'stripe',
+      maskedToken: 'sk_live_****',
+      where: { filePath: '~/.claude/transcripts/2026-07-01.jsonl' },
+      state: 'still-valid',
+    },
+    {
+      provider: 'aws',
+      maskedToken: 'AKIA****************',
+      where: { filePath: '/tmp/agent-dump.txt', span: { start: 12, end: 32 } },
+      state: 'still-valid',
+    },
+  ];
+
+  it('carries the masked summaries into the frame when secret findings exist', () => {
+    const { frame } = frameCalibration(preview, masked);
+    expect(frame.maskedFindings).toEqual(masked);
+    // Additive, not a reshape: the existing counts/category fields are untouched.
+    expect(frame.counts).toEqual({ total: 161, important: 3, routine: 158 });
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('omits maskedFindings when none are supplied — a pre-existing frame still validates', () => {
+    const { frame } = frameCalibration(preview);
+    expect(frame.maskedFindings).toBeUndefined();
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('omits maskedFindings on an empty supplied set rather than emitting []', () => {
+    const { frame } = frameCalibration(preview, []);
+    expect(frame.maskedFindings).toBeUndefined();
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('carries the masked summaries through the real frame-JSON emission seam', () => {
+    // The emission seam the apply-suppressions preview uses: frameCalibration's
+    // frame is serialized by frameJsonBlock (the SAME function the adapter emits at
+    // stdout) and read back. Proves the additive field survives the actual JSON
+    // round-trip — a reachable path, not just an in-memory object — and reparses as
+    // a schema-valid CalibrationFrame with the masked summaries intact.
+    const { frame } = frameCalibration(preview, masked);
+    const emitted = readFrameJsonBlock(frameJsonBlock(frame));
+    const reparsed = CalibrationFrame.safeParse(emitted);
+    expect(reparsed.success).toBe(true);
+    expect(reparsed.success && reparsed.data.maskedFindings).toEqual(masked);
+  });
+
+  it('emits a frame with no maskedFindings key through the seam when none surfaced', () => {
+    // The pre-existing (zero-finding) frame still round-trips: the optional field is
+    // absent from the emitted JSON, and it reparses valid — the extension is additive.
+    const { frame } = frameCalibration(preview);
+    const emitted = readFrameJsonBlock(frameJsonBlock(frame)) as Record<string, unknown>;
+    expect('maskedFindings' in emitted).toBe(false);
+    expect(CalibrationFrame.safeParse(emitted).success).toBe(true);
   });
 });
 

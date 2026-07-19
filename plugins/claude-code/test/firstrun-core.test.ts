@@ -9,7 +9,12 @@ import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseSurfacedCount, runFirstRun, runFirstRunFailOpen } from '../src/firstrun-core.ts';
+import {
+  parseLiveKeyCount,
+  parseSurfacedCount,
+  runFirstRun,
+  runFirstRunFailOpen,
+} from '../src/firstrun-core.ts';
 import { readPostureBlock } from '../src/posture.ts';
 import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
 
@@ -58,6 +63,22 @@ describe('parseSurfacedCount', () => {
   });
 });
 
+describe('parseLiveKeyCount', () => {
+  it('reads a non-negative integer from --live-keys', () => {
+    expect(parseLiveKeyCount(['--live-keys', '3'])).toBe(3);
+    expect(parseLiveKeyCount(['--live-keys', '0'])).toBe(0);
+  });
+
+  it('defaults to 0 when the flag is absent or malformed — the remediation gate stays shut', () => {
+    expect(parseLiveKeyCount([])).toBe(0);
+    expect(parseLiveKeyCount(['--surfaced', '3'])).toBe(0);
+    expect(parseLiveKeyCount(['--live-keys'])).toBe(0);
+    expect(parseLiveKeyCount(['--live-keys', 'lots'])).toBe(0);
+    expect(parseLiveKeyCount(['--live-keys', '-1'])).toBe(0);
+    expect(parseLiveKeyCount(['--live-keys', '2.5'])).toBe(0);
+  });
+});
+
 describe('runFirstRun — emits the handoff-offer payload alongside the card', () => {
   let dir: string;
 
@@ -90,8 +111,9 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     return out.join('');
   }
 
-  it('emits a valid SetupHandoffOffer whose worthALook is the passed --surfaced count', async () => {
-    const blob = await seedAndRun(['--surfaced', '2']);
+  it('composes the chain-entry offer alongside the dashboard handoff when live keys surfaced', async () => {
+    // 3 surfaced important findings, 2 of them live-key secrets.
+    const blob = await seedAndRun(['--surfaced', '3', '--live-keys', '2']);
 
     // Additive: the human-readable install card is still present (not replaced).
     expect(blob).toContain('installed');
@@ -104,7 +126,51 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
 
     // 'M worth a look' is the surfaced/important count threaded in from the
     // calibration preview — NOT the whole-store finding total (1 finding was seeded).
-    expect(parsed.data.worthALook).toBe(2);
+    expect(parsed.data.worthALook).toBe(3);
+    // The live-key count is the narrower secret subset that gated the offer.
+    expect(parsed.data.liveKeys).toBe(2);
+    // The chain-entry offer composes with — never replaces — the dashboard
+    // handoff: Open dashboard + Not now stay reachable exactly as on the
+    // no-findings branch (the dashboard handoff does not regress).
+    expect(parsed.data.options).toEqual([
+      { id: 'enter-remediation', label: 'Review leaked keys' },
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('offers no remediation when important findings surfaced but zero live keys (negative branch)', async () => {
+    // The divergent case: 3 surfaced important findings, none of them live-key
+    // secrets (--live-keys 0). The gate is the live-key count, NOT the
+    // all-category surfaced count, so no remediation is offered even though
+    // worthALook > 0.
+    const blob = await seedAndRun(['--surfaced', '3', '--live-keys', '0']);
+
+    const payload = readFrameJsonBlock(blob);
+    const parsed = SetupHandoffOffer.safeParse(payload);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    expect(parsed.data.worthALook).toBe(3);
+    // No live keys → no chain entry: only the dashboard handoff, unchanged from
+    // the no-findings shape ('never otherwise').
+    expect(parsed.data.options).toEqual([
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('offers the plain dashboard handoff (no chain entry) when zero live keys surfaced', async () => {
+    const blob = await seedAndRun(['--surfaced', '0']);
+
+    const payload = readFrameJsonBlock(blob);
+    const parsed = SetupHandoffOffer.safeParse(payload);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    expect(parsed.data.worthALook).toBe(0);
+    // No remediation offered: only the dashboard handoff, unchanged from
+    // the no-findings shape.
     expect(parsed.data.options).toEqual([
       { id: 'open-dashboard', label: 'Open dashboard' },
       { id: 'not-now', label: 'Not now' },

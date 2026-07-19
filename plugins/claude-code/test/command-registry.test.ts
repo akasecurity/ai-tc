@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { readRegisteredCommands, selectRegisteredCommands } from '../src/command-registry.ts';
+import {
+  readRegisteredCommands,
+  selectRegisteredCommands,
+  selectSecretScanContinuation,
+} from '../src/command-registry.ts';
 import { READY_COMMANDS, TRY_COMMANDS } from '../src/render.ts';
 
 // The real shipped command set, read straight from disk the same way the plugin
@@ -95,5 +99,57 @@ describe('per-surface curated sets resolve against the installed registry', () =
     // no line is silently enumerating everything the plugin registers.
     const named = new Set([...TRY_COMMANDS, ...READY_COMMANDS]);
     expect(named.size).toBeLessThan(registry.length);
+  });
+});
+
+describe('chaining-line secret-scan continuation selection', () => {
+  // The chaining line names a single specific secret-scan continuation
+  // command, resolved against the installed registry through the same per-surface
+  // selection mechanism — never a hardcoded bare string, never the full registry.
+  // The continuation is registered under `/aka:scan` today and moves to
+  // `/aka:secretscan` once the dedicated secret-scan command exists; the selection
+  // resolves to whichever name is actually registered, in either ship order.
+  it('returns exactly one command, a member of the registered set', () => {
+    const selected = selectSecretScanContinuation();
+    expect(typeof selected).toBe('string');
+    expect(readRegisteredCommands()).toContain(selected);
+  });
+
+  it('resolves to the single registered secret-scan command today (/aka:scan)', () => {
+    const registry = readRegisteredCommands();
+    expect(registry).toContain('/aka:scan');
+    expect(registry).not.toContain('/aka:secretscan');
+    expect(selectSecretScanContinuation()).toBe('/aka:scan');
+  });
+
+  it('is a strict single-element curated subset, never the full registry', () => {
+    const registry = readRegisteredCommands();
+    expect(registry.length).toBeGreaterThan(1);
+    const selected = selectSecretScanContinuation(registry);
+    // One specific command drawn from — but not equal to — the whole registry.
+    expect(Array.isArray(selected)).toBe(false);
+    expect(registry).toContain(selected);
+    expect(registry.filter((c) => c === selected)).toHaveLength(1);
+  });
+
+  it('resolves to /aka:secretscan once the rename registers it (either ship order)', () => {
+    // Post-rename registry: the working-tree scan is `/aka:codescan` and the new
+    // `/aka:secretscan` carries the secret-scan continuation.
+    const renamed = ['/aka:codescan', '/aka:secretscan', '/aka:dashboard'];
+    expect(selectSecretScanContinuation(renamed)).toBe('/aka:secretscan');
+  });
+
+  it('prefers /aka:secretscan when both names are briefly registered', () => {
+    const both = ['/aka:scan', '/aka:secretscan', '/aka:dashboard'];
+    expect(selectSecretScanContinuation(both)).toBe('/aka:secretscan');
+  });
+
+  it('fails the build (throws) when no secret-scan continuation is registered', () => {
+    // A stubbed registry with the curated command removed — the selection must
+    // fail loud rather than render a call-to-action the user cannot invoke.
+    const withoutSecretScan = readRegisteredCommands().filter(
+      (c) => c !== '/aka:scan' && c !== '/aka:secretscan',
+    );
+    expect(() => selectSecretScanContinuation(withoutSecretScan)).toThrow();
   });
 });

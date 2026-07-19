@@ -136,6 +136,38 @@ describe('CalibrationFrame', () => {
   });
 });
 
+describe('CalibrationFrame masked per-finding summaries (additive)', () => {
+  const maskedFindings = [
+    {
+      provider: 'stripe',
+      maskedToken: 'sk_live_…4f2c',
+      where: {
+        filePath: '~/.claude/projects/acme/transcript.jsonl',
+        span: { start: 120, end: 148 },
+      },
+      state: 'still-valid',
+    },
+  ];
+
+  it('parses a frame WITHOUT the masked-findings field (additivity — existing frames unchanged)', () => {
+    expect('maskedFindings' in populatedFrame).toBe(false);
+    expect(CalibrationFrame.safeParse(populatedFrame).success).toBe(true);
+  });
+
+  it('parses a frame WITH a masked-findings array', () => {
+    expect(CalibrationFrame.safeParse({ ...populatedFrame, maskedFindings }).success).toBe(true);
+  });
+
+  it('rejects a frame whose masked-findings entry carries a raw-looking secret field', () => {
+    expect(
+      CalibrationFrame.safeParse({
+        ...populatedFrame,
+        maskedFindings: [{ ...maskedFindings[0], rawToken: 'sk_live_EXAMPLE0000000000000000' }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('SetupHandoffOffer', () => {
   const openDashboard = { id: 'open-dashboard', label: 'Open dashboard' };
   const notNow = { id: 'not-now', label: 'Not now' };

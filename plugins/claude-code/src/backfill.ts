@@ -14,7 +14,6 @@
  *     error writes a diagnostic to stderr plus a non-zero exit — never a silent
  *     exit 0 with a partial stream.
  */
-import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -27,9 +26,8 @@ import {
 import { TriageHit } from '@akasecurity/schema';
 
 import { scanHistory, type ScanSummary } from './history/scan.ts';
-import { type HistoryWalkOptions, transcriptsDir } from './history/transcripts.ts';
+import { type HistoryWalkOptions } from './history/transcripts.ts';
 import { reconcileHistory } from './history/usage.ts';
-import { parseHomeFlag } from './home-flag.ts';
 import { fenced, indent } from './present.ts';
 
 // The trailing sentinel that terminates a --triage stream. Its presence (and
@@ -72,11 +70,12 @@ export interface BackfillDeps {
   // Walk options threaded into the scan. The self-contamination guard: `beforeMs`
   // drops any transcript message written at/after the backfill started (so a re-run
   // never re-ingests the wizard's own in-progress session), and `excludeSessionId`
-  // skips AKA's OWN session transcript by id when the host exposes it. `dir`
-  // overrides the transcript root; it is supplied only by the journey harness/tests
-  // to scan a throwaway ~/.claude in isolation — no production call site passes it.
-  // Injected (not read from the environment here) so runBackfill stays pure +
-  // testable; the CLI wiring at the bottom of this file computes the real values.
+  // skips AKA's OWN session transcript by id when the host exposes it. `dir` can
+  // override the transcript root for isolated tests; no production or harness call
+  // site passes it — the harness sets HOME so the default transcriptsDir() already
+  // resolves under the throwaway home. Injected (not read from the environment here)
+  // so runBackfill stays pure + testable; the CLI wiring below computes beforeMs and
+  // the host session id.
   guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
 }
 
@@ -209,12 +208,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const startedAt = Date.now();
   // eslint-disable-next-line n/no-process-env -- host session id for the self-contamination guard
   const sessionId = process.env.CLAUDE_CODE_BRIDGE_SESSION_ID;
-  // The wizard's ~/.aka override; absent on every real run, so loadConfig and the
-  // transcript scan fall back to the OS home. The transcript root sits under the OS
-  // home, which is ~/.aka's parent — the inverse of defaultDataDir's
-  // join(homedir(), '.aka') — so its dirname recovers the OS home to scan.
-  const home = parseHomeFlag(process.argv.slice(2));
-  const transcriptRoot = home !== undefined ? transcriptsDir(dirname(home)) : undefined;
   await runBackfill({
     triage,
     io: {
@@ -224,14 +217,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         process.exitCode = 1;
       },
     },
-    loadConfig: () => loadConfig(home),
+    loadConfig: () => loadConfig(),
     scanHistory,
-    reconcileHistory: (cfg) =>
-      reconcileHistory(cfg, transcriptRoot !== undefined ? { dir: transcriptRoot } : {}),
+    reconcileHistory: (cfg) => reconcileHistory(cfg),
     guard: {
       beforeMs: startedAt,
       ...(sessionId ? { excludeSessionId: sessionId } : {}),
-      ...(transcriptRoot !== undefined ? { dir: transcriptRoot } : {}),
     },
   });
   // process.exit() does not flush a buffered async stdout write on darwin, so a

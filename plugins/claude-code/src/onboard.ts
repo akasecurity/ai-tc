@@ -61,10 +61,6 @@ function fail(message: string): never {
 }
 
 const flags = parseFlags(process.argv.slice(2));
-// The `--home` override that points the wizard at a throwaway ~/.aka home; absent
-// on every real run, so loadConfig falls back to the default home. parseFlags
-// already captures it.
-const home = flags.get('home');
 const answers: Partial<WorkspaceSettings> = {};
 
 const rawPolicy = flags.get('policy');
@@ -97,7 +93,7 @@ if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) 
 
 if (Object.keys(answers).length > 0) {
   try {
-    const settings = applyOnboarding(answers, home);
+    const settings = applyOnboarding(answers);
     process.stdout.write(
       `AKA configured: policy=${settings.policy}, ` +
         `historicalAccess=${settings.historicalAccess}. ` +
@@ -107,7 +103,7 @@ if (Object.keys(answers).length > 0) {
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.
     try {
-      const dataDir = loadConfig(home).dataDir;
+      const dataDir = loadConfig().dataDir;
       const db = openLocalDatabase(dataDir);
       try {
         const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
@@ -142,7 +138,7 @@ if (rawPosture !== undefined || useFloor) {
     // category rows; --floor is the fallback and only fills gaps (never
     // downgrades a calibrated posture) unless --recalibrate forces an overwrite.
     const mode = rawPosture !== undefined || recalibrate ? 'overwrite' : 'fill-gaps';
-    const db = openLocalDatabase(loadConfig(home).dataDir);
+    const db = openLocalDatabase(loadConfig().dataDir);
     try {
       applyCategoryPosture(posture, db.policies, mode);
       // The applying confirmation — the "tuned" segment reports the

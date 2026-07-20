@@ -36,6 +36,63 @@ mangles the `●` lines).
 node "${CLAUDE_PLUGIN_ROOT}/scripts/intro.js" "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
 ```
 
+## 0b. Repo-aware posture check — tighten-only, working-tree only
+
+Before showing any recommended posture — the start-light default table in
+step 2 or the calibrated posture in step 4 — look at the **current project's**
+working tree yourself, with your own Read/Glob tools. There is no script for
+this: it is your own reasoning over facts you read directly, not the isolated
+triage subprocess's raw-free plan, and it needs no user interaction.
+
+**In scope:** the manifest's declared frameworks/dependencies
+(`package.json` or equivalent), payment or other third-party API SDKs among
+them, CI config (`.github/workflows/`, etc.), and the **presence and names**
+of `.env*`/config files as a signal that secrets live on disk here — never
+their contents; a secret-bearing file's contents are exactly the kind of raw
+value this wizard never reads. **Out of scope:** Claude's own history and the
+local AKA store (that is the separate, consent-gated scan in steps 1/3) — no
+historical read, and no AskUserQuestion or other consent interaction of any
+kind.
+
+The severity-floor default map (secret/pii/financial/phi/code_flaw/custom at
+`warn`, code_context/config at `monitor` — the table step 2's start-light card
+prints) is both the **floor** this check is measured against and its
+**fallback**. From what you directly observe you may **tighten** individual
+categories above that floor — raise the level, never lower one below it —
+each tightened category carrying a one-line rationale naming the concrete
+evidence you found, e.g.:
+
+> Stripe + a `Customer` model here — financial → redact
+
+Present the tightening on whichever recommended posture is about to render, the
+same "recommended base + changed-packs overlay" shape step 4b's adjust fork
+uses: the tightened categories raise, every other category keeps its existing
+recommended level, each carrying its rationale line. Where you compose the view
+yourself (the adjust fork, the calibrated result) this tightened recommendation
+IS that view; where the view is printed verbatim by a script (the step-2
+start-light card, reproduced exactly as printed), show the tightened
+recommendation and its rationale lines adjacent to that card rather than
+rewriting the card's own printed levels.
+
+This tightening is a **display-time recommendation**: it shapes the recommended
+posture the user reads, not a separate write. Persisting a tightened level happens
+only where the wizard already writes a per-category override — the adjust fork's
+`onboard.js --posture` write (step 4b), where the user picks each category's level
+explicitly. The keep-defaults path writes the severity floor (`--floor`, step 2)
+and the calibrated accept path applies the isolated subprocess's saved plan
+verbatim (`--confirmed --plan`, step 5); neither carries the tightening on its
+own, so a tightened level the user wants persisted is chosen through the adjust
+fork. Do **not** bolt on an extra `onboard.js --posture` overlay to auto-re-persist
+the tightening across the other paths: it would overwrite — and so could silently
+**downgrade** — a category the user had hardened out of band (a tightening is only
+guaranteed to raise above the severity floor, not above the user's stored level),
+with no downgrade-approval gate. So the tightening is not auto-persisted across
+those paths — a tightened level the user wants kept is set through the adjust fork.
+
+**When nothing in the working tree is inferable, change nothing.** Render the
+recommended posture exactly as the static frame already gives it — no rationale
+line and no tightened category (fail-open).
+
 ## 1. Offer the retroactive scan
 
 Ask this **before** anything about detection posture — the posture
@@ -180,7 +237,11 @@ to the floor branch below rather than step 4.
 
 Also **retain the block's full text verbatim** (not just the counts you read out
 of it) — step 6's "Review leaked keys" branch feeds this same text to the
-secret-leak remediation entry, which reads its own `maskedFindings` from it.
+secret-leak remediation entry, which reads its own `maskedFindings` from it,
+and step 4's finding narration and step 6's secret-leak narration (both below)
+read the same `maskedFindings` array off it too. When present, the block's
+`falsePositivePatterns` array is what step 4's fixture/exception offer (below)
+names its pattern and count from — never invent either off-signal.
 
 Everything you show the user in step 4 comes from **this command's output**. You
 never read the raw finding values yourself — do not echo, quote, or reconstruct
@@ -236,6 +297,55 @@ printed and show it in full:
    rule, and masked context for each detection the writeback would suppress —
    the routine noise being dismissed. This is the checkpoint that stops a genuine
    secret being silenced: the user reads the masked evidence and approves it.
+4. **Explain what surfaced, in plain language.** When the frame carries
+   `maskedFindings`, walk through them — what each one is, where it showed up,
+   and why it matters — grounded entirely in that array: every count you speak
+   equals the frame's own count for it (`counts.important`/`counts.total`, or
+   a specific finding kind's count), and every value you reference appears
+   masked, exactly as the frame gives it — never a raw value, never an
+   invented one. This is an actual explanation of the known findings, not a
+   restatement of the headline's counts. When the frame carries no
+   `maskedFindings` (nothing surfaced, or a fallback floor ran), skip this —
+   the calibrated-result card already said so; do not invent narration over a
+   missing signal.
+5. **Offer an exception for a grounded false-positive pattern.** When the
+   frame carries `falsePositivePatterns`, name each group's pattern and count
+   **strictly from that signal** — never invent a pattern name or fabricate a
+   count. For each group, use **AskUserQuestion** to offer a pre-filled
+   exception with a duration picker (the exception scope axis — `once` /
+   `temporary` / `permanent`):
+
+   **Add an exception for `<pattern>` (×N)?** — "`<pattern>` looks like a test
+   fixture — add a pre-filled exception so it stops surfacing?"
+
+   - **Once** — single use, expires automatically in 30 minutes if unused
+   - **Temporary** — expires after a set window, then re-evaluates normally
+   - **Permanent** — stays until you revoke it
+   - **Not now** — skip; nothing is written
+
+   **Temporary needs a concrete window.** `once` and `permanent` fully determine
+   the scope on their own, but `temporary` does not — resolving it into the
+   stored `{scope, expiresAt, maxUses}` triple requires an actual duration, and
+   you must **never** invent or default one. When the user picks **Temporary**,
+   follow up with a second **AskUserQuestion** that offers concrete windows only
+   — `30m` / `1h` / `24h` (the exception scope resolver accepts `<n>m`/`<n>h`,
+   capped at 24h; a longer bypass is a `permanent` grant, not a forgotten timer)
+   — and resolve the exact chosen string through that resolver. **Once** and
+   **Permanent** take no follow-up.
+
+   Accepting surfaces the exact pre-filled exception — one **per distinct value
+   identity** (`ruleId`/`valueFingerprint`/`keyVersion`) at the chosen
+   `{scope, expiresAt, maxUses}` — for review, and the marked pattern is
+   suppressed as part of the calibration plan confirmed below (the same store
+   `/aka:exceptions` reads). A group whose displayed pattern covers more than one
+   distinct value surfaces one exception per distinct value — never a single
+   grant collapsing them — and a value missing its exact identity is not
+   offered for. Declining surfaces nothing; this offer is separate from the
+   calibration plan's suppressions confirmed below, so declining here changes
+   nothing about that confirmation. When the frame carries no
+   `falsePositivePatterns` (nothing was marked a likely false positive, or the
+   scan was declined), skip this entirely — no offer, nothing invented
+   (fail-open).
 
 Then use **AskUserQuestion** (the real picker, never a printed numbered list) to
 confirm:
@@ -466,7 +576,17 @@ parts, all of which you **show to the user verbatim, in order**:
    secret-scan chaining line.
 
 Reproduce the count line and the whole fenced block exactly as printed — do not
-drop the recommendation or chaining lines, and do not paraphrase. Then issue an
+drop the recommendation or chaining lines, and do not paraphrase.
+
+Alongside that fenced block, explain the findings in plain language grounded
+in the same `maskedFindings` array the block came from — what each finding is
+and why it matters, not a bare recital of the count line above it. The same
+grounding discipline as step 4's narration applies here: every count you
+speak matches the frame's own count, and every value you reference stays
+masked. With no `maskedFindings` present there is nothing to narrate beyond
+the count line and table already shown — do not invent an explanation.
+
+Then issue an
 **AskUserQuestion** offering exactly these four options, in order (each option's
 label maps to the `--option` id shown in parentheses):
 

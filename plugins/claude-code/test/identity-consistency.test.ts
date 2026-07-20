@@ -53,6 +53,10 @@ describe('identity/description consistency guard', () => {
     expect(setupMd).not.toContain('AKA Control Plane');
   });
 
+  it('eval/prompt.md prose carries no phased-out product descriptor', () => {
+    expect(read('../eval/prompt.md')).not.toContain('AKA Control Plane');
+  });
+
   it.each(READMES)('%s prose carries the canonical name and tagline', (_label, relative) => {
     const readme = read(relative);
     expect(readme).toContain(NAME);

@@ -4,6 +4,7 @@ import {
   CalibrationCounts,
   CalibrationFindingKind,
   CalibrationFrame,
+  FalsePositivePatternGroup,
   SetupHandoffOffer,
 } from '../../src/zod/setup-frame.ts';
 
@@ -163,6 +164,120 @@ describe('CalibrationFrame masked per-finding summaries (additive)', () => {
       CalibrationFrame.safeParse({
         ...populatedFrame,
         maskedFindings: [{ ...maskedFindings[0], rawToken: 'sk_live_EXAMPLE0000000000000000' }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('CalibrationFrame masked false-positive pattern signal (additive)', () => {
+  const falsePositivePatterns = [
+    {
+      pattern: 'test_sk_live_placeholder',
+      count: 12,
+      values: [
+        {
+          ruleId: 'secret-stripe-live-key',
+          category: 'secret',
+          valueFingerprint: 'fp-aaa',
+          keyVersion: 1,
+        },
+      ],
+    },
+  ];
+
+  it('parses a frame WITHOUT the false-positive-patterns field (additivity — existing frames unchanged)', () => {
+    expect('falsePositivePatterns' in populatedFrame).toBe(false);
+    expect(CalibrationFrame.safeParse(populatedFrame).success).toBe(true);
+  });
+
+  it('parses and round-trips a frame WITH a well-formed false-positive-patterns group', () => {
+    const result = CalibrationFrame.safeParse({ ...populatedFrame, falsePositivePatterns });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.falsePositivePatterns).toEqual(falsePositivePatterns);
+    }
+  });
+
+  it('parses a group whose values carry more than one distinct valueFingerprint (masked-token collision)', () => {
+    const collisionGroup = [
+      {
+        pattern: 'test_sk_live_placeholder',
+        count: 2,
+        values: [
+          {
+            ruleId: 'secret-stripe-live-key',
+            category: 'secret',
+            valueFingerprint: 'fp-aaa',
+            keyVersion: 1,
+          },
+          {
+            ruleId: 'secret-stripe-live-key',
+            category: 'pii',
+            valueFingerprint: 'fp-bbb',
+            keyVersion: 1,
+          },
+        ],
+      },
+    ];
+    expect(
+      CalibrationFrame.safeParse({ ...populatedFrame, falsePositivePatterns: collisionGroup })
+        .success,
+    ).toBe(true);
+  });
+
+  it('rejects a group whose value entry is missing valueFingerprint', () => {
+    const malformed = [
+      {
+        pattern: 'test_sk_live_placeholder',
+        count: 1,
+        values: [{ ruleId: 'secret-stripe-live-key', category: 'secret', keyVersion: 1 }],
+      },
+    ];
+    expect(
+      CalibrationFrame.safeParse({ ...populatedFrame, falsePositivePatterns: malformed }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a group with an empty values array', () => {
+    const malformed = [{ pattern: 'test_sk_live_placeholder', count: 0, values: [] }];
+    expect(
+      CalibrationFrame.safeParse({ ...populatedFrame, falsePositivePatterns: malformed }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a group with a negative count', () => {
+    const malformed = [
+      {
+        pattern: 'test_sk_live_placeholder',
+        count: -1,
+        values: [
+          {
+            ruleId: 'secret-stripe-live-key',
+            category: 'secret',
+            valueFingerprint: 'fp-aaa',
+            keyVersion: 1,
+          },
+        ],
+      },
+    ];
+    expect(
+      CalibrationFrame.safeParse({ ...populatedFrame, falsePositivePatterns: malformed }).success,
+    ).toBe(false);
+  });
+
+  it('FalsePositivePatternGroup rejects a negative keyVersion', () => {
+    expect(
+      FalsePositivePatternGroup.safeParse({
+        pattern: 'test_sk_live_placeholder',
+        count: 1,
+        values: [
+          {
+            ruleId: 'secret-stripe-live-key',
+            category: 'secret',
+            valueFingerprint: 'fp-aaa',
+            keyVersion: -1,
+          },
+        ],
       }).success,
     ).toBe(false);
   });

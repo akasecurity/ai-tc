@@ -82,6 +82,12 @@ export const ROUTINE_KEY = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
 export const MULTI_KEY_STRIPE_KEY = ['sk', '_live_', 'aBcDeFgHiJkLmNoPqRsTuVwXyZmulti1'].join('');
 export const MULTI_KEY_GITHUB_KEY = ['ghp_', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ12multi901'].join('');
 
+// A fourth real AWS key, reused identically across THREE seeded messages by
+// seedRepeatedFalsePositiveTranscript() below — the repeated-value false
+// positive under one rule that gives the masked FP-pattern signal a group whose
+// count > 1. Composed at runtime for the same reason as the other keys above.
+export const REPEATED_FP_KEY = ['AKIA', 'TEQPSWRIUQF4V7JF'].join('');
+
 export class SetupJourney {
   readonly home: string;
   // The resolved ~/.aka/data store dir the scripts actually write to (base/data),
@@ -175,6 +181,33 @@ export class SetupJourney {
         message: { role: 'user', content: 'lets refactor the parser and add a couple of tests' },
       }),
     ];
+    const transcriptPath = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptPath, lines.join('\n'));
+    return transcriptPath;
+  }
+
+  // Seed a prior Claude Code transcript under the temp home carrying the SAME
+  // leaked AWS key (REPEATED_FP_KEY) repeated across THREE distinct messages —
+  // same rule, same raw value, same re-derived masked token — timestamped
+  // inside the retention window. Each message's surrounding text differs so
+  // the scan's content-hash dedup (scanHistory streams a hash of the whole
+  // message text) treats them as three distinct messages rather than folding
+  // them into one, so the backfill streams three separate hits under the SAME
+  // rule. The stub judge (writeFakeJudge) marks the first (sorted) hit under a
+  // shared rule genuine and every other hit false-positive, so the marked
+  // (model-dismissed) hits here are the other two — a masked FP-pattern group
+  // whose count is 2, not 1, proving the signal groups a REPEATED value rather
+  // than merely naming a single dismissed hit.
+  seedRepeatedFalsePositiveTranscript(): string {
+    const projectDir = join(this.home, '.claude', 'projects', '-Users-me-repeated-fp');
+    mkdirSync(projectDir, { recursive: true });
+    const lines = [5, 4, 3].map((daysAgo, i) =>
+      JSON.stringify({
+        type: 'user',
+        timestamp: new Date(Date.now() - daysAgo * DAY_MS).toISOString(),
+        message: { role: 'user', content: `example fixture key #${String(i)}: ${REPEATED_FP_KEY}` },
+      }),
+    );
     const transcriptPath = join(projectDir, 'session.jsonl');
     writeFileSync(transcriptPath, lines.join('\n'));
     return transcriptPath;

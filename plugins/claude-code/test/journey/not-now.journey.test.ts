@@ -5,8 +5,10 @@
  * This owns no behavior — the underlying units do — it just runs the shipped
  * Not-now scripts in wizard-step order and asserts each frame's rendered output
  * and the final store state. The Not-now leg grants ZERO historical access, so
- * unlike the Yes-scan spine it seeds no transcript and runs no backfill/scan: the
- * chain is intro.js (0.1) → start-light.js (0.3b) → onboard.js --floor (0.5, the
+ * unlike the Yes-scan spine it runs no backfill/scan even though a transcript is
+ * seeded — the history is there to be ignored, which is what makes the empty
+ * final store a real proof of non-ingestion. The chain is intro.js (0.1) →
+ * start-light.js (0.3b) → onboard.js --floor (0.5, the
  * start-light posture write). The chosen posture lands in the policies store
  * (~/.aka/data/aka.db), where onboard.ts writes it — settings.json is never
  * touched on the floor-only path, so no historical-review consent is recorded.
@@ -62,8 +64,10 @@ describe('Not-now start-light path, end-to-end', () => {
 
   beforeAll(() => {
     journey = new SetupJourney();
-    // NO seedTranscript — the Not-now leg declines the scan, so there is no
-    // history to calibrate from and the store is never populated by a scan.
+    // Seed a real transcript on disk BEFORE the spine runs. The Not-now leg
+    // declines the scan, so this history exists but must never be read — an empty
+    // store at the end is then proof of non-ingestion, not of an empty home.
+    journey.seedTranscript();
 
     // Kickoff intro (0.1).
     intro = journey.intro().stdout;
@@ -141,9 +145,10 @@ describe('Not-now start-light path, end-to-end', () => {
   });
 
   it('zero historical read: no scan side effects landed and no full-access consent was recorded', async () => {
-    // No transcript was seeded and historicalAccess was never set to 'full', so
+    // A transcript WAS seeded, but historicalAccess was never set to 'full', so
     // backfill's gate would refuse — and no backfill/scan ran here at all. The
-    // store must therefore carry no scanned findings and no suppression rows.
+    // store must therefore carry no scanned findings and no suppression rows
+    // despite there being real history on disk to find.
     const db = openLocalDatabase(journey.storeDir);
     try {
       expect(await db.findings.recentFindings()).toHaveLength(0);

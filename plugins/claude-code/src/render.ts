@@ -14,6 +14,7 @@ import type {
 } from '@akasecurity/plugin-sdk';
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
 import type {
+  ActionTaken,
   BuiltinPolicyId,
   DetectionException,
   DetectionListItem,
@@ -34,6 +35,7 @@ import {
   table,
   wrapText,
 } from './present.ts';
+import { downgradeWarning, isDowngrade } from './triage/gate-display.ts';
 
 // The fail-open note shown when the local store can't be READ (missing / corrupt
 // / locked db) mid-wizard: the calibration and first-run frames print this instead
@@ -218,13 +220,18 @@ export function renderStartLight(
 // three-column 'category │ recommended │ yours' table laying each pack's
 // recommended level beside the level the user chose, so a changed pack reads as
 // a different 'yours' value and the untouched packs repeat their recommended
-// level. Closes with the -WL adjust copy and the shared re-tune pointer at the
+// level. Closes with the adjust copy and the shared re-tune pointer at the
 // deep-tuning surface. Pure (no I/O); the caller hands in the recommended posture
-// (severityFloorPosture()) and the chosen map (that base with the user's
-// overrides overlaid), whose packs render in canonical category order.
+// (severityFloorPosture()), the chosen map (that base with the user's overrides
+// overlaid), and `current` — the store's existing action per category
+// (undefined = no row yet) — whose packs render in canonical category order.
+// A chosen level that ranks BELOW the category's existing action is an
+// enforcement downgrade and appends the shared WARNING footer, so the adjust fork
+// can no longer quietly lower a pack hardened out of band.
 export function renderAdjustConfirm(
   recommended: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+  current: Partial<Record<DetectionCategory, ActionTaken>> = {},
 ): string {
   const packs = (Object.keys(recommended) as DetectionCategory[]).sort(
     (a, b) => categoryRank(a) - categoryRank(b),
@@ -234,6 +241,10 @@ export function renderAdjustConfirm(
     recommended[category] ?? '',
     chosen[category] ?? recommended[category] ?? '',
   ]);
+  const downgrades = packs.filter((category) => {
+    const planned = chosen[category] ?? recommended[category];
+    return planned !== undefined && isDowngrade(planned, current[category]);
+  });
   return [
     '● Adjust — set the packs you want, keep the rest',
     '',
@@ -242,7 +253,9 @@ export function renderAdjustConfirm(
     indent("I'll keep the rest as recommended."),
     '',
     indent(RE_TUNE_HINT),
-  ].join('\n');
+  ]
+    .join('\n')
+    .concat(downgradeWarning(downgrades));
 }
 
 // The read commands the applying-confirmation "Ready" line points at once

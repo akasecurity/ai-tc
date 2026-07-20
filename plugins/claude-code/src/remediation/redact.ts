@@ -142,9 +142,19 @@ export function redactLeakedKeysDetailed(
       continue; // unreadable or vanished artifact — skip, don't abort the batch
     }
     const struckHere: RedactionTarget[] = [];
+    const struckValues = new Set<string>();
     for (const target of fileTargets) {
+      // A sibling target sharing this raw value already struck every occurrence
+      // in this file, so `content.includes` is now false even though this
+      // target's value IS redacted — count it struck rather than misreport it as
+      // still exposed (two findings on one repeated value both resolve together).
+      if (struckValues.has(target.rawValue)) {
+        struckHere.push(target);
+        continue;
+      }
       if (!content.includes(target.rawValue)) continue;
       content = content.replaceAll(target.rawValue, REDACTED_PLACEHOLDER);
+      struckValues.add(target.rawValue);
       struckHere.push(target);
     }
     if (struckHere.length === 0) continue;

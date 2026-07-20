@@ -1,7 +1,11 @@
 import { MaskedSecretFinding, type RotationChecklistEntry } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { renderRemediationDecision, renderResolvedSummary } from '../../src/remediation/render.ts';
+import {
+  renderRedactionOutcome,
+  renderRemediationDecision,
+  renderResolvedSummary,
+} from '../../src/remediation/render.ts';
 import { renderChecklistMarkdown } from '../../src/remediation/rotation-checklist.ts';
 
 // The RAW_* constants are what the underlying leak actually contains; each
@@ -278,5 +282,59 @@ describe('renderResolvedSummary', () => {
 
     expect(partial).toContain('Leaked secrets — partially redacted');
     expect(partial).toContain('Could not draft rotation-checklist.md at /nowhere.');
+  });
+});
+
+describe('renderRedactionOutcome — redact-only confirmation', () => {
+  it('renders the clean confirmation when every finding was struck', () => {
+    const findings = [stripeFinding(), awsFinding()];
+    expect(renderRedactionOutcome({ redactedKeys: 2, findings, unredactedFindings: [] })).toBe(
+      '✓ Redacted 2 keys',
+    );
+  });
+
+  it('pluralizes the clean confirmation over a single struck key', () => {
+    const findings = [stripeFinding()];
+    expect(renderRedactionOutcome({ redactedKeys: 1, findings, unredactedFindings: [] })).toBe(
+      '✓ Redacted 1 key',
+    );
+  });
+
+  it('never claims a clean strike on a partial redact-only outcome — it names the shortfall and the file still holding a live key', () => {
+    const secondAwsFinding = { ...awsFinding(), where: { filePath: '/tmp/second-agent-dump.txt' } };
+    const findings = [stripeFinding(), awsFinding(), secondAwsFinding];
+
+    // Two of three struck; the aws finding in the second file was not (it vanished
+    // or changed between the calibration scan and the redact-time re-scan) — the
+    // redact-only route must disclose this exactly as the resolved summary does.
+    const outcome = renderRedactionOutcome({
+      redactedKeys: 2,
+      findings,
+      unredactedFindings: [secondAwsFinding],
+    });
+
+    expect(outcome).not.toContain('✓ Redacted');
+    expect(outcome).toBe(
+      'Redacted 2 of 3 keys; 1 key still needs attention in /tmp/second-agent-dump.txt',
+    );
+  });
+
+  it('pluralizes the partial confirmation across more than one remaining key', () => {
+    const secondStripeFinding = {
+      ...stripeFinding(),
+      maskedToken: 'sk_live_…2222',
+      where: { filePath: '/tmp/second-agent-dump.txt' },
+    };
+    const findings = [stripeFinding(), secondStripeFinding, awsFinding()];
+
+    const outcome = renderRedactionOutcome({
+      redactedKeys: 1,
+      findings,
+      unredactedFindings: [secondStripeFinding, awsFinding()],
+    });
+
+    expect(outcome).toContain('Redacted 1 of 3 keys; 2 keys still need attention in');
+    expect(outcome).toContain('/tmp/second-agent-dump.txt');
+    expect(outcome).toContain(awsFinding().where.filePath);
   });
 });

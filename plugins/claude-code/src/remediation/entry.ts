@@ -60,7 +60,7 @@ import { presentBatchedRemediation, routeRemediationOption } from './chain.ts';
 import { resolveRemediationDeliverable } from './deliverable.ts';
 import { loadSecretLeakFindings } from './findings.ts';
 import { type StandingPostureResult, writeStandingSecretPosture } from './posture.ts';
-import { renderRedactionConfirmation, renderRemediationDecision } from './render.ts';
+import { renderRedactionOutcome, renderRemediationDecision } from './render.ts';
 import { redactSurfacedSecrets } from './surfaced-redact.ts';
 
 function fail(message: string): never {
@@ -212,11 +212,18 @@ async function route(
   switch (outcome.kind) {
     case 'redacted':
       // 'redact-only' has no resolved summary, so it prints its own redaction
-      // confirmation. 'redact-rotation-checklist' reports the redaction inside
-      // the resolved summary below (with the transcript count), so it does not
-      // print the standalone confirmation here — the strike is reported once.
+      // confirmation — partial-aware, naming any key left unredacted rather than
+      // claiming a clean strike. 'redact-rotation-checklist' reports the
+      // redaction inside the resolved summary below (with the transcript count),
+      // so it does not print the standalone confirmation here — reported once.
       if (!outcome.withRotationChecklist) {
-        process.stdout.write(`${renderRedactionConfirmation(outcome.redactedKeys)}\n`);
+        process.stdout.write(
+          `${renderRedactionOutcome({
+            redactedKeys: outcome.redactedKeys,
+            findings,
+            unredactedFindings: redaction.unredacted,
+          })}\n`,
+        );
       }
       // A 'redacted' outcome comes only from a redact route, where
       // requireRedactPosture already produced a validated level; persist it after

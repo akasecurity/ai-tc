@@ -16,6 +16,7 @@ import {
   platformRedactionScope,
   type RedactionScope,
   redactLeakedKeys,
+  redactLeakedKeysDetailed,
 } from '../../src/remediation/redact.ts';
 
 // Canonical test AWS access-key ids, composed at runtime so the repo's own secret
@@ -160,6 +161,27 @@ describe('redactLeakedKeys', () => {
 
     // The file whose key was absent is untouched.
     expect(readFileSync(absent, 'utf8')).toBe('no secret in this transcript');
+  });
+
+  it('counts every finding on a repeated value struck, not just the first', () => {
+    // The same raw secret value appears twice in one transcript and is surfaced
+    // as TWO findings (two targets sharing one rawValue). The first strike's
+    // replaceAll clears every occurrence, so the second target's value is already
+    // gone — it must still count as struck, never misreported as still exposed.
+    const transcriptFile = join(transcriptRoot, 'repeated.jsonl');
+    writeFileSync(transcriptFile, `one ${TRANSCRIPT_KEY} two ${TRANSCRIPT_KEY} done`);
+
+    const targets = [
+      { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+      { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+    ];
+    const detail = redactLeakedKeysDetailed(targets, scope);
+
+    // Both findings resolve on the single rewrite: counted and struck, so a
+    // caller diffing its input against `struck` finds nothing left unredacted.
+    expect(detail.redactedKeys).toBe(2);
+    expect(detail.struck).toEqual(targets);
+    expect(readFileSync(transcriptFile, 'utf8')).not.toContain(TRANSCRIPT_KEY);
   });
 
   it('the production default scope does not treat an arbitrary temp file as in-scope', () => {

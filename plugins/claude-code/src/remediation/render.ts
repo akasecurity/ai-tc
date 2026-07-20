@@ -68,6 +68,41 @@ export function renderRedactionConfirmation(redactedKeys: number): string {
   return `✓ Redacted ${String(redactedKeys)} ${noun}`;
 }
 
+// The honest partial-strike line — "Redacted N of M keys; K still need attention
+// in <files>" — shared by the redact-only confirmation and the resolved summary
+// so a partial redaction reads identically wherever it surfaces.
+export function renderPartialRedactionLine(
+  redactedKeys: number,
+  totalKeys: number,
+  unredactedFindings: readonly MaskedSecretFinding[],
+): string {
+  const remainingCount = unredactedFindings.length;
+  const remainingFiles = [...new Set(unredactedFindings.map((finding) => finding.where.filePath))];
+  const totalNoun = totalKeys === 1 ? 'key' : 'keys';
+  const remainingNoun = remainingCount === 1 ? 'key' : 'keys';
+  const remainingVerb = remainingCount === 1 ? 'needs' : 'need';
+  return (
+    `Redacted ${String(redactedKeys)} of ${String(totalKeys)} ${totalNoun}; ` +
+    `${String(remainingCount)} ${remainingNoun} still ${remainingVerb} attention in ${remainingFiles.join(', ')}`
+  );
+}
+
+// The standalone redaction confirmation for the redact-only route (no rotation
+// checklist, so no resolved summary carries the strike). Honest about a partial
+// strike: when some findings were left unredacted it names the count still
+// outstanding and the file(s) that still hold a live key, rather than a bare
+// "✓ Redacted N keys" that a partial strike must never earn.
+export function renderRedactionOutcome(input: {
+  readonly redactedKeys: number;
+  readonly findings: readonly MaskedSecretFinding[];
+  readonly unredactedFindings: readonly MaskedSecretFinding[];
+}): string {
+  const totalKeys = input.findings.length;
+  const isComplete = input.redactedKeys === totalKeys && input.unredactedFindings.length === 0;
+  if (isComplete) return renderRedactionConfirmation(input.redactedKeys);
+  return renderPartialRedactionLine(input.redactedKeys, totalKeys, input.unredactedFindings);
+}
+
 // The "resolved" framing is only ever honest when every leaked key was struck.
 // `renderResolvedSummary` renders that framing exactly when `redactedKeys`
 // covers every finding AND the caller reports no finding left unredacted —
@@ -94,16 +129,11 @@ export function renderResolvedSummary(
   const checklistLine = input.degradedNote ?? renderRotationChecklistResolvedLine(input.location);
 
   if (!isComplete) {
-    const remainingCount = input.unredactedFindings.length;
-    const remainingFiles = [
-      ...new Set(input.unredactedFindings.map((finding) => finding.where.filePath)),
-    ];
-    const totalNoun = totalKeys === 1 ? 'key' : 'keys';
-    const remainingNoun = remainingCount === 1 ? 'key' : 'keys';
-    const remainingVerb = remainingCount === 1 ? 'needs' : 'need';
-    const redactionLine =
-      `Redacted ${String(input.redactedKeys)} of ${String(totalKeys)} ${totalNoun}; ` +
-      `${String(remainingCount)} ${remainingNoun} still ${remainingVerb} attention in ${remainingFiles.join(', ')}`;
+    const redactionLine = renderPartialRedactionLine(
+      input.redactedKeys,
+      totalKeys,
+      input.unredactedFindings,
+    );
 
     return ['Leaked secrets — partially redacted', redactionLine, checklistLine, '', preview].join(
       '\n',

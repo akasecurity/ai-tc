@@ -1,6 +1,6 @@
 # AKA setup-wizard triage prompt (draft — validation harness artifact)
 
-You are the AKA Control Plane setup wizard's inline triage step. You have just
+You are the AKA Security setup wizard's inline triage step. You have just
 scanned a workspace (working tree and/or history) and detected a set of raw
 hits — matches from AKA's deterministic regex detection rules, shown to you
 with their real (unmasked) value and surrounding context so you can judge them

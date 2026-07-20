@@ -1,6 +1,7 @@
 import {
   CalibrationFrame,
   type CalibrationPreview,
+  type FalsePositivePatternGroup,
   type MaskedSecretFinding,
   severityFloorPosture,
 } from '@akasecurity/schema';
@@ -190,6 +191,58 @@ describe('frameCalibration — additive masked per-finding summaries', () => {
     const { frame } = frameCalibration(preview);
     const emitted = readFrameJsonBlock(frameJsonBlock(frame)) as Record<string, unknown>;
     expect('maskedFindings' in emitted).toBe(false);
+    expect(CalibrationFrame.safeParse(emitted).success).toBe(true);
+  });
+});
+
+describe('frameCalibration — additive masked false-positive pattern groups', () => {
+  const patterns: FalsePositivePatternGroup[] = [
+    {
+      pattern: 'test_sk_live_placeholder',
+      count: 12,
+      values: [
+        {
+          ruleId: 'secrets/stripe-live-key',
+          category: 'secret',
+          valueFingerprint: 'ab'.repeat(32),
+          keyVersion: 1,
+        },
+      ],
+    },
+  ];
+
+  it('carries the FP-pattern groups into the frame when patterns are supplied', () => {
+    const { frame } = frameCalibration(preview, [], patterns);
+    expect(frame.falsePositivePatterns).toEqual(patterns);
+    // Additive, not a reshape: the existing counts/category fields are untouched.
+    expect(frame.counts).toEqual({ total: 161, important: 3, routine: 158 });
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('omits falsePositivePatterns when none are supplied — a pre-existing frame still validates', () => {
+    const { frame } = frameCalibration(preview);
+    expect(frame.falsePositivePatterns).toBeUndefined();
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('omits falsePositivePatterns on an empty supplied set rather than emitting []', () => {
+    const { frame } = frameCalibration(preview, [], []);
+    expect(frame.falsePositivePatterns).toBeUndefined();
+    expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+  });
+
+  it('carries the FP-pattern groups through the real frame-JSON emission seam', () => {
+    const { frame } = frameCalibration(preview, [], patterns);
+    const emitted = readFrameJsonBlock(frameJsonBlock(frame));
+    const reparsed = CalibrationFrame.safeParse(emitted);
+    expect(reparsed.success).toBe(true);
+    expect(reparsed.success && reparsed.data.falsePositivePatterns).toEqual(patterns);
+  });
+
+  it('emits a frame with no falsePositivePatterns key through the seam when none surfaced', () => {
+    const { frame } = frameCalibration(preview);
+    const emitted = readFrameJsonBlock(frameJsonBlock(frame)) as Record<string, unknown>;
+    expect('falsePositivePatterns' in emitted).toBe(false);
     expect(CalibrationFrame.safeParse(emitted).success).toBe(true);
   });
 });

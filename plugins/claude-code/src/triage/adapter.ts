@@ -28,6 +28,7 @@ import { frameCalibration, frameEmptyState } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
+import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
@@ -197,7 +198,12 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // raw-free MaskedSecretFinding shape and carried additively in the frame.
     // Empty for a clean/all-suppressed run, so the optional field is omitted.
     const maskedFindings = deriveSurfacedSecretFindings(hits, rec, plan);
-    const calibration = frameCalibration(preview, maskedFindings);
+    // The masked false-positive pattern groups the fixture/exception offer names
+    // its pattern and count from: the marked hits, re-derived to their masked
+    // token and grouped, carried additively in the frame. Empty when nothing was
+    // marked a false positive, so the optional field is omitted (fail-open).
+    const falsePositivePatterns = deriveFalsePositivePatterns(hits, rec, plan);
+    const calibration = frameCalibration(preview, maskedFindings, falsePositivePatterns);
 
     // The calibrated-result card: the real-count headline over the
     // preview's genuine/suppressed split, then the condensed one-row-per-pack

@@ -22,11 +22,45 @@ export const CalibrationCounts = z
   });
 export type CalibrationCounts = z.infer<typeof CalibrationCounts>;
 
+// The exact value identity of one masked hit within a false-positive pattern
+// group: the same ruleId/valueFingerprint/keyVersion identity carried on
+// TriageHit, required (not optional) here because this is the identity a
+// pre-filled exception offer keys its written grant on — the offer cannot key
+// on a value it cannot identify. `category` travels per value (denormalized
+// from the hit) because a group is keyed by masked token alone, and one masked
+// token can collide across categories — so the written exception stamps each
+// value's own category, never a single group-level one. No `.meta({ id })`,
+// matching the TriageHit convention (no API route references it).
+export const FalsePositivePatternValue = z.object({
+  ruleId: z.string(),
+  category: DetectionCategory,
+  valueFingerprint: z.string(),
+  keyVersion: z.number().int().nonnegative(),
+});
+export type FalsePositivePatternValue = z.infer<typeof FalsePositivePatternValue>;
+
+// One masked false-positive pattern group: the display-only masked token
+// (`pattern`, what Claude speaks, e.g. `test_sk_live_placeholder`) and the
+// `count` of marked hits that share it, plus the exact value identity of each
+// underlying hit (`values`). Distinct raw values can collide on one masked
+// `pattern` — the pattern×count grouping is display-only and does NOT by
+// itself identify a value to except, so `values` may carry more than one
+// distinct `valueFingerprint` for a single group. `count` is expected to equal
+// the marked-hit total for the token; the producer emitting this signal owns
+// getting that right, this schema only checks each field's own shape. No
+// `.meta({ id })`, matching the CalibrationFrame/TriageHit convention (no API
+// route references it).
+export const FalsePositivePatternGroup = z.object({
+  pattern: z.string(),
+  count: z.number().int().nonnegative(),
+  values: z.array(FalsePositivePatternValue).min(1),
+});
+export type FalsePositivePatternGroup = z.infer<typeof FalsePositivePatternGroup>;
+
 // One kind of finding present in the scanned history, counted and tagged on the
 // egress-kind axis: `egress` marks an outbound-leak kind, distinct from an
-// at-rest exposure (e.g. a live key sitting in a transcript). The honest-positive
-// line is gated on the absence of any egress-kind finding across a frame's
-// `findingKinds`.
+// at-rest exposure (e.g. a live key sitting in a transcript). The axis is
+// carried on each frame's `findingKinds` for callers that distinguish the two.
 export const CalibrationFindingKind = z.object({
   category: DetectionCategory,
   count: z.number().int().nonnegative(),
@@ -43,9 +77,16 @@ export type CalibrationFindingKind = z.infer<typeof CalibrationFindingKind>;
 // consumers only add fields. `maskedFindings` is the first such extension: an
 // optional array of raw-free per-finding summaries the finding table renders
 // from and the narration reads the same fields off of; kept `.optional()` so
-// zero-finding and pre-existing calibration frames still validate unchanged. The
-// other known extension point is the egress predicate computed over
-// `findingKinds` (its `egress` axis) by the honest-positive-line consumer.
+// zero-finding and pre-existing calibration frames still validate unchanged.
+// `falsePositivePatterns` is a second additive extension, on the same
+// `.optional()` discipline: the masked false-positive patterns marked by the
+// triage preview, grouped by their display-only masked token with a count,
+// each group's `values` carrying the exact value identity of the underlying
+// marked hits — the grounded signal the fixture/exception offer names its
+// pattern and count from, and keys its written exception on, instead of
+// inventing either. Omitted when no hit is marked a false positive
+// (fail-open). `findingKinds` additionally carries the per-kind `egress` axis
+// (outbound-leak vs at-rest) for callers that distinguish the two.
 //
 // No `.meta({ id })` — no API route references this shape, matching the
 // TriageHit/TriageRecommendation convention (an unrouted id would still register
@@ -58,6 +99,7 @@ export const CalibrationFrame = z.object({
   findingKinds: z.array(CalibrationFindingKind),
   posture: z.record(DetectionCategory, BuiltinPolicyId),
   maskedFindings: z.array(MaskedSecretFinding).optional(),
+  falsePositivePatterns: z.array(FalsePositivePatternGroup).optional(),
 });
 export type CalibrationFrame = z.infer<typeof CalibrationFrame>;
 

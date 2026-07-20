@@ -14,6 +14,7 @@ import type {
   CalibrationPreview,
   CalibrationResult,
   DetectionCategory,
+  FalsePositivePatternGroup,
   MaskedSecretFinding,
 } from '@akasecurity/schema';
 
@@ -35,6 +36,7 @@ const SURFACED_KIND_LABEL: Record<DetectionCategory, string> = {
 export function frameCalibration(
   preview: CalibrationPreview,
   maskedFindings: readonly MaskedSecretFinding[] = [],
+  falsePositivePatterns: readonly FalsePositivePatternGroup[] = [],
 ): CalibrationResult {
   const important = preview.categories.reduce((n, c) => n + c.genuineCount, 0);
   const routine = preview.categories.reduce((n, c) => n + c.fpCount, 0);
@@ -53,6 +55,9 @@ export function frameCalibration(
   // optional `maskedFindings` field is populated only when a secret finding
   // surfaced, so an empty set omits it entirely and a pre-existing frame without
   // it still validates. The finding table and the narration read these fields.
+  // `falsePositivePatterns` follows the same additive discipline: populated only
+  // when a hit was marked a false positive, so a clean run's frame still omits
+  // it entirely — the fixture/exception offer's grounded pattern×count signal.
   const frame: CalibrationFrame = {
     counts: { total, important, routine },
     routineCategories,
@@ -60,6 +65,9 @@ export function frameCalibration(
     findingKinds,
     posture: preview.posture,
     ...(maskedFindings.length > 0 ? { maskedFindings: [...maskedFindings] } : {}),
+    ...(falsePositivePatterns.length > 0
+      ? { falsePositivePatterns: [...falsePositivePatterns] }
+      : {}),
   };
 
   const kind = surfacedCategories.map((c) => SURFACED_KIND_LABEL[c]).join(', ');

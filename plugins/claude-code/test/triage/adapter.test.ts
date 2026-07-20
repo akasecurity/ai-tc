@@ -987,6 +987,75 @@ describe('runApply — preview derives surfaced secret findings into the frame',
   });
 });
 
+describe('runApply — preview derives the masked false-positive pattern signal into the frame', () => {
+  it('carries the masked FP-pattern group when a hit is marked a false positive', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => verdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    const frame = parsed.data;
+    // The group's pattern is re-derived from the raw value (never the streamed
+    // maskedMatch), and it carries the marked hit's exact value identity so a
+    // later exception offer can key its written grant on it.
+    expect(frame.falsePositivePatterns).toEqual([
+      {
+        pattern: safeMaskedMatch(RAW),
+        count: 1,
+        values: [
+          { ruleId: 'core-secret/aws', category: 'secret', valueFingerprint: FP, keyVersion: 1 },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(frame.falsePositivePatterns)).not.toContain(RAW);
+  });
+
+  it('omits falsePositivePatterns when nothing was marked a false positive', async () => {
+    const surfacedVerdict = (): TriageRecommendation => ({
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'a genuine live key in an old transcript',
+          genuineCount: 1,
+          fpCount: 0,
+          fpIds: [],
+        },
+      ],
+      notes: 'looks routine',
+    });
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => surfacedVerdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    // Fail-open: the optional field is entirely absent, not an empty array.
+    expect(parsed.data.falsePositivePatterns).toBeUndefined();
+    const emitted = readFrameJsonBlock(out.join('')) as Record<string, unknown>;
+    expect('falsePositivePatterns' in emitted).toBe(false);
+  });
+});
+
 describe('runApply — preview degrades fail-open when the local store is unreadable', () => {
   it('substitutes the store-unavailable note instead of throwing, and never fabricates a count', async () => {
     const out: string[] = [];

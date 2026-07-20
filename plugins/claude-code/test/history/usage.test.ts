@@ -200,7 +200,10 @@ describe('reconcileHistory — backfill', () => {
 
   it('writes one llm_call per usage-bearing assistant message and a session root', async () => {
     seed(transcripts, transcript());
-    const summary = await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
+    const summary = await reconcileHistory(config(dataDir), {
+      dir: transcripts,
+      now: RECONCILE_NOW,
+    });
 
     expect(summary.sessions).toBe(1);
     expect(summary.llmCalls).toBe(2); // msg_1 + msg_2; synthetic + zero-usage dropped
@@ -310,7 +313,10 @@ describe('reconcileHistory — tool calls', () => {
 
   it('writes one tool_call per tool_use, parented on the session root, with run_key + metadata', async () => {
     seed(transcripts, toolTranscript());
-    const summary = await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
+    const summary = await reconcileHistory(config(dataDir), {
+      dir: transcripts,
+      now: RECONCILE_NOW,
+    });
 
     expect(summary.toolCalls).toBe(1);
     const { parentId, rootId, attrs } = toolCallRow(dataDir);

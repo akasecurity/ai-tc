@@ -180,10 +180,10 @@ export type GetActivityStatsResponse = z.infer<typeof GetActivityStatsResponse>;
 
 // ─── listActivitySessions ──────────────────────────────────────────────────────
 
-/** GET /v1/activity/sessions query params. No boolean params exist here today
- * — if one is ever added it MUST use `z.stringbool()`, never
- * `z.coerce.boolean()` (`Boolean(str)` is true for any non-empty string, so
- * `?flag=false`/`?flag=0` would wrongly coerce to `true` — see shares.ts). */
+/** GET /v1/activity/sessions query params. Boolean params (excludeEmpty) MUST
+ * use `z.stringbool()`, never `z.coerce.boolean()` (`Boolean(str)` is true for
+ * any non-empty string, so `?flag=false`/`?flag=0` would wrongly coerce to
+ * `true` — see shares.ts). */
 export const ListActivitySessionsQuery = z.object({
   /** Case-insensitive match over session title/project/branches AND event title/detail (server-side). */
   q: z.string().optional(),
@@ -193,6 +193,10 @@ export const ListActivitySessionsQuery = z.object({
   from: z.union([z.iso.date(), z.iso.datetime()]).optional(),
   /** Upper bound on startedAt; omitted defaults to now. */
   to: z.union([z.iso.date(), z.iso.datetime()]).optional(),
+  /** Exclude zero-activity sessions — roots whose only recorded children are
+   * bookkeeping rows (hooks, config scans), typically background `claude`
+   * launches. Omitted = list everything. `z.stringbool()` per the note above. */
+  excludeEmpty: z.stringbool().optional(),
   /** Page size, 1–100; out-of-range values are a 400. `z.coerce` — query params arrive as strings. */
   limit: z.coerce.number().int().min(1).max(100).default(50),
   /** Opaque pagination cursor (most-recent first). */
@@ -205,6 +209,10 @@ export const ListActivitySessionsResponse = z
     items: z.array(ActivitySessionSummary),
     /** `null` once the last page is reached. */
     nextCursor: z.string().nullable(),
+    /** Zero-activity sessions matching the query's filters/range (whether or
+     * not `excludeEmpty` dropped them from `items`) — the count a UI toggle
+     * shows when collapsing them. */
+    emptyCount: z.number().int().nonnegative(),
   })
   .meta({ id: 'ListActivitySessionsResponse' });
 export type ListActivitySessionsResponse = z.infer<typeof ListActivitySessionsResponse>;

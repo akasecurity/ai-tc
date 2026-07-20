@@ -1,19 +1,38 @@
 // The audit-log timeline: a vertical rail of events, each with a tinted node,
 // timestamp, title + badges, and detail line. Presentational — takes events via props.
-import type { AuditEvent } from '@akasecurity/schema';
+import type { ActivityLink, AuditEvent } from '@akasecurity/schema';
 import { Badge, Button, cn, SeverityBadge } from '@akasecurity/ui-kit';
 
 import { AlertIcon, ArrowUpRightIcon, ShieldCheckIcon } from '../shared/icons.tsx';
 import { eventTime } from './format.ts';
 import { EVENT_META, LINK_LABEL, TOOL_META } from './meta.ts';
 
-function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; last: boolean }) {
+/**
+ * Host-supplied href builder for an event's cross-referencing deep link
+ * (`event.link` + `event.targetId` → the linked surface's URL). Returning null
+ * suppresses the link for that event; omitting the prop suppresses all of them —
+ * the view never renders a link target it can't navigate to.
+ */
+export type BuildActivityLinkHref = (link: ActivityLink, targetId: string | null) => string | null;
+
+function EventRow({
+  event,
+  first,
+  last,
+  linkHref,
+}: {
+  event: AuditEvent;
+  first: boolean;
+  last: boolean;
+  linkHref?: BuildActivityLinkHref;
+}) {
   const meta = EVENT_META[event.kind];
   const Icon =
     event.kind === 'tool' && event.tool ? (TOOL_META[event.tool] ?? meta.icon) : meta.icon;
   const pulse = event.kind === 'active';
   const mono = event.kind === 'tool' || event.kind === 'commit';
   const linkLabel = event.link ? LINK_LABEL[event.link] : null;
+  const href = event.link && linkHref ? linkHref(event.link, event.targetId) : null;
 
   return (
     <div className="grid grid-cols-[60px_24px_1fr] gap-x-3">
@@ -61,10 +80,12 @@ function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; l
         </div>
         <div className={cn('mt-0.5 text-xs text-text-2', mono && 'font-mono')}>
           {event.detail}
-          {linkLabel && (
-            <Button variant="link" tone="primary" className="ml-2 text-xs font-normal">
-              Open in {linkLabel}
-              <ArrowUpRightIcon aria-hidden focusable={false} />
+          {linkLabel && href && (
+            <Button asChild variant="link" tone="primary" className="ml-2 text-xs font-normal">
+              <a href={href}>
+                Open in {linkLabel}
+                <ArrowUpRightIcon aria-hidden focusable={false} />
+              </a>
             </Button>
           )}
         </div>
@@ -73,11 +94,24 @@ function EventRow({ event, first, last }: { event: AuditEvent; first: boolean; l
   );
 }
 
-export function AuditTimelineView({ events }: { events: AuditEvent[] }) {
+export function AuditTimelineView({
+  events,
+  linkHref,
+}: {
+  events: AuditEvent[];
+  /** Optional — see BuildActivityLinkHref; without it events render no deep links. */
+  linkHref?: BuildActivityLinkHref;
+}) {
   return (
     <div>
       {events.map((event, i) => (
-        <EventRow key={event.id} event={event} first={i === 0} last={i === events.length - 1} />
+        <EventRow
+          key={event.id}
+          event={event}
+          first={i === 0}
+          last={i === events.length - 1}
+          {...(linkHref ? { linkHref } : {})}
+        />
       ))}
     </div>
   );

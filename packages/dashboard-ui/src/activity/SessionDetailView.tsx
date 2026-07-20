@@ -12,6 +12,7 @@ import { MetaItem } from '../shared/DetailFields.tsx';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ArrowUpRightIcon,
   BoltIcon,
   DownloadIcon,
   ListIcon,
@@ -20,7 +21,7 @@ import {
 import { Provider, PROVIDERS } from '../shared/Provider.tsx';
 import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
 import { MetaChips, SessionStatusBadge, ToolChip } from './atoms.tsx';
-import { AuditTimelineView } from './AuditTimelineView.tsx';
+import { AuditTimelineView, type BuildActivityLinkHref } from './AuditTimelineView.tsx';
 import {
   cacheHitPct,
   dayLabel,
@@ -51,10 +52,14 @@ function downloadSession(session: ActivitySession): void {
 function DetailBody({
   session,
   tokenReport,
+  liveFindings,
+  linkHref,
   toolHref,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
+  liveFindings?: { count: number; href: string } | null;
+  linkHref?: BuildActivityLinkHref;
   toolHref?: (toolName: string) => string;
 }) {
   const harness = PROVIDERS[session.harness];
@@ -111,8 +116,30 @@ function DetailBody({
           </MetaItem>
           <MetaItem label="Turns">{session.turns}</MetaItem>
           <MetaItem label="Findings">
-            {session.findings > 0 ? (
-              <span className="font-semibold text-sev-critical">{session.findings} triggered</span>
+            {session.findings > 0 || liveFindings ? (
+              <span className="inline-flex flex-wrap items-center gap-x-1.5">
+                {session.findings > 0 && (
+                  <span
+                    className="font-semibold text-sev-critical"
+                    title="Detection firings across this session's transcript — the same value fires once per event it appears in"
+                  >
+                    {session.findings} triggered
+                  </span>
+                )}
+                {session.findings > 0 && liveFindings && (
+                  <span className="text-border-strong">·</span>
+                )}
+                {liveFindings && (
+                  <a
+                    href={liveFindings.href}
+                    className="inline-flex items-center gap-0.5 font-semibold text-sev-critical underline-offset-2 hover:underline"
+                    title="Unique findings recorded by live enforcement — open in Findings"
+                  >
+                    {liveFindings.count} enforced live
+                    <ArrowUpRightIcon aria-hidden focusable={false} className="size-3.5" />
+                  </a>
+                )}
+              </span>
             ) : (
               <span className="text-ok">None</span>
             )}
@@ -212,7 +239,7 @@ function DetailBody({
             <WidgetEmpty message="No events recorded for this session yet" />
           )
         ) : (
-          <AuditTimelineView events={session.events} />
+          <AuditTimelineView events={session.events} {...(linkHref ? { linkHref } : {})} />
         )}
       </div>
 
@@ -241,6 +268,8 @@ export function SessionDetailView({
   isLoading,
   error,
   tokenReport,
+  liveFindings,
+  linkHref,
   toolHref,
 }: {
   session: ActivitySession | null;
@@ -251,6 +280,14 @@ export function SessionDetailView({
    * that omits it (e.g. until cost is available) leaves the
    * band/breakdown hidden. */
   tokenReport?: SessionTokenReport | null;
+  /** The session's live-enforced findings: unique-value count + the
+   * session-scoped findings-page href it links to. Shown beside the
+   * transcript-firing tally (`session.findings`), which counts every firing —
+   * the two legitimately differ. Optional/null → only the tally renders. */
+  liveFindings?: { count: number; href: string } | null;
+  /** Href builder for the timeline's cross-referencing event links — see
+   * BuildActivityLinkHref. Omitted → the timeline renders no deep links. */
+  linkHref?: BuildActivityLinkHref;
   /** Href for a tool chip (e.g. the findings page filtered to that tool).
    * Optional: omitted, the chips render as plain text. */
   toolHref?: (toolName: string) => string;
@@ -283,6 +320,8 @@ export function SessionDetailView({
     <DetailBody
       session={session}
       tokenReport={tokenReport ?? null}
+      liveFindings={liveFindings ?? null}
+      {...(linkHref ? { linkHref } : {})}
       {...(toolHref ? { toolHref } : {})}
     />
   );

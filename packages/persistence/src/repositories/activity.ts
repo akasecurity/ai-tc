@@ -322,6 +322,16 @@ const TIMELINE_COLUMNS = `
 // identically for bare session rows too, not just for fully-attributed seed data.
 const SESSION_ROOT = `event_type = 'session'`;
 
+// A session root "has activity" when any child event is more than bookkeeping —
+// hooks and config scans are recorded for every launch (including background
+// `claude` invocations that never see a prompt), so they alone don't make a
+// session worth listing. Correlates on the outer `audit_events` row; served by
+// idx_audit_session (root_session_id, started_at).
+const HAS_ACTIVITY = `EXISTS (
+  SELECT 1 FROM audit_events c
+  WHERE c.root_session_id = audit_events.id
+    AND c.event_type NOT IN ('hook', 'config_scan'))`;
+
 /**
  * Activity read views over the tenant-free local `audit_events` store. Runs the
  * session/timeline queries on node:sqlite (epoch-ms integer columns,
@@ -340,10 +350,14 @@ export class SqliteActivityRepository implements ActivityReadPort {
     const window = todayWindow(tz ?? defaultTimeZone(), this.now());
     const { startMs, endMs } = window;
 
+    // Only sessions with real activity — background `claude` launches record a
+    // root (plus hook/config-scan bookkeeping) and nothing else, and would
+    // otherwise dominate the count on stores where they outnumber real work.
     const sessionsToday = countScalar(
       this.db,
       `SELECT count(*) AS n FROM audit_events
-           WHERE ${SESSION_ROOT} AND started_at >= ? AND started_at < ?`,
+           WHERE ${SESSION_ROOT} AND started_at >= ? AND started_at < ?
+             AND ${HAS_ACTIVITY}`,
       [startMs, endMs],
     );
 
@@ -445,6 +459,20 @@ export class SqliteActivityRepository implements ActivityReadPort {
       );
       params.push(pattern, pattern, pattern, pattern, pattern, pattern);
     }
+    // Zero-activity sessions matching the filters so far (range/harness/q, no
+    // cursor — the count is page-independent). Always reported, so the UI's
+    // collapse toggle can label itself; the page itself drops them only when
+    // the query says so. This second scan doubles the q-search predicate's
+    // cost when a q is set — accepted: searches are debounced and the count
+    // must honor the same filters the list does.
+    const emptyCount = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM audit_events
+        WHERE ${[...conditions, `NOT ${HAS_ACTIVITY}`].join(' AND ')}`,
+      params as SQLInputValue[],
+    );
+    if (query.excludeEmpty) conditions.push(HAS_ACTIVITY);
+
     if (cursor) {
       // Keyset pagination, expanded tuple comparison (node:sqlite has no row-
       // value syntax): strictly-earlier startedAt, or same startedAt + lower id.
@@ -490,7 +518,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
     const nextCursor =
       hasMore && last ? encodeCursor({ startedAtMs: last.started_at, id: last.id }) : null;
 
-    return Promise.resolve({ items, nextCursor });
+    return Promise.resolve({ items, nextCursor, emptyCount });
   }
 
   getSession(sessionId: string): Promise<ActivitySession | null> {

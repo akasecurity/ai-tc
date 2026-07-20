@@ -1,0 +1,42 @@
+name: Internal-path guard
+
+# Fails if any maintainer-internal file is ever committed to this public
+# repository. Maintainer-internal working directories carry a `.aka-internal`
+# marker at their root, and any lone internal workflow follows an
+# `*.internal.yml` naming convention; this job rejects either marker anywhere in
+# the tree. It never names an internal path, so the guard itself discloses
+# nothing beyond the convention. Runs on every pull request regardless of its
+# base branch, so a change targeting an intermediate branch in a stack is
+# guarded too, not only PRs that target main directly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Reject internal-only paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for internal-only markers
+        run: |
+          hits="$(git ls-files -- \
+            ':(glob)**/.aka-internal' \
+            ':(glob)**/*.internal.*')"
+          if [ -n "$hits" ]; then
+            echo "::error::Maintainer-internal files must not be committed to this public repository:"
+            echo "$hits" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "OK — no internal-only markers present."

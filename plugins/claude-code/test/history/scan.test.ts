@@ -159,6 +159,27 @@ describe('buildTriageHit', () => {
     );
     expect(hit.maskedMatch).toBe(safeMaskedMatch(BACKFILL_SECRET));
     expect(hit.rawMatch).toBe(BACKFILL_SECRET);
+    // No source path was supplied, so filePath is absent — the finding derives
+    // '(location unavailable)' downstream rather than an empty-string path.
+    expect(hit.filePath).toBeUndefined();
+  });
+
+  it('carries the source transcript path when one is supplied, so a surfaced finding can be located and struck', () => {
+    const path = '/Users/me/.claude/projects/-Users-me-project/session.jsonl';
+    const text = `padding ${BACKFILL_SECRET} padding`;
+    const start = text.indexOf(BACKFILL_SECRET);
+    const finding = {
+      ruleId: 'secrets/aws-access-key',
+      category: 'secret' as const,
+      severity: 'critical' as const,
+      rawMatch: BACKFILL_SECRET,
+      span: { start, end: start + BACKFILL_SECRET.length },
+      confidence: 0.9,
+    };
+
+    const hit = buildTriageHit(text, finding, [], path);
+
+    expect(hit.filePath).toBe(path);
   });
 
   it('never sets maskedMatch to the raw value, even for a single-char-local-part email', () => {
@@ -246,6 +267,10 @@ describe('scanHistory — onHit sink', () => {
     const otherHit = hits.find((h) => h.rawMatch === otherSecret);
     expect(backfillHit?.context).not.toContain(otherSecret);
     expect(otherHit?.context).not.toContain(BACKFILL_SECRET);
+    // Each streamed hit carries the real transcript it was found in, so the
+    // remediation redact path can locate and strike the leaked key in place.
+    expect(backfillHit?.filePath).toBe(join(transcripts, '-Users-me-project', 'session.jsonl'));
+    expect(otherHit?.filePath).toBe(join(transcripts, '-Users-me-other-project', 'session.jsonl'));
   });
 
   it('redacts a neighboring secret from context when two findings share one message', async () => {

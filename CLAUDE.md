@@ -38,7 +38,7 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply, and the Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
 
 ## Package dependency rules
 

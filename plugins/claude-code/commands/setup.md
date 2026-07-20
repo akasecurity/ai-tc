@@ -1,22 +1,19 @@
 ---
-description: Set up the AKA Control Plane plugin — evidence-first detection posture and historical access
+description: Set up AKA Security — calibrate notifications and detection posture from Claude's real activity.
 ---
 
 # AKA setup wizard
 
-You are onboarding the AKA Control Plane plugin for this machine. AKA works
+You are onboarding the AKA Security plugin for this machine. AKA works
 fully locally with **zero backend and zero Docker**: detection runs in-process
 and findings persist to a local SQLite store at `~/.aka/data/aka.db`.
 
-This wizard is **evidence-first**: instead of asking you to guess a global
-redact/warn setting up front, it looks at your _actual_ history for real
-leaked findings, triages them (silently filtering the routine false-positive
-noise regex rules produce), and recommends a detection **posture per
-category** (`secret`, `pii`, `financial`, `phi`, `code_context`, `code_flaw`,
-`config`, `custom`) — shown to you with its reasoning — before anything is
-written. If there isn't enough history to judge, or you decline the
-historical review, it falls back to a conservative severity-derived floor
-instead of guessing.
+This wizard tells a **calibration story**: introduce AKA → show what it does →
+offer one retroactive scan → report the real numbers it found and the posture it
+recommends → apply on confirmation → show the installed summary → hand off to the
+dashboard. Everything the user sees is derived from their _actual_ history — never
+a fabricated or demo number. When there isn't enough history to judge, the wizard
+falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment itself runs in a **separate, transient
 subprocess that writes no transcript** — the raw (unmasked) finding values are
@@ -24,21 +21,22 @@ never read into this conversation or your scannable history. You act only on the
 raw-free plan that subprocess prints back.
 
 Follow the steps below **in order**. Nothing is written to the policy store
-until step 5 (or the floor branch in step 2).
+until step 5 (or a floor fallback in step 3 if the calibration can't complete).
 
-## 0. Show the intro card
+## 0. Show the kickoff and 'what I do' cards
 
-Run the intro script and show the user its output **exactly as printed** — it is a
-space-aligned monospace card (name, repository, version, what AKA adds). The script
-already prints it inside a Markdown code fence; reproduce that verbatim and do
-**not** add another code fence, strip the fence, or reformat it (unfenced, Markdown
-collapses the indentation and mangles the `●` line).
+Run the intro script and show the user its output **exactly as printed**. It
+prints two space-aligned monospace cards — the kickoff card (name, repository,
+version, what AKA adds) and the "what I do" card — each inside its own Markdown
+code fence. Reproduce both fences verbatim and do **not** add another code fence,
+strip a fence, or reformat them (unfenced, Markdown collapses the indentation and
+mangles the `●` lines).
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/intro.js" "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
 ```
 
-## 1. Ask historical-review consent
+## 1. Offer the retroactive scan
 
 Ask this **before** anything about detection posture — the posture
 recommendation in step 4 is _derived from_ the answer to this question, so it
@@ -47,55 +45,100 @@ interactive picker. The plugin can't draw its own selectable UI (it can't
 capture keystrokes), so do **not** print a fake option list or ask the user to
 "reply with a number"; let the picker collect the answer.
 
-**Historical & memory access** — "Secrets often leak before AKA is installed. May I also review your temp files, agent memory & prior conversation transcripts?"
+**Want me to look at what Claude's been up to?** — "A retroactive scan of recent activity — transcripts, temp files, agent memory — tunes the notifications we'll review next."
 
-List **Grant full review** as the first (top) option:
+Offer exactly two options:
 
-- **Grant full review** → `full` — scan scratch/temp files, agent memory & prior
-  transcripts for leaked secrets (deepest coverage · one-time consent, revocable
-  under Policies). This is what lets AKA recommend a posture backed by your
-  real findings instead of a generic default.
-- **Current session only** → `session-only` — decline historical access. AKA
-  starts in a conservative observe-first posture instead (step 2) and can
-  still review: the **working tree** (all source, config & dotfiles in the
-  repo), **this session** (prompts, tool calls & files Claude reads or writes
-  now), **git history** (commits reachable from HEAD, incl.
-  removed-but-tracked secrets), and **pointed scans** (any path you explicitly
-  hand AKA during a run).
+- **Yes, scan** — "calibrate my notifications to your real activity"
+- **Not now** — "start light and learn as we go"
 
-Map the picked label to the flag value shown above (`full`/`session-only`).
+Choosing **Yes, scan** records the same historical-review consent the wizard has
+always recorded — the identical scope, the one-time grant, and the
+revocable-under-Policies semantics — so the simpler question broadens nothing
+about what AKA may access. Those granular scope and revocation details stay
+inspectable on request and in the dashboard.
 
-## 2. Save the historical answer, then branch
+## 2. Save the answer, then branch
 
-Run the onboarding writer with the answer from step 1. This must happen
-**before** the backfill (step 3), because the backfill script reads
-`historicalAccess` from the saved settings to decide whether it's allowed to
-run. Omitting `--policy` is deliberate — the old global redact/warn toggle no
-longer drives enforcement (posture is per-category now); its field is kept
-for backward compatibility but this wizard doesn't ask about it.
+Branch on the answer from step 1. On the **Yes, scan** path the onboarding
+writer runs, and it must run **before** the backfill (step 3), because the
+backfill script reads `historicalAccess` from the saved settings to decide
+whether it's allowed to run. Omitting `--policy` is deliberate — the old global
+redact/warn toggle no longer drives enforcement (posture is per-category now);
+its field is kept for backward compatibility but this wizard doesn't ask about
+it.
 
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --historical <full|session-only>
-```
+**Branch on the choice:**
 
-**Branch on the historical answer:**
-
-- **If the user chose "Current session only" (`session-only`)** — there is no
-  history to calibrate a posture from. Write the severity-derived floor
-  immediately and skip straight to step 6 (first-run summary); steps 3–5 do
-  not run:
+- **If the user chose "Yes, scan"** — record the historical-review consent and
+  continue to step 3 (which runs the scan and leads to the calibrated result in
+  step 4). "Yes, scan" maps to the existing full historical-review path — no
+  access is granted beyond what that path already granted:
 
   ```bash
-  node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --floor
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --historical full
   ```
 
-  Briefly tell the user why: without evidence, AKA starts every high-impact
-  category (`secret`/`pii`/`financial`/`phi`/`code_flaw`/`custom`) at `warn`
-  so nothing is under-watched, and low-value/observe-only categories
-  (`code_context`/`config`) at `monitor` — conservative, no guessing. This can
-  be revisited any time via `/aka:setup` or Policies.
+- **If the user chose "Not now"** — take the **start-light** path.
+  This path takes **zero historical access**: do **not** read any history, do
+  **not** run the backfill, and do **not** record consent — nothing about the
+  machine's past is touched.
+  Instead present the start-light posture card, write the posture the user picks
+  (this write **is** the applying frame — it stands in for step 5, which never
+  runs here because there is no scan plan to apply), and rejoin the spine at the
+  installed summary (step 6). **Skip steps 3, 4, and 5 entirely** — there is no
+  scan to triage, no calibrated result to confirm, and no suppression plan to
+  write. Do the following in order:
 
-- **If the user chose "Grant full review" (`full`)** — continue to step 3.
+  1. **Show the start-light card.** Run the start-light script and reproduce its
+     fenced card **exactly as printed** — the `Start light — set your packs`
+     heading, the full 8-pack × 4-level default posture table, the per-pack rationale, and the
+     re-tune hint. It reads no history and writes nothing; it only prints the card
+     (the severity-floor default map — secret, pii, financial, phi, code_flaw, custom at
+     `warn`; code_context, config at `monitor`).
+
+     ```bash
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js"
+     ```
+
+  2. **Confirm or adjust.** Use **AskUserQuestion** — Claude Code's built-in
+     picker — to let the user keep the recommended defaults or tune individual
+     packs. The plugin can't draw its own selectable UI, so do **not** print a
+     fake option list or ask the user to "reply with a number"; let the picker
+     collect the answer.
+
+     **Set your packs** — "Keep the recommended defaults, or adjust individual packs?"
+
+     - **Keep defaults** _(recommended)_ — "the conservative default posture shown above"
+     - **Adjust packs** — "change one or more pack levels; keep the rest as recommended"
+
+     If they choose **Adjust packs**, use AskUserQuestion again to collect the new
+     level (monitor/warn/redact/block) for each pack they want to change, then
+     merge those overrides over the severity-floor defaults to form the full 8-pack map.
+
+  3. **Write the chosen posture.** The default map is the severity floor,
+     so when the user keeps the defaults, write the floor directly; when they
+     adjusted packs, write the merged 8-pack map:
+
+     ```bash
+     # Kept the recommended defaults
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --floor
+
+     # Adjusted one or more packs — <json> is the merged 8-pack map
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<json>'
+     ```
+
+     Either write prints only `✓ K categories tuned` (the `--floor` write appends
+     ` (severity floor)`) — which is the honest confirmation here, because nothing
+     was scanned or suppressed. Show that line to the user; do **not** invent a
+     dismissed count or any calibration counts.
+
+  4. **Rejoin the spine at the installed summary (step 6).** Continue to step 6
+     to show the installed summary and hand off to the dashboard, using honest
+     no-scan copy. No scan ran, so there is **no surfaced count** — call
+     `firstrun.js` with **no `--surfaced` flag** (the same floor-fallback rule
+     step 6 already follows when no calibration frame was emitted). Steps 7–8
+     then run as written.
 
 ## 3. Run the evidence triage — isolated judgment, nothing written yet
 
@@ -111,14 +154,33 @@ and streams one masked-plus-raw triage hit per line; masked findings are
 recorded to the local store as a side effect. The adapter runs the
 false-positive/severity **judgment in a separate transient subprocess** (no
 transcript), then prints back a **raw-free plan** you can safely show the user:
-the per-category posture it would apply, the masked false positives it would
-suppress, any categories it skipped, and its notes.
+the calibrated-result card (the real-count headline and the recommended posture),
+the per-category reasoning, the masked false positives it would suppress, any
+categories it skipped, and its notes.
 
 The preview also **persists that exact raw-free plan to a temp file and prints
 its path** — a line beginning `Plan saved to: <path>`. Capture that path: step 5
 applies **this saved plan verbatim**, so the confirm step performs no second scan
 and no second judgment. (The plan file carries only masked/fingerprint/enum data;
 it is deleted after a successful apply.)
+
+Alongside the human copy, the preview also emits a **machine-readable calibration
+frame** — a single JSON block delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>`
+carrying the raw-free calibration counts and categories, plus (when the scan
+surfaced any) a `maskedFindings` array of raw-free secret-leak summaries. Do
+**not** show this block to the user (it is additive to the human copy above).
+Capture its `counts.important` value — the **surfaced count** — and pass it to the
+first-run summary in step 6 as `--surfaced <count>` — but **only when the preview
+also printed a `Plan saved to:` path** (a real calibrated plan to confirm in step
+4). The `Plan saved to:` line is the completion signal: a preview that omits it did
+not calibrate a plan you can confirm. The fallback branches below carry no
+surfaced count; the scan-ran-clean empty state (a scan that completed but
+surfaced nothing) emits a zero-count frame but **no plan path**, so it too routes
+to the floor branch below rather than step 4.
+
+Also **retain the block's full text verbatim** (not just the counts you read out
+of it) — step 6's "Review leaked keys" branch feeds this same text to the
+secret-leak remediation entry, which reads its own `maskedFindings` from it.
 
 Everything you show the user in step 4 comes from **this command's output**. You
 never read the raw finding values yourself — do not echo, quote, or reconstruct
@@ -139,52 +201,41 @@ conservative severity floor (high-impact categories at `warn`, observe-only at
 `monitor`) instead of a calibrated posture, and it can be re-run any time with
 `/aka:setup`.
 
-**Nothing to calibrate.** If the adapter reports there were no triage hits to
-review (an empty or intentionally-skipped scan), there's no evidence to
-calibrate from: take the same floor branch (`onboard.js --floor`), tell the
-user the scan found nothing to calibrate from, and skip to step 6.
+**Nothing to calibrate.** A scan that **completes but surfaces nothing** prints
+the honest **scan-ran-clean** card — `Calibrated. I looked at Claude's recent
+activity — nothing needs your attention…` over the recommended posture — with a
+zero-count calibration frame (its `counts.important` is `0`) and **no `Plan saved
+to:` path**. An empty or intentionally-skipped scan instead prints `No triage hits
+to review …`. In either case there's no evidence to calibrate from and no plan to
+confirm: show the card the adapter printed, take the floor branch
+(`onboard.js --floor`), tell the user the scan found nothing to calibrate from, and
+skip to step 6 (with **no `--surfaced`**, the floor-fallback rule there — nothing
+was surfaced to carry over). Do **not** continue to step 4.
 
-Otherwise continue to step 4.
+Otherwise (the preview printed a `Plan saved to:` path) continue to step 4.
 
-## 4. Show the calibration and get explicit confirmation — before any write
+## 4. Show the calibrated result and get explicit confirmation — before any write
 
-The preview output is raw-free and has three parts. Show the user **all** of
-them.
+The preview output is raw-free. Lead with the **calibrated-result card** it
+printed and show it in full:
 
-**Known limitation — the showcase is a first-run artifact.** The backfill records
-each masked finding to the local store as a side effect, so a second `/aka:setup`
-over the _same_ history dedups those already-recorded findings to zero triage hits
-and the showcase comes back empty (the adapter reports "no triage hits to
-review"). That is expected, not a failure: a re-run recalibrates **only if there
-is genuinely new history** since the last run. The **first run's** showcase is the
-one that matters — it is not reconstructed from the store on a re-run (the raw
-values it needs are deliberately never persisted). If a re-run shows nothing to
-calibrate, take the floor branch as usual and tell the user the scan found no new
-history.
-
-1. **The per-category posture plan.** The action
-   (`monitor`/`warn`/`redact`/`block`) the writeback would set for every
-   category present in the evidence. Show it in full.
-   - **Surface every downgrade — this is not optional.** The preview flags any
-     category whose action would be **LOWERED** from a stronger existing setting
-     (e.g. an existing `block`/`redact` dropping to `warn`/`monitor`) and prints
-     a `WARNING` line summarizing them. Call these out prominently: a user who
-     hardened a category must **explicitly approve weakening it**. Never let an
-     enforcement downgrade through on the "apply as recommended" path without the
-     user having seen it.
-   - A category the adapter had to **skip** for its suppressions can still carry
-     a posture change; it appears in this plan too, so the user sees any posture
-     change even on a skipped category.
-2. **The intelligence showcase.** The masked-only per-category reasoning and
-   notes the judgment produced. Frame it as "look what it caught — and correctly
-   dismissed": the false-positive discard is as much the pitch as the catch (a
-   plain regex scanner would scream "161 CRITICAL secrets!"; AKA says "…all
-   placeholders — `warn` is enough"). Keep the framing neutral — no "sloppy" or
-   "bad practice".
+1. **The calibrated headline.** The `Calibrated. N notifications, M important…`
+   line — every count templated over the real scan (surfaced findings are the
+   `M important` that matter; the rest are routine noise a plain scanner would
+   have screamed about). Show it verbatim; never substitute a demo number.
+2. **The recommended posture.** The condensed one-row-per-pack recommended view
+   the card printed — the level AKA would set for each category. Show it in full.
+   - **Surface the downgrades the preview flags — this is not optional.** For the
+     recommended posture it is about to write, the preview compares each category
+     against its stored setting and flags any that would be **LOWERED** from a
+     stronger existing one (e.g. an existing `block`/`redact` dropping to
+     `warn`/`monitor`), printing a `WARNING` line summarizing them. Call these out
+     prominently: a user who hardened a category must **explicitly approve weakening
+     it** before applying.
 3. **The false positives to be suppressed (the human gate).** The masked value,
-   rule, and masked context for each detection the writeback would suppress.
-   This is the checkpoint that stops a genuine secret being silenced: the user
-   reads the masked evidence and approves it.
+   rule, and masked context for each detection the writeback would suppress —
+   the routine noise being dismissed. This is the checkpoint that stops a genuine
+   secret being silenced: the user reads the masked evidence and approves it.
 
 Then use **AskUserQuestion** (the real picker, never a printed numbered list) to
 confirm:
@@ -194,27 +245,127 @@ false positives shown above?"
 
 - **Yes, apply** _(recommended)_ — write the posture and suppressions exactly as
   previewed.
-- **Let me adjust a category** — override one or more categories before saving
-  (for example, keep a category the plan would lower).
+- **Adjust a category** — "change one or more pack levels first; keep the rest as
+  recommended"
 
-If they choose to adjust, ask a follow-up **AskUserQuestion** per category,
-offering the four actions with honest semantics so they choose with full
-information: `monitor` logs only; `warn` flags the request and lets them decide;
-`redact` strips the value from **tool I/O** but is a **no-op on the
-prompt/conversation channel** (a secret pasted into chat still reaches the
-model); `block` refuses the action outright. Collect the overrides as a
-`{category: action}` map. Do **not** proceed to step 5 until the user has
-explicitly confirmed.
+Do **not** proceed until the user picks one. On **Yes, apply**, continue to
+step 5 and apply the previewed plan verbatim — that is the confirm spine,
+unchanged. On **Adjust a category**, take the **adjust fork** (step 4b), which
+applies within the fork and rejoins the spine at the installed summary (step 6).
+
+## 4b. Adjust a category — the override fork
+
+The **adjust base is the calibrated recommended posture the preview just
+printed** — the condensed one-row-per-pack view from step 4, not the cold-start
+severity floor. The user changes the packs they want and keeps the rest as
+recommended.
+
+1. **Collect the changes.** Use **AskUserQuestion** — the built-in picker — to
+   ask which packs to change and to which level (monitor/warn/redact/block). The
+   plugin can't draw its own selectable UI, so do **not** print a fake option list
+   or ask the user to "reply with a number"; let the picker collect the answer.
+
+2. **Show the adjust-confirm table.** Compose the merged 8-pack map — the
+   recommended base with the user's picks overlaid — and render the adjust-confirm
+   card by passing the calibrated recommended posture as `--recommended` and that
+   merged map as `--posture`. Reproduce its
+   fenced `category │ recommended │ yours` table **exactly as printed** (it is
+   space-aligned monospace; do **not** add another code fence, strip the fence, or
+   reformat it):
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js" --adjust-confirm --recommended '<recommended-json>' --posture '<merged-json>' --current '<current-json>'
+   ```
+
+   `<recommended-json>` is the calibrated recommended posture the preview printed
+   (the adjust base) — so the `recommended` column shows each pack's calibrated
+   level, and a pack calibration escalated above the floor never renders as a
+   spurious change. `<merged-json>` is the full 8-pack map — that same recommended
+   base with the user's overrides overlaid — so a changed pack reads as a different
+   `yours` value and every untouched pack repeats its recommended level.
+   `<current-json>` is the `current` object from the plan file at the path step 3
+   printed (`Plan saved to: <path>`) — the store's per-category action at preview
+   time, the baseline the downgrade check compares against. Pass it verbatim; do
+   not retype or summarize it.
+
+3. **Surface any downgrade — the card computes this, you do not.** With
+   `--current` passed, the card itself appends the `WARNING: N categories … would
+be LOWERED from a stronger existing setting` footer whenever a pick weakens
+   enforcement — the same rule and the same wording as the confirm gate above,
+   from the same code. Show the card in full, footer included, and when that
+   footer is present get explicit approval before saving. Never let an enforcement
+   downgrade through without the user having seen it.
+
+4. **Save or back out.** Use **AskUserQuestion** with **N** the number of packs
+   the user changed and **M** the number kept as recommended (`M = 8 − N`), both
+   real — never a placeholder:
+
+   **Save your adjustments?**
+
+   - **Save adjusted — N changed, M as recommended** — apply with the adjusted
+     posture.
+   - **Back to recommended** — discard the changes and apply the recommended
+     posture instead.
+
+5. **On "Save adjusted" — produce the applying frame here, carrying the adjusted
+   posture, then rejoin the spine at the installed summary (step 6).** This fork
+   applies within itself and **stands in for step 5**, so step 5 never runs on
+   this path. First apply the previewed plan with the **unchanged confirm spine**,
+   so the reviewed false positives are dismissed and the recommended base is
+   written (the reviewed evidence packs overwrite; the severity floor fill-gaps the
+   rest, so a pack hardened out of band is never downgraded):
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-suppressions.js" --confirmed --plan <path>
+   ```
+
+   If that `--confirmed` run exits non-zero (or `--plan` is missing/unreadable),
+   handle it exactly as step 5 does: tell the user the write did not complete, fall
+   back to the floor (`onboard.js --floor`), and continue to step 6. Do **not** run
+   the overlay below on a failed spine — nothing was written, so there is no
+   recommended base to overlay the changes onto.
+
+   Then overwrite **only the packs the user changed** with their chosen levels:
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<changed-packs-json>'
+   ```
+
+   `<changed-packs-json>` carries **only** the packs the user adjusted (not the
+   full 8-pack map), so the packs kept as recommended keep the fill-gaps-safe
+   values the spine wrote and only the user's explicit, downgrade-approved changes
+   overwrite.
+
+   If that overlay exits non-zero, the spine already wrote the recommended base, so
+   the store holds a valid posture — but **not** the user's overrides. Tell the user
+   their adjustments did not save and the store holds the recommended posture, then
+   continue to step 6. Do **not** report the adjusted posture as saved on a failed
+   overlay.
+
+   On success, present the applying-frame confirmation the **spine** printed —
+   `✓ 8 categories tuned · ✓ N routine dismissed · Ready: …` — the store now holds
+   the adjusted posture. The overlay's own smaller `✓ N categories tuned` line
+   (the count of just the changed packs) is bookkeeping — **do not show it**; the
+   applying frame reports the full 8-pack posture. Then continue to step 6.
+
+   **On "Back to recommended"** — take the **Yes, apply** path instead: continue
+   to step 5 and apply the previewed plan verbatim with no override.
+
+Do **not** write anything until the user has explicitly confirmed at step 4
+(Yes, apply) or saved at step 4b (Save adjusted).
 
 ## 5. Write the posture and suppressions
 
 On confirmation, run the adapter again with `--confirmed --plan <path>`, passing
 the **plan-file path the preview printed in step 3** (`Plan saved to: <path>`). It
-reads that saved plan back and applies it **exactly as previewed** — it overwrites
-the per-category posture and writes one 30-day suppression per confirmed false
-positive **without re-running the backfill or the judge**. There is deliberately
-**no `backfill.js` pipe here**: re-scanning and re-judging would produce a fresh,
-non-deterministic plan and silently defeat the human gate the user just approved.
+reads that saved plan back and applies it **exactly as previewed** — establishing
+the **full 8-pack posture** the recommended view showed (the reviewed
+evidence packs overwrite; the conservative severity floor fill-gaps the remaining
+packs, so a pack the user had already hardened out of band is never downgraded) and
+writing one 30-day suppression per confirmed false positive **without re-running the
+backfill or the judge**. There is deliberately **no `backfill.js` pipe here**:
+re-scanning and re-judging would produce a fresh, non-deterministic plan and
+silently defeat the human gate the user just approved.
 
 The posture overwrite and the suppression writes are applied as a **single
 all-or-nothing transaction**: a mid-batch failure rolls back the posture change
@@ -226,39 +377,147 @@ conservative floor cannot collide with a partially-written posture.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-suppressions.js" --confirmed --plan <path>
 ```
 
+The script prints the applying confirmation — `✓ K categories tuned ·
+✓ N routine dismissed · Ready: …` — with both counts threaded from the real write.
+Show that line to the user.
+
 If `--plan` is missing or the file is unreadable/invalid, the adapter **fails loud
 (non-zero) and writes nothing** — it never falls back to a re-judge. Treat that
 like the `--confirmed` failure below: tell the user the write did not complete,
 fall back to the floor, and continue to step 6.
 
-If the user chose to **adjust** categories in step 4, apply their overrides on
-top afterwards. `onboard.js --posture` overwrites only the categories in the map
-it's given, leaving the rest as written by the adapter:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '{"secret":"block"}'
-```
-
-(The JSON is illustrative — pass only the categories the user changed, values
-one of `monitor`/`warn`/`redact`/`block`.) This is the only point in the wizard
-where a posture is persisted.
-
 If the `--confirmed` run exits non-zero, tell the user the write did not
 complete, fall back to the floor (`onboard.js --floor`), and continue to step 6
 so setup still finishes.
 
-## 6. Show the first-run summary
+## 6. Show the installed summary and hand off to the dashboard
 
-Run the first-run script and show its output **exactly as printed** (the
-install-complete summary with live findings/recommendation counts, the health
-score, and — now — the per-category posture just written or floored). The
-script already prints it inside a Markdown code fence; reproduce that
-verbatim and do **not** add another code fence, strip the fence, or reformat it (it
-is space-aligned monospace that Markdown would otherwise collapse).
+Run the first-run script and show its **install-complete summary** exactly as
+printed (live findings/recommendation counts, the health score, and the
+per-category posture just written or floored). The script prints that summary
+inside a Markdown code fence; reproduce the fenced card verbatim and do **not**
+add another code fence, strip the fence, or reformat it (it is space-aligned
+monospace that Markdown would otherwise collapse).
+
+Pass the **surfaced count** captured from step 3's calibration frame
+(`counts.important`) as `--surfaced <count>` — this is the 'N worth a look' figure
+the script emits in its own machine-readable handoff payload — but only when step 3
+carried a surfaced count forward (it printed a `Plan saved to:` path). If the
+calibration fell back to the floor (no plan path in step 3 — a fallback branch, or
+the scan-ran-clean empty state whose zero-count frame carries nothing to look at),
+**omit `--surfaced` entirely** — the script then withholds that payload rather than
+fabricating a count.
+
+Alongside it, pass the **surfaced live-key count** — the number of surfaced
+live-key secret findings, which is the length of the calibration frame's
+`maskedFindings` array (absent ⇒ 0) — as `--live-keys <count>`. This is the
+narrower secret subset of the surfaced count; it gates the remediation
+chain-entry the handoff offers, so a calibration that surfaced only non-secret
+findings passes `--live-keys 0` and offers no remediation.
+
+When `--surfaced` is passed, the script appends that handoff payload as a single
+JSON block delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>` after the fenced
+card. Like step 3's calibration frame, do **not** show this block to the user — it
+is additive and machine-only; only the fenced install summary above is
+user-facing.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/firstrun.js"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/firstrun.js" --surfaced <count> --live-keys <count>
 ```
+
+**Then hand off to the dashboard.** When the payload carries a positive
+`worthALook` count, issue an explicit **AskUserQuestion** (the real picker, never a
+printed list) using that count for `N`:
+
+**N worth a look — see them in the browser?**
+
+- **Review leaked keys** — _(offer this option first only when the payload's
+  `options` include `enter-remediation`, i.e. `liveKeys > 0`)_ enter the
+  secret-leak remediation chain on the surfaced live keys. This composes with —
+  never replaces — the dashboard handoff below, so both stay reachable.
+- **Open dashboard** — open the local web dashboard on the surfaced findings.
+- **Not now** — stay here; they can open it anytime.
+
+Use the payload's `worthALook` value for `N` verbatim — do not invent or round it.
+Offer **Review leaked keys** exactly when the payload's `options` carry the
+`enter-remediation` entry (never otherwise); the **Open dashboard** / **Not now**
+handoff is always present. If the payload was withheld (the floor fallback, or
+nothing surfaced), skip this handoff question rather than inventing a count.
+
+**If they choose "Review leaked keys"** — run the secret-leak remediation entry's
+**present** mode, feeding it the calibration frame block you captured in step 3
+(the same text `maskedFindings` came from) on stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" <<'AKA_FRAME'
+<the <<<AKA_FRAME_JSON … AKA_FRAME_JSON>>> block captured in step 3, verbatim>
+AKA_FRAME
+```
+
+It prints the decision as human-facing text, then a machine-readable block
+delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>` carrying the same decision
+structured (do **not** show that block to the user). The human text has three
+parts, all of which you **show to the user verbatim, in order**:
+
+1. the templated count line ("N exposed secret keys found in old transcripts"),
+2. the fenced finding table (provider, masked token, where, state), and
+3. inside that same fence, a most-exposed-first recommendation line and a
+   secret-scan chaining line.
+
+Reproduce the count line and the whole fenced block exactly as printed — do not
+drop the recommendation or chaining lines, and do not paraphrase. Then issue an
+**AskUserQuestion** offering exactly these four options, in order (each option's
+label maps to the `--option` id shown in parentheses):
+
+- **Redact + rotation checklist** (`redact-rotation-checklist`)
+- **Redact only** (`redact-only`)
+- **Set 'secret' to redact** (`set-secret-redact`)
+- **Leave** (`leave`)
+
+**If they chose "Redact + rotation checklist" or "Redact only"** — before running
+the route, issue a second **AskUserQuestion** presenting the standing-posture
+prompt, offering exactly these four options, in order (each option's label maps
+to the `--posture` level in parentheses):
+
+**Set the 'secret' posture**
+
+- **Redact** (`redact`)
+- **Warn** (`warn`)
+- **Block** (`block`)
+- **Monitor** (`monitor`)
+
+Then run the entry's **route** mode ONCE with the chosen redact option's id AND
+the chosen posture level, feeding it the SAME calibration frame block again on
+stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> --posture <level> <<'AKA_FRAME'
+<the same block>
+AKA_FRAME
+```
+
+Never run the route a second time for this choice — a repeat call would strike
+the already-redacted keys again and corrupt the reported count. Show its printed
+result verbatim, in order. For "Redact only" that is the redaction confirmation
+then the standing-posture confirmation. For "Redact + rotation checklist" it is
+the standing-posture confirmation then the resolved rotation-checklist summary —
+which reports the redaction itself, so the script does not print a separate
+redaction confirmation ahead of it.
+
+**If they chose "Set 'secret' to redact" or "Leave"** — run the entry's **route**
+mode with the chosen option's id (the id in parentheses above, e.g. **Leave** →
+`leave`), feeding it the SAME calibration frame block again on stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> <<'AKA_FRAME'
+<the same block>
+AKA_FRAME
+```
+
+Show its printed result verbatim — a standing-posture confirmation, or (choosing
+"Leave") a plain note that nothing changed. This entry reads its findings from the
+calibration frame alone and holds no wizard state of its own, so it works
+identically from any caller.
 
 ## 7. Offer the AKA CLI + local dashboard (opt-in)
 

@@ -17,10 +17,14 @@ import {
   ensureDataDirSync,
   settingsDir,
 } from '@akasecurity/plugin-sdk';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import { defaultWorkspaceSettings, PRODUCT_NAME, PRODUCT_TAGLINE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { runPlugins } from './plugins.ts';
+
+// The init plugin-offer copy, built from the canonical product identity single-sourced
+// in @akasecurity/schema so the CLI and plugin present the same name and tagline.
+export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
@@ -98,7 +102,8 @@ async function offerPluginInstall(autoYes: boolean): Promise<void> {
   if (!autoYes) {
     if (!process.stdin.isTTY) {
       out.write(
-        `\nNo Claude Code plugin detected. Install it via the marketplace:\n` +
+        `\n${PLUGIN_OFFER_IDENTITY}\n` +
+          `No Claude Code plugin detected. Install it via the marketplace:\n` +
           `  /plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
           `  /plugin install ${ref}\n` +
           `Or re-run \`aka init --yes\` to install it automatically.\n`,
@@ -106,7 +111,10 @@ async function offerPluginInstall(autoYes: boolean): Promise<void> {
       return;
     }
     if (
-      !(await confirm(`\nInstall the AKA Claude Code plugin now (via the marketplace)? [y/N] `))
+      !(await confirm(
+        `\n${PLUGIN_OFFER_IDENTITY}\n` +
+          `Install the ${PRODUCT_NAME} plugin for Claude Code now (via the marketplace)? [y/N] `,
+      ))
     ) {
       out.write('Skipped. Install anytime with `aka plugins install claude-code`.\n');
       return;

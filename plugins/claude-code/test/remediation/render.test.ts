@@ -150,6 +150,7 @@ describe('renderResolvedSummary', () => {
     const summary = renderResolvedSummary({
       redactedKeys: 3,
       findings,
+      unredactedFindings: [],
       location: 'repo root',
       entries,
     });
@@ -158,22 +159,27 @@ describe('renderResolvedSummary', () => {
     expect(summary).toContain('✓ Redacted 3 keys across 2 transcripts');
     expect(summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
 
+    // A fourth finding (all four struck: redactedKeys tracks findings.length so
+    // the "resolved" framing stays honest) proves the transcript count is
+    // independently derived from distinct filePaths, not the key count relabelled.
     const threeTranscriptSummary = renderResolvedSummary({
-      redactedKeys: 3,
+      redactedKeys: 4,
       findings: [
         ...findings,
         { ...awsFinding(), where: { filePath: '/tmp/second-agent-dump.txt' } },
       ],
+      unredactedFindings: [],
       location: 'repo root',
       entries,
     });
-    expect(threeTranscriptSummary).toContain('✓ Redacted 3 keys across 3 transcripts');
+    expect(threeTranscriptSummary).toContain('✓ Redacted 4 keys across 3 transcripts');
   });
 
   it('renders singular key and transcript nouns from a single-key fixture', () => {
     const summary = renderResolvedSummary({
       redactedKeys: 1,
       findings: [stripeFinding()],
+      unredactedFindings: [],
       location: 'repo root',
       entries: entries.slice(0, 1),
     });
@@ -183,8 +189,9 @@ describe('renderResolvedSummary', () => {
 
   it('renders the inline preview entry-for-entry from the checklist file model', () => {
     const summary = renderResolvedSummary({
-      redactedKeys: 3,
+      redactedKeys: 2,
       findings: [stripeFinding(), awsFinding()],
+      unredactedFindings: [],
       location: 'repo root',
       entries,
     });
@@ -192,5 +199,84 @@ describe('renderResolvedSummary', () => {
     const fileLines = renderChecklistMarkdown(entries).trimEnd().split('\n');
 
     expect(previewLines).toEqual(fileLines);
+  });
+
+  it('never claims "resolved" on a partial strike — an honest partial message names the shortfall and the file still holding a live key', () => {
+    const secondAwsFinding = { ...awsFinding(), where: { filePath: '/tmp/second-agent-dump.txt' } };
+    const findings = [stripeFinding(), awsFinding(), secondAwsFinding];
+
+    // Two of the three findings were struck; the aws finding in the second file
+    // was not (e.g. it vanished or changed between the calibration scan and the
+    // redact-time re-scan) — a real, legitimate partial outcome.
+    const summary = renderResolvedSummary({
+      redactedKeys: 2,
+      findings,
+      unredactedFindings: [secondAwsFinding],
+      location: 'repo root',
+      entries,
+    });
+
+    // The clean "resolved" framing is never shown over a partial strike.
+    expect(summary).not.toContain('Leaked secrets — resolved');
+    expect(summary).toContain('Leaked secrets — partially redacted');
+    expect(summary).toContain(
+      'Redacted 2 of 3 keys; 1 key still needs attention in /tmp/second-agent-dump.txt',
+    );
+    // The checklist deliverable still lands — rotation is still owed regardless
+    // of whether the leaked text itself was struck.
+    expect(summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+  });
+
+  it('pluralizes the partial message correctly across more than one remaining key', () => {
+    const secondStripeFinding = {
+      ...stripeFinding(),
+      maskedToken: 'sk_live_…2222',
+      where: { filePath: '/tmp/second-agent-dump.txt' },
+    };
+    const findings = [stripeFinding(), secondStripeFinding, awsFinding()];
+
+    const summary = renderResolvedSummary({
+      redactedKeys: 1,
+      findings,
+      unredactedFindings: [secondStripeFinding, awsFinding()],
+      location: 'repo root',
+      entries,
+    });
+
+    expect(summary).toContain('Leaked secrets — partially redacted');
+    expect(summary).toContain('Redacted 1 of 3 keys; 2 keys still need attention in');
+    // Both remaining files are named, not just the first.
+    expect(summary).toContain('/tmp/second-agent-dump.txt');
+    expect(summary).toContain(awsFinding().where.filePath);
+  });
+
+  it('never renders "Redacted 0 keys" as a clean all-clear when nothing was struck', () => {
+    const findings = [stripeFinding(), awsFinding()];
+
+    const summary = renderResolvedSummary({
+      redactedKeys: 0,
+      findings,
+      unredactedFindings: findings,
+      location: 'repo root',
+      entries,
+    });
+
+    expect(summary).not.toContain('Leaked secrets — resolved');
+    expect(summary).toContain('Leaked secrets — partially redacted');
+    expect(summary).toContain('Redacted 0 of 2 keys; 2 keys still need attention in');
+  });
+
+  it('treats a degraded checklist-write note the same across the complete and partial framings', () => {
+    const findings = [stripeFinding()];
+    const partial = renderResolvedSummary({
+      redactedKeys: 0,
+      findings,
+      unredactedFindings: findings,
+      degradedNote: 'Could not draft rotation-checklist.md at /nowhere.',
+      entries,
+    });
+
+    expect(partial).toContain('Leaked secrets — partially redacted');
+    expect(partial).toContain('Could not draft rotation-checklist.md at /nowhere.');
   });
 });

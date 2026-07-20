@@ -2,9 +2,38 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { PluginRuntime } from '@akasecurity/plugin-sdk';
 import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { MaskedSecretFinding } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// A toggle a single test flips to make the adapter's runtime `close()` throw —
+// every other test leaves it off, so the real teardown path still runs
+// everywhere else in this suite. `vi.hoisted` makes it exist before the mock
+// factory below runs.
+const { runtimeCloseShouldThrow } = vi.hoisted(() => ({
+  runtimeCloseShouldThrow: { value: false },
+}));
+
+vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const realCreatePluginRuntime = actual.createPluginRuntime as (
+    ...args: unknown[]
+  ) => PluginRuntime;
+  return {
+    ...actual,
+    createPluginRuntime: (...args: unknown[]): PluginRuntime => {
+      const runtime = realCreatePluginRuntime(...args);
+      return {
+        ...runtime,
+        close: async () => {
+          if (runtimeCloseShouldThrow.value) throw new Error('simulated runtime close fault');
+          await runtime.close();
+        },
+      };
+    },
+  };
+});
 
 import { redactSurfacedSecrets } from '../../src/remediation/surfaced-redact.ts';
 import { deriveProvider } from '../../src/triage/surfaced-secrets.ts';
@@ -75,13 +104,14 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
 
     const findings = [findingFor(transcriptFile, TRANSCRIPT_KEY), findingFor(tempFile, TEMP_KEY)];
 
-    const count = await redactSurfacedSecrets(findings, {
+    const result = await redactSurfacedSecrets(findings, {
       home,
       dataDirBase,
       tempRoot: legitTempRoot,
     });
 
-    expect(count).toBe(2);
+    expect(result.redactedKeys).toBe(2);
+    expect(result.unredacted).toEqual([]);
     const transcriptAfter = readFileSync(transcriptFile, 'utf8');
     expect(transcriptAfter).not.toContain(TRANSCRIPT_KEY);
     expect(transcriptAfter).toContain('[REDACTED:SECRET]');
@@ -104,20 +134,20 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
     const projectBytesBefore = readFileSync(projectFile);
     const projectListingBefore = readdirSync(projectRoot);
 
-    const findings = [
-      findingFor(transcriptFile, TRANSCRIPT_KEY),
-      findingFor(projectFile, PROJECT_KEY),
-    ];
+    const projectFinding = findingFor(projectFile, PROJECT_KEY);
+    const findings = [findingFor(transcriptFile, TRANSCRIPT_KEY), projectFinding];
 
-    const count = await redactSurfacedSecrets(findings, {
+    const result = await redactSurfacedSecrets(findings, {
       home,
       dataDirBase,
       tempRoot: projectRoot,
     });
 
     // Only the genuine transcript artifact was redacted — the project-root scope
-    // was refused outright, not partially honoured.
-    expect(count).toBe(1);
+    // was refused outright, not partially honoured. The out-of-scope finding is
+    // reported back as unredacted, never silently dropped.
+    expect(result.redactedKeys).toBe(1);
+    expect(result.unredacted).toEqual([projectFinding]);
     const transcriptAfter = readFileSync(transcriptFile, 'utf8');
     expect(transcriptAfter).not.toContain(TRANSCRIPT_KEY);
     expect(transcriptAfter).toContain('[REDACTED:SECRET]');
@@ -130,7 +160,61 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
   });
 
   it('returns 0 and touches nothing for an empty findings set', async () => {
-    const count = await redactSurfacedSecrets([], { home, dataDirBase });
-    expect(count).toBe(0);
+    const result = await redactSurfacedSecrets([], { home, dataDirBase });
+    expect(result).toEqual({ redactedKeys: 0, unredacted: [] });
+  });
+
+  it('reports a vanished/unreadable artifact as unredacted rather than silently dropping it', async () => {
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptFile = join(projectDir, 'session.jsonl');
+    // The finding references a transcript path inside the enforced scope that was
+    // never actually written — mirrors a vanished/unreadable artifact at
+    // redact-time, distinct from an out-of-scope path.
+    const vanishedFinding = findingFor(transcriptFile, TRANSCRIPT_KEY);
+
+    const result = await redactSurfacedSecrets([vanishedFinding], { home, dataDirBase });
+
+    expect(result.redactedKeys).toBe(0);
+    expect(result.unredacted).toEqual([vanishedFinding]);
+  });
+
+  it('reports a finding whose content changed since the calibration scan as unredacted, not silently dropped', async () => {
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptFile = join(projectDir, 'session.jsonl');
+    // The artifact exists and is readable, but no longer contains the key the
+    // finding references — the re-scan at redact-time finds no matching occurrence.
+    writeFileSync(transcriptFile, 'this transcript no longer contains the leaked key');
+    const staleFinding = findingFor(transcriptFile, TRANSCRIPT_KEY);
+
+    const result = await redactSurfacedSecrets([staleFinding], { home, dataDirBase });
+
+    expect(result.redactedKeys).toBe(0);
+    expect(result.unredacted).toEqual([staleFinding]);
+  });
+
+  it('a runtime close() fault after targets were recovered does not drop them — the strike still lands and the count still reports it', async () => {
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptFile = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptFile, `{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+    const finding = findingFor(transcriptFile, TRANSCRIPT_KEY);
+
+    runtimeCloseShouldThrow.value = true;
+    try {
+      const result = await redactSurfacedSecrets([finding], { home, dataDirBase });
+
+      // The teardown fault must not rewrite the outcome: the target was
+      // recovered and struck before close() ever ran, so it stays reported as
+      // redacted rather than being dropped to a false "0 keys" / "unredacted".
+      expect(result.redactedKeys).toBe(1);
+      expect(result.unredacted).toEqual([]);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+      expect(after).toContain('[REDACTED:SECRET]');
+    } finally {
+      runtimeCloseShouldThrow.value = false;
+    }
   });
 });

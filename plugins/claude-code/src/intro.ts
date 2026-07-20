@@ -31,7 +31,9 @@ try {
 }
 
 // Each card is printed as its own Markdown code fence so the wizard can echo the
-// pair verbatim (space-aligned monospace collapses without the fence).
+// pair verbatim (space-aligned monospace collapses without the fence). The
+// kickoff card renders the version and repository line without a verified
+// badge — it performs no provenance check or npm subprocess.
 process.stdout.write(`${fenced(buildIntroCard(manifest))}\n\n${fenced(renderWhatIDo())}\n`);
 
 // Match the other adapter scripts (query.js, onboard.js) which hard-exit on

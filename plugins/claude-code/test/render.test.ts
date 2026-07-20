@@ -13,8 +13,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readRegisteredCommands } from '../src/command-registry.ts';
 import { NAME, ONE_LINER, TAGLINE } from '../src/identity.ts';
-import { buildIntroCard, type Manifest } from '../src/intro-card.ts';
+import { buildIntroCard, buildVerifiedIntroCard, type Manifest } from '../src/intro-card.ts';
 import { paint } from '../src/present.ts';
+import type { NpmRunner } from '../src/provenance.ts';
+import { EXPECTED_REPOSITORY, EXPECTED_WORKFLOW_PATH } from '../src/provenance.ts';
 import {
   buildHandoffOffer,
   buildHealthReport,
@@ -272,16 +274,24 @@ describe('pure renderers', () => {
     // identity strings can only appear if intro-card.ts sources them from the
     // shared identity constant, and the provenance version comes from the real
     // plugin manifest — so a stale local copy or a version drift fails here.
-    const out = strip(buildIntroCard(PLUGIN_MANIFEST));
+    const out = strip(buildIntroCard(PLUGIN_MANIFEST, /* verified */ false));
     expect(out).toContain(NAME);
     expect(out).toContain(TAGLINE);
     expect(out).toContain(ONE_LINER);
-    // Provenance line: the real installed version + canonical repo, no 'verified' badge yet.
+    // Provenance line: the real installed version + canonical repo, no 'verified' badge
+    // when the caller passes verified: false.
     expect(out).toContain(`v${PLUGIN_MANIFEST.version ?? ''} · github.com/akasecurity/ai-tc`);
     expect(out).not.toContain('verified');
     // The old tagline and the stale two-question line are gone.
     expect(out).not.toContain('Agent Harness Security for Claude Code.');
     expect(out).not.toContain('two quick questions');
+  });
+
+  it('setup intro: the adapter appends the verified badge when the caller confirms provenance', () => {
+    const out = strip(buildIntroCard(PLUGIN_MANIFEST, /* verified */ true));
+    expect(out).toContain(
+      `v${PLUGIN_MANIFEST.version ?? ''} · github.com/akasecurity/ai-tc · verified`,
+    );
   });
 
   it('what I do: the calibration card carries the walkthrough voice, verbatim', () => {
@@ -315,6 +325,151 @@ describe('pure renderers', () => {
     // Still a card: the identity one-liner renders even with no manifest facts.
     expect(out).toContain(ONE_LINER);
     expect(out).not.toContain('verified');
+  });
+
+  // The card-render surface leg: drives the composed
+  // buildVerifiedIntroCard(manifest, runNpm) render path across five
+  // provenance fixtures, each built from npm's REAL
+  // `npm audit signatures --json --include-attestations` report shape (a
+  // base64 DSSE payload inside verified[].attestationBundles[]) — the same
+  // builder shape as test/provenance.test.ts's buildReport fixture.
+  describe('buildVerifiedIntroCard: card-render surface over five provenance fixtures', () => {
+    const PACKAGE_NAME = '@akasecurity/ai-tc-claude-code';
+    const VERSION = PLUGIN_MANIFEST.version ?? '';
+    const SUBJECT_PURL = `pkg:npm/%40akasecurity/ai-tc-claude-code@${VERSION}`;
+
+    const encodePayload = (statement: unknown): string =>
+      Buffer.from(JSON.stringify(statement), 'utf8').toString('base64');
+
+    // Mirrors test/provenance.test.ts's buildReport fixture — an
+    // `npm audit signatures --json --include-attestations` report for a single
+    // verified package. `workflow` seeds the SLSA provenance predicate's
+    // buildDefinition; `subjectPurl` seeds the attestation subject binding.
+    const buildReport = (opts: {
+      workflow?: { repository: string; path: string };
+      subjectPurl?: string;
+    }): string => {
+      const {
+        workflow = { repository: EXPECTED_REPOSITORY, path: EXPECTED_WORKFLOW_PATH },
+        subjectPurl = SUBJECT_PURL,
+      } = opts;
+      return JSON.stringify({
+        invalid: [],
+        missing: [],
+        verified: [
+          {
+            name: PACKAGE_NAME,
+            version: VERSION,
+            registry: 'https://registry.npmjs.org/',
+            attestationBundles: [
+              {
+                predicateType: 'https://slsa.dev/provenance/v1',
+                bundle: {
+                  dsseEnvelope: {
+                    payload: encodePayload({
+                      predicateType: 'https://slsa.dev/provenance/v1',
+                      subject: [{ name: subjectPurl, digest: { sha512: 'deadbeef' } }],
+                      predicate: {
+                        buildDefinition: {
+                          externalParameters: {
+                            workflow: { ref: 'refs/heads/main', ...workflow },
+                          },
+                        },
+                      },
+                    }),
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      });
+    };
+
+    // No attestation present for the package at all — an empty verified set,
+    // the shape npm reports for an unattested package.
+    const noAttestationReport = (): string =>
+      JSON.stringify({ invalid: [], missing: [], verified: [] });
+
+    const VERIFIED_LINE = `v${VERSION} · github.com/akasecurity/ai-tc · verified`;
+    const UNVERIFIED_LINE = `v${VERSION} · github.com/akasecurity/ai-tc`;
+
+    it('(a) matching attestation binding the exact package@version + expected workflow -> badge', () => {
+      const out = strip(
+        buildVerifiedIntroCard(PLUGIN_MANIFEST, () => ({ ok: true, stdout: buildReport({}) })),
+      );
+      expect(out).toContain(VERIFIED_LINE);
+    });
+
+    it('(b) no attestation present for the package -> no badge', () => {
+      const out = strip(
+        buildVerifiedIntroCard(PLUGIN_MANIFEST, () => ({
+          ok: true,
+          stdout: noAttestationReport(),
+        })),
+      );
+      expect(out).toContain(UNVERIFIED_LINE);
+      expect(out).not.toContain('verified');
+    });
+
+    it('(c) attestation whose source repository/workflow does not match -> no badge', () => {
+      const out = strip(
+        buildVerifiedIntroCard(PLUGIN_MANIFEST, () => ({
+          ok: true,
+          stdout: buildReport({
+            workflow: {
+              repository: 'https://github.com/someone-else/unrelated',
+              path: EXPECTED_WORKFLOW_PATH,
+            },
+          }),
+        })),
+      );
+      expect(out).toContain(UNVERIFIED_LINE);
+      expect(out).not.toContain('verified');
+    });
+
+    it('(d) the shell-out unavailable/offline -> no badge', () => {
+      const out = strip(buildVerifiedIntroCard(PLUGIN_MANIFEST, () => ({ ok: false, stdout: '' })));
+      expect(out).toContain(UNVERIFIED_LINE);
+      expect(out).not.toContain('verified');
+    });
+
+    it('(e) a hung-equivalent child (an injected runner that throws) -> no badge, never throws', () => {
+      // Stands in for the timed-out/killed real child, whose hard 2s-bound
+      // termination is already proven at the oracle seam in provenance.test.ts.
+      const throwingRunner = (): never => {
+        throw new Error('spawn exploded');
+      };
+      expect(() => buildVerifiedIntroCard(PLUGIN_MANIFEST, throwingRunner)).not.toThrow();
+      const out = strip(buildVerifiedIntroCard(PLUGIN_MANIFEST, throwingRunner));
+      expect(out).toContain(UNVERIFIED_LINE);
+      expect(out).not.toContain('verified');
+    });
+
+    it('setup always continues: all five fixtures render a card and never throw', () => {
+      const unverifiedRunners: NpmRunner[] = [
+        () => ({ ok: true, stdout: noAttestationReport() }),
+        () => ({
+          ok: true,
+          stdout: buildReport({
+            workflow: { repository: 'https://github.com/someone-else/unrelated', path: 'x.yml' },
+          }),
+        }),
+        () => ({ ok: false, stdout: '' }),
+        () => {
+          throw new Error('spawn exploded');
+        },
+      ];
+      for (const runNpm of unverifiedRunners) {
+        expect(() => buildVerifiedIntroCard(PLUGIN_MANIFEST, runNpm)).not.toThrow();
+        expect(strip(buildVerifiedIntroCard(PLUGIN_MANIFEST, runNpm))).toContain(UNVERIFIED_LINE);
+      }
+      const matchingRunner: NpmRunner = () => ({ ok: true, stdout: buildReport({}) });
+      expect(() => buildVerifiedIntroCard(PLUGIN_MANIFEST, matchingRunner)).not.toThrow();
+      expect(strip(buildVerifiedIntroCard(PLUGIN_MANIFEST, matchingRunner))).toContain(
+        VERIFIED_LINE,
+      );
+    });
   });
 
   it('healthScore: blends coverage and handled ratio into 0–100', () => {

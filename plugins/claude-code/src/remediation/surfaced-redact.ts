@@ -47,7 +47,7 @@ import {
   realPathOrNull,
   type RedactionScope,
   type RedactionTarget,
-  redactLeakedKeys,
+  redactLeakedKeysDetailed,
   resolveRedactableArtifact,
 } from './redact.ts';
 
@@ -100,35 +100,60 @@ function recoverTarget(
   return hit === undefined ? undefined : { where: finding.where, rawValue: hit.rawMatch };
 }
 
+// The real outcome of a redaction pass: the count of keys actually struck, plus
+// exactly which of the input findings are NOT covered by that count — a
+// vanished/unreadable artifact, content that changed between the calibration
+// scan and this redact-time re-scan, an out-of-scope artifact, or a recovery
+// failure all land a finding here. A caller must never present a "resolved"
+// framing while `unredacted` is non-empty — that is exactly the false
+// all-clear this shape exists to prevent.
+export interface SurfacedRedactionResult {
+  readonly redactedKeys: number;
+  readonly unredacted: readonly MaskedSecretFinding[];
+}
+
 /**
  * Redact every in-scope leaked key the surfaced secret findings reference, and
- * return the real count of keys actually redacted. Fully fail-open: any failure
- * recovering raw values (config/store unavailable, an unreadable artifact) yields
- * 0 rather than throwing — the caller's session must never break because a
- * best-effort recovery pass failed. The actual in-place striking is delegated
- * entirely to `redactLeakedKeys`, so its binding-scope, atomic-write, and
- * per-file fail-open guarantees apply unchanged.
+ * report the real count of keys actually redacted plus which findings were not
+ * (so a caller can render an honest partial outcome rather than claim complete
+ * redaction). Fully fail-open: any failure recovering raw values (config/store
+ * unavailable, an unreadable artifact) leaves the affected findings in
+ * `unredacted` rather than throwing — the caller's session must never break
+ * because a best-effort recovery pass failed. The actual in-place striking is
+ * delegated entirely to `redactLeakedKeysDetailed`, so its binding-scope,
+ * atomic-write, and per-file fail-open guarantees apply unchanged.
  */
 export async function redactSurfacedSecrets(
   findings: readonly MaskedSecretFinding[],
   overrides: RedactSurfacedSecretsOverrides = {},
-): Promise<number> {
-  if (findings.length === 0) return 0;
+): Promise<SurfacedRedactionResult> {
+  if (findings.length === 0) return { redactedKeys: 0, unredacted: [] };
   const scope = enforcedScope(overrides);
 
-  // Group by file, and drop any finding whose artifact does not resolve inside
-  // the enforced scope BEFORE reading it — an out-of-scope (e.g. project) file is
-  // never opened, let alone scanned, by this adapter.
+  // Group by file, and set aside any finding whose artifact does not resolve
+  // inside the enforced scope BEFORE reading it — an out-of-scope (e.g. project)
+  // file is never opened, let alone scanned, by this adapter, and the finding
+  // referencing it is honestly reported as unredacted rather than silently dropped.
   const byFile = new Map<string, MaskedSecretFinding[]>();
+  const outOfScope: MaskedSecretFinding[] = [];
   for (const finding of findings) {
-    if (resolveRedactableArtifact(finding.where.filePath, scope) === null) continue;
+    if (resolveRedactableArtifact(finding.where.filePath, scope) === null) {
+      outOfScope.push(finding);
+      continue;
+    }
     const existing = byFile.get(finding.where.filePath);
     if (existing) existing.push(finding);
     else byFile.set(finding.where.filePath, [finding]);
   }
-  if (byFile.size === 0) return 0;
+  if (byFile.size === 0) return { redactedKeys: 0, unredacted: findings };
 
-  let targets: RedactionTarget[] = [];
+  // Every finding whose raw value could not be recovered — because its file
+  // vanished/is unreadable, the re-scan found no matching occurrence, or it was
+  // out-of-scope above — accumulates here. `recovered` pairs a finding with the
+  // redaction target derived from it, so a struck/unstruck target can be traced
+  // back to the finding it came from.
+  const unrecovered: MaskedSecretFinding[] = [...outOfScope];
+  const recovered: { finding: MaskedSecretFinding; target: RedactionTarget }[] = [];
   try {
     const config = loadConfig(overrides.dataDirBase);
     const gateway = resolveDataGateway(config);
@@ -139,26 +164,44 @@ export async function redactSurfacedSecrets(
         try {
           content = readFileSync(filePath, 'utf8');
         } catch {
-          continue; // vanished/unreadable artifact — best-effort, skip it
+          unrecovered.push(...fileFindings); // vanished/unreadable artifact — best-effort, skip it
+          continue;
         }
         let matches: { ruleId: string; rawMatch: string }[];
         try {
           matches = (await runtime.processText(content)).findings;
         } catch {
-          continue; // a scan failure on one artifact must not abort the others
+          unrecovered.push(...fileFindings); // a scan failure on one artifact must not abort the others
+          continue;
         }
         for (const finding of fileFindings) {
           const target = recoverTarget(finding, matches);
-          if (target !== undefined) targets.push(target);
+          if (target === undefined) unrecovered.push(finding);
+          else recovered.push({ finding, target });
         }
       }
     } finally {
-      await runtime.close();
+      try {
+        await runtime.close();
+      } catch {
+        // Best-effort teardown: a close fault here must never rewrite the
+        // outcome already computed above — the targets already recovered stay
+        // recovered, and the redaction below still runs.
+      }
     }
   } catch {
     // Config/store unavailable — recover nothing rather than break the session.
-    targets = [];
+    return { redactedKeys: 0, unredacted: findings };
   }
 
-  return redactLeakedKeys(targets, scope);
+  const { redactedKeys, struck } = redactLeakedKeysDetailed(
+    recovered.map((r) => r.target),
+    scope,
+  );
+  const struckTargets = new Set(struck);
+  const unredacted = [
+    ...unrecovered,
+    ...recovered.filter((r) => !struckTargets.has(r.target)).map((r) => r.finding),
+  ];
+  return { redactedKeys, unredacted };
 }

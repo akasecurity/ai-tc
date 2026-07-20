@@ -345,13 +345,18 @@ export interface PluginMeta {
   oneLiner: string;
   repository: string;
   version: string;
+  verified?: boolean;
 }
 
 export function renderSetupIntro(meta: PluginMeta): string {
   const heading = `● Found ${meta.name} — ${meta.tagline}`;
 
-  // The ' · verified' badge is appended here once the provenance check lands.
-  const provenance = `v${meta.version} · ${meta.repository}`;
+  // The ' · verified' badge appears only when the provenance check confirmed the
+  // exact package@version's attestation binds to the expected repository + workflow.
+  const provenance =
+    meta.verified === true
+      ? `v${meta.version} · ${meta.repository} · verified`
+      : `v${meta.version} · ${meta.repository}`;
 
   return [heading, '', indent(meta.oneLiner), '', indent(provenance)].join('\n');
 }

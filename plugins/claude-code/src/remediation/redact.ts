@@ -97,45 +97,57 @@ export function resolveRedactableArtifact(filePath: string, scope: RedactionScop
   return scope.artifactRoots.some((root) => isWithinRoot(realTarget, root)) ? realTarget : null;
 }
 
+// The detailed outcome of a redaction sweep: the real count (same figure
+// `redactLeakedKeys` returns) plus exactly which input targets were struck —
+// so a caller that needs to know which specific findings remain unredacted
+// (rather than only how many) can compare its input targets against `struck`.
+export interface RedactionDetail {
+  readonly redactedKeys: number;
+  readonly struck: readonly RedactionTarget[];
+}
+
 /**
- * Redact every in-scope leaked-key occurrence in place and return the real count of
+ * Redact every in-scope leaked-key occurrence in place and report the real count of
  * keys actually redacted (a key counts only when its raw value was present, struck,
- * and the rewrite persisted). Targets outside the scope roots are skipped and their
- * files never written. Targets against the same file are folded into a single
- * read/rewrite. Each file is handled best-effort: a read or write failure on one
- * artifact is skipped so the rest of the batch is still redacted.
+ * and the rewrite persisted) plus exactly which of the input targets were struck.
+ * Targets outside the scope roots are skipped and their files never written.
+ * Targets against the same file are folded into a single read/rewrite. Each file is
+ * handled best-effort: a read or write failure on one artifact is skipped so the
+ * rest of the batch is still redacted.
  */
-export function redactLeakedKeys(
+export function redactLeakedKeysDetailed(
   targets: readonly RedactionTarget[],
   scope: RedactionScope = platformRedactionScope(),
-): number {
-  // Group the in-scope targets by the real path of the file they strike, so a file
-  // with several leaked keys is read and rewritten once.
-  const byFile = new Map<string, string[]>();
+): RedactionDetail {
+  // Group the in-scope targets (keeping each target's identity, not just its raw
+  // value) by the real path of the file they strike, so a file with several leaked
+  // keys is read and rewritten once.
+  const byFile = new Map<string, RedactionTarget[]>();
   for (const target of targets) {
     if (target.rawValue === '') continue;
     const artifactPath = resolveRedactableArtifact(target.where.filePath, scope);
     if (artifactPath === null) continue;
-    const values = byFile.get(artifactPath);
-    if (values === undefined) byFile.set(artifactPath, [target.rawValue]);
-    else values.push(target.rawValue);
+    const existing = byFile.get(artifactPath);
+    if (existing === undefined) byFile.set(artifactPath, [target]);
+    else existing.push(target);
   }
 
   let redactedKeys = 0;
-  for (const [filePath, rawValues] of byFile) {
+  const struck: RedactionTarget[] = [];
+  for (const [filePath, fileTargets] of byFile) {
     let content: string;
     try {
       content = readFileSync(filePath, 'utf8');
     } catch {
       continue; // unreadable or vanished artifact — skip, don't abort the batch
     }
-    let struckHere = 0;
-    for (const rawValue of rawValues) {
-      if (!content.includes(rawValue)) continue;
-      content = content.replaceAll(rawValue, REDACTED_PLACEHOLDER);
-      struckHere += 1;
+    const struckHere: RedactionTarget[] = [];
+    for (const target of fileTargets) {
+      if (!content.includes(target.rawValue)) continue;
+      content = content.replaceAll(target.rawValue, REDACTED_PLACEHOLDER);
+      struckHere.push(target);
     }
-    if (struckHere === 0) continue;
+    if (struckHere.length === 0) continue;
     // Write atomically: a full write to a sibling temp file, then rename over the
     // original (rename is atomic on the same filesystem). A crash mid-write leaves
     // the original transcript intact rather than truncated.
@@ -156,8 +168,21 @@ export function redactLeakedKeys(
     }
     // Count only after the rewrite is on disk, so the returned count reflects keys
     // actually redacted rather than merely matched.
-    redactedKeys += struckHere;
+    redactedKeys += struckHere.length;
+    struck.push(...struckHere);
   }
 
-  return redactedKeys;
+  return { redactedKeys, struck };
+}
+
+/**
+ * Redact every in-scope leaked-key occurrence in place and return the real count of
+ * keys actually redacted. A thin wrapper over `redactLeakedKeysDetailed` for callers
+ * that only need the count.
+ */
+export function redactLeakedKeys(
+  targets: readonly RedactionTarget[],
+  scope: RedactionScope = platformRedactionScope(),
+): number {
+  return redactLeakedKeysDetailed(targets, scope).redactedKeys;
 }

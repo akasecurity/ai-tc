@@ -49,10 +49,7 @@ export {
 } from './activity/ActivitySummaryStripView.tsx';
 export { ActivityTokenUsageView } from './activity/ActivityTokenUsageView.tsx';
 export { MetaChips, Metric, SessionStatusBadge, StatusDot, ToolChip } from './activity/atoms.tsx';
-export {
-  AuditTimelineView,
-  type BuildActivityLinkHref,
-} from './activity/AuditTimelineView.tsx';
+export { AuditTimelineView, type BuildActivityLinkHref } from './activity/AuditTimelineView.tsx';
 export {
   cacheHitPct,
   dayLabel,

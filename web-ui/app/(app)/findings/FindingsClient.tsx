@@ -142,9 +142,7 @@ export function FindingsClient({
   // have no group row here — without naming them, part of the session's
   // "N triggered" tally would reconcile against nothing on this page.
   const transcriptOnly = data.sessionFirings
-    ? Object.entries(data.sessionFirings).filter(
-        ([rule]) => !data.items.some((g) => g.id === rule),
-      )
+    ? Object.entries(data.sessionFirings).filter(([rule]) => !data.items.some((g) => g.id === rule))
     : [];
 
   return (
@@ -197,9 +195,7 @@ export function FindingsClient({
           {transcriptOnly.length > 0 && (
             <p className="w-full text-xs text-text-3">
               {`Also detected in this session's transcript without live enforcement: `}
-              {transcriptOnly
-                .map(([rule, n]) => `${rule} ×${String(n)}`)
-                .join(', ')}
+              {transcriptOnly.map(([rule, n]) => `${rule} ×${String(n)}`).join(', ')}
             </p>
           )}
         </div>

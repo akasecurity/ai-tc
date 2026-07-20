@@ -3,6 +3,8 @@
 [![npm](https://img.shields.io/npm/v/@akasecurity/ai-tc-claude-code?style=flat-square&labelColor=232F3E&color=00E0B8)](https://www.npmjs.com/package/@akasecurity/ai-tc-claude-code)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-232F3E?style=flat-square)](https://github.com/akasecurity/ai-tc/blob/main/LICENSE)
 
+**AKA Security — We secure agent harnesses at the source.**
+
 The Claude Code plugin for **[AI Traffic Control](https://github.com/akasecurity/ai-tc)** (`ai-tc`). It hooks into a Claude Code session and inspects its traffic — prompts, tool calls, tool results, file reads — scanning each event against your rule packs and applying inline **warn / redact / block** policies. Every event is recorded to a local SQLite store at `~/.aka/data/aka.db`.
 
 Detection runs entirely on your machine. There's no account and no backend — nothing leaves your computer to be scanned.

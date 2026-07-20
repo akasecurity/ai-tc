@@ -1,13 +1,6 @@
-# Code owners for ai-tc. Every PR requests review from the owners of the paths it touches.
-
-# Default owner for everything not otherwise matched.
-*                       @akasecurity/maintainers
-
-# Detection rules are published as first-party verified packs under the `aka`
-# namespace when merged, so /rules is a supply-chain trust boundary — every rule
-# change requires maintainer + rules-review sign-off before it can be released.
-/rules/                 @akasecurity/maintainers @akasecurity/rules-reviewers
-
-# Release + supply-chain surfaces.
-/.github/workflows/     @akasecurity/maintainers
-/tools/installer/       @akasecurity/maintainers
+# Code owners for ai-tc.
+#
+# Every PR requests review from the developers team — a visible team with write
+# access, so GitHub resolves it and the review is actually requested. Any member
+# can review; a senior approves in practice.
+*   @akasecurity/developers

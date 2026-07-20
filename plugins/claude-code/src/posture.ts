@@ -6,15 +6,18 @@ import { renderPosture } from './render.ts';
 // store (the wizard's policy write) so the card shows what's actually enforced
 // rather than the single settings.policy string.
 //
-// Best-effort by design: this OWNS the catch so a policies-read fault degrades
-// to '' — renderFirstRun then hides only the Posture section instead of letting
-// the throw propagate to firstrun's outer fail-open handler and collapse the
-// entire card into the "AKA could not read your data yet…" note. Always closes
-// the handle it was given, on both paths.
+// Best-effort by design: this OWNS the catch so a policies fault degrades to ''
+// — renderFirstRun then hides only the Posture section instead of letting the
+// throw propagate to firstrun's outer fail-open handler and collapse the entire
+// card into the store-unavailable note. The store is opened INSIDE the guarded
+// scope via the injected opener, so an open failure degrades identically to a
+// read failure. Always closes the handle when one was opened, on both paths.
 export async function readPostureBlock(
-  db: Pick<LocalDatabase, 'policies' | 'close'>,
+  open: () => Pick<LocalDatabase, 'policies' | 'close'>,
 ): Promise<string> {
+  let db: Pick<LocalDatabase, 'policies' | 'close'> | undefined;
   try {
+    db = open();
     const policies = await db.policies.readPolicies();
     return renderPosture(
       policies
@@ -25,9 +28,10 @@ export async function readPostureBlock(
         .filter((r) => r.category !== ''),
     );
   } catch {
-    // Best-effort: an unreadable policies store just omits the Posture section.
+    // Best-effort: an unreadable or unopenable policies store just omits the
+    // Posture section.
     return '';
   } finally {
-    db.close();
+    db?.close();
   }
 }

@@ -32,6 +32,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
+import { renderCategoriesTuned } from './render.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
 // positionals are ignored — the wizard only ever passes the ones it knows.
@@ -140,10 +141,12 @@ if (rawPosture !== undefined || useFloor) {
     const db = openLocalDatabase(loadConfig().dataDir);
     try {
       applyCategoryPosture(posture, db.policies, mode);
+      // The applying confirmation — the "tuned" segment reports the
+      // categories the applied posture covers (the 8-pack matrix, or the
+      // severity-floor fallback), never a literal.
       const categoryCount = Object.keys(posture).length;
       process.stdout.write(
-        `AKA per-category posture saved (${String(categoryCount)} categories` +
-          `${useFloor ? ', severity floor' : ''}).\n`,
+        renderCategoriesTuned(categoryCount) + (useFloor ? ' (severity floor)' : '') + '\n',
       );
     } finally {
       db.close();

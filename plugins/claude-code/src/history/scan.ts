@@ -62,7 +62,10 @@ function redactOverlapping(
 // doc) — it is never persisted here, only handed to scanHistory's onHit sink.
 // `otherFindings` are the message's other findings (if any); any of their raw
 // values that fall inside this hit's context window are redacted, so a single
-// hit never exposes a second, unrelated secret through its context.
+// hit never exposes a second, unrelated secret through its context. `filePath`
+// is the transcript this text came from, carried through so a surfaced finding
+// can later be located and struck in place; omitted when the source path is
+// unknown (an empty string means the same as absent).
 export function buildTriageHit(
   text: string,
   f: {
@@ -74,6 +77,7 @@ export function buildTriageHit(
     confidence: number;
   },
   otherFindings: readonly { rawMatch: string; span: Span }[] = [],
+  filePath = '',
 ): TriageHit {
   const start = Math.max(0, f.span.start - CONTEXT_RADIUS);
   const end = Math.min(text.length, f.span.end + CONTEXT_RADIUS);
@@ -87,6 +91,7 @@ export function buildTriageHit(
     rawMatch: f.rawMatch,
     context: redactOverlapping(rawContext, start, overlapping),
     confidence: f.confidence,
+    ...(filePath !== '' ? { filePath } : {}),
   };
 }
 
@@ -153,7 +158,7 @@ export async function scanHistory(
         bySeverity[finding.severity] = (bySeverity[finding.severity] ?? 0) + 1;
         if (onHit) {
           const otherFindings = result.findings.filter((other) => other !== finding);
-          const hit = buildTriageHit(message.text, finding, otherFindings);
+          const hit = buildTriageHit(message.text, finding, otherFindings, message.filePath);
           try {
             // onHit is a synchronous void callback (see its parameter type on
             // scanHistory below) — this try/catch guards a synchronous throw

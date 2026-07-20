@@ -24,7 +24,7 @@ describe('readPostureBlock', () => {
         { target: { category: 'code_context' }, action: 'log' },
       ]),
     );
-    const block = await readPostureBlock(db);
+    const block = await readPostureBlock(() => db);
     expect(block).toContain('secret');
     expect(block).toContain('redact');
     // 'log' (ActionTaken) surfaces to the user as 'monitor'.
@@ -42,9 +42,18 @@ describe('readPostureBlock', () => {
     // The fault must NOT propagate — that would collapse the whole install card
     // into firstrun's fail-open note. It degrades to '' so only the Posture
     // section is hidden, and the handle is still closed.
-    const block = await readPostureBlock(db);
+    const block = await readPostureBlock(() => db);
     expect(block).toBe('');
     expect(closed).toBe(true);
+  });
+
+  it('degrades to an empty block when opening the store throws', async () => {
+    // A store-open fault must degrade identically to a read fault: the Posture
+    // section is hidden, nothing propagates to collapse the whole install card.
+    const block = await readPostureBlock(() => {
+      throw new Error('cannot open database');
+    });
+    expect(block).toBe('');
   });
 
   it('closes the database handle on the happy path too', async () => {
@@ -55,7 +64,7 @@ describe('readPostureBlock', () => {
         closed = true;
       },
     );
-    await readPostureBlock(db);
+    await readPostureBlock(() => db);
     expect(closed).toBe(true);
   });
 });

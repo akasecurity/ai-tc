@@ -59,9 +59,14 @@ export default defineConfig({
     // /aka:setup FP-writeback adapter (reads a backfill --triage stream)
     'apply-suppressions': 'src/apply-suppressions.ts',
     intro: 'src/intro.ts',
+    // /aka:setup start-light card (Not-now branch)
+    'start-light': 'src/start-light.ts',
     firstrun: 'src/firstrun.ts',
     backfill: 'src/backfill.ts',
     filescan: 'src/filescan.ts',
+    // /aka:setup frame-0.6 "Review leaked keys" — the secret-leak remediation
+    // chain's production entry
+    remediate: 'src/remediation/entry.ts',
   },
   format: ['esm'],
   platform: 'node',

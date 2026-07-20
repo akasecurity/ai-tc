@@ -258,6 +258,9 @@ export const ListGroupedFindingsQuery = z.object({
   provider: z.array(FindingProvider).optional(),
   action: z.array(FindingAction).optional(),
   q: z.string().optional(),
+  // Scope to findings whose event carries this session id (the Activity page's
+  // session → findings drilldown). Findings without a session never match.
+  sessionId: z.string().optional(),
   groupBy: z.literal('type').optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   cursor: z.string().optional(),
@@ -273,6 +276,12 @@ export const ListGroupedFindingsResponse = z
     facets: FindingFacets,
     items: z.array(FindingGroup),
     nextCursor: z.string().nullable(),
+    // Present only on session-scoped queries (`sessionId` set): per ruleId, how
+    // many times that rule fired in the session's persisted transcript. Findings
+    // here are deduplicated to unique values while the transcript tally counts
+    // every firing, so the two numbers legitimately differ — this map lets a
+    // session-scoped view show both.
+    sessionFirings: z.record(z.string(), z.number().int().nonnegative()).optional(),
   })
   .meta({ id: 'ListGroupedFindingsResponse' });
 export type ListGroupedFindingsResponse = z.infer<typeof ListGroupedFindingsResponse>;

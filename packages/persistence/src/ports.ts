@@ -77,6 +77,9 @@ export interface FindingsReadPort {
  */
 export interface GroupedFindingsView {
   listGroupedFindings(query: ListGroupedFindingsQuery): Promise<ListGroupedFindingsResponse>;
+  /** How many live-enforced findings belong to this session — a bare COUNT, so
+   * a caller labeling a link never pays the grouped pipeline. */
+  sessionFindingsCount(sessionId: string): Promise<number>;
 }
 
 /** Aggregated dashboard reads — independent of the findings row shape. */

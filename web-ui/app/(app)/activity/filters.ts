@@ -3,8 +3,8 @@ import { Harness, type ListActivitySessionsQuery } from '@akasecurity/schema';
 
 import { parseRange } from '../../lib/range';
 
-// The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=) so
-// the Server Component re-queries the local store on every change — the same
+// The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=&empty=1)
+// so the Server Component re-queries the local store on every change — the same
 // mechanism as the findings/detections pages. These pure helpers convert between
 // the URL params and the persistence query; shared by the page (parse) and the
 // client shell (build), so keep it dependency-free of React.
@@ -41,6 +41,12 @@ export function parseActivityRange(sp: ActivitySearchParams): TimeRange {
   return parseRange(one(sp.range));
 }
 
+/** Whether zero-activity ("background") sessions are shown — hidden by default;
+ * `?empty=1` reveals them. */
+export function parseShowEmpty(sp: ActivitySearchParams): boolean {
+  return one(sp.empty) === '1';
+}
+
 /**
  * Search + harness + range → the persistence session-list query. The range maps
  * to a `from` lower bound (`now − N days`); `limit: 100` is the schema max (the
@@ -51,11 +57,14 @@ export function toListQuery(
   q: string,
   harness: Harness[],
   range: TimeRange,
+  showEmpty = false,
   nowMs: number = Date.now(),
 ): ListActivitySessionsQuery {
   return {
     ...(q ? { q } : {}),
     ...(harness.length ? { harness } : {}),
+    // Zero-activity sessions are hidden unless the toggle reveals them.
+    ...(showEmpty ? {} : { excludeEmpty: true }),
     from: rangeToFromIso(range, nowMs),
     limit: 100,
   };
@@ -67,6 +76,7 @@ export function buildActivityParams(opts: {
   harness: Harness[];
   range: TimeRange;
   id?: string;
+  showEmpty?: boolean;
 }): URLSearchParams {
   const sp = new URLSearchParams();
   const q = opts.q.trim();
@@ -77,5 +87,6 @@ export function buildActivityParams(opts: {
   // resets it to DEFAULT_TIME_RANGE.
   if (opts.range !== DEFAULT_TIME_RANGE) sp.set('range', opts.range);
   if (opts.id) sp.set('id', opts.id);
+  if (opts.showEmpty) sp.set('empty', '1');
   return sp;
 }

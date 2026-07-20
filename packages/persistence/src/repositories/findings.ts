@@ -25,7 +25,7 @@ import {
   toFindingRow,
 } from '@akasecurity/schema';
 
-import { allRows, countScalar } from '../internal/rows.ts';
+import { allRows, countBy, countScalar } from '../internal/rows.ts';
 import type { DashboardViews, FindingsReadPort, GroupedFindingsView } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
@@ -253,6 +253,42 @@ export class SqliteFindingsRepository
     );
   }
 
+  /** Live-enforced findings recorded for one session — a bare COUNT over the
+   * session-stamped events (served by idx_events_session_id), so the Activity
+   * page can label its findings link without the grouped pipeline. */
+  sessionFindingsCount(sessionId: string): Promise<number> {
+    if (!sessionId) return Promise.resolve(0);
+    return Promise.resolve(
+      countScalar(
+        this.db,
+        `SELECT count(*) AS n FROM findings f
+           JOIN events e ON e.id = f.event_id
+          WHERE json_extract(e.metadata, '$.sessionId') = :sessionId`,
+        { sessionId },
+      ),
+    );
+  }
+
+  /** Per-rule transcript firing tally for one session — reads the OTHER finding
+   * store (inspection_findings, keyed to audit_events): every detection the
+   * transcript pass recorded, counted per firing rather than per unique value.
+   * Rides on session-scoped grouped responses so the findings view can
+   * reconcile the Activity page's tally with the deduped groups it lists. */
+  private sessionFirings(sessionId: string): Record<string, number> {
+    return Object.fromEntries(
+      countBy(
+        this.db,
+        `SELECT d.rule_id AS k, count(*) AS n
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+          WHERE e.root_session_id = :sessionId
+          GROUP BY d.rule_id`,
+        { sessionId },
+      ),
+    );
+  }
+
   /**
    * Grouped findings for the dashboard — joins findings⋈events (repo/file
    * from event metadata), groups by ruleId, computes per-filter-excluded facets,
@@ -272,10 +308,23 @@ export class SqliteFindingsRepository
    * rule is ever restated in SQL.
    */
   listGroupedFindings(query: ListGroupedFindingsQuery): Promise<ListGroupedFindingsResponse> {
+    // The session scope is a SQL predicate, not a JS filter: totals, facets and
+    // the per-group aggregates must all speak for the session only, and the
+    // aggregate query never materializes a row per finding to filter in JS.
+    const sessionPredicate = query.sessionId
+      ? `WHERE json_extract(e.metadata, '$.sessionId') = :sessionId`
+      : '';
+    const sessionParams: Record<string, string> = query.sessionId
+      ? { sessionId: query.sessionId }
+      : {};
+
     // The search text is the one aggregate column whose size tracks the store
     // rather than the rule count, so fetch it only for a request that can use
     // it (see groupAggregates).
-    const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '');
+    const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '', {
+      predicate: sessionPredicate,
+      params: sessionParams,
+    });
 
     const rows = allRows<FindingGroupRowJoined>(
       this.db.prepare(
@@ -298,11 +347,12 @@ export class SqliteFindingsRepository
              JOIN events e ON e.id = f.event_id
              LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
                ON latest.finding_key = f.finding_key
+             ${sessionPredicate}
          )
          WHERE rn <= :cap
          ORDER BY occurred_at DESC, id DESC`,
       ),
-      { cap: PREVIEW_INSTANCES_PER_GROUP },
+      { cap: PREVIEW_INSTANCES_PER_GROUP, ...sessionParams },
     );
 
     const groupable: GroupableFindingRow[] = rows.map((r) => ({
@@ -344,7 +394,13 @@ export class SqliteFindingsRepository
     const limit = query.limit ?? DEFAULT_GROUPED_FINDINGS_LIMIT;
     const items = sorted.slice(0, limit);
 
-    return Promise.resolve({ totals, facets, items, nextCursor: null });
+    return Promise.resolve({
+      totals,
+      facets,
+      items,
+      nextCursor: null,
+      ...(query.sessionId ? { sessionFirings: this.sessionFirings(query.sessionId) } : {}),
+    });
   }
 
   /**
@@ -369,7 +425,10 @@ export class SqliteFindingsRepository
    * would silently lose, so it is fetched only when the request actually
    * carries a `q`.
    */
-  private groupAggregates(withSearchText: boolean): Map<string, FindingGroupAggregate> {
+  private groupAggregates(
+    withSearchText: boolean,
+    scope: { predicate: string; params: Record<string, string> },
+  ): Map<string, FindingGroupAggregate> {
     const searchTextColumns = withSearchText
       ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
            group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files`
@@ -392,9 +451,10 @@ export class SqliteFindingsRepository
            JOIN events e ON e.id = f.event_id
            LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
              ON latest.finding_key = f.finding_key
+          ${scope.predicate}
           GROUP BY f.rule_id`,
       )
-      .all() as unknown as FindingAggregateRowJoined[];
+      .all(scope.params) as unknown as FindingAggregateRowJoined[];
 
     return new Map(
       rows.map((r) => [

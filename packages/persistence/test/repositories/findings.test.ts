@@ -41,7 +41,8 @@ afterEach(() => {
 });
 
 // Record one event + one finding. Distinct `occurredAt` (ISO) keeps ordering
-// deterministic; repo/filePath ride in the event metadata (extracted in SQL).
+// deterministic; repo/filePath/sessionId ride in the event metadata (extracted
+// in SQL).
 function record(opts: {
   occurredAt: string;
   sourceTool: IngestEvent['sourceTool'];
@@ -51,9 +52,14 @@ function record(opts: {
   actionTaken?: ActionTaken;
   repo: string;
   filePath: string;
+  sessionId?: string;
 }): void {
   const id = randomUUID();
-  const metadata: EventMetadata = { repo: opts.repo, filePath: opts.filePath };
+  const metadata: EventMetadata = {
+    repo: opts.repo,
+    filePath: opts.filePath,
+    ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+  };
   const event: IngestEvent = {
     id,
     sourceTool: opts.sourceTool,
@@ -157,6 +163,185 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
     expect(res.items).toEqual([]);
     expect(res.totals).toEqual({ findings: 0, groups: 0 });
     expect(res.nextCursor).toBeNull();
+  });
+});
+
+// The Activity page's session → findings drilldown: a sessionId scopes the
+// grouped list to findings whose event metadata carries that session, so the
+// same query/response shape serves both the whole-store page and the
+// session-filtered deep link (/findings?session=…).
+describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () => {
+  const SESSION_A = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const SESSION_B = 'bbbbbbbb-2222-4222-8222-222222222222';
+
+  function seedSessions(): void {
+    record({
+      occurredAt: '2026-01-03T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      severity: 'critical',
+      repo: 'acme/api',
+      filePath: 'a.ts',
+      sessionId: SESSION_A,
+    });
+    record({
+      occurredAt: '2026-01-02T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'email',
+      category: 'code_context',
+      severity: 'low',
+      actionTaken: 'redact',
+      repo: 'acme/api',
+      filePath: 'b.ts',
+      sessionId: SESSION_A,
+    });
+    record({
+      occurredAt: '2026-01-01T00:00:00.000Z',
+      sourceTool: 'cursor',
+      ruleId: 'aws-key',
+      severity: 'critical',
+      repo: 'acme/web',
+      filePath: 'c.ts',
+      sessionId: SESSION_B,
+    });
+    // A scan-derived finding with no session at all — never in a session scope.
+    record({
+      occurredAt: '2026-01-04T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      severity: 'critical',
+      repo: 'acme/scan',
+      filePath: 'd.ts',
+    });
+  }
+
+  it('scopes items, totals and instance counts to the session', async () => {
+    seedSessions();
+    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A });
+
+    expect(res.totals).toEqual({ findings: 2, groups: 2 });
+    expect(res.items.map((g) => g.id)).toEqual(['aws-key', 'email']);
+    // Only the session's own instance — not session B's, not the sessionless one.
+    expect(res.items[0]?.instanceCount).toBe(1);
+    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['a.ts']);
+    expect(res.items[0]?.latestDetectedAt).toBe('2026-01-03T00:00:00.000Z');
+  });
+
+  it('excludes findings whose events carry no sessionId', async () => {
+    seedSessions();
+    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_B });
+
+    expect(res.totals).toEqual({ findings: 1, groups: 1 });
+    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['c.ts']);
+  });
+
+  it('returns empty for a session with no findings', async () => {
+    seedSessions();
+    const res = await db.findings.listGroupedFindings({ sessionId: 'no-such-session' });
+
+    expect(res.items).toEqual([]);
+    expect(res.totals).toEqual({ findings: 0, groups: 0 });
+  });
+
+  it('composes with the other filters and scopes facets to the session', async () => {
+    seedSessions();
+    const res = await db.findings.listGroupedFindings({
+      sessionId: SESSION_B,
+      severity: ['critical'],
+    });
+
+    // Session B holds one of the store's three critical aws-key instances.
+    expect(res.totals).toEqual({ findings: 1, groups: 1 });
+    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['c.ts']);
+    // Facets honor the session scope: session B has no low finding, so the
+    // severity facet (own filter excluded) lists critical only.
+    expect(res.facets.severity.map((s) => s.value)).toEqual(['critical']);
+  });
+
+  it('search text scoping: a q that only matches another session finds nothing', async () => {
+    seedSessions();
+    // 'acme/web' belongs to session B's finding; scoped to A it must not match.
+    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A, q: 'acme/web' });
+    expect(res.items).toEqual([]);
+  });
+
+  // The Activity page's link label: a bare COUNT over the session's live
+  // findings, not the grouped pipeline — it must not pay the whole-store
+  // aggregate cost just to produce one number.
+  it('sessionFindingsCount tallies the session without the grouped pipeline', async () => {
+    seedSessions();
+    expect(await db.findings.sessionFindingsCount(SESSION_A)).toBe(2);
+    expect(await db.findings.sessionFindingsCount(SESSION_B)).toBe(1);
+    expect(await db.findings.sessionFindingsCount('no-such-session')).toBe(0);
+    // Sessionless findings never count toward any session.
+    expect(await db.findings.sessionFindingsCount('')).toBe(0);
+  });
+
+  // Seed the OTHER finding store: a session root + tool events in audit_events,
+  // with transcript-derived inspection findings attached — the rows behind the
+  // Activity page's per-session "N triggered" tally. Written raw (the write
+  // gateway lives in plugin-runtime, out of this package's reach).
+  function seedTranscriptFirings(sessionId: string, ruleId: string, firings: number): void {
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    try {
+      raw
+        .prepare(
+          `INSERT OR IGNORE INTO audit_events (id, event_type, started_at, content)
+           VALUES (?, 'session', 0, 'seeded session')`,
+        )
+        .run(sessionId);
+      raw
+        .prepare(
+          `INSERT OR IGNORE INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES (?, ?, ?, 'secret', 'low', '{}', '1')`,
+        )
+        .run(`def-${ruleId}`, ruleId, ruleId);
+      for (let i = 0; i < firings; i++) {
+        const eventId = `${sessionId}-ev-${ruleId}-${String(i)}`;
+        raw
+          .prepare(
+            `INSERT INTO audit_events (id, root_session_id, event_type, started_at, content)
+             VALUES (?, ?, 'tool_call', ?, '')`,
+          )
+          .run(eventId, sessionId, i);
+        raw
+          .prepare(
+            `INSERT INTO inspection_findings
+               (id, audit_event_id, inspection_definition_id, span_start, span_end,
+                masked_match, action_taken, confidence)
+             VALUES (?, ?, ?, 0, 1, '••', 'log', 1)`,
+          )
+          .run(`${eventId}-f`, eventId, `def-${ruleId}`);
+      }
+    } finally {
+      raw.close();
+    }
+  }
+
+  // Session-scoped responses also carry the OTHER store's tally per rule — how
+  // many times each rule fired in the session's transcript — so the findings
+  // view can reconcile the Activity page's firing count with the deduped
+  // groups it lists.
+  it('session-scoped queries report per-rule transcript firings', async () => {
+    seedSessions();
+    seedTranscriptFirings(SESSION_A, 'aws-key', 3);
+    seedTranscriptFirings(SESSION_A, 'transcript-only-rule', 5);
+
+    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A });
+    expect(res.sessionFirings).toEqual({ 'aws-key': 3, 'transcript-only-rule': 5 });
+
+    // Another session's firings never leak in.
+    const other = await db.findings.listGroupedFindings({ sessionId: SESSION_B });
+    expect(other.sessionFirings).toEqual({});
+  });
+
+  it('unscoped queries carry no transcript firings', async () => {
+    seedSessions();
+    seedTranscriptFirings(SESSION_A, 'aws-key', 3);
+
+    const res = await db.findings.listGroupedFindings({});
+    expect(res.sessionFirings).toBeUndefined();
   });
 });
 

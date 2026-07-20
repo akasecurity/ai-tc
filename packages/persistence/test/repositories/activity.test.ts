@@ -238,11 +238,25 @@ describe('stats', () => {
     expect(stats.egressToday).toBe(2); // distinct {newrelic.com, vault.globex.com}
   });
 
-  it('counts a bare session row too (defensive defaults)', async () => {
-    insertSession({ id: 'D', startedAt: NOW, attributes: {} }); // no harness attribute
+  it('counts a bare-attribute session row too (defensive defaults)', async () => {
+    // No harness attribute — but real activity, so it counts.
+    insertSession({ id: 'D', startedAt: NOW, attributes: {} });
+    insertEvent({ id: 'D1', sessionId: 'D', type: 'prompt', startedAt: NOW });
     const stats = await activity().stats('UTC');
     expect(stats.sessionsToday).toBe(1);
     expect(stats.liveNow).toBe(1); // open + just started → within the live window
+  });
+
+  it('sessionsToday ignores zero-activity sessions; liveNow still sees them', async () => {
+    // A background `claude` launch: root + bookkeeping children only. It must
+    // not inflate "Sessions today" — but a just-opened session that has not
+    // produced activity YET is still legitimately live, so liveNow keeps it.
+    insertSession({ id: 'G', startedAt: NOW, attributes: {} });
+    insertEvent({ id: 'G1', sessionId: 'G', type: 'config_scan', startedAt: NOW });
+    insertEvent({ id: 'G2', sessionId: 'G', type: 'hook', startedAt: NOW + 1 });
+    const stats = await activity().stats('UTC');
+    expect(stats.sessionsToday).toBe(0);
+    expect(stats.liveNow).toBe(1);
   });
 
   it('excludes an idle open session from liveNow (no session-end writer)', async () => {
@@ -390,6 +404,60 @@ describe('listSessions', () => {
   it('restarts from the top on a stale/undecodable cursor', async () => {
     const res = await activity().listSessions({ limit: 1, cursor: 'not-a-cursor' });
     expect(res.items.map((s) => s.id)).toEqual(['A']);
+  });
+});
+
+// A "ghost": the root the plugin's SessionStart hook records for a background
+// `claude` launch that never produces any activity — its only children are
+// bookkeeping rows (config scan, hooks). On real stores these outnumber real
+// sessions, so the list query can exclude them and always reports how many
+// matched, letting the UI collapse them behind a toggle.
+describe('listSessions — zero-activity sessions', () => {
+  function insertGhost(id: string, startedAt: number): void {
+    insertSession({ id, startedAt, attributes: {} });
+    insertEvent({ id: `${id}-scan`, sessionId: id, type: 'config_scan', startedAt });
+    insertEvent({ id: `${id}-hook`, sessionId: id, type: 'hook', startedAt: startedAt + 1 });
+  }
+
+  it('excludeEmpty drops bookkeeping-only sessions and reports emptyCount', async () => {
+    seedSessionA();
+    insertGhost('G', NOW - HOUR_MS);
+
+    const res = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(res.items.map((s) => s.id)).toEqual(['A']);
+    expect(res.emptyCount).toBe(1);
+  });
+
+  it('without the flag, zero-activity sessions stay listed but are still counted', async () => {
+    seedSessionA();
+    insertGhost('G', NOW - HOUR_MS);
+
+    const res = await activity().listSessions({ limit: 50 });
+    expect(res.items.map((s) => s.id)).toEqual(['A', 'G']);
+    expect(res.emptyCount).toBe(1);
+  });
+
+  it('emptyCount respects the query filters, not the whole store', async () => {
+    seedSessionA();
+    insertGhost('G', NOW - HOUR_MS);
+    insertGhost('H', NOW - 10 * DAY_MS);
+
+    const res = await activity().listSessions({
+      limit: 50,
+      excludeEmpty: true,
+      from: new Date(NOW - 2 * DAY_MS).toISOString(),
+    });
+    expect(res.emptyCount).toBe(1); // G only — H is outside the range
+  });
+
+  it('a session with real activity is never treated as empty', async () => {
+    // One prompt is enough — only hook/config_scan children are bookkeeping.
+    insertSession({ id: 'P', startedAt: NOW - HOUR_MS, attributes: {} });
+    insertEvent({ id: 'P1', sessionId: 'P', type: 'prompt', startedAt: NOW - HOUR_MS + 1000 });
+
+    const res = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(res.items.map((s) => s.id)).toEqual(['P']);
+    expect(res.emptyCount).toBe(0);
   });
 });
 

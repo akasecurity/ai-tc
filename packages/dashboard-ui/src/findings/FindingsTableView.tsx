@@ -48,6 +48,7 @@ export function FindingsTableView({
   isLoading = false,
   error = null,
   emptyState,
+  sessionFirings,
 }: {
   groups: FindingGroup[];
   /** Visible columns, in display order (caller applies column visibility). */
@@ -66,6 +67,13 @@ export function FindingsTableView({
    * hint) from an empty filter result. Absent ⇒ the default message.
    */
   emptyState?: ReactNode;
+  /**
+   * Per-rule transcript firing counts for the session the list is scoped to
+   * (ruleId → firings). When present, each expanded group states how its
+   * deduplicated rows relate to the session's per-firing tally. Absent on
+   * unscoped lists.
+   */
+  sessionFirings?: Record<string, number>;
 }) {
   // Lifecycle-status filter — local to the table (not part of the shared
   // severity/type/provider/action FindingsFilters, which round-trip through
@@ -181,6 +189,19 @@ export function FindingsTableView({
                         ))}
                       </TableRow>
                     ))}
+                  {/* On a session-scoped list, reconcile this group's deduped
+                      rows with the session's per-firing tally — the two counts
+                      legitimately differ and the gap confuses otherwise. */}
+                  {expanded && sessionFirings && (
+                    <TableRow className="bg-surface-2/50 hover:bg-surface-2/50">
+                      <TableCell />
+                      <TableCell colSpan={columns.length} className="text-xs text-text-3">
+                        {(sessionFirings[group.id] ?? 0) > 0
+                          ? `Fired ${String(sessionFirings[group.id])} times in this session's transcript — the session's "triggered" tally counts every firing, this row counts unique values.`
+                          : `Caught by live enforcement only — not re-detected in this session's transcript.`}
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {/* `instances` is the newest slice of a large group, not all
                       of it — say so rather than ending the rows silently. */}
                   {expanded && group.instances.length < group.instanceCount && (

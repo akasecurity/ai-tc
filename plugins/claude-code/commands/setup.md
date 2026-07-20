@@ -474,9 +474,39 @@ label maps to the `--option` id shown in parentheses):
 - **Set 'secret' to redact** (`set-secret-redact`)
 - **Leave** (`leave`)
 
-Then run the entry's **route** mode with the chosen option's id (the id in
-parentheses above, e.g. **Leave** → `leave`), feeding it the SAME calibration
-frame block again on stdin:
+**If they chose "Redact + rotation checklist" or "Redact only"** — before running
+the route, issue a second **AskUserQuestion** presenting the standing-posture
+prompt, offering exactly these four options, in order (each option's label maps
+to the `--posture` level in parentheses):
+
+**Set the 'secret' posture**
+
+- **Redact** (`redact`)
+- **Warn** (`warn`)
+- **Block** (`block`)
+- **Monitor** (`monitor`)
+
+Then run the entry's **route** mode ONCE with the chosen redact option's id AND
+the chosen posture level, feeding it the SAME calibration frame block again on
+stdin:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> --posture <level> <<'AKA_FRAME'
+<the same block>
+AKA_FRAME
+```
+
+Never run the route a second time for this choice — a repeat call would strike
+the already-redacted keys again and corrupt the reported count. Show its printed
+result verbatim, in order. For "Redact only" that is the redaction confirmation
+then the standing-posture confirmation. For "Redact + rotation checklist" it is
+the standing-posture confirmation then the resolved rotation-checklist summary —
+which reports the redaction itself, so the script does not print a separate
+redaction confirmation ahead of it.
+
+**If they chose "Set 'secret' to redact" or "Leave"** — run the entry's **route**
+mode with the chosen option's id (the id in parentheses above, e.g. **Leave** →
+`leave`), feeding it the SAME calibration frame block again on stdin:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> <<'AKA_FRAME'
@@ -484,9 +514,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/remediate.js" --option <id> <<'AKA_FRAME'
 AKA_FRAME
 ```
 
-Show its printed result verbatim — a redaction confirmation, a standing-posture
-confirmation, the resolved rotation-checklist summary, or (choosing "Leave") a
-plain note that nothing changed. This entry reads its findings from the
+Show its printed result verbatim — a standing-posture confirmation, or (choosing
+"Leave") a plain note that nothing changed. This entry reads its findings from the
 calibration frame alone and holds no wizard state of its own, so it works
 identically from any caller.
 

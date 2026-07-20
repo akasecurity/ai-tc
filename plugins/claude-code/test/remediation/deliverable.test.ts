@@ -102,4 +102,40 @@ describe('resolveRemediationDeliverable', () => {
     expect(result.summary).toContain(`Could not draft rotation-checklist.md at ${missingTarget}.`);
     expect(result.summary).not.toContain('✓ Drafted rotation-checklist.md');
   });
+
+  it('threads unredactedFindings through to an honest partial summary — never the "resolved" framing on a partial strike', () => {
+    const repositoryRoot = mkdtempSync(join(tmpdir(), 'aka-deliverable-partial-repo-'));
+    temporaryDirectories.push(repositoryRoot);
+    mkdirSync(join(repositoryRoot, '.git'));
+
+    // Only the first two findings were actually redacted; the third (a
+    // different transcript) was not — e.g. it vanished between the calibration
+    // scan and the redact-time re-scan.
+    const [, , thirdFinding] = findings;
+
+    const result = resolveRemediationDeliverable({
+      findings,
+      redactedKeys: 2,
+      unredactedFindings: thirdFinding === undefined ? [] : [thirdFinding],
+      cwd: repositoryRoot,
+    });
+
+    expect(result.summary).not.toContain('Leaked secrets — resolved');
+    expect(result.summary).toContain('Leaked secrets — partially redacted');
+    expect(result.summary).toContain('Redacted 2 of 3 keys');
+  });
+
+  it('defaults unredactedFindings to empty — a caller that redacted every finding still gets the "resolved" framing', () => {
+    const repositoryRoot = mkdtempSync(join(tmpdir(), 'aka-deliverable-default-repo-'));
+    temporaryDirectories.push(repositoryRoot);
+    mkdirSync(join(repositoryRoot, '.git'));
+
+    const result = resolveRemediationDeliverable({
+      findings,
+      redactedKeys: 3,
+      cwd: repositoryRoot,
+    });
+
+    expect(result.summary).toContain('Leaked secrets — resolved');
+  });
 });

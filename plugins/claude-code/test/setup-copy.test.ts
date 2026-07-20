@@ -168,4 +168,39 @@ describe('setup.md frame-0.6 "Review leaked keys" branch', () => {
       'This composes with —\n  never replaces — the dashboard handoff below, so both stay reachable.',
     );
   });
+
+  it('follows a redact choice with the standing-posture question, offering exactly the four palette options mapped to --posture levels', () => {
+    const idx = setupMd.indexOf('If they choose "Review leaked keys"');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
+    expect(section).toContain('If they chose "Redact + rotation checklist" or "Redact only"');
+    expect(section).toContain("Set the 'secret' posture");
+    const redact = section.indexOf('**Redact** (`redact`)');
+    const warn = section.indexOf('**Warn** (`warn`)');
+    const block = section.indexOf('**Block** (`block`)');
+    const monitor = section.indexOf('**Monitor** (`monitor`)');
+    // The palette appears in the standing order Redact -> Warn -> Block -> Monitor.
+    expect(redact).toBeGreaterThanOrEqual(0);
+    expect(warn).toBeGreaterThan(redact);
+    expect(block).toBeGreaterThan(warn);
+    expect(monitor).toBeGreaterThan(block);
+  });
+
+  it('runs the route ONCE for a redact choice, carrying both --option and --posture, never re-running the redact route', () => {
+    const idx = setupMd.indexOf('If they choose "Review leaked keys"');
+    const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
+    expect(section).toContain('scripts/remediate.js" --option <id> --posture <level>');
+    expect(section).toContain('Never run the route a second time for this choice');
+    // The redact route is invoked exactly once — a second invocation would strike
+    // already-redacted keys and corrupt the count.
+    const invocations = section.split('--option <id> --posture <level>').length - 1;
+    expect(invocations).toBe(1);
+  });
+
+  it("routes 'Set 'secret' to redact' and 'Leave' unchanged — no standing-posture follow-up, no --posture", () => {
+    const idx = setupMd.indexOf('If they choose "Review leaked keys"');
+    const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
+    expect(section).toContain('If they chose "Set \'secret\' to redact" or "Leave"');
+    expect(section).toContain("scripts/remediate.js\" --option <id> <<'AKA_FRAME'");
+  });
 });

@@ -62,6 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub Release
+      id-token: write # OIDC trusted publishing to npm (provenance attestation)
     steps:
       - uses: actions/checkout@v7
 
@@ -107,11 +108,15 @@ jobs:
       - name: Pack tarball (release asset)
         run: pnpm --filter @akasecurity/ai-tc-claude-code pack --pack-destination "$RUNNER_TEMP"
 
+      # OIDC trusted publishing: the id-token: write permission above lets npm
+      # exchange this job's OIDC token for a short-lived publish credential — no
+      # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
+      # attestation binding the published package to this repository and workflow.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -142,7 +147,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 26
+          node-version: 24
           cache: pnpm
           registry-url: https://npm.pkg.github.com
           scope: '@akasecurity'

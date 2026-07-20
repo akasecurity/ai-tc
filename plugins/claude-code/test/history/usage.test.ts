@@ -29,6 +29,12 @@ function config(dataDir: string): PluginConfig {
 
 const SESSION = 'sess-abc';
 
+// The sweep clock, pinned one day after the fixtures' absolute timestamps
+// (2026-06-20): reconcileHistory only reads records inside its 30-day window
+// from `now`, so an unpinned wall clock walks past the fixtures and every
+// count silently becomes 0 once the suite is 30 days old.
+const RECONCILE_NOW = Date.parse('2026-06-21T00:00:00.000Z');
+
 // A realistic transcript: a real prompt (promptId p1), the assistant call answering
 // it (parentUuid → the prompt), a tool-result user record (type:user, fresh uuid,
 // SAME promptId p1), then a second assistant call whose parentUuid points at the
@@ -194,7 +200,7 @@ describe('reconcileHistory — backfill', () => {
 
   it('writes one llm_call per usage-bearing assistant message and a session root', async () => {
     seed(transcripts, transcript());
-    const summary = await reconcileHistory(config(dataDir), { dir: transcripts });
+    const summary = await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     expect(summary.sessions).toBe(1);
     expect(summary.llmCalls).toBe(2); // msg_1 + msg_2; synthetic + zero-usage dropped
@@ -207,7 +213,7 @@ describe('reconcileHistory — backfill', () => {
 
   it('is idempotent — re-running yields the same row count (deterministic ids + INSERT OR IGNORE)', async () => {
     seed(transcripts, transcript());
-    const opts = { dir: transcripts };
+    const opts = { dir: transcripts, now: RECONCILE_NOW };
 
     const first = await reconcileHistory(config(dataDir), opts);
     expect(first.llmCalls).toBe(2);
@@ -220,7 +226,7 @@ describe('reconcileHistory — backfill', () => {
 
   it('run_key is the parent prompt promptId, NOT the tool-result uuid', async () => {
     seed(transcripts, transcript());
-    await reconcileHistory(config(dataDir), { dir: transcripts });
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     const r = rows(dataDir);
     // Both calls in the turn share the prompt's promptId — even msg_2, whose direct
@@ -233,7 +239,7 @@ describe('reconcileHistory — backfill', () => {
 
   it('maps token + correlation fields onto the llm_call attributes', async () => {
     seed(transcripts, transcript());
-    await reconcileHistory(config(dataDir), { dir: transcripts });
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     const a = rows(dataDir).byMessageId.get('msg_1');
     expect(a).toMatchObject({
@@ -304,7 +310,7 @@ describe('reconcileHistory — tool calls', () => {
 
   it('writes one tool_call per tool_use, parented on the session root, with run_key + metadata', async () => {
     seed(transcripts, toolTranscript());
-    const summary = await reconcileHistory(config(dataDir), { dir: transcripts });
+    const summary = await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     expect(summary.toolCalls).toBe(1);
     const { parentId, rootId, attrs } = toolCallRow(dataDir);
@@ -330,7 +336,7 @@ describe('reconcileHistory — tool calls', () => {
 
   it('is idempotent — re-running yields the same tool_call count', async () => {
     seed(transcripts, toolTranscript());
-    const opts = { dir: transcripts };
+    const opts = { dir: transcripts, now: RECONCILE_NOW };
 
     await reconcileHistory(config(dataDir), opts);
     expect(toolCallCount(dataDir)).toBe(1);
@@ -402,7 +408,7 @@ describe('reconcileHistory — tool calls', () => {
 
   it('writes an inspection_finding for a secret in a tool target, linked to the tool_call', async () => {
     seed(transcripts, secretTranscript());
-    await reconcileHistory(config(dataDir), { dir: transcripts });
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     const findings = inspectionRows(dataDir);
     expect(findings.length).toBeGreaterThan(0);
@@ -419,7 +425,7 @@ describe('reconcileHistory — tool calls', () => {
 
   it('inspection findings are idempotent (content-addressed) across re-runs', async () => {
     seed(transcripts, secretTranscript());
-    const opts = { dir: transcripts };
+    const opts = { dir: transcripts, now: RECONCILE_NOW };
     await reconcileHistory(config(dataDir), opts);
     const first = inspectionRows(dataDir).length;
     await reconcileHistory(config(dataDir), opts);
@@ -463,7 +469,7 @@ describe('reconcileHistory — tool calls', () => {
 
   it('masks a secret straddling the target size cap — no unmasked prefix leaks', async () => {
     seed(transcripts, straddlingSecretTranscript());
-    await reconcileHistory(config(dataDir), { dir: transcripts });
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: RECONCILE_NOW });
 
     const target = String(toolCallRow(dataDir).attrs.target);
     // The cap held: MAX_TARGET_LEN (500) chars + the single-char '…' truncation marker.

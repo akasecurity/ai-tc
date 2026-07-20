@@ -17,9 +17,9 @@
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/ui-kit": "workspace:*",
-    "@fontsource-variable/inter": "^5.2.8",
-    "@fontsource-variable/jetbrains-mono": "^5.2.8",
-    "@fontsource-variable/space-grotesk": "^5.2.10",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "next": "^15.2.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -27,12 +27,12 @@
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
-    "@tailwindcss/postcss": "^4.3.2",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.0.0",
-    "tailwindcss": "^4.3.2",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.64.0"
   }

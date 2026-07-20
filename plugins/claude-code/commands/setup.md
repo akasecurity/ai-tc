@@ -1,5 +1,5 @@
 ---
-description: Set up the AKA Control Plane plugin — evidence-first detection posture and historical access
+description: Set up AKA Security — calibrate notifications and detection posture from Claude's real activity.
 ---
 
 # AKA setup wizard

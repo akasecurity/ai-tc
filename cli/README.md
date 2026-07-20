@@ -3,6 +3,8 @@
 [![npm](https://img.shields.io/npm/v/@akasecurity/cli?style=flat-square&labelColor=232F3E&color=00E0B8)](https://www.npmjs.com/package/@akasecurity/cli)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-232F3E?style=flat-square)](https://github.com/akasecurity/ai-tc/blob/main/LICENSE)
 
+**AKA Security — We secure agent harnesses at the source.**
+
 The `aka` command-line tool for **[AI Traffic Control](https://github.com/akasecurity/ai-tc)** (`ai-tc`) — an open-source, local-first control plane for coding agents. It inspects and governs the traffic of an agent session (prompts, tool calls, responses, file reads), scans each event against your rule packs, and records everything to a local SQLite store at `~/.aka/data/aka.db`.
 
 Everything runs on your machine. There's no account, no backend, and nothing leaves your computer to be scanned.

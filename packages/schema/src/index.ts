@@ -1,5 +1,6 @@
 export * from './drizzle/sqlite-ddl.ts';
 export * from './exception-scope.ts';
+export * from './identity.ts';
 export * from './time.ts';
 // Pure read-time token cost/rollup/format logic (no Node-API deps) — shared by
 // the plugin, the web-ui Activity surfaces, and the CLI/TUI.

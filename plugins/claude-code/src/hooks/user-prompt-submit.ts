@@ -28,6 +28,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 
 import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
+import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
@@ -98,10 +99,7 @@ async function main(): Promise<void> {
   // stronger action to a detection. Gate it to once per session so a busy
   // pre-onboarding session isn't spammed every prompt.
   if (!config.onboarded && claimOnboardingNudge(config.dataDir, sessionId)) {
-    await emit({
-      systemMessage:
-        'AKA is active and monitoring your prompts (log-only by default — nothing is blocked or redacted yet). Run /aka:setup to choose your installation type and set enforcement (warn/redact/block) per detection.',
-    });
+    await emit({ systemMessage: ONBOARDING_NUDGE });
   }
 }
 

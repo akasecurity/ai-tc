@@ -384,7 +384,7 @@ recommended.
    reformat it):
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js" --adjust-confirm --recommended '<recommended-json>' --posture '<merged-json>'
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js" --adjust-confirm --recommended '<recommended-json>' --posture '<merged-json>' --current '<current-json>'
    ```
 
    `<recommended-json>` is the calibrated recommended posture the preview printed
@@ -393,19 +393,18 @@ recommended.
    spurious change. `<merged-json>` is the full 8-pack map — that same recommended
    base with the user's overrides overlaid — so a changed pack reads as a different
    `yours` value and every untouched pack repeats its recommended level.
+   `<current-json>` is the `current` object from the plan file at the path step 3
+   printed (`Plan saved to: <path>`) — the store's per-category action at preview
+   time, the baseline the downgrade check compares against. Pass it verbatim; do
+   not retype or summarize it.
 
-3. **Show the packs the user lowered — relative to the recommendation and to the
-   stored posture.** The adjust-confirm table lays each changed pack's `yours`
-   level beside its `recommended` level, so a pack set below the recommendation
-   reads as a visible change — point those out so the choice is deliberate. The
-   card also re-compares each picked level against the **stored** posture and
-   surfaces an explicit downgrade approval for any pack being lowered below its
-   current level — including a pack hardened out of band that surfaced nothing
-   this run, which the step-4 evidence gate (scoped to packs with findings) does
-   not cover. When the stored posture can't be read the card renders without that
-   comparison rather than blocking. Untouched packs stay protected regardless: the
-   overlay below writes **only** the packs the user changed, so a pack hardened out
-   of band and left untouched here is never downgraded.
+3. **Surface any downgrade — the card computes this, you do not.** With
+   `--current` passed, the card itself appends the `WARNING: N categories … would
+be LOWERED from a stronger existing setting` footer whenever a pick weakens
+   enforcement — the same rule and the same wording as the confirm gate above,
+   from the same code. Show the card in full, footer included, and when that
+   footer is present get explicit approval before saving. Never let an enforcement
+   downgrade through without the user having seen it.
 
 4. **Save or back out.** Use **AskUserQuestion** with **N** the number of packs
    the user changed and **M** the number kept as recommended (`M = 8 − N`), both

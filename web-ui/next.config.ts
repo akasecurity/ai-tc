@@ -1,6 +1,14 @@
+import { fileURLToPath } from 'node:url';
+
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Pin the standalone file-tracing root to the repo root. Without this, Next infers the
+  // root from the nearest lockfile and can climb above the repo (e.g. a lockfile in the
+  // developer's home dir), nesting server.js under an absolute path and breaking the
+  // bundle into cli/web-ui. Pinning keeps the standalone layout (web-ui/server.js)
+  // deterministic across checkouts and CI.
+  outputFileTracingRoot: fileURLToPath(new URL('..', import.meta.url)),
   // The workspace packages export raw .ts source (no build step), so Next must
   // compile them. node:sqlite / node:path inside @akasecurity/persistence stay external
   // as Node builtins on the server. (If @akasecurity/persistence ever emits built JS,

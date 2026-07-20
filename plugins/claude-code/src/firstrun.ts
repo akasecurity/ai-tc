@@ -4,7 +4,7 @@
  * stdout) into the dependency-injected core in ./firstrun-core.ts, which holds
  * the logic (and its tests).
  *
- *   node scripts/firstrun.js [--surfaced <n>]
+ *   node scripts/firstrun.js [--surfaced <n>] [--live-keys <n>]
  *
  * Posture (per-category policy), findings (real count) and recommendations (same
  * count /recommend renders) are read live; the Health score is derived (see
@@ -14,7 +14,8 @@
  *
  * `--surfaced <n>` is the surfaced/important count from the calibration preview,
  * threaded through by the wizard orchestration into the handoff-offer payload —
- * see ./firstrun-core.ts.
+ * see ./firstrun-core.ts. `--live-keys <n>` is the narrower surfaced live-key
+ * secret count that gates the remediation chain-entry offer.
  *
  * Fail-open: an unreadable store prints a friendly note.
  */

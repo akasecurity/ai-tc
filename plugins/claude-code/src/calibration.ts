@@ -14,6 +14,7 @@ import type {
   CalibrationPreview,
   CalibrationResult,
   DetectionCategory,
+  MaskedSecretFinding,
 } from '@akasecurity/schema';
 
 import { renderPostureGrid, renderRecommendedPosture } from './render.ts';
@@ -31,7 +32,10 @@ const SURFACED_KIND_LABEL: Record<DetectionCategory, string> = {
   config: 'configuration secrets',
 };
 
-export function frameCalibration(preview: CalibrationPreview): CalibrationResult {
+export function frameCalibration(
+  preview: CalibrationPreview,
+  maskedFindings: readonly MaskedSecretFinding[] = [],
+): CalibrationResult {
   const important = preview.categories.reduce((n, c) => n + c.genuineCount, 0);
   const routine = preview.categories.reduce((n, c) => n + c.fpCount, 0);
   const total = important + routine;
@@ -45,12 +49,17 @@ export function frameCalibration(preview: CalibrationPreview): CalibrationResult
     .filter((c) => c.genuineCount + c.fpCount > 0)
     .map((c) => ({ category: c.category, count: c.genuineCount + c.fpCount, egress: c.egress }));
 
+  // The masked per-finding summaries ride ALONGSIDE the counts additively: the
+  // optional `maskedFindings` field is populated only when a secret finding
+  // surfaced, so an empty set omits it entirely and a pre-existing frame without
+  // it still validates. The finding table and the narration read these fields.
   const frame: CalibrationFrame = {
     counts: { total, important, routine },
     routineCategories,
     surfacedCategories,
     findingKinds,
     posture: preview.posture,
+    ...(maskedFindings.length > 0 ? { maskedFindings: [...maskedFindings] } : {}),
   };
 
   const kind = surfacedCategories.map((c) => SURFACED_KIND_LABEL[c]).join(', ');

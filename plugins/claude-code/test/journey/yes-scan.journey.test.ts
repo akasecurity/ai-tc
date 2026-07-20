@@ -80,8 +80,10 @@ describe('Yes-scan happy path, end-to-end', () => {
     // Apply the confirmed plan through the real writer.
     confirm = journey.applyConfirm(planPathFromPreview(preview)).stdout;
 
-    // Installed summary, carrying the surfaced count from the calibration preview.
-    firstRun = journey.firstRun(frame.counts.important).stdout;
+    // Installed summary, carrying the surfaced count from the calibration preview
+    // and the narrower surfaced live-key count (the masked secret findings) that
+    // gates the remediation chain-entry.
+    firstRun = journey.firstRun(frame.counts.important, frame.maskedFindings?.length ?? 0).stdout;
   }, 120_000);
 
   afterAll(() => {
@@ -195,7 +197,18 @@ describe('Yes-scan happy path, end-to-end', () => {
     expect(firstRun).toContain('✓ AKA Security installed');
     const offer = SetupHandoffOffer.parse(readFrameJsonBlock(firstRun));
     expect(offer.worthALook).toBe(1);
-    expect(offer.options.map((o) => o.id)).toEqual(['open-dashboard', 'not-now']);
+    // The happy path surfaced one live-key secret, so frame 0.6 composes the
+    // chain-entry option ALONGSIDE the dashboard handoff — Open dashboard / Not
+    // now stay reachable exactly as on the no-findings branch (the dashboard
+    // handoff is preserved). The gate is the live-key count, which the
+    // calibration frame carried as the one masked secret finding.
+    expect(offer.liveKeys).toBe(1);
+    expect(calibrationFrame.maskedFindings).toHaveLength(1);
+    expect(offer.options.map((o) => o.id)).toEqual([
+      'enter-remediation',
+      'open-dashboard',
+      'not-now',
+    ]);
   });
 
   it('command lines: the applying Ready line and the first-run Try line name only registered commands', () => {

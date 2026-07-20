@@ -393,19 +393,33 @@ export function topFindings(findings: FindingView[], limit = 10): FindingView[] 
 }
 
 // The handoff-offer payload: the 'M worth a look' count the installed
-// summary hands to its dashboard question, plus the two fixed offer options.
+// summary hands to its frame 0.6 question, plus the offer options.
 // `worthALook` is the surfaced/important count the caller carries over from the
-// calibration preview (a real store-derived value) — this builder
-// never invents it. The prompt layer (setup.md) issues the AskUserQuestion; this
-// is the structured payload a harness reads to assert the offer.
-export function buildHandoffOffer(worthALook: number): SetupHandoffOffer {
-  return {
-    worthALook,
-    options: [
-      { id: 'open-dashboard', label: 'Open dashboard' },
-      { id: 'not-now', label: 'Not now' },
-    ],
-  };
+// calibration preview (the sum across every category); `liveKeys` is the
+// narrower surfaced live-key secret count. Both are real store-derived values —
+// this builder never invents them. The prompt layer (setup.md) issues the
+// AskUserQuestion; this is the structured payload a harness reads to assert the
+// offer.
+//
+// The chain-entry option is composed in ahead of the dashboard handoff exactly
+// when live-key secrets surfaced (`liveKeys > 0`), so remediation is reachable
+// without displacing Open dashboard / Not now. When no live keys surfaced — even
+// with other important findings present (`worthALook > 0`, `liveKeys` 0) — the
+// plain dashboard handoff stands alone — offered exactly when
+// live-key secrets surfaced, and never otherwise.
+export function buildHandoffOffer(worthALook: number, liveKeys: number): SetupHandoffOffer {
+  const dashboardHandoff: SetupHandoffOffer['options'] = [
+    { id: 'open-dashboard', label: 'Open dashboard' },
+    { id: 'not-now', label: 'Not now' },
+  ];
+  if (liveKeys > 0) {
+    return {
+      worthALook,
+      liveKeys,
+      options: [{ id: 'enter-remediation', label: 'Review leaked keys' }, ...dashboardHandoff],
+    };
+  }
+  return { worthALook, options: dashboardHandoff };
 }
 
 // `registry` is the installed command registry (readRegisteredCommands()),

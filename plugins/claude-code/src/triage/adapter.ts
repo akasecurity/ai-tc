@@ -30,6 +30,7 @@ import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from 
 import { frameJsonBlock } from '../setup-frame-json.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
+import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
   type CategoryPolicyWriter,
   parseTriageStream,
@@ -191,7 +192,12 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       })),
       posture: recommendedPosture(plan.posture),
     };
-    const calibration = frameCalibration(preview);
+    // The surfaced secret leaks the remediation table renders from: the
+    // secret hits the model did NOT dismiss as false positives, projected to the
+    // raw-free MaskedSecretFinding shape and carried additively in the frame.
+    // Empty for a clean/all-suppressed run, so the optional field is omitted.
+    const maskedFindings = deriveSurfacedSecretFindings(hits, rec, plan);
+    const calibration = frameCalibration(preview, maskedFindings);
 
     // The calibrated-result card: the real-count headline over the
     // preview's genuine/suppressed split, then the condensed one-row-per-pack

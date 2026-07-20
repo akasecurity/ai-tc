@@ -402,6 +402,13 @@ the scan-ran-clean empty state whose zero-count frame carries nothing to look at
 **omit `--surfaced` entirely** — the script then withholds that payload rather than
 fabricating a count.
 
+Alongside it, pass the **surfaced live-key count** — the number of surfaced
+live-key secret findings, which is the length of the calibration frame's
+`maskedFindings` array (absent ⇒ 0) — as `--live-keys <count>`. This is the
+narrower secret subset of the surfaced count; it gates the remediation
+chain-entry the handoff offers, so a calibration that surfaced only non-secret
+findings passes `--live-keys 0` and offers no remediation.
+
 When `--surfaced` is passed, the script appends that handoff payload as a single
 JSON block delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>` after the fenced
 card. Like step 3's calibration frame, do **not** show this block to the user — it
@@ -409,7 +416,7 @@ is additive and machine-only; only the fenced install summary above is
 user-facing.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/firstrun.js" --surfaced <count>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/firstrun.js" --surfaced <count> --live-keys <count>
 ```
 
 **Then hand off to the dashboard.** When the payload carries a positive
@@ -418,12 +425,18 @@ printed list) using that count for `N`:
 
 **N worth a look — see them in the browser?**
 
+- **Review leaked keys** — _(offer this option first only when the payload's
+  `options` include `enter-remediation`, i.e. `liveKeys > 0`)_ enter the
+  secret-leak remediation chain on the surfaced live keys. This composes with —
+  never replaces — the dashboard handoff below, so both stay reachable.
 - **Open dashboard** — open the local web dashboard on the surfaced findings.
 - **Not now** — stay here; they can open it anytime.
 
 Use the payload's `worthALook` value for `N` verbatim — do not invent or round it.
-If the payload was withheld (the floor fallback, or nothing surfaced), skip this
-handoff question rather than inventing a count.
+Offer **Review leaked keys** exactly when the payload's `options` carry the
+`enter-remediation` entry (never otherwise); the **Open dashboard** / **Not now**
+handoff is always present. If the payload was withheld (the floor fallback, or
+nothing surfaced), skip this handoff question rather than inventing a count.
 
 ## 7. Offer the AKA CLI + local dashboard (opt-in)
 

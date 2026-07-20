@@ -1,14 +1,18 @@
 name: Internal-path guard
 
-# Fails if a maintainer-internal working directory is ever committed to this
-# public repository. These paths hold planning and orchestration artifacts kept
-# out of the public tree; a pull request must never introduce them.
+# Fails if any maintainer-internal file is ever committed to this public
+# repository. Maintainer-internal working directories carry a `.aka-internal`
+# marker at their root, and any lone internal workflow follows an
+# `*.internal.yml` naming convention; this job rejects either marker anywhere in
+# the tree. It never names an internal path, so the guard itself discloses
+# nothing beyond the convention. Runs on every pull request regardless of its
+# base branch, so a change targeting an intermediate branch in a stack is
+# guarded too, not only PRs that target main directly.
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -25,12 +29,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check for internal-only paths
+      - name: Check for internal-only markers
         run: |
-          hits="$(git ls-files -- internal/plans docs/superpowers tools/flightcrew)"
+          hits="$(git ls-files -- \
+            ':(glob)**/.aka-internal' \
+            ':(glob)**/*.internal.*')"
           if [ -n "$hits" ]; then
-            echo "::error::Internal-only paths must not be committed to this public repository:"
+            echo "::error::Maintainer-internal files must not be committed to this public repository:"
             echo "$hits" | sed 's/^/  /'
             exit 1
           fi
-          echo "OK — no internal-only paths present."
+          echo "OK — no internal-only markers present."

@@ -24,6 +24,7 @@ import {
   parseHarness,
   parseQuery,
   parseSelectedId,
+  parseShowEmpty,
   toListQuery,
 } from './filters';
 
@@ -48,6 +49,7 @@ export default async function ActivityPage({
   const harness = parseHarness(sp);
   const range = parseActivityRange(sp);
   const requestedId = parseSelectedId(sp);
+  const showEmpty = parseShowEmpty(sp);
 
   const activity = db().activity;
 
@@ -58,7 +60,7 @@ export default async function ActivityPage({
 
   const [stats, list, tokenReports, harnessOptions] = await Promise.all([
     activity.stats(),
-    activity.listSessions(toListQuery(q, harness, range)),
+    activity.listSessions(toListQuery(q, harness, range, showEmpty)),
     activity.tokenReports(rangeFromMs),
     // Only the harnesses that actually have sessions in this range populate the
     // filter (not the full enum).
@@ -67,18 +69,28 @@ export default async function ActivityPage({
   const tokenUsage = aggregateTokenUsage(tokenReports);
   const rangeLabel = TIME_RANGES.find((r) => r.value === range)?.label;
 
-  // Honor the pinned ?id when it's still in the filtered list; otherwise default
-  // to the first row so the detail pane is never empty when sessions exist.
-  const selectedId =
-    requestedId && list.items.some((s) => s.id === requestedId)
-      ? requestedId
-      : (list.items[0]?.id ?? '');
+  // Honor the pinned ?id whenever one is present — a deep link (e.g. the
+  // findings drawer's "View session") must show THAT session even when the
+  // current search/range excludes it from the list; an unknown id renders the
+  // detail pane's empty state rather than silently swapping in another session.
+  // With no ?id, default to the first row so the pane isn't empty needlessly.
+  const selectedId = requestedId || (list.items[0]?.id ?? '');
   const [detail, sessionTokenReport] = selectedId
     ? await Promise.all([
         activity.getSession(selectedId),
         activity.tokenReportForSession(selectedId),
       ])
     : [null, null];
+
+  // The session → findings drilldown. Two numbers coexist: `detail.findings`
+  // tallies transcript firings (every re-detection counts), while /findings
+  // lists the live-enforced store's unique values — so the link carries its
+  // destination's own count and appears only when that page has rows to show.
+  const liveCount = detail ? await db().findings.sessionFindingsCount(detail.id) : 0;
+  const liveFindings =
+    detail && liveCount > 0
+      ? { count: liveCount, href: `/findings?session=${encodeURIComponent(detail.id)}` }
+      : null;
 
   const items: SummaryStatItem[] = [
     {
@@ -139,12 +151,15 @@ export default async function ActivityPage({
         sessions={list.items}
         detail={detail}
         tokenReport={sessionTokenReport}
+        liveFindings={liveFindings}
         q={q}
         harness={harness}
         harnessOptions={harnessOptions}
         range={range}
         selectedId={selectedId}
         hasMore={Boolean(list.nextCursor)}
+        emptyCount={list.emptyCount}
+        showEmpty={showEmpty}
       />
     </div>
   );

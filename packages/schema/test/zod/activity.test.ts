@@ -352,23 +352,63 @@ describe('ListActivitySessionsQuery', () => {
   it('rejects an invalid harness value', () => {
     expect(ListActivitySessionsQuery.safeParse({ harness: ['vscode'] }).success).toBe(false);
   });
+
+  // excludeEmpty is a stringbool: the wire format is a string ('?excludeEmpty=1')
+  // and `?excludeEmpty=false`/`0` must parse to false — the exact bug
+  // z.coerce.boolean() would introduce (see the header note above).
+  it('excludeEmpty parses string booleans, including the falsy strings', () => {
+    for (const [raw, parsed] of [
+      ['true', true],
+      ['1', true],
+      ['false', false],
+      ['0', false],
+    ] as const) {
+      const result = ListActivitySessionsQuery.safeParse({ excludeEmpty: raw });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.excludeEmpty).toBe(parsed);
+    }
+  });
+
+  it('excludeEmpty is optional and rejects junk strings', () => {
+    const absent = ListActivitySessionsQuery.safeParse({});
+    expect(absent.success).toBe(true);
+    if (absent.success) expect(absent.data.excludeEmpty).toBeUndefined();
+    expect(ListActivitySessionsQuery.safeParse({ excludeEmpty: 'banana' }).success).toBe(false);
+  });
 });
 
 describe('ListActivitySessionsResponse', () => {
   it('parses items[] with a null nextCursor at the last page', () => {
     expect(
-      ListActivitySessionsResponse.safeParse({ items: [validSummary], nextCursor: null }).success,
+      ListActivitySessionsResponse.safeParse({
+        items: [validSummary],
+        nextCursor: null,
+        emptyCount: 0,
+      }).success,
     ).toBe(true);
   });
 
   it('accepts an empty items array (no error on zero matches)', () => {
-    expect(ListActivitySessionsResponse.safeParse({ items: [], nextCursor: null }).success).toBe(
-      true,
-    );
+    expect(
+      ListActivitySessionsResponse.safeParse({ items: [], nextCursor: null, emptyCount: 3 })
+        .success,
+    ).toBe(true);
   });
 
   it('rejects a missing nextCursor key', () => {
-    expect(ListActivitySessionsResponse.safeParse({ items: [] }).success).toBe(false);
+    expect(ListActivitySessionsResponse.safeParse({ items: [], emptyCount: 0 }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a missing or negative emptyCount', () => {
+    expect(ListActivitySessionsResponse.safeParse({ items: [], nextCursor: null }).success).toBe(
+      false,
+    );
+    expect(
+      ListActivitySessionsResponse.safeParse({ items: [], nextCursor: null, emptyCount: -1 })
+        .success,
+    ).toBe(false);
   });
 });
 
@@ -483,7 +523,7 @@ describe('ActivityOverviewResponse', () => {
           findingsToday: 3,
           egressToday: 5,
         },
-        sessions: { items: [validSummary], nextCursor: null },
+        sessions: { items: [validSummary], nextCursor: null, emptyCount: 0 },
       }).success,
     ).toBe(true);
   });

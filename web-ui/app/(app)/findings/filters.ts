@@ -6,11 +6,13 @@ import {
   Severity,
 } from '@akasecurity/schema';
 
-// The findings filters ride in the URL (?severity=…&type=…&provider=…&action=…&q=…)
-// so the Server Component re-queries the local store per filter change — the same
-// mechanism as RangeSelect. These pure helpers convert between the URL params, the
-// toolbar's FindingsFilters shape, and the persistence query. Shared by the page
-// (parse + query) and the client wrapper (build params), so keep it dependency-free.
+// The findings filters ride in the URL (?severity=…&type=…&provider=…&action=…&q=…,
+// plus the Activity page's deep-link context: ?session=… scopes the list to one
+// session and ?finding=… opens the detail sheet) so the Server Component re-queries
+// the local store per filter change — the same mechanism as RangeSelect. These pure
+// helpers convert between the URL params, the toolbar's FindingsFilters shape, and
+// the persistence query. Shared by the page (parse + query) and the client wrapper
+// (build params), so keep it dependency-free.
 
 /** Next's searchParams value for one key: absent, a single value, or repeated. */
 type ParamValue = string | string[] | undefined;
@@ -47,13 +49,27 @@ export function parseQuery(sp: FindingsSearchParams): string {
   return typeof sp.q === 'string' ? sp.q.trim() : '';
 }
 
+/** The session id the list is scoped to (?session=…), or '' when unscoped. */
+export function parseSession(sp: FindingsSearchParams): string {
+  return typeof sp.session === 'string' ? sp.session.trim() : '';
+}
+
+/** The finding (group or instance) id the detail sheet opens on (?finding=…). */
+export function parseSelectedFinding(sp: FindingsSearchParams): string {
+  return typeof sp.finding === 'string' ? sp.finding.trim() : '';
+}
+
 /**
  * Filters + search → the persistence grouped-findings query. The filter arrays
  * carry validated enum values (the toolbar only emits facet/severity values, and
  * parseFindingsFilters drops unknown URL values), so the casts to the schema
  * enums are safe.
  */
-export function toGroupedQuery(filters: FindingsFilters, q: string): ListGroupedFindingsQuery {
+export function toGroupedQuery(
+  filters: FindingsFilters,
+  q: string,
+  session = '',
+): ListGroupedFindingsQuery {
   const trimmed = q.trim();
   return {
     ...(filters.severity.length ? { severity: filters.severity as Severity[] } : {}),
@@ -61,11 +77,21 @@ export function toGroupedQuery(filters: FindingsFilters, q: string): ListGrouped
     ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
     ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
     ...(trimmed ? { q: trimmed } : {}),
+    ...(session ? { sessionId: session } : {}),
   };
 }
 
-/** The toolbar's filters + search → a URLSearchParams (repeated keys per value). */
-export function buildFindingsParams(filters: FindingsFilters, q: string): URLSearchParams {
+/**
+ * The toolbar's filters + search → a URLSearchParams (repeated keys per value).
+ * The session scope rides along so filter/search changes keep the deep-link
+ * context; the `finding` selection param is deliberately NOT rebuilt here — it
+ * is a one-shot deep link, dropped as soon as the user navigates.
+ */
+export function buildFindingsParams(
+  filters: FindingsFilters,
+  q: string,
+  session = '',
+): URLSearchParams {
   const sp = new URLSearchParams();
   for (const s of filters.severity) sp.append('severity', s);
   for (const t of filters.type) sp.append('type', t);
@@ -73,5 +99,6 @@ export function buildFindingsParams(filters: FindingsFilters, q: string): URLSea
   for (const a of filters.action) sp.append('action', a);
   const trimmed = q.trim();
   if (trimmed) sp.set('q', trimmed);
+  if (session) sp.set('session', session);
   return sp;
 }

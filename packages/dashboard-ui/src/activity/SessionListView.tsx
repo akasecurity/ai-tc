@@ -5,7 +5,7 @@
 // (viewer-local) and derives the row's time/duration labels. Renders its own
 // loading / error / empty states so both apps share one behaviour.
 import type { ActivitySessionSummary, Harness } from '@akasecurity/schema';
-import { cn, Skeleton } from '@akasecurity/ui-kit';
+import { Button, cn, Skeleton } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import {
@@ -113,6 +113,9 @@ export function SessionListView({
   isLoading,
   error,
   hasMore = false,
+  emptyCount = 0,
+  showEmpty = false,
+  onToggleEmpty,
 }: {
   sessions: ActivitySessionSummary[];
   selectedId: string;
@@ -126,9 +129,33 @@ export function SessionListView({
   isLoading: boolean;
   error: string | null;
   hasMore?: boolean;
+  /** Zero-activity ("background") sessions in range — the collapse toggle's
+   * label. 0 hides the toggle entirely. */
+  emptyCount?: number;
+  /** Whether zero-activity sessions are currently listed. */
+  showEmpty?: boolean;
+  /** Flips showEmpty; omitted hides the toggle. */
+  onToggleEmpty?: () => void;
 }) {
   const days = groupSessionsByDay(sessions);
   const filtersActive = query.trim() !== '' || harness.length > 0;
+
+  const noun = emptyCount === 1 ? 'background session' : 'background sessions';
+  const emptyToggle =
+    emptyCount > 0 && onToggleEmpty ? (
+      <div className="px-2 py-2 text-center">
+        <Button
+          variant="link"
+          tone="primary"
+          className="text-label font-normal"
+          onClick={onToggleEmpty}
+        >
+          {showEmpty
+            ? `Hide ${String(emptyCount)} ${noun}`
+            : `${String(emptyCount)} ${noun} hidden — show`}
+        </Button>
+      </div>
+    ) : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -164,7 +191,12 @@ export function SessionListView({
           </div>
         ) : days.length === 0 ? (
           <div className="py-10 text-center text-sm text-text-3">
-            {filtersActive ? 'No sessions match' : 'No sessions recorded yet'}
+            {filtersActive
+              ? 'No sessions match'
+              : emptyCount > 0
+                ? 'No active sessions in this range'
+                : 'No sessions recorded yet'}
+            {emptyToggle}
           </div>
         ) : (
           <>
@@ -191,6 +223,7 @@ export function SessionListView({
                 </div>
               </div>
             ))}
+            {emptyToggle}
             {hasMore && (
               <div className="px-2 py-3 text-center text-label text-text-3">
                 Showing the most recent {sessions.length} sessions — narrow the range to see more.

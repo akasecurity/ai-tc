@@ -67,4 +67,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0009_findings_path_expression_index',
     sql: "-- Custom migration: partial expression index for the resolver's per-path reads.\n--\n-- openAtRestKeysForPath / resolvedAtRestKeysForPath (and the scanner's tier-3\n-- open-key probe) filter at-rest events by\n--   e.kind = 'code_change' AND json_extract(e.metadata, '$.filePath') = :path\n-- once per changed/deleted file on every scan — previously a full events scan\n-- per file. json_extract is deterministic, so SQLite allows it in an index;\n-- the WHERE kind = 'code_change' keeps the index to exactly the rows those\n-- queries can match (in-flight events are never path-addressed).\nCREATE INDEX `idx_events_code_change_path` ON `events` (json_extract(`metadata`, '$.filePath')) WHERE `kind` = 'code_change';\n",
   },
+  {
+    tag: '0010_events_session_expression_index',
+    sql: "-- Custom migration: partial expression index for session-scoped finding reads.\n--\n-- sessionFindingsCount, the session-scoped listGroupedFindings paths, and the\n-- insert-time session dedup all filter live-capture events by\n--   json_extract(e.metadata, '$.sessionId') = :sessionId\n-- — previously a full findings-join scan with a JSON parse per row. The\n-- IS NOT NULL predicate keeps the index to session-stamped events only (an\n-- equality probe implies non-null, so SQLite still uses it).\nCREATE INDEX `idx_events_session_id` ON `events` (json_extract(`metadata`, '$.sessionId')) WHERE json_extract(`metadata`, '$.sessionId') IS NOT NULL;\n",
+  },
 ];

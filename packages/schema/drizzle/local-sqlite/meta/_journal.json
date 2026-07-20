@@ -71,6 +71,13 @@
       "when": 1783690389260,
       "tag": "0009_findings_path_expression_index",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1784297543348,
+      "tag": "0010_events_session_expression_index",
+      "breakpoints": true
     }
   ]
 }

@@ -8,7 +8,10 @@ export type MatcherType = z.infer<typeof MatcherType>;
 
 export const KeywordMatcher = z.object({
   type: z.literal('keyword'),
-  keywords: z.array(z.string()).min(1),
+  // An empty keyword matches at every position, yielding one zero-length span
+  // per character. Rejected here because a keyword that matches everything is
+  // never intentional.
+  keywords: z.array(z.string().min(1)).min(1),
   caseSensitive: z.boolean().default(false),
 });
 

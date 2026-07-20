@@ -54,11 +54,13 @@ function DetailBody({
   tokenReport,
   liveFindings,
   linkHref,
+  toolHref,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
   liveFindings?: { count: number; href: string } | null;
   linkHref?: BuildActivityLinkHref;
+  toolHref?: (toolName: string) => string;
 }) {
   const harness = PROVIDERS[session.harness];
   const tools = toolEntries(session.tools);
@@ -186,7 +188,12 @@ function DetailBody({
             {toolTotal(session.tools)} tool calls
           </span>
           {tools.map((t) => (
-            <ToolChip key={t.name} name={t.name} n={t.n} />
+            <ToolChip
+              key={t.name}
+              name={t.name}
+              n={t.n}
+              {...(toolHref ? { href: toolHref(t.name) } : {})}
+            />
           ))}
         </div>
       </div>
@@ -263,6 +270,7 @@ export function SessionDetailView({
   tokenReport,
   liveFindings,
   linkHref,
+  toolHref,
 }: {
   session: ActivitySession | null;
   isLoading: boolean;
@@ -280,6 +288,9 @@ export function SessionDetailView({
   /** Href builder for the timeline's cross-referencing event links — see
    * BuildActivityLinkHref. Omitted → the timeline renders no deep links. */
   linkHref?: BuildActivityLinkHref;
+  /** Href for a tool chip (e.g. the findings page filtered to that tool).
+   * Optional: omitted, the chips render as plain text. */
+  toolHref?: (toolName: string) => string;
 }) {
   if (error) {
     return (
@@ -311,6 +322,7 @@ export function SessionDetailView({
       tokenReport={tokenReport ?? null}
       liveFindings={liveFindings ?? null}
       {...(linkHref ? { linkHref } : {})}
+      {...(toolHref ? { toolHref } : {})}
     />
   );
 }

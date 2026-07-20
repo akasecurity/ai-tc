@@ -25,6 +25,7 @@ import {
   filterInstancesByStatus,
   FINDING_STATUS_META,
   type FindingColumn,
+  instanceLocationLabel,
   type Selection,
   STATUS_FILTER_OPTIONS,
 } from './meta.ts';
@@ -310,8 +311,11 @@ const INSTANCE_CELL: Record<
   ),
   sources: (_g, i) => <ProviderTag provider={i.provider} />,
   locations: (_g, i) => (
-    <span className="font-mono text-xs text-text-3 block max-w-[20rem] truncate" title={i.file}>
-      {i.file}
+    <span
+      className="font-mono text-xs text-text-3 block max-w-[20rem] truncate"
+      title={instanceLocationLabel(i)}
+    >
+      {instanceLocationLabel(i)}
     </span>
   ),
   action: (_g, i) => <ActionTag action={i.action} />,

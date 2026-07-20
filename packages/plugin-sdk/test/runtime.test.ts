@@ -335,6 +335,41 @@ describe('capture', () => {
     expect(record?.event.content).toContain('[REDACTED:SECRET]');
   });
 
+  it('records each finding at its own action, not the capture-wide decision', async () => {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'secret' },
+        action: 'block',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'pii' },
+        action: 'warn',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings());
+    const result = await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'deploy with SECRET_MARKER and PII_MARKER now',
+    });
+    await rt.close();
+
+    // The capture as a whole collapses worst-first to 'block'...
+    expect(result.action).toBe('block');
+    // ...but the PII match only warns, so it is recorded as 'warn'.
+    const byRule = new Map(gw.records[0]?.findings.map((f) => [f.ruleId, f.actionTaken] as const));
+    expect(byRule.get('test/secret-marker')).toBe('block');
+    expect(byRule.get('test/pii-marker')).toBe('warn');
+  });
+
   it('stamps the supplied occurredAt on the event (historical backfill)', async () => {
     const gw = fakeGateway(bundle());
     const rt = createPluginRuntime(gw, settings());

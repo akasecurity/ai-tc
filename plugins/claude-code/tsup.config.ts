@@ -59,6 +59,8 @@ export default defineConfig({
     // /aka:setup FP-writeback adapter (reads a backfill --triage stream)
     'apply-suppressions': 'src/apply-suppressions.ts',
     intro: 'src/intro.ts',
+    // /aka:setup start-light card (Not-now branch)
+    'start-light': 'src/start-light.ts',
     firstrun: 'src/firstrun.ts',
     backfill: 'src/backfill.ts',
     filescan: 'src/filescan.ts',

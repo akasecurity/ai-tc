@@ -49,6 +49,10 @@ describe('identity/description consistency guard', () => {
     expect(setupMd).not.toContain(STALE_SETUP_DESCRIPTION);
   });
 
+  it('setup.md body prose carries no phased-out product descriptor', () => {
+    expect(setupMd).not.toContain('AKA Control Plane');
+  });
+
   it.each(READMES)('%s prose carries the canonical name and tagline', (_label, relative) => {
     const readme = read(relative);
     expect(readme).toContain(NAME);
@@ -57,6 +61,20 @@ describe('identity/description consistency guard', () => {
 
   it.each(READMES)('%s carries no stale tagline variant', (_label, relative) => {
     expect(read(relative)).not.toContain(STALE_TAGLINE);
+  });
+
+  // The CLI's init copy single-sources its identity from @akasecurity/schema rather
+  // than spelling the name and tagline out, so a substring scan for the literals
+  // would fail. Pin the single-sourcing itself instead: the import of both
+  // constants and the composed offer line. Scanning the source (not importing the
+  // module) keeps this test off the CLI's dependency graph, which the plugin
+  // workspace does not carry.
+  it('cli init plugin-offer copy composes the identity from the canonical constants', () => {
+    const initSource = read('../../../cli/src/commands/init.ts');
+    expect(initSource).toContain('PRODUCT_NAME');
+    expect(initSource).toContain('PRODUCT_TAGLINE');
+    expect(initSource).toContain('@akasecurity/schema');
+    expect(initSource).toContain('`${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`');
   });
 
   it('marketplace.json owner name equals the canonical NAME', () => {

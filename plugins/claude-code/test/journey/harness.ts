@@ -116,9 +116,34 @@ export class SetupJourney {
     return this.run('onboard.js', ['--posture', JSON.stringify(posture)]);
   }
 
+  // Frame 0.3b — the Not-now branch's start-light card: the full 8×4 default posture
+  // matrix seeded with the conservative severity-floor defaults, its per-pack
+  // rationale, and the re-tune hint. Reads no store and records no consent, so it
+  // drives the No-history leg with no prior backfill or scan.
+  startLight(): StepResult {
+    return this.run('start-light.js', []);
+  }
+
+  // Frame 0.5 (Not-now leg) — the start-light posture write. Keeping the default
+  // defaults is the `--floor` write (fills the store with the severity-floor
+  // posture); an adjusted map is the `--posture` write. This is the Not-now
+  // analog of the Yes-path confirm write — no scan, no suppressions.
+  onboardStartLight(posture?: Record<string, string>): StepResult {
+    return posture === undefined
+      ? this.run('onboard.js', ['--floor'])
+      : this.onboardPosture(posture);
+  }
+
   // The backfill triage stream (JSONL + sentinel).
   backfillTriage(): StepResult {
     return this.run('backfill.js', ['--triage']);
+  }
+
+  // The backfill's human (default) output path — the scan summary when access was
+  // granted, or the consent-gate note when it wasn't. The Not-now leg drives this
+  // to prove the gate refuses to read without a 'full' grant.
+  backfill(): StepResult {
+    return this.run('backfill.js', []);
   }
 
   // The calibration preview: judge (stubbed), plan, gate, frame JSON,

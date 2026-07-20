@@ -4,7 +4,7 @@ description: Set up AKA Security — calibrate notifications and detection postu
 
 # AKA setup wizard
 
-You are onboarding the AKA Control Plane plugin for this machine. AKA works
+You are onboarding the AKA Security plugin for this machine. AKA works
 fully locally with **zero backend and zero Docker**: detection runs in-process
 and findings persist to a local SQLite store at `~/.aka/data/aka.db`.
 
@@ -79,12 +79,65 @@ it.
   node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --historical full
   ```
 
-- **If the user chose "Not now"** — the start-light path that learns as it goes
-  is not built yet. Until it is, do **not** read any history and do **not** write
-  a posture. End setup gracefully: tell the user nothing was scanned and nothing
-  was changed, and that they can re-run `/aka:setup` anytime to calibrate or set
-  a posture. Do **not** run `onboard.js`, the backfill, or any other script —
-  steps 3–8 do not run.
+- **If the user chose "Not now"** — take the **start-light** path.
+  This path takes **zero historical access**: do **not** read any history, do
+  **not** run the backfill, and do **not** record consent — nothing about the
+  machine's past is touched.
+  Instead present the start-light posture card, write the posture the user picks
+  (this write **is** the applying frame — it stands in for step 5, which never
+  runs here because there is no scan plan to apply), and rejoin the spine at the
+  installed summary (step 6). **Skip steps 3, 4, and 5 entirely** — there is no
+  scan to triage, no calibrated result to confirm, and no suppression plan to
+  write. Do the following in order:
+
+  1. **Show the start-light card.** Run the start-light script and reproduce its
+     fenced card **exactly as printed** — the `Start light — set your packs`
+     heading, the full 8-pack × 4-level default posture table, the per-pack rationale, and the
+     re-tune hint. It reads no history and writes nothing; it only prints the card
+     (the severity-floor default map — secret, pii, financial, phi, code_flaw, custom at
+     `warn`; code_context, config at `monitor`).
+
+     ```bash
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js"
+     ```
+
+  2. **Confirm or adjust.** Use **AskUserQuestion** — Claude Code's built-in
+     picker — to let the user keep the recommended defaults or tune individual
+     packs. The plugin can't draw its own selectable UI, so do **not** print a
+     fake option list or ask the user to "reply with a number"; let the picker
+     collect the answer.
+
+     **Set your packs** — "Keep the recommended defaults, or adjust individual packs?"
+
+     - **Keep defaults** _(recommended)_ — "the conservative default posture shown above"
+     - **Adjust packs** — "change one or more pack levels; keep the rest as recommended"
+
+     If they choose **Adjust packs**, use AskUserQuestion again to collect the new
+     level (monitor/warn/redact/block) for each pack they want to change, then
+     merge those overrides over the severity-floor defaults to form the full 8-pack map.
+
+  3. **Write the chosen posture.** The default map is the severity floor,
+     so when the user keeps the defaults, write the floor directly; when they
+     adjusted packs, write the merged 8-pack map:
+
+     ```bash
+     # Kept the recommended defaults
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --floor
+
+     # Adjusted one or more packs — <json> is the merged 8-pack map
+     node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<json>'
+     ```
+
+     Either write prints only `✓ K categories tuned` — which is the honest
+     confirmation here, because nothing was scanned or suppressed. Show that line
+     to the user; do **not** invent a dismissed count or any calibration counts.
+
+  4. **Rejoin the spine at the installed summary (step 6).** Continue to step 6
+     to show the installed summary and hand off to the dashboard, using honest
+     no-scan copy. No scan ran, so there is **no surfaced count** — call
+     `firstrun.js` with **no `--surfaced` flag** (the same floor-fallback rule
+     step 6 already follows when no calibration frame was emitted). Steps 7–8
+     then run as written.
 
 ## 3. Run the evidence triage — isolated judgment, nothing written yet
 
@@ -174,11 +227,114 @@ false positives shown above?"
 
 - **Yes, apply** _(recommended)_ — write the posture and suppressions exactly as
   previewed.
+- **Adjust a category** — "change one or more pack levels first; keep the rest as
+  recommended"
 
-Offer **only** the "Yes, apply" option for now. An "Adjust a category" option —
-an override loop over the recommended posture — arrives in a follow-up; until
-then a user who wants a different posture re-runs `/aka:setup` or edits it in the
-dashboard. Do **not** proceed to step 5 until the user has explicitly confirmed.
+Do **not** proceed until the user picks one. On **Yes, apply**, continue to
+step 5 and apply the previewed plan verbatim — that is the confirm spine,
+unchanged. On **Adjust a category**, take the **adjust fork** (step 4b), which
+applies within the fork and rejoins the spine at the installed summary (step 6).
+
+## 4b. Adjust a category — the override fork
+
+The **adjust base is the calibrated recommended posture the preview just
+printed** — the condensed one-row-per-pack view from step 4, not the cold-start
+severity floor. The user changes the packs they want and keeps the rest as
+recommended.
+
+1. **Collect the changes.** Use **AskUserQuestion** — the built-in picker — to
+   ask which packs to change and to which level (monitor/warn/redact/block). The
+   plugin can't draw its own selectable UI, so do **not** print a fake option list
+   or ask the user to "reply with a number"; let the picker collect the answer.
+
+2. **Show the adjust-confirm table.** Compose the merged 8-pack map — the
+   recommended base with the user's picks overlaid — and render the adjust-confirm
+   card by passing the calibrated recommended posture as `--recommended` and that
+   merged map as `--posture`. Reproduce its
+   fenced `category │ recommended │ yours` table **exactly as printed** (it is
+   space-aligned monospace; do **not** add another code fence, strip the fence, or
+   reformat it):
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js" --adjust-confirm --recommended '<recommended-json>' --posture '<merged-json>' --current '<current-json>'
+   ```
+
+   `<recommended-json>` is the calibrated recommended posture the preview printed
+   (the adjust base) — so the `recommended` column shows each pack's calibrated
+   level, and a pack calibration escalated above the floor never renders as a
+   spurious change. `<merged-json>` is the full 8-pack map — that same recommended
+   base with the user's overrides overlaid — so a changed pack reads as a different
+   `yours` value and every untouched pack repeats its recommended level.
+   `<current-json>` is the `current` object from the plan file at the path step 3
+   printed (`Plan saved to: <path>`) — the store's per-category action at preview
+   time, the baseline the downgrade check compares against. Pass it verbatim; do
+   not retype or summarize it.
+
+3. **Surface any downgrade — the card computes this, you do not.** With
+   `--current` passed, the card itself appends the `WARNING: N categories … would
+be LOWERED from a stronger existing setting` footer whenever a pick weakens
+   enforcement — the same rule and the same wording as the confirm gate above,
+   from the same code. Show the card in full, footer included, and when that
+   footer is present get explicit approval before saving. Never let an enforcement
+   downgrade through without the user having seen it.
+
+4. **Save or back out.** Use **AskUserQuestion** with **N** the number of packs
+   the user changed and **M** the number kept as recommended (`M = 8 − N`), both
+   real — never a placeholder:
+
+   **Save your adjustments?**
+
+   - **Save adjusted — N changed, M as recommended** — apply with the adjusted
+     posture.
+   - **Back to recommended** — discard the changes and apply the recommended
+     posture instead.
+
+5. **On "Save adjusted" — produce the applying frame here, carrying the adjusted
+   posture, then rejoin the spine at the installed summary (step 6).** This fork
+   applies within itself and **stands in for step 5**, so step 5 never runs on
+   this path. First apply the previewed plan with the **unchanged confirm spine**,
+   so the reviewed false positives are dismissed and the recommended base is
+   written (the reviewed evidence packs overwrite; the severity floor fill-gaps the
+   rest, so a pack hardened out of band is never downgraded):
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-suppressions.js" --confirmed --plan <path>
+   ```
+
+   If that `--confirmed` run exits non-zero (or `--plan` is missing/unreadable),
+   handle it exactly as step 5 does: tell the user the write did not complete, fall
+   back to the floor (`onboard.js --floor`), and continue to step 6. Do **not** run
+   the overlay below on a failed spine — nothing was written, so there is no
+   recommended base to overlay the changes onto.
+
+   Then overwrite **only the packs the user changed** with their chosen levels:
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<changed-packs-json>'
+   ```
+
+   `<changed-packs-json>` carries **only** the packs the user adjusted (not the
+   full 8-pack map), so the packs kept as recommended keep the fill-gaps-safe
+   values the spine wrote and only the user's explicit, downgrade-approved changes
+   overwrite.
+
+   If that overlay exits non-zero, the spine already wrote the recommended base, so
+   the store holds a valid posture — but **not** the user's overrides. Tell the user
+   their adjustments did not save and the store holds the recommended posture, then
+   continue to step 6. Do **not** report the adjusted posture as saved on a failed
+   overlay.
+
+   On success, present the applying-frame confirmation the **spine** printed —
+   `✓ 8 categories tuned · ✓ N routine dismissed · Ready: …` — the store now holds
+   the adjusted posture. The overlay's own smaller `✓ N categories tuned` line
+   (the count of just the changed packs) is bookkeeping — **do not show it**; the
+   applying frame reports the full 8-pack posture. Then continue to step 6.
+
+   **On "Back to recommended"** — take the **Yes, apply** path instead: continue
+   to step 5 and apply the previewed plan verbatim with no override.
+
+Do **not** write anything until the user has explicitly confirmed at step 4
+(Yes, apply) or saved at step 4b (Save adjusted).
 
 ## 5. Write the posture and suppressions
 

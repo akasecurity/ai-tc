@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +16,7 @@ import {
   platformRedactionScope,
   type RedactionScope,
   redactLeakedKeys,
+  redactLeakedKeysDetailed,
 } from '../../src/remediation/redact.ts';
 
 // Canonical test AWS access-key ids, composed at runtime so the repo's own secret
@@ -154,6 +163,27 @@ describe('redactLeakedKeys', () => {
     expect(readFileSync(absent, 'utf8')).toBe('no secret in this transcript');
   });
 
+  it('counts every finding on a repeated value struck, not just the first', () => {
+    // The same raw secret value appears twice in one transcript and is surfaced
+    // as TWO findings (two targets sharing one rawValue). The first strike's
+    // replaceAll clears every occurrence, so the second target's value is already
+    // gone — it must still count as struck, never misreported as still exposed.
+    const transcriptFile = join(transcriptRoot, 'repeated.jsonl');
+    writeFileSync(transcriptFile, `one ${TRANSCRIPT_KEY} two ${TRANSCRIPT_KEY} done`);
+
+    const targets = [
+      { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+      { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+    ];
+    const detail = redactLeakedKeysDetailed(targets, scope);
+
+    // Both findings resolve on the single rewrite: counted and struck, so a
+    // caller diffing its input against `struck` finds nothing left unredacted.
+    expect(detail.redactedKeys).toBe(2);
+    expect(detail.struck).toEqual(targets);
+    expect(readFileSync(transcriptFile, 'utf8')).not.toContain(TRANSCRIPT_KEY);
+  });
+
   it('the production default scope does not treat an arbitrary temp file as in-scope', () => {
     // Under the real platform default scope (transcripts dir only), a leaked key in
     // a file that merely lives under the OS temp dir is NOT redacted — proving the
@@ -214,5 +244,53 @@ describe('redactLeakedKeys', () => {
     expect(count).toBe(1);
     expect(readFileSync(present, 'utf8')).not.toContain(TRANSCRIPT_KEY);
     expect(readFileSync(present, 'utf8')).toContain('[REDACTED:SECRET]');
+  });
+
+  describe('.aka-redact.tmp cleanup', () => {
+    // Entries left behind matching the atomic-write sibling-temp-file naming.
+    function orphanedTmpEntries(dir: string): string[] {
+      return readdirSync(dir).filter((entry) => entry.endsWith('.aka-redact.tmp'));
+    }
+
+    it('leaves no .aka-redact.tmp sibling after a successful redaction', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(readFileSync(transcriptFile, 'utf8')).toContain('[REDACTED:SECRET]');
+      // The rename consumed the temp file — no orphan sibling remains.
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+    });
+
+    it('leaves no .aka-redact.tmp orphan and the original intact when the atomic write fails', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      const originalContent = `leaked ${TRANSCRIPT_KEY} here`;
+      writeFileSync(transcriptFile, originalContent);
+
+      // Pre-create a DIRECTORY at the exact sibling temp path the atomic write
+      // uses, so `writeFileSync(tmpPath, content)` throws EISDIR instead of
+      // writing — a deterministic, OS-level way to force the write/rename step
+      // to fail without touching the original file at all.
+      const tmpPath = `${transcriptFile}.aka-redact.tmp`;
+      mkdirSync(tmpPath);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      // The write failed, so nothing was redacted or counted.
+      expect(count).toBe(0);
+      // The cleanup catch removed the tmp entry — even though it turned out to be
+      // a directory rather than a partially written file — so no orphan survives.
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+      // The atomic-write guarantee: the original artifact is untouched.
+      expect(readFileSync(transcriptFile, 'utf8')).toBe(originalContent);
+    });
   });
 });

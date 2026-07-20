@@ -19,7 +19,7 @@
       "dependsOn": ["^typecheck"]
     },
     "test": {
-      "dependsOn": ["^build", "^typecheck"],
+      "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
     "clean": {

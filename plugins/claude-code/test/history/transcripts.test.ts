@@ -63,15 +63,42 @@ describe('parseTranscript', () => {
   it('keeps user prompts + assistant text, drops everything else', () => {
     const msgs = parseTranscript(TRANSCRIPT);
     expect(msgs).toEqual([
-      { kind: 'prompt', text: 'hello with SECRET_MARKER', occurredAt: '2026-06-20T10:00:00.000Z' },
-      { kind: 'prompt', text: 'array prompt text', occurredAt: '2026-06-20T10:01:00.000Z' },
-      { kind: 'response', text: 'assistant reply here', occurredAt: '2026-06-20T10:02:00.000Z' },
-      { kind: 'prompt', text: 'ancient prompt', occurredAt: '2020-01-01T00:00:00.000Z' },
+      {
+        kind: 'prompt',
+        text: 'hello with SECRET_MARKER',
+        occurredAt: '2026-06-20T10:00:00.000Z',
+        filePath: '',
+      },
+      {
+        kind: 'prompt',
+        text: 'array prompt text',
+        occurredAt: '2026-06-20T10:01:00.000Z',
+        filePath: '',
+      },
+      {
+        kind: 'response',
+        text: 'assistant reply here',
+        occurredAt: '2026-06-20T10:02:00.000Z',
+        filePath: '',
+      },
+      {
+        kind: 'prompt',
+        text: 'ancient prompt',
+        occurredAt: '2020-01-01T00:00:00.000Z',
+        filePath: '',
+      },
     ]);
     // thinking, tool_use, tool_result, image, metadata and malformed lines are gone.
     const joined = JSON.stringify(msgs);
     expect(joined).not.toContain('private chain of thought');
     expect(joined).not.toContain('tool output');
+  });
+
+  it('stamps the source transcript path onto every message so a surfaced finding can be located', () => {
+    const path = '/Users/me/.claude/projects/-Users-me-project/session.jsonl';
+    const msgs = parseTranscript(TRANSCRIPT, 0, Infinity, path);
+    expect(msgs.length).toBeGreaterThan(0);
+    for (const msg of msgs) expect(msg.filePath).toBe(path);
   });
 
   it('drops records whose timestamp is unparseable (never NaN downstream)', () => {

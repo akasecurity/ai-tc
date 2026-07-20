@@ -38,9 +38,23 @@ export const MaskedSecretFinding = z
     maskedToken: z.string(),
     where: MaskedFindingLocation,
     state: SecretFindingState,
+    observedAt: z.iso.datetime().optional(),
   })
   .strict();
 export type MaskedSecretFinding = z.infer<typeof MaskedSecretFinding>;
+
+// One ordered line in a rotation checklist. The token is a masked-only
+// preview, and the console path names either the provider's rotation surface
+// or the generic provider-console fallback.
+export const RotationChecklistEntry = z
+  .object({
+    provider: z.string(),
+    maskedToken: z.string(),
+    consolePath: z.string(),
+    occurrenceSpread: z.number().int().positive(),
+  })
+  .strict();
+export type RotationChecklistEntry = z.infer<typeof RotationChecklistEntry>;
 
 // The exactly-four options of the remediation decision, each a stable id the
 // prompt layer routes on. The set is closed: a fifth id fails validation.

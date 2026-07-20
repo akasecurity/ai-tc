@@ -44,7 +44,7 @@ import { presentBatchedRemediation, routeRemediationOption } from './chain.ts';
 import { resolveRemediationDeliverable } from './deliverable.ts';
 import { loadSecretLeakFindings } from './findings.ts';
 import { writeStandingSecretPosture } from './posture.ts';
-import { renderRedactionConfirmation, renderRemediationDecision } from './render.ts';
+import { renderRedactionOutcome, renderRemediationDecision } from './render.ts';
 import { redactSurfacedSecrets } from './surfaced-redact.ts';
 
 function fail(message: string): never {
@@ -115,14 +115,16 @@ async function route(frameText: string, rawOption: string): Promise<void> {
     return;
   }
   const needsRedaction = option === 'redact-only' || option === 'redact-rotation-checklist';
-  const redactedKeys = needsRedaction ? await redactSurfacedSecrets(findings) : 0;
+  const redaction = needsRedaction
+    ? await redactSurfacedSecrets(findings)
+    : { redactedKeys: 0, unredacted: [] };
 
   // Open the local store ONLY on the path that writes to it: the router invokes
   // setStandingRedactPosture solely for 'set-secret-redact', so 'leave' and the
   // redact paths never touch the policies store and a store fault can't affect
   // their outcome. The store is opened and closed within this one call.
   const outcome = routeRemediationOption(option, {
-    redact: () => redactedKeys,
+    redact: () => redaction.redactedKeys,
     setStandingRedactPosture: () => {
       let db: ReturnType<typeof openLocalDatabase>;
       try {
@@ -136,7 +138,12 @@ async function route(frameText: string, rawOption: string): Promise<void> {
       try {
         return writeStandingSecretPosture('redact', db.policies);
       } finally {
-        db.close();
+        try {
+          db.close();
+        } catch {
+          // Best-effort teardown: a close fault here must never rewrite the
+          // write result already computed above.
+        }
       }
     },
   });
@@ -147,11 +154,21 @@ async function route(frameText: string, rawOption: string): Promise<void> {
         const deliverable = resolveRemediationDeliverable({
           findings,
           redactedKeys: outcome.redactedKeys,
+          unredactedFindings: redaction.unredacted,
           cwd: process.cwd(),
         });
         process.stdout.write(`${deliverable.summary}\n`);
       } else {
-        process.stdout.write(`${renderRedactionConfirmation(outcome.redactedKeys)}\n`);
+        // The 'redact-only' route has no resolved summary, so it prints its own
+        // redaction confirmation — partial-aware, naming any key left unredacted
+        // rather than claiming a clean strike.
+        process.stdout.write(
+          `${renderRedactionOutcome({
+            redactedKeys: outcome.redactedKeys,
+            findings,
+            unredactedFindings: redaction.unredacted,
+          })}\n`,
+        );
       }
       break;
     case 'posture-set':

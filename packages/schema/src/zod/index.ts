@@ -18,6 +18,7 @@ export * from './registry.ts';
 export * from './rule.ts';
 export * from './rule-test.ts';
 export * from './security.ts';
+export * from './setup-frame.ts';
 export * from './shares.ts';
 export * from './shares-access.ts';
 export * from './triage.ts';

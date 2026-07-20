@@ -8,8 +8,13 @@ import type {
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
+import {
+  CalibrationFrame,
+  DetectionCategory as DetectionCategorySchema,
+} from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { runApply } from '../../src/triage/adapter.ts';
 import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
 
@@ -208,8 +213,10 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
     expect(code).toBe(0);
     expect(runJudge).not.toHaveBeenCalled();
     expect(readStream).not.toHaveBeenCalled();
-    // applied exactly the previewed plan: posture secret->warn, one suppression
-    expect(confirmDb.posture).toEqual({ secret: 'warn' });
+    // applied exactly the previewed plan: the full recommended 8-pack (evidence
+    // secret->warn, floor for the rest) plus one suppression
+    expect(Object.keys(confirmDb.posture)).toHaveLength(8);
+    expect(confirmDb.posture.secret).toBe('warn');
     expect(confirmDb.created).toHaveLength(1);
     expect(confirmDb.created[0]).toMatchObject({
       ruleId: 'core-secret/aws',
@@ -220,7 +227,62 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
     });
     // plan file deleted after a successful apply
     expect(existsSync(path)).toBe(false);
-    expect(out.join('')).toMatch(/suppressions applied/i);
+    // The confirm path emits the applying confirmation, threading the
+    // real writeback counts: all 8 packs tuned, one routine suppression dismissed.
+    const applied = out.join('');
+    expect(applied).toContain('✓ 8 categories tuned');
+    expect(applied).toContain('✓ 1 routine dismissed');
+    expect(applied).toMatch(/Ready:/);
+  });
+});
+
+describe('runApply — confirm persists the full recommended 8-pack posture', () => {
+  it('writes all 8 packs (severity floor overlaid with evidence) and reports "8 categories tuned"', async () => {
+    // Evidence action that DIFFERS from the severity floor (secret floors to warn;
+    // the judge here says redact) so the overlay precedence is observable end-to-end.
+    const v: TriageRecommendation = {
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'redact',
+          reasoning: 'canonical fake AWS example key',
+          genuineCount: 0,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: 'looks routine',
+    };
+    const path = await previewPlan(streamText(), v);
+    const confirmDb = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: confirmDb.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+
+    expect(code).toBe(0);
+    // The whole 8-pack lands — not just the evidence-derived category. This is
+    // the "recommended posture" the user confirmed, persisted verbatim.
+    expect(Object.keys(confirmDb.posture).sort()).toEqual(
+      [...DetectionCategorySchema.options].sort(),
+    );
+    // Evidence overrides the floor for its category; the floor fills every other pack.
+    expect(confirmDb.posture.secret).toBe('redact');
+    expect(confirmDb.posture.code_context).toBe('log'); // monitor floor -> log action
+    expect(confirmDb.posture.config).toBe('log');
+    // The applying-confirmation copy holds end-to-end: all 8 categories tuned, not the survivor subset.
+    expect(out.join('')).toContain('✓ 8 categories tuned');
   });
 });
 
@@ -317,7 +379,8 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
       },
     });
     expect(code).toBe(0); // the write persisted; a delete throw must not flip it
-    expect(db.posture).toEqual({ secret: 'warn' });
+    expect(Object.keys(db.posture)).toHaveLength(8); // the full recommended 8-pack landed
+    expect(db.posture.secret).toBe('warn');
     expect(db.created).toHaveLength(1);
     expect(db.closed).toBe(1); // closed exactly once, no double-close
   });
@@ -338,7 +401,8 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
       stderr: vi.fn(),
     });
     expect(code).toBe(0);
-    expect(db.posture).toEqual({ secret: 'warn' });
+    expect(Object.keys(db.posture)).toHaveLength(8); // the full recommended 8-pack landed
+    expect(db.posture.secret).toBe('warn');
     expect(db.closed).toBe(1);
   });
 
@@ -458,10 +522,50 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       stderr: vi.fn(),
     });
     expect(code).toBe(0);
-    expect(out.join('')).toMatch(/applied/i);
-    // no drift → the write proceeded: one suppression row AND the posture overwrite
+    // The applying confirmation on the real confirm path: all 8 packs tuned, one
+    // routine suppression dismissed.
+    expect(out.join('')).toContain('✓ 8 categories tuned');
+    expect(out.join('')).toContain('✓ 1 routine dismissed');
+    // no drift → the write proceeded: one suppression row AND the full 8-pack
+    // posture overwrite (the evidence category kept its judged action)
     expect(confirmDb.created).toHaveLength(1);
-    expect(confirmDb.posture).toEqual({ secret: 'warn' });
+    expect(Object.keys(confirmDb.posture)).toHaveLength(8);
+    expect(confirmDb.posture.secret).toBe('warn');
+  });
+
+  it('never downgrades a pre-existing stronger posture on an UNREVIEWED floor pack', async () => {
+    // The judge only produces `secret` evidence, so `code_context` is a floor pack
+    // the wizard never reviewed and the drift gate never checks. The user had
+    // already hardened it to `block` out-of-band. Establishing the full 8-pack must
+    // NOT reset that stronger setting to the weak severity floor — the floor packs
+    // fill gaps only. (The preview shows a recommended posture for all 8, but the
+    // confirm write overwrites only the reviewed evidence and fills gaps for the rest.)
+    const path = await previewWith({ code_context: 'block' });
+    const confirmDb = fakeDb();
+    confirmDb.posture.code_context = 'block'; // still hardened at confirm — no drift
+    const out: string[] = [];
+    const code = await runApply({
+      argv: ['--confirmed', '--plan', path],
+      readStream: () => {
+        throw new Error('stream must not be read');
+      },
+      runJudge: () => {
+        throw new Error('judge must not run');
+      },
+      openDb: confirmDb.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    // The hardened floor pack is PRESERVED, not silently reset to the floor.
+    expect(confirmDb.posture.code_context).toBe('block');
+    // The reviewed evidence pack took its judged action; the rest sit at the floor.
+    expect(confirmDb.posture.secret).toBe('warn');
+    // All 8 packs hold a posture and the tuned count stays honest.
+    expect(Object.keys(confirmDb.posture)).toHaveLength(8);
+    expect(out.join('')).toContain('✓ 8 categories tuned');
   });
 
   it('treats a category ADDED to the store since preview as drift (undefined → value)', async () => {
@@ -576,5 +680,130 @@ describe('runApply — confirm fails loud on a bad --plan', () => {
     expect(err.join('')).toMatch(/plan file/i);
     expect(db.posture).toEqual({});
     expect(db.created).toEqual([]);
+  });
+});
+
+describe('runApply — preview emits the calibration frame JSON alongside the human gate', () => {
+  // A verdict with a surfaced (genuine) count so `important` is provably non-zero
+  // and tracks it, not just the suppressed FPs.
+  const genuineVerdict = (): TriageRecommendation => ({
+    perCategory: [
+      {
+        category: 'secret',
+        action: 'warn',
+        reasoning: 'canonical fake AWS example key',
+        genuineCount: 2,
+        fpCount: 1,
+        fpIds: ['0'],
+      },
+    ],
+    notes: 'looks routine',
+  });
+
+  it('emits a valid CalibrationFrame whose counts come from the plan (genuine vs suppressed)', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => genuineVerdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const blob = out.join('');
+
+    // Additive: the human gate render is still present (not replaced).
+    expect(blob).toContain('false-positive');
+
+    // The calibrated-result card the wizard leads with: the real-count
+    // headline over this run's genuine/suppressed split, then the condensed
+    // one-row-per-pack recommended posture.
+    expect(blob).toContain('Calibrated. 3 notifications, 2 important.');
+    expect(blob).toMatch(/secret\s+warn/);
+
+    const frame = readFrameJsonBlock(blob);
+    const parsed = CalibrationFrame.safeParse(frame);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    // important = surfaced (genuine) count, routine = suppressed (fp) count.
+    expect(parsed.data.counts).toEqual({ total: 3, important: 2, routine: 1 });
+    expect(parsed.data.surfacedCategories).toEqual(['secret']);
+    expect(parsed.data.routineCategories).toEqual(['secret']);
+    // The retroactive scan reads at-rest history, so every kind is at-rest.
+    expect(parsed.data.findingKinds).toContainEqual({
+      category: 'secret',
+      count: 3,
+      egress: false,
+    });
+    // The posture map is the full recommended view (all 8 packs), with the
+    // evidence-derived action overriding secret.
+    expect(Object.keys(parsed.data.posture).sort()).toEqual(
+      [...DetectionCategorySchema.options].sort(),
+    );
+    expect(parsed.data.posture.secret).toBe('warn');
+  });
+
+  it('carries no raw detected value into the frame JSON (masked/enum/count only)', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => genuineVerdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    const blob = out.join('');
+    // The frame block itself never echoes the raw hit value.
+    expect(blob).toContain('<<<AKA_FRAME_JSON');
+    expect(JSON.stringify(readFrameJsonBlock(blob))).not.toContain(RAW);
+  });
+});
+
+describe('runApply — preview degrades fail-open when the local store is unreadable', () => {
+  it('substitutes the store-unavailable note instead of throwing, and never fabricates a count', async () => {
+    const out: string[] = [];
+    let code: number | undefined;
+    let threw: unknown;
+    try {
+      code = await runApply({
+        argv: [],
+        readStream: () => streamText(),
+        runJudge: () => verdict(),
+        // A store that cannot be opened mid-preview (missing / corrupt / locked db):
+        // the calibration step's only store read is the current-posture downgrade
+        // view, and it must degrade rather than break the wizard.
+        openDb: () => {
+          throw new Error('SQLITE_CANTOPEN: unable to open database file');
+        },
+        now: () => 0,
+        createdBy: () => 'tester',
+        stdout: (s) => out.push(s),
+        stderr: vi.fn(),
+      });
+    } catch (e) {
+      threw = e;
+    }
+    const blob = out.join('');
+
+    // Fail-open: no thrown error escaped the calibration preview, and it completed.
+    expect(threw).toBeUndefined();
+    expect(code).toBe(0);
+
+    // The honest store-unavailable note stands in for the store-derived downgrade
+    // comparison — the store-read-failure path, not the found-nothing/empty copy.
+    expect(blob).toContain("I couldn't read the local store");
+
+    // The real calibration count (from the scan/plan, not the store) still renders —
+    // a store-read failure never fabricates or zeroes the calibrated headline.
+    expect(blob).toContain('Calibrated. 1 notifications');
   });
 });

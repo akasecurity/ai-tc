@@ -1,6 +1,6 @@
 /**
  * Historical backfill entry — invoked by the `/aka:setup` wizard right after
- * onboarding when the user chose "Grant full review" (historicalAccess: full).
+ * onboarding when the user chose "Yes, scan" (historicalAccess: full).
  * It sweeps prior Claude Code transcripts (~/.claude/projects) for secrets that
  * leaked BEFORE AKA was installed and records them into the same local store the
  * read surfaces query.
@@ -26,7 +26,7 @@ import {
 import { TriageHit } from '@akasecurity/schema';
 
 import { scanHistory, type ScanSummary } from './history/scan.ts';
-import type { HistoryWalkOptions } from './history/transcripts.ts';
+import { type HistoryWalkOptions } from './history/transcripts.ts';
 import { reconcileHistory } from './history/usage.ts';
 import { fenced, indent } from './present.ts';
 
@@ -61,13 +61,15 @@ export interface BackfillDeps {
     onHit?: (hit: TriageHit) => void,
   ) => Promise<ScanSummary>;
   reconcileHistory: (config: PluginConfig) => Promise<unknown>;
-  // Self-contamination guard threaded into the scan: `beforeMs` drops any
-  // transcript message written at/after the backfill started (so a re-run never
-  // re-ingests the wizard's own in-progress session), and `excludeSessionId`
-  // skips AKA's OWN session transcript by id when the host exposes it. Injected
-  // (not read from the environment here) so runBackfill stays pure + testable;
-  // the CLI wiring at the bottom of this file computes the real values.
-  guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs'>;
+  // Walk options threaded into the scan. The self-contamination guard: `beforeMs`
+  // drops any transcript message written at/after the backfill started (so a re-run
+  // never re-ingests the wizard's own in-progress session), and `excludeSessionId`
+  // skips AKA's OWN session transcript by id when the host exposes it. `dir`
+  // overrides the transcript root; it is supplied only by the journey harness/tests
+  // to scan a throwaway ~/.claude in isolation — no production call site passes it.
+  // Injected (not read from the environment here) so runBackfill stays pure +
+  // testable; the CLI wiring at the bottom of this file computes the real values.
+  guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
 }
 
 export async function runBackfill(deps: BackfillDeps): Promise<void> {
@@ -201,9 +203,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         process.exitCode = 1;
       },
     },
-    loadConfig,
+    loadConfig: () => loadConfig(),
     scanHistory,
-    reconcileHistory,
+    reconcileHistory: (cfg) => reconcileHistory(cfg),
     guard: {
       beforeMs: startedAt,
       ...(sessionId ? { excludeSessionId: sessionId } : {}),

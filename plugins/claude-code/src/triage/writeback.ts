@@ -22,6 +22,7 @@ import {
   assertRawFree,
   type ExceptionWriter,
   RawEgressError,
+  severityFloorPosture,
   type SuppressionEntry,
 } from '@akasecurity/plugin-sdk';
 import type {
@@ -252,6 +253,20 @@ export function planTriageWriteback(
   return { entries, posture, showcase, join, notes, skipped };
 }
 
+// The full recommended posture the preview shows: the cold-start severity floor
+// for all 8 packs, overlaid with the evidence-derived actions the judge assigned.
+// Single-sourced so the previewed posture matches the 8-pack the confirm write
+// establishes — the 'N categories tuned' count is the size of this map
+// (8), not the survivor subset the evidence produced. The confirm write does NOT
+// blanket-overwrite this map: the reviewed evidence packs overwrite, the floor
+// packs only fill gaps (see performTriageWriteback), so a pack the user already
+// hardened is never silently downgraded to the weak floor.
+export function recommendedPosture(
+  evidence: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): Record<DetectionCategory, BuiltinPolicyId> {
+  return { ...severityFloorPosture(), ...evidence };
+}
+
 // -------------------------------------------------------------------------
 // performTriageWriteback (destructive; takes an already-resolved plan)
 // -------------------------------------------------------------------------
@@ -284,14 +299,36 @@ export interface TriageWritebackWriters {
 export async function performTriageWriteback(
   plan: TriageWritebackPlan,
   writers: TriageWritebackWriters,
-  opts: { createdBy: string; now: number },
+  opts: {
+    createdBy: string;
+    now: number;
+    // The cold-start severity floor to establish for the packs the evidence did
+    // not cover, so the confirmed store holds all 8 packs. Optional: omit it
+    // and only the plan's own posture is written (the pure-plan tests do this).
+    floor?: Partial<Record<DetectionCategory, BuiltinPolicyId>>;
+  },
 ): Promise<{ written: number; skippedDuplicate: number; categoriesWritten: number }> {
   const applyBoth = async (): Promise<{ written: number; skippedDuplicate: number }> => {
+    // The reviewed, drift-gated evidence posture: overwrite the surviving
+    // categories the user saw in the gate.
     applyCategoryPosture(plan.posture, writers.policies, 'overwrite');
-    return applySetupTriageSuppressions(plan.entries, writers.exceptions, opts);
+    // The cold-start floor for the remaining packs, when supplied: fill-gaps
+    // ONLY. A pack the user already hardened out-of-band (not in the evidence, so
+    // never reviewed or drift-checked) is left untouched — the floor establishes
+    // a posture only where none exists, never a downgrade (mirrors onboard.ts's
+    // --floor semantics).
+    if (opts.floor) applyCategoryPosture(opts.floor, writers.policies, 'fill-gaps');
+    return applySetupTriageSuppressions(plan.entries, writers.exceptions, {
+      createdBy: opts.createdBy,
+      now: opts.now,
+    });
   };
   const { written, skippedDuplicate } = writers.transaction
     ? await writers.transaction(applyBoth)
     : await applyBoth();
-  return { written, skippedDuplicate, categoriesWritten: Object.keys(plan.posture).length };
+  // Every category that now holds a posture: the reviewed evidence packs plus the
+  // floor packs (8 when the floor is supplied), so the tuned count is honest.
+  const tuned = new Set<DetectionCategory>(Object.keys(plan.posture) as DetectionCategory[]);
+  if (opts.floor) for (const c of Object.keys(opts.floor) as DetectionCategory[]) tuned.add(c);
+  return { written, skippedDuplicate, categoriesWritten: tuned.size };
 }

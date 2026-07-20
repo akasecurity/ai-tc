@@ -1,10 +1,12 @@
 import type { ActionTaken, DetectionCategory, TriageHit } from '@akasecurity/schema';
+import { severityFloorPosture } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
+  recommendedPosture,
   SCRUBBED_NOTES,
 } from '../../src/triage/writeback.ts';
 
@@ -263,6 +265,28 @@ describe('performTriageWriteback', () => {
     expect(fake.created[0]).toMatchObject({ createdVia: 'setup-triage', createdBy: 'me' });
   });
 
+  it('overwrites the reviewed evidence but only FILL-GAPS the floor (no downgrade)', async () => {
+    // A store where an unreviewed floor pack is already hardened stronger than the
+    // floor, and the evidence pack (secret) already holds a value.
+    const fake = fakeWriters();
+    fake.posture.code_context = 'block'; // hardened out-of-band, not in the evidence
+    fake.posture.secret = 'block'; // reviewed pack with a prior value
+    const plan = planTriageWriteback([hit()], rec([{ action: 'redact' }])); // secret -> redact
+    const res = await performTriageWriteback(plan, fake.writers, {
+      createdBy: 'me',
+      now: 0,
+      floor: severityFloorPosture(),
+    });
+    // The reviewed evidence pack is OVERWRITTEN with its judged action.
+    expect(fake.posture.secret).toBe('redact');
+    // The hardened floor pack is PRESERVED (fill-gaps skips an existing row).
+    expect(fake.posture.code_context).toBe('block');
+    // Every other pack got the floor.
+    expect(Object.keys(fake.posture)).toHaveLength(8);
+    // The count reflects the full established 8-pack, not the survivor subset.
+    expect(res.categoriesWritten).toBe(8);
+  });
+
   it('does not write any suppression when the plan resolved none', async () => {
     // fpIds point at an id absent from the join, so nothing resolves regardless
     // of the relaxed count check.
@@ -321,5 +345,24 @@ describe('performTriageWriteback', () => {
     // nothing persisted: posture NOT overwritten, no exception row survived
     expect(posture).toEqual({});
     expect(created).toEqual([]);
+  });
+});
+
+describe('recommendedPosture', () => {
+  it('overlays the severity floor for all 8 packs with the evidence-derived actions', () => {
+    // Evidence covers only two packs, one of them differing from its floor value.
+    const full = recommendedPosture({ secret: 'redact', pii: 'warn' });
+    // All 8 packs are present — never the survivor subset.
+    expect(Object.keys(full).sort()).toEqual(Object.keys(severityFloorPosture()).sort());
+    expect(Object.keys(full)).toHaveLength(8);
+    // Evidence wins where present; the floor fills every other pack unchanged.
+    expect(full.secret).toBe('redact'); // floor is 'warn' — evidence overrides
+    expect(full.pii).toBe('warn');
+    expect(full.code_context).toBe('monitor'); // untouched floor default
+    expect(full.config).toBe('monitor');
+  });
+
+  it('returns the bare severity floor when there is no evidence', () => {
+    expect(recommendedPosture({})).toEqual(severityFloorPosture());
   });
 });

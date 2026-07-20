@@ -15,14 +15,18 @@
  * All IO (stream read, judge spawn, DB, clock, stdout/stderr) is injected so this
  * is unit-testable with fakes; the script wires the real implementations.
  */
-import { assertRawFree, type ExceptionWriter } from '@akasecurity/plugin-sdk';
+import { assertRawFree, type ExceptionWriter, severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
+  CalibrationPreview,
   DetectionCategory,
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
 
+import { frameCalibration } from '../calibration.ts';
+import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
+import { frameJsonBlock } from '../setup-frame-json.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import {
@@ -30,6 +34,7 @@ import {
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
+  recommendedPosture,
 } from './writeback.ts';
 
 export interface AdapterDb {
@@ -112,18 +117,33 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
 
     // Read the store's current per-category action for the downgrade view.
     // Read-only; retained in the plan file so confirm needn't re-read the DB.
+    // Fail-open: this is the calibration step's only store read, and an unreadable
+    // store (missing / corrupt / locked db) must degrade the downgrade comparison
+    // to the honest store-unavailable note rather than throw and break the wizard.
+    // The calibrated counts below come from the reviewed plan, not the store, so
+    // they still render truthfully — no fabricated count stands in for the fault.
     const current: Partial<Record<DetectionCategory, ActionTaken>> = {};
-    const db = deps.openDb();
+    let storeUnavailable = false;
     try {
-      for (const category of Object.keys(plan.posture) as DetectionCategory[]) {
-        const action = db.policies.getCategoryAction(category);
-        if (action !== undefined) current[category] = action;
+      const db = deps.openDb();
+      try {
+        for (const category of Object.keys(plan.posture) as DetectionCategory[]) {
+          const action = db.policies.getCategoryAction(category);
+          if (action !== undefined) current[category] = action;
+        }
+      } finally {
+        db.close();
       }
-    } finally {
-      db.close();
+    } catch {
+      storeUnavailable = true;
     }
 
-    deps.stdout(renderPosturePlan(plan.posture, current) + '\n\n');
+    if (storeUnavailable) {
+      deps.stdout(`${STORE_UNAVAILABLE_NOTE}\n\n`);
+    }
+    // With no readable store the downgrade comparison has no baseline, so pass an
+    // empty current — every category renders as new rather than a partial/false view.
+    deps.stdout(renderPosturePlan(plan.posture, storeUnavailable ? {} : current) + '\n\n');
     deps.stdout(renderShowcase(plan.showcase) + '\n\n');
     deps.stdout(renderSuppressionGate(plan.entries, plan.join) + '\n');
     if (plan.skipped.length > 0) {
@@ -135,9 +155,42 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     }
     deps.stdout(`\nNotes: ${plan.notes}\n`);
 
+    // Emit the structured calibration frame ALONGSIDE the human gate
+    // above — additive, not a replacement. Counts and category lists come from
+    // the raw-free plan's per-category genuine/suppressed split (surviving
+    // categories only; a poisoned category was already dropped). The posture is
+    // the full recommended view — the severity floor overlaid with the
+    // evidence-derived actions the judge assigned — so every pack is present.
+    // The retroactive scan reads at-rest history (transcripts, temp files, agent
+    // memory), so every triaged kind is an at-rest exposure, not an
+    // outbound-leak: egress is false across the board here. The frame carries
+    // only masked/enum/count data, so it stays within this raw-egress boundary.
+    const preview: CalibrationPreview = {
+      categories: plan.showcase.map((c) => ({
+        category: c.category,
+        genuineCount: c.genuineCount,
+        fpCount: c.fpCount,
+        egress: false,
+      })),
+      posture: recommendedPosture(plan.posture),
+    };
+    const calibration = frameCalibration(preview);
+
+    // The calibrated-result card: the real-count headline over the
+    // preview's genuine/suppressed split, then the condensed one-row-per-pack
+    // recommended posture. Both are raw-free (counts, category enums, and palette
+    // levels only) and template over this run's numbers, never a fixed value.
+    deps.stdout(`${calibration.copy}\n\n${renderRecommendedPosture(preview.posture)}\n\n`);
+
+    // The machine-readable calibration frame carrying the same counts/posture the
+    // card above renders, for downstream consumers (the installed-summary handoff).
+    deps.stdout(frameJsonBlock(calibration.frame));
+
     // Persist the EXACT resolved raw-free plan the user is about to approve. The
-    // backstop (assertRawFree over the serialized doc) runs inside write().
-    const planPath = planIO.write(plan, current, rawValues);
+    // backstop (assertRawFree over the serialized doc) runs inside write(). With an
+    // unreadable store the baseline is empty (matching the displayed view), so a
+    // later confirm re-reads and drift-gates rather than trusting a partial read.
+    const planPath = planIO.write(plan, storeUnavailable ? {} : current, rawValues);
     deps.stdout(`\nPlan saved to: ${planPath}\n`);
     deps.stdout(
       `Re-run with: apply-suppressions.js --confirmed --plan ${planPath}\n` +
@@ -242,6 +295,13 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // `transaction` makes the posture + suppression writes ALL-OR-NOTHING, so a
       // mid-batch fault rolls the posture overwrite back too — the store is never
       // left half-applied (and the floor fallback below is safe: nothing persisted).
+      // Establish the full 8-pack the preview showed so settings holds
+      // all 8 packs and the confirmation reads '8 categories tuned': the reviewed,
+      // drift-gated evidence packs (plan.posture) OVERWRITE, and the severity floor
+      // fills the remaining packs with FILL-GAPS. The floor packs are not covered by
+      // the drift gate above (only the reviewed evidence is), so they must never
+      // overwrite — an out-of-band-hardened pack (e.g. code_context=block) is left
+      // as-is rather than silently reset to the weak floor.
       {
         posture: plan.posture,
         entries: plan.entries,
@@ -256,7 +316,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
         // Only set when the store provides one (exactOptionalPropertyTypes).
         ...(db.transaction ? { transaction: db.transaction } : {}),
       },
-      { createdBy: deps.createdBy(), now: deps.now() },
+      { createdBy: deps.createdBy(), now: deps.now(), floor: severityFloorPosture() },
     );
     // The write COMMITTED. From here nothing may flip the result to failure:
     // cleanup (plan-file delete) and reporting (stdout) are best-effort, and a
@@ -268,11 +328,9 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // A leftover temp plan file is harmless; the apply already succeeded.
     }
     try {
-      deps.stdout(
-        `AKA suppressions applied: ${String(res.written)} written` +
-          (res.skippedDuplicate > 0 ? `, ${String(res.skippedDuplicate)} already active` : '') +
-          `; posture calibrated for ${String(res.categoriesWritten)} categories.\n`,
-      );
+      // The applying confirmation — the tuned-category and routine-dismissed
+      // counts threaded from the real writeback result, never a literal.
+      deps.stdout(`${renderApplied(res.categoriesWritten, res.written)}\n`);
     } catch {
       // Reporting failed but the write did not — still a success.
     }

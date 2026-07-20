@@ -22,9 +22,12 @@ export interface ScannedMessage {
   occurredAt: string;
 }
 
-// Where Claude Code writes its per-project, per-session transcripts.
-export function transcriptsDir(): string {
-  return join(homedir(), '.claude', 'projects');
+// Where Claude Code writes its per-project, per-session transcripts. `home`
+// overrides the OS home root; it is supplied only by the journey harness/tests to
+// scan a throwaway ~/.claude in isolation — no production call site passes it, so
+// every real run falls back to the OS home.
+export function transcriptsDir(home?: string): string {
+  return join(home ?? homedir(), '.claude', 'projects');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

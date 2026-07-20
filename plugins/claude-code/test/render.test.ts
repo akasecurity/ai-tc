@@ -1,30 +1,46 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
+import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { DetectionException } from '@akasecurity/schema';
+import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { NAME, ONE_LINER, TAGLINE } from '../src/identity.ts';
+import { buildIntroCard, type Manifest } from '../src/intro-card.ts';
 import { paint } from '../src/present.ts';
 import {
+  buildHandoffOffer,
   buildHealthReport,
   buildRecommendations,
   healthScore,
+  renderApplied,
   renderAudit,
+  renderCategoriesTuned,
   renderExceptions,
   renderFindings,
   renderFirstRun,
   renderHealth,
   renderPosture,
   renderRecommend,
-  renderSetupIntro,
+  renderRecommendedPosture,
   renderStatusLine,
+  renderWhatIDo,
   runQuery,
   topFindings,
 } from '../src/render.ts';
+
+// The real shipped plugin manifest — the same plugin.json the intro adapter
+// reads at runtime. Read here so the provenance assertions track the actual
+// installed version, not a literal that silently rots on a version bump.
+const PLUGIN_MANIFEST = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../.claude-plugin/plugin.json', import.meta.url)), 'utf8'),
+) as Manifest;
 
 // In standalone mode the effective ruleset is the store's INSTALLED snapshot
 // (seeded from bundledDetections() by resolveDataGateway), not ad-hoc packs
@@ -238,21 +254,62 @@ describe('pure renderers', () => {
     expect(strip(renderFindings([partial], status))).toContain('—');
   });
 
-  it('setup intro: card with manifest facts', () => {
-    const out = strip(
-      renderSetupIntro({
-        name: 'AKA Security',
-        tagline: 'Agent Harness Security for Claude Code.',
-        repository: 'github.com/akasecurity/ai-tc',
-        version: '0.0.1',
-        publisher: 'AKA',
-        adds: 'Secures your local environment to prevent secret leakage and vulnerabilities.',
-      }),
+  it('identity: exports the canonical name, tagline, and one-liner', () => {
+    expect(NAME).toBe('AKA Security');
+    expect(TAGLINE).toBe('We secure agent harnesses at the source.');
+    expect(ONE_LINER).toBe(
+      'I watch out for Claude as it codes — catching secrets and customer data before they slip out.',
     );
-    expect(out).toContain('Found AKA Security');
-    expect(out).toContain('github.com/akasecurity/ai-tc');
-    expect(out).toContain('0.0.1 · AKA');
-    expect(out).toContain('two quick questions');
+  });
+
+  it('setup intro: the adapter builds the card from the real manifest, sourced from identity.ts', () => {
+    // Exercises the shipped intro adapter (manifest → card) end to end: the
+    // identity strings can only appear if intro-card.ts sources them from the
+    // shared identity constant, and the provenance version comes from the real
+    // plugin manifest — so a stale local copy or a version drift fails here.
+    const out = strip(buildIntroCard(PLUGIN_MANIFEST));
+    expect(out).toContain(NAME);
+    expect(out).toContain(TAGLINE);
+    expect(out).toContain(ONE_LINER);
+    // Provenance line: the real installed version + canonical repo, no 'verified' badge yet.
+    expect(out).toContain(`v${PLUGIN_MANIFEST.version ?? ''} · github.com/akasecurity/ai-tc`);
+    expect(out).not.toContain('verified');
+    // The old tagline and the stale two-question line are gone.
+    expect(out).not.toContain('Agent Harness Security for Claude Code.');
+    expect(out).not.toContain('two quick questions');
+  });
+
+  it('what I do: the calibration card carries the walkthrough voice, verbatim', () => {
+    const out = strip(renderWhatIDo());
+    // Every line from the calibration walkthrough, verbatim.
+    expect(out).toContain('I watch out for Claude as it works.');
+    expect(out).toContain(
+      'As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.',
+    );
+    expect(out).toContain(
+      "Most of it I handle quietly; I only notify you when it's worth your call.",
+    );
+    // Leads into the calibration handoff that hands off to the scan offer.
+    expect(out).toContain("let's calibrate your notifications based on what Claude's been up to");
+    // No internal narration (design-doc / decision citations) leaks into the copy.
+    expect(out).not.toMatch(/Decision|design doc|ADR/i);
+    // The whole card, so a copy regression is caught as a snapshot diff.
+    expect(out).toMatchInlineSnapshot(`
+      "● I watch out for Claude as it works.
+
+        As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.
+        Most of it I handle quietly; I only notify you when it's worth your call.
+
+        let's calibrate your notifications based on what Claude's been up to"
+    `);
+  });
+
+  it('setup intro: the adapter fails open with a blank version when the manifest is unreadable', () => {
+    // Empty manifest — the fallback intro.ts uses when plugin.json can't be read.
+    const out = strip(buildIntroCard({}));
+    // Still a card: the identity one-liner renders even with no manifest facts.
+    expect(out).toContain(ONE_LINER);
+    expect(out).not.toContain('verified');
   });
 
   it('healthScore: blends coverage and handled ratio into 0–100', () => {
@@ -276,63 +333,124 @@ describe('pure renderers', () => {
     ).toBe(70);
   });
 
-  it('first run: install-complete summary with real-ish stats', () => {
-    const out = strip(
-      renderFirstRun({
-        commands: ['/health', '/recommend', '/findings', '/audit'],
-        posture: renderPosture([
-          { category: 'secret', action: 'redact' },
-          { category: 'code_context', action: 'log' },
-        ]),
-        health: 72,
-        findings: 142,
-        recommendations: 6,
-      }),
+  describe('renderFirstRun — installed card', () => {
+    // The command files the shipped plugin registers — the Try line must never
+    // outrun this set, since a named command with no matching file would 404 when
+    // the user types it. Read from disk (never a hardcoded copy) so a renamed or
+    // removed command is caught here.
+    const REGISTERED = new Set(
+      readdirSync(fileURLToPath(new URL('../commands', import.meta.url)))
+        .filter((f) => f.endsWith('.md'))
+        .map((f) => f.replace(/\.md$/, '')),
     );
-    expect(out).toContain('AKA Security installed');
-    expect(out).toContain('/health · /recommend · /findings · /audit');
-    expect(out).toContain('Posture');
-    expect(out).toContain('secret');
-    expect(out).toContain('redact');
-    // 'log' (ActionTaken) surfaces to the user as 'monitor'.
-    expect(out).toContain('monitor');
-    expect(out).toContain('Health 72/100');
-    expect(out).toContain('Findings 142');
-    expect(out).toContain('Recommendations 6');
-    expect(out).toContain('run /health anytime');
-  });
 
-  it('first run: clean scan hides the Top findings section', () => {
-    const out = strip(
-      renderFirstRun({
-        commands: ['/health'],
-        health: 100,
-        findings: 0,
-        recommendations: 0,
-        topFindings: [],
-      }),
-    );
-    expect(out).not.toContain('Top findings');
-  });
+    const populated = (over: Partial<Parameters<typeof renderFirstRun>[0]> = {}): string =>
+      strip(
+        renderFirstRun({
+          posture: renderPosture([
+            { category: 'secret', action: 'redact' },
+            { category: 'code_context', action: 'log' },
+          ]),
+          health: 72,
+          findings: 142,
+          recommendations: 6,
+          worthALook: 2,
+          topFindings: [
+            finding({ ruleId: 'secrets/aws-access-key', category: 'secret', severity: 'critical' }),
+          ],
+          ...over,
+        }),
+      );
 
-  it('first run: lists the top findings table when the scan caught something', () => {
-    const out = strip(
-      renderFirstRun({
-        commands: ['/health'],
-        health: 80,
-        findings: 2,
-        recommendations: 2,
+    it("heading reads 'AKA Security installed — calibrated to this machine'", () => {
+      expect(populated()).toContain('AKA Security installed — calibrated to this machine');
+    });
+
+    it('stats line templates the real health · findings · recommendations, never a fixed literal', () => {
+      const out = populated();
+      expect(out).toContain('Health 72/100');
+      expect(out).toContain('Findings 142');
+      expect(out).toContain('Recommendations 6');
+      // A different set of real values flows straight through — proof it is
+      // templated over the store, not a baked-in literal.
+      const other = populated({ health: 91, findings: 3, recommendations: 1 });
+      expect(other).toContain('Health 91/100');
+      expect(other).toContain('Findings 3');
+      expect(other).toContain('Recommendations 1');
+      // The fixed sample numbers never appear.
+      expect(out).not.toContain('82/100');
+      expect(out).not.toContain('40 findings');
+    });
+
+    it('shows the posture line the user chose', () => {
+      const out = populated();
+      expect(out).toContain('Posture');
+      expect(out).toContain('secret');
+      expect(out).toContain('redact');
+      // 'log' (ActionTaken) surfaces to the user as 'monitor'.
+      expect(out).toContain('monitor');
+    });
+
+    it("renders the '2 worth a look' handoff with the real surfaced count and the Open dashboard / Not now framing", () => {
+      const out = populated({ worthALook: 2 });
+      expect(out).toContain('2 worth a look — see them in the browser?');
+      expect(out).toContain('Open dashboard');
+      expect(out).toContain('Not now');
+      // The count is the surfaced value, echoed — a different count flows through.
+      expect(populated({ worthALook: 5 })).toContain('5 worth a look');
+    });
+
+    it('the Try line names only commands the shipped plugin registers, in invokable /aka: form', () => {
+      const out = populated();
+      const tryLine = out.split('\n').find((l) => l.includes('Try:'));
+      expect(tryLine).toBeDefined();
+      const named = tryLine?.match(/\/aka:[a-z]+/g) ?? [];
+      // The line actually names commands (guards against an empty match passing).
+      expect(named.length).toBeGreaterThan(0);
+      for (const cmd of named) {
+        const base = /^\/aka:([a-z]+)$/.exec(cmd)?.[1] ?? '';
+        expect(REGISTERED.has(base)).toBe(true);
+      }
+      // The not-yet-shipped rename targets do not exist yet — the Try line must not print them.
+      expect(out).not.toContain('/aka:secretscan');
+      expect(out).not.toContain('/aka:codescan');
+    });
+
+    it('clean scan hides the Top findings section', () => {
+      const out = populated({ topFindings: [], worthALook: 0 });
+      expect(out).not.toContain('Top findings');
+    });
+
+    it('lists the top findings table when the scan caught something', () => {
+      const out = populated({
         topFindings: [
           finding({ ruleId: 'secrets/aws-access-key', category: 'secret', severity: 'critical' }),
           finding({ ruleId: 'pii/email', category: 'pii', severity: 'low' }),
         ],
-      }),
-    );
-    expect(out).toContain('Top findings (2)');
-    expect(out).toContain('secrets/aws-access-key');
-    expect(out).toContain('pii/email');
-    // The masked match shows; the raw secret never does (finding() masks it).
-    expect(out).toContain('AKIA…MPLE');
+      });
+      expect(out).toContain('Top findings (2)');
+      expect(out).toContain('secrets/aws-access-key');
+      expect(out).toContain('pii/email');
+      // The masked match shows; the raw secret never does (finding() masks it).
+      expect(out).toContain('AKIA…MPLE');
+    });
+  });
+
+  it('buildHandoffOffer: handoff payload — the worth-a-look count + two options', () => {
+    const offer = buildHandoffOffer(3);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
+    // The count is whatever the caller derived from the store — echoed, not invented.
+    expect(offer.worthALook).toBe(3);
+    expect(offer.options).toEqual([
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('buildHandoffOffer: honest zero — a clean store carries a real 0, not a fabricated number', () => {
+    const offer = buildHandoffOffer(0);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
+    expect(offer.worthALook).toBe(0);
   });
 
   it('topFindings: ranks by severity then recency, capped to the limit', () => {
@@ -410,6 +528,118 @@ describe('renderPosture', () => {
     ]);
     const order = out.split('\n').map((line) => line.trim().split(/\s+/)[0]);
     expect(order).toEqual(['pii', 'financial', 'secret', 'code_context']);
+  });
+});
+
+describe('renderRecommendedPosture — condensed recommended view', () => {
+  it('shows each pack with its recommended level, compact and in canonical order', () => {
+    const out = renderRecommendedPosture(severityFloorPosture());
+    // One compact row per pack — the recommended level, not the full 8×4 grid of
+    // every level (that is the start-light branch's table).
+    const packs = out
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => line.trim().split(/\s+/)[0]);
+    expect(packs).toEqual([
+      'pii',
+      'financial',
+      'secret',
+      'phi',
+      'code_context',
+      'code_flaw',
+      'custom',
+      'config',
+    ]);
+    // The recommendation: sensitive packs surface (warn); observe-only packs
+    // monitor. Palette vocabulary only — no DB 'log' leaks through.
+    expect(out).not.toMatch(/\blog\b/);
+    expect(out).not.toMatch(/\bblock\b/);
+    // The whole block, so a layout/copy regression is caught as a snapshot diff.
+    expect(out).toMatchInlineSnapshot(`
+      "  pii           warn
+        financial     warn
+        secret        warn
+        phi           warn
+        code_context  monitor
+        code_flaw     warn
+        custom        warn
+        config        monitor"
+    `);
+  });
+
+  it('renders whatever recommended map it is handed (no hardcoded levels)', () => {
+    const out = renderRecommendedPosture({
+      secret: 'block',
+      pii: 'redact',
+      financial: 'warn',
+      phi: 'warn',
+      code_context: 'monitor',
+      code_flaw: 'warn',
+      custom: 'warn',
+      config: 'monitor',
+    });
+    expect(out).toContain('secret');
+    expect(out).toContain('block');
+    expect(out).toContain('redact');
+  });
+});
+
+describe('renderApplied — applying confirmation', () => {
+  // The read-command files the shipped plugin registers — the real registry the
+  // Ready line must not outrun. A command it names with no matching file would
+  // 404 when the user runs it, so the line is asserted against this set, never a
+  // hardcoded copy.
+  const REGISTERED = new Set(
+    readdirSync(fileURLToPath(new URL('../commands', import.meta.url)))
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => f.replace(/\.md$/, '')),
+  );
+
+  it('templates the real dismissed count and confirms the tuned pack count', () => {
+    const out = renderApplied(8, 12);
+    expect(out).toContain('✓ 8 categories tuned');
+    expect(out).toContain('✓ 12 routine dismissed');
+    // N is templated from the real count — a different value flows straight
+    // through, never a baked-in literal.
+    expect(renderApplied(8, 3)).toContain('✓ 3 routine dismissed');
+    // The tuned count is threaded too, not hardcoded to 8.
+    expect(renderApplied(5, 3)).toContain('✓ 5 categories tuned');
+  });
+
+  it('renders an honest zero-state when nothing routine was dismissed', () => {
+    const out = renderApplied(8, 0);
+    expect(out).toContain('✓ 8 categories tuned');
+    // No fabricated '✓ 0 routine dismissed' — honest copy instead.
+    expect(out).not.toContain('0 routine dismissed');
+    expect(out).toMatch(/no routine/i);
+  });
+
+  it('the Ready line names only commands the plugin actually registers, in invokable /aka: form', () => {
+    const ready = (renderApplied(8, 5).split('Ready:')[1] ?? '').trim();
+    const named = ready.match(/\/[a-z:]+/g) ?? [];
+    // The line actually names commands (guards against an empty match passing).
+    expect(named.length).toBeGreaterThan(0);
+    for (const cmd of named) {
+      // The plugin registers commands under its `aka` namespace, so the only
+      // form that resolves when typed is `/aka:<command>` — a bare `/<command>`
+      // would not invoke. Require the namespace, then check the base name is a
+      // real registered command file (never a hardcoded copy).
+      const match = /^\/aka:([a-z]+)$/.exec(cmd);
+      expect(match).not.toBeNull();
+      expect(REGISTERED.has(match?.[1] ?? '')).toBe(true);
+    }
+  });
+
+  it("reads '✓ 8 categories tuned' from the real 8-pack the posture writer wrote", () => {
+    // onboard.ts feeds its confirmation the size of the posture it actually
+    // wrote: renderCategoriesTuned(Object.keys(posture).length). Drive that with
+    // the real recommended map so the '8' is the true pack count, not a
+    // literal — this is the segment that composes into the applying-confirmation line.
+    const packCount = Object.keys(severityFloorPosture()).length;
+    expect(packCount).toBe(8);
+    expect(renderCategoriesTuned(packCount)).toBe('✓ 8 categories tuned');
+    // Same phrase renderApplied composes — single-sourced, so the two can't drift.
+    expect(renderApplied(packCount, 5)).toContain(renderCategoriesTuned(packCount));
   });
 });
 

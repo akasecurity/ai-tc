@@ -75,7 +75,7 @@ jobs:
             Write-Error "archive did not root at aka-${{ matrix.target }}/aka.exe"
             exit 1
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: aka-${{ matrix.target }}
           path: cli/sea-dist/aka-${{ matrix.target }}/

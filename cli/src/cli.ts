@@ -4,7 +4,7 @@ import { cliVersion, notifyFromCache, refreshCache } from '@akasecurity/local-op
 import { commandsHelp } from './command-manifest.ts';
 import { runCheckUpdates } from './commands/check-updates.ts';
 import { runCompletion } from './commands/completion.ts';
-import { runDashboard } from './commands/dashboard.ts';
+import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
 import { runDetections } from './commands/detections.ts';
 import { runException } from './commands/exception.ts';
 import { runInit } from './commands/init.ts';
@@ -35,11 +35,21 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   '__update-refresh': (argv) => {
     refreshCache(homeFromArgv(argv));
   },
+  // Hidden: boots the bundled Next standalone server in-process (see dashboard.ts).
+  // `aka dashboard` spawns this so a SEA binary can serve the dashboard without
+  // exec-ing an external script. Returns the promise so main() awaits the boot.
+  '__dashboard-server': (argv) => runDashboardServer(argv),
 };
 
 // Commands that already surface (or manage) update state — the passive post-command
 // notice would be redundant or recursive after these.
-const SKIP_NOTICE = new Set(['update', 'check-updates', '__update-refresh', 'completion']);
+const SKIP_NOTICE = new Set([
+  'update',
+  'check-updates',
+  '__update-refresh',
+  '__dashboard-server',
+  'completion',
+]);
 
 const USAGE = `aka — AI Traffic Control (local-first, everything stays on your machine)
 

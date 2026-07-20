@@ -1,13 +1,7 @@
 import type { Rule, Span } from '@akasecurity/schema';
 
 import type { Matcher } from '../types.ts';
-
-// An absolute per-scan match ceiling. A whole-match pattern that can match the
-// empty string (e.g. "\d*") re-matches at the same index forever unless
-// `lastIndex` is advanced — the `g`-flag loop below now does that — but this
-// ceiling stays as a second backstop against any other way a rule ends up
-// looping (a huge text, an unexpected zero-width edge case in a future engine).
-const MAX_MATCHES_PER_RULE = 10_000;
+import { MAX_MATCHES_PER_RULE } from './limits.ts';
 
 export class RegexMatcher implements Matcher {
   match(text: string, rule: Rule): Span[] {

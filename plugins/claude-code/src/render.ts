@@ -10,15 +10,9 @@ import type {
   DayActivity,
   FindingView,
   HealthSummary,
-  PostureChange,
   SessionTokenReport,
 } from '@akasecurity/plugin-sdk';
-import {
-  aggregateTokenUsage,
-  detectPostureChanges,
-  formatCostTotal,
-  formatUsd,
-} from '@akasecurity/plugin-sdk';
+import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   BuiltinPolicyId,
@@ -42,6 +36,7 @@ import {
   table,
   wrapText,
 } from './present.ts';
+import { downgradeWarning, isDowngrade } from './triage/gate-display.ts';
 
 // The fail-open note shown when the local store can't be READ (missing / corrupt
 // / locked db) mid-wizard: the calibration and first-run frames print this instead
@@ -222,75 +217,46 @@ export function renderStartLight(
   ].join('\n');
 }
 
-// The downgrade-approval block appended to the adjust-confirm card when one or
-// more packs would be LOWERED below the level already stored — including a pack
-// the user never touched this run (it sits at its recommended default because it
-// surfaced no findings to escalate, not because anyone chose to weaken it). This
-// is the only point in the adjust fork that compares against the existing STORE
-// posture rather than just the recommended-vs-chosen table, so a pack hardened
-// out of band (e.g. via /aka:config) can't be silently lowered by the wizard.
-function renderDowngradeApproval(changes: readonly PostureChange[]): string {
-  const noun = changes.length === 1 ? 'pack' : 'packs';
-  const lines = changes.map(
-    (c) => `  ${c.category}: ${ACTION_LABEL[c.from] ?? c.from} → ${ACTION_LABEL[c.to] ?? c.to}`,
-  );
-  return [
-    `⚠ Downgrade approval needed — ${String(changes.length)} ${noun} would be lowered below ` +
-      'the current hardened level (this applies even to a pack with no findings this run):',
-    lines.join('\n'),
-    'Confirm you intend to weaken enforcement here, or adjust your picks so the pack stays at its current level.',
-  ].join('\n');
-}
-
 // The 0.4b adjust-confirm card of the /aka:setup Yes-path adjust loop: a
 // three-column 'category │ recommended │ yours' table laying each pack's
 // recommended level beside the level the user chose, so a changed pack reads as
 // a different 'yours' value and the untouched packs repeat their recommended
 // level. Closes with the adjust copy and the shared re-tune pointer at the
 // deep-tuning surface. Pure (no I/O); the caller hands in the recommended posture
-// (severityFloorPosture()) and the chosen map (that base with the user's
-// overrides overlaid), whose packs render in canonical category order.
-//
-// `existingStorePosture` (optional, default {}) is the store's CURRENT
-// per-category posture — the caller's own read, done at its I/O boundary so this
-// renderer stays pure. When supplied, every pack's effective choice (chosen,
-// falling back to recommended) is compared against it via detectPostureChanges;
-// any pack that would be lowered gets an explicit downgrade-approval block below
-// the table. An empty/omitted map (no store, or a store read failure) renders
-// exactly as before — no comparison, no warning.
+// (severityFloorPosture()), the chosen map (that base with the user's overrides
+// overlaid), and `current` — the store's existing action per category
+// (undefined = no row yet) — whose packs render in canonical category order.
+// A chosen level that ranks BELOW the category's existing action is an
+// enforcement downgrade and appends the shared WARNING footer, so the adjust fork
+// can no longer quietly lower a pack hardened out of band.
 export function renderAdjustConfirm(
   recommended: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
-  existingStorePosture: Partial<
-    Record<DetectionCategory, { action: ActionTaken; enabled: boolean }>
-  > = {},
+  current: Partial<Record<DetectionCategory, ActionTaken>> = {},
 ): string {
   const packs = (Object.keys(recommended) as DetectionCategory[]).sort(
     (a, b) => categoryRank(a) - categoryRank(b),
   );
-  const effective: Partial<Record<DetectionCategory, BuiltinPolicyId>> = {};
-  for (const category of packs) {
-    const level = chosen[category] ?? recommended[category];
-    if (level !== undefined) effective[category] = level;
-  }
   const rows = packs.map((category) => [
     category,
     recommended[category] ?? '',
-    effective[category] ?? '',
+    chosen[category] ?? recommended[category] ?? '',
   ]);
-  const downgrades = detectPostureChanges(effective, existingStorePosture).filter(
-    (change) => change.kind === 'downgrade',
-  );
+  const downgrades = packs.filter((category) => {
+    const planned = chosen[category] ?? recommended[category];
+    return planned !== undefined && isDowngrade(planned, current[category]);
+  });
   return [
     '● Adjust — set the packs you want, keep the rest',
     '',
     indent(table(['category', 'recommended', 'yours'], rows)),
     '',
     indent("I'll keep the rest as recommended."),
-    ...(downgrades.length > 0 ? ['', indent(renderDowngradeApproval(downgrades))] : []),
     '',
     indent(RE_TUNE_HINT),
-  ].join('\n');
+  ]
+    .join('\n')
+    .concat(downgradeWarning(downgrades));
 }
 
 // The applying-confirmation "Ready" line's curated command set — the read

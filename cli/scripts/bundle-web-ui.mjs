@@ -26,9 +26,12 @@ const log = (m) => process.stdout.write(`bundle-web-ui: ${m}\n`);
 // 1. Build the web-ui standalone (Turbo-cached, so this is cheap when unchanged).
 //    Always rebuild so the bundle is fresh regardless of how prepack was invoked.
 log('building @akasecurity/web-ui (output: standalone)…');
+// `shell` on Windows: pnpm is pnpm.cmd there, and Node refuses to execFile a .cmd
+// without a shell — so route the launcher through cmd.exe. No-op elsewhere.
 execFileSync('pnpm', ['turbo', 'run', 'build', '--filter=@akasecurity/web-ui'], {
   cwd: repoRoot,
   stdio: 'inherit',
+  shell: process.platform === 'win32',
 });
 if (!existsSync(standalone)) {
   throw new Error(

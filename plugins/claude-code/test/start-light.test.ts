@@ -107,6 +107,25 @@ describe('scripts/start-light.js --adjust-confirm', () => {
     expect(badJson.stderr).toBe('');
   });
 
+  // Bad input reaches the user as a plain line, never a stack trace — the same
+  // failure form onboard.js prints.
+  it.each([
+    ['a missing --posture map', ['--adjust-confirm']],
+    ['malformed --posture JSON', ['--adjust-confirm', '--posture', '{not json']],
+    ['an unknown category', ['--adjust-confirm', '--posture', '{"nope":"warn"}']],
+    [
+      'malformed --current JSON',
+      ['--adjust-confirm', '--posture', '{"secret":"warn"}', '--current', '{oops'],
+    ],
+  ])('reports %s as a friendly failure line and a non-zero exit', (_label, args) => {
+    const failed = runStartLight(args);
+    expect(failed.status).not.toBe(0);
+    expect(failed.stdout).toContain('AKA setup failed: ');
+    // A stack trace would name the throwing frame; the friendly path prints none.
+    expect(failed.stdout).not.toContain('    at ');
+    expect(failed.stderr).toBe('');
+  });
+
   it('keys the recommended column on --recommended, not the severity floor', () => {
     // A calibration that escalated the 'secret' pack above the floor: the
     // recommended base carries the calibrated level.
@@ -131,5 +150,60 @@ describe('scripts/start-light.js --adjust-confirm', () => {
     // The untouched escalated pack repeats its calibrated level in both columns —
     // it does not render as a spurious change against the floor.
     expect(withRec.stdout).toMatch(/secret\s+block\s+block/);
+  });
+
+  // The adjust fork can lower a pack the user hardened out of band, so the card
+  // must carry the same downgrade WARNING the confirm gate prints.
+  describe('--current downgrade guard', () => {
+    // 'secret' hardened to block in the store before the wizard ran.
+    const hardened = JSON.stringify({ secret: 'block' });
+
+    it('warns when the chosen level lowers enforcement below the stored action', () => {
+      // The user picks 'warn' for a pack the store holds at 'block'.
+      const lowered: Partial<Record<DetectionCategory, BuiltinPolicyId>> = {
+        ...recommended,
+        secret: 'warn',
+      };
+      const run = runStartLight([
+        '--adjust-confirm',
+        '--posture',
+        JSON.stringify(lowered),
+        '--current',
+        hardened,
+      ]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain('WARNING: 1 category (secret) would be LOWERED');
+      expect(run.stdout).toContain(
+        'Confirm you intend to weaken enforcement there before applying',
+      );
+    });
+
+    it('stays silent when the chosen level is the same or higher than the stored action', () => {
+      // The user picks 'block' — matching what the store already holds.
+      const kept: Partial<Record<DetectionCategory, BuiltinPolicyId>> = {
+        ...recommended,
+        secret: 'block',
+      };
+      const run = runStartLight([
+        '--adjust-confirm',
+        '--posture',
+        JSON.stringify(kept),
+        '--current',
+        hardened,
+      ]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).not.toContain('WARNING');
+      expect(run.stdout).not.toContain('LOWERED');
+    });
+
+    it('has no baseline to warn against when --current is omitted', () => {
+      const lowered: Partial<Record<DetectionCategory, BuiltinPolicyId>> = {
+        ...recommended,
+        secret: 'warn',
+      };
+      const run = runStartLight(['--adjust-confirm', '--posture', JSON.stringify(lowered)]);
+      expect(run.status).toBe(0);
+      expect(run.stdout).not.toContain('WARNING');
+    });
   });
 });

@@ -797,6 +797,36 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
     expect(row('pii')).toEqual(['pii', 'warn', 'warn']);
   });
 
+  // The adjust fork writes posture just like the confirm spine, so it must flag an
+  // enforcement downgrade the same way — a pack hardened out of band can otherwise
+  // be lowered here with nothing shown to the user.
+  describe('downgrade guard against the stored posture', () => {
+    it('appends the WARNING footer when a pick ranks below the stored action', () => {
+      // The store holds 'secret' at block; the user picks redact.
+      const out = renderAdjustConfirm(recommended, chosen, { secret: 'block' });
+      expect(out).toContain('WARNING: 1 category (secret) would be LOWERED');
+    });
+
+    it('names every lowered pack and pluralizes the count', () => {
+      const out = renderAdjustConfirm(recommended, chosen, {
+        secret: 'block',
+        config: 'redact',
+      });
+      expect(out).toContain('WARNING: 2 categories (secret, config) would be LOWERED');
+    });
+
+    it('stays silent when every pick is the same or stronger than the stored action', () => {
+      // secret: stored warn -> picked redact (stronger). config: stored log
+      // ('monitor') -> picked warn (stronger).
+      const out = renderAdjustConfirm(recommended, chosen, { secret: 'warn', config: 'log' });
+      expect(out).not.toContain('WARNING');
+    });
+
+    it('has no baseline to compare against when current is omitted', () => {
+      expect(renderAdjustConfirm(recommended, chosen)).not.toContain('WARNING');
+    });
+  });
+
   it('carries the adjust copy and the shared re-tune hint', () => {
     const out = renderAdjustConfirm(recommended, chosen);
     expect(out).toContain("I'll keep the rest as recommended");

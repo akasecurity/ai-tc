@@ -1,7 +1,12 @@
-import { CalibrationFrame, type CalibrationPreview } from '@akasecurity/schema';
+import {
+  CalibrationFrame,
+  type CalibrationPreview,
+  severityFloorPosture,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { frameCalibration } from '../src/calibration.ts';
+import { frameCalibration, frameEmptyState } from '../src/calibration.ts';
+import { renderPostureGrid, renderRecommendedPosture } from '../src/render.ts';
 
 // A backfill + apply-suppressions preview with 161 findings of which 3 are surfaced
 // (genuine live secret keys) and 158 are suppressed FPs. Every count is carried in
@@ -123,5 +128,55 @@ describe('frameCalibration', () => {
       'Calibrated. 24 notifications, 4 important. 20 routine, 4 that matter (personal data)',
     );
     expect(copy).not.toContain('live keys');
+  });
+});
+
+describe('frameEmptyState', () => {
+  const posture = severityFloorPosture();
+
+  // The exact per-cause headlines, spelled out here (not sourced from the module)
+  // so the test pins the shipped copy rather than mirroring the implementation.
+  const SCAN_CLEAN_HEADLINE =
+    "Calibrated. I looked at Claude's recent activity — nothing needs your attention. You're starting clean; here's the posture I'd recommend:";
+  const NO_HISTORY_HEADLINE =
+    "Nothing to calibrate from yet — Claude hasn't left activity on this machine. Each pack starts at a conservative default:";
+
+  it('scan-ran-clean renders the exact clean copy over the recommended posture', () => {
+    const { copy } = frameEmptyState('scan-clean', posture);
+    expect(copy).toBe(`${SCAN_CLEAN_HEADLINE}\n${renderRecommendedPosture(posture)}`);
+  });
+
+  it('no-history renders the exact start-light copy over the 0.3b table', () => {
+    const { copy } = frameEmptyState('no-history', posture);
+    expect(copy).toBe(`${NO_HISTORY_HEADLINE}\n${renderPostureGrid(posture)}`);
+  });
+
+  it('the two empty-state copies are distinct and each states why it is empty', () => {
+    const clean = frameEmptyState('scan-clean', posture).copy;
+    const noHistory = frameEmptyState('no-history', posture).copy;
+    expect(clean).not.toBe(noHistory);
+    // scan-ran-clean states a scan looked and found nothing.
+    expect(clean).toContain("I looked at Claude's recent activity");
+    // no-history states there is nothing on this machine to calibrate from.
+    expect(noHistory).toContain("Claude hasn't left activity on this machine");
+  });
+
+  it('never renders a fabricated count — no "0 notifications" theater', () => {
+    for (const cause of ['scan-clean', 'no-history'] as const) {
+      const { copy } = frameEmptyState(cause, posture);
+      expect(copy).not.toMatch(/\d+\s+notifications/);
+    }
+  });
+
+  it('emits a valid zero-count CalibrationFrame', () => {
+    for (const cause of ['scan-clean', 'no-history'] as const) {
+      const { frame } = frameEmptyState(cause, posture);
+      expect(CalibrationFrame.safeParse(frame).success).toBe(true);
+      expect(frame.counts).toEqual({ total: 0, important: 0, routine: 0 });
+      expect(frame.surfacedCategories).toEqual([]);
+      expect(frame.routineCategories).toEqual([]);
+      expect(frame.findingKinds).toEqual([]);
+      expect(frame.posture).toEqual(posture);
+    }
   });
 });

@@ -92,6 +92,19 @@ describe('scripts/start-light.js --adjust-confirm', () => {
   it('fails loudly when --adjust-confirm is given without a --posture map', () => {
     const missing = runStartLight(['--adjust-confirm']);
     expect(missing.status).not.toBe(0);
+    // A malformed invocation prints the clean one-line reason, not a raw stack.
+    expect(missing.stdout).toContain('AKA setup failed:');
+    expect(missing.stderr).toBe('');
+  });
+
+  it('fails cleanly on malformed --posture JSON, with no raw stack trace', () => {
+    const badJson = runStartLight(['--adjust-confirm', '--posture', '{not valid json']);
+    expect(badJson.status).not.toBe(0);
+    // The parse error is caught and reported as the clean setup-failure line; a
+    // raw uncaught throw would spill a stack to stderr instead.
+    expect(badJson.stdout).toContain('AKA setup failed:');
+    expect(badJson.stdout).not.toMatch(/\n\s+at\s/);
+    expect(badJson.stderr).toBe('');
   });
 
   // Bad input reaches the user as a plain line, never a stack trace — the same

@@ -101,6 +101,26 @@ export class SetupJourney {
     return transcriptPath;
   }
 
+  // Seed a prior Claude Code transcript under the temp home carrying only benign
+  // prose — messages that get examined but surface no findings — timestamped
+  // inside the retention window but before the scan starts, so the backfill has
+  // real history to examine yet streams zero hits (scan-clean, not no-history).
+  seedCleanTranscript(): string {
+    const projectDir = join(this.home, '.claude', 'projects', '-Users-me-clean');
+    mkdirSync(projectDir, { recursive: true });
+    const ts = new Date(Date.now() - 2 * DAY_MS).toISOString();
+    const lines = [
+      JSON.stringify({
+        type: 'user',
+        timestamp: ts,
+        message: { role: 'user', content: 'lets refactor the parser and add a couple of tests' },
+      }),
+    ];
+    const transcriptPath = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptPath, lines.join('\n'));
+    return transcriptPath;
+  }
+
   // The kickoff intro card.
   intro(): StepResult {
     return this.run('intro.js', [MANIFEST_PATH]);

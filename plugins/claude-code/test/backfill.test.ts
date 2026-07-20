@@ -89,7 +89,7 @@ describe('runBackfill — triage mode', () => {
     const hits = [fixtureHit('AKIAEXAMPLE1'), fixtureHit('AKIAEXAMPLE2')];
     const scanHistory = vi.fn((_config, _opts, onHit?: (hit: TriageHit) => void) => {
       for (const hit of hits) onHit?.(hit);
-      return Promise.resolve(zeroSummary());
+      return Promise.resolve({ ...zeroSummary(), scanned: hits.length });
     });
     const deps = baseDeps({ triage: true, io, scanHistory });
 
@@ -101,6 +101,43 @@ describe('runBackfill — triage mode', () => {
     expect((JSON.parse(second ?? '') as TriageHit).rawMatch).toBe('AKIAEXAMPLE2');
     expect(third).toBe(triageSentinel(2, 'complete'));
     expect(stderr).toEqual([]);
+  });
+
+  it('emits a complete:no-history sentinel when the history set was genuinely empty (scanned === 0)', async () => {
+    const { io, stdout, stderr } = fakeIo();
+    // A completed, non-truncated scan that examined zero messages — a fresh
+    // machine with no Claude history to calibrate from.
+    const scanHistory = vi.fn(() => Promise.resolve({ ...zeroSummary(), scanned: 0 }));
+    const deps = baseDeps({ triage: true, io, scanHistory });
+
+    await runBackfill(deps);
+
+    expect(stdout).toEqual([triageSentinel(0, 'complete:no-history')]);
+    expect(stderr).toEqual([]);
+  });
+
+  it('emits a plain complete sentinel when history WAS scanned but nothing surfaced (scanned > 0)', async () => {
+    const { io, stdout } = fakeIo();
+    // Messages were examined but none leaked — scan-clean, not no-history.
+    const scanHistory = vi.fn(() => Promise.resolve({ ...zeroSummary(), scanned: 5 }));
+    const deps = baseDeps({ triage: true, io, scanHistory });
+
+    await runBackfill(deps);
+
+    expect(stdout).toEqual([triageSentinel(0, 'complete')]);
+  });
+
+  it('emits a plain complete sentinel on a fully-deduped rescan of real history (scanned === 0, skipped > 0)', async () => {
+    const { io, stdout } = fakeIo();
+    // A re-run over history already recorded on a prior scan: every message is
+    // deduped (skipped), none newly examined. History exists — this is NOT
+    // no-history, even though scanned is 0.
+    const scanHistory = vi.fn(() => Promise.resolve({ ...zeroSummary(), scanned: 0, skipped: 7 }));
+    const deps = baseDeps({ triage: true, io, scanHistory });
+
+    await runBackfill(deps);
+
+    expect(stdout).toEqual([triageSentinel(0, 'complete')]);
   });
 
   it('emits only the skipped:no-consent sentinel when consent is not full', async () => {

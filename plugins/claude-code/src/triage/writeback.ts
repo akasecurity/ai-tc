@@ -48,8 +48,10 @@ export const SCRUBBED_NOTES = '[notes withheld: model text referenced a raw dete
 // presence is the ONLY proof the stream was not truncated mid-scan. The status
 // set MUST stay in lockstep with backfill.ts's producer TriageStatus — a value
 // one side emits and the other doesn't is a silent skew (see isKnownStatus).
-type TriageStatus = 'complete' | 'skipped:no-consent';
-const TRIAGE_STATUSES = ['complete', 'skipped:no-consent'] as const;
+// `complete:no-history` is a completed, non-truncated scan over an empty history
+// set (no hits to act on), passed through so the adapter can branch on it.
+export const TRIAGE_STATUSES = ['complete', 'complete:no-history', 'skipped:no-consent'] as const;
+type TriageStatus = (typeof TRIAGE_STATUSES)[number];
 
 // `status` is only shape-checked (string) here; parseTriageStream validates it
 // against TRIAGE_STATUSES via isKnownStatus and fails loud on anything else.
@@ -109,11 +111,18 @@ export function parseTriageStream(text: string): { hits: TriageHit[]; status: Tr
   }
   const hitLines = lines.slice(0, -1);
   if (tail.status !== 'complete') {
-    // An intentional skip: no hits to act on. A non-empty body under a skip
-    // sentinel is malformed, so guard against it.
+    // A skip (skipped:no-consent) or a completed empty-history scan
+    // (complete:no-history): zero hits to act on, status passed through for the
+    // adapter to branch on. Both a non-empty body and a nonzero count are
+    // malformed under these zero-hit sentinels, so guard against either.
     if (hitLines.length > 0) {
       throw new Error(
         `triage stream carried ${String(hitLines.length)} hits under a ${tail.status} sentinel`,
+      );
+    }
+    if (tail.count !== 0) {
+      throw new Error(
+        `triage stream sentinel reported ${String(tail.count)} hits under a ${tail.status} sentinel`,
       );
     }
     return { hits: [], status: tail.status };

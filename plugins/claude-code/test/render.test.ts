@@ -11,6 +11,7 @@ import type { BuiltinPolicyId, DetectionCategory, DetectionException } from '@ak
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { readRegisteredCommands } from '../src/command-registry.ts';
 import { NAME, ONE_LINER, TAGLINE } from '../src/identity.ts';
 import { buildIntroCard, type Manifest } from '../src/intro-card.ts';
 import { paint } from '../src/present.ts';
@@ -350,20 +351,27 @@ describe('pure renderers', () => {
 
     const populated = (over: Partial<Parameters<typeof renderFirstRun>[0]> = {}): string =>
       strip(
-        renderFirstRun({
-          posture: renderPosture([
-            { category: 'secret', action: 'redact' },
-            { category: 'code_context', action: 'log' },
-          ]),
-          health: 72,
-          findings: 142,
-          recommendations: 6,
-          worthALook: 2,
-          topFindings: [
-            finding({ ruleId: 'secrets/aws-access-key', category: 'secret', severity: 'critical' }),
-          ],
-          ...over,
-        }),
+        renderFirstRun(
+          {
+            posture: renderPosture([
+              { category: 'secret', action: 'redact' },
+              { category: 'code_context', action: 'log' },
+            ]),
+            health: 72,
+            findings: 142,
+            recommendations: 6,
+            worthALook: 2,
+            topFindings: [
+              finding({
+                ruleId: 'secrets/aws-access-key',
+                category: 'secret',
+                severity: 'critical',
+              }),
+            ],
+            ...over,
+          },
+          readRegisteredCommands(),
+        ),
       );
 
     it("heading reads 'AKA Security installed — calibrated to this machine'", () => {
@@ -432,14 +440,17 @@ describe('pure renderers', () => {
       // rather than a bare 'Findings 0 · Recommendations 0' scan tally, and the
       // dashboard handoff is withheld (never a fabricated '0 worth a look').
       const out = strip(
-        renderFirstRun({
-          posture: renderPosture([{ category: 'secret', action: 'redact' }]),
-          health: 40,
-          findings: 0,
-          recommendations: 0,
-          topFindings: [],
-          // worthALook intentionally omitted — nothing surfaced.
-        }),
+        renderFirstRun(
+          {
+            posture: renderPosture([{ category: 'secret', action: 'redact' }]),
+            health: 40,
+            findings: 0,
+            recommendations: 0,
+            topFindings: [],
+            // worthALook intentionally omitted — nothing surfaced.
+          },
+          readRegisteredCommands(),
+        ),
       );
 
       // No fabricated dashboard handoff and no bare numeric scan tally.
@@ -867,19 +878,24 @@ describe('renderApplied — applying confirmation', () => {
       .map((f) => f.replace(/\.md$/, '')),
   );
 
+  // The installed command registry, resolved the way the shipped caller does and
+  // threaded into the pure renderer so the Ready line's curated set is validated
+  // against the commands the plugin actually registers.
+  const REGISTRY = readRegisteredCommands();
+
   it('templates the real dismissed count and confirms the tuned pack count', () => {
-    const out = renderApplied(8, 12);
+    const out = renderApplied(8, 12, REGISTRY);
     expect(out).toContain('✓ 8 categories tuned');
     expect(out).toContain('✓ 12 routine dismissed');
     // N is templated from the real count — a different value flows straight
     // through, never a baked-in literal.
-    expect(renderApplied(8, 3)).toContain('✓ 3 routine dismissed');
+    expect(renderApplied(8, 3, REGISTRY)).toContain('✓ 3 routine dismissed');
     // The tuned count is threaded too, not hardcoded to 8.
-    expect(renderApplied(5, 3)).toContain('✓ 5 categories tuned');
+    expect(renderApplied(5, 3, REGISTRY)).toContain('✓ 5 categories tuned');
   });
 
   it('renders an honest zero-state when nothing routine was dismissed', () => {
-    const out = renderApplied(8, 0);
+    const out = renderApplied(8, 0, REGISTRY);
     expect(out).toContain('✓ 8 categories tuned');
     // No fabricated '✓ 0 routine dismissed' — honest copy instead.
     expect(out).not.toContain('0 routine dismissed');
@@ -887,7 +903,7 @@ describe('renderApplied — applying confirmation', () => {
   });
 
   it('the Ready line names only commands the plugin actually registers, in invokable /aka: form', () => {
-    const ready = (renderApplied(8, 5).split('Ready:')[1] ?? '').trim();
+    const ready = (renderApplied(8, 5, REGISTRY).split('Ready:')[1] ?? '').trim();
     const named = ready.match(/\/[a-z:]+/g) ?? [];
     // The line actually names commands (guards against an empty match passing).
     expect(named.length).toBeGreaterThan(0);
@@ -902,6 +918,14 @@ describe('renderApplied — applying confirmation', () => {
     }
   });
 
+  it('builds the Ready line through the registry mechanism — an unregistered curated command throws', () => {
+    // The Ready line's curated set is validated against the registry, not
+    // free-printed: a registry missing one of its curated commands fails loud
+    // rather than rendering a call-to-action the user cannot invoke.
+    const withoutHealth = REGISTRY.filter((c) => c !== '/aka:health');
+    expect(() => renderApplied(8, 5, withoutHealth)).toThrow(/aka:health/);
+  });
+
   it("reads '✓ 8 categories tuned' from the real 8-pack the posture writer wrote", () => {
     // onboard.ts feeds its confirmation the size of the posture it actually
     // wrote: renderCategoriesTuned(Object.keys(posture).length). Drive that with
@@ -911,7 +935,7 @@ describe('renderApplied — applying confirmation', () => {
     expect(packCount).toBe(8);
     expect(renderCategoriesTuned(packCount)).toBe('✓ 8 categories tuned');
     // Same phrase renderApplied composes — single-sourced, so the two can't drift.
-    expect(renderApplied(packCount, 5)).toContain(renderCategoriesTuned(packCount));
+    expect(renderApplied(packCount, 5, REGISTRY)).toContain(renderCategoriesTuned(packCount));
   });
 });
 

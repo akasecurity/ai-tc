@@ -22,6 +22,7 @@ import type {
 } from '@akasecurity/schema';
 import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
 
+import { selectRegisteredCommands } from './command-registry.ts';
 import { NAME } from './identity.ts';
 import {
   bar,
@@ -258,12 +259,14 @@ export function renderAdjustConfirm(
     .concat(downgradeWarning(downgrades));
 }
 
-// The read commands the applying-confirmation "Ready" line points at once
-// calibration is applied. Written in the plugin's `/aka:<command>` namespace — the only form
-// that resolves when typed — so the call-to-action never names a command the
-// user can't actually invoke.
-// TODO: derive this from the plugin command registry once one is available.
-const READY_COMMANDS = ['/aka:health', '/aka:findings', '/aka:recommend'] as const;
+// The applying-confirmation "Ready" line's curated command set — the read
+// surfaces to run once calibration is applied (health, findings, recommend), a
+// surface-specific subset (not the whole registry) deliberately distinct from the
+// Try line's, written in the plugin's `/aka:<command>` namespace (the only form
+// that resolves when typed). Validated against the installed command registry
+// before it renders, so the call-to-action never names a command the user cannot
+// invoke.
+export const READY_COMMANDS = ['/aka:health', '/aka:findings', '/aka:recommend'] as const;
 
 // The "tuned" segment — the count of posture categories the writer
 // wrote, threaded from the real write (never a literal). Single-sourced here so
@@ -280,11 +283,19 @@ export function renderCategoriesTuned(categoriesTuned: number): string {
 // writer's category count and the apply-suppressions result's written count),
 // never a literal. When nothing routine was dismissed (N === 0) the middle
 // segment is honest empty-state copy rather than a fabricated '✓ 0 routine
-// dismissed'. Pure (no I/O) so it unit-tests without a DB.
-export function renderApplied(categoriesTuned: number, dismissed: number): string {
+// dismissed'. `registry` is the installed command registry (readRegisteredCommands()),
+// resolved at the caller's I/O boundary and threaded in so this stays a pure
+// formatter: the Ready line's curated set is validated against it, and an
+// unregistered curated command throws rather than rendering. Pure (no I/O) so it
+// unit-tests without a DB.
+export function renderApplied(
+  categoriesTuned: number,
+  dismissed: number,
+  registry: readonly string[],
+): string {
   const routine =
     dismissed > 0 ? `✓ ${String(dismissed)} routine dismissed` : 'no routine to dismiss';
-  const ready = `Ready: ${READY_COMMANDS.join(' · ')}`;
+  const ready = `Ready: ${selectRegisteredCommands(READY_COMMANDS, registry).join(' · ')}`;
   return `${renderCategoriesTuned(categoriesTuned)} · ${routine} · ${ready}`;
 }
 
@@ -362,12 +373,12 @@ export interface FirstRunSummary {
   topFindings?: FindingView[];
 }
 
-// The commands the installed-summary "Try" line points at — the dashboard and the
-// working-tree scan, both shipped in this plugin's `/aka:<command>` namespace
-// (the only form that resolves when typed). Hardcoded to the current command
-// set so the call-to-action never names a command the user cannot invoke.
-// TODO: derive this from the plugin command registry once one is available.
-const TRY_COMMANDS = ['/aka:dashboard', '/aka:scan'] as const;
+// The installed-summary "Try" line's curated command set — the dashboard and the
+// working-tree scan, a surface-specific subset (not the whole registry), written
+// in the plugin's `/aka:<command>` namespace (the only form that resolves when
+// typed). Validated against the installed command registry before it renders, so
+// the call-to-action never names a command the user cannot invoke.
+export const TRY_COMMANDS = ['/aka:dashboard', '/aka:scan'] as const;
 
 // Rank findings for the install card's "Top findings" list: most severe first,
 // then most recent within a severity, capped to `limit`. Pure so the first-run
@@ -397,7 +408,11 @@ export function buildHandoffOffer(worthALook: number): SetupHandoffOffer {
   };
 }
 
-export function renderFirstRun(s: FirstRunSummary): string {
+// `registry` is the installed command registry (readRegisteredCommands()),
+// resolved at the caller's I/O boundary and threaded in so this stays a pure
+// formatter: the Try line's curated set is validated against it here, and an
+// unregistered curated command throws rather than rendering.
+export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]): string {
   const heading = `✓ ${NAME} installed — calibrated to this machine`;
 
   // Nothing-surfaced degradation: with no findings in the store the numeric
@@ -410,7 +425,8 @@ export function renderFirstRun(s: FirstRunSummary): string {
       ? "Nothing needs your attention — you're starting clean."
       : `Health ${String(s.health)}/100 · Findings ${String(s.findings)} · Recommendations ${String(s.recommendations)}`;
 
-  const lines = [heading, '', indent(stats), '', indent(`Try: ${TRY_COMMANDS.join(' · ')}`)];
+  const tryCommands = selectRegisteredCommands(TRY_COMMANDS, registry);
+  const lines = [heading, '', indent(stats), '', indent(`Try: ${tryCommands.join(' · ')}`)];
 
   // Per-category posture — hidden when unreadable (fail-open upstream leaves
   // it undefined/empty) so the card degrades gracefully instead of showing an

@@ -25,6 +25,7 @@ import type {
 } from '@akasecurity/schema';
 
 import { frameCalibration, frameEmptyState } from '../calibration.ts';
+import { readRegisteredCommands } from '../command-registry.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
@@ -101,6 +102,14 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // A scan ran and surfaced nothing: render the honest scan-ran-clean empty
       // state over the recommended posture, plus its zero-count CalibrationFrame.
       const empty = frameEmptyState('scan-clean', severityFloorPosture());
+      deps.stdout(`${empty.copy}\n\n`);
+      deps.stdout(frameJsonBlock(empty.frame));
+      return 0;
+    }
+    if (status === 'complete:no-history') {
+      // A scan ran over an empty history set: render the honest no-history empty
+      // state over the start-light posture, plus its zero-count CalibrationFrame.
+      const empty = frameEmptyState('no-history', severityFloorPosture());
       deps.stdout(`${empty.copy}\n\n`);
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
@@ -337,8 +346,11 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
     }
     try {
       // The applying confirmation — the tuned-category and routine-dismissed
-      // counts threaded from the real writeback result, never a literal.
-      deps.stdout(`${renderApplied(res.categoriesWritten, res.written)}\n`);
+      // counts threaded from the real writeback result, never a literal; the
+      // Ready line's curated set validated against the installed command registry.
+      deps.stdout(
+        `${renderApplied(res.categoriesWritten, res.written, readRegisteredCommands())}\n`,
+      );
     } catch {
       // Reporting failed but the write did not — still a success.
     }

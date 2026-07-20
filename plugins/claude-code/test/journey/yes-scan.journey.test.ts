@@ -19,6 +19,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { CalibrationFrame, DetectionCategory, SetupHandoffOffer } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { readRegisteredCommands } from '../../src/command-registry.ts';
 import { renderCategoriesTuned, STORE_UNAVAILABLE_NOTE } from '../../src/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import {
@@ -150,14 +151,14 @@ describe('Yes-scan happy path, end-to-end', () => {
     expect(confirm).toMatch(/Ready:/);
   });
 
-  it('happy path: no store-unavailable fail-open note leaks into the fail-open frames', () => {
+  it('happy path: no store-unavailable fail-open note leaks into the healthy-store frames', () => {
     // The two frames that degrade to the fail-open note on an unreadable store —
-    // the calibration preview's downgrade read and the first-run card's stats read —
-    // read cleanly the whole way here, so the note must be absent: a regression that
-    // spuriously renders it on a healthy store fails here instead of passing the
-    // positive-only assertions. The confirm write is deliberately excluded — it fails
-    // SECURE to stderr on a store fault and has no fail-open note path, so asserting
-    // its absence there is vacuous.
+    // the calibration preview's downgrade read and the first-run card's stats read,
+    // the same pair the store-fault path exercises — read cleanly the whole way here, so
+    // the note must be absent: a regression that spuriously renders it on a healthy
+    // store fails here instead of passing the positive-only assertions. The confirm
+    // write is deliberately excluded — it fails SECURE to stderr on a store fault
+    // and has no fail-open note path, so asserting its absence there is vacuous.
     expect(preview).not.toContain(STORE_UNAVAILABLE_NOTE);
     expect(firstRun).not.toContain(STORE_UNAVAILABLE_NOTE);
   });
@@ -195,6 +196,29 @@ describe('Yes-scan happy path, end-to-end', () => {
     const offer = SetupHandoffOffer.parse(readFrameJsonBlock(firstRun));
     expect(offer.worthALook).toBe(1);
     expect(offer.options.map((o) => o.id)).toEqual(['open-dashboard', 'not-now']);
+  });
+
+  it('command lines: the applying Ready line and the first-run Try line name only registered commands', () => {
+    // The step-5 Ready line and the step-6 Try line are selected from the shipped
+    // command registry. Prove end-to-end over the real script output that every
+    // /aka: token they name is a member of the on-disk registry — a subset check,
+    // not a hardcoded snapshot. A hardcoded array or an unregistered name here
+    // (the regression the registry mechanism prevents) fails this assertion.
+    const registered = new Set(readRegisteredCommands());
+    for (const [label, blob] of [
+      ['Ready', confirm],
+      ['Try', firstRun],
+    ] as const) {
+      const line = blob.split('\n').find((l) => l.includes(`${label}:`));
+      expect(line, `${label} line present`).toBeDefined();
+      // Match only valid command-name chars so trailing punctuation is not folded
+      // into the token; compare the full invokable form the registry stores.
+      const named = line?.match(/\/aka:[a-z][a-z-]*/g) ?? [];
+      expect(named.length, `${label} line names commands`).toBeGreaterThan(0);
+      for (const cmd of named) {
+        expect(registered.has(cmd), `${cmd} is registered`).toBe(true);
+      }
+    }
   });
 });
 

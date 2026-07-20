@@ -32,11 +32,17 @@ import { fenced, indent } from './present.ts';
 
 // The trailing sentinel that terminates a --triage stream. Its presence (and
 // only its presence) tells the consumer the stream was not truncated:
-//   complete            — the scan ran to completion; count hits precede this.
+//   complete            — the scan ran to completion over history that was examined;
+//                         count hits precede this.
+//   complete:no-history — the scan ran to completion but the history set was empty
+//                         (no messages examined); still a completed, non-truncated
+//                         scan, distinguished so the empty-state copy can say why.
 //   skipped:no-consent  — consent wasn't 'full'; an empty-but-intentional scan.
 // A truncated stream has no sentinel, so it is never mistaken for a real
 // zero-finding scan (which ends in status:"complete","count":0).
-export type TriageStatus = 'complete' | 'skipped:no-consent';
+// The set MUST stay in lockstep with the writeback.ts TRIAGE_STATUSES set.
+export const TRIAGE_STATUSES = ['complete', 'complete:no-history', 'skipped:no-consent'] as const;
+export type TriageStatus = (typeof TRIAGE_STATUSES)[number];
 
 export function triageSentinel(count: number, status: TriageStatus): string {
   return JSON.stringify({ done: true, count, status }) + '\n';
@@ -64,11 +70,12 @@ export interface BackfillDeps {
   // Walk options threaded into the scan. The self-contamination guard: `beforeMs`
   // drops any transcript message written at/after the backfill started (so a re-run
   // never re-ingests the wizard's own in-progress session), and `excludeSessionId`
-  // skips AKA's OWN session transcript by id when the host exposes it. `dir`
-  // overrides the transcript root; it is supplied only by the journey harness/tests
-  // to scan a throwaway ~/.claude in isolation — no production call site passes it.
-  // Injected (not read from the environment here) so runBackfill stays pure +
-  // testable; the CLI wiring at the bottom of this file computes the real values.
+  // skips AKA's OWN session transcript by id when the host exposes it. `dir` can
+  // override the transcript root for isolated tests; no production or harness call
+  // site passes it — the harness sets HOME so the default transcriptsDir() already
+  // resolves under the throwaway home. Injected (not read from the environment here)
+  // so runBackfill stays pure + testable; the CLI wiring below computes beforeMs and
+  // the host session id.
   guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
 }
 
@@ -156,7 +163,14 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
     }
 
     if (triage) {
-      io.stdout(triageSentinel(count, 'complete'));
+      // A completed scan that touched zero messages is a no-history run (a fresh
+      // machine with nothing to calibrate from), distinct from a scan that examined
+      // history and surfaced/kept nothing. A message already recorded on a prior run
+      // counts under skipped (dedup), not scanned, so a fully-deduped rescan of real
+      // history is NOT no-history — both counters must be zero.
+      const status: TriageStatus =
+        summary.scanned === 0 && summary.skipped === 0 ? 'complete:no-history' : 'complete';
+      io.stdout(triageSentinel(count, status));
     } else {
       const heading = '✓ Historical scan complete';
       const scope = `Scanned ${String(summary.scanned)} messages from the last ${String(summary.windowDays)} days of Claude Code history.`;

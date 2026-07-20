@@ -986,6 +986,36 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
     expect(row('pii')).toEqual(['pii', 'warn', 'warn']);
   });
 
+  // The adjust fork writes posture just like the confirm spine, so it must flag an
+  // enforcement downgrade the same way — a pack hardened out of band can otherwise
+  // be lowered here with nothing shown to the user.
+  describe('downgrade guard against the stored posture', () => {
+    it('appends the WARNING footer when a pick ranks below the stored action', () => {
+      // The store holds 'secret' at block; the user picks redact.
+      const out = renderAdjustConfirm(recommended, chosen, { secret: 'block' });
+      expect(out).toContain('WARNING: 1 category (secret) would be LOWERED');
+    });
+
+    it('names every lowered pack and pluralizes the count', () => {
+      const out = renderAdjustConfirm(recommended, chosen, {
+        secret: 'block',
+        config: 'redact',
+      });
+      expect(out).toContain('WARNING: 2 categories (secret, config) would be LOWERED');
+    });
+
+    it('stays silent when every pick is the same or stronger than the stored action', () => {
+      // secret: stored warn -> picked redact (stronger). config: stored log
+      // ('monitor') -> picked warn (stronger).
+      const out = renderAdjustConfirm(recommended, chosen, { secret: 'warn', config: 'log' });
+      expect(out).not.toContain('WARNING');
+    });
+
+    it('has no baseline to compare against when current is omitted', () => {
+      expect(renderAdjustConfirm(recommended, chosen)).not.toContain('WARNING');
+    });
+  });
+
   it('carries the adjust copy and the shared re-tune hint', () => {
     const out = renderAdjustConfirm(recommended, chosen);
     expect(out).toContain("I'll keep the rest as recommended");
@@ -1012,40 +1042,6 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
 
         Re-tune anytime with /aka:setup or the dashboard"
     `);
-  });
-});
-
-describe('renderAdjustConfirm — downgrade guard against the existing store posture', () => {
-  const recommended = severityFloorPosture();
-  // The user leaves every pack at its recommended level — no explicit override
-  // for 'secret' at all, exercising the quiet-pack case: the pack surfaced no
-  // findings this run, so it never entered the recommended escalation, and the
-  // adjust table falls back to the plain floor default for it.
-  const chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>> = { ...recommended };
-
-  it('surfaces an explicit downgrade approval for a pack hardened out of band, even though the user never touched it', () => {
-    // The store holds 'secret' hardened to 'block' from an earlier, unrelated
-    // session — well above the 'warn' floor the adjust table would otherwise
-    // apply silently.
-    const existingStorePosture = { secret: { action: 'block' as const, enabled: true } };
-    const out = renderAdjustConfirm(recommended, chosen, existingStorePosture);
-    expect(out).toContain('secret');
-    expect(out).toContain('block');
-    expect(out).toContain('warn');
-    expect(out.toLowerCase()).toContain('downgrade');
-  });
-
-  it('does not warn when the chosen level matches or exceeds the existing store posture', () => {
-    const existingStorePosture = { secret: { action: 'warn' as const, enabled: true } };
-    const out = renderAdjustConfirm(recommended, chosen, existingStorePosture);
-    expect(out.toLowerCase()).not.toContain('downgrade');
-  });
-
-  it('omits the warning entirely when no existing store posture is supplied (unchanged behavior)', () => {
-    expect(renderAdjustConfirm(recommended, chosen)).toBe(
-      renderAdjustConfirm(recommended, chosen, {}),
-    );
-    expect(renderAdjustConfirm(recommended, chosen).toLowerCase()).not.toContain('downgrade');
   });
 });
 

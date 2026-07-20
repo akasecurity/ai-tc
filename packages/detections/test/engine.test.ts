@@ -7,11 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../src/engine.ts';
 import type { MatchResult } from '../src/types.ts';
-
-function loadRule(packDir: string, ruleFile: string): Rule {
-  const raw = JSON.parse(readFileSync(resolve(packDir, `${ruleFile}.json`), 'utf-8')) as unknown;
-  return RuleSchema.parse(raw);
-}
+import { bundledPackDirs, discoverBundledRuleFiles, loadRule, RULES_DIR } from './helpers/rules.ts';
 
 type Fixture = RuleFixture;
 
@@ -27,12 +23,7 @@ function loadFixtures(packDir: string, ruleFile: string): Fixture[] {
   return (raw as unknown[]).map((f) => RuleFixtureSchema.parse(f));
 }
 
-const RULES_DIR = resolve(__dirname, '../../../rules');
-
-// Auto-discover all packs, rules, and fixtures
-const packDirs = readdirSync(RULES_DIR, { withFileTypes: true })
-  .filter((d) => d.isDirectory())
-  .map((d) => d.name);
+const packDirs = bundledPackDirs();
 
 interface DiscoveredRule {
   packDir: string;
@@ -42,17 +33,13 @@ interface DiscoveredRule {
 }
 
 const discovered: DiscoveredRule[] = [];
-for (const packDir of packDirs) {
-  const manifestPath = resolve(RULES_DIR, packDir, 'manifest.json');
-  if (!existsSync(manifestPath)) continue;
-
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { rules: string[] };
-
-  for (const ruleFile of manifest.rules) {
-    const rule = loadRule(resolve(RULES_DIR, packDir), ruleFile);
-    const fixtures = loadFixtures(resolve(RULES_DIR, packDir), ruleFile);
-    discovered.push({ packDir, ruleFile, rule, fixtures });
-  }
+for (const { packDir, packDirAbs, ruleFile } of discoverBundledRuleFiles()) {
+  discovered.push({
+    packDir,
+    ruleFile,
+    rule: loadRule(packDirAbs, ruleFile),
+    fixtures: loadFixtures(packDirAbs, ruleFile),
+  });
 }
 
 // The full loaded ruleset across every pack. Rules that declare `requiresNearby`

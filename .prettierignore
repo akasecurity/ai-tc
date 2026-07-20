@@ -1,5 +1,8 @@
 node_modules
 dist
+cli/dist-sea
+cli/sea-dist
+cli/web-ui
 .turbo
 .next
 coverage

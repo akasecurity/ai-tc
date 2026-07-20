@@ -1,10 +1,12 @@
 name: Release plugin
 
-# Publishes the Claude Code plugin package to the public npm registry and
-# attaches the packed tarball to a GitHub Release. The plugin's hook scripts are
-# a build artifact (plugins/claude-code/scripts/, git-ignored) — they are
-# generated here and shipped inside the package, never committed. End users
-# install via the `ai-tc` marketplace, whose source resolves this package.
+# Publishes the Claude Code plugin package to the public npm registry AND to the
+# repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
+# Release. The plugin's hook scripts are a build artifact
+# (plugins/claude-code/scripts/, git-ignored) — they are generated here and shipped
+# inside the package, never committed. End users install via the `ai-tc` marketplace,
+# whose source resolves this package from public npm (GitHub Packages requires auth
+# even for public reads, so it is a secondary artifact, not the marketplace source).
 #
 # Release flow: bump version in package.json + .claude-plugin/plugin.json, then
 # push a tag `plugin-v<version>` (e.g. plugin-v0.1.0).
@@ -60,6 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub Release
+      id-token: write # OIDC trusted publishing to npm (provenance attestation)
     steps:
       - uses: actions/checkout@v7
 
@@ -105,11 +108,15 @@ jobs:
       - name: Pack tarball (release asset)
         run: pnpm --filter @akasecurity/ai-tc-claude-code pack --pack-destination "$RUNNER_TEMP"
 
+      # OIDC trusted publishing: the id-token: write permission above lets npm
+      # exchange this job's OIDC token for a short-lived publish credential — no
+      # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
+      # attestation binding the published package to this repository and workflow.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -118,3 +125,43 @@ jobs:
           files: ${{ runner.temp }}/*.tgz
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'plugin-v0.') }}
+
+  # Publish the same package to the repo's GitHub Packages registry (requirement:
+  # packages land in the org's GitHub registry). Kept a separate job so its GitHub
+  # Packages .npmrc/auth never collides with the public-npm publish above. The
+  # @akasecurity scope must match the akasecurity org that owns this repo.
+  github-packages:
+    name: Publish to GitHub Packages
+    needs: verify
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@akasecurity'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin (Turbo)
+        run: pnpm turbo run build --filter=@akasecurity/ai-tc-claude-code
+
+      # publishConfig.registry pins public npm, so override the target here. The
+      # built-in GITHUB_TOKEN can publish to this repo's Packages; setup-node wrote
+      # the matching auth token into .npmrc.
+      - name: Publish to GitHub Packages
+        run: pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

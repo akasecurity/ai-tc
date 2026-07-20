@@ -57,7 +57,9 @@ const ACTION_LABEL: Record<ActionTaken, BuiltinPolicyId | 'allow'> = {
   allow: 'allow',
 };
 
-function isDowngrade(planned: BuiltinPolicyId, current: ActionTaken | undefined): boolean {
+// Shared with the adjust fork's confirm card (render.ts), so both gates decide
+// "is this a downgrade?" from one comparison rather than two that can drift.
+export function isDowngrade(planned: BuiltinPolicyId, current: ActionTaken | undefined): boolean {
   if (current === undefined) return false;
   return ACTION_RANK[builtinPolicyToAction(planned)] < ACTION_RANK[current];
 }
@@ -96,11 +98,15 @@ export function renderPosturePlan(
   if (lines.length === 0) {
     return 'No per-category detection posture will be written.';
   }
-  const footer =
-    downgrades.length > 0
-      ? `\n\nWARNING: ${String(downgrades.length)} categor${downgrades.length === 1 ? 'y' : 'ies'} (${downgrades.join(', ')}) would be LOWERED from a stronger existing setting. Confirm you intend to weaken enforcement there before applying.`
-      : '';
-  return `Per-category detection posture to be applied:\n${lines.join('\n')}${footer}`;
+  return `Per-category detection posture to be applied:\n${lines.join('\n')}${downgradeWarning(downgrades)}`;
+}
+
+// The downgrade WARNING footer, single-sourced so every gate that can weaken
+// enforcement (the confirm preview and the adjust fork's confirm card) states it
+// identically. Empty string when nothing would be lowered.
+export function downgradeWarning(downgrades: readonly DetectionCategory[]): string {
+  if (downgrades.length === 0) return '';
+  return `\n\nWARNING: ${String(downgrades.length)} categor${downgrades.length === 1 ? 'y' : 'ies'} (${downgrades.join(', ')}) would be LOWERED from a stronger existing setting. Confirm you intend to weaken enforcement there before applying.`;
 }
 
 // The intelligence showcase. One compact block per

@@ -205,3 +205,25 @@ describe('setup.md frame-0.6 "Review leaked keys" branch', () => {
     expect(section).toContain("scripts/remediate.js\" --option <id> <<'AKA_FRAME'");
   });
 });
+
+// Task 9: the prompt states the relay contract once, up front, rather than
+// leaving a skimming model to infer AKA_SHOW handling per step. These guards
+// pin the contract's verbatim invariant strings and the step-7 double-ask trim.
+describe('setup.md execution contract', () => {
+  it('states the one-sentence relay rule for AKA_SHOW regions', () => {
+    expect(setupMd).toContain('relay every AKA_SHOW region verbatim');
+  });
+  it('forbids ad-libbed confirmations', () => {
+    expect(setupMd).toContain('write a confirmation or acknowledgement the wizard did not emit');
+  });
+  it('requires each step’s SHOW regions before advancing', () => {
+    expect(setupMd).toContain('must be relayed before you advance');
+  });
+  it('states one picker per decision', () => {
+    expect(setupMd).toContain('picker per decision');
+  });
+  it('step 7 has a single install gate (no second permission picker)', () => {
+    // The old double-ask phrasing must be gone.
+    expect(setupMd).not.toContain('Ask permission before running it, warmly');
+  });
+});

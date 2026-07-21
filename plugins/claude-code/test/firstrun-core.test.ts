@@ -17,6 +17,7 @@ import {
 } from '../src/firstrun-core.ts';
 import { readPostureBlock } from '../src/posture.ts';
 import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
+import { parseSurface } from '../src/setup-show.ts';
 
 // Composed at runtime so the repo's own secret scanning doesn't flag this file.
 const AWS_EXAMPLE_KEY = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
@@ -261,6 +262,17 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     expect(blob).not.toContain(AWS_EXAMPLE_KEY);
   });
 
+  it('install summary is a SHOW region; the handoff payload stays a frame', async () => {
+    const blob = await seedAndRun(['--surfaced', '2', '--live-keys', '1']);
+    const surface = parseSurface(blob);
+    // The install card (its "Health N/100" line) is relayed verbatim as a SHOW region.
+    expect(surface.shows.some((s) => s.includes('Health'))).toBe(true);
+    // The handoff payload stays a machine-only FRAME, never shown.
+    expect(surface.frames).toHaveLength(1);
+    // The card text never leaks into the untagged status remainder.
+    expect(surface.status).not.toContain('Health');
+  });
+
   it('card stats trace to the seeded store, never a fixed literal', async () => {
     const cfg = config(dir);
     // Two distinct sensitive findings through the real write path: a critical
@@ -350,5 +362,12 @@ describe('runFirstRunFailOpen — degrades to the store-unavailable note on a st
     expect(blob).toContain("I couldn't check my records just now");
     // No fabricated card: the install card's stats never rendered over a dead store.
     expect(blob).not.toContain('installed');
+
+    // The note is relayed as a SHOW region, not left in the untagged status remainder.
+    const surface = parseSurface(blob);
+    expect(surface.shows.some((s) => s.includes("I couldn't check my records just now"))).toBe(
+      true,
+    );
+    expect(surface.status).not.toContain("I couldn't check my records just now");
   });
 });

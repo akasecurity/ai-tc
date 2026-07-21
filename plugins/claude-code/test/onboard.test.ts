@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase, readWorkspaceSettings } from '@akasecurity/persistence';
@@ -13,6 +15,36 @@ import { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parsePosture } from '../src/onboard-posture.ts';
+import { parseSurface } from '../src/setup-show.ts';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+// test -> plugins/claude-code
+const SCRIPT = join(HERE, '..', 'scripts', 'onboard.js');
+
+interface Run {
+  stdout: string;
+  stderr: string;
+  status: number;
+}
+
+// Runs the BUILT script the wizard actually shells out to, against a fresh,
+// throwaway ~/.aka home per call so this suite's assertions stay independent
+// of the real machine's store (mirrors start-light.test.ts's runStartLight).
+function onboardRun(args: string[] = []): Run {
+  const home = mkdtempSync(join(tmpdir(), 'aka-onboard-run-test-'));
+  try {
+    const stdout = execFileSync(process.execPath, [SCRIPT, ...args], {
+      env: { HOME: home, USERPROFILE: home },
+      encoding: 'utf8',
+    });
+    return { stdout, stderr: '', status: 0 };
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; status?: number };
+    return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', status: e.status ?? 1 };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
 
 // The recommended-posture default map, frozen here so the test fails loudly if
 // severityFloorPosture() ever drifts from it (the "unchanged from before the
@@ -108,5 +140,21 @@ describe('onboard writes a valid store/settings state with the recommended postu
     // code_context keeps the default the store seeds on open ('log'); fill-gaps
     // never downgrades the already-calibrated 'secret' row.
     expect(db.policies.getCategoryAction('code_context')).toBe('log');
+  });
+});
+
+describe('onboard emits user-facing output inside SHOW regions', () => {
+  it('--historical full wraps the warm confirmation as a SHOW region', () => {
+    const run = onboardRun(['--historical', 'full']);
+    const surface = parseSurface(run.stdout);
+    expect(surface.shows.join('\n')).toContain("Got it — I'll look over Claude's recent work");
+    expect(surface.status).not.toContain("Got it — I'll look over");
+  });
+
+  it('--floor wraps the applied-posture confirmation as a SHOW region', () => {
+    const run = onboardRun(['--floor']);
+    const surface = parseSurface(run.stdout);
+    expect(surface.shows.join('\n')).toContain('safe defaults');
+    expect(surface.status).not.toContain('safe defaults');
   });
 });

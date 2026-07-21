@@ -15,6 +15,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
+import { parseSurface } from '../../src/setup-show.ts';
 import { runApply } from '../../src/triage/adapter.ts';
 import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
 
@@ -132,6 +133,47 @@ describe('runApply — preview persists a plan and writes nothing', () => {
   });
 });
 
+describe('runApply — preview consolidates the human gate into one SHOW region', () => {
+  it('emits exactly one SHOW gate, one FRAME, and keeps Plan-saved-to as untagged status', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge: () => verdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const surface = parseSurface(out.join(''));
+
+    // The whole human gate — posture plan, showcase, suppression gate, notes,
+    // AND the calibrated-result card — is ONE consolidated relay region.
+    expect(surface.shows).toHaveLength(1);
+    const [gate] = surface.shows;
+    if (gate === undefined) throw new Error('no SHOW region emitted');
+    expect(gate).toContain('canonical fake AWS example key'); // suppression-gate reasoning
+    expect(gate).toContain('routine'); // the showcase's genuine/routine split
+    expect(gate).toContain("I went through Claude's recent work"); // calibrated headline
+    expect(gate).toMatch(/secret\s+warn/); // renderRecommendedPosture row, inside the card
+
+    // The machine-readable calibration frame stays its own single FRAME region.
+    expect(surface.frames).toHaveLength(1);
+
+    // The plan-file path and re-run instructions stay untagged status — the model
+    // needs them, but they are not part of the relayed human copy.
+    expect(surface.status).toContain('Plan saved to:');
+    expect(surface.status).toContain('Re-run with:');
+
+    // None of the human gate's copy leaks into the untagged status remainder.
+    expect(surface.status).not.toContain('canonical fake AWS example key');
+    expect(surface.status).not.toContain("I went through Claude's recent work");
+  });
+});
+
 describe('runApply — preview renders the honest empty state on a clean scan', () => {
   it('prints the scan-ran-clean copy and a zero-count frame when the scan completes with no hits', async () => {
     const db = fakeDb();
@@ -157,6 +199,12 @@ describe('runApply — preview renders the honest empty state on a clean scan', 
     // Preview stays read-only: no posture upsert, no exception created.
     expect(db.posture).toEqual({});
     expect(db.created).toEqual([]);
+    // The empty-state copy is relayed as a SHOW region, and the frame stays the
+    // single FRAME region — the scan-ran-clean path follows the same three-region
+    // rule as the populated preview gate.
+    const surface = parseSurface(blob);
+    expect(surface.shows.some((s) => s.includes('nothing needs your attention'))).toBe(true);
+    expect(surface.frames).toHaveLength(1);
   });
 });
 

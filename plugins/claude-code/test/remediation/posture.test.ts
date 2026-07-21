@@ -38,8 +38,8 @@ function throwingPolicies(): CategoryPolicyWriter {
 }
 
 describe('presentStandingSecretPosture — standing-posture palette', () => {
-  it("presents the 'Set the secret posture' prompt", () => {
-    expect(presentStandingSecretPosture().prompt).toContain("Set the 'secret' posture");
+  it("presents the 'Set the secret detection level' prompt", () => {
+    expect(presentStandingSecretPosture().prompt).toContain("Set the 'secret' detection level");
   });
 
   it('offers EXACTLY Redact / Warn / Block / Monitor in that order', () => {

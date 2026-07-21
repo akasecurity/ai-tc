@@ -64,7 +64,9 @@ describe('store-read failure mid-wizard completes fail-open, end-to-end', () => 
     // The real calibrated headline still renders from the plan (two seeded keys:
     // one surfaced, one routine FP) — a store-read failure never zeroes or
     // fabricates the count.
-    expect(preview.stdout).toContain('Calibrated. 2 notifications, 1 important.');
+    expect(preview.stdout).toContain(
+      "I went through Claude's recent work — 2 detections, 1 result worth a look. (live keys)",
+    );
 
     // The step did not stop at the note — it continued past the failed store read
     // and rendered the COMPLETE frame downstream of it: the recommended posture
@@ -89,9 +91,9 @@ describe('store-read failure mid-wizard completes fail-open, end-to-end', () => 
     expect(firstRun.stdout).toContain(STORE_UNAVAILABLE_NOTE);
 
     // It never papered over the unreadable store with a fabricated install card:
-    // the installed-card heading and its calibrated stats are absent, so the note
+    // neither the scan-path nor the floor-path heading appears, so the note
     // stands in for the whole frame rather than a zeroed-out summary.
-    expect(firstRun.stdout).not.toContain('installed — calibrated to this machine');
+    expect(firstRun.stdout).not.toContain("You're all set");
   });
 
   it('the fail-open notes never leak a raw detected value', () => {

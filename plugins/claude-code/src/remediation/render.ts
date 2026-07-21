@@ -53,7 +53,7 @@ export function renderRemediationDecision(
     STATE_LABEL[f.state],
   ]);
   const findingTable = table(['Provider', 'Token', 'Where', 'State'], rows, { rowSep: true });
-  const chainingLine = `${String(moreCount)} more worth a look — run ${scanCommand}`;
+  const chainingLine = `${String(moreCount)} more worth a look — run ${scanCommand} when you're ready.`;
   return [findingTable, '', RECOMMENDATION_LINE, '', chainingLine].join('\n');
 }
 
@@ -99,7 +99,7 @@ export function renderRedactionOutcome(input: {
 }): string {
   const totalKeys = input.findings.length;
   const isComplete = input.redactedKeys === totalKeys && input.unredactedFindings.length === 0;
-  if (isComplete) return renderRedactionConfirmation(input.redactedKeys);
+  if (isComplete) return `${renderRedactionConfirmation(input.redactedKeys)}.`;
   return renderPartialRedactionLine(input.redactedKeys, totalKeys, input.unredactedFindings);
 }
 

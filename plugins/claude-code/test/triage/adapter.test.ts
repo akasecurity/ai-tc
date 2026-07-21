@@ -178,12 +178,39 @@ describe('runApply — preview renders the no-history empty state on an empty-hi
     expect(code).toBe(0);
     const blob = out.join('');
     // The honest no-history empty state, distinct from the scan-clean copy.
-    expect(blob).toContain('Nothing to calibrate from yet');
+    expect(blob).toContain('Nothing to learn from yet');
     expect(blob).not.toContain('nothing needs your attention');
     expect(blob).not.toContain('No triage hits to review');
     // A zero-count CalibrationFrame is still emitted for downstream consumers.
     const frame = CalibrationFrame.parse(readFrameJsonBlock(blob));
     expect(frame.counts).toEqual({ total: 0, important: 0, routine: 0 });
+    // Preview stays read-only: no posture upsert, no exception created.
+    expect(db.posture).toEqual({});
+    expect(db.created).toEqual([]);
+  });
+});
+
+describe('runApply — preview renders the skipped-scan copy when triage was skipped', () => {
+  it('prints the warm empty-review copy and drops the internal status token', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () =>
+        `${JSON.stringify({ done: true, count: 0, status: 'skipped:no-consent' })}\n`,
+      runJudge: () => verdict(),
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    const blob = out.join('');
+    expect(blob).toContain("I didn't find anything to review — nothing to tune.");
+    // The internal status token never reaches user-facing copy.
+    expect(blob).not.toContain('skipped:no-consent');
+    expect(blob).not.toContain('No triage hits to review');
     // Preview stays read-only: no posture upsert, no exception created.
     expect(db.posture).toEqual({});
     expect(db.created).toEqual([]);
@@ -286,16 +313,17 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
     // plan file deleted after a successful apply
     expect(existsSync(path)).toBe(false);
     // The confirm path emits the applying confirmation, threading the
-    // real writeback counts: all 8 packs tuned, one routine suppression dismissed.
+    // real writeback counts: all 8 detection categories set, one routine
+    // suppression set aside.
     const applied = out.join('');
-    expect(applied).toContain('✓ 8 categories tuned');
-    expect(applied).toContain('✓ 1 routine dismissed');
+    expect(applied).toContain('✓ Set all 8 detection categories');
+    expect(applied).toContain('set aside 1 routine result');
     expect(applied).toMatch(/Ready:/);
   });
 });
 
 describe('runApply — confirm persists the full recommended 8-pack posture', () => {
-  it('writes all 8 packs (severity floor overlaid with evidence) and reports "8 categories tuned"', async () => {
+  it('writes all 8 packs (severity floor overlaid with evidence) and reports "Set all 8 detection categories"', async () => {
     // Evidence action that DIFFERS from the severity floor (secret floors to warn;
     // the judge here says redact) so the overlay precedence is observable end-to-end.
     const v: TriageRecommendation = {
@@ -339,8 +367,8 @@ describe('runApply — confirm persists the full recommended 8-pack posture', ()
     expect(confirmDb.posture.secret).toBe('redact');
     expect(confirmDb.posture.code_context).toBe('log'); // monitor floor -> log action
     expect(confirmDb.posture.config).toBe('log');
-    // The applying-confirmation copy holds end-to-end: all 8 categories tuned, not the survivor subset.
-    expect(out.join('')).toContain('✓ 8 categories tuned');
+    // The applying-confirmation copy holds end-to-end: all 8 detection categories set, not the survivor subset.
+    expect(out.join('')).toContain('✓ Set all 8 detection categories');
   });
 });
 
@@ -580,10 +608,10 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       stderr: vi.fn(),
     });
     expect(code).toBe(0);
-    // The applying confirmation on the real confirm path: all 8 packs tuned, one
-    // routine suppression dismissed.
-    expect(out.join('')).toContain('✓ 8 categories tuned');
-    expect(out.join('')).toContain('✓ 1 routine dismissed');
+    // The applying confirmation on the real confirm path: all 8 detection
+    // categories set, one routine result set aside.
+    expect(out.join('')).toContain('✓ Set all 8 detection categories');
+    expect(out.join('')).toContain('set aside 1 routine result');
     // no drift → the write proceeded: one suppression row AND the full 8-pack
     // posture overwrite (the evidence category kept its judged action)
     expect(confirmDb.created).toHaveLength(1);
@@ -623,7 +651,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     expect(confirmDb.posture.secret).toBe('warn');
     // All 8 packs hold a posture and the tuned count stays honest.
     expect(Object.keys(confirmDb.posture)).toHaveLength(8);
-    expect(out.join('')).toContain('✓ 8 categories tuned');
+    expect(out.join('')).toContain('✓ Set all 8 detection categories');
   });
 
   it('treats a category ADDED to the store since preview as drift (undefined → value)', async () => {
@@ -780,7 +808,9 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
     // The calibrated-result card the wizard leads with: the real-count
     // headline over this run's genuine/suppressed split, then the condensed
     // one-row-per-pack recommended posture.
-    expect(blob).toContain('Calibrated. 3 notifications, 2 important.');
+    expect(blob).toContain(
+      "I went through Claude's recent work — 3 detections, 2 results worth a look.",
+    );
     expect(blob).toMatch(/secret\s+warn/);
 
     const frame = readFrameJsonBlock(blob);
@@ -1088,10 +1118,84 @@ describe('runApply — preview degrades fail-open when the local store is unread
 
     // The honest store-unavailable note stands in for the store-derived downgrade
     // comparison — the store-read-failure path, not the found-nothing/empty copy.
-    expect(blob).toContain("I couldn't read the local store");
+    expect(blob).toContain("I couldn't check my records just now");
 
     // The real calibration count (from the scan/plan, not the store) still renders —
     // a store-read failure never fabricates or zeroes the calibrated headline.
-    expect(blob).toContain('Calibrated. 1 notifications');
+    expect(blob).toContain("I went through Claude's recent work — 1 detection,");
+  });
+});
+
+describe('runApply — dedups repeated hits before the judge and before the writeback plan', () => {
+  it('feeds the judge and the plan/frame derivations the SAME deduped representative set', async () => {
+    const FP1 = 'ab'.repeat(32);
+    const FP2 = 'cd'.repeat(32);
+    const OTHER = ['sk', 'live', '51H8xEXAMPLErawstripesecretVALUE0000'].join('_');
+
+    // Three occurrences of the SAME value (fp1) plus one distinct value (fp2).
+    const dup = (id: string, tag: string): TriageHit =>
+      hit({ id, valueFingerprint: FP1, rawMatch: RAW, context: `export KEY=${RAW} ${tag}` });
+    const h0 = dup('0', 'first');
+    const h1 = dup('1', 'second');
+    const h2 = dup('2', 'third');
+    const h3 = hit({
+      id: '3',
+      ruleId: 'secrets/stripe-live-key',
+      valueFingerprint: FP2,
+      rawMatch: OTHER,
+      context: `token=${OTHER}`,
+    });
+    const stream =
+      [h0, h1, h2, h3].map((h) => JSON.stringify(h)).join('\n') +
+      '\n' +
+      JSON.stringify({ done: true, count: 4, status: 'complete' }) +
+      '\n';
+
+    // Echoes how many hits it saw, and dismisses only id '0' as a false positive —
+    // so if dedup did NOT happen, the duplicate occurrences h1/h2 (never listed in
+    // fpIds) would wrongly surface as extra "genuine" findings alongside h3.
+    const runJudge = vi.fn((hits: readonly TriageHit[]): TriageRecommendation => ({
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'one dismissed as a duplicate example value',
+          genuineCount: hits.length - 1,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: 'looks routine',
+    }));
+
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => stream,
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+
+    // The judge saw the deduped representative set (2), not all 4 raw occurrences.
+    expect(runJudge).toHaveBeenCalledTimes(1);
+    const [call] = runJudge.mock.calls;
+    if (call === undefined) throw new Error('runJudge was not called');
+    const [seenByJudge] = call;
+    expect(seenByJudge).toHaveLength(2);
+    expect(seenByJudge.map((h) => h.id)).toEqual(['0', '3']);
+
+    // The writeback plan / calibration derivations were fed the SAME representative
+    // set: only h3 is genuine (h0 was dismissed) — the duplicate occurrences h1/h2
+    // must not reappear as extra surfaced findings.
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    expect(parsed.data.maskedFindings).toHaveLength(1);
+    expect(parsed.data.maskedFindings?.[0]?.maskedToken).toBe(safeMaskedMatch(OTHER));
   });
 });

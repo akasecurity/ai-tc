@@ -34,7 +34,7 @@ const preview: CalibrationPreview = {
 };
 
 describe('frameCalibration', () => {
-  it('reports 161 notifications, 3 important, 158 routine from the preview', () => {
+  it('reports 161 detections, 3 important, 158 routine from the preview', () => {
     const { frame } = frameCalibration(preview);
     expect(frame.counts).toEqual({ total: 161, important: 3, routine: 158 });
   });
@@ -78,10 +78,21 @@ describe('frameCalibration', () => {
     expect(frame.findingKinds.every((k) => typeof k.egress === 'boolean')).toBe(true);
   });
 
-  it("templates the 'Calibrated.' copy exactly over the preview values", () => {
+  it('templates the headline copy exactly over the preview values', () => {
     const { copy } = frameCalibration(preview);
     expect(copy).toBe(
-      'Calibrated. 161 notifications, 3 important. 158 routine, 3 that matter (live keys)',
+      "I went through Claude's recent work — 161 detections, 3 results worth a look. (live keys)",
+    );
+  });
+
+  it('uses the singular "detection"/"result" (no trailing s) when the total and important count are each exactly one', () => {
+    const singleImportant: CalibrationPreview = {
+      categories: [{ category: 'secret', genuineCount: 1, fpCount: 0, egress: false }],
+      posture: preview.posture,
+    };
+    const { copy } = frameCalibration(singleImportant);
+    expect(copy).toBe(
+      "I went through Claude's recent work — 1 detection, 1 result worth a look. (live keys)",
     );
   });
 
@@ -96,7 +107,7 @@ describe('frameCalibration', () => {
     const { frame, copy } = frameCalibration(other);
     expect(frame.counts).toEqual({ total: 10, important: 2, routine: 8 });
     expect(copy).toBe(
-      'Calibrated. 10 notifications, 2 important. 8 routine, 2 that matter (live keys)',
+      "I went through Claude's recent work — 10 detections, 2 results worth a look. (live keys)",
     );
     expect(copy).not.toContain('161');
   });
@@ -112,13 +123,15 @@ describe('frameCalibration', () => {
     const { frame, copy } = frameCalibration(allSuppressed);
     expect(frame.surfacedCategories).toEqual([]);
     expect(frame.counts).toEqual({ total: 10, important: 0, routine: 10 });
-    expect(copy).toBe('Calibrated. 10 notifications, 0 important. 10 routine, 0 that matter');
+    expect(copy).toBe(
+      "I went through Claude's recent work — 10 detections, 0 results worth a look.",
+    );
     // No dangling empty parenthetical.
     expect(copy).not.toContain('()');
-    expect(copy).not.toContain('matter (');
+    expect(copy).not.toContain('look. (');
   });
 
-  it("derives the 'that matter (…)' kind from the surfaced categories, not a fixed label", () => {
+  it("derives the 'worth a look (…)' kind from the surfaced categories, not a fixed label", () => {
     const piiSurfaced: CalibrationPreview = {
       categories: [
         { category: 'pii', genuineCount: 4, fpCount: 0, egress: false },
@@ -128,7 +141,7 @@ describe('frameCalibration', () => {
     };
     const { copy } = frameCalibration(piiSurfaced);
     expect(copy).toBe(
-      'Calibrated. 24 notifications, 4 important. 20 routine, 4 that matter (personal data)',
+      "I went through Claude's recent work — 24 detections, 4 results worth a look. (personal data)",
     );
     expect(copy).not.toContain('live keys');
   });
@@ -253,9 +266,9 @@ describe('frameEmptyState', () => {
   // The exact per-cause headlines, spelled out here (not sourced from the module)
   // so the test pins the shipped copy rather than mirroring the implementation.
   const SCAN_CLEAN_HEADLINE =
-    "Calibrated. I looked at Claude's recent activity — nothing needs your attention. You're starting clean; here's the posture I'd recommend:";
+    "I looked over Claude's recent work — nothing needs your attention right now. You're starting clean; here's what I'd recommend:";
   const NO_HISTORY_HEADLINE =
-    "Nothing to calibrate from yet — Claude hasn't left activity on this machine. Each pack starts at a conservative default:";
+    "Nothing to learn from yet — Claude hasn't left any work on this machine. I'll start each detection category at a careful default:";
 
   it('scan-ran-clean renders the exact clean copy over the recommended posture', () => {
     const { copy } = frameEmptyState('scan-clean', posture);
@@ -272,15 +285,15 @@ describe('frameEmptyState', () => {
     const noHistory = frameEmptyState('no-history', posture).copy;
     expect(clean).not.toBe(noHistory);
     // scan-ran-clean states a scan looked and found nothing.
-    expect(clean).toContain("I looked at Claude's recent activity");
-    // no-history states there is nothing on this machine to calibrate from.
-    expect(noHistory).toContain("Claude hasn't left activity on this machine");
+    expect(clean).toContain("I looked over Claude's recent work");
+    // no-history states there is nothing on this machine to learn from.
+    expect(noHistory).toContain("Claude hasn't left any work on this machine");
   });
 
-  it('never renders a fabricated count — no "0 notifications" theater', () => {
+  it('never renders a fabricated count — no "0 detections" theater', () => {
     for (const cause of ['scan-clean', 'no-history'] as const) {
       const { copy } = frameEmptyState(cause, posture);
-      expect(copy).not.toMatch(/\d+\s+notifications/);
+      expect(copy).not.toMatch(/\d+\s+detections/);
     }
   });
 

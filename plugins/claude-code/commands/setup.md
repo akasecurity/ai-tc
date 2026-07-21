@@ -23,14 +23,13 @@ raw-free plan that subprocess prints back.
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
 
-## 0. Show the kickoff and 'what I do' cards
+## 0. Show the intro card
 
 Run the intro script and show the user its output **exactly as printed**. It
-prints two space-aligned monospace cards — the kickoff card (name, repository,
-version, what AKA adds) and the "what I do" card — each inside its own Markdown
-code fence. Reproduce both fences verbatim and do **not** add another code fence,
-strip a fence, or reformat them (unfenced, Markdown collapses the indentation and
-mangles the `●` lines).
+prints a single space-aligned monospace card — identity and provenance, then
+what AKA does — inside a Markdown code fence. Reproduce the fence verbatim and
+do **not** add another code fence, strip the fence, or reformat it (unfenced,
+Markdown collapses the indentation and mangles the `●` lines).
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/intro.js" "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
@@ -102,14 +101,14 @@ interactive picker. The plugin can't draw its own selectable UI (it can't
 capture keystrokes), so do **not** print a fake option list or ask the user to
 "reply with a number"; let the picker collect the answer.
 
-**Want me to look at what Claude's been up to?** — "A retroactive scan of recent activity — transcripts, temp files, agent memory — tunes the notifications we'll review next."
+**Want me to look over what Claude's been up to?** — "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next."
 
 Offer exactly two options:
 
-- **Yes, scan** — "calibrate my notifications to your real activity"
-- **Not now** — "start light and learn as we go"
+- **Yes, take a look** — "tune what I bring you, based on Claude's real work here"
+- **Not now** — "start light and I'll learn as we go"
 
-Choosing **Yes, scan** records the same historical-review consent the wizard has
+Choosing **Yes, take a look** records the same historical-review consent the wizard has
 always recorded — the identical scope, the one-time grant, and the
 revocable-under-Policies semantics — so the simpler question broadens nothing
 about what AKA may access. Those granular scope and revocation details stay
@@ -117,7 +116,7 @@ inspectable on request and in the dashboard.
 
 ## 2. Save the answer, then branch
 
-Branch on the answer from step 1. On the **Yes, scan** path the onboarding
+Branch on the answer from step 1. On the **Yes, take a look** path the onboarding
 writer runs, and it must run **before** the backfill (step 3), because the
 backfill script reads `historicalAccess` from the saved settings to decide
 whether it's allowed to run. Omitting `--policy` is deliberate — the old global
@@ -127,9 +126,9 @@ it.
 
 **Branch on the choice:**
 
-- **If the user chose "Yes, scan"** — record the historical-review consent and
+- **If the user chose "Yes, take a look"** — record the historical-review consent and
   continue to step 3 (which runs the scan and leads to the calibrated result in
-  step 4). "Yes, scan" maps to the existing full historical-review path — no
+  step 4). "Yes, take a look" maps to the existing full historical-review path — no
   access is granted beyond what that path already granted:
 
   ```bash
@@ -148,9 +147,10 @@ it.
   write. Do the following in order:
 
   1. **Show the start-light card.** Run the start-light script and reproduce its
-     fenced card **exactly as printed** — the `Start light — set your packs`
-     heading, the full 8-pack × 4-level default posture table, the per-pack rationale, and the
-     re-tune hint. It reads no history and writes nothing; it only prints the card
+     fenced card **exactly as printed** — the
+     `● Starting light — your detection categories` heading, the full 8-pack ×
+     4-level default posture table, the per-pack rationale, and the re-tune
+     hint. It reads no history and writes nothing; it only prints the card
      (the severity-floor default map — secret, pii, financial, phi, code_flaw, custom at
      `warn`; code_context, config at `monitor`).
 
@@ -164,12 +164,12 @@ it.
      fake option list or ask the user to "reply with a number"; let the picker
      collect the answer.
 
-     **Set your packs** — "Keep the recommended defaults, or adjust individual packs?"
+     **Set your detection categories** — "Keep the defaults I'd recommend, or adjust any of them?"
 
-     - **Keep defaults** _(recommended)_ — "the conservative default posture shown above"
-     - **Adjust packs** — "change one or more pack levels; keep the rest as recommended"
+     - **Keep defaults** _(recommended)_ — "the careful defaults shown above"
+     - **Adjust** — "change one or more levels, keep the rest as I recommend"
 
-     If they choose **Adjust packs**, use AskUserQuestion again to collect the new
+     If they choose **Adjust**, use AskUserQuestion again to collect the new
      level (monitor/warn/redact/block) for each pack they want to change, then
      merge those overrides over the severity-floor defaults to form the full 8-pack map.
 
@@ -185,17 +185,17 @@ it.
      node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --posture '<json>'
      ```
 
-     Either write prints only `✓ K categories tuned` (the `--floor` write appends
-     ` (severity floor)`) — which is the honest confirmation here, because nothing
-     was scanned or suppressed. Show that line to the user; do **not** invent a
-     dismissed count or any calibration counts.
+     Either write prints only `✓ Set all K detection categories` (the `--floor`
+     write appends ` — safe defaults`) — which is the honest confirmation here,
+     because nothing was scanned or suppressed. Show that line to the user; do
+     **not** invent a dismissed count or any calibration counts.
 
   4. **Rejoin the spine at the installed summary (step 6).** Continue to step 6
      to show the installed summary and hand off to the dashboard, using honest
      no-scan copy. No scan ran, so there is **no surfaced count** — call
      `firstrun.js` with **no `--surfaced` flag** (the same floor-fallback rule
-     step 6 already follows when no calibration frame was emitted). Steps 7–8
-     then run as written.
+     step 6 already follows when no calibration frame was emitted). Step 7
+     then runs as written.
 
 ## 3. Run the evidence triage — isolated judgment, nothing written yet
 
@@ -263,12 +263,13 @@ conservative severity floor (high-impact categories at `warn`, observe-only at
 `/aka:setup`.
 
 **Nothing to calibrate.** A scan that **completes but surfaces nothing** prints
-the honest **scan-ran-clean** card — `Calibrated. I looked at Claude's recent
-activity — nothing needs your attention…` over the recommended posture — with a
-zero-count calibration frame (its `counts.important` is `0`) and **no `Plan saved
-to:` path**. An empty or intentionally-skipped scan instead prints `No triage hits
-to review …`. In either case there's no evidence to calibrate from and no plan to
-confirm: show the card the adapter printed, take the floor branch
+the honest **scan-ran-clean** card — `I looked over Claude's recent work —
+nothing needs your attention right now. You're starting clean; here's what I'd
+recommend:` over the recommended posture — with a zero-count calibration frame
+(its `counts.important` is `0`) and **no `Plan saved to:` path**. An empty or
+intentionally-skipped scan instead prints `I didn't find anything to review —
+nothing to tune.`. In either case there's no evidence to calibrate from and no
+plan to confirm: show the card the adapter printed, take the floor branch
 (`onboard.js --floor`), tell the user the scan found nothing to calibrate from, and
 skip to step 6 (with **no `--surfaced`**, the floor-fallback rule there — nothing
 was surfaced to carry over). Do **not** continue to step 4.
@@ -280,10 +281,11 @@ Otherwise (the preview printed a `Plan saved to:` path) continue to step 4.
 The preview output is raw-free. Lead with the **calibrated-result card** it
 printed and show it in full:
 
-1. **The calibrated headline.** The `Calibrated. N notifications, M important…`
-   line — every count templated over the real scan (surfaced findings are the
-   `M important` that matter; the rest are routine noise a plain scanner would
-   have screamed about). Show it verbatim; never substitute a demo number.
+1. **The calibrated headline.** The `I went through Claude's recent work — N
+detections, M results worth a look.` line — every count templated over the
+   real scan (surfaced findings are the `M results` worth a look; the rest are
+   routine noise a plain scanner would have screamed about). Show it verbatim;
+   never substitute a demo number.
 2. **The recommended posture.** The condensed one-row-per-pack recommended view
    the card printed — the level AKA would set for each category. Show it in full.
    - **Surface the downgrades the preview flags — this is not optional.** For the
@@ -315,13 +317,13 @@ printed and show it in full:
    exception with a duration picker (the exception scope axis — `once` /
    `temporary` / `permanent`):
 
-   **Add an exception for `<pattern>` (×N)?** — "`<pattern>` looks like a test
-   fixture — add a pre-filled exception so it stops surfacing?"
+   **Make an exception for `<pattern>` (×N)?** — "This `<pattern>` looks like a
+   test fixture — want me to set an exception so it stops popping up?"
 
-   - **Once** — single use, expires automatically in 30 minutes if unused
-   - **Temporary** — expires after a set window, then re-evaluates normally
+   - **Once** — just this once — expires in 30 minutes
+   - **Temporary** — for a set window, then I'll check it again
    - **Permanent** — stays until you revoke it
-   - **Not now** — skip; nothing is written
+   - **Not now** — skip — I won't write anything
 
    **Temporary needs a concrete window.** `once` and `permanent` fully determine
    the scope on their own, but `temporary` does not — resolving it into the
@@ -350,13 +352,13 @@ printed and show it in full:
 Then use **AskUserQuestion** (the real picker, never a printed numbered list) to
 confirm:
 
-**Apply this calibration?** — "Apply this detection posture and suppress the
-false positives shown above?"
+**Want me to apply this?** — "I'll set these levels and suppress the false
+positives above."
 
 - **Yes, apply** _(recommended)_ — write the posture and suppressions exactly as
   previewed.
-- **Adjust a category** — "change one or more pack levels first; keep the rest as
-  recommended"
+- **Adjust a category** — "change one or more first; keep the rest as I
+  recommend"
 
 Do **not** proceed until the user picks one. On **Yes, apply**, continue to
 step 5 and apply the previewed plan verbatim — that is the confirm spine,
@@ -453,10 +455,11 @@ be LOWERED from a stronger existing setting` footer whenever a pick weakens
    overlay.
 
    On success, present the applying-frame confirmation the **spine** printed —
-   `✓ 8 categories tuned · ✓ N routine dismissed · Ready: …` — the store now holds
-   the adjusted posture. The overlay's own smaller `✓ N categories tuned` line
-   (the count of just the changed packs) is bookkeeping — **do not show it**; the
-   applying frame reports the full 8-pack posture. Then continue to step 6.
+   `✓ Set all 8 detection categories · set aside N routine results · Ready: …` —
+   the store now holds the adjusted posture. The overlay's own smaller
+   `✓ Set all N detection categories` line (the count of just the changed packs)
+   is bookkeeping — **do not show it**; the applying frame reports the full
+   8-pack posture. Then continue to step 6.
 
    **On "Back to recommended"** — take the **Yes, apply** path instead: continue
    to step 5 and apply the previewed plan verbatim with no override.
@@ -487,9 +490,9 @@ conservative floor cannot collide with a partially-written posture.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-suppressions.js" --confirmed --plan <path>
 ```
 
-The script prints the applying confirmation — `✓ K categories tuned ·
-✓ N routine dismissed · Ready: …` — with both counts threaded from the real write.
-Show that line to the user.
+The script prints the applying confirmation — `✓ Set all K detection categories
+· set aside N routine results · Ready: …` — with both counts threaded from the
+real write. Show that line to the user.
 
 If `--plan` is missing or the file is unreadable/invalid, the adapter **fails loud
 (non-zero) and writes nothing** — it never falls back to a re-judge. Treat that
@@ -539,14 +542,15 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/firstrun.js" --surfaced <count> --live-keys 
 `worthALook` count, issue an explicit **AskUserQuestion** (the real picker, never a
 printed list) using that count for `N`:
 
-**N worth a look — see them in the browser?**
+**N worth a look — want to see them in the browser?**
 
-- **Review leaked keys** — _(offer this option first only when the payload's
-  `options` include `enter-remediation`, i.e. `liveKeys > 0`)_ enter the
+- **Review leaked keys** — "let's deal with the exposed keys I found" —
+  _(offer this option first only when the payload's `options` include
+  `enter-remediation`, i.e. `liveKeys > 0`)_; entering it starts the
   secret-leak remediation chain on the surfaced live keys. This composes with —
   never replaces — the dashboard handoff below, so both stay reachable.
-- **Open dashboard** — open the local web dashboard on the surfaced findings.
-- **Not now** — stay here; they can open it anytime.
+- **Open dashboard** — "open the local dashboard on what I found"
+- **Not now** — "stay here — you can open it anytime"
 
 Use the payload's `worthALook` value for `N` verbatim — do not invent or round it.
 Offer **Review leaked keys** exactly when the payload's `options` carry the
@@ -569,7 +573,8 @@ delimited by `<<<AKA_FRAME_JSON` … `AKA_FRAME_JSON>>>` carrying the same decis
 structured (do **not** show that block to the user). The human text has three
 parts, all of which you **show to the user verbatim, in order**:
 
-1. the templated count line ("N exposed secret keys found in old transcripts"),
+1. the templated count line ("I found N exposed secret keys sitting in old
+   transcripts."),
 2. the fenced finding table (provider, masked token, where, state), and
 3. inside that same fence, a most-exposed-first recommendation line and a
    secret-scan chaining line.
@@ -599,7 +604,7 @@ the route, issue a second **AskUserQuestion** presenting the standing-posture
 prompt, offering exactly these four options, in order (each option's label maps
 to the `--posture` level in parentheses):
 
-**Set the 'secret' posture**
+**Set the 'secret' detection level**
 
 - **Redact** (`redact`)
 - **Warn** (`warn`)
@@ -646,12 +651,12 @@ a richer, still-fully-local surface over the same `~/.aka` store this plugin
 writes. The plugin works completely on its own; this is additive (and the path to
 future multi-agent support). Use **AskUserQuestion**:
 
-**Add the AKA CLI + dashboard?** — "Install the `aka` CLI for a local web +
-terminal dashboard and on-demand scans? Everything stays on your machine."
+**Want the AKA CLI + dashboard too?** — "The `aka` CLI adds a local user
+interface + terminal dashboard and on-demand scans."
 
-- **Yes, install it** _(recommended)_ — adds the `aka` binary: `aka stats`,
-  `aka tui` (terminal dashboard), `aka dashboard` (local web UI), `aka scan`.
-- **Not now** — skip; it can be added anytime with the one-liner below.
+- **Yes, add it** _(recommended)_ — "adds the `aka` command: stats, a terminal
+  dashboard, a local user interface, and on-demand scans"
+- **Not now** — "skip — you can add it anytime with the one-liner below"
 
 If they choose **Yes**, run the bootstrap installer (it ensures Node is available
 and installs the global CLI from the public npm registry). **Ask permission
@@ -683,8 +688,7 @@ what happened, show the one-liner so they can retry later, and continue the
 wizard normally. The plugin is already fully set up and works on its own; a
 failed CLI install changes nothing about that.
 
-## 8. Report the result
-
-- The first-run summary already confirms the saved posture and points at
-  `/health`. Add at most one short sentence: detection runs locally and nothing
-  leaves the machine.
+**Close the wizard.** The first-run summary already confirmed the saved posture
+and pointed at `/health`. Whichever way the CLI offer went — installed,
+declined, or a failed install you already reported — end with one warm close:
+"That's it — I'm watching out for Claude going forward."

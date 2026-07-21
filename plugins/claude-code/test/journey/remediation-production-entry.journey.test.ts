@@ -133,7 +133,7 @@ describe('frame 0.6 -> remediation decision -> option routing: production entry 
   it('the real-count leg: the remediation-decision presentation is the full four-option layout over the real finding, masked-only, no "case" vocabulary', () => {
     // The count is templated from the real surfaced finding (1), never hardcoded.
     expect(decision.secretCount).toBe(1);
-    expect(decision.prompt).toBe('1 exposed secret key found in old transcripts');
+    expect(decision.prompt).toBe('I found 1 exposed secret key sitting in old transcripts.');
     expect(decision.options.map((o) => o.id)).toEqual([
       'redact-rotation-checklist',
       'redact-only',
@@ -209,13 +209,13 @@ describe('frame 0.6 -> remediation decision -> option routing: production entry 
     const brokenFrame = 'this is not a calibration frame block';
 
     const presentOutBroken = journey.remediationPresent(brokenFrame).stdout;
-    expect(presentOutBroken).toContain('Could not read the calibration frame');
-    expect(presentOutBroken).not.toContain('No secret-leak findings to review');
+    expect(presentOutBroken).toContain("I couldn't pull up what I found just now");
+    expect(presentOutBroken).not.toContain("No exposed keys to deal with — you're clear");
 
     // A valid --posture, so the route clears posture validation (which precedes
     // the frame read) and the unreadable frame itself is what degrades honestly.
     const redactOutBroken = journey.remediationRoute(brokenFrame, 'redact-only', 'redact').stdout;
-    expect(redactOutBroken).toContain('Could not read the calibration frame');
+    expect(redactOutBroken).toContain("I couldn't pull up what I found just now");
     expect(redactOutBroken).not.toContain(renderRedactionConfirmation(0));
     expect(redactOutBroken.toLowerCase()).not.toContain('redacted');
   });
@@ -232,7 +232,7 @@ describe('frame 0.6 -> remediation decision -> option routing: production entry 
 describe("'Redact only' presents the standing-posture step, parameterized over all four choices, driven from the built remediate.js", () => {
   it('the standing-posture prompt offers exactly Redact / Warn / Block / Monitor, in that order', () => {
     const step = presentStandingSecretPosture();
-    expect(step.prompt).toContain("Set the 'secret' posture");
+    expect(step.prompt).toContain("Set the 'secret' detection level");
     expect(step.options.map((o) => o.level)).toEqual(['redact', 'warn', 'block', 'monitor']);
     expect(step.options.map((o) => o.label)).toEqual(['Redact', 'Warn', 'Block', 'Monitor']);
   });
@@ -270,7 +270,7 @@ describe("'Redact only' presents the standing-posture step, parameterized over a
         // redaction count stays at N=1 across every choice — the sweep is
         // over the four posture choices, not the finding count.
         expect(redactOut).toContain(renderRedactionConfirmation(1));
-        expect(redactOut).toContain(`✓ Set 'secret' posture to ${level}`);
+        expect(redactOut).toContain(`✓ From now on, I'll treat secrets like these as ${level}.`);
         const after = readFileSync(transcript, 'utf8');
         expect(after).not.toContain(SURFACED_KEY);
         expect(after).toContain('[REDACTED:SECRET]');

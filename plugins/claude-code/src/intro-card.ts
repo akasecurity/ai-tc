@@ -1,10 +1,10 @@
 // Pure manifest → setup-intro-card wiring for the `/aka:setup` wizard's first
-// screen. The display copy (name, tagline, one-liner) comes from the identity
-// constant; the factual fields (version, repository) come from the plugin
-// manifest so the card never drifts from the installed build. No I/O here — the
-// intro.ts adapter reads the manifest file and this turns it into the card, so
-// the wiring unit-tests without touching the filesystem.
-import { NAME, ONE_LINER, TAGLINE } from './identity.ts';
+// screen. The display name comes from the identity constant; the factual fields
+// (version, repository) come from the plugin manifest so the card never drifts
+// from the installed build. No I/O here — the intro.ts adapter reads the
+// manifest file and this turns it into the card, so the wiring unit-tests
+// without touching the filesystem.
+import { NAME } from './identity.ts';
 import type { NpmRunner } from './provenance.ts';
 import { verifyProvenance } from './provenance.ts';
 import { renderSetupIntro } from './render.ts';
@@ -34,8 +34,6 @@ function repoLabel(homepage: string | undefined): string {
 export function buildIntroCard(manifest: Manifest, verified?: boolean): string {
   return renderSetupIntro({
     name: NAME,
-    tagline: TAGLINE,
-    oneLiner: ONE_LINER,
     repository: repoLabel(manifest.homepage),
     version: manifest.version ?? '',
     verified: verified === true,

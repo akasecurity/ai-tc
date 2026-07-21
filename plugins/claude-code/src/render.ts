@@ -207,7 +207,7 @@ export function renderStartLight(
     '● Starting light — your detection categories',
     '',
     indent(
-      "I don't have any of Claude's past work to learn from yet, so I'll start each detection category at a careful default.",
+      "For now, each detection category starts at a careful default. Run /aka:setup whenever you like and I'll tune these from Claude's recent work.",
     ),
     '',
     renderPostureGrid(posture),
@@ -248,7 +248,7 @@ export function renderAdjustConfirm(
     return planned !== undefined && isDowngrade(planned, current[category]);
   });
   return [
-    '● Adjust — set the packs you want, keep the rest',
+    '● Adjust — set the detection categories you want, keep the rest',
     '',
     indent(table(['category', 'recommended', 'yours'], rows)),
     '',
@@ -450,7 +450,7 @@ export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]):
   // alone rather than claiming a review that did not happen.
   const warmSummary =
     s.calibration === 'scan'
-      ? `I've gone over ${String(s.findings)} detections from Claude's recent work — ${String(s.worthALook ?? 0)} worth your attention.`
+      ? `Your store holds ${String(s.findings)} detections — ${String(s.worthALook ?? 0)} worth your attention.`
       : undefined;
   const stats =
     s.findings === 0

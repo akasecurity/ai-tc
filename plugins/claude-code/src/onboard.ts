@@ -116,7 +116,7 @@ if (Object.keys(answers).length > 0) {
       // Best-effort: see comment above.
     }
   } catch (err) {
-    fail(err instanceof Error ? err.message : 'could not write settings.json');
+    fail(err instanceof Error ? err.message : 'could not save your settings');
   }
 }
 

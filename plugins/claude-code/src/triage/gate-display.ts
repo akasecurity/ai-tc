@@ -36,7 +36,7 @@ function findContext(entry: SuppressionEntry, join: readonly JoinEntry[]): strin
 // Enforcement strength, least -> most restrictive, over the stored ActionTaken
 // palette. `allow` (an active exception override) sits below `log`/monitor. A
 // DOWNGRADE is a planned action that ranks strictly below the category's stored
-// one — the case I-1 requires the human to see and confirm before it is written.
+// one — a downgrade the human must see and confirm before it is written.
 const ACTION_RANK: Record<ActionTaken, number> = {
   allow: 0,
   log: 1,
@@ -70,7 +70,7 @@ export function isDowngrade(planned: BuiltinPolicyId, current: ActionTaken | und
 // a stronger existing setting — an enforcement downgrade must never happen silently.
 // `current` is the store's existing action per category (undefined = no row yet).
 // This iterates the resolved plan's posture, so a category that had its suppression
-// skipped but still has a posture change (M-1) is surfaced here too.
+// skipped but still has a posture change is surfaced here too.
 export function renderPosturePlan(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   current: Partial<Record<DetectionCategory, ActionTaken>>,

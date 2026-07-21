@@ -577,19 +577,15 @@ describe('pure renderers', () => {
 
     it('scan path: a warm summary line rides above the stat row, over the real counts', () => {
       const out = populated({ findings: 142, worthALook: 2, calibration: 'scan' });
-      expect(out).toContain(
-        "I've gone over 142 detections from Claude's recent work — 2 worth your attention.",
-      );
+      expect(out).toContain('Your store holds 142 detections — 2 worth your attention.');
       // A different set of real values flows straight through.
       const other = populated({ findings: 9, worthALook: 4, calibration: 'scan' });
-      expect(other).toContain(
-        "I've gone over 9 detections from Claude's recent work — 4 worth your attention.",
-      );
+      expect(other).toContain('Your store holds 9 detections — 4 worth your attention.');
     });
 
     it('floor path: no warm summary line — the floor path never scanned anything', () => {
       const out = populated({ calibration: 'floor' });
-      expect(out).not.toContain("I've gone over");
+      expect(out).not.toContain('Your store holds');
       // The stat row still renders over the real store counts.
       expect(out).toContain('Health 72/100');
       expect(out).toContain('142 detections');
@@ -661,7 +657,7 @@ describe('pure renderers', () => {
       expect(out).not.toContain('worth a look');
       expect(out).not.toContain('0 detections');
       expect(out).not.toContain('0 recommendations');
-      expect(out).not.toContain("I've gone over");
+      expect(out).not.toContain('Your store holds');
       // Instead, an explicit honest empty-state line.
       expect(out).toContain("you're starting clean");
       // The card still reads as a tidy success state: scan-path heading + posture.
@@ -959,7 +955,7 @@ describe('renderStartLight — 0.3b start-light card', () => {
     expect(renderStartLight(posture)).toMatchInlineSnapshot(`
       "● Starting light — your detection categories
 
-        I don't have any of Claude's past work to learn from yet, so I'll start each detection category at a careful default.
+        For now, each detection category starts at a careful default. Run /aka:setup whenever you like and I'll tune these from Claude's recent work.
 
         CATEGORY       MONITOR   WARN   REDACT   BLOCK
         ────────────   ───────   ────   ──────   ─────
@@ -1077,7 +1073,7 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
 
   it('matches the whole-card snapshot so copy/layout regressions surface', () => {
     expect(renderAdjustConfirm(recommended, chosen)).toMatchInlineSnapshot(`
-      "● Adjust — set the packs you want, keep the rest
+      "● Adjust — set the detection categories you want, keep the rest
 
         CATEGORY       RECOMMENDED   YOURS  
         ────────────   ───────────   ───────

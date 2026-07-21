@@ -1,26 +1,42 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatCostTotal, formatTokenCount, formatUsd } from '../../src/token/format.ts';
+import {
+  compactNumber,
+  formatCostTotal,
+  formatTokenCount,
+  formatUsd,
+} from '../../src/token/format.ts';
 
-describe('formatTokenCount', () => {
+describe('compactNumber', () => {
   it('prints exact integers under 1000', () => {
-    expect(formatTokenCount(0)).toBe('0');
-    expect(formatTokenCount(500)).toBe('500');
-    expect(formatTokenCount(999)).toBe('999');
+    expect(compactNumber(0)).toBe('0');
+    expect(compactNumber(500)).toBe('500');
+    expect(compactNumber(999)).toBe('999');
   });
 
-  it('rolls up k → M → B at each 1000x boundary', () => {
-    expect(formatTokenCount(1_000)).toBe('1.0k');
-    expect(formatTokenCount(12_340)).toBe('12.3k');
-    expect(formatTokenCount(1_000_000)).toBe('1.0M'); // 1000k rolls to 1M
-    expect(formatTokenCount(4_500_000)).toBe('4.5M');
-    expect(formatTokenCount(1_000_000_000)).toBe('1.0B'); // 1000M rolls to 1B
-    // The real-store total that used to render as "4464193.1k".
-    expect(formatTokenCount(4_464_193_100)).toBe('4.5B');
+  it('rolls up K → M → B → T at each 1000x boundary, dropping a trailing .0', () => {
+    expect(compactNumber(1_000)).toBe('1K');
+    expect(compactNumber(1_127)).toBe('1.1K');
+    expect(compactNumber(12_340)).toBe('12.3K');
+    expect(compactNumber(318_000)).toBe('318K');
+    expect(compactNumber(1_000_000)).toBe('1M'); // 1000K rolls to 1M
+    expect(compactNumber(4_500_000)).toBe('4.5M');
+    expect(compactNumber(1_000_000_000)).toBe('1B'); // 1000M rolls to 1B
+    expect(compactNumber(4_464_193_100)).toBe('4.5B');
+    expect(compactNumber(1_500_000_000_000)).toBe('1.5T');
   });
 
   it('is negative-safe', () => {
-    expect(formatTokenCount(-2_500_000)).toBe('-2.5M');
+    expect(compactNumber(-2_500_000)).toBe('-2.5M');
+  });
+});
+
+describe('formatTokenCount', () => {
+  it('is the shared compactNumber applied to a token count', () => {
+    expect(formatTokenCount(999)).toBe('999');
+    expect(formatTokenCount(12_340)).toBe('12.3K');
+    expect(formatTokenCount(4_500_000)).toBe('4.5M');
+    expect(formatTokenCount(4_464_193_100)).toBe('4.5B');
   });
 });
 

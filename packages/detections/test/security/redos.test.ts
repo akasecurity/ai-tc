@@ -192,10 +192,15 @@ function benignBaselineMs(rule: Rule, length: number): number {
 // loudly if a probe stops being adversarial.
 const CATASTROPHIC_RATIO = 50;
 
+// Below any genuine scan cost, so it only replaces an unmeasurably fast baseline
+// that rounded to zero and never distorts a real measurement — it exists purely
+// to keep the ratio's denominator above zero.
+const MIN_BASELINE_MS = 1e-6;
+
 // The worst probe's slowdown over a same-length benign baseline for `rule`.
 function backtrackRatio(rule: Rule): { ratio: number; ms: number; benignMs: number } {
   const { ms, probe } = worstProbeMs(rule);
-  const benignMs = benignBaselineMs(rule, probe.length);
+  const benignMs = Math.max(benignBaselineMs(rule, probe.length), MIN_BASELINE_MS);
   return { ratio: ms / benignMs, ms, benignMs };
 }
 

@@ -47,6 +47,8 @@ export function StatTile({
   delta,
   spark,
   sparkColor,
+  sparkLabels,
+  sparkFormatValue,
   loading = false,
 }: {
   icon: IconComponent;
@@ -57,6 +59,10 @@ export function StatTile({
   delta?: StatDelta;
   spark?: number[];
   sparkColor?: string;
+  /** Per-point hover labels for the sparkline tooltip (see Sparkline). */
+  sparkLabels?: string[];
+  /** Sparkline tooltip value formatter. */
+  sparkFormatValue?: (v: number) => string;
   loading?: boolean;
 }) {
   return (
@@ -82,7 +88,13 @@ export function StatTile({
       )}
       {spark && !loading && (
         <div className="mt-0.5">
-          <Sparkline data={spark} color={sparkColor ?? COLORS.primary} height={34} />
+          <Sparkline
+            data={spark}
+            color={sparkColor ?? COLORS.primary}
+            height={34}
+            {...(sparkLabels ? { labels: sparkLabels } : {})}
+            {...(sparkFormatValue ? { formatValue: sparkFormatValue } : {})}
+          />
         </div>
       )}
     </Card>

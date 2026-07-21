@@ -4,7 +4,7 @@
 // svgr/asset imports). Data-fetching stays in the apps — these take data via props.
 export { COLORS } from './lib/colors.ts';
 export type { IconComponent } from './lib/icons.ts';
-export { relativeTime } from './lib/relativeTime.ts';
+export { relativeTime, relativeTimeShort } from './lib/relativeTime.ts';
 export {
   BLOCKED_WINDOW_MS,
   BLOCKED_WINDOW_PHRASE,
@@ -32,6 +32,7 @@ export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { type StatDelta, StatTile } from './shared/StatTile.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
+export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 
 // Shared detail-pane primitives (section headings, label/value rows) reused by
 // every detail view and by app-injected footers.

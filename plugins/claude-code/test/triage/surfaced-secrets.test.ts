@@ -6,6 +6,7 @@ import {
 } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { groundVerdict } from '../../src/triage/merge.ts';
 import { deriveProvider, deriveSurfacedSecretFindings } from '../../src/triage/surfaced-secrets.ts';
 import { planTriageWriteback } from '../../src/triage/writeback.ts';
 
@@ -280,5 +281,146 @@ describe('deriveSurfacedSecretFindings — genuine, non-suppressed secret leaks'
     // The poisoned category left no posture, so no reviewed finding may surface.
     expect(plan.posture.secret).toBeUndefined();
     expect(deriveSurfacedSecretFindings([surfaced], rec, plan)).toEqual([]);
+  });
+});
+
+// The derivation is LOCATION-scoped: each finding carries one filePath, and that
+// path is the only thing that puts a file in the redaction pass's scope and the
+// only unit the complete-vs-partial redaction gate counts. The judge, by
+// contrast, is VALUE-scoped — it sees one representative per distinct value.
+// These tests pin both halves of that split.
+describe('deriveSurfacedSecretFindings — one value found in several artifacts', () => {
+  // Same value, same rule, three different transcripts: one collapsed finding
+  // would put ONE file in redaction scope, leave the key live in the other two,
+  // and still satisfy the complete-redaction gate (`redactedKeys === findings.length`).
+  const occurrences = ['s1', 's2', 's3'].map((tag, i) =>
+    hit({ id: String(i), filePath: `/h/.claude/projects/p/${tag}.jsonl` }),
+  );
+  // The one the judge would have seen, standing in for the whole value class.
+  const [representative] = occurrences;
+  if (representative === undefined) throw new Error('unreachable: fixed-length array');
+
+  const genuineRec: TriageRecommendation = {
+    perCategory: [
+      {
+        category: 'secret',
+        action: 'redact',
+        reasoning: 'a live-looking provider key in old transcripts',
+        genuineCount: 1,
+        fpCount: 0,
+        fpIds: [],
+      },
+    ],
+    notes: '',
+  };
+
+  it('surfaces every occurrence so each artifact holding the key enters redaction scope', () => {
+    const plan = planTriageWriteback(occurrences, genuineRec);
+    const out = deriveSurfacedSecretFindings(occurrences, genuineRec, plan);
+
+    expect(out).toHaveLength(3);
+    expect(out.map((f) => f.where.filePath)).toEqual([
+      '/h/.claude/projects/p/s1.jsonl',
+      '/h/.claude/projects/p/s2.jsonl',
+      '/h/.claude/projects/p/s3.jsonl',
+    ]);
+    // One value, so one masked token across all three — the rows differ only by
+    // location, which is exactly what the remediation table's WHERE column shows.
+    expect(new Set(out.map((f) => f.maskedToken)).size).toBe(1);
+    for (const f of out) expect(MaskedSecretFinding.safeParse(f).success).toBe(true);
+  });
+
+  it('expands the judge’s per-representative dismissal over every occurrence of that value', () => {
+    // The judge saw only the representative (id '0') and dismissed it. The other
+    // two occurrences were never named in fpIds — but they are the same value, so
+    // the verdict binds them too and none of the three may surface as a live leak.
+    const dismissedRec: TriageRecommendation = {
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'canonical documentation example value',
+          genuineCount: 0,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: '',
+    };
+    const plan = planTriageWriteback([representative], dismissedRec);
+    expect(deriveSurfacedSecretFindings(occurrences, dismissedRec, plan)).toEqual([]);
+  });
+
+  it('never lets a dismissal cross to a different rule sharing the fingerprint', () => {
+    // Suppressions key on ruleId+fingerprint+keyVersion, so the value class does
+    // too: a same-value hit under a DIFFERENT rule is a different class and must
+    // still surface after the first rule's hit is dismissed.
+    const otherRule = hit({
+      id: '9',
+      ruleId: 'secrets/generic-high-entropy',
+      filePath: '/h/.claude/projects/p/s9.jsonl',
+    });
+    const dismissedRec: TriageRecommendation = {
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'example value under the aws rule',
+          genuineCount: 0,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: '',
+    };
+    const hits = [representative, otherRule];
+    const plan = planTriageWriteback(hits, dismissedRec);
+    const out = deriveSurfacedSecretFindings(hits, dismissedRec, plan);
+    expect(out.map((f) => f.where.filePath)).toEqual(['/h/.claude/projects/p/s9.jsonl']);
+  });
+});
+
+// The dedupe means the judge is shown the representative set while this
+// derivation holds the full hit list, so the two sets differ and an fpId naming
+// a hit outside the judged set must never take effect. Ungrounded, a single
+// stray id expands across the whole value class and buries a key the judge
+// explicitly called genuine — the amplification the class expansion creates and
+// `groundVerdict` (merge.ts, applied on every judging path) prevents.
+describe('deriveSurfacedSecretFindings — an fpId the judge never saw', () => {
+  it('does not let a stray id bury the value class once the verdict is grounded', () => {
+    const occurrences = ['s1', 's2', 's3'].map((tag, i) =>
+      hit({ id: String(i), filePath: `/h/.claude/projects/p/${tag}.jsonl` }),
+    );
+    const [representative] = occurrences;
+    if (representative === undefined) throw new Error('unreachable: fixed-length array');
+
+    // The judge saw only the representative and called the value GENUINE, but
+    // emitted id '2' — an occurrence collapsed before judging, never shown to it.
+    const strayRec: TriageRecommendation = {
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'redact',
+          reasoning: 'a live-looking provider key',
+          genuineCount: 1,
+          fpCount: 1,
+          fpIds: ['2'],
+        },
+      ],
+      notes: '',
+    };
+    const judged = new Set(['0']);
+    const grounded = groundVerdict(strayRec, judged);
+    expect(grounded.perCategory[0]?.fpIds).toEqual([]);
+    expect(grounded.notes).toContain('dropped 1 false-positive id(s)');
+
+    const plan = planTriageWriteback([representative], grounded);
+    const out = deriveSurfacedSecretFindings(occurrences, grounded, plan);
+    // All three artifacts still surface — the genuine key is not buried.
+    expect(out.map((f) => f.where.filePath)).toEqual([
+      '/h/.claude/projects/p/s1.jsonl',
+      '/h/.claude/projects/p/s2.jsonl',
+      '/h/.claude/projects/p/s3.jsonl',
+    ]);
   });
 });

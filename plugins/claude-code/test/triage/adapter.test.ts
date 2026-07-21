@@ -191,7 +191,7 @@ describe('runApply — preview renders the no-history empty state on an empty-hi
 });
 
 describe('runApply — preview renders the skipped-scan copy when triage was skipped', () => {
-  it('prints the warm empty-review copy and drops the internal status token', async () => {
+  it('says nothing was reviewed — not that nothing was found — and drops the status token', async () => {
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
@@ -207,7 +207,12 @@ describe('runApply — preview renders the skipped-scan copy when triage was ski
     });
     expect(code).toBe(0);
     const blob = out.join('');
-    expect(blob).toContain("I didn't find anything to review — nothing to tune.");
+    // Nothing was examined here — historical access was never granted. The copy
+    // must not borrow the looked-and-found-nothing wording the scan-ran-clean
+    // branch uses, which would report a clean bill of health for a scan that
+    // never ran.
+    expect(blob).toContain("I didn't review anything — historical access wasn't granted.");
+    expect(blob).not.toContain("didn't find anything");
     // The internal status token never reaches user-facing copy.
     expect(blob).not.toContain('skipped:no-consent');
     expect(blob).not.toContain('No triage hits to review');
@@ -1197,5 +1202,293 @@ describe('runApply — dedups repeated hits before the judge and before the writ
     if (!parsed.success) throw new Error('emitted frame did not validate');
     expect(parsed.data.maskedFindings).toHaveLength(1);
     expect(parsed.data.maskedFindings?.[0]?.maskedToken).toBe(safeMaskedMatch(OTHER));
+  });
+});
+
+describe('runApply — location-scoped findings survive the value-scoped dedup', () => {
+  // The judge is value-scoped (one representative per distinct value); the
+  // surfaced findings are location-scoped (one per artifact holding the key,
+  // because each names the file the redaction pass will open and each is a unit
+  // the complete-vs-partial redaction gate counts). Collapsing the second onto
+  // the first strikes one transcript and still reports the run resolved.
+  it('emits one finding per artifact for a single value found in three transcripts', async () => {
+    const FP1 = 'ef'.repeat(32);
+    const dup = (id: string, tag: string): TriageHit =>
+      hit({
+        id,
+        valueFingerprint: FP1,
+        rawMatch: RAW,
+        context: `export KEY=${RAW} ${tag}`,
+        filePath: `/h/.claude/projects/p/${tag}.jsonl`,
+      });
+    const hits = [dup('0', 's1'), dup('1', 's2'), dup('2', 's3')];
+    const stream =
+      hits.map((h) => JSON.stringify(h)).join('\n') +
+      '\n' +
+      JSON.stringify({ done: true, count: 3, status: 'complete' }) +
+      '\n';
+
+    // Genuine — nothing dismissed, so every occurrence must surface.
+    const runJudge = vi.fn((seen: readonly TriageHit[]): TriageRecommendation => ({
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'redact',
+          reasoning: 'a live-looking key left in old transcripts',
+          genuineCount: seen.length,
+          fpCount: 0,
+          fpIds: [],
+        },
+      ],
+      notes: '',
+    }));
+
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => stream,
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+
+    // The judge still reasons over ONE representative — the dedup is intact.
+    const [call] = runJudge.mock.calls;
+    if (call === undefined) throw new Error('runJudge was not called');
+    expect(call[0]).toHaveLength(1);
+
+    // ...but all three artifacts reach the frame, so redaction opens all three
+    // and a one-file strike is reported as partial rather than resolved.
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    expect(parsed.data.maskedFindings?.map((f) => f.where.filePath)).toEqual([
+      '/h/.claude/projects/p/s1.jsonl',
+      '/h/.claude/projects/p/s2.jsonl',
+      '/h/.claude/projects/p/s3.jsonl',
+    ]);
+    // One value, so one masked token — the rows differ only by location.
+    expect(new Set(parsed.data.maskedFindings?.map((f) => f.maskedToken)).size).toBe(1);
+  });
+});
+
+describe('runApply — the batch-and-merge path the large-history fallback takes', () => {
+  // Nothing else in the suite drives chunks.length > 1 through runPreview, so
+  // without this the whole batch/merge fallback ships unexercised end to end.
+  it('judges in batches and refuses an fpId naming a hit its batch never saw', async () => {
+    // 12 distinct values, each ~1KB of context, split by a small byte budget.
+    const pad = 'x'.repeat(1024);
+    const hits = Array.from({ length: 12 }, (_, i) =>
+      hit({
+        id: String(i),
+        valueFingerprint: String(i).padStart(2, '0').repeat(32),
+        rawMatch: `${RAW}${String(i)}`,
+        context: `export KEY=${RAW}${String(i)} ${pad}`,
+        filePath: `/h/.claude/projects/p/s${String(i)}.jsonl`,
+      }),
+    );
+    const stream =
+      hits.map((h) => JSON.stringify(h)).join('\n') +
+      '\n' +
+      JSON.stringify({ done: true, count: 12, status: 'complete' }) +
+      '\n';
+
+    // Every batch dismisses id '0' — grounded for the batch that actually holds
+    // it, an ungrounded cross-batch reference for every other batch.
+    const runJudge = vi.fn((seen: readonly TriageHit[]): TriageRecommendation => ({
+      perCategory: [
+        {
+          category: 'secret',
+          action: 'warn',
+          reasoning: 'batch verdict',
+          genuineCount: seen.length - 1,
+          fpCount: 1,
+          fpIds: ['0'],
+        },
+      ],
+      notes: '',
+    }));
+
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => stream,
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+      maxJudgeBytes: 3_000,
+    });
+    expect(code).toBe(0);
+    // It really did batch.
+    expect(runJudge.mock.calls.length).toBeGreaterThan(1);
+
+    const blob = out.join('');
+    // The out-of-batch references were dropped and disclosed, not silently kept.
+    expect(blob).toContain('naming hits outside the batch they were judged in');
+
+    // Exactly one suppression is offered — id '0', from the batch that held it.
+    // Without the chunk-membership filter every batch's stray '0' would resolve
+    // against the full join and the other 11 genuine keys would be dismissed
+    // from the remediation table by a judge that never read them.
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(out.join('')));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    expect(parsed.data.maskedFindings).toHaveLength(11);
+    expect(parsed.data.maskedFindings?.map((f) => f.where.filePath)).not.toContain(
+      '/h/.claude/projects/p/s0.jsonl',
+    );
+  });
+});
+
+describe('runApply — an fpId the judge was never shown, on the single-batch path', () => {
+  // Dedupe alone makes the judged set a strict subset of the hits the frame
+  // derivations hold, so grounding is needed even when there is only one batch.
+  // Ungrounded, one stray id expands across the whole value class and buries a
+  // key the judge called genuine — with no batching involved.
+  it('drops the stray id instead of letting it bury the whole value class', async () => {
+    const FP1 = 'ba'.repeat(32);
+    const dup = (id: string, tag: string): TriageHit =>
+      hit({
+        id,
+        valueFingerprint: FP1,
+        rawMatch: RAW,
+        context: `export KEY=${RAW} ${tag}`,
+        filePath: `/h/.claude/projects/p/${tag}.jsonl`,
+      });
+    const hits = [dup('0', 's1'), dup('1', 's2'), dup('2', 's3')];
+    const stream =
+      hits.map((h) => JSON.stringify(h)).join('\n') +
+      '\n' +
+      JSON.stringify({ done: true, count: 3, status: 'complete' }) +
+      '\n';
+
+    // The judge sees only the representative (id '0') and calls the value
+    // GENUINE — but names id '2', an occurrence collapsed before judging.
+    const runJudge = vi.fn((seen: readonly TriageHit[]): TriageRecommendation => {
+      expect(seen.map((h) => h.id)).toEqual(['0']);
+      return {
+        perCategory: [
+          {
+            category: 'secret',
+            action: 'redact',
+            reasoning: 'a live-looking key left in old transcripts',
+            genuineCount: 1,
+            fpCount: 1,
+            fpIds: ['2'],
+          },
+        ],
+        notes: '',
+      };
+    });
+
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => stream,
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+
+    const blob = out.join('');
+    expect(blob).toContain('naming hits outside the batch they were judged in');
+
+    // The genuine key still reaches the finding table for all three artifacts.
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(blob));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    expect(parsed.data.maskedFindings?.map((f) => f.where.filePath)).toEqual([
+      '/h/.claude/projects/p/s1.jsonl',
+      '/h/.claude/projects/p/s2.jsonl',
+      '/h/.claude/projects/p/s3.jsonl',
+    ]);
+    // Nothing was suppressed on the strength of an id the judge never saw.
+    expect(db.created).toEqual([]);
+  });
+});
+
+describe('runApply — --max-judge-bytes makes the batch path exercisable', () => {
+  const bigHits = (n: number): TriageHit[] => {
+    const pad = 'x'.repeat(512);
+    return Array.from({ length: n }, (_, i) =>
+      hit({
+        id: String(i),
+        valueFingerprint: String(i).padStart(2, '0').repeat(32),
+        rawMatch: `${RAW}${String(i)}`,
+        context: `export KEY=${RAW}${String(i)} ${pad}`,
+        filePath: `/h/.claude/projects/p/s${String(i)}.jsonl`,
+      }),
+    );
+  };
+  const streamOf = (hits: readonly TriageHit[]): string =>
+    hits.map((h) => JSON.stringify(h)).join('\n') +
+    '\n' +
+    JSON.stringify({ done: true, count: hits.length, status: 'complete' }) +
+    '\n';
+
+  const cleanVerdict = (seen: readonly TriageHit[]): TriageRecommendation => ({
+    perCategory: [
+      {
+        category: 'secret',
+        action: 'warn',
+        reasoning: 'batch verdict',
+        genuineCount: seen.length,
+        fpCount: 0,
+        fpIds: [],
+      },
+    ],
+    notes: '',
+  });
+
+  const drive = async (argv: string[]) => {
+    const hits = bigHits(6);
+    const runJudge = vi.fn(cleanVerdict);
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv,
+      readStream: () => streamOf(hits),
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    return { code, out: out.join(''), batches: runJudge.mock.calls.length };
+  };
+
+  it('splits into batches and announces it before the judging runs', async () => {
+    const { code, out, batches } = await drive(['--max-judge-bytes', '1200']);
+    expect(code).toBe(0);
+    expect(batches).toBeGreaterThan(1);
+    expect(out).toContain(`in ${String(batches)} batches`);
+    // Announced ahead of the results, so it reads as progress rather than a summary.
+    expect(out.indexOf('batches')).toBeLessThan(out.indexOf('detection level'));
+  });
+
+  it('stays on the single-batch path with no flag, and says nothing about batches', async () => {
+    const { code, out, batches } = await drive([]);
+    expect(code).toBe(0);
+    expect(batches).toBe(1);
+    expect(out).not.toContain('batches');
+  });
+
+  it('ignores a junk value rather than silently disabling batching', async () => {
+    for (const bad of ['0', '-5', 'lots', '']) {
+      const { batches } = await drive(['--max-judge-bytes', bad]);
+      expect(batches).toBe(1);
+    }
   });
 });

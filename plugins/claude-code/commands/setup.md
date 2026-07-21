@@ -23,13 +23,36 @@ raw-free plan that subprocess prints back.
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
 
+## Execution contract (read before step 0)
+
+Every script prints output in three region kinds. Your job for each is fixed:
+
+- **`<<<AKA_SHOW … AKA_SHOW>>>`** — relay every AKA_SHOW region verbatim as your
+  next message: paste the content _between_ the markers exactly — a card region
+  carries its own code fence, a plain confirmation line does not, but either way
+  you paste exactly what's between the markers — never the marker lines, never a
+  paraphrase or summary.
+- **`<<<AKA_FRAME_JSON … AKA_FRAME_JSON>>>`** — machine-only. Parse it if a step
+  tells you to read a value from it; never display it.
+- **Anything else on stdout** — status for you (paths like `Plan saved to:`,
+  errors, exit signals). Act on it; never relay it.
+
+Invariants:
+
+- **Never write a confirmation or acknowledgement the wizard did not emit** — the
+  script's AKA_SHOW line is the confirmation.
+- **Each step's AKA_SHOW regions must be relayed before you advance.**
+- **One picker per decision; never re-ask a decision already collected.**
+
 ## 0. Show the intro card
 
-Run the intro script and show the user its output **exactly as printed**. It
+Run the intro script and relay its AKA_SHOW region per the execution contract:
+paste the content between the markers verbatim, never the marker lines. It
 prints a single space-aligned monospace card — identity and provenance, then
-what AKA does — inside a Markdown code fence. Reproduce the fence verbatim and
-do **not** add another code fence, strip the fence, or reformat it (unfenced,
-Markdown collapses the indentation and mangles the `●` lines).
+what AKA does — inside a Markdown code fence that is part of that pasted
+content. Keep the fence as printed and do **not** add another code fence, strip
+the fence, or reformat it (unfenced, Markdown collapses the indentation and
+mangles the `●` lines).
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/intro.js" "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
@@ -68,8 +91,8 @@ same "recommended base + changed-packs overlay" shape step 4b's adjust fork
 uses: the tightened categories raise, every other category keeps its existing
 recommended level, each carrying its rationale line. Where you compose the view
 yourself (the adjust fork, the calibrated result) this tightened recommendation
-IS that view; where the view is printed verbatim by a script (the step-2
-start-light card, reproduced exactly as printed), show the tightened
+IS that view; where the view is a script's AKA_SHOW card (the step-2
+start-light card, relayed per the execution contract), show the tightened
 recommendation and its rationale lines adjacent to that card rather than
 rewriting the card's own printed levels.
 
@@ -146,11 +169,12 @@ it.
   scan to triage, no calibrated result to confirm, and no suppression plan to
   write. Do the following in order:
 
-  1. **Show the start-light card.** Run the start-light script and reproduce its
-     fenced card **exactly as printed** — the
+  1. **Show the start-light card.** Run the start-light script and relay its
+     AKA_SHOW card per the execution contract — the
      `● Starting light — your detection categories` heading, the full 8-pack ×
      4-level default posture table, the per-pack rationale, and the re-tune
-     hint. It reads no history and writes nothing; it only prints the card
+     hint, pasted between the markers exactly as printed, fence included. It
+     reads no history and writes nothing; it only prints the card
      (the severity-floor default map — secret, pii, financial, phi, code_flaw, custom at
      `warn`; code_context, config at `monitor`).
 
@@ -380,10 +404,10 @@ recommended.
 2. **Show the adjust-confirm table.** Compose the merged 8-pack map — the
    recommended base with the user's picks overlaid — and render the adjust-confirm
    card by passing the calibrated recommended posture as `--recommended` and that
-   merged map as `--posture`. Reproduce its
-   fenced `category │ recommended │ yours` table **exactly as printed** (it is
-   space-aligned monospace; do **not** add another code fence, strip the fence, or
-   reformat it):
+   merged map as `--posture`. Relay its AKA_SHOW region per the execution
+   contract — the fenced `category │ recommended │ yours` table, pasted between
+   the markers exactly as printed (it is space-aligned monospace; do **not** add
+   another code fence, strip the fence, or reformat it):
 
    ```bash
    node "${CLAUDE_PLUGIN_ROOT}/scripts/start-light.js" --adjust-confirm --recommended '<recommended-json>' --posture '<merged-json>' --current '<current-json>'
@@ -505,12 +529,13 @@ so setup still finishes.
 
 ## 6. Show the installed summary and hand off to the dashboard
 
-Run the first-run script and show its **install-complete summary** exactly as
-printed (live findings/recommendation counts, the health score, and the
-per-category posture just written or floored). The script prints that summary
-inside a Markdown code fence; reproduce the fenced card verbatim and do **not**
-add another code fence, strip the fence, or reformat it (it is space-aligned
-monospace that Markdown would otherwise collapse).
+Run the first-run script and relay its **install-complete summary** AKA_SHOW
+region per the execution contract (live findings/recommendation counts, the
+health score, and the per-category posture just written or floored). The
+script wraps that summary in a Markdown code fence; paste it between the
+markers exactly as printed and do **not** add another code fence, strip the
+fence, or reformat it (it is space-aligned monospace that Markdown would
+otherwise collapse).
 
 Pass the **surfaced count** captured from step 3's calibration frame
 (`counts.important`) as `--surfaced <count>` — this is the 'N worth a look' figure
@@ -579,7 +604,8 @@ parts, all of which you **show to the user verbatim, in order**:
 3. inside that same fence, a most-exposed-first recommendation line and a
    secret-scan chaining line.
 
-Reproduce the count line and the whole fenced block exactly as printed — do not
+This entire human-text block is the entry's AKA_SHOW region — relay it per the
+execution contract, pasting it between the markers exactly as printed — do not
 drop the recommendation or chaining lines, and do not paraphrase.
 
 Alongside that fenced block, explain the findings in plain language grounded
@@ -658,12 +684,9 @@ interface + terminal dashboard and on-demand scans."
   dashboard, a local user interface, and on-demand scans"
 - **Not now** — "skip — you can add it anytime with the one-liner below"
 
-If they choose **Yes**, run the bootstrap installer (it ensures Node is available
-and installs the global CLI from the public npm registry). **Ask permission
-before running it, warmly** — e.g. "Would you like me to install the CLI? I'll
-install it via the npm package manager." — don't recite the shell mechanics or
-frame it as a scary "fetches and runs a script from GitHub" warning. Then run
-the line for their OS:
+**Yes, add it** is the install authorization — run the bootstrap installer
+directly, with no second picker (it ensures Node is available and installs the
+global CLI from the public npm registry). Run the line for their OS:
 
 ```bash
 # macOS / Linux
@@ -695,3 +718,6 @@ failed CLI install changes nothing about that.
 and pointed at `/health`. Whichever way the CLI offer went — installed,
 declined, or a failed install you already reported — end with one warm close:
 "That's it — I'm watching out for Claude going forward."
+
+Before you finish, confirm every AKA_SHOW region on the path you took was
+relayed to the user. If you summarized one instead of pasting it, paste it now.

@@ -1,3 +1,5 @@
+import { showBlock } from './setup-show.ts';
+
 // Tiny zero-dependency terminal layout kit for the read surfaces. The
 // hook/command scripts ship self-contained (no node_modules on the user's
 // machine), so we can't pull in picocolors/cli-table — plain text and a few
@@ -202,4 +204,11 @@ export function fenced(body: string): string {
   const longestRun = Math.max(0, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = '`'.repeat(Math.max(3, longestRun + 1));
   return [fence, body, fence].join('\n');
+}
+
+// Wrap user-facing output in a SHOW relay region. The wizard's global contract
+// pastes everything between the markers verbatim; the markers are delimiters,
+// never shown. A card is show(fenced(card)); a plain confirmation is show(line).
+export function show(body: string): string {
+  return showBlock(body);
 }

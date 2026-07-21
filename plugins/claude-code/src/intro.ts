@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 
 import { buildIntroCard, type Manifest } from './intro-card.ts';
-import { fenced } from './present.ts';
+import { fenced, show } from './present.ts';
 
 const manifestPath = process.argv[2];
 
@@ -32,7 +32,7 @@ try {
 // (space-aligned monospace collapses without the fence). Renders the version
 // and repository line without a verified badge — it performs no provenance
 // check or npm subprocess.
-process.stdout.write(`${fenced(buildIntroCard(manifest))}\n`);
+process.stdout.write(show(fenced(buildIntroCard(manifest))));
 
 // Match the other adapter scripts (query.js, onboard.js) which hard-exit on
 // completion so no stray handle can keep the process alive.

@@ -26,6 +26,7 @@ import type {
 
 import { frameCalibration, frameEmptyState } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
+import { fenced, show } from '../present.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
 import { dedupeForJudge } from './dedupe.ts';
@@ -127,7 +128,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // A scan ran and surfaced nothing: render the honest scan-ran-clean empty
       // state over the recommended posture, plus its zero-count CalibrationFrame.
       const empty = frameEmptyState('scan-clean', severityFloorPosture());
-      deps.stdout(`${empty.copy}\n\n`);
+      deps.stdout(show(fenced(empty.copy)));
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
     }
@@ -135,7 +136,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // A scan ran over an empty history set: render the honest no-history empty
       // state over the start-light posture, plus its zero-count CalibrationFrame.
       const empty = frameEmptyState('no-history', severityFloorPosture());
-      deps.stdout(`${empty.copy}\n\n`);
+      deps.stdout(show(fenced(empty.copy)));
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
     }
@@ -143,7 +144,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // refused to read history because access was never granted. Nothing was
     // examined, so this must not borrow the looked-and-found-nothing copy above:
     // that would report a clean bill of health for a scan that never ran.
-    deps.stdout("I didn't review anything — historical access wasn't granted.\n");
+    deps.stdout(show("I didn't review anything — historical access wasn't granted."));
     return 0;
   }
 
@@ -170,7 +171,9 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // on screen. It also makes the fallback observable — otherwise the only
       // difference between one batch and ten is how long the wizard hangs.
       deps.stdout(
-        `Reviewing ${String(reps.length)} distinct values in ${String(chunks.length)} batches — this is the large-history path, so give it a moment.\n\n`,
+        show(
+          `Reviewing ${String(reps.length)} distinct values in ${String(chunks.length)} batches — this is the large-history path, so give it a moment.`,
+        ),
       );
     }
     let rec: TriageRecommendation;
@@ -217,22 +220,23 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       storeUnavailable = true;
     }
 
+    // Collect every human-copy piece of the gate — the human gate is ONE
+    // consolidated SHOW region below, not a sequence of separate emits.
+    const gate: string[] = [];
     if (storeUnavailable) {
-      deps.stdout(`${STORE_UNAVAILABLE_NOTE}\n\n`);
+      gate.push(STORE_UNAVAILABLE_NOTE);
     }
     // With no readable store the downgrade comparison has no baseline, so pass an
     // empty current — every category renders as new rather than a partial/false view.
-    deps.stdout(renderPosturePlan(plan.posture, storeUnavailable ? {} : current) + '\n\n');
-    deps.stdout(renderShowcase(plan.showcase) + '\n\n');
-    deps.stdout(renderSuppressionGate(plan.entries, plan.join) + '\n');
+    gate.push(renderPosturePlan(plan.posture, storeUnavailable ? {} : current));
+    gate.push(renderShowcase(plan.showcase));
+    gate.push(renderSuppressionGate(plan.entries, plan.join));
     if (plan.skipped.length > 0) {
-      deps.stdout(
-        `\nSkipped (fail-secure): ${plan.skipped
-          .map((s) => `${s.category} — ${s.reason}`)
-          .join('; ')}\n`,
+      gate.push(
+        `Skipped (fail-secure): ${plan.skipped.map((s) => `${s.category} — ${s.reason}`).join('; ')}`,
       );
     }
-    deps.stdout(`\nNotes: ${plan.notes}\n`);
+    gate.push(`Notes: ${plan.notes}`);
 
     // Emit the structured calibration frame ALONGSIDE the human gate
     // above — additive, not a replacement. Counts and category lists come from
@@ -280,7 +284,14 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // preview's genuine/suppressed split, then the condensed one-row-per-pack
     // recommended posture. Both are raw-free (counts, category enums, and palette
     // levels only) and template over this run's numbers, never a fixed value.
-    deps.stdout(`${calibration.copy}\n\n${renderRecommendedPosture(preview.posture)}\n\n`);
+    gate.push(calibration.copy);
+    gate.push(renderRecommendedPosture(preview.posture));
+
+    // The whole human gate — the posture plan, showcase, suppression gate, notes,
+    // and the calibrated-result card — is ONE relay region: the model pastes it
+    // verbatim, so it must read as a single coherent screen, not several stray
+    // fragments the model has to stitch back together.
+    deps.stdout(show(fenced(gate.join('\n\n'))));
 
     // The machine-readable calibration frame carrying the same counts/posture the
     // card above renders, for downstream consumers (the installed-summary handoff).
@@ -432,7 +443,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // counts threaded from the real writeback result, never a literal; the
       // Ready line's curated set validated against the installed command registry.
       deps.stdout(
-        `${renderApplied(res.categoriesWritten, res.written, readRegisteredCommands())}\n`,
+        show(renderApplied(res.categoriesWritten, res.written, readRegisteredCommands())),
       );
     } catch {
       // Reporting failed but the write did not — still a success.

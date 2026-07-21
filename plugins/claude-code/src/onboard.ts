@@ -32,6 +32,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
+import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
@@ -94,7 +95,7 @@ if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) 
 if (Object.keys(answers).length > 0) {
   try {
     const settings = applyOnboarding(answers);
-    process.stdout.write("Got it — I'll look over Claude's recent work to tune things.\n");
+    process.stdout.write(show("Got it — I'll look over Claude's recent work to tune things."));
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.
@@ -105,8 +106,10 @@ if (Object.keys(answers).length > 0) {
         const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
         if (capped > 0) {
           process.stdout.write(
-            `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
-              `"warn" to match the new defaults — you can raise any of them again in this setup.\n`,
+            show(
+              `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
+                `"warn" to match the new defaults — you can raise any of them again in this setup.`,
+            ),
           );
         }
       } finally {
@@ -141,7 +144,7 @@ if (rawPosture !== undefined || useFloor) {
       // severity-floor fallback), never a literal.
       const categoryCount = Object.keys(posture).length;
       process.stdout.write(
-        renderCategoriesTuned(categoryCount) + (useFloor ? ' — safe defaults' : '') + '\n',
+        show(renderCategoriesTuned(categoryCount) + (useFloor ? ' — safe defaults' : '')),
       );
     } finally {
       db.close();

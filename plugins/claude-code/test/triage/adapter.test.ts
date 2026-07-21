@@ -1417,3 +1417,78 @@ describe('runApply — an fpId the judge was never shown, on the single-batch pa
     expect(db.created).toEqual([]);
   });
 });
+
+describe('runApply — --max-judge-bytes makes the batch path exercisable', () => {
+  const bigHits = (n: number): TriageHit[] => {
+    const pad = 'x'.repeat(512);
+    return Array.from({ length: n }, (_, i) =>
+      hit({
+        id: String(i),
+        valueFingerprint: String(i).padStart(2, '0').repeat(32),
+        rawMatch: `${RAW}${String(i)}`,
+        context: `export KEY=${RAW}${String(i)} ${pad}`,
+        filePath: `/h/.claude/projects/p/s${String(i)}.jsonl`,
+      }),
+    );
+  };
+  const streamOf = (hits: readonly TriageHit[]): string =>
+    hits.map((h) => JSON.stringify(h)).join('\n') +
+    '\n' +
+    JSON.stringify({ done: true, count: hits.length, status: 'complete' }) +
+    '\n';
+
+  const cleanVerdict = (seen: readonly TriageHit[]): TriageRecommendation => ({
+    perCategory: [
+      {
+        category: 'secret',
+        action: 'warn',
+        reasoning: 'batch verdict',
+        genuineCount: seen.length,
+        fpCount: 0,
+        fpIds: [],
+      },
+    ],
+    notes: '',
+  });
+
+  const drive = async (argv: string[]) => {
+    const hits = bigHits(6);
+    const runJudge = vi.fn(cleanVerdict);
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv,
+      readStream: () => streamOf(hits),
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    return { code, out: out.join(''), batches: runJudge.mock.calls.length };
+  };
+
+  it('splits into batches and announces it before the judging runs', async () => {
+    const { code, out, batches } = await drive(['--max-judge-bytes', '1200']);
+    expect(code).toBe(0);
+    expect(batches).toBeGreaterThan(1);
+    expect(out).toContain(`in ${String(batches)} batches`);
+    // Announced ahead of the results, so it reads as progress rather than a summary.
+    expect(out.indexOf('batches')).toBeLessThan(out.indexOf('detection level'));
+  });
+
+  it('stays on the single-batch path with no flag, and says nothing about batches', async () => {
+    const { code, out, batches } = await drive([]);
+    expect(code).toBe(0);
+    expect(batches).toBe(1);
+    expect(out).not.toContain('batches');
+  });
+
+  it('ignores a junk value rather than silently disabling batching', async () => {
+    for (const bad of ['0', '-5', 'lots', '']) {
+      const { batches } = await drive(['--max-judge-bytes', bad]);
+      expect(batches).toBe(1);
+    }
+  });
+});

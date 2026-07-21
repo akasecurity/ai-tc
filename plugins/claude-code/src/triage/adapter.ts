@@ -80,7 +80,9 @@ export interface AdapterDeps {
   planIO?: PlanFileIO;
   // Byte budget per judging batch. Defaults to chunkForJudge's own; injectable
   // so a test can drive the multi-batch path without a quarter-megabyte of
-  // fixture, which is otherwise the only way to reach it.
+  // fixture, which is otherwise the only way to reach it. `--max-judge-bytes`
+  // (below) exposes the same override on the command line, so the batch path
+  // can be exercised on a real machine without a giant history.
   maxJudgeBytes?: number;
 }
 
@@ -89,6 +91,21 @@ function getFlag(argv: readonly string[], name: string): string | undefined {
   if (i === -1) return undefined;
   const next = argv[i + 1];
   return next !== undefined && !next.startsWith('--') ? next : '';
+}
+
+// The per-batch byte budget, from `--max-judge-bytes N` or the injected dep.
+// Reaching the batch path otherwise takes a quarter-megabyte of real history,
+// so this is how the fallback gets exercised deliberately — set it low (a few
+// thousand) against a small history and every hit becomes its own batch.
+// Ignores a missing/zero/non-numeric value and falls back to the default,
+// rather than letting a typo silently disable batching.
+function resolveMaxJudgeBytes(deps: AdapterDeps): number | undefined {
+  const flag = getFlag(deps.argv, 'max-judge-bytes');
+  if (flag !== undefined && flag !== '') {
+    const parsed = Number(flag);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return deps.maxJudgeBytes;
 }
 
 // Returns a process exit code (0 ok, 1 failure). Never calls process.exit itself.
@@ -146,7 +163,16 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // representative's verdict covers every occurrence, so the judge (and every
     // downstream derivation below) reasons over distinct values, not raw counts.
     const reps = dedupeForJudge(hits);
-    const chunks = chunkForJudge(reps, deps.maxJudgeBytes);
+    const chunks = chunkForJudge(reps, resolveMaxJudgeBytes(deps));
+    if (chunks.length > 1) {
+      // Say so BEFORE the judging runs: each batch is its own `claude -p`
+      // subprocess, so a large history sits here for a while with nothing else
+      // on screen. It also makes the fallback observable — otherwise the only
+      // difference between one batch and ten is how long the wizard hangs.
+      deps.stdout(
+        `Reviewing ${String(reps.length)} distinct values in ${String(chunks.length)} batches — this is the large-history path, so give it a moment.\n\n`,
+      );
+    }
     let rec: TriageRecommendation;
     if (chunks.length === 1) {
       const [soleChunk] = chunks;

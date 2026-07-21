@@ -31,7 +31,7 @@ import { frameJsonBlock } from '../setup-frame-json.ts';
 import { dedupeForJudge } from './dedupe.ts';
 import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
-import { chunkForJudge, chunkIds, mergeRecommendations } from './merge.ts';
+import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from './merge.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
@@ -153,7 +153,11 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // chunkForJudge always returns at least one chunk for a non-empty input
       // (reps is non-empty: runPreview already returned on hits.length === 0).
       if (soleChunk === undefined) throw new Error('chunkForJudge returned no chunks');
-      rec = deps.runJudge(soleChunk);
+      // Grounded even though there is only one batch: the judge saw the
+      // representative set, not the full hit list, so an fpId naming a
+      // collapsed duplicate is still an id it never read — and a value-scoped
+      // consumer would expand that one id across the whole value class.
+      rec = groundVerdict(deps.runJudge(soleChunk), chunkIds(soleChunk));
     } else {
       // Each chunk's verdict is paired with the ids that chunk actually
       // contained: the merge drops any fpId naming a hit its judge never saw,

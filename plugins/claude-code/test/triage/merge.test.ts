@@ -5,6 +5,7 @@ import {
   chunkForJudge,
   chunkIds,
   type ChunkVerdict,
+  groundVerdict,
   mergeRecommendations,
 } from '../../src/triage/merge.ts';
 
@@ -159,5 +160,27 @@ describe('chunkIds', () => {
       '7',
       '9',
     ]);
+  });
+});
+
+describe('groundVerdict', () => {
+  // Runs on every judging path, not only the chunked one: dedupe alone makes the
+  // judged set a strict subset of the hits downstream consumers hold.
+  it('drops ids outside the judged set, discloses the drop, and keeps the claimed fpCount', () => {
+    const g = groundVerdict(
+      { perCategory: [cat({ fpCount: 2, fpIds: ['0', '9'] })], notes: 'n' },
+      new Set(['0']),
+    );
+    expect(g.perCategory[0]?.fpIds).toEqual(['0']);
+    // The claimed count is untouched so resolve.ts still raises the discrepancy.
+    expect(g.perCategory[0]?.fpCount).toBe(2);
+    expect(g.notes).toBe(
+      'n\nsecret: dropped 1 false-positive id(s) naming hits outside the batch they were judged in',
+    );
+  });
+
+  it('is a no-op when every id was judged', () => {
+    const rec = { perCategory: [cat({ fpCount: 1, fpIds: ['0'] })], notes: '' };
+    expect(groundVerdict(rec, new Set(['0', '1']))).toEqual(rec);
   });
 });

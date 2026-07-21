@@ -81,34 +81,54 @@ function joinReasonings(reasonings: readonly { rank: number; text: string }[]): 
   return [...new Set(ordered.map((r) => r.text.trim()).filter((t) => t !== ''))].join(' ');
 }
 
+// Drop every fpId that names a hit the judge behind this verdict did not see,
+// and disclose each drop in `notes` — silence would look identical to a clean
+// verdict at the human gate.
+//
+// This runs on EVERY judging path, not only the chunked one. Dedupe alone is
+// enough to need it: the judge is shown the representative set while downstream
+// consumers hold the full hit list, so an id naming a collapsed duplicate is an
+// id the judge never read. Left ungrounded it is not merely inert — a
+// value-scoped consumer expands one such id across the whole value class and
+// silently buries a key the judge called genuine.
+export function groundVerdict(
+  rec: TriageRecommendation,
+  ids: ReadonlySet<string>,
+): TriageRecommendation {
+  const perCategory: TriageCategoryRec[] = [];
+  const strayNotes: string[] = [];
+  for (const c of rec.perCategory) {
+    const grounded = c.fpIds.filter((id) => ids.has(id));
+    const strayCount = c.fpIds.length - grounded.length;
+    if (strayCount > 0) {
+      strayNotes.push(
+        `${c.category}: dropped ${String(strayCount)} false-positive id(s) naming hits outside the batch they were judged in`,
+      );
+    }
+    // fpCount keeps the model's CLAIMED count, deliberately NOT recomputed from
+    // the grounded ids. resolve.ts compares the two and surfaces any divergence
+    // to the human gate ('model reported N FPs, M resolved') — exactly the
+    // signal a dropped stray id should raise; recomputing would erase it.
+    perCategory.push({ ...c, fpIds: grounded });
+  }
+  return { perCategory, notes: [rec.notes, ...strayNotes].filter(Boolean).join('\n') };
+}
+
 export function mergeRecommendations(verdicts: readonly ChunkVerdict[]): TriageRecommendation {
   const byCat = new Map<DetectionCategory, CategoryAccumulator>();
-  const strayNotes: string[] = [];
+  const grounded = verdicts.map((v) => groundVerdict(v.rec, v.ids));
 
-  for (const { rec, ids } of verdicts) {
+  for (const rec of grounded) {
     for (const c of rec.perCategory) {
-      // Drop ids this chunk's judge could not have been describing, and say so:
-      // silence here would look identical to a clean verdict at the human gate.
-      const grounded = c.fpIds.filter((id) => ids.has(id));
-      const strayCount = c.fpIds.length - grounded.length;
-      if (strayCount > 0) {
-        strayNotes.push(
-          `${c.category}: dropped ${String(strayCount)} false-positive id(s) naming hits outside the batch they were judged in`,
-        );
-      }
       const entry = { rank: RANK[c.action], text: c.reasoning };
       const prev = byCat.get(c.category);
       if (!prev) {
-        byCat.set(c.category, { ...c, fpIds: [...grounded], reasonings: [entry] });
+        byCat.set(c.category, { ...c, fpIds: [...c.fpIds], reasonings: [entry] });
         continue;
       }
       prev.genuineCount += c.genuineCount;
-      // The model's CLAIMED count, summed as-is — deliberately NOT recomputed
-      // from `fpIds`. resolve.ts compares the two and surfaces any divergence to
-      // the human gate ('model reported N FPs, M resolved'), which is exactly the
-      // signal a dropped stray id should raise; recomputing would erase it.
       prev.fpCount += c.fpCount;
-      prev.fpIds = [...new Set([...prev.fpIds, ...grounded])];
+      prev.fpIds = [...new Set([...prev.fpIds, ...c.fpIds])];
       prev.reasonings.push(entry);
       // Strictest action wins, so a merge can only ever tighten.
       if (RANK[c.action] > RANK[prev.action]) prev.action = c.action;
@@ -121,6 +141,9 @@ export function mergeRecommendations(verdicts: readonly ChunkVerdict[]): TriageR
   }));
   return {
     perCategory,
-    notes: [...verdicts.map((v) => v.rec.notes), ...strayNotes].filter(Boolean).join('\n'),
+    notes: grounded
+      .map((r) => r.notes)
+      .filter(Boolean)
+      .join('\n'),
   };
 }

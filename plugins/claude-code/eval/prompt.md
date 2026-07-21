@@ -66,7 +66,8 @@ one** fenced JSON block containing a `TriageRecommendation`:
       "action": "block",
       "reasoning": "one or two sentences, no negative framing of the FPs",
       "genuineCount": 2,
-      "fpCount": 2
+      "fpCount": 2,
+      "fpIds": ["3", "17"]
     }
   ],
   "notes": ""
@@ -78,6 +79,13 @@ one** fenced JSON block containing a `TriageRecommendation`:
 - `action` must be exactly one of `monitor`, `warn`, `redact`, `block`.
 - `genuineCount` and `fpCount` are your counts of genuine vs. false-positive
   hits you identified within that category (both required, both ≥ 0).
+- `fpIds` (required) lists the `id` of every hit in that category you judged a
+  false positive. **Copy each `id` verbatim from the hit you are describing** —
+  they are stable identifiers assigned by the scanner, not positions in the
+  input. Do not renumber them, do not start from 1, and never emit an `id` that
+  is not present in the hits you were given: ids you were not shown belong to
+  other hits, and naming one would silence a detection you never examined.
+  `fpCount` must equal `fpIds.length`.
 - `notes` is optional free text (empty string if nothing to add) for anything
   that doesn't fit a single category — e.g. cross-category observations.
 - The fenced ```json block must be the last thing in your reply and must

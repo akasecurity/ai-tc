@@ -31,7 +31,7 @@ import { frameJsonBlock } from '../setup-frame-json.ts';
 import { dedupeForJudge } from './dedupe.ts';
 import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
-import { chunkForJudge, mergeRecommendations } from './merge.ts';
+import { chunkForJudge, chunkIds, mergeRecommendations } from './merge.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
@@ -78,6 +78,10 @@ export interface AdapterDeps {
   stdout: (s: string) => void;
   stderr: (s: string) => void;
   planIO?: PlanFileIO;
+  // Byte budget per judging batch. Defaults to chunkForJudge's own; injectable
+  // so a test can drive the multi-batch path without a quarter-megabyte of
+  // fixture, which is otherwise the only way to reach it.
+  maxJudgeBytes?: number;
 }
 
 function getFlag(argv: readonly string[], name: string): string | undefined {
@@ -118,7 +122,11 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
     }
-    deps.stdout("I didn't find anything to review — nothing to tune.\n");
+    // The only status that reaches here is `skipped:no-consent` — the backfill
+    // refused to read history because access was never granted. Nothing was
+    // examined, so this must not borrow the looked-and-found-nothing copy above:
+    // that would report a clean bill of health for a scan that never ran.
+    deps.stdout("I didn't review anything — historical access wasn't granted.\n");
     return 0;
   }
 
@@ -138,7 +146,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // representative's verdict covers every occurrence, so the judge (and every
     // downstream derivation below) reasons over distinct values, not raw counts.
     const reps = dedupeForJudge(hits);
-    const chunks = chunkForJudge(reps);
+    const chunks = chunkForJudge(reps, deps.maxJudgeBytes);
     let rec: TriageRecommendation;
     if (chunks.length === 1) {
       const [soleChunk] = chunks;
@@ -147,7 +155,10 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       if (soleChunk === undefined) throw new Error('chunkForJudge returned no chunks');
       rec = deps.runJudge(soleChunk);
     } else {
-      rec = mergeRecommendations(chunks.map((c) => deps.runJudge(c)));
+      // Each chunk's verdict is paired with the ids that chunk actually
+      // contained: the merge drops any fpId naming a hit its judge never saw,
+      // which a single judgment guaranteed structurally and chunking does not.
+      rec = mergeRecommendations(chunks.map((c) => ({ rec: deps.runJudge(c), ids: chunkIds(c) })));
     }
     // Fed the SAME representative set the judge saw, so the join/fpIds the plan
     // resolves suppressions from line up with the ids the verdict references.
@@ -216,11 +227,22 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // secret hits the model did NOT dismiss as false positives, projected to the
     // raw-free MaskedSecretFinding shape and carried additively in the frame.
     // Empty for a clean/all-suppressed run, so the optional field is omitted.
-    const maskedFindings = deriveSurfacedSecretFindings(reps, rec, plan);
+    // Fed the FULL hit list, NOT `reps`: this is the pipeline's one
+    // location-scoped consumer — each finding carries a single filePath, and
+    // that path is both the only thing that puts a file in the redaction pass's
+    // scope and the unit the complete-vs-partial redaction gate counts. One key
+    // pasted into three transcripts must surface as three findings or redaction
+    // strikes one file and still reports the run resolved. The judge's
+    // value-scoped dismissal is expanded back over each class inside.
+    const maskedFindings = deriveSurfacedSecretFindings(hits, rec, plan);
     // The masked false-positive pattern groups the fixture/exception offer names
     // its pattern and count from: the marked hits, re-derived to their masked
     // token and grouped, carried additively in the frame. Empty when nothing was
     // marked a false positive, so the optional field is omitted (fail-open).
+    // `reps` on purpose (unlike maskedFindings above): the offer writes
+    // fingerprint-keyed exceptions, so its unit is the distinct VALUE — one
+    // exception covers every occurrence, and counting occurrences here would
+    // inflate the offer's count over the number of exceptions it can grant.
     const falsePositivePatterns = deriveFalsePositivePatterns(reps, rec, plan);
     const calibration = frameCalibration(preview, maskedFindings, falsePositivePatterns);
 

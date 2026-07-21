@@ -5,17 +5,28 @@
 // Node deps. Cost is a read-time ESTIMATE derived from the price map, never
 // stored — the `≥` lower-bound marker carries that when pricing is unknown.
 
+// One compact-number formatter shared by every magnitude surface — token
+// totals, KPI tiles, connected-tool prompt counts — so the same value prints
+// identically everywhere. Rolls up to K · M · B · T with up to one decimal and
+// a dropped trailing ".0" ("1M", not "1.0M"); exact integers under 1000 print
+// in full. Negative-safe.
+const COMPACT = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
+/** Compact magnitude with K/M/B/T roll-up: `999` · `1.1K` · `45.2K` · `318M` · `4.5B` · `1.5T`. */
+export function compactNumber(n: number): string {
+  return COMPACT.format(n);
+}
+
 /**
- * Compact token magnitude with SI-style roll-up: `12.3k`, `4.5M`, `1.2B` — 1000k
- * rolls to 1M, 1000M to 1B (rather than the old always-`k` form that printed an
- * unreadable "4464193.1k"). Under 1000 prints the exact integer. Negative-safe.
+ * Compact token magnitude — {@link compactNumber} applied to a raw token count
+ * (`12.3K`, `4.5M`, `4.5B`), so token totals print the same K/M/B/T figures as
+ * every other magnitude on the dashboard.
  */
 export function formatTokenCount(n: number): string {
-  const abs = Math.abs(n);
-  if (abs < 1_000) return String(n);
-  if (abs < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
-  if (abs < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  return `${(n / 1_000_000_000).toFixed(1)}B`;
+  return compactNumber(n);
 }
 
 /**

@@ -25,3 +25,33 @@ export function relativeTime(iso: string | undefined): string {
   }
   return 'just now';
 }
+
+// Terse unit suffixes for relativeTimeShort, keyed by the same units as `UNITS`
+// above so the two helpers can never drift on tier boundaries.
+const SHORT_SUFFIX: Partial<Record<Intl.RelativeTimeFormatUnit, string>> = {
+  year: 'y',
+  month: 'mo',
+  week: 'w',
+  day: 'd',
+  hour: 'h',
+  minute: 'm',
+};
+
+/**
+ * Terse relative age for compact feeds where the long form ("2 minutes ago")
+ * won't fit a narrow column: "2m" · "14m" · "1h" · "3d" · "2w" · "3mo" · "1y".
+ * Weeks cap at "4w" — the `month` tier (30d) precedes `week`, so 30+ days read
+ * as "1mo"+. Under a minute reads "now" (same 45s cutoff as {@link relativeTime}'s
+ * "just now"). Floors to the whole unit — "1h" means at least an hour elapsed.
+ */
+export function relativeTimeShort(iso: string | undefined): string {
+  if (!iso) return '';
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return '';
+  const abs = Math.abs((then - Date.now()) / 1000);
+  if (abs < 45) return 'now';
+  for (const [unit, secs] of UNITS) {
+    if (abs >= secs) return `${String(Math.floor(abs / secs))}${SHORT_SUFFIX[unit] ?? ''}`;
+  }
+  return 'now';
+}

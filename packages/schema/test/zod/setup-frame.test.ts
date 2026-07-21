@@ -5,10 +5,11 @@ import {
   CalibrationFindingKind,
   CalibrationFrame,
   FalsePositivePatternGroup,
+  FirstRunCalibration,
   SetupHandoffOffer,
 } from '../../src/zod/setup-frame.ts';
 
-// A populated example frame: 161 total notifications, 3 important (surfaced),
+// A populated example frame: 161 total detections, 3 important (surfaced),
 // 158 routine (suppressed); the surfaced findings are at-rest live secret keys
 // (no egress-kind evidence).
 const populatedFrame = {
@@ -312,5 +313,17 @@ describe('SetupHandoffOffer', () => {
         options: [openDashboard, notNow, { id: 'not-now', label: 'Later' }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('FirstRunCalibration', () => {
+  it('accepts scan and floor', () => {
+    expect(FirstRunCalibration.safeParse('scan').success).toBe(true);
+    expect(FirstRunCalibration.safeParse('floor').success).toBe(true);
+  });
+
+  it('rejects any other value', () => {
+    expect(FirstRunCalibration.safeParse('calibrated').success).toBe(false);
+    expect(FirstRunCalibration.safeParse('').success).toBe(false);
   });
 });

@@ -71,10 +71,10 @@ function fail(message: string): never {
 // The honest note both modes print when the calibration frame could not be read
 // or parsed. `loadSecretLeakFindings` returns `undefined` on a read/parse fault
 // (distinct from `[]`, a clean read with no secrets), so neither mode fabricates
-// an all-clear ("No secret-leak findings to review.") or a false success
-// ("✓ Redacted 0 keys.") off a frame it never actually read.
+// an all-clear ("No exposed keys to deal with — you're clear.") or a false
+// success ("✓ Redacted 0 keys.") off a frame it never actually read.
 const FRAME_READ_NOTE =
-  'Could not read the calibration frame — the surfaced findings were unavailable.\n';
+  "I couldn't pull up what I found just now — the details weren't available.\n";
 
 // The batched remediation decision's chaining line "N more worth a look" count: the calibration
 // preview's whole-run surfaced count minus the secret findings this batch
@@ -82,10 +82,17 @@ const FRAME_READ_NOTE =
 // unreadable/malformed frame yields 0 (no fabricated figure) rather than
 // throwing — the caller already degraded honestly if the frame itself could
 // not be read.
-function moreWorthALook(frameText: string, secretCount: number): number {
+//
+// SCOPE: `counts.important` counts distinct VALUES (the judge reasons over one
+// representative per value), while `findings` carries one entry per artifact a
+// value was found in. Subtracting the raw finding count would mix the two and
+// understate the remainder whenever one key sits in several transcripts, so the
+// batch's coverage is converted to its distinct-value count first.
+function moreWorthALook(frameText: string, findings: readonly MaskedSecretFinding[]): number {
   try {
     const frame = CalibrationFrame.parse(readFrameJsonBlock(frameText));
-    return Math.max(0, frame.counts.important - secretCount);
+    const distinctValues = new Set(findings.map((f) => f.maskedToken)).size;
+    return Math.max(0, frame.counts.important - distinctValues);
   } catch {
     return 0;
   }
@@ -104,12 +111,12 @@ function present(frameText: string): void {
   }
   const decision = presentBatchedRemediation(findings, { entrySource: 'first-run' });
   if (decision.kind !== 'decision') {
-    process.stdout.write('No secret-leak findings to review.\n');
+    process.stdout.write("No exposed keys to deal with — you're clear.\n");
     return;
   }
   const layout = renderRemediationDecision(
     findings,
-    moreWorthALook(frameText, decision.secretCount),
+    moreWorthALook(frameText, findings),
     readRegisteredCommands(),
   );
   process.stdout.write(`${decision.prompt}\n\n${fenced(layout)}\n`);
@@ -120,8 +127,8 @@ function present(frameText: string): void {
 // write and the 'set-secret-redact' shortcut print.
 function postureConfirmation(result: StandingPostureResult): string {
   return result.persisted
-    ? `✓ Set 'secret' posture to ${result.level}\n`
-    : "Could not persist the 'secret' posture — the local store was unavailable.\n";
+    ? `✓ From now on, I'll treat secrets like these as ${result.level}.\n`
+    : "I couldn't save that detection level just now — my records weren't reachable.\n";
 }
 
 // Persist the chosen standing 'secret' posture to the policies store, opening
@@ -245,7 +252,7 @@ async function route(
       process.stdout.write(postureConfirmation(outcome.posture));
       break;
     case 'left':
-      process.stdout.write('Left the leaked keys as-is — no redaction, no posture change.\n');
+      process.stdout.write('Left them as they are — nothing redacted, nothing changed.\n');
       break;
   }
 }

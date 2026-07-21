@@ -70,7 +70,7 @@ describe('scripts/start-light.js', () => {
   });
 
   it('the fenced card carries the heading, the 8×4 default posture grid, and the re-tune hint', () => {
-    expect(result.stdout).toContain('Start light — set your packs');
+    expect(result.stdout).toContain('Starting light — your detection categories');
     expect(result.stdout).toContain(renderPostureGrid(severityFloorPosture()));
     expect(result.stdout).toContain(RE_TUNE_HINT);
   });
@@ -189,10 +189,8 @@ describe('scripts/start-light.js --adjust-confirm', () => {
         hardened,
       ]);
       expect(run.status).toBe(0);
-      expect(run.stdout).toContain('WARNING: 1 category (secret) would be LOWERED');
-      expect(run.stdout).toContain(
-        'Confirm you intend to weaken enforcement there before applying',
-      );
+      expect(run.stdout).toContain('Heads up — this would lower 1 detection level (secret) below');
+      expect(run.stdout).toContain('Confirm you mean to lower it before I apply');
     });
 
     it('stays silent when the chosen level is the same or higher than the stored action', () => {

@@ -102,7 +102,7 @@ describe("'Redact only' through the built remediate.js persists the standing pos
     const out = journey.remediationRoute(preview, 'redact-only', 'redact').stdout;
 
     expect(out).toContain(renderRedactionConfirmation(1));
-    expect(out).toContain("✓ Set 'secret' posture to redact");
+    expect(out).toContain("✓ From now on, I'll treat secrets like these as redact.");
     const after = readFileSync(transcriptPath, 'utf8');
     expect(after).not.toContain(SURFACED_KEY);
     expect(after).toContain('[REDACTED:SECRET]');

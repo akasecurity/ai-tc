@@ -71,7 +71,7 @@ describe('resolveRemediationDeliverable', () => {
       'sk_live_…one',
     ]);
     expect(result.summary).toContain('✓ Redacted 3 keys across 2 transcripts');
-    expect(result.summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(result.summary).toContain('✓ I drafted a rotation checklist for you (repo root).');
 
     const previewLines = result.summary.split('\n').filter((line) => line.startsWith('- [ ] '));
     expect(previewLines).toEqual(renderChecklistMarkdown(result.entries).trimEnd().split('\n'));
@@ -100,7 +100,7 @@ describe('resolveRemediationDeliverable', () => {
       note: `Could not draft rotation-checklist.md at ${missingTarget}.`,
     });
     expect(result.summary).toContain(`Could not draft rotation-checklist.md at ${missingTarget}.`);
-    expect(result.summary).not.toContain('✓ Drafted rotation-checklist.md');
+    expect(result.summary).not.toContain('✓ I drafted a rotation checklist for you');
   });
 
   it('threads unredactedFindings through to an honest partial summary — never the "resolved" framing on a partial strike', () => {

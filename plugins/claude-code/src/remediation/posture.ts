@@ -28,7 +28,7 @@ import { BUILTIN_POLICIES, type BuiltinPolicyId } from '@akasecurity/schema';
 import type { CategoryPolicyWriter } from '../triage/writeback.ts';
 
 // The prompt heading the standing-posture step presents above the palette.
-const STANDING_POSTURE_PROMPT = "Set the 'secret' posture";
+const STANDING_POSTURE_PROMPT = "Set the 'secret' detection level";
 
 // The palette the standing-posture step offers, in its own display order — Redact, Warn,
 // Block, Monitor — which is deliberately distinct from the catalog's canonical

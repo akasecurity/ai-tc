@@ -106,6 +106,10 @@ export async function runFirstRun(deps: FirstRunDeps): Promise<void> {
     `${fenced(
       renderFirstRun(
         {
+          // A surfaced count means a scan ran and carried a real preview value
+          // through setup — the same signal that gates the handoff payload
+          // below. Its absence means the floor fallback ran instead.
+          calibration: surfaced !== undefined ? 'scan' : 'floor',
           posture: postureBlock,
           health: healthScore(summary),
           // The card's "Findings N" stat is the whole-store total — correct here.

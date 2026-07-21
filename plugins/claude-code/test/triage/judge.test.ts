@@ -79,30 +79,66 @@ describe('runJudge', () => {
     confidence: 0.9,
   };
 
-  it('spawns claude -p with --no-session-persistence + --output-format json, raw prompt, and parses', () => {
+  it('spawns claude -p with --no-session-persistence + --output-format json, and the prompt on stdin', () => {
     let seenArgv: readonly string[] = [];
     let seenEnv: NodeJS.ProcessEnv = {};
+    let seenStdin = '';
     const rec = runJudge([hit], {
-      spawn: (argv, env) => {
+      spawn: (argv, env, stdin) => {
         seenArgv = argv;
         seenEnv = env;
+        seenStdin = stdin;
         return envelope(VERDICT_FENCE);
       },
       loadRubric: () => 'RUBRIC BODY',
     });
 
-    expect(seenArgv[0]).toBe('-p');
-    expect(seenArgv).toContain('--no-session-persistence');
-    expect(seenArgv).toContain('--output-format');
-    expect(seenArgv).toContain('json');
-    // The full raw hit (rawMatch + context) rides in the prompt — that is the
-    // point; SKIP_PROMPT_HISTORY + --no-session-persistence keep it out of any
-    // transcript.
-    expect(seenArgv.at(-1)).toContain('AKIAIOSFODNN7EXAMPLE');
-    expect(seenArgv.at(-1)).toContain('RUBRIC BODY');
+    expect(seenArgv).toEqual(['-p', '--no-session-persistence', '--output-format', 'json']);
+    // The full raw hit (rawMatch + context) rides on stdin — that is the point;
+    // SKIP_PROMPT_HISTORY + --no-session-persistence keep it out of any
+    // transcript, and stdin (unlike argv) keeps it off the process list and out
+    // of ARG_MAX.
+    expect(seenStdin).toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(seenStdin).toContain('RUBRIC BODY');
     expect(seenEnv.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
 
     expect(rec.perCategory[0]?.action).toBe('block');
+  });
+
+  it('passes the prompt on stdin, never in argv', () => {
+    let seenArgv: readonly string[] = [],
+      seenStdin = '';
+    const rec = runJudge(
+      [
+        {
+          ruleId: 'r',
+          category: 'secret',
+          severity: 'high',
+          maskedMatch: 'A***E',
+          rawMatch: 'AKIAREALKEY',
+          context: 'x',
+          confidence: 0.9,
+          id: '0',
+          valueFingerprint: 'fp1',
+          keyVersion: 1,
+        },
+      ],
+      {
+        spawn: (argv, _env, stdin) => {
+          seenArgv = argv;
+          seenStdin = stdin;
+          return JSON.stringify({
+            is_error: false,
+            result: '```json\n{"perCategory":[],"notes":"ok"}\n```',
+          });
+        },
+        loadRubric: () => 'RUBRIC',
+      },
+    );
+    expect(seenArgv).toEqual(['-p', '--no-session-persistence', '--output-format', 'json']);
+    expect(seenArgv.join(' ')).not.toContain('AKIAREALKEY');
+    expect(seenStdin).toContain('AKIAREALKEY'); // raw rides stdin, isolated subprocess only
+    expect(rec.notes).toBe('ok');
   });
 
   it('re-throws a spawn failure as raw-free metadata (execFileSync puts the prompt in .message)', () => {

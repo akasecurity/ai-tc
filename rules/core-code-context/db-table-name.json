@@ -10,7 +10,6 @@
       "SELECT * FROM ",
       "SELECT COUNT(*) FROM ",
       "INSERT INTO ",
-      "UPDATE ",
       "DELETE FROM ",
       "CREATE TABLE ",
       "ALTER TABLE ",

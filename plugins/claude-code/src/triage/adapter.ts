@@ -28,8 +28,10 @@ import { frameCalibration, frameEmptyState } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
+import { dedupeForJudge } from './dedupe.ts';
 import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
+import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from './merge.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
@@ -76,6 +78,12 @@ export interface AdapterDeps {
   stdout: (s: string) => void;
   stderr: (s: string) => void;
   planIO?: PlanFileIO;
+  // Byte budget per judging batch. Defaults to chunkForJudge's own; injectable
+  // so a test can drive the multi-batch path without a quarter-megabyte of
+  // fixture, which is otherwise the only way to reach it. `--max-judge-bytes`
+  // (below) exposes the same override on the command line, so the batch path
+  // can be exercised on a real machine without a giant history.
+  maxJudgeBytes?: number;
 }
 
 function getFlag(argv: readonly string[], name: string): string | undefined {
@@ -83,6 +91,21 @@ function getFlag(argv: readonly string[], name: string): string | undefined {
   if (i === -1) return undefined;
   const next = argv[i + 1];
   return next !== undefined && !next.startsWith('--') ? next : '';
+}
+
+// The per-batch byte budget, from `--max-judge-bytes N` or the injected dep.
+// Reaching the batch path otherwise takes a quarter-megabyte of real history,
+// so this is how the fallback gets exercised deliberately — set it low (a few
+// thousand) against a small history and every hit becomes its own batch.
+// Ignores a missing/zero/non-numeric value and falls back to the default,
+// rather than letting a typo silently disable batching.
+function resolveMaxJudgeBytes(deps: AdapterDeps): number | undefined {
+  const flag = getFlag(deps.argv, 'max-judge-bytes');
+  if (flag !== undefined && flag !== '') {
+    const parsed = Number(flag);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return deps.maxJudgeBytes;
 }
 
 // Returns a process exit code (0 ok, 1 failure). Never calls process.exit itself.
@@ -116,7 +139,11 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
     }
-    deps.stdout(`No triage hits to review (${status}). Nothing to suppress.\n`);
+    // The only status that reaches here is `skipped:no-consent` — the backfill
+    // refused to read history because access was never granted. Nothing was
+    // examined, so this must not borrow the looked-and-found-nothing copy above:
+    // that would report a clean bill of health for a scan that never ran.
+    deps.stdout("I didn't review anything — historical access wasn't granted.\n");
     return 0;
   }
 
@@ -131,8 +158,41 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
   // checkpoint (plan-file backstop, reasoning/notes checks), not a weaker one.
   const rawValues = hits.map((h) => h.rawMatch);
   try {
-    const rec = deps.runJudge(hits);
-    const plan = planTriageWriteback(hits, rec);
+    // Collapse repeated occurrences of the same detected value to one
+    // representative BEFORE the judge — value-scoped suppression means one
+    // representative's verdict covers every occurrence, so the judge (and every
+    // downstream derivation below) reasons over distinct values, not raw counts.
+    const reps = dedupeForJudge(hits);
+    const chunks = chunkForJudge(reps, resolveMaxJudgeBytes(deps));
+    if (chunks.length > 1) {
+      // Say so BEFORE the judging runs: each batch is its own `claude -p`
+      // subprocess, so a large history sits here for a while with nothing else
+      // on screen. It also makes the fallback observable — otherwise the only
+      // difference between one batch and ten is how long the wizard hangs.
+      deps.stdout(
+        `Reviewing ${String(reps.length)} distinct values in ${String(chunks.length)} batches — this is the large-history path, so give it a moment.\n\n`,
+      );
+    }
+    let rec: TriageRecommendation;
+    if (chunks.length === 1) {
+      const [soleChunk] = chunks;
+      // chunkForJudge always returns at least one chunk for a non-empty input
+      // (reps is non-empty: runPreview already returned on hits.length === 0).
+      if (soleChunk === undefined) throw new Error('chunkForJudge returned no chunks');
+      // Grounded even though there is only one batch: the judge saw the
+      // representative set, not the full hit list, so an fpId naming a
+      // collapsed duplicate is still an id it never read — and a value-scoped
+      // consumer would expand that one id across the whole value class.
+      rec = groundVerdict(deps.runJudge(soleChunk), chunkIds(soleChunk));
+    } else {
+      // Each chunk's verdict is paired with the ids that chunk actually
+      // contained: the merge drops any fpId naming a hit its judge never saw,
+      // which a single judgment guaranteed structurally and chunking does not.
+      rec = mergeRecommendations(chunks.map((c) => ({ rec: deps.runJudge(c), ids: chunkIds(c) })));
+    }
+    // Fed the SAME representative set the judge saw, so the join/fpIds the plan
+    // resolves suppressions from line up with the ids the verdict references.
+    const plan = planTriageWriteback(reps, rec);
 
     // Read the store's current per-category action for the downgrade view.
     // Read-only; retained in the plan file so confirm needn't re-read the DB.
@@ -197,12 +257,23 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // secret hits the model did NOT dismiss as false positives, projected to the
     // raw-free MaskedSecretFinding shape and carried additively in the frame.
     // Empty for a clean/all-suppressed run, so the optional field is omitted.
+    // Fed the FULL hit list, NOT `reps`: this is the pipeline's one
+    // location-scoped consumer — each finding carries a single filePath, and
+    // that path is both the only thing that puts a file in the redaction pass's
+    // scope and the unit the complete-vs-partial redaction gate counts. One key
+    // pasted into three transcripts must surface as three findings or redaction
+    // strikes one file and still reports the run resolved. The judge's
+    // value-scoped dismissal is expanded back over each class inside.
     const maskedFindings = deriveSurfacedSecretFindings(hits, rec, plan);
     // The masked false-positive pattern groups the fixture/exception offer names
     // its pattern and count from: the marked hits, re-derived to their masked
     // token and grouped, carried additively in the frame. Empty when nothing was
     // marked a false positive, so the optional field is omitted (fail-open).
-    const falsePositivePatterns = deriveFalsePositivePatterns(hits, rec, plan);
+    // `reps` on purpose (unlike maskedFindings above): the offer writes
+    // fingerprint-keyed exceptions, so its unit is the distinct VALUE — one
+    // exception covers every occurrence, and counting occurrences here would
+    // inflate the offer's count over the number of exceptions it can grant.
+    const falsePositivePatterns = deriveFalsePositivePatterns(reps, rec, plan);
     const calibration = frameCalibration(preview, maskedFindings, falsePositivePatterns);
 
     // The calibrated-result card: the real-count headline over the
@@ -284,7 +355,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
   // preview captured in `plan.current`. If the store changed since (a CLI edit, a
   // web-ui save, another wizard run), applying the plan blindly could turn an
   // approved non-downgrade into a SILENT downgrade — the exact case the preview's
-  // renderPosturePlan WARNING exists to surface. Re-read each planned category and
+  // renderPosturePlan surfaces via its "Heads up" downgrade note. Re-read each planned category and
   // compare; on drift, fail loud with no write so the wizard routes to the floor
   // fallback and the user re-previews against the store they can actually see.
   // undefined (no row) compares equal on both sides, so an added/removed row
@@ -325,7 +396,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // mid-batch fault rolls the posture overwrite back too — the store is never
       // left half-applied (and the floor fallback below is safe: nothing persisted).
       // Establish the full 8-pack the preview showed so settings holds
-      // all 8 packs and the confirmation reads '8 categories tuned': the reviewed,
+      // all 8 packs and the confirmation reads 'Set all 8 detection categories': the reviewed,
       // drift-gated evidence packs (plan.posture) OVERWRITE, and the severity floor
       // fills the remaining packs with FILL-GAPS. The floor packs are not covered by
       // the drift gate above (only the reviewed evidence is), so they must never

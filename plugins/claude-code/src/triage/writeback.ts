@@ -265,8 +265,8 @@ export function planTriageWriteback(
 // The full recommended posture the preview shows: the cold-start severity floor
 // for all 8 packs, overlaid with the evidence-derived actions the judge assigned.
 // Single-sourced so the previewed posture matches the 8-pack the confirm write
-// establishes — the 'N categories tuned' count is the size of this map
-// (8), not the survivor subset the evidence produced. The confirm write does NOT
+// establishes — the 'Set all N detection categories' count is the size of this
+// map (8), not the survivor subset the evidence produced. The confirm write does NOT
 // blanket-overwrite this map: the reviewed evidence packs overwrite, the floor
 // packs only fill gaps (see performTriageWriteback), so a pack the user already
 // hardened is never silently downgraded to the weak floor.

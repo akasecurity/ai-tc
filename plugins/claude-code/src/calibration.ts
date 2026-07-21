@@ -2,12 +2,12 @@
  * Pure calibration count-framing for the /aka:setup wizard's calibrated-result
  * screen. frameCalibration turns the backfill + apply-suppressions preview
  * breakdown into the CalibrationFrame emitted for downstream consumers and the
- * human-facing copy 'Calibrated. N notifications, M important. (N−M) routine,
- * M that matter (KIND)' — every count follows the preview input. frameEmptyState
- * produces the honest empty-state copy over a zero-count frame for a scan that
- * found nothing or a machine with no history. Surfaced (genuine, non-suppressed)
- * findings are 'important'; suppressed findings are 'routine'; the total is their
- * sum. No IO.
+ * human-facing copy "I went through Claude's recent work — N detections, M
+ * result(s) worth a look. (KIND)" — every count follows the preview input.
+ * frameEmptyState produces the honest empty-state copy over a zero-count frame
+ * for a scan that found nothing or a machine with no history. Surfaced
+ * (genuine, non-suppressed) findings are 'important'; suppressed findings are
+ * 'routine'; the total is their sum. No IO.
  */
 import type {
   CalibrationFrame,
@@ -20,8 +20,8 @@ import type {
 
 import { renderPostureGrid, renderRecommendedPosture } from './render.ts';
 
-// Plain-English kind of a surfaced category, for the 'M that matter (…)'
-// parenthetical. Presentation-only — not a persisted contract.
+// Plain-English kind of a surfaced category, for the 'M result(s) worth a
+// look. (…)' parenthetical. Presentation-only — not a persisted contract.
 const SURFACED_KIND_LABEL: Record<DetectionCategory, string> = {
   secret: 'live keys',
   pii: 'personal data',
@@ -72,11 +72,11 @@ export function frameCalibration(
 
   const kind = surfacedCategories.map((c) => SURFACED_KIND_LABEL[c]).join(', ');
   // Omit the kind parenthetical entirely when nothing surfaced, so an
-  // all-suppressed run reads 'M that matter' rather than 'M that matter ()'.
+  // all-suppressed run reads 'worth a look.' with no dangling ' ()'.
   const parenthetical = kind ? ` (${kind})` : '';
   const headline =
-    `Calibrated. ${String(total)} notifications, ${String(important)} important. ` +
-    `${String(routine)} routine, ${String(important)} that matter${parenthetical}`;
+    `I went through Claude's recent work — ${String(total)} detection${total === 1 ? '' : 's'}, ` +
+    `${String(important)} result${important === 1 ? '' : 's'} worth a look.${parenthetical}`;
 
   // The frame carries the finding kinds (incl. the egress axis) for downstream
   // consumers; the calibrated headline is the copy. A positive observation over
@@ -93,20 +93,21 @@ export function frameCalibration(
 // persisted contract.
 export type EmptyCause = 'scan-clean' | 'no-history';
 
-// The scan-ran-clean headline: a scan looked at recent activity and found
+// The scan-ran-clean headline: a scan looked at recent work and found
 // nothing worth surfacing, so the user starts from the recommended posture.
 const SCAN_CLEAN_HEADLINE =
-  "Calibrated. I looked at Claude's recent activity — nothing needs your attention. " +
-  "You're starting clean; here's the posture I'd recommend:";
+  "I looked over Claude's recent work — nothing needs your attention right now. " +
+  "You're starting clean; here's what I'd recommend:";
 
-// The no-history headline: there is nothing on this machine to calibrate from,
-// so each pack starts at its conservative default (the start-light 0.3b table).
+// The no-history headline: there is nothing on this machine to learn from,
+// so each detection category starts at its careful default (the start-light
+// 0.3b table).
 const NO_HISTORY_HEADLINE =
-  "Nothing to calibrate from yet — Claude hasn't left activity on this machine. " +
-  'Each pack starts at a conservative default:';
+  "Nothing to learn from yet — Claude hasn't left any work on this machine. " +
+  "I'll start each detection category at a careful default:";
 
 // The empty-state framing: two distinct honest copies, one per cause, each
-// stating why it is empty — never '0 notifications' theater. A scan-clean state
+// stating why it is empty — never '0 detections' theater. A scan-clean state
 // renders the recommended posture; a no-history state renders the start-light
 // table. Both carry a valid zero-count CalibrationFrame. This is the
 // found-nothing/empty-store copy only; an unreadable store is the separate

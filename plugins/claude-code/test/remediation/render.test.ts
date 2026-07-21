@@ -112,12 +112,12 @@ describe('renderRemediationDecision — decision layout', () => {
 
   it('closes with the chaining line naming the registered secret-scan command', () => {
     const out = renderRemediationDecision([stripeFinding()], 1, REGISTRY_SCAN);
-    expect(out).toContain('1 more worth a look — run /aka:scan');
+    expect(out).toContain("1 more worth a look — run /aka:scan when you're ready.");
   });
 
   it('reflects the registry — names /aka:secretscan when that is what is registered, not a hardcode', () => {
     const out = renderRemediationDecision([stripeFinding()], 2, REGISTRY_SECRETSCAN);
-    expect(out).toContain('2 more worth a look — run /aka:secretscan');
+    expect(out).toContain("2 more worth a look — run /aka:secretscan when you're ready.");
   });
 
   it('fails loud when no secret-scan command is registered', () => {
@@ -161,7 +161,7 @@ describe('renderResolvedSummary', () => {
 
     expect(summary).toContain('Leaked secrets — resolved');
     expect(summary).toContain('✓ Redacted 3 keys across 2 transcripts');
-    expect(summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(summary).toContain('✓ I drafted a rotation checklist for you (repo root).');
 
     // A fourth finding (all four struck: redactedKeys tracks findings.length so
     // the "resolved" framing stays honest) proves the transcript count is
@@ -228,7 +228,7 @@ describe('renderResolvedSummary', () => {
     );
     // The checklist deliverable still lands — rotation is still owed regardless
     // of whether the leaked text itself was struck.
-    expect(summary).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(summary).toContain('✓ I drafted a rotation checklist for you (repo root).');
   });
 
   it('pluralizes the partial message correctly across more than one remaining key', () => {
@@ -289,14 +289,14 @@ describe('renderRedactionOutcome — redact-only confirmation', () => {
   it('renders the clean confirmation when every finding was struck', () => {
     const findings = [stripeFinding(), awsFinding()];
     expect(renderRedactionOutcome({ redactedKeys: 2, findings, unredactedFindings: [] })).toBe(
-      '✓ Redacted 2 keys',
+      '✓ Redacted 2 keys.',
     );
   });
 
   it('pluralizes the clean confirmation over a single struck key', () => {
     const findings = [stripeFinding()];
     expect(renderRedactionOutcome({ redactedKeys: 1, findings, unredactedFindings: [] })).toBe(
-      '✓ Redacted 1 key',
+      '✓ Redacted 1 key.',
     );
   });
 

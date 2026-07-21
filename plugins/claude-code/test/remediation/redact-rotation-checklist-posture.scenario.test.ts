@@ -150,7 +150,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
     // is reported EXACTLY ONCE — inside the resolved summary, in its
     // transcript-count form — never repeated as a standalone confirmation ahead
     // of the posture line.
-    const postureIdx = out.indexOf("✓ Set 'secret' posture to redact");
+    const postureIdx = out.indexOf("✓ From now on, I'll treat secrets like these as redact.");
     const summaryIdx = out.indexOf('Leaked secrets — resolved');
     expect(postureIdx).toBeGreaterThanOrEqual(0);
     expect(summaryIdx).toBeGreaterThan(postureIdx);
@@ -170,7 +170,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
     // The deliverable landed at the isolated repo root the script was spawned
     // with as its cwd, never the ai-tc working tree.
     expect(out).toContain('✓ Redacted 1 key across 1 transcript');
-    expect(out).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(out).toContain('✓ I drafted a rotation checklist for you (repo root).');
     const checklistPath = join(repoRoot, 'rotation-checklist.md');
     expect(existsSync(checklistPath)).toBe(true);
     expect(readFileSync(checklistPath, 'utf8')).not.toContain(SURFACED_KEY);
@@ -227,7 +227,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
     // N (3 keys) and M (2 transcripts) are independently real: three raw values
     // struck across exactly two artifacts, never N relabelled as M.
     expect(out).toContain('✓ Redacted 3 keys across 2 transcripts');
-    expect(out).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(out).toContain('✓ I drafted a rotation checklist for you (repo root).');
 
     const afterA = readFileSync(transcriptA, 'utf8');
     const afterB = readFileSync(transcriptB, 'utf8');

@@ -130,7 +130,7 @@ export function renderChecklistMarkdown(entries: readonly RotationChecklistEntry
 }
 
 export function renderRotationChecklistResolvedLine(location: string): string {
-  return `✓ Drafted rotation-checklist.md (${location})`;
+  return `✓ I drafted a rotation checklist for you (${location}).`;
 }
 
 export function writeRotationChecklist(

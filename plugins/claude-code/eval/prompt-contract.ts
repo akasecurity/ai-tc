@@ -34,6 +34,7 @@ import type {
   BuiltinPolicyId,
   CalibrationFrame,
   DetectionCategory,
+  MaskedSecretFinding,
   SecretFindingState,
 } from '@akasecurity/schema';
 import {
@@ -174,29 +175,40 @@ export function checkNarrationContract(
   }
 
   for (const fact of claims.citedFindingFacts) {
-    const finding = (frame.maskedFindings ?? []).find((f) => f.maskedToken === fact.maskedToken);
-    if (!finding) {
+    // One leaked value can be found in several artifacts, and the frame carries
+    // one finding per OCCURRENCE (each with its own location — that is what puts
+    // a file in redaction scope). So a masked token can name SEVERAL findings,
+    // and an asserted attribute is grounded when it matches any of them: pinning
+    // the check to the first would reject a true statement about the second file
+    // the same key was found in.
+    const cited = (frame.maskedFindings ?? []).filter((f) => f.maskedToken === fact.maskedToken);
+    if (cited.length === 0) {
       return {
         ok: false,
         reason: `cited finding "${fact.maskedToken}" has no corresponding frame fact — invented claim`,
       };
     }
-    if (fact.assertedProvider !== undefined && fact.assertedProvider !== finding.provider) {
+    const grounded = <T>(
+      asserted: T | undefined,
+      recorded: (f: MaskedSecretFinding) => T,
+    ): boolean => asserted === undefined || cited.some((f) => recorded(f) === asserted);
+
+    if (!grounded(fact.assertedProvider, (f) => f.provider)) {
       return {
         ok: false,
-        reason: `cited finding "${fact.maskedToken}" asserts provider "${fact.assertedProvider}", but the frame records provider "${finding.provider}" — invented finding attribute`,
+        reason: `cited finding "${fact.maskedToken}" asserts provider "${String(fact.assertedProvider)}", but the frame records provider(s) ${cited.map((f) => `"${f.provider}"`).join(', ')} — invented finding attribute`,
       };
     }
-    if (fact.assertedLocation !== undefined && fact.assertedLocation !== finding.where.filePath) {
+    if (!grounded(fact.assertedLocation, (f) => f.where.filePath)) {
       return {
         ok: false,
-        reason: `cited finding "${fact.maskedToken}" asserts location "${fact.assertedLocation}", but the frame records location "${finding.where.filePath}" — invented finding attribute`,
+        reason: `cited finding "${fact.maskedToken}" asserts location "${String(fact.assertedLocation)}", but the frame records location(s) ${cited.map((f) => `"${f.where.filePath}"`).join(', ')} — invented finding attribute`,
       };
     }
-    if (fact.assertedState !== undefined && fact.assertedState !== finding.state) {
+    if (!grounded(fact.assertedState, (f) => f.state)) {
       return {
         ok: false,
-        reason: `cited finding "${fact.maskedToken}" asserts state "${fact.assertedState}", but the frame records state "${finding.state}" — invented finding attribute`,
+        reason: `cited finding "${fact.maskedToken}" asserts state "${String(fact.assertedState)}", but the frame records state(s) ${cited.map((f) => `"${f.state}"`).join(', ')} — invented finding attribute`,
       };
     }
   }

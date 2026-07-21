@@ -152,7 +152,7 @@ describe('batched four-option remediation decision (app-level: no case, secret-o
     if (decision.kind !== 'decision')
       throw new Error(`expected a decision, got '${decision.kind}'`);
     expect(decision.secretCount).toBe(3);
-    expect(decision.prompt).toContain('3 exposed secret keys found in old transcripts');
+    expect(decision.prompt).toContain('I found 3 exposed secret keys sitting in old transcripts.');
     expect(decision.prompt.toLowerCase()).not.toContain('still valid');
 
     // Exactly the four options, in stable order — no more, no fewer.
@@ -237,7 +237,7 @@ describe('batched four-option remediation decision (app-level: no case, secret-o
 
     // The standing-posture step then offers exactly Redact / Warn / Block / Monitor.
     const c3 = presentStandingSecretPosture();
-    expect(c3.prompt).toContain("Set the 'secret' posture");
+    expect(c3.prompt).toContain("Set the 'secret' detection level");
     expect(c3.options.map((o) => o.level)).toEqual(['redact', 'warn', 'block', 'monitor']);
     expect(c3.options.map((o) => o.label)).toEqual(['Redact', 'Warn', 'Block', 'Monitor']);
 

@@ -37,7 +37,6 @@ import {
   renderRecommendedPosture,
   renderStartLight,
   renderStatusLine,
-  renderWhatIDo,
   runQuery,
   topFindings,
 } from '../src/render.ts';
@@ -269,22 +268,47 @@ describe('pure renderers', () => {
     );
   });
 
-  it('setup intro: the adapter builds the card from the real manifest, sourced from identity.ts', () => {
+  it('setup intro: the merged card builds from the real manifest, sourced from identity.ts', () => {
     // Exercises the shipped intro adapter (manifest → card) end to end: the
-    // identity strings can only appear if intro-card.ts sources them from the
-    // shared identity constant, and the provenance version comes from the real
-    // plugin manifest — so a stale local copy or a version drift fails here.
+    // identity name can only appear if intro-card.ts sources it from the shared
+    // identity constant, and the provenance version comes from the real plugin
+    // manifest — so a stale local copy or a version drift fails here.
     const out = strip(buildIntroCard(PLUGIN_MANIFEST, /* verified */ false));
     expect(out).toContain(NAME);
-    expect(out).toContain(TAGLINE);
-    expect(out).toContain(ONE_LINER);
+    // The "what I do" body, merged into the same card — no duplicated one-liner.
+    expect(out).toContain("I'm a security harness for Claude.");
+    expect(out).toContain(
+      'While it codes, I keep the sensitive information — secrets, keys, regulated data — safely on your machine.',
+    );
+    expect(out).toContain(
+      "Most of it I handle quietly; I only notify you when it's worth your call.",
+    );
     // Provenance line: the real installed version + canonical repo, no 'verified' badge
     // when the caller passes verified: false.
     expect(out).toContain(`v${PLUGIN_MANIFEST.version ?? ''} · github.com/akasecurity/ai-tc`);
     expect(out).not.toContain('verified');
-    // The old tagline and the stale two-question line are gone.
+    // The tagline, the one-liner and the handoff line are gone — the scan-offer
+    // question carries the handoff instead — and the old copy never leaks back in.
+    expect(out).not.toContain(TAGLINE);
+    expect(out).not.toContain(ONE_LINER);
+    expect(out).not.toContain("let's calibrate your notifications");
     expect(out).not.toContain('Agent Harness Security for Claude Code.');
     expect(out).not.toContain('two quick questions');
+    // No internal narration (design-doc / decision citations) leaks into the copy.
+    expect(out).not.toMatch(/Decision|design doc|ADR/i);
+    // The whole card, built from the real manifest version/repo, so a layout
+    // regression is caught here rather than only by the individual toContains
+    // above (a literal snapshot can't be frozen since the version is real data).
+    expect(out).toBe(
+      [
+        `● ${NAME}  ·  v${PLUGIN_MANIFEST.version ?? ''} · github.com/akasecurity/ai-tc`,
+        '',
+        "  I'm a security harness for Claude.",
+        '',
+        '  While it codes, I keep the sensitive information — secrets, keys, regulated data — safely on your machine.',
+        "  Most of it I handle quietly; I only notify you when it's worth your call.",
+      ].join('\n'),
+    );
   });
 
   it('setup intro: the adapter appends the verified badge when the caller confirms provenance', () => {
@@ -294,36 +318,13 @@ describe('pure renderers', () => {
     );
   });
 
-  it('what I do: the calibration card carries the walkthrough voice, verbatim', () => {
-    const out = strip(renderWhatIDo());
-    // Every line from the calibration walkthrough, verbatim.
-    expect(out).toContain('I watch out for Claude as it works.');
-    expect(out).toContain(
-      'As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.',
-    );
-    expect(out).toContain(
-      "Most of it I handle quietly; I only notify you when it's worth your call.",
-    );
-    // Leads into the calibration handoff that hands off to the scan offer.
-    expect(out).toContain("let's calibrate your notifications based on what Claude's been up to");
-    // No internal narration (design-doc / decision citations) leaks into the copy.
-    expect(out).not.toMatch(/Decision|design doc|ADR/i);
-    // The whole card, so a copy regression is caught as a snapshot diff.
-    expect(out).toMatchInlineSnapshot(`
-      "● I watch out for Claude as it works.
-
-        As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.
-        Most of it I handle quietly; I only notify you when it's worth your call.
-
-        let's calibrate your notifications based on what Claude's been up to"
-    `);
-  });
-
-  it('setup intro: the adapter fails open with a blank version when the manifest is unreadable', () => {
+  it('setup intro: the adapter fails open with blank facts when the manifest is unreadable', () => {
     // Empty manifest — the fallback intro.ts uses when plugin.json can't be read.
     const out = strip(buildIntroCard({}));
-    // Still a card: the identity one-liner renders even with no manifest facts.
-    expect(out).toContain(ONE_LINER);
+    // Still a card: the identity name and "what I do" body render even with no
+    // manifest facts.
+    expect(out).toContain(NAME);
+    expect(out).toContain("I'm a security harness for Claude.");
     expect(out).not.toContain('verified');
   });
 
@@ -508,6 +509,7 @@ describe('pure renderers', () => {
       strip(
         renderFirstRun(
           {
+            calibration: 'scan',
             posture: renderPosture([
               { category: 'secret', action: 'redact' },
               { category: 'code_context', action: 'log' },
@@ -529,24 +531,65 @@ describe('pure renderers', () => {
         ),
       );
 
-    it("heading reads 'AKA Security installed — calibrated to this machine'", () => {
-      expect(populated()).toContain('AKA Security installed — calibrated to this machine');
+    it('scan path: heading reads "You\'re all set — tuned to this machine."', () => {
+      const out = populated({ calibration: 'scan' });
+      expect(out).toContain("✓ You're all set — tuned to this machine.");
+      // The floor-path heading never leaks onto the scan path.
+      expect(out).not.toContain('safe defaults');
     });
 
-    it('stats line templates the real health · findings · recommendations, never a fixed literal', () => {
+    it('scan path: divider reads "First scan complete"', () => {
+      const out = populated({ calibration: 'scan' });
+      expect(out).toContain('First scan complete');
+      expect(out).not.toContain('Safe defaults in place');
+    });
+
+    it('floor path: heading reads the cause-neutral no-scan fallback copy', () => {
+      const out = populated({ calibration: 'floor' });
+      expect(out).toContain(
+        "✓ You're all set — I've started you on safe defaults. Rerun /aka:setup anytime to calibrate from Claude's activity.",
+      );
+      // The scan-path heading never leaks onto the floor path.
+      expect(out).not.toContain('tuned to this machine');
+    });
+
+    it('floor path: divider reads "Safe defaults in place" (no scan ran)', () => {
+      const out = populated({ calibration: 'floor' });
+      expect(out).toContain('Safe defaults in place');
+      expect(out).not.toContain('First scan complete');
+    });
+
+    it('stats line templates the real health · detections · recommendations, never a fixed literal', () => {
       const out = populated();
       expect(out).toContain('Health 72/100');
-      expect(out).toContain('Findings 142');
-      expect(out).toContain('Recommendations 6');
+      expect(out).toContain('142 detections');
+      expect(out).toContain('6 recommendations');
       // A different set of real values flows straight through — proof it is
       // templated over the store, not a baked-in literal.
       const other = populated({ health: 91, findings: 3, recommendations: 1 });
       expect(other).toContain('Health 91/100');
-      expect(other).toContain('Findings 3');
-      expect(other).toContain('Recommendations 1');
+      expect(other).toContain('3 detections');
+      expect(other).toContain('1 recommendations');
       // The fixed sample numbers never appear.
       expect(out).not.toContain('82/100');
       expect(out).not.toContain('40 findings');
+    });
+
+    it('scan path: a warm summary line rides above the stat row, over the real counts', () => {
+      const out = populated({ findings: 142, worthALook: 2, calibration: 'scan' });
+      expect(out).toContain('Your store holds 142 detections — 2 worth your attention.');
+      // A different set of real values flows straight through.
+      const other = populated({ findings: 9, worthALook: 4, calibration: 'scan' });
+      expect(other).toContain('Your store holds 9 detections — 4 worth your attention.');
+    });
+
+    it('floor path: no warm summary line — the floor path never scanned anything', () => {
+      const out = populated({ calibration: 'floor' });
+      expect(out).not.toContain('Your store holds');
+      // The stat row still renders over the real store counts.
+      expect(out).toContain('Health 72/100');
+      expect(out).toContain('142 detections');
+      expect(out).toContain('6 recommendations');
     });
 
     it('shows the posture line the user chose', () => {
@@ -560,7 +603,7 @@ describe('pure renderers', () => {
 
     it("renders the '2 worth a look' handoff with the real surfaced count and the Open dashboard / Not now framing", () => {
       const out = populated({ worthALook: 2 });
-      expect(out).toContain('2 worth a look — see them in the browser?');
+      expect(out).toContain('2 worth a look — want to see them in the browser?');
       expect(out).toContain('Open dashboard');
       expect(out).toContain('Not now');
       // The count is the surfaced value, echoed — a different count flows through.
@@ -592,11 +635,12 @@ describe('pure renderers', () => {
       // No scan surfaced anything: no worthALook, an empty store (0 findings /
       // recommendations), a clean scan (no top findings). The card degrades
       // honestly — the numeric stats triple becomes explicit empty-state copy
-      // rather than a bare 'Findings 0 · Recommendations 0' scan tally, and the
+      // rather than a bare '0 detections · 0 recommendations' scan tally, and the
       // dashboard handoff is withheld (never a fabricated '0 worth a look').
       const out = strip(
         renderFirstRun(
           {
+            calibration: 'scan',
             posture: renderPosture([{ category: 'secret', action: 'redact' }]),
             health: 40,
             findings: 0,
@@ -608,14 +652,16 @@ describe('pure renderers', () => {
         ),
       );
 
-      // No fabricated dashboard handoff and no bare numeric scan tally.
+      // No fabricated dashboard handoff, no bare numeric scan tally, and no
+      // fabricated warm-summary claim of a review over zero detections.
       expect(out).not.toContain('worth a look');
-      expect(out).not.toContain('Findings 0');
-      expect(out).not.toContain('Recommendations 0');
+      expect(out).not.toContain('0 detections');
+      expect(out).not.toContain('0 recommendations');
+      expect(out).not.toContain('Your store holds');
       // Instead, an explicit honest empty-state line.
       expect(out).toContain("you're starting clean");
-      // The card still reads as a tidy success state: installed heading + posture.
-      expect(out).toContain('installed — calibrated to this machine');
+      // The card still reads as a tidy success state: scan-path heading + posture.
+      expect(out).toContain("You're all set — tuned to this machine.");
       expect(out).toContain('Posture');
       expect(out).toContain('secret');
       expect(out).toContain('redact');
@@ -846,7 +892,7 @@ describe('renderPostureGrid — full 8×4 posture matrix', () => {
     // Feeding the default posture map, the mark sits in monitor for the observe-only
     // packs (code_context, config) and in warn for the rest.
     expect(out).toMatchInlineSnapshot(`
-      "  PACK           MONITOR   WARN   REDACT   BLOCK
+      "  CATEGORY       MONITOR   WARN   REDACT   BLOCK
         ────────────   ───────   ────   ──────   ─────
         pii                      ●                    
         financial                ●                    
@@ -876,7 +922,7 @@ describe('renderStartLight — 0.3b start-light card', () => {
   const posture = severityFloorPosture();
 
   it('leads with the start-light heading', () => {
-    expect(renderStartLight(posture)).toContain('Start light — set your packs');
+    expect(renderStartLight(posture)).toContain('Starting light — your detection categories');
   });
 
   it('embeds the full 8×4 default posture grid, composed from the shared primitive', () => {
@@ -907,11 +953,11 @@ describe('renderStartLight — 0.3b start-light card', () => {
 
   it('matches the whole-card snapshot so copy/layout regressions surface', () => {
     expect(renderStartLight(posture)).toMatchInlineSnapshot(`
-      "● Start light — set your packs
+      "● Starting light — your detection categories
 
-        No history to calibrate from yet, so each pack starts at a conservative default.
+        For now, each detection category starts at a careful default. Run /aka:setup whenever you like and I'll tune these from Claude's recent work.
 
-        PACK           MONITOR   WARN   REDACT   BLOCK
+        CATEGORY       MONITOR   WARN   REDACT   BLOCK
         ────────────   ───────   ────   ──────   ─────
         pii                      ●                    
         financial                ●                    
@@ -924,12 +970,12 @@ describe('renderStartLight — 0.3b start-light card', () => {
 
         pii — warn: personal data carries real obligations, so I surface it before it moves.
         financial — warn: card and account numbers are sensitive by default, so these come to you.
-        secret — warn: live credentials are the costliest thing to leak, so I bring them to you on sight.
+        secret — warn: keys and credentials are the costliest thing to lose, so I bring those straight to you.
         phi — warn: health information is regulated wherever it lands, so I flag it for your call.
         code_context — monitor: proprietary code context is common and mostly benign, so I watch quietly and keep the record.
         code_flaw — warn: an insecure pattern is worth a look before it ships, so I raise it.
         custom — warn: your own policy matches start surfaced so nothing you care about slips by unseen.
-        config — monitor: configuration values are noisy to flag, so I keep an eye on them without a notification.
+        config — monitor: config values are noisy, so I keep an eye on them without notifying you.
 
         Re-tune anytime with /aka:setup or the dashboard"
     `);
@@ -990,18 +1036,20 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
   // enforcement downgrade the same way — a pack hardened out of band can otherwise
   // be lowered here with nothing shown to the user.
   describe('downgrade guard against the stored posture', () => {
-    it('appends the WARNING footer when a pick ranks below the stored action', () => {
+    it('appends the downgrade footer when a pick ranks below the stored action', () => {
       // The store holds 'secret' at block; the user picks redact.
       const out = renderAdjustConfirm(recommended, chosen, { secret: 'block' });
-      expect(out).toContain('WARNING: 1 category (secret) would be LOWERED');
+      expect(out).toContain('Heads up — this would lower 1 detection level (secret) below');
     });
 
-    it('names every lowered pack and pluralizes the count', () => {
+    it('names every lowered detection category and pluralizes the count', () => {
       const out = renderAdjustConfirm(recommended, chosen, {
         secret: 'block',
         config: 'redact',
       });
-      expect(out).toContain('WARNING: 2 categories (secret, config) would be LOWERED');
+      expect(out).toContain(
+        'Heads up — this would lower 2 detection levels (secret, config) below',
+      );
     });
 
     it('stays silent when every pick is the same or stronger than the stored action', () => {
@@ -1025,7 +1073,7 @@ describe('renderAdjustConfirm — 0.4b adjust-confirm table', () => {
 
   it('matches the whole-card snapshot so copy/layout regressions surface', () => {
     expect(renderAdjustConfirm(recommended, chosen)).toMatchInlineSnapshot(`
-      "● Adjust — set the packs you want, keep the rest
+      "● Adjust — set the detection categories you want, keep the rest
 
         CATEGORY       RECOMMENDED   YOURS  
         ────────────   ───────────   ───────
@@ -1061,23 +1109,26 @@ describe('renderApplied — applying confirmation', () => {
   // against the commands the plugin actually registers.
   const REGISTRY = readRegisteredCommands();
 
-  it('templates the real dismissed count and confirms the tuned pack count', () => {
+  it('templates the real dismissed count and confirms the tuned category count', () => {
     const out = renderApplied(8, 12, REGISTRY);
-    expect(out).toContain('✓ 8 categories tuned');
-    expect(out).toContain('✓ 12 routine dismissed');
+    expect(out).toContain('✓ Set all 8 detection categories');
+    expect(out).toContain('set aside 12 routine results');
     // N is templated from the real count — a different value flows straight
     // through, never a baked-in literal.
-    expect(renderApplied(8, 3, REGISTRY)).toContain('✓ 3 routine dismissed');
+    expect(renderApplied(8, 3, REGISTRY)).toContain('set aside 3 routine results');
+    // Singular is grammatical when exactly one routine result was set aside.
+    expect(renderApplied(8, 1, REGISTRY)).toContain('set aside 1 routine result');
+    expect(renderApplied(8, 1, REGISTRY)).not.toContain('1 routine results');
     // The tuned count is threaded too, not hardcoded to 8.
-    expect(renderApplied(5, 3, REGISTRY)).toContain('✓ 5 categories tuned');
+    expect(renderApplied(5, 3, REGISTRY)).toContain('✓ Set all 5 detection categories');
   });
 
-  it('renders an honest zero-state when nothing routine was dismissed', () => {
+  it('renders an honest empty-state when nothing routine was set aside', () => {
     const out = renderApplied(8, 0, REGISTRY);
-    expect(out).toContain('✓ 8 categories tuned');
-    // No fabricated '✓ 0 routine dismissed' — honest copy instead.
-    expect(out).not.toContain('0 routine dismissed');
-    expect(out).toMatch(/no routine/i);
+    expect(out).toContain('✓ Set all 8 detection categories');
+    // No fabricated 'set aside 0 routine results' — honest copy instead.
+    expect(out).not.toContain('set aside 0');
+    expect(out).toContain('nothing routine to set aside');
   });
 
   it('the Ready line names only commands the plugin actually registers, in invokable /aka: form', () => {
@@ -1104,14 +1155,14 @@ describe('renderApplied — applying confirmation', () => {
     expect(() => renderApplied(8, 5, withoutHealth)).toThrow(/aka:health/);
   });
 
-  it("reads '✓ 8 categories tuned' from the real 8-pack the posture writer wrote", () => {
+  it("reads '✓ Set all 8 detection categories' from the real 8-pack the posture writer wrote", () => {
     // onboard.ts feeds its confirmation the size of the posture it actually
     // wrote: renderCategoriesTuned(Object.keys(posture).length). Drive that with
     // the real recommended map so the '8' is the true pack count, not a
     // literal — this is the segment that composes into the applying-confirmation line.
     const packCount = Object.keys(severityFloorPosture()).length;
     expect(packCount).toBe(8);
-    expect(renderCategoriesTuned(packCount)).toBe('✓ 8 categories tuned');
+    expect(renderCategoriesTuned(packCount)).toBe('✓ Set all 8 detection categories');
     // Same phrase renderApplied composes — single-sourced, so the two can't drift.
     expect(renderApplied(packCount, 5, REGISTRY)).toContain(renderCategoriesTuned(packCount));
   });

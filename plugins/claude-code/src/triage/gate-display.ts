@@ -36,7 +36,7 @@ function findContext(entry: SuppressionEntry, join: readonly JoinEntry[]): strin
 // Enforcement strength, least -> most restrictive, over the stored ActionTaken
 // palette. `allow` (an active exception override) sits below `log`/monitor. A
 // DOWNGRADE is a planned action that ranks strictly below the category's stored
-// one — the case I-1 requires the human to see and confirm before it is written.
+// one — a downgrade the human must see and confirm before it is written.
 const ACTION_RANK: Record<ActionTaken, number> = {
   allow: 0,
   log: 1,
@@ -70,7 +70,7 @@ export function isDowngrade(planned: BuiltinPolicyId, current: ActionTaken | und
 // a stronger existing setting — an enforcement downgrade must never happen silently.
 // `current` is the store's existing action per category (undefined = no row yet).
 // This iterates the resolved plan's posture, so a category that had its suppression
-// skipped but still has a posture change (M-1) is surfaced here too.
+// skipped but still has a posture change is surfaced here too.
 export function renderPosturePlan(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
   current: Partial<Record<DetectionCategory, ActionTaken>>,
@@ -98,15 +98,15 @@ export function renderPosturePlan(
   if (lines.length === 0) {
     return 'No per-category detection posture will be written.';
   }
-  return `Per-category detection posture to be applied:\n${lines.join('\n')}${downgradeWarning(downgrades)}`;
+  return `Here's the detection level I'd set for each type:\n${lines.join('\n')}${downgradeWarning(downgrades)}`;
 }
 
-// The downgrade WARNING footer, single-sourced so every gate that can weaken
+// The downgrade footer, single-sourced so every gate that can weaken
 // enforcement (the confirm preview and the adjust fork's confirm card) states it
 // identically. Empty string when nothing would be lowered.
 export function downgradeWarning(downgrades: readonly DetectionCategory[]): string {
   if (downgrades.length === 0) return '';
-  return `\n\nWARNING: ${String(downgrades.length)} categor${downgrades.length === 1 ? 'y' : 'ies'} (${downgrades.join(', ')}) would be LOWERED from a stronger existing setting. Confirm you intend to weaken enforcement there before applying.`;
+  return `\n\nHeads up — this would lower ${String(downgrades.length)} detection level${downgrades.length === 1 ? '' : 's'} (${downgrades.join(', ')}) below what you've already set. Confirm you mean to lower ${downgrades.length === 1 ? 'it' : 'them'} before I apply.`;
 }
 
 // The intelligence showcase. One compact block per
@@ -129,7 +129,7 @@ export function renderShowcase(showcase: readonly ShowcaseCategory[]): string {
       `   ${s.reasoning}`,
     ].join('\n');
   });
-  return `What the judgment found, per category:\n\n${blocks.join('\n\n')}`;
+  return `Here's what I found, by type:\n\n${blocks.join('\n\n')}`;
 }
 
 export function renderSuppressionGate(
@@ -142,8 +142,8 @@ export function renderSuppressionGate(
 
   const header =
     entries.length === 1
-      ? 'The following detection will be suppressed as a false positive:'
-      : `The following ${String(entries.length)} detections will be suppressed as false positives:`;
+      ? 'This looks like a false positive — take a look before I suppress it:'
+      : `These ${String(entries.length)} look like false positives — take a look before I suppress them:`;
 
   const blocks = entries.map((entry, i) => {
     const context = findContext(entry, join);

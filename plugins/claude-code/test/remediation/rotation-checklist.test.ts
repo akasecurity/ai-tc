@@ -125,7 +125,7 @@ describe('rotation checklist', () => {
       status: 'written',
       filePath: join(repositoryRoot, 'rotation-checklist.md'),
       locationLabel: 'repo root',
-      resolvedLine: '✓ Drafted rotation-checklist.md (repo root)',
+      resolvedLine: '✓ I drafted a rotation checklist for you (repo root).',
     });
     expect(readFileSync(join(repositoryRoot, 'rotation-checklist.md'), 'utf8')).toBe(
       renderChecklistMarkdown(entries),
@@ -143,7 +143,7 @@ describe('rotation checklist', () => {
       status: 'written',
       filePath: join(invocationDirectory, 'rotation-checklist.md'),
       locationLabel: `invocation working directory: ${invocationDirectory}`,
-      resolvedLine: `✓ Drafted rotation-checklist.md (invocation working directory: ${invocationDirectory})`,
+      resolvedLine: `✓ I drafted a rotation checklist for you (invocation working directory: ${invocationDirectory}).`,
     });
     expect(readFileSync(join(invocationDirectory, 'rotation-checklist.md'), 'utf8')).toBe(
       renderChecklistMarkdown(entries),

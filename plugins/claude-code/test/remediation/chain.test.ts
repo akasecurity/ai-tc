@@ -75,7 +75,7 @@ describe('presentBatchedRemediation', () => {
     // No status word either: the finding's status is what the data holds (unknown),
     // rendered per-row — the count copy states only the count and where.
     expect(decision.prompt.toLowerCase()).not.toContain('live');
-    expect(decision.prompt).toContain('3 exposed secret keys found in old transcripts');
+    expect(decision.prompt).toContain('I found 3 exposed secret keys sitting in old transcripts.');
   });
 
   it("never emits the word 'case' in user-facing copy", () => {

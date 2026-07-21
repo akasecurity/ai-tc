@@ -8,7 +8,7 @@
  * confirmed calibration through the ACTUAL writer, apply-suppressions.js
  * --confirmed (not onboard.js --posture): that is the spine that establishes the
  * floor-overlaid 8-pack (reviewed-evidence overwrite + severity-floor fill-gaps)
- * and emits the '8 categories tuned · N routine dismissed'
+ * and emits the '✓ Set all 8 detection categories · set aside N routine results'
  * confirmation. The AskUserQuestion issuances (the consent question and the
  * dashboard handoff) are prompt-authored setup.md territory this script-chain
  * harness cannot observe; it asserts the offer PAYLOAD instead.
@@ -92,26 +92,26 @@ describe('Yes-scan happy path, end-to-end', () => {
 
   it('intro: renders the canonical identity and the version·repo provenance line', () => {
     expect(intro).toContain('AKA Security');
-    expect(intro).toContain('We secure agent harnesses at the source.');
     expect(intro).toContain(`v${MANIFEST.version} · github.com/akasecurity/ai-tc`);
     // No provenance badge yet — that lands with the signature check.
     expect(intro).not.toContain('verified');
   });
 
-  it('intro: the intro script also emits the "what I do" calibration card', () => {
-    // The kickoff and "what I do" cards are printed by the same
-    // intro run, back-to-back, before the scan offer. This asserts the wiring
-    // (the copy itself is unit-owned in render.test.ts).
-    expect(intro).toContain('I watch out for Claude as it works.');
-    expect(intro).toContain("let's calibrate your notifications based on what Claude's been up to");
+  it('intro: the merged card also carries the "what I do" body, from the same intro run', () => {
+    // The identity header and the "what I do" body render in a single merged
+    // card from the same intro run, before the scan offer. This asserts the
+    // wiring (the copy itself is unit-owned in render.test.ts).
+    expect(intro).toContain("I'm a security harness for Claude.");
+    expect(intro).toContain('While it codes, I keep the sensitive information');
   });
 
   it('preview: leads with the real-count headline and the condensed recommended posture', () => {
     // The calibrated-result card the wizard shows the user — the counts are the
     // real scan's (two seeded keys: one surfaced, one routine FP), and the kind
     // parenthetical names the surfaced category's kind.
-    expect(preview).toContain('Calibrated. 2 notifications, 1 important.');
-    expect(preview).toContain('1 routine, 1 that matter (live keys)');
+    expect(preview).toContain(
+      "I went through Claude's recent work — 2 detections, 1 result worth a look. (live keys)",
+    );
     // The condensed recommended view lists every pack with its recommended
     // level (the evidence pack took 'warn'); a full 8×4 level grid is the
     // start-light branch's, not the spine's.
@@ -149,7 +149,7 @@ describe('Yes-scan happy path, end-to-end', () => {
     // the shipped helper, so the assertion carries no hardcoded count.
     const categoriesTuned = Object.values(readPosture(journey.storeDir)).filter(Boolean).length;
     expect(confirm).toContain(renderCategoriesTuned(categoriesTuned));
-    expect(confirm).toContain('✓ 1 routine dismissed');
+    expect(confirm).toContain('set aside 1 routine result');
     expect(confirm).toMatch(/Ready:/);
   });
 
@@ -194,7 +194,8 @@ describe('Yes-scan happy path, end-to-end', () => {
   });
 
   it('installed summary: the installed card and the handoff-offer payload carry the real surfaced count', () => {
-    expect(firstRun).toContain('✓ AKA Security installed');
+    // A scan ran, so the card carries the scan-path heading.
+    expect(firstRun).toContain("✓ You're all set — tuned to this machine.");
     const offer = SetupHandoffOffer.parse(readFrameJsonBlock(firstRun));
     expect(offer.worthALook).toBe(1);
     // The happy path surfaced one live-key secret, so frame 0.6 composes the

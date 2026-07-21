@@ -168,7 +168,7 @@ describe('renderPosturePlan', () => {
     // stored block (rank 4) -> planned warn (rank 2): a downgrade the human must see.
     const out = renderPosturePlan({ secret: 'warn' }, { secret: 'block' });
     expect(out).toContain('LOWERED from block');
-    expect(out.toUpperCase()).toContain('WARNING');
+    expect(out).toContain('Heads up');
     expect(out).toContain('secret');
   });
 
@@ -182,7 +182,7 @@ describe('renderPosturePlan', () => {
     // stored log(=monitor) -> planned warn is an UPGRADE; stored warn -> warn unchanged.
     const out = renderPosturePlan({ secret: 'warn', pii: 'warn' }, { secret: 'log', pii: 'warn' });
     expect(out).not.toContain('LOWERED');
-    expect(out.toUpperCase()).not.toContain('WARNING');
+    expect(out).not.toContain('Heads up');
     expect(out).toContain('secret: warn (was monitor)');
     expect(out).toContain('pii: warn (unchanged)');
   });
@@ -192,7 +192,7 @@ describe('renderPosturePlan', () => {
       { secret: 'warn', financial: 'monitor' },
       { secret: 'block', financial: 'redact' },
     );
-    expect(out).toMatch(/2 categories/);
+    expect(out).toMatch(/2 detection levels/);
     expect(out).toContain('secret');
     expect(out).toContain('financial');
   });

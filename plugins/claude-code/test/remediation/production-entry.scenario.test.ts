@@ -60,7 +60,7 @@ describe('production remediation entry: honest degrade on a successfully-read, z
     // The honest no-op the entry prints when `presentBatchedRemediation` returns
     // `{ kind: 'no-decision' }` over an empty findings set — never a fabricated
     // count and never the remediation-decision copy.
-    expect(out).toBe('No secret-leak findings to review.\n');
+    expect(out).toBe("No exposed keys to deal with — you're clear.\n");
     expect(out).not.toContain('exposed secret');
     expect(out).not.toContain('Redact + rotation checklist');
     // No frame JSON block is emitted for a no-decision outcome — nothing for a
@@ -75,9 +75,9 @@ describe('production remediation entry: honest degrade on a successfully-read, z
     const emptyOut = present(emptyFrameText);
     const unreadableOut = present(unreadableFrameText);
 
-    expect(emptyOut).toBe('No secret-leak findings to review.\n');
+    expect(emptyOut).toBe("No exposed keys to deal with — you're clear.\n");
     expect(unreadableOut).toBe(
-      'Could not read the calibration frame — the surfaced findings were unavailable.\n',
+      "I couldn't pull up what I found just now — the details weren't available.\n",
     );
     expect(emptyOut).not.toEqual(unreadableOut);
   });

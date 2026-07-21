@@ -81,5 +81,12 @@ export default defineConfig({
     // default path (eval/prompt.md) is not in the package `files`, so the adapter
     // reads scripts/triage-rubric.md at runtime — copied here from the single source.
     copyFileSync('eval/prompt.md', join('scripts', 'triage-rubric.md'));
+    // Mark the emitted scripts as ESM. The plugin ships to the Claude Code plugin
+    // cache as scripts/ without the plugin's own package.json, so Node has no
+    // "type" field nearby and walks the directory tree to infer the module type —
+    // printing a MODULE_TYPELESS_PACKAGE_JSON reparse warning on every invocation.
+    // A package.json beside the scripts is the nearest ancestor Node finds, so it
+    // reads them as ESM directly and the warning never fires.
+    writeFileSync(join('scripts', 'package.json'), JSON.stringify({ type: 'module' }) + '\n');
   },
 });

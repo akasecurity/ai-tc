@@ -147,7 +147,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     // One decision moment over the whole set; the count templates over the real
     // three findings with no unverifiable 'still valid' claim.
     expect(decision.secretCount).toBe(3);
-    expect(decision.prompt).toContain('3 exposed secret keys found in old transcripts');
+    expect(decision.prompt).toContain('I found 3 exposed secret keys sitting in old transcripts.');
     expect(decision.prompt.toLowerCase()).not.toContain('still valid');
     // Exactly the four options, in stable order — no more, no fewer.
     expect(decision.options.map((o) => o.id)).toEqual([
@@ -205,7 +205,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     // The store's seeded default is 'warn', so the standing Redact choice is an
     // observable change — not a coincidental match with the baseline.
     expect(postureBaseline).toBe('warn');
-    expect(routeResult.stdout).toContain("✓ Set 'secret' posture to redact");
+    expect(routeResult.stdout).toContain("✓ From now on, I'll treat secrets like these as redact.");
     // The 'secret' posture is durable in the policies store — read back on a fresh
     // connection, so future secret detections are governed by it.
     expect(postureAfter).toBe('redact');
@@ -213,7 +213,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
 
   it('step 4: rotation-checklist.md is written at the repo root, most-exposed-first, masked, with per-provider console paths', () => {
     expect(existsSync(join(repoRoot, 'rotation-checklist.md'))).toBe(true);
-    expect(routeResult.stdout).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(routeResult.stdout).toContain('✓ I drafted a rotation checklist for you (repo root).');
 
     // Three DISTINCT provider+masked-token entries — the fixture's three keys
     // never collapse into one row. Every seeded entry has the same occurrence
@@ -250,7 +250,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
     expect(routeResult.stdout).toContain(
       `✓ Redacted 3 keys across ${String(distinctTranscripts.size)} transcripts`,
     );
-    expect(routeResult.stdout).toContain('✓ Drafted rotation-checklist.md (repo root)');
+    expect(routeResult.stdout).toContain('✓ I drafted a rotation checklist for you (repo root).');
   });
 
   it('step 4: the inline checklist preview matches the written rotation-checklist.md entry-for-entry', () => {

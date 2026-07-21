@@ -18,12 +18,12 @@ import type {
   BuiltinPolicyId,
   DetectionException,
   DetectionListItem,
+  FirstRunCalibration,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
 import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
 
 import { selectRegisteredCommands } from './command-registry.ts';
-import { NAME } from './identity.ts';
 import {
   bar,
   defList,
@@ -45,7 +45,7 @@ import { downgradeWarning, isDowngrade } from './triage/gate-display.ts';
 // (a store that reads fine but holds nothing) is a distinct path with its own
 // honest copy — frameEmptyState in calibration.ts — not this note.
 export const STORE_UNAVAILABLE_NOTE =
-  "I couldn't read the local store right now. AKA stays fail-open — your Claude session is unaffected, and it populates as you use Claude Code.";
+  "I couldn't check my records just now — we can check again soon. Your Claude session keeps going, and I'll fill in as you work.";
 
 const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -161,7 +161,7 @@ export function renderPostureGrid(
     category,
     ...BUILTIN_ORDER.map((level) => (posture[category] === level ? GRID_MARK : '')),
   ]);
-  return indent(table(['Pack', ...BUILTIN_ORDER], rows));
+  return indent(table(['Category', ...BUILTIN_ORDER], rows));
 }
 
 // The re-tune hint that closes the start-light card and the applied frame,
@@ -176,7 +176,7 @@ export const RE_TUNE_HINT = 'Re-tune anytime with /aka:setup or the dashboard';
 // the user's call; the monitor packs (code_context, config) watch quietly to keep
 // the noise down. Presentation copy only — not a persisted contract.
 const PACK_RATIONALE: Record<DetectionCategory, string> = {
-  secret: 'live credentials are the costliest thing to leak, so I bring them to you on sight.',
+  secret: 'keys and credentials are the costliest thing to lose, so I bring those straight to you.',
   pii: 'personal data carries real obligations, so I surface it before it moves.',
   financial: 'card and account numbers are sensitive by default, so these come to you.',
   phi: 'health information is regulated wherever it lands, so I flag it for your call.',
@@ -184,8 +184,7 @@ const PACK_RATIONALE: Record<DetectionCategory, string> = {
     'proprietary code context is common and mostly benign, so I watch quietly and keep the record.',
   code_flaw: 'an insecure pattern is worth a look before it ships, so I raise it.',
   custom: 'your own policy matches start surfaced so nothing you care about slips by unseen.',
-  config:
-    'configuration values are noisy to flag, so I keep an eye on them without a notification.',
+  config: 'config values are noisy, so I keep an eye on them without notifying you.',
 };
 
 // The start-light card — frame 0.3b of the /aka:setup Not-now branch, shown when
@@ -205,9 +204,11 @@ export function renderStartLight(
     (pack) => `  ${pack} — ${posture[pack] ?? ''}: ${PACK_RATIONALE[pack]}`,
   );
   return [
-    '● Start light — set your packs',
+    '● Starting light — your detection categories',
     '',
-    indent('No history to calibrate from yet, so each pack starts at a conservative default.'),
+    indent(
+      "For now, each detection category starts at a careful default. Run /aka:setup whenever you like and I'll tune these from Claude's recent work.",
+    ),
     '',
     renderPostureGrid(posture),
     '',
@@ -247,7 +248,7 @@ export function renderAdjustConfirm(
     return planned !== undefined && isDowngrade(planned, current[category]);
   });
   return [
-    '● Adjust — set the packs you want, keep the rest',
+    '● Adjust — set the detection categories you want, keep the rest',
     '',
     indent(table(['category', 'recommended', 'yours'], rows)),
     '',
@@ -268,79 +269,70 @@ export function renderAdjustConfirm(
 // invoke.
 export const READY_COMMANDS = ['/aka:health', '/aka:findings', '/aka:recommend'] as const;
 
-// The "tuned" segment — the count of posture categories the writer
-// wrote, threaded from the real write (never a literal). Single-sourced here so
+// The "set" segment — the count of detection categories the writer wrote,
+// threaded from the real write (never a literal). Single-sourced here so
 // onboard.ts's posture-write confirmation and the composed applying-confirmation
 // line read identically.
 export function renderCategoriesTuned(categoriesTuned: number): string {
-  const noun = categoriesTuned === 1 ? 'category' : 'categories';
-  return `✓ ${String(categoriesTuned)} ${noun} tuned`;
+  return `✓ Set all ${String(categoriesTuned)} detection categories`;
 }
 
 // The /aka:setup wizard's applying confirmation, shown once the
-// calibration takes effect: '✓ K categories tuned · ✓ N routine dismissed ·
-// Ready: …'. Both counts are threaded from the real apply result (the posture
-// writer's category count and the apply-suppressions result's written count),
-// never a literal. When nothing routine was dismissed (N === 0) the middle
-// segment is honest empty-state copy rather than a fabricated '✓ 0 routine
-// dismissed'. `registry` is the installed command registry (readRegisteredCommands()),
-// resolved at the caller's I/O boundary and threaded in so this stays a pure
-// formatter: the Ready line's curated set is validated against it, and an
-// unregistered curated command throws rather than rendering. Pure (no I/O) so it
-// unit-tests without a DB.
+// calibration takes effect: '✓ Set all K detection categories · set aside N
+// routine results · Ready: …'. Both counts are threaded from the real apply
+// result (the posture writer's category count and the apply-suppressions
+// result's written count), never a literal. When nothing routine was set aside
+// (N === 0) the middle segment is honest empty-state copy rather than a
+// fabricated 'set aside 0 routine results'. `registry` is the installed command
+// registry (readRegisteredCommands()), resolved at the caller's I/O boundary and
+// threaded in so this stays a pure formatter: the Ready line's curated set is
+// validated against it, and an unregistered curated command throws rather than
+// rendering. Pure (no I/O) so it unit-tests without a DB.
 export function renderApplied(
   categoriesTuned: number,
   dismissed: number,
   registry: readonly string[],
 ): string {
   const routine =
-    dismissed > 0 ? `✓ ${String(dismissed)} routine dismissed` : 'no routine to dismiss';
+    dismissed > 0
+      ? `set aside ${String(dismissed)} routine result${dismissed === 1 ? '' : 's'}`
+      : 'nothing routine to set aside';
   const ready = `Ready: ${selectRegisteredCommands(READY_COMMANDS, registry).join(' · ')}`;
   return `${renderCategoriesTuned(categoriesTuned)} · ${routine} · ${ready}`;
 }
 
 const RULE_WIDTH = 64;
 
-// The setup-intro "card" the /aka:setup wizard shows first.
-// Factual fields (version, repository) are read from the plugin manifest by the
-// intro script; the display copy (name, tagline, one-liner) comes from the
-// identity constant. Pure here so it renders without any I/O.
+// The single setup-intro card the /aka:setup wizard shows first: identity +
+// provenance on the header line, then the "what I do" body. Factual fields
+// (version, repository, verified) are read from the plugin manifest by the intro
+// script; the display name comes from the identity constant. Pure here so it
+// renders without any I/O.
 export interface PluginMeta {
   name: string;
-  tagline: string;
-  oneLiner: string;
   repository: string;
   version: string;
   verified?: boolean;
 }
 
 export function renderSetupIntro(meta: PluginMeta): string {
-  const heading = `● Found ${meta.name} — ${meta.tagline}`;
-
   // The ' · verified' badge appears only when the provenance check confirmed the
   // exact package@version's attestation binds to the expected repository + workflow.
   const provenance =
     meta.verified === true
       ? `v${meta.version} · ${meta.repository} · verified`
       : `v${meta.version} · ${meta.repository}`;
+  const heading = `● ${meta.name}  ·  ${provenance}`;
 
-  return [heading, '', indent(meta.oneLiner), '', indent(provenance)].join('\n');
-}
-
-// The "What I do" card the /aka:setup wizard shows after the intro. Static
-// explanatory copy — no data to template, so it takes no arguments. Pure here so
-// it renders without any I/O and unit-tests as a plain string. The closing line
-// hands off to the scan offer that calibrates the notifications.
-export function renderWhatIDo(): string {
   return [
-    '● I watch out for Claude as it works.',
+    heading,
+    '',
+    indent("I'm a security harness for Claude."),
     '',
     indent(
-      'As it codes, I intelligently contain sensitive data — secrets and regulated information — to your computer.',
+      'While it codes, I keep the sensitive information — secrets, keys, regulated data — safely on your machine.',
     ),
     indent("Most of it I handle quietly; I only notify you when it's worth your call."),
-    '',
-    indent("let's calibrate your notifications based on what Claude's been up to"),
   ].join('\n');
 }
 
@@ -360,6 +352,11 @@ export function healthScore(summary: HealthSummary): number {
 // recommendations are real; `health` is the derived score above. The host's
 // input box and window chrome are not the plugin's to draw.
 export interface FirstRunSummary {
+  // Whether the card followed a completed calibration scan or fell back to the
+  // severity floor with no scan run — the same signal that gates the dashboard
+  // handoff (`worthALook`) below. Drives the heading and the post-stats
+  // divider so the card never claims a scan that did not happen.
+  calibration: FirstRunCalibration;
   // Per-category posture block (renderPosture's output) — the wizard's
   // per-category policy read, one row per category. Optional/omittable: the
   // read lives inside firstrun's fail-open try/catch, so a store that can't
@@ -432,17 +429,33 @@ export function buildHandoffOffer(worthALook: number, liveKeys: number): SetupHa
 // formatter: the Try line's curated set is validated against it here, and an
 // unregistered curated command throws rather than rendering.
 export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]): string {
-  const heading = `✓ ${NAME} installed — calibrated to this machine`;
+  // Path-honest heading: the scan-path copy claims a scan only when one ran.
+  // The floor path is reached for three different causes — a deliberate
+  // "Not now" decline, a scan that ran clean, or a genuine no-history/failed
+  // scan — and this function can't tell them apart, so the floor copy stays
+  // cause-neutral rather than naming a failure that may not have happened.
+  const heading =
+    s.calibration === 'scan'
+      ? "✓ You're all set — tuned to this machine."
+      : "✓ You're all set — I've started you on safe defaults. Rerun /aka:setup anytime to calibrate from Claude's activity.";
 
   // Nothing-surfaced degradation: with no findings in the store the numeric
-  // Health/Findings/Recommendations triple would read as a scan tally over an
+  // Health/detections/recommendations triple would read as a scan tally over an
   // empty result. The stats line becomes an honest empty-state instead — an
   // explicit zero-state, never a fabricated count. (The dashboard handoff is
   // withheld on the same nothing-surfaced footing below.)
+  const statRow = `Health ${String(s.health)}/100 · ${String(s.findings)} detections · ${String(s.recommendations)} recommendations`;
+  // A warm one-line summary rides above the stat row, but only on the scan
+  // path: the floor path never scanned anything, so it renders the stat row
+  // alone rather than claiming a review that did not happen.
+  const warmSummary =
+    s.calibration === 'scan'
+      ? `Your store holds ${String(s.findings)} detections — ${String(s.worthALook ?? 0)} worth your attention.`
+      : undefined;
   const stats =
     s.findings === 0
       ? "Nothing needs your attention — you're starting clean."
-      : `Health ${String(s.health)}/100 · Findings ${String(s.findings)} · Recommendations ${String(s.recommendations)}`;
+      : [warmSummary, statRow].filter((line): line is string => line !== undefined).join('\n');
 
   const tryCommands = selectRegisteredCommands(TRY_COMMANDS, registry);
   const lines = [heading, '', indent(stats), '', indent(`Try: ${tryCommands.join(' · ')}`)];
@@ -454,7 +467,10 @@ export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]):
     lines.push('', indent('Posture'), '', indent(s.posture));
   }
 
-  lines.push('', indent('─'.repeat(RULE_WIDTH)), '', indent('First scan complete'));
+  // The divider mirrors the heading's scan-vs-floor honesty: no scan ran on
+  // the floor path, so it never claims one completed.
+  const divider = s.calibration === 'scan' ? 'First scan complete' : 'Safe defaults in place';
+  lines.push('', indent('─'.repeat(RULE_WIDTH)), '', indent(divider));
 
   // Top findings — a compact, severity-ranked glance at what the first scan
   // caught. Hidden on a clean scan so the card stays a tidy success state.
@@ -487,7 +503,7 @@ export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]):
   if (s.worthALook !== undefined && s.worthALook > 0) {
     lines.push(
       '',
-      indent(`${String(s.worthALook)} worth a look — see them in the browser?`),
+      indent(`${String(s.worthALook)} worth a look — want to see them in the browser?`),
       indent('Open dashboard · Not now'),
     );
   }

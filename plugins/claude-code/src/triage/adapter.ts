@@ -28,8 +28,10 @@ import { frameCalibration, frameEmptyState } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
+import { dedupeForJudge } from './dedupe.ts';
 import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
 import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
+import { chunkForJudge, mergeRecommendations } from './merge.ts';
 import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
 import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
@@ -116,7 +118,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       deps.stdout(frameJsonBlock(empty.frame));
       return 0;
     }
-    deps.stdout(`No triage hits to review (${status}). Nothing to suppress.\n`);
+    deps.stdout("I didn't find anything to review — nothing to tune.\n");
     return 0;
   }
 
@@ -131,8 +133,25 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
   // checkpoint (plan-file backstop, reasoning/notes checks), not a weaker one.
   const rawValues = hits.map((h) => h.rawMatch);
   try {
-    const rec = deps.runJudge(hits);
-    const plan = planTriageWriteback(hits, rec);
+    // Collapse repeated occurrences of the same detected value to one
+    // representative BEFORE the judge — value-scoped suppression means one
+    // representative's verdict covers every occurrence, so the judge (and every
+    // downstream derivation below) reasons over distinct values, not raw counts.
+    const reps = dedupeForJudge(hits);
+    const chunks = chunkForJudge(reps);
+    let rec: TriageRecommendation;
+    if (chunks.length === 1) {
+      const [soleChunk] = chunks;
+      // chunkForJudge always returns at least one chunk for a non-empty input
+      // (reps is non-empty: runPreview already returned on hits.length === 0).
+      if (soleChunk === undefined) throw new Error('chunkForJudge returned no chunks');
+      rec = deps.runJudge(soleChunk);
+    } else {
+      rec = mergeRecommendations(chunks.map((c) => deps.runJudge(c)));
+    }
+    // Fed the SAME representative set the judge saw, so the join/fpIds the plan
+    // resolves suppressions from line up with the ids the verdict references.
+    const plan = planTriageWriteback(reps, rec);
 
     // Read the store's current per-category action for the downgrade view.
     // Read-only; retained in the plan file so confirm needn't re-read the DB.
@@ -197,12 +216,12 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // secret hits the model did NOT dismiss as false positives, projected to the
     // raw-free MaskedSecretFinding shape and carried additively in the frame.
     // Empty for a clean/all-suppressed run, so the optional field is omitted.
-    const maskedFindings = deriveSurfacedSecretFindings(hits, rec, plan);
+    const maskedFindings = deriveSurfacedSecretFindings(reps, rec, plan);
     // The masked false-positive pattern groups the fixture/exception offer names
     // its pattern and count from: the marked hits, re-derived to their masked
     // token and grouped, carried additively in the frame. Empty when nothing was
     // marked a false positive, so the optional field is omitted (fail-open).
-    const falsePositivePatterns = deriveFalsePositivePatterns(hits, rec, plan);
+    const falsePositivePatterns = deriveFalsePositivePatterns(reps, rec, plan);
     const calibration = frameCalibration(preview, maskedFindings, falsePositivePatterns);
 
     // The calibrated-result card: the real-count headline over the
@@ -284,7 +303,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
   // preview captured in `plan.current`. If the store changed since (a CLI edit, a
   // web-ui save, another wizard run), applying the plan blindly could turn an
   // approved non-downgrade into a SILENT downgrade — the exact case the preview's
-  // renderPosturePlan WARNING exists to surface. Re-read each planned category and
+  // renderPosturePlan surfaces via its "Heads up" downgrade note. Re-read each planned category and
   // compare; on drift, fail loud with no write so the wizard routes to the floor
   // fallback and the user re-previews against the store they can actually see.
   // undefined (no row) compares equal on both sides, so an added/removed row
@@ -325,7 +344,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // mid-batch fault rolls the posture overwrite back too — the store is never
       // left half-applied (and the floor fallback below is safe: nothing persisted).
       // Establish the full 8-pack the preview showed so settings holds
-      // all 8 packs and the confirmation reads '8 categories tuned': the reviewed,
+      // all 8 packs and the confirmation reads 'Set all 8 detection categories': the reviewed,
       // drift-gated evidence packs (plan.posture) OVERWRITE, and the severity floor
       // fills the remaining packs with FILL-GAPS. The floor packs are not covered by
       // the drift gate above (only the reviewed evidence is), so they must never

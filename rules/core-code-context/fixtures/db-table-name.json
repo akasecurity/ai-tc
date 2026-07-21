@@ -23,5 +23,10 @@
     "label": "not SQL",
     "text": "FROM the bottom of my heart",
     "shouldMatch": false
+  },
+  {
+    "label": "prose verb 'update', not a SQL statement",
+    "text": "rebuild the dev bundle and update the plugin",
+    "shouldMatch": false
   }
 ]

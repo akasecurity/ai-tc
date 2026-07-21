@@ -228,7 +228,7 @@ describe('fail-open leg: the narration signal is absent — both the calibration
 
   it('the remediation decision degrades honestly too — no decision, and no frame JSON is emitted for it (nothing to narrate)', () => {
     expect(present.status).toBe(0);
-    expect(present.stdout).toContain('No secret-leak findings to review.');
+    expect(present.stdout).toContain("No exposed keys to deal with — you're clear.");
     expect(readFrameJsonBlock(present.stdout)).toBeUndefined();
   });
 

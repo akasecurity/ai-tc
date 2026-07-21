@@ -36,7 +36,7 @@ const REMEDIATION_OPTIONS: BatchedRemediationDecision['options'] = [
 // per-row in the finding table (render.ts).
 function countCopy(secretCount: number): string {
   const noun = secretCount === 1 ? 'key' : 'keys';
-  return `${secretCount.toString()} exposed secret ${noun} found in old transcripts`;
+  return `I found ${secretCount.toString()} exposed secret ${noun} sitting in old transcripts.`;
 }
 
 // Build the batched remediation decision over the surfaced secret leaks. The

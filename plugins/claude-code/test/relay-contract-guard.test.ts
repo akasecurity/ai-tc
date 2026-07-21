@@ -36,6 +36,7 @@ const FILES = [
   'src/firstrun.ts',
   'src/firstrun-core.ts',
   'src/triage/adapter.ts',
+  'src/apply-suppressions.ts',
   'src/remediation/entry.ts',
 ] as const;
 
@@ -207,6 +208,14 @@ const ALLOWLIST: AllowlistEntry[] = [
       'The FirstRunDeps.stdout DI wiring: a pure passthrough callback. Its argument `s` is already ' +
       'wrapped in show(...)/frameJsonBlock(...) by firstrun-core.ts before it ever reaches this ' +
       'callback, so no raw content originates at this call site.',
+  },
+  {
+    file: 'src/apply-suppressions.ts',
+    substring: 'process.stdout.write(s)',
+    reason:
+      'The apply-suppressions stdout DI wiring: a pure passthrough callback into runApply() — ' +
+      'symmetric with firstrun.ts. All content originates in triage/adapter.ts (covered), already ' +
+      'wrapped in show(...)/frameJsonBlock(...) or an allowlisted STATUS path before it reaches here.',
   },
   {
     file: 'src/triage/adapter.ts',

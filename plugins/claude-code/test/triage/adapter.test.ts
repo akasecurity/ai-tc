@@ -1346,3 +1346,74 @@ describe('runApply — the batch-and-merge path the large-history fallback takes
     );
   });
 });
+
+describe('runApply — an fpId the judge was never shown, on the single-batch path', () => {
+  // Dedupe alone makes the judged set a strict subset of the hits the frame
+  // derivations hold, so grounding is needed even when there is only one batch.
+  // Ungrounded, one stray id expands across the whole value class and buries a
+  // key the judge called genuine — with no batching involved.
+  it('drops the stray id instead of letting it bury the whole value class', async () => {
+    const FP1 = 'ba'.repeat(32);
+    const dup = (id: string, tag: string): TriageHit =>
+      hit({
+        id,
+        valueFingerprint: FP1,
+        rawMatch: RAW,
+        context: `export KEY=${RAW} ${tag}`,
+        filePath: `/h/.claude/projects/p/${tag}.jsonl`,
+      });
+    const hits = [dup('0', 's1'), dup('1', 's2'), dup('2', 's3')];
+    const stream =
+      hits.map((h) => JSON.stringify(h)).join('\n') +
+      '\n' +
+      JSON.stringify({ done: true, count: 3, status: 'complete' }) +
+      '\n';
+
+    // The judge sees only the representative (id '0') and calls the value
+    // GENUINE — but names id '2', an occurrence collapsed before judging.
+    const runJudge = vi.fn((seen: readonly TriageHit[]): TriageRecommendation => {
+      expect(seen.map((h) => h.id)).toEqual(['0']);
+      return {
+        perCategory: [
+          {
+            category: 'secret',
+            action: 'redact',
+            reasoning: 'a live-looking key left in old transcripts',
+            genuineCount: 1,
+            fpCount: 1,
+            fpIds: ['2'],
+          },
+        ],
+        notes: '',
+      };
+    });
+
+    const db = fakeDb();
+    const out: string[] = [];
+    const code = await runApply({
+      argv: [],
+      readStream: () => stream,
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+
+    const blob = out.join('');
+    expect(blob).toContain('naming hits outside the batch they were judged in');
+
+    // The genuine key still reaches the finding table for all three artifacts.
+    const parsed = CalibrationFrame.safeParse(readFrameJsonBlock(blob));
+    if (!parsed.success) throw new Error('emitted frame did not validate');
+    expect(parsed.data.maskedFindings?.map((f) => f.where.filePath)).toEqual([
+      '/h/.claude/projects/p/s1.jsonl',
+      '/h/.claude/projects/p/s2.jsonl',
+      '/h/.claude/projects/p/s3.jsonl',
+    ]);
+    // Nothing was suppressed on the strength of an id the judge never saw.
+    expect(db.created).toEqual([]);
+  });
+});

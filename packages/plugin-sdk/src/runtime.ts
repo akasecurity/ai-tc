@@ -144,9 +144,7 @@ export function createPluginRuntime(
     // on every commit, so re-checking them here would only add steady-state
     // cache-lookup overhead for zero additional safety.
     const safeBundleRules = await filterUnsafeRules(bundle.rules ?? [], gateway);
-    rules = bundle.rulesComplete
-      ? safeBundleRules
-      : [...getLoadedRules(), ...safeBundleRules];
+    rules = bundle.rulesComplete ? safeBundleRules : [...getLoadedRules(), ...safeBundleRules];
     bundleExceptions = bundle.exceptions ?? [];
     initialized = true;
   }

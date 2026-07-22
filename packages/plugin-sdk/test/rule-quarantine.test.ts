@@ -82,6 +82,19 @@ describe('filterUnsafeRules', () => {
     expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
   });
 
+  it('reuses a cached safe verdict instead of re-measuring', async () => {
+    const gateway = fakeCacheGateway();
+    const rule = regexRule('pack/cached-safe', 'AKIA[A-Z0-9]{16}');
+    const key = ruleProbeKey(rule);
+    if (key === undefined) throw new Error('expected a rule key for a regex rule');
+    gateway.store.set(key, { verdict: 'safe', worstProbeMs: 75 });
+
+    const result = await filterUnsafeRules([rule], gateway);
+
+    expect(result).toEqual([rule]);
+    expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
+  });
+
   it('quarantines remaining unchecked rules once the pass budget is exhausted', async () => {
     const gateway = fakeCacheGateway();
     const ruleA = regexRule('pack/a', 'AKIA[A-Z0-9]{16}');

@@ -289,8 +289,13 @@ describe('recordProjectEgress — key collision safety', () => {
   it('never aliases a remote-less repo onto the non-git key for the same path', () => {
     // A repo with no remote falls back to a PATH-shaped identity, which is
     // exactly the shape the non-git key is built from. The prefixes are what
-    // keep the two universes apart.
-    const repo = join(root, 'repo');
+    // keep the two universes apart. Built under root's OWN realpath (macOS
+    // temp dirs live under a symlink, e.g. /var/folders -> /private/var/folders)
+    // so `repo` and `realpathSync(repo)` are already the same string — without
+    // this, the assertion below would pass for the unrelated reason that the
+    // two paths differ by the symlink prefix alone, never actually exercising
+    // the 'git:' / 'path:' prefix that is the thing under test.
+    const repo = join(realpathSync(root), 'repo');
     mkdirSync(repo);
     initRepo(repo);
     writeCall(join(repo, 'pay.ts'), 'api.alpha-corp.com');
@@ -303,6 +308,38 @@ describe('recordProjectEgress — key collision safety', () => {
     // The identity is the worktree root path, so only the prefix distinguishes
     // it from a non-git walk of the same directory.
     expect(key).toBe(`git:${repo}`);
+  });
+});
+
+describe('recordProjectEgress — dot-path exclusion', () => {
+  it('does not store egress from a root-level dot-file', () => {
+    initRepo(root, REMOTE_URL);
+    // fs-scan's entry.isFile() branch has no dot check, so a root-level
+    // dot-file like a real .releaserc.js IS walked and read.
+    writeCall(join(root, '.releaserc.js'), 'api.acme-webhooks.com');
+
+    const recorded = scanAndRecord(db, root, base);
+
+    // The reconciler's walk-mode delete excludes dot-paths ('file NOT LIKE
+    // '.%''), so a stored row here could never be cleared by a later scan.
+    // The collector must therefore never store one in the first place.
+    expect(recorded).toMatchObject({ destinations: 0, endpoints: 0, callSites: 0 });
+    expect(storedSites(store)).toEqual([]);
+  });
+
+  it('does not store egress from a dot-directory reached via an .akaignore negation', () => {
+    initRepo(root, REMOTE_URL);
+    // A bare '!' re-include beats the default dot-directory skip (fs-scan.ts),
+    // so this nested file IS walked despite living under a dot-directory —
+    // proving the exclusion below is a second, independent gate, not just a
+    // restatement of the walker's own default dot-directory skip.
+    writeFileSync(join(root, '.akaignore'), '!.github/\n');
+    writeCall(join(root, '.github', 'scripts', 'notify.js'), 'api.acme-webhooks.com');
+
+    const recorded = scanAndRecord(db, root, base);
+
+    expect(recorded).toMatchObject({ destinations: 0, endpoints: 0, callSites: 0 });
+    expect(storedSites(store)).toEqual([]);
   });
 });
 

@@ -1,11 +1,11 @@
 import { realpathSync, statSync } from 'node:fs';
-import { basename, dirname, relative, resolve, sep } from 'node:path';
+import { basename, dirname, relative, resolve } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
 import { isVendoredPath, resolveEgress } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { defaultDataDir, readWorkspaceSettings } from '@akasecurity/persistence';
-import { resolveRepoIdentity, resolveWorktreeRoot } from '@akasecurity/plugin-sdk';
+import { resolveRepoIdentity, resolveWorktreeRoot, toPosix } from '@akasecurity/plugin-sdk';
 import type { EgressWriteSummary } from '@akasecurity/schema';
 
 // The egress-recording pass shared by `aka scan` and the web-ui's Scan page:
@@ -25,10 +25,6 @@ import type { EgressWriteSummary } from '@akasecurity/schema';
 
 /** What one egress-recording pass wrote, for host display (`aka scan`). */
 export type EgressRecordResult = EgressWriteSummary & { project: string };
-
-function toPosix(path: string): string {
-  return path.split(sep).join('/');
-}
 
 /**
  * Record the egress `scanPathIntoStore` collected for `target`. Returns the
@@ -62,6 +58,10 @@ export function recordProjectEgress(
     let projectId: string | null;
 
     if (identity && worktreeRoot) {
+      // A linked worktree's identity resolves to its HEAD repo (resolveRepoIdentity),
+      // but paths are relativized against worktreeRoot, which is the CURRENT
+      // worktree's own root — so a linked-worktree scan shares its head repo's
+      // project key while its stored file paths are relative to its own checkout.
       root = worktreeRoot;
       // identity.url is the remote URL, or the worktree root PATH when the repo
       // has no remote. The 'git:' prefix keeps that path-shaped fallback from
@@ -90,6 +90,15 @@ export function recordProjectEgress(
       // Outside the resolved root: reconciliation is scoped to paths under it,
       // so a row keyed on a '../' path could never be replaced or cleared.
       if (file === '' || file.startsWith('../')) continue;
+      // The walk-mode reconciler's delete excludes dot-paths (`file NOT LIKE
+      // '.%' AND file NOT LIKE '%/.%'`), on the premise that this walk never
+      // descends into dot-directories. That premise does not hold — a
+      // root-level dot-file, an `.akaignore` `!` negation, or a directly-named
+      // dot-file target can all put one here — so a stored dot-path row would
+      // be one no future walk-mode scan could ever clear. Skip it instead: this
+      // pipeline simply does not record dot-path egress; the plugin scanner's
+      // ledger mode owns those files.
+      if (file.startsWith('.') || file.includes('/.')) continue;
       // `vendored` describes the path being stored — an absolute path can pick
       // up a vendor/ segment from an ancestor outside the project entirely.
       files.push({ ...hit, file, vendored: isVendoredPath(file) });

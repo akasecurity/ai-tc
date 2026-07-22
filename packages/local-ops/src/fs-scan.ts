@@ -8,6 +8,7 @@ import {
   extractEgress,
   extractManifestSdks,
   isVendoredPath,
+  LOCKFILE_BASENAMES,
   manifestKindOf,
   maskMatch,
   redact,
@@ -214,7 +215,17 @@ export interface ScanPathResult {
 function extractFileEgress(file: string, text: string): FileEgressHits | null {
   if (text.includes('\u0000')) return null;
 
-  const kind = manifestKindOf(basename(file));
+  const name = basename(file);
+  // Lockfiles are regenerated dependency-resolution output — every transitive
+  // package's registry URL is packaging noise, not egress. manifestKindOf
+  // already returns null for these basenames, and none of them currently
+  // carry a code extension, so this early-out changes nothing observable
+  // today; it exists so the exclusion still holds if a future lockfile
+  // basename ever does carry one, instead of relying on that gap staying
+  // empty by chance.
+  if (LOCKFILE_BASENAMES.has(name)) return null;
+
+  const kind = manifestKindOf(name);
   const sdkHits = kind === null ? [] : extractManifestSdks(text, kind);
   // A manifest is never also scanned for URL literals: package.json's own
   // registry/repository URLs are packaging metadata, not egress.

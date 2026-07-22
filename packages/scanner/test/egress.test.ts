@@ -321,6 +321,50 @@ describe('scanWorktree — egress-versioned ledger key', () => {
   });
 });
 
+describe('scanWorktree — manifest walk honors .akaignore', () => {
+  it("a manifest inside an .akaignore'd directory produces no egress hit and no scannedFiles entry", async () => {
+    write(repo, '.akaignore', 'ignored/\n');
+    write(repo, 'ignored/package.json', STRIPE_MANIFEST);
+    // Kept non-ignored so the run still calls recordProjectEgress at all —
+    // otherwise an empty run short-circuits before the assertion means anything.
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    const input = lastEgressInput();
+    expect(scannedFilesOf(input)).toEqual(['src/pay.ts']);
+    expect(input.hits.some((h) => h.site.file.startsWith('ignored/'))).toBe(false);
+  });
+
+  it('an !vendor/ negation re-includes a vendor/ manifest, matching the source walk', async () => {
+    write(repo, '.akaignore', '!vendor/\n');
+    write(repo, 'vendor/firstparty/package.json', STRIPE_MANIFEST);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    const input = lastEgressInput();
+    expect(scannedFilesOf(input)).toContain('vendor/firstparty/package.json');
+    expect(
+      input.hits.some(
+        (h) => h.site.file === 'vendor/firstparty/package.json' && h.method === 'SDK',
+      ),
+    ).toBe(true);
+  });
+
+  it('a manifest outside any ignore rule is still collected (guard against over-broad ignoring)', async () => {
+    write(repo, '.akaignore', 'ignored/\n');
+    write(repo, 'pkg/package.json', STRIPE_MANIFEST);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    const input = lastEgressInput();
+    expect(scannedFilesOf(input)).toContain('pkg/package.json');
+    expect(input.hits.some((h) => h.site.file === 'pkg/package.json' && h.method === 'SDK')).toBe(
+      true,
+    );
+  });
+});
+
 describe('scanWorktree — Data Shares kill-switch', () => {
   it('skips the egress write but still advances the ledger when the toggle is off', async () => {
     write(repo, 'src/pay.ts', STRIPE_CALL);

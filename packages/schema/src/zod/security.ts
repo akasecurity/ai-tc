@@ -41,6 +41,9 @@ export type SeveritySummaryResponse = z.infer<typeof SeveritySummaryResponse>;
 
 // An unsupported value fails Zod validation → 400 (shared VALIDATION_ERROR
 // envelope, consistent with every other query param in this API).
+//
+// The inline enum is deliberate: `TimeRange` carries a component id, so it would
+// emit as a $ref and the sibling `default` would be dropped from the parameter.
 export const SecurityRangeQuery = z.object({
   range: z.enum(TIME_RANGES).default(DEFAULT_TIME_RANGE),
 });

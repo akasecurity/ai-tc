@@ -10,7 +10,7 @@ import {
 } from '@akasecurity/ui-kit';
 import type { SVGProps } from 'react';
 
-import { TIME_RANGES, type TimeRange } from '../lib/timeRanges.ts';
+import { rangeLabel, TIME_RANGE_OPTIONS, type TimeRange } from '../lib/timeRanges.ts';
 
 // Inlined as plain JSX (no bundler svgr) so @akasecurity/dashboard-ui stays portable
 // across Vite + Next. Both follow text color via stroke="currentColor".
@@ -61,7 +61,7 @@ export function TimeRangeSelect({
   value: TimeRange;
   onChange: (value: TimeRange) => void;
 }) {
-  const currentLabel = TIME_RANGES.find((r) => r.value === value)?.label ?? value;
+  const currentLabel = rangeLabel(value);
 
   return (
     <DropdownMenu>
@@ -79,7 +79,7 @@ export function TimeRangeSelect({
             onChange(v as TimeRange);
           }}
         >
-          {TIME_RANGES.map((r) => (
+          {TIME_RANGE_OPTIONS.map((r) => (
             <DropdownMenuRadioItem key={r.value} value={r.value}>
               {r.label}
             </DropdownMenuRadioItem>

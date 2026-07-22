@@ -1,7 +1,10 @@
-import { DEFAULT_TIME_RANGE, rangeToFromIso, type TimeRange } from '@akasecurity/dashboard-ui';
+import {
+  DEFAULT_TIME_RANGE,
+  parseTimeRange,
+  rangeToFromIso,
+  type TimeRange,
+} from '@akasecurity/dashboard-ui';
 import { Harness, type ListActivitySessionsQuery } from '@akasecurity/schema';
-
-import { parseRange } from '../../lib/range';
 
 // The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=&empty=1)
 // so the Server Component re-queries the local store on every change — the same
@@ -38,7 +41,7 @@ export function parseSelectedId(sp: ActivitySearchParams): string {
 
 /** The time-range chip value, defaulting/validating via the shared range parser. */
 export function parseActivityRange(sp: ActivitySearchParams): TimeRange {
-  return parseRange(one(sp.range));
+  return parseTimeRange(one(sp.range));
 }
 
 /** Whether zero-activity ("background") sessions are shown — hidden by default;
@@ -82,8 +85,8 @@ export function buildActivityParams(opts: {
   const q = opts.q.trim();
   if (q) sp.set('q', q);
   for (const h of opts.harness) sp.append('harness', h);
-  // Omit only the actual default (what parseRange returns for a missing param),
-  // else a non-default range like 7d gets dropped and the next server render
+  // Omit only the actual default (what parseTimeRange returns for a missing param),
+  // else a non-default range like 30d gets dropped and the next server render
   // resets it to DEFAULT_TIME_RANGE.
   if (opts.range !== DEFAULT_TIME_RANGE) sp.set('range', opts.range);
   if (opts.id) sp.set('id', opts.id);

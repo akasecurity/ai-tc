@@ -13,10 +13,12 @@ export {
   type BlockedWindowOption,
   DEFAULT_BLOCKED_WINDOW,
   DEFAULT_TIME_RANGE,
+  parseTimeRange,
   RANGE_DAYS,
+  rangeLabel,
   rangeToFromIso,
   resolveBlockedWindow,
-  TIME_RANGES,
+  TIME_RANGE_OPTIONS,
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';

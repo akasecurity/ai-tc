@@ -32,10 +32,24 @@ import {
 import { safeJson } from '../internal/json.ts';
 import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
 import { containsPattern, placeholders } from '../internal/sql-text.ts';
+import { withTransaction } from '../internal/transactions.ts';
 import type { SharesReadPort } from '../ports.ts';
 
-// Section order for the grouped listing — provider → internal → ip.
-const KIND_ORDER: DestinationKind[] = ['provider', 'internal', 'ip'];
+// Section order for the grouped listing — provider → internal → external → ip.
+// A kind missing here is dropped from the response, not just left unlabelled.
+const KIND_ORDER: DestinationKind[] = ['provider', 'internal', 'external', 'ip'];
+
+// Transports that carry data without TLS. Mirrors deriveReviewReasons'
+// plaintext rule in @akasecurity/schema, which these SQL pre-filters must agree
+// with; `wss` and `https` are secure and excluded.
+const PLAINTEXT_TRANSPORT_SQL = "('http', 'ws')";
+
+// Host-first override resolution: `oh` re-attaches a decision by host, so it
+// survives a destination being pruned and re-detected under a fresh id; `ol`
+// matches rows written before the host column existed. Paired with
+// COALESCE(oh.decision, ol.decision).
+const OVERRIDE_JOIN = `LEFT JOIN egress_decision_override oh ON oh.host = d.host
+             LEFT JOIN egress_decision_override ol ON ol.destination_id = d.id AND ol.host IS NULL`;
 
 // Defensive bound on call sites embedded in a destination detail, so a runaway
 // destination can't inflate the read.
@@ -196,13 +210,15 @@ export class SqliteSharesRepository implements SharesReadPort {
     const callSites = countScalar(this.db, 'SELECT count(*) AS n FROM share_call_site');
     const insecure = countScalar(
       this.db,
-      "SELECT count(DISTINCT destination_id) AS n FROM share_endpoint WHERE transport = 'http'",
+      `SELECT count(DISTINCT destination_id) AS n FROM share_endpoint
+       WHERE transport IN ${PLAINTEXT_TRANSPORT_SQL}`,
     );
     const needsReview = countScalar(
       this.db,
       `SELECT count(DISTINCT d.id) AS n
        FROM share_destination d
-       LEFT JOIN share_endpoint e ON e.destination_id = d.id AND e.transport = 'http'
+       LEFT JOIN share_endpoint e ON e.destination_id = d.id
+         AND e.transport IN ${PLAINTEXT_TRANSPORT_SQL}
        WHERE d.trust IN ('unverified', 'ip') OR e.id IS NOT NULL`,
     );
 
@@ -314,30 +330,51 @@ export class SqliteSharesRepository implements SharesReadPort {
 
   /**
    * Set (decision) or clear (null) the egress decision override for a destination.
-   * `null` deletes the override row → reverts to the trust default.
+   * `null` deletes the override rows → reverts to the trust default.
+   *
+   * The written row carries both the destination id and its host, so the
+   * decision re-attaches by host after the destination is pruned and
+   * re-detected under a fresh id. Rows written before the host column existed
+   * (host NULL, matched by destination id) are replaced rather than left to
+   * shadow the new one. Runs IMMEDIATE: the host lookup is read-then-write and
+   * would otherwise race a concurrent prune.
    */
   setEgressDecision(destinationId: string, decision: EgressDecision | null): boolean {
-    const exists = this.db
-      .prepare('SELECT 1 FROM share_destination WHERE id = ?')
-      .get(destinationId);
-    if (exists === undefined) return false;
+    let existed = false;
+    withTransaction(
+      this.db,
+      () => {
+        const dest = this.db
+          .prepare('SELECT host FROM share_destination WHERE id = ?')
+          .get(destinationId) as { host: string } | undefined;
+        if (dest === undefined) return;
+        existed = true;
 
-    if (decision === null) {
-      this.db
-        .prepare('DELETE FROM egress_decision_override WHERE destination_id = ?')
-        .run(destinationId);
-      return true;
-    }
-    this.db
-      .prepare(
-        `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
-         VALUES (:id, :destinationId, :decision, :now, :now)
-         ON CONFLICT (destination_id) DO UPDATE SET
-           decision = excluded.decision,
-           updated_at = excluded.updated_at`,
-      )
-      .run({ id: randomUUID(), destinationId, decision, now: Date.now() });
-    return true;
+        this.db
+          .prepare(
+            `DELETE FROM egress_decision_override
+             WHERE host = :host OR (destination_id = :destinationId AND host IS NULL)`,
+          )
+          .run({ host: dest.host, destinationId });
+        if (decision === null) return;
+
+        this.db
+          .prepare(
+            `INSERT INTO egress_decision_override
+               (id, destination_id, host, decision, created_at, updated_at)
+             VALUES (:id, :destinationId, :host, :decision, :now, :now)`,
+          )
+          .run({
+            id: randomUUID(),
+            destinationId,
+            host: dest.host,
+            decision,
+            now: Date.now(),
+          });
+      },
+      'IMMEDIATE',
+    );
+    return existed;
   }
 
   // ─── Raw fetchers ────────────────────────────────────────────────────────────
@@ -375,7 +412,8 @@ export class SqliteSharesRepository implements SharesReadPort {
   ): DestRow[] {
     const cols = `d.id, d.kind, d.name, d.host, d.category, d.trust, d.note,
                   d.network_json AS networkJson, d.last_seen AS lastSeenMs,
-                  d.created_at AS createdAt, o.decision AS overrideDecision`;
+                  d.created_at AS createdAt,
+                  COALESCE(oh.decision, ol.decision) AS overrideDecision`;
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (kinds && kinds.length > 0) {
@@ -388,7 +426,8 @@ export class SqliteSharesRepository implements SharesReadPort {
       conditions.push(
         `(d.trust IN ('unverified', 'ip')
           OR EXISTS (SELECT 1 FROM share_endpoint re
-                     WHERE re.destination_id = d.id AND re.transport = 'http'))`,
+                     WHERE re.destination_id = d.id
+                       AND re.transport IN ${PLAINTEXT_TRANSPORT_SQL}))`,
       );
     }
 
@@ -402,7 +441,7 @@ export class SqliteSharesRepository implements SharesReadPort {
       params.push(pattern, pattern, pattern, pattern, pattern);
       sql = `SELECT DISTINCT ${cols}
              FROM share_destination d
-             LEFT JOIN egress_decision_override o ON o.destination_id = d.id
+             ${OVERRIDE_JOIN}
              LEFT JOIN share_endpoint e ON e.destination_id = d.id
              LEFT JOIN share_call_site c ON c.endpoint_id = e.id
              ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
@@ -410,7 +449,7 @@ export class SqliteSharesRepository implements SharesReadPort {
     } else {
       sql = `SELECT ${cols}
              FROM share_destination d
-             LEFT JOIN egress_decision_override o ON o.destination_id = d.id
+             ${OVERRIDE_JOIN}
              ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
              ORDER BY d.created_at ASC, d.id ASC`;
     }
@@ -427,9 +466,9 @@ export class SqliteSharesRepository implements SharesReadPort {
       this.db.prepare(
         `SELECT d.id, d.kind, d.name, d.host, d.category, d.trust, d.note,
                 d.network_json AS networkJson, d.last_seen AS lastSeenMs,
-                o.decision AS overrideDecision
+                COALESCE(oh.decision, ol.decision) AS overrideDecision
          FROM share_destination d
-         LEFT JOIN egress_decision_override o ON o.destination_id = d.id
+         ${OVERRIDE_JOIN}
          WHERE d.id = ?`,
       ),
       [destinationId],

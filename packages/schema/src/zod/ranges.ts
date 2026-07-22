@@ -10,6 +10,10 @@ import { z } from 'zod';
 
 export const TIME_RANGES = ['7d', '30d', '3m', '6m'] as const;
 
+// Carries a component id because it is echoed inside response bodies. Query
+// schemas re-declare an INLINE `z.enum(TIME_RANGES)` instead of reusing this
+// one, so the OpenAPI generator expands `range` as a plain parameter rather
+// than a $ref (params cannot be a $ref).
 export const TimeRange = z.enum(TIME_RANGES).meta({ id: 'TimeRange' });
 export type TimeRange = z.infer<typeof TimeRange>;
 
@@ -19,3 +23,15 @@ export const DEFAULT_TIME_RANGE: TimeRange = '7d';
 // Lookback per range, in days. 3m/6m are 90/180-day rolling approximations (no
 // calendar-month math) — fine for a rolling dashboard window.
 export const RANGE_DAYS: Record<TimeRange, number> = { '7d': 7, '30d': 30, '3m': 90, '6m': 180 };
+
+const TIME_RANGE_OR_DEFAULT = TimeRange.catch(DEFAULT_TIME_RANGE);
+
+/**
+ * Coerce an untrusted value — a `?range=` URL param, an `aka stats --range`
+ * flag — to a supported range, falling back to the default. Surfaces that read
+ * a range off the outside world parse it here, so a missing or unsupported
+ * value resolves to the same window on every surface.
+ */
+export function parseTimeRange(value: unknown): TimeRange {
+  return TIME_RANGE_OR_DEFAULT.parse(value);
+}

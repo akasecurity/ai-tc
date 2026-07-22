@@ -4,10 +4,9 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
-  DEFAULT_TIME_RANGE,
+  parseTimeRange,
   RANGE_DAYS,
   type SeveritySummaryResponse,
-  TIME_RANGES,
   type TimeRange,
   type TokenUsageSummary,
 } from '@akasecurity/schema';
@@ -16,13 +15,6 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
 
 const DAY_MS = 86_400_000;
-
-// Exported for the unit test (same pattern as renderFindingsSummary).
-export function parseRange(value: string | undefined): TimeRange {
-  return (TIME_RANGES as readonly string[]).includes(value ?? '')
-    ? (value as TimeRange)
-    : DEFAULT_TIME_RANGE;
-}
 
 // `aka stats` — print local-store aggregates: findings by severity + enforcement
 // actions in a range, installed-pack counts, and the latest findings. All reads
@@ -33,7 +25,7 @@ export async function runStats(argv: string[]): Promise<void> {
     options: { ...HOME_OPTION, range: { type: 'string' } },
   });
   const home = homeBase(values.home);
-  const range = parseRange(values.range);
+  const range = parseTimeRange(values.range);
 
   const db = openLocalDatabase(dataDir(home));
   const tokenFromMs = Date.now() - RANGE_DAYS[range] * DAY_MS;

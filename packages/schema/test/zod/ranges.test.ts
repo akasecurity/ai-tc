@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_TIME_RANGE, RANGE_DAYS, TIME_RANGES, TimeRange } from '../../src/zod/ranges.ts';
+import {
+  DEFAULT_TIME_RANGE,
+  parseTimeRange,
+  RANGE_DAYS,
+  TIME_RANGES,
+  TimeRange,
+} from '../../src/zod/ranges.ts';
 
 describe('DEFAULT_TIME_RANGE', () => {
   it('is 7 days', () => {
@@ -41,5 +47,27 @@ describe('RANGE_DAYS', () => {
   it('orders lookbacks the same way the ranges are listed', () => {
     const days = TIME_RANGES.map((r) => RANGE_DAYS[r]);
     expect(days).toEqual([...days].sort((a, b) => a - b));
+  });
+});
+
+describe('parseTimeRange', () => {
+  it('accepts every supported range', () => {
+    for (const range of TIME_RANGES) {
+      expect(parseTimeRange(range)).toBe(range);
+    }
+  });
+
+  it('falls back to the default for a missing or unsupported value', () => {
+    expect(parseTimeRange(undefined)).toBe(DEFAULT_TIME_RANGE);
+    expect(parseTimeRange('')).toBe(DEFAULT_TIME_RANGE);
+    expect(parseTimeRange('1y')).toBe(DEFAULT_TIME_RANGE);
+  });
+
+  // Callers hand it raw URL params and CLI flags, so a non-string must resolve
+  // to the default rather than throw.
+  it('falls back for a non-string value', () => {
+    expect(parseTimeRange(null)).toBe(DEFAULT_TIME_RANGE);
+    expect(parseTimeRange(7)).toBe(DEFAULT_TIME_RANGE);
+    expect(parseTimeRange(['7d'])).toBe(DEFAULT_TIME_RANGE);
   });
 });

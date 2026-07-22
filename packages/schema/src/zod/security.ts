@@ -39,14 +39,6 @@ export const SeveritySummaryResponse = z
   .meta({ id: 'SeveritySummaryResponse' });
 export type SeveritySummaryResponse = z.infer<typeof SeveritySummaryResponse>;
 
-// ---------------------------------------------------------------------------
-// Shared `range` query param for the range-driven widgets. The values, the
-// default, and the per-range lookback live in ranges.ts. TimeRange carries a
-// component id because it is echoed inside response bodies; the query schemas
-// re-declare an INLINE enum (no id) so the OpenAPI generator expands `range`
-// as a plain parameter instead of a $ref (params cannot be a $ref).
-// ---------------------------------------------------------------------------
-
 // An unsupported value fails Zod validation → 400 (shared VALIDATION_ERROR
 // envelope, consistent with every other query param in this API).
 export const SecurityRangeQuery = z.object({

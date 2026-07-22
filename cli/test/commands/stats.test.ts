@@ -1,23 +1,7 @@
 import type { SeveritySummaryResponse, TokenUsageSummary } from '@akasecurity/schema';
-import { DEFAULT_TIME_RANGE, TIME_RANGES } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { parseRange, renderFindingsSummary, renderTokenUsage } from '../../src/commands/stats.ts';
-
-describe('parseRange', () => {
-  it('accepts every supported range', () => {
-    for (const range of TIME_RANGES) {
-      expect(parseRange(range)).toBe(range);
-    }
-  });
-
-  it('falls back to the shared default for a missing or unsupported value', () => {
-    expect(parseRange(undefined)).toBe(DEFAULT_TIME_RANGE);
-    expect(parseRange('')).toBe(DEFAULT_TIME_RANGE);
-    expect(parseRange('1y')).toBe(DEFAULT_TIME_RANGE);
-    expect(DEFAULT_TIME_RANGE).toBe('7d');
-  });
-});
+import { renderFindingsSummary, renderTokenUsage } from '../../src/commands/stats.ts';
 
 describe('renderFindingsSummary', () => {
   it('shows Caught (sum of per-severity caught) and Needs remediation (top-level needsRemediation)', () => {

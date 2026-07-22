@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // runs — the journey harness (test/journey) drives those built scripts.
 //
 // The journey tests spawn those built scripts as real child processes, which
-// runs slowly on the Windows CI runner under parallel load, so raise the
+// runs slowly under Turbo's parallel task load, so raise the
 // per-test AND per-hook timeouts above vitest's 5s/10s defaults (mirrors
 // packages/persistence/vitest.config.ts).
 export default defineConfig({

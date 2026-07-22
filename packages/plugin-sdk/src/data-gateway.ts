@@ -12,6 +12,7 @@ import type {
   InventoryFacets,
   LlmCallInput,
   PolicyBundle,
+  RecordProjectEgressInput,
   ResolvedInventory,
   SessionTokenReport,
   ToolCallInput,
@@ -163,5 +164,11 @@ export interface DataGateway {
   // (SqliteResolutionsRepository.insertResolution) — the
   // resolutions ledger is local, like the scan ledger it derives from.
   insertResolution(input: ResolutionInput): Promise<void>;
+  // Record one project's statically-extracted egress (destinations, endpoints,
+  // call sites) into the local store. Unlike most gateway writes this THROWS
+  // on failure rather than swallowing it: the caller pairs a failed write with
+  // skipping its scan-ledger commit, so the next scan retries the same files
+  // instead of treating them as already processed.
+  recordProjectEgress(input: RecordProjectEgressInput): Promise<void>;
   close(): Promise<void>;
 }

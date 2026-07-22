@@ -102,6 +102,7 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
       db.resolutions.insertResolution(input);
       return Promise.resolve();
     },
+    recordProjectEgress: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }

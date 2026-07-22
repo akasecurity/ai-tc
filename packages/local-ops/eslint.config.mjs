@@ -1,8 +1,9 @@
 // @ts-check
-import { base } from '@akasecurity/eslint-config';
+import { base, noEnterpriseImports } from '@akasecurity/eslint-config';
 
 export default [
   ...base,
+  ...noEnterpriseImports,
   {
     languageOptions: {
       parserOptions: {

@@ -6,6 +6,12 @@ import { DetectionCategory, Severity } from './finding.ts';
 export const MatcherType = z.enum(['keyword', 'regex', 'validator']).meta({ id: 'MatcherType' });
 export type MatcherType = z.infer<typeof MatcherType>;
 
+// The ReDoS timing verdict for a regex rule. 'safe' means the rule passed
+// the adversarial probe battery within budget; 'quarantined' means it was
+// excluded from the active ruleset.
+export const RuleProbeVerdict = z.enum(['safe', 'quarantined']).meta({ id: 'RuleProbeVerdict' });
+export type RuleProbeVerdict = z.infer<typeof RuleProbeVerdict>;
+
 export const KeywordMatcher = z.object({
   type: z.literal('keyword'),
   // An empty keyword matches at every position, yielding one zero-length span

@@ -21,7 +21,7 @@ plugins/claude-code/scripts/
 
 # local agent-tooling state — not product code
 .wolf/
-.worktrees/
+.superpowers/
 
 # maintainer-internal docs never ship in the OSS tree (see CLAUDE.md)
 docs/
@@ -29,3 +29,4 @@ docs/
 # Claude Code project config stays local — never ship agent-tooling config
 .claude/settings.json
 .claude/rules/
+.worktrees/

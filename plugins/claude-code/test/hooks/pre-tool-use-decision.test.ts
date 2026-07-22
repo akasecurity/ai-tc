@@ -320,6 +320,8 @@ function fakeGateway(b: PolicyBundle): DataGateway {
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
+    getRuleProbeVerdict: () => Promise.resolve(undefined),
+    setRuleProbeVerdict: () => Promise.resolve(),
     close: () => Promise.resolve(),
   };
 }

@@ -1,0 +1,272 @@
+{
+  "hosts": [
+    {
+      "label": "api.stripe.com resolves to Stripe (subdomain of a bare hostSuffix)",
+      "host": "api.stripe.com",
+      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe" }
+    },
+    {
+      "label": "stripe.com resolves to Stripe (exact hostSuffix)",
+      "host": "stripe.com",
+      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe" }
+    },
+    {
+      "label": "www.stripe.com resolves to Stripe (another subdomain)",
+      "host": "www.stripe.com",
+      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe" }
+    },
+    {
+      "label": "api.datadoghq.eu resolves to Datadog (second hostSuffix entry)",
+      "host": "api.datadoghq.eu",
+      "expect": { "kind": "provider", "trust": "recognized", "name": "Datadog" }
+    },
+    {
+      "label": "evilstripe.com is NOT Stripe — mid-label suffix must not match",
+      "host": "evilstripe.com",
+      "expect": { "kind": "external", "trust": "unverified", "name": "evilstripe.com" }
+    },
+    {
+      "label": "evildatadoghq.com is NOT Datadog — same suffix hazard, different provider",
+      "host": "evildatadoghq.com",
+      "expect": { "kind": "external", "trust": "unverified", "name": "evildatadoghq.com" }
+    },
+    {
+      "label": "db.internal resolves internal via the .internal TLD",
+      "host": "db.internal",
+      "expect": { "kind": "internal", "trust": "internal", "name": "db.internal" }
+    },
+    {
+      "label": "intranet (single-label host) resolves internal",
+      "host": "intranet",
+      "expect": { "kind": "internal", "trust": "internal", "name": "intranet" }
+    },
+    {
+      "label": "host.home.arpa resolves internal via the dotted home.arpa TLD",
+      "host": "host.home.arpa",
+      "expect": { "kind": "internal", "trust": "internal", "name": "host.home.arpa" }
+    },
+    {
+      "label": "app.corp resolves internal via the .corp TLD",
+      "host": "app.corp",
+      "expect": { "kind": "internal", "trust": "internal", "name": "app.corp" }
+    },
+    {
+      "label": "goodcode.us resolves internal only when the caller supplies it as an internalDomain",
+      "host": "goodcode.us",
+      "opts": { "internalDomains": ["goodcode.us"] },
+      "expect": { "kind": "internal", "trust": "internal", "name": "goodcode.us" }
+    },
+    {
+      "label": "goodcode.us with no internalDomains hint resolves external",
+      "host": "goodcode.us",
+      "expect": { "kind": "external", "trust": "unverified", "name": "goodcode.us" }
+    },
+    {
+      "label": "acme-partner.com has no registry match and no internal signal — external, not internal",
+      "host": "acme-partner.com",
+      "expect": { "kind": "external", "trust": "unverified", "name": "acme-partner.com" }
+    },
+    {
+      "label": "an unrecognized public domain with a malformed-IP-looking label still resolves external",
+      "host": "999.1.1.1",
+      "expect": { "kind": "external", "trust": "unverified", "name": "999.1.1.1" }
+    },
+    {
+      "label": "198.51.100.23 is a public IPv4 literal — kind ip",
+      "host": "198.51.100.23",
+      "expect": { "kind": "ip", "trust": "ip", "name": "198.51.100.23" }
+    },
+    {
+      "label": "172.32.0.1 is just outside the private 172.16-31 range — kind ip, not excluded",
+      "host": "172.32.0.1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "172.32.0.1" }
+    },
+    {
+      "label": "localhost is excluded",
+      "host": "localhost",
+      "expect": null
+    },
+    {
+      "label": "127.0.0.1 (loopback) is excluded",
+      "host": "127.0.0.1",
+      "expect": null
+    },
+    {
+      "label": "10.1.2.3 (private) is excluded",
+      "host": "10.1.2.3",
+      "expect": null
+    },
+    {
+      "label": "192.168.0.5 (private) is excluded",
+      "host": "192.168.0.5",
+      "expect": null
+    },
+    {
+      "label": "0.0.0.0 (this-network) is excluded",
+      "host": "0.0.0.0",
+      "expect": null
+    },
+    {
+      "label": "169.254.1.1 (link-local) is excluded",
+      "host": "169.254.1.1",
+      "expect": null
+    },
+    {
+      "label": "172.16.5.5 (private, low end of the 16-31 range) is excluded",
+      "host": "172.16.5.5",
+      "expect": null
+    },
+    {
+      "label": "172.31.255.255 (private, high end of the 16-31 range) is excluded",
+      "host": "172.31.255.255",
+      "expect": null
+    },
+    {
+      "label": "224.0.0.1 (multicast/reserved) is excluded",
+      "host": "224.0.0.1",
+      "expect": null
+    },
+    {
+      "label": "example.com is excluded",
+      "host": "example.com",
+      "expect": null
+    },
+    {
+      "label": "sub.example.org (subdomain of an excluded reserved domain) is excluded",
+      "host": "sub.example.org",
+      "expect": null
+    },
+    {
+      "label": "api.example.net (subdomain of an excluded reserved domain) is excluded",
+      "host": "api.example.net",
+      "expect": null
+    },
+    {
+      "label": "foo.test is excluded",
+      "host": "foo.test",
+      "expect": null
+    },
+    {
+      "label": "www.w3.org is excluded",
+      "host": "www.w3.org",
+      "expect": null
+    },
+    {
+      "label": "w3.org (bare) is excluded",
+      "host": "w3.org",
+      "expect": null
+    },
+    {
+      "label": "schemas.openxmlformats.org is excluded",
+      "host": "schemas.openxmlformats.org",
+      "expect": null
+    },
+    {
+      "label": "schemas.microsoft.com is excluded",
+      "host": "schemas.microsoft.com",
+      "expect": null
+    },
+    {
+      "label": "schemas.android.com is excluded",
+      "host": "schemas.android.com",
+      "expect": null
+    },
+    {
+      "label": "maven.apache.org is excluded",
+      "host": "maven.apache.org",
+      "expect": null
+    }
+  ],
+  "sdks": [
+    {
+      "label": "npm:stripe resolves to stripe",
+      "ecosystem": "npm",
+      "pkg": "stripe",
+      "expectId": "stripe"
+    },
+    {
+      "label": "pypi:SENTRY_SDK resolves to sentry (PEP-503: case AND separator normalization)",
+      "ecosystem": "pypi",
+      "pkg": "SENTRY_SDK",
+      "expectId": "sentry"
+    },
+    {
+      "label": "pypi:google.cloud.storage resolves to gcp (PEP-503 dot-separator normalization)",
+      "ecosystem": "pypi",
+      "pkg": "google.cloud.storage",
+      "expectId": "gcp"
+    },
+    {
+      "label": "go:github.com/stripe/stripe-go/v76 resolves to stripe (path-prefix match)",
+      "ecosystem": "go",
+      "pkg": "github.com/stripe/stripe-go/v76",
+      "expectId": "stripe"
+    },
+    {
+      "label": "go:github.com/stripe/stripe-go (exact, no version suffix) resolves to stripe",
+      "ecosystem": "go",
+      "pkg": "github.com/stripe/stripe-go",
+      "expectId": "stripe"
+    },
+    {
+      "label": "go:github.com/stripe/stripe-go-extra does NOT match — prefix must respect the '/' boundary",
+      "ecosystem": "go",
+      "pkg": "github.com/stripe/stripe-go-extra",
+      "expectId": null
+    },
+    {
+      "label": "maven:com.stripe.subthing resolves to stripe (group-id prefix match)",
+      "ecosystem": "maven",
+      "pkg": "com.stripe.subthing",
+      "expectId": "stripe"
+    },
+    {
+      "label": "maven:com.stripeextra does NOT match — prefix must respect the '.' boundary",
+      "ecosystem": "maven",
+      "pkg": "com.stripeextra",
+      "expectId": null
+    },
+    {
+      "label": "nuget:stripe.NET resolves to stripe (case-insensitive exact)",
+      "ecosystem": "nuget",
+      "pkg": "stripe.NET",
+      "expectId": "stripe"
+    },
+    {
+      "label": "rubygems:stripe (lowercase, exact) resolves to stripe",
+      "ecosystem": "rubygems",
+      "pkg": "stripe",
+      "expectId": "stripe"
+    },
+    {
+      "label": "rubygems:Stripe (capitalized) does NOT match — rubygems is case-sensitive exact",
+      "ecosystem": "rubygems",
+      "pkg": "Stripe",
+      "expectId": null
+    },
+    {
+      "label": "composer:sentry/sentry resolves to sentry",
+      "ecosystem": "composer",
+      "pkg": "sentry/sentry",
+      "expectId": "sentry"
+    },
+    {
+      "label": "cargo:sentry resolves to sentry",
+      "ecosystem": "cargo",
+      "pkg": "sentry",
+      "expectId": "sentry"
+    },
+    {
+      "label": "npm:left-pad has no provider (miss)",
+      "ecosystem": "npm",
+      "pkg": "left-pad",
+      "expectId": null
+    },
+    {
+      "label": "pypi:requests has no provider (miss)",
+      "ecosystem": "pypi",
+      "pkg": "requests",
+      "expectId": null
+    }
+  ]
+}

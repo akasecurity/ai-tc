@@ -198,13 +198,13 @@ export function applyMigrations(db: DatabaseSync): void {
 // SQLite generated-column DDL for the six token-usage facets: the four counts are
 // integer, model/provider are text, all VIRTUAL via json_extract.
 //
-// CANONICAL SOURCE is the `0010_token_usage_audit_columns` migration in
+// CANONICAL SOURCE is the `0001_adorable_marten_broadcloak` migration in
 // `@akasecurity/schema` (packages/schema/src/drizzle/sqlite-ddl.ts), itself generated from
 // the local-store drizzle column defs in `packages/schema/src/drizzle/local/sqlite.ts`. This
 // list is an INTENTIONAL re-hardcoding, not a careless copy: `@akasecurity/persistence` is
 // forbidden from importing `@akasecurity/schema`'s drizzle layer (boundary rule — it may
 // only touch the Zod/DDL re-exports, never the drizzle internals), so we cannot
-// share the column objects directly. Any column added/removed/renamed in the 0010
+// share the column objects directly. Any column added/removed/renamed in that
 // migration MUST be mirrored here. `migrations.test.ts` guards the column-NAME set
 // against drift so a mismatch fails loudly instead of silently skipping a facet.
 export const TOKEN_USAGE_COLUMNS: readonly { name: string; ddl: string }[] = [

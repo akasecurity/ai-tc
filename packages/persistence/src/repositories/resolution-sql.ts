@@ -1,11 +1,11 @@
 // Single source of truth for the LATEST-RESOLUTION-WINS SQL used everywhere a
 // finding's lifecycle status is derived from the append-only finding_resolution
 // table. The rule: a key is classified by its NEWEST row only (max created_at,
-// tie-broken by rowid — the SQLite twin of the Postgres `seq` tiebreak), never
-// by "does ANY row exist" — otherwise a fixed-at-source key that is later
-// redetected (the same secret re-added) would stay invisibly "caught" under its
-// stale resolved row forever. See SqliteResolutionsRepository's class doc for
-// the full invariant, and keep the two consumers in lockstep:
+// ties broken by the higher rowid so rows sharing a created_at still resolve in
+// insertion order), never by "does ANY row exist" — otherwise a fixed-at-source
+// key that is later redetected (the same secret re-added) would stay invisibly
+// "caught" under its stale resolved row forever. See SqliteResolutionsRepository's
+// class doc for the full invariant, and keep the two consumers in lockstep:
 //
 //   - SqliteSecurityRepository.severitySummary (caught / open-at-rest buckets)
 //   - SqliteFindingsRepository.listGroupedFindings (per-finding status column)

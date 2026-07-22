@@ -159,19 +159,15 @@ describe('fail-open: malformed/hostile input never breaks a hook', () => {
         });
       });
 
-      it(
-        '100 MB stdin → exit 0, empty stdout, no OOM',
-        () => {
-          withTempHome((home) => {
-            const result = runHook(hook.name, HUGE_STDIN, {
-              env: tempHomeEnv(home),
-              timeoutMs: 30_000,
-            });
-            expectFailsOpen(result.status, result.stdout);
+      it('100 MB stdin → exit 0, empty stdout, no OOM', () => {
+        withTempHome((home) => {
+          const result = runHook(hook.name, HUGE_STDIN, {
+            env: tempHomeEnv(home),
+            timeoutMs: 30_000,
           });
-        },
-        35_000,
-      );
+          expectFailsOpen(result.status, result.stdout);
+        });
+      }, 35_000);
     });
   }
 });

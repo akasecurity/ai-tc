@@ -295,5 +295,70 @@
     "label": "NEGATIVE: a verb-first argument with a fully dynamic url produces nothing",
     "text": "req, err := http.NewRequest(\"POST\", fmt.Sprintf(\"https://%s/v1\", host), body)",
     "expect": []
+  },
+  {
+    "label": "a bare client call with a second variable argument is not a proven bare call: REF, not a fabricated GET",
+    "text": "fetch('https://a.io/x', options);",
+    "expect": [
+      {
+        "url": "https://a.io/x",
+        "host": "a.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a bare client call with a second call-expression argument is not a proven bare call: REF, not a fabricated GET",
+    "text": "fetch('https://a.io/x', buildOpts(cfg));",
+    "expect": [
+      {
+        "url": "https://a.io/x",
+        "host": "a.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a multi-line bare client call with a second options argument is not a proven bare call: REF, not a fabricated GET",
+    "text": [
+      "fetch(",
+      " 'https://a.io/x',",
+      " requestOptions,",
+      ");"
+    ],
+    "expect": [
+      {
+        "url": "https://a.io/x",
+        "host": "a.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a trailing comma after the sole url argument is still a single-argument call: GET",
+    "text": "fetch('https://a.io/x',);",
+    "expect": [
+      {
+        "url": "https://a.io/x",
+        "host": "a.io",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
   }
 ]

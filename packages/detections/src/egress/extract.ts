@@ -96,10 +96,15 @@ const IP_HOST_CONTEXT = /\b(host|hostname|server|address|endpoint|ip|url|uri)\b/
 const IP_SFTP_CONTEXT = /\bs(ftp|cp|sh)\b/i;
 const IP_SMTP_CONTEXT = /\b(smtp|mail)\b/i;
 
-// Redaction. Values are masked, keys are kept readable.
+// Redaction. Values are masked, keys are kept readable. The quote class
+// covers backtick-quoted (template literal) values the same as single- and
+// double-quoted ones. A value that starts with `Bearer` followed by a space,
+// quote, or backtick is left for the bearer rule below, which masks the
+// token while keeping the scheme keyword visible; a `Bearer`-prefixed value
+// with no such delimiter (e.g. `Bearer-x`, `Bearer.x`) is masked here instead.
 const USERINFO = /:\/\/[^@/\s]+@/g;
 const SECRET_VALUE =
-  /((?:api[_-]?key|apikey|token|secret|password|passwd|authorization|access[_-]?key|access[_-]?token|sig|signature|sas|assertion)['"]?\s*[:=]\s*['"]?)(?!Bearer\b)[^\s'"&]+/gi;
+  /((?:api[_-]?key|apikey|token|secret|password|passwd|authorization|access[_-]?key|access[_-]?token|sig|signature|sas|assertion)['"`]?\s*[:=]\s*['"`]?)(?!Bearer[\s'"`])[^\s'"`&]+/gi;
 const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 
 const VENDORED_PATH = /(^|\/)(vendor|third_party|external)\//;
@@ -125,7 +130,7 @@ export function redactSnippet(line: string): string {
 
 /**
  * Pull every URL literal and bare public IPv4 reference out of one file's
- * text, in line order.
+ * text, sorted ascending by line, then by url (never by match order).
  */
 export function extractEgress(text: string): RawEndpointHit[] {
   const lineStarts = lineStartOffsets(text);
@@ -286,8 +291,11 @@ function identifierWords(line: string): string {
 }
 
 // Methods are evidence, never fabrication: a bare client call counts as GET
-// only when the whole call is visible and carries no method key. Anything the
-// windows cannot prove is a plain reference.
+// only when the whole call is visible, the URL is its only argument, and it
+// carries no method key. Anything the windows cannot prove is a plain
+// reference — including a call that passes a second argument such as an
+// options object, since that object's own contents (e.g. its HTTP method)
+// sit outside the window this pass can see.
 function inferMethod(text: string, start: number, end: number): HttpMethod {
   const before = text.slice(Math.max(0, start - BEFORE_WINDOW), start);
   const after = text.slice(end, end + AFTER_WINDOW);
@@ -303,7 +311,13 @@ function inferMethod(text: string, start: number, end: number): HttpMethod {
 
   if (CLIENT_OPENER.test(before)) {
     const close = callCloseIndex(after);
-    if (close !== -1 && !ANY_METHOD_KEY.test(after.slice(0, close))) return 'GET';
+    if (
+      close !== -1 &&
+      isSoleArgument(after, close) &&
+      !ANY_METHOD_KEY.test(after.slice(0, close))
+    ) {
+      return 'GET';
+    }
   }
 
   return 'REF';
@@ -327,6 +341,16 @@ function callCloseIndex(span: string): number {
     }
   }
   return -1;
+}
+
+// True when nothing sits between the URL match and the call's closing paren
+// except an optional single trailing comma. A comma anywhere else in that
+// span — including one that opens a nested call's own argument list — marks
+// a second argument to the outer call, so the URL is not its sole argument.
+function isSoleArgument(span: string, close: number): boolean {
+  const between = span.slice(0, close - 1).trimEnd();
+  const withoutTrailingComma = between.endsWith(',') ? between.slice(0, -1) : between;
+  return !withoutTrailingComma.includes(',');
 }
 
 // Per-line derivations are computed on first use and reused by every later

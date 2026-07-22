@@ -1,0 +1,405 @@
+[
+  {
+    "label": "fetch of a literal https URL yields one hit with the host portless",
+    "text": "const charge = await fetch('https://api.stripe.com/v1/charges');",
+    "expect": [
+      {
+        "url": "https://api.stripe.com/v1/charges",
+        "host": "api.stripe.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "template literal keeps the ${var} token in the path and sets template",
+    "text": "const metricsUrl = `https://api.newrelic.com/v2/apps/${appId}/metrics.json`;",
+    "expect": [
+      {
+        "url": "https://api.newrelic.com/v2/apps/${var}/metrics.json",
+        "host": "api.newrelic.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": true,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "python f-string placeholder normalizes to ${var} and sets template",
+    "text": "url = f\"https://api.x.dev/v1/{user_id}\"",
+    "expect": [
+      {
+        "url": "https://api.x.dev/v1/${var}",
+        "host": "api.x.dev",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": true,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "printf-style placeholder normalizes to ${var} and sets template",
+    "text": "apiURL := fmt.Sprintf(\"https://api.acme-corp.com/v1/users/%s\", userID)",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/users/${var}",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": true,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "wss scheme maps to the wss transport",
+    "text": "const socket = new WebSocket('wss://stream.acme-corp.com/feed');",
+    "expect": [
+      {
+        "url": "wss://stream.acme-corp.com/feed",
+        "host": "stream.acme-corp.com",
+        "port": null,
+        "transport": "wss",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "ws scheme maps to the plaintext ws transport",
+    "text": "const dev = new WebSocket('ws://events.acme-corp.com/live');",
+    "expect": [
+      {
+        "url": "ws://events.acme-corp.com/live",
+        "host": "events.acme-corp.com",
+        "port": null,
+        "transport": "ws",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "sftp scheme maps to the sftp transport",
+    "text": "SFTP_URL = \"sftp://files.acme-corp.com/uploads\"",
+    "expect": [
+      {
+        "url": "sftp://files.acme-corp.com/uploads",
+        "host": "files.acme-corp.com",
+        "port": null,
+        "transport": "sftp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "grpcs collapses to the grpc transport and its port is a separate field",
+    "text": "conn, err := grpc.Dial(\"grpcs://svc.acme-corp.com:50051\")",
+    "expect": [
+      {
+        "url": "grpc://svc.acme-corp.com:50051",
+        "host": "svc.acme-corp.com",
+        "port": 50051,
+        "transport": "grpc",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "smtp scheme maps to the smtp transport and keeps its port",
+    "text": "MAIL_URL = \"smtp://mail.acme-corp.com:587\"",
+    "expect": [
+      {
+        "url": "smtp://mail.acme-corp.com:587",
+        "host": "mail.acme-corp.com",
+        "port": 587,
+        "transport": "smtp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "userinfo is stripped from both the stored url and the snippet",
+    "text": "fetch(\"https://svc:s3cr3t@api.acme-corp.com/v1/push\")",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/push",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1,
+        "snippet": "fetch(\"https://api.acme-corp.com/v1/push\")"
+      }
+    ]
+  },
+  {
+    "label": "query string is stripped from the url and its key value is masked in the snippet",
+    "text": "const r = await fetch('https://api.acme-corp.com/v1/search?api_key=SECRET123');",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/search",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1,
+        "snippet": "const r = await fetch('https://api.acme-corp.com/v1/search?api_key=••••');"
+      }
+    ]
+  },
+  {
+    "label": "fragment is stripped from the url",
+    "text": "// https://docs.acme-corp.com/guide#section-3",
+    "expect": [
+      {
+        "url": "https://docs.acme-corp.com/guide",
+        "host": "docs.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "trailing sentence punctuation is trimmed off the url",
+    "text": "# See https://api.acme-corp.com/v1/docs.",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/docs",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "explicit non-default port lands in port, never in host",
+    "text": "const base = 'https://api.stripe.com:8443/v1/charges';",
+    "expect": [
+      {
+        "url": "https://api.stripe.com:8443/v1/charges",
+        "host": "api.stripe.com",
+        "port": 8443,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a scheme default port is dropped from both url and port",
+    "text": "const base = 'https://api.acme-corp.com:443/v1';",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a bare origin normalizes to a single trailing slash path",
+    "text": "const r = await fetch('https://api.acme-corp.com');",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "line numbers track the raw text across several lines",
+    "text": [
+      "const a = 'https://api.stripe.com/v1/charges';",
+      "const b = 'https://api.twilio.com/2010-04-01/Accounts';"
+    ],
+    "expect": [
+      {
+        "url": "https://api.stripe.com/v1/charges",
+        "host": "api.stripe.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      },
+      {
+        "url": "https://api.twilio.com/2010-04-01/Accounts",
+        "host": "api.twilio.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "CRLF line endings do not shift line numbers or leak into the snippet",
+    "text": "const a = 'https://api.stripe.com/v1/charges';\r\nconst b = 'https://api.twilio.com/x';",
+    "expect": [
+      {
+        "url": "https://api.stripe.com/v1/charges",
+        "host": "api.stripe.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1,
+        "snippet": "const a = 'https://api.stripe.com/v1/charges';"
+      },
+      {
+        "url": "https://api.twilio.com/x",
+        "host": "api.twilio.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2,
+        "snippet": "const b = 'https://api.twilio.com/x';"
+      }
+    ]
+  },
+  {
+    "label": "an uppercased host is lowercased",
+    "text": "const base = 'https://API.Acme-Corp.COM/v1';",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an uppercased host on a non-special scheme is lowercased too",
+    "text": "SFTP_URL = \"sftp://Files.ACME-corp.com/uploads\"",
+    "expect": [
+      {
+        "url": "sftp://files.acme-corp.com/uploads",
+        "host": "files.acme-corp.com",
+        "port": null,
+        "transport": "sftp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "NEGATIVE: a placeholder in the authority drops the hit (fully dynamic host)",
+    "text": "const url = `https://${base}/v1`;",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a templated subdomain is still an authority placeholder",
+    "text": "url = f\"https://{tenant}.acme-corp.com/v1\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a templated port cannot be parsed and is dropped",
+    "text": "const u = `https://api.acme-corp.com:${port}/v1`;",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a bare host literal with no scheme is not a URL",
+    "text": "const host = 'api.acme-corp.com/v1';",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a scheme this pass does not cover is ignored",
+    "text": "const conn = 'postgres://db.acme-corp.com:5432/app';",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE (known gap): bracketed IPv6 authorities are not matched",
+    "text": "const r = await fetch('http://[2001:db8::1]/health');",
+    "expect": []
+  },
+  {
+    "label": "localhost is extracted raw and excluded downstream by resolveHost",
+    "text": "const r = await fetch('http://localhost:3000/x');",
+    "resolvesToNull": true,
+    "expect": [
+      {
+        "url": "http://localhost:3000/x",
+        "host": "localhost",
+        "port": 3000,
+        "transport": "http",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "example.com is extracted raw and excluded downstream by resolveHost",
+    "text": "// https://example.com/docs",
+    "resolvesToNull": true,
+    "expect": [
+      {
+        "url": "https://example.com/docs",
+        "host": "example.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an xmlns schema identifier is extracted raw and excluded downstream by resolveHost",
+    "text": "const svg = '<svg xmlns=\"http://www.w3.org/2000/svg\">';",
+    "resolvesToNull": true,
+    "expect": [
+      {
+        "url": "http://www.w3.org/2000/svg",
+        "host": "www.w3.org",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  }
+]

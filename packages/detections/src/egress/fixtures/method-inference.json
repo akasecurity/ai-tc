@@ -1,0 +1,299 @@
+[
+  {
+    "label": "verb-method opener: axios.post( yields POST",
+    "text": "axios.post('https://api.acme-corp.com/v1/events', payload)",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/events",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "verb-method opener: axios.get( yields GET",
+    "text": "const { data } = await axios.get('https://api.acme-corp.com/v1/items');",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/items",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "verb-method opener: api.delete( yields DELETE",
+    "text": "await api.delete(\"https://api.acme-corp.com/v1/items/42\")",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/items/42",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "DELETE",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "verb-method opener reaches across a newline to a templated url",
+    "text": [
+      "axios.post(",
+      "  `https://api.acme-corp.com/v1/events/${id}`,",
+      "  payload,",
+      ")"
+    ],
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/events/${var}",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": true,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "options evidence three lines below the url yields POST",
+    "text": [
+      "const res = await fetch('https://api.acme-corp.com/v1/users',",
+      "  {",
+      "    method: 'POST',",
+      "    body: JSON.stringify(user),",
+      "  });"
+    ],
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/users",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "single-line options object still carries method evidence",
+    "text": "fetch('https://api.acme-corp.com/v1/items/42', { method: 'DELETE' })",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/items/42",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "DELETE",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a lowercase method value is normalized to the uppercase verb",
+    "text": "fetch('https://a.acme.io/x', { method: \"put\" })",
+    "expect": [
+      {
+        "url": "https://a.acme.io/x",
+        "host": "a.acme.io",
+        "port": null,
+        "transport": "https",
+        "method": "PUT",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "options evidence written with = rather than : still counts",
+    "text": "r = session.request(url='https://api.acme-corp.com/v1/x', method='POST')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/x",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "verb-first argument: http.NewRequest(\"POST\", url) yields POST",
+    "text": "req, err := http.NewRequest(\"POST\", \"https://api.twilio.com/2010-04-01/Messages.json\", body)",
+    "expect": [
+      {
+        "url": "https://api.twilio.com/2010-04-01/Messages.json",
+        "host": "api.twilio.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "verb-first argument: requests.request('PUT', url) yields PUT",
+    "text": "resp = requests.request('PUT', 'https://api.acme-corp.com/v1/items/42')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/items/42",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "PUT",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "proven bare fetch: the call closes in-window with no method key, so GET",
+    "text": "const r = await fetch('https://a.acme.io/x');",
+    "expect": [
+      {
+        "url": "https://a.acme.io/x",
+        "host": "a.acme.io",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "proven bare urlopen call yields GET",
+    "text": "body = urlopen('https://api.acme-corp.com/v1/ping').read()",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/ping",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "options object runs past the evidence window: REF, never a fabricated GET",
+    "text": [
+      "const r = await fetch('https://a.acme.io/x', {",
+      "  headers: {",
+      "    'X-Correlation-Id': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',",
+      "  },",
+      "});"
+    ],
+    "expect": [
+      {
+        "url": "https://a.acme.io/x",
+        "host": "a.acme.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a method key whose value is not a literal verb blocks the bare-call GET",
+    "text": "fetch('https://a.acme.io/x', { method: verb })",
+    "expect": [
+      {
+        "url": "https://a.acme.io/x",
+        "host": "a.acme.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a bare constant assignment is a reference, not a call",
+    "text": "const URL = 'https://api.acme-corp.com/v1'",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a log call is not method evidence",
+    "text": "console.log('https://api.acme-corp.com/v1 failed')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a verb inside prose is not verb-first-argument evidence",
+    "text": "logger.info('POST to https://api.acme-corp.com/v1/x')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1/x",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a client-lookalike identifier is not a known client opener",
+    "text": "const r = prefetch('https://a.acme.io/x');",
+    "expect": [
+      {
+        "url": "https://a.acme.io/x",
+        "host": "a.acme.io",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "NEGATIVE: method evidence alone, with no url literal, produces nothing",
+    "text": "fetch(endpoint, { method: 'POST' })",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a verb-first argument with a fully dynamic url produces nothing",
+    "text": "req, err := http.NewRequest(\"POST\", fmt.Sprintf(\"https://%s/v1\", host), body)",
+    "expect": []
+  }
+]

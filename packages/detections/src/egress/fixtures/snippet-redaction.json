@@ -1,0 +1,82 @@
+[
+  {
+    "label": "userinfo credentials are stripped out of the authority",
+    "line": "curl https://svc:s3cr3t@api.acme-corp.com/v1/push",
+    "expect": "curl https://api.acme-corp.com/v1/push"
+  },
+  {
+    "label": "an api_key value is masked while the key itself stays readable",
+    "line": "const u = 'https://api.acme-corp.com/v1?api_key=abc123';",
+    "expect": "const u = 'https://api.acme-corp.com/v1?api_key=••••';"
+  },
+  {
+    "label": "an apikey value written without a separator is masked",
+    "line": "apikey='XYZ987'",
+    "expect": "apikey='••••'"
+  },
+  {
+    "label": "a bearer TOKEN is masked and the Bearer keyword survives",
+    "line": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSM",
+    "expect": "Authorization: Bearer ••••"
+  },
+  {
+    "label": "a quoted bearer token inside a headers object is masked the same way",
+    "line": "headers: { Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc' }",
+    "expect": "headers: { Authorization: 'Bearer ••••' }"
+  },
+  {
+    "label": "a non-bearer authorization value is masked outright",
+    "line": "Authorization: abc123def",
+    "expect": "Authorization: ••••"
+  },
+  {
+    "label": "a sig value is masked and the following query parameter survives",
+    "line": "const url = 'https://acct.blob.core.windows.net/c/b?sig=aB3%2FxYz&se=2026';",
+    "expect": "const url = 'https://acct.blob.core.windows.net/c/b?sig=••••&se=2026';"
+  },
+  {
+    "label": "an X-Sas-Token header value is masked",
+    "line": "X-Sas-Token: abc.def.ghi",
+    "expect": "X-Sas-Token: ••••"
+  },
+  {
+    "label": "a quoted password value is masked inside its quotes",
+    "line": "password: \"hunter2\"",
+    "expect": "password: \"••••\""
+  },
+  {
+    "label": "an access_token value is masked",
+    "line": "access_token: 'ya29.a0AfH6SMBabc'",
+    "expect": "access_token: '••••'"
+  },
+  {
+    "label": "every secret on a line is masked, not just the first",
+    "line": "{ api_key: 'A1B2C3', token: 'D4E5F6' }",
+    "expect": "{ api_key: '••••', token: '••••' }"
+  },
+  {
+    "label": "leading and trailing whitespace is trimmed",
+    "line": "    const r = await fetch('https://api.stripe.com/v1/charges');   ",
+    "expect": "const r = await fetch('https://api.stripe.com/v1/charges');"
+  },
+  {
+    "label": "NEGATIVE: an ordinary source line passes through unchanged",
+    "line": "const r = await fetch('https://api.stripe.com/v1/charges');",
+    "expect": "const r = await fetch('https://api.stripe.com/v1/charges');"
+  },
+  {
+    "label": "NEGATIVE: a secret-like word with no assigned value is left alone",
+    "line": "// token bucket refill rate is 10/s",
+    "expect": "// token bucket refill rate is 10/s"
+  },
+  {
+    "label": "NEGATIVE: an email address is not mistaken for userinfo",
+    "line": "// owner: platform-team@acme-corp.com",
+    "expect": "// owner: platform-team@acme-corp.com"
+  },
+  {
+    "label": "an over-long line is truncated to 200 characters",
+    "line": "// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "expect": "// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+]

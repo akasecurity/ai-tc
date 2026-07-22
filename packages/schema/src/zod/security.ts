@@ -54,7 +54,7 @@ export type SecurityRange = z.infer<typeof SecurityRange>;
 // An unsupported value fails Zod validation → 400 (shared VALIDATION_ERROR
 // envelope, consistent with every other query param in this API).
 export const SecurityRangeQuery = z.object({
-  range: z.enum(SECURITY_RANGES).default('30d'),
+  range: z.enum(SECURITY_RANGES).default('7d'),
 });
 export type SecurityRangeQuery = z.infer<typeof SecurityRangeQuery>;
 
@@ -205,7 +205,7 @@ export const TopSourcesResponse = z
 export type TopSourcesResponse = z.infer<typeof TopSourcesResponse>;
 
 export const TopSourcesQuery = z.object({
-  range: z.enum(SECURITY_RANGES).default('30d'),
+  range: z.enum(SECURITY_RANGES).default('7d'),
   limit: z.coerce.number().int().min(1).max(50).default(5),
   // Omit for both kinds.
   kind: z.enum(SOURCE_KINDS).optional(),

@@ -35,6 +35,21 @@
     "expect": []
   },
   {
+    "label": "package.json — a devDependencies entry with the same name as a dependencies entry attributes the production line",
+    "kind": "package.json",
+    "text": [
+      "{",
+      "  \"devDependencies\": {",
+      "    \"stripe\": \"^13.0.0\"",
+      "  },",
+      "  \"dependencies\": {",
+      "    \"stripe\": \"^14.0.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [{ "ecosystem": "npm", "pkg": "stripe", "line": 6 }]
+  },
+  {
     "label": "requirements.txt — plain pinned lines",
     "kind": "requirements.txt",
     "text": ["sentry-sdk==1.40.0", "requests>=2.28,<3"],
@@ -131,6 +146,37 @@
     "kind": "go.mod",
     "text": ["exclude github.com/pkg/errors v0.9.0"],
     "expect": []
+  },
+  {
+    "label": "go.mod — an exclude block's module/version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["exclude (", "\tgithub.com/pkg/errors v0.9.0", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a replace block's module/version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["replace (", "\tgithub.com/stripe/stripe-go v72.0.0 => ./fork", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a retract block's version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["retract (", "\tv1.0.1", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a require block is still extracted correctly when followed by an exclude block",
+    "kind": "go.mod",
+    "text": [
+      "require (",
+      "\tgithub.com/stripe/stripe-go v72.0.0",
+      ")",
+      "exclude (",
+      "\tgithub.com/pkg/errors v0.9.0",
+      ")"
+    ],
+    "expect": [{ "ecosystem": "go", "pkg": "github.com/stripe/stripe-go", "line": 2 }]
   },
   {
     "label": "pom.xml — a dependencies/dependency groupId is extracted while the project's own coordinates, a parent groupId, a dependencyManagement groupId, and a build-plugin groupId are all ignored",
@@ -250,6 +296,35 @@
     "expect": [{ "ecosystem": "maven", "pkg": "com.twilio.sdk", "line": 4 }]
   },
   {
+    "label": "pom.xml — a single-line commented-out dependency block yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencies>",
+      "    <!-- <dependency><groupId>com.stripe</groupId></dependency> -->",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — a multi-line commented-out dependency block yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencies>",
+      "    <!--",
+      "    <dependency>",
+      "      <groupId>com.stripe</groupId>",
+      "      <artifactId>stripe-java</artifactId>",
+      "    </dependency>",
+      "    -->",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
     "label": "build.gradle — Groovy DSL implementation with a plain string coordinate",
     "kind": "build.gradle",
     "text": ["implementation 'com.stripe:stripe-java:20.0.0'"],
@@ -354,6 +429,21 @@
     "expect": []
   },
   {
+    "label": "composer.json — a require-dev entry with the same name as a require entry attributes the production line",
+    "kind": "composer.json",
+    "text": [
+      "{",
+      "  \"require-dev\": {",
+      "    \"sentry/sentry\": \"^3.0\"",
+      "  },",
+      "  \"require\": {",
+      "    \"sentry/sentry\": \"^4.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [{ "ecosystem": "composer", "pkg": "sentry/sentry", "line": 6 }]
+  },
+  {
     "label": "csproj — a self-closing PackageReference",
     "kind": "csproj",
     "text": ["<PackageReference Include=\"Sentry\" Version=\"4.0.0\" />"],
@@ -372,6 +462,12 @@
     "expect": []
   },
   {
+    "label": "csproj — a commented-out PackageReference yields nothing",
+    "kind": "csproj",
+    "text": ["<!-- <PackageReference Include=\"Stripe.net\" /> -->"],
+    "expect": []
+  },
+  {
     "label": "packages.config — a package element",
     "kind": "packages.config",
     "text": ["<packages>", "  <package id=\"Sentry\" version=\"4.0.0\" targetFramework=\"net472\" />", "</packages>"],
@@ -381,6 +477,12 @@
     "label": "packages.config — an empty packages element yields nothing",
     "kind": "packages.config",
     "text": ["<packages>", "</packages>"],
+    "expect": []
+  },
+  {
+    "label": "packages.config — a commented-out package element yields nothing",
+    "kind": "packages.config",
+    "text": ["<packages>", "  <!-- <package id=\"Stripe.net\" version=\"1.0\" /> -->", "</packages>"],
     "expect": []
   }
 ]

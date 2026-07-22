@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { EgressEcosystem } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { redactSnippet } from '../../src/egress/extract.ts';
 import {
   extractManifestSdks,
   LOCKFILE_BASENAMES,
@@ -68,12 +69,17 @@ describe('extractManifestSdks — fixture corpus', () => {
   });
 
   it.each(cases.map((c) => [c.label, c] as const))('%s', (_label, c) => {
-    const hits = extractManifestSdks(textOf(c), c.kind);
+    const text = textOf(c);
+    const hits = extractManifestSdks(text, c.kind);
     const actual = hits.map((h) => ({ ecosystem: h.ecosystem, pkg: h.pkg, line: h.line }));
     expect(actual.sort(byLineThenPkg)).toEqual([...c.expect].sort(byLineThenPkg));
 
+    const sourceLines = text.split('\n');
     for (const hit of hits) {
       expect(hit.snippet.length).toBeLessThanOrEqual(200);
+      // The snippet must come from the exact line the hit is attributed to,
+      // not merely be some redacted line somewhere in the file.
+      expect(hit.snippet).toBe(redactSnippet(sourceLines[hit.line - 1] ?? ''));
     }
   });
 });
@@ -134,6 +140,13 @@ describe('manifestKindOf', () => {
     ['README.md', null],
     ['Dockerfile', null],
     ['', null],
+    // Object.prototype member names must not resolve through the prototype
+    // chain of the plain-object basename table.
+    ['constructor', null],
+    ['toString', null],
+    ['valueOf', null],
+    ['hasOwnProperty', null],
+    ['__proto__', null],
   ])('classifies %s as %s', (basename, kind) => {
     expect(manifestKindOf(basename)).toBe(kind);
   });

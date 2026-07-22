@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "358226c8-cbed-46c3-b25b-aefdb469dc7a",
+  "id": "b420c253-c8c2-4472-bbdb-d8b77f986293",
   "prevId": "9d597686-38f9-4bdd-8d62-cebd626ff250",
   "tables": {
     "audit_events": {
@@ -412,7 +412,7 @@
           "name": "destination_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "host": {
@@ -472,7 +472,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

@@ -509,12 +509,16 @@ export const egressDecisionOverride = sqliteTable(
   'egress_decision_override',
   {
     id: text(COL.id).primaryKey(),
-    destinationId: text(COL.destinationId)
-      .notNull()
-      .references(() => shareDestination.id),
-    // The decision's host, so it survives destination pruning and re-attaches
-    // when the same host is detected again. NULL on rows written before the
-    // column existed, which are matched by destination_id instead.
+    // Nullable, ON DELETE SET NULL: pruning a destination clears this pointer
+    // instead of blocking the delete, so a host-keyed row outlives the
+    // destination it was made on.
+    destinationId: text(COL.destinationId).references(() => shareDestination.id, {
+      onDelete: 'set null',
+    }),
+    // The decision's host. It is what the read joins on, so a row survives its
+    // destination being pruned and re-attaches when the same host is detected
+    // again under a fresh id. NULL on rows written before the column existed,
+    // which are matched by destination_id instead.
     host: text(COL.host),
     decision: text(COL.decision).notNull(),
     createdAt: integer(COL.createdAt)

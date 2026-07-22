@@ -77,7 +77,7 @@ describe('renderTokenUsage', () => {
 
     expect(lines[0]).toBe('Token usage (30d): 3 sessions · 1.3M tokens · $3.40');
     expect(text).toContain('anthropic/claude-opus-4-8');
-    expect(text).toContain('980.0k');
+    expect(text).toContain('980K');
     expect(text).toContain('$3.20');
     expect(text).not.toContain('≥'); // fully priced → no lower-bound marker
   });

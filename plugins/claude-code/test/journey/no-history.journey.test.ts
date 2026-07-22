@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { SetupJourney } from './harness.ts';
 
-const NO_HISTORY_COPY = 'Nothing to calibrate from yet';
+const NO_HISTORY_COPY = 'Nothing to learn from yet';
 const SCAN_CLEAN_COPY = 'nothing needs your attention';
 
 describe('empty-history backfill renders the no-history calibration copy end-to-end', () => {

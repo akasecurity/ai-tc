@@ -94,7 +94,7 @@ export function cacheHitPct(tokens: TokenRollup): number {
 }
 
 /** Compact token count for the detail band — the shared @akasecurity/schema
- * humanizer (`128400` → `128.4k`, rolling k→M→B) so every surface reads
+ * humanizer (`128400` → `128.4K`, rolling K→M→B→T) so every surface reads
  * identically. */
 export function tokenLabel(n: number): string {
   return formatTokenCount(n);

@@ -20,16 +20,16 @@ const forkSection = setupMd.slice(forkStart, forkEnd === -1 ? undefined : forkEn
 describe('setup.md 0.3 scan-offer copy', () => {
   it('carries the scope disclosure verbatim', () => {
     expect(setupMd).toContain(
-      "A retroactive scan of recent activity — transcripts, temp files, agent memory — tunes the notifications we'll review next.",
+      "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next.",
     );
   });
 
   it('carries the Yes-option subtitle verbatim', () => {
-    expect(setupMd).toContain('calibrate my notifications to your real activity');
+    expect(setupMd).toContain("tune what I bring you, based on Claude's real work here");
   });
 
   it('carries the Not-now-option subtitle verbatim', () => {
-    expect(setupMd).toContain('start light and learn as we go');
+    expect(setupMd).toContain("start light and I'll learn as we go");
   });
 });
 
@@ -44,7 +44,7 @@ describe('setup.md 0.3b Not-now start-light branch', () => {
   });
 
   it('names the start-light card heading the wizard reproduces verbatim', () => {
-    expect(setupMd).toContain('Start light — set your packs');
+    expect(setupMd).toContain('● Starting light — your detection categories');
   });
 
   it('writes the chosen posture via --floor for defaults or --posture for adjustments', () => {
@@ -98,28 +98,29 @@ describe('setup.md 0.4b adjust reroute branch', () => {
 
 // The 0.4b adjust fork rejoins the spine at the applying frame (0.5) with its own
 // full-8-pack confirmation prose in commands/setup.md — distinct from the step-5
-// spine's generic '✓ K categories tuned'. Freeze that fork-specific rejoin copy so
-// a voice regression fails CI, not only the manual walkthrough. Scope is the branch
-// frames only; frame 0.6 and the Yes-scan spine copy (frames 0.1–0.6) are baselined
-// elsewhere and are not re-frozen here.
+// spine's generic '✓ Set all K detection categories'. Freeze that fork-specific
+// rejoin copy so a voice regression fails CI, not only the manual walkthrough.
+// Scope is the branch frames only; frame 0.6 and the Yes-take-a-look spine copy
+// (frames 0.1–0.6) are baselined elsewhere and are not re-frozen here.
 //
 // The rest of the branch-frame voice baseline is already covered and is not
-// duplicated here: the 0.3b start-light heading ('Start light — set your packs'),
-// the 0.4b 'Adjust a category' option, and the save-option copy are frozen verbatim
-// by the 0.3b/0.4b branch blocks above. Strings that live in a rendered card rather
-// than setup.md prose — the start-light heading, the 'Re-tune anytime with /aka:setup
-// or the dashboard' re-tune hint, and the confirm table's 'CATEGORY │ RECOMMENDED │
-// YOURS' header (rendered uppercase, space-aligned; the lowercase '│'-framed phrase
-// is only prose narration of it) — are guarded against real stdout by
+// duplicated here: the 0.3b start-light heading ('● Starting light — your
+// detection categories'), the 0.4b 'Adjust a category' option, and the
+// save-option copy are frozen verbatim by the 0.3b/0.4b branch blocks above.
+// Strings that live in a rendered card rather than setup.md prose — the
+// start-light heading, the 'Re-tune anytime with /aka:setup or the dashboard'
+// re-tune hint, and the confirm table's 'CATEGORY │ RECOMMENDED │ YOURS' header
+// (rendered uppercase, space-aligned; the lowercase '│'-framed phrase is only
+// prose narration of it) — are guarded against real stdout by
 // start-light.test.ts, so this guard stays on the setup.md-prose surface.
 describe('setup.md branch-frame voice baseline (0.4b → 0.5 rejoin)', () => {
   it('rejoins the applying frame (0.5) with the full-8-pack tuned/dismissed prose', () => {
     // Command-line templating carve-out: assert only the stable applying-frame
     // prose, never the 'Ready: …' command names the registry templates over the
     // actually-registered command set. Asserted within the fork section so it is
-    // the fork's own '✓ 8 categories tuned' applying frame, not the step-5 spine's
-    // generic '✓ K categories tuned'.
-    expect(forkSection).toContain('✓ 8 categories tuned · ✓ N routine dismissed');
+    // the fork's own '✓ Set all 8 detection categories' applying frame, not the
+    // step-5 spine's generic '✓ Set all K detection categories'.
+    expect(forkSection).toContain('✓ Set all 8 detection categories · set aside N routine results');
   });
 });
 
@@ -174,7 +175,7 @@ describe('setup.md frame-0.6 "Review leaked keys" branch', () => {
     expect(idx).toBeGreaterThanOrEqual(0);
     const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
     expect(section).toContain('If they chose "Redact + rotation checklist" or "Redact only"');
-    expect(section).toContain("Set the 'secret' posture");
+    expect(section).toContain("Set the 'secret' detection level");
     const redact = section.indexOf('**Redact** (`redact`)');
     const warn = section.indexOf('**Warn** (`warn`)');
     const block = section.indexOf('**Block** (`block`)');
@@ -202,5 +203,27 @@ describe('setup.md frame-0.6 "Review leaked keys" branch', () => {
     const section = setupMd.slice(idx, setupMd.indexOf('\n## 7', idx));
     expect(section).toContain('If they chose "Set \'secret\' to redact" or "Leave"');
     expect(section).toContain("scripts/remediate.js\" --option <id> <<'AKA_FRAME'");
+  });
+});
+
+// Task 9: the prompt states the relay contract once, up front, rather than
+// leaving a skimming model to infer AKA_SHOW handling per step. These guards
+// pin the contract's verbatim invariant strings and the step-7 double-ask trim.
+describe('setup.md execution contract', () => {
+  it('states the one-sentence relay rule for AKA_SHOW regions', () => {
+    expect(setupMd).toContain('relay every AKA_SHOW region verbatim');
+  });
+  it('forbids ad-libbed confirmations', () => {
+    expect(setupMd).toContain('write a confirmation or acknowledgement the wizard did not emit');
+  });
+  it('requires each step’s SHOW regions before advancing', () => {
+    expect(setupMd).toContain('must be relayed before you advance');
+  });
+  it('states one picker per decision', () => {
+    expect(setupMd).toContain('picker per decision');
+  });
+  it('step 7 has a single install gate (no second permission picker)', () => {
+    // The old double-ask phrasing must be gone.
+    expect(setupMd).not.toContain('Ask permission before running it, warmly');
   });
 });

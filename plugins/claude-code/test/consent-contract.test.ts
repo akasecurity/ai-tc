@@ -65,7 +65,9 @@ describe('Leg 1 — "Yes, scan" records the historical-review consent without br
 
   it('records the historicalAccess=full grant', () => {
     expect(persisted.historicalAccess).toBe('full');
-    expect(onboardStdout).toContain('historicalAccess=full');
+    // The confirmation is user-facing copy, not a dev-internal key=value dump —
+    // it never echoes the raw historicalAccess value.
+    expect(onboardStdout).toContain("Got it — I'll look over Claude's recent work to tune things.");
   });
 
   it('records a consent scope provably identical to the prior historical-review flow', () => {

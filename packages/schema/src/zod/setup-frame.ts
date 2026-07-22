@@ -5,11 +5,11 @@ import { BuiltinPolicyId } from './policy.ts';
 import { MaskedSecretFinding } from './remediation.ts';
 import { TriageCategoryRec } from './triage.ts';
 
-// The calibration counts shown at the calibrated-result frame ('Calibrated. N
-// notifications, M important. (N−M) routine, M that matter'). `important` counts
-// the surfaced findings, `routine` the suppressed ones, `total` their sum. The
-// sum equality (`total === important + routine`) is enforced by the schema's
-// refinement, so a frame whose counts do not add up fails validation.
+// The calibration counts shown at the calibrated-result frame ('I went through
+// Claude's recent work — N detections, M results worth a look.'). `important`
+// counts the surfaced findings, `routine` the suppressed ones, `total` their
+// sum. The sum equality (`total === important + routine`) is enforced by the
+// schema's refinement, so a frame whose counts do not add up fails validation.
 export const CalibrationCounts = z
   .object({
     total: z.number().int().nonnegative(),
@@ -127,12 +127,22 @@ export const CalibrationPreview = z.object({
 export type CalibrationPreview = z.infer<typeof CalibrationPreview>;
 
 // The calibration module's output: the structured frame plus the copy that
-// templates over it ('Calibrated. N notifications, M important. …').
+// templates over it ('I went through Claude's recent work — N detections, M
+// results worth a look.').
 export const CalibrationResult = z.object({
   frame: CalibrationFrame,
   copy: z.string(),
 });
 export type CalibrationResult = z.infer<typeof CalibrationResult>;
+
+// Whether the installed-summary card followed a completed calibration scan or
+// fell back to the severity floor with no scan run. `'scan'` is the same
+// signal that gates the dashboard handoff below (a surfaced/important count
+// was carried through setup); `'floor'` is the cold-start fallback with
+// nothing scanned. Drives the install heading and the post-stats divider so
+// the card never claims a scan that did not happen.
+export const FirstRunCalibration = z.enum(['scan', 'floor']);
+export type FirstRunCalibration = z.infer<typeof FirstRunCalibration>;
 
 // One option of the installed-summary frame 0.6 handoff: a stable id the prompt
 // layer routes on and the label it shows. `enter-remediation` is the live-key

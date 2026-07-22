@@ -25,7 +25,7 @@
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 
 import { parseCurrent, parsePosture } from './onboard-posture.ts';
-import { fenced } from './present.ts';
+import { fenced, show } from './present.ts';
 import { renderAdjustConfirm, renderStartLight } from './render.ts';
 
 const argv = process.argv.slice(2);
@@ -70,7 +70,7 @@ try {
 
   // One Markdown code fence so the wizard can echo the card verbatim (space-aligned
   // monospace collapses without the fence).
-  process.stdout.write(`${fenced(card)}\n`);
+  process.stdout.write(show(fenced(card)));
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
   process.stdout.write(`AKA setup failed: ${message}\n`);

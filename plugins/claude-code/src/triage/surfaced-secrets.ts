@@ -18,6 +18,7 @@ import type {
   TriageRecommendation,
 } from '@akasecurity/schema';
 
+import { dedupeKey } from './dedupe.ts';
 import type { TriageWritebackPlan } from './writeback.ts';
 
 // A leaked key's live/revoked status is genuinely unknowable on this machine: the
@@ -51,6 +52,16 @@ export function deriveProvider(ruleId: string): string {
 // fingerprint alone). A secret category the plan distrusted (its reasoning echoed
 // a raw value, so it carries no posture) surfaces nothing, staying consistent
 // with the frame's surfacedCategories.
+//
+// LOCATION-SCOPED: this takes the FULL hit list, never the judge's collapsed
+// representative set. One finding is emitted per OCCURRENCE because each
+// carries a single `where.filePath` and is the only thing that puts a file in
+// the redaction pass's scope (see remediation/surfaced-redact.ts, which builds
+// its per-file map exclusively from these paths) and the only thing the
+// complete-vs-partial redaction gate counts. Collapsing here would strike the
+// first file a key was found in, leave it live in the rest, and still print
+// the clean "resolved" framing. The judge's verdict, which IS value-scoped, is
+// expanded back over each value class below so the two scopes stay consistent.
 export function deriveSurfacedSecretFindings(
   hits: readonly TriageHit[],
   rec: TriageRecommendation,
@@ -61,10 +72,27 @@ export function deriveSurfacedSecretFindings(
   const dismissedIds = new Set(
     rec.perCategory.filter((c) => c.category === 'secret').flatMap((c) => c.fpIds),
   );
+  // The judge saw ONE representative per (ruleId, valueFingerprint) class, so a
+  // dismissal binds every occurrence of that value — expand the id verdict to
+  // the whole class, or a dismissed representative's duplicates would surface
+  // as live leaks the model has already ruled out. A hit with no fingerprint
+  // has no class, so it neither joins nor inherits one (dedupeKey ->
+  // undefined), preserving the id-keyed behaviour above for it.
+  const dismissedKeys = new Set(
+    hits
+      .filter((h) => h.id !== undefined && dismissedIds.has(h.id))
+      .map((h) => dedupeKey(h))
+      .filter((k): k is string => k !== undefined),
+  );
+  const isDismissed = (h: TriageHit): boolean => {
+    if (h.id !== undefined && dismissedIds.has(h.id)) return true;
+    const key = dedupeKey(h);
+    return key !== undefined && dismissedKeys.has(key);
+  };
   const rawValues = hits.map((h) => h.rawMatch);
 
   return hits
-    .filter((h) => h.category === 'secret' && !(h.id !== undefined && dismissedIds.has(h.id)))
+    .filter((h) => h.category === 'secret' && !isDismissed(h))
     .map((h) => ({
       provider: deriveProvider(h.ruleId),
       maskedToken: safeMaskedMatch(h.rawMatch),

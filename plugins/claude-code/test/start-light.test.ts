@@ -20,13 +20,14 @@ import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { fenced } from '../src/present.ts';
+import { fenced, show } from '../src/present.ts';
 import {
   RE_TUNE_HINT,
   renderAdjustConfirm,
   renderPostureGrid,
   renderStartLight,
 } from '../src/render.ts';
+import { parseSurface } from '../src/setup-show.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test -> plugins/claude-code
@@ -66,13 +67,22 @@ describe('scripts/start-light.js', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
     // The whole card wrapped in the shared code fence, rendered from the severity floor.
-    expect(result.stdout.trim()).toBe(fenced(renderStartLight(severityFloorPosture())));
+    expect(result.stdout.trim()).toBe(
+      show(fenced(renderStartLight(severityFloorPosture()))).trim(),
+    );
   });
 
   it('the fenced card carries the heading, the 8×4 default posture grid, and the re-tune hint', () => {
-    expect(result.stdout).toContain('Start light — set your packs');
+    expect(result.stdout).toContain('Starting light — your detection categories');
     expect(result.stdout).toContain(renderPostureGrid(severityFloorPosture()));
     expect(result.stdout).toContain(RE_TUNE_HINT);
+  });
+
+  it('emits the start-light card inside a single SHOW region', () => {
+    const surface = parseSurface(result.stdout);
+    expect(surface.shows).toHaveLength(1);
+    expect(surface.shows[0]).toContain('Starting light');
+    expect(surface.status.trim()).toBe('');
   });
 });
 
@@ -93,7 +103,9 @@ describe('scripts/start-light.js --adjust-confirm', () => {
     expect(result.stderr).toBe('');
     // The whole card wrapped in the shared fence, rendered from the recommended
     // posture against the adjusted --posture map it was handed.
-    expect(result.stdout.trim()).toBe(fenced(renderAdjustConfirm(recommended, chosen)));
+    expect(result.stdout.trim()).toBe(
+      show(fenced(renderAdjustConfirm(recommended, chosen))).trim(),
+    );
   });
 
   it("carries the 'category │ recommended │ yours' columns, the changed pack, and the re-tune hint", () => {
@@ -163,7 +175,9 @@ describe('scripts/start-light.js --adjust-confirm', () => {
       JSON.stringify(merged),
     ]);
     expect(withRec.status).toBe(0);
-    expect(withRec.stdout.trim()).toBe(fenced(renderAdjustConfirm(calibrated, merged)));
+    expect(withRec.stdout.trim()).toBe(
+      show(fenced(renderAdjustConfirm(calibrated, merged))).trim(),
+    );
     // The untouched escalated pack repeats its calibrated level in both columns —
     // it does not render as a spurious change against the floor.
     expect(withRec.stdout).toMatch(/secret\s+block\s+block/);
@@ -189,10 +203,8 @@ describe('scripts/start-light.js --adjust-confirm', () => {
         hardened,
       ]);
       expect(run.status).toBe(0);
-      expect(run.stdout).toContain('WARNING: 1 category (secret) would be LOWERED');
-      expect(run.stdout).toContain(
-        'Confirm you intend to weaken enforcement there before applying',
-      );
+      expect(run.stdout).toContain('Heads up — this would lower 1 detection level (secret) below');
+      expect(run.stdout).toContain('Confirm you mean to lower it before I apply');
     });
 
     it('stays silent when the chosen level is the same or higher than the stored action', () => {

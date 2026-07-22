@@ -82,11 +82,20 @@ export const ROUTINE_KEY = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
 export const MULTI_KEY_STRIPE_KEY = ['sk', '_live_', 'aBcDeFgHiJkLmNoPqRsTuVwXyZmulti1'].join('');
 export const MULTI_KEY_GITHUB_KEY = ['ghp_', 'aBcDeFgHiJkLmNoPqRsTuVwXyZ12multi901'].join('');
 
-// A fourth real AWS key, reused identically across THREE seeded messages by
-// seedRepeatedFalsePositiveTranscript() below — the repeated-value false
-// positive under one rule that gives the masked FP-pattern signal a group whose
-// count > 1. Composed at runtime for the same reason as the other keys above.
-export const REPEATED_FP_KEY = ['AKIA', 'TEQPSWRIUQF4V7JF'].join('');
+// Three DISTINCT real AWS keys — under the same rule, seeded by
+// seedRepeatedFalsePositiveTranscript() below — that collide on their
+// safeMaskedMatch pattern: every key here starts 'A' (the AKIA prefix) and
+// ends 'F', and maskMatch's generic rule reveals only the first + last
+// character ('A' + six asterisks + 'F'), so the three mask identically despite
+// carrying different values (and different valueFingerprints — dedupeForJudge
+// does not collapse them). This gives the masked FP-pattern signal a group
+// whose count > 1 from genuinely distinct values, not from one repeated raw
+// value. Composed at runtime for the same reason as the other keys above.
+export const REPEATED_FP_KEYS: readonly string[] = [
+  ['AKIA', 'TEQPSWRIUQF4V7JF'].join(''),
+  ['AKIA', 'TEQPSWRIUQG4V7JF'].join(''),
+  ['AKIA', 'TEQPSWRIUQH4V7JF'].join(''),
+];
 
 export class SetupJourney {
   readonly home: string;
@@ -186,26 +195,27 @@ export class SetupJourney {
     return transcriptPath;
   }
 
-  // Seed a prior Claude Code transcript under the temp home carrying the SAME
-  // leaked AWS key (REPEATED_FP_KEY) repeated across THREE distinct messages —
-  // same rule, same raw value, same re-derived masked token — timestamped
-  // inside the retention window. Each message's surrounding text differs so
-  // the scan's content-hash dedup (scanHistory streams a hash of the whole
-  // message text) treats them as three distinct messages rather than folding
-  // them into one, so the backfill streams three separate hits under the SAME
-  // rule. The stub judge (writeFakeJudge) marks the first (sorted) hit under a
-  // shared rule genuine and every other hit false-positive, so the marked
-  // (model-dismissed) hits here are the other two — a masked FP-pattern group
-  // whose count is 2, not 1, proving the signal groups a REPEATED value rather
-  // than merely naming a single dismissed hit.
+  // Seed a prior Claude Code transcript under the temp home carrying the THREE
+  // DISTINCT leaked AWS keys in REPEATED_FP_KEYS — same rule, different raw
+  // values, same re-derived masked token (mask-collision, not a literal
+  // repeat) — across three distinct messages, timestamped inside the
+  // retention window. Each carries a different valueFingerprint, so
+  // dedupeForJudge does not collapse them: the backfill streams three
+  // separate hits under the SAME rule, and all three reach the judge as
+  // distinct representatives. The stub judge (writeFakeJudge) marks the first
+  // (sorted) hit under a shared rule genuine and every other hit false-positive,
+  // so the marked (model-dismissed) hits here are the other two — sharing one
+  // masked token, they fold into a single masked FP-pattern group whose count
+  // is 2, not 1, proving the signal groups by masked-token collision across
+  // genuinely distinct values rather than merely naming a single dismissed hit.
   seedRepeatedFalsePositiveTranscript(): string {
     const projectDir = join(this.home, '.claude', 'projects', '-Users-me-repeated-fp');
     mkdirSync(projectDir, { recursive: true });
-    const lines = [5, 4, 3].map((daysAgo, i) =>
+    const lines = REPEATED_FP_KEYS.map((key, i) =>
       JSON.stringify({
         type: 'user',
-        timestamp: new Date(Date.now() - daysAgo * DAY_MS).toISOString(),
-        message: { role: 'user', content: `example fixture key #${String(i)}: ${REPEATED_FP_KEY}` },
+        timestamp: new Date(Date.now() - (5 - i) * DAY_MS).toISOString(),
+        message: { role: 'user', content: `example fixture key #${String(i)}: ${key}` },
       }),
     );
     const transcriptPath = join(projectDir, 'session.jsonl');
@@ -371,19 +381,19 @@ export class SetupJourney {
   }
 
   // A controlled `claude` on PATH: the apply-suppressions preview spawns
-  // `claude -p … <prompt>` for its triage judgment. This stub parses the hits out
-  // of the prompt's trailing fenced block and returns a deterministic, raw-free
-  // TriageRecommendation envelope — the first hit per (category, rule) surfaced
-  // (genuine), the rest marked routine false positives — so a repeated hit under
-  // the SAME rule (e.g. the SURFACED_KEY/ROUTINE_KEY aws-access-key pair) still
-  // dismisses all but one, while distinct rules in the same category (e.g. aws +
-  // stripe + github secrets) each surface their own genuine hit. No live model
-  // is ever hit.
+  // `claude -p …` for its triage judgment, feeding the prompt on STDIN (never
+  // argv — see judge.ts's spawnClaude). This stub reads stdin, parses the hits
+  // out of the prompt's trailing fenced block, and returns a deterministic,
+  // raw-free TriageRecommendation envelope — the first hit per (category, rule)
+  // surfaced (genuine), the rest marked routine false positives — so a repeated
+  // hit under the SAME rule (e.g. the SURFACED_KEY/ROUTINE_KEY aws-access-key
+  // pair) still dismisses all but one, while distinct rules in the same
+  // category (e.g. aws + stripe + github secrets) each surface their own
+  // genuine hit. No live model is ever hit.
   private writeFakeJudge(): void {
     const src = `#!/usr/bin/env node
 'use strict';
-const argv = process.argv.slice(2);
-const prompt = argv.length ? argv[argv.length - 1] : '';
+const prompt = require('node:fs').readFileSync(0, 'utf8');
 const fences = [...String(prompt).matchAll(/\`\`\`[a-z]*\\n([\\s\\S]*?)\`\`\`/g)];
 const block = fences.length ? fences[fences.length - 1][1] : '';
 const byCategory = new Map();

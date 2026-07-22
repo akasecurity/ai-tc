@@ -16,7 +16,7 @@ export const TIME_RANGES: TimeRangeOption[] = [
   { value: '6m', label: 'Last 6 months' },
 ];
 
-export const DEFAULT_TIME_RANGE: TimeRange = '30d';
+export const DEFAULT_TIME_RANGE: TimeRange = '7d';
 
 const DAY_MS = 86_400_000;
 

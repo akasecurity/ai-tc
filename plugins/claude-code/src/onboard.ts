@@ -32,6 +32,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
+import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
@@ -94,11 +95,7 @@ if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) 
 if (Object.keys(answers).length > 0) {
   try {
     const settings = applyOnboarding(answers);
-    process.stdout.write(
-      `AKA configured: policy=${settings.policy}, ` +
-        `historicalAccess=${settings.historicalAccess}. ` +
-        `Settings saved to ~/.aka/settings/settings.json.\n`,
-    );
+    process.stdout.write(show("Got it — I'll look over Claude's recent work to tune things."));
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.
@@ -109,9 +106,10 @@ if (Object.keys(answers).length > 0) {
         const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
         if (capped > 0) {
           process.stdout.write(
-            `AKA: kept ${String(capped)} existing block/redact categories at warn ` +
-              `(the global "warn only" handling was retired). Confirm per-category ` +
-              `enforcement in this setup.\n`,
+            show(
+              `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
+                `"warn" to match the new defaults — you can raise any of them again in this setup.`,
+            ),
           );
         }
       } finally {
@@ -121,7 +119,7 @@ if (Object.keys(answers).length > 0) {
       // Best-effort: see comment above.
     }
   } catch (err) {
-    fail(err instanceof Error ? err.message : 'could not write settings.json');
+    fail(err instanceof Error ? err.message : 'could not save your settings');
   }
 }
 
@@ -146,7 +144,7 @@ if (rawPosture !== undefined || useFloor) {
       // severity-floor fallback), never a literal.
       const categoryCount = Object.keys(posture).length;
       process.stdout.write(
-        renderCategoriesTuned(categoryCount) + (useFloor ? ' (severity floor)' : '') + '\n',
+        show(renderCategoriesTuned(categoryCount) + (useFloor ? ' — safe defaults' : '')),
       );
     } finally {
       db.close();

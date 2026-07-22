@@ -164,6 +164,46 @@ function worstProbeMs(rule: Rule): { ms: number; probe: string } {
   return { ms, probe };
 }
 
+// A same-length ordinary input for `rule` that cannot enter the pattern's
+// repeated group, so scan() runs linearly over it. Its cost is this machine's
+// baseline for an input of this size — the denominator a catastrophic probe is
+// measured against, so the ratio reflects backtracking blowup rather than raw
+// machine speed. 'z' matches none of the meta-test patterns' required prefixes
+// or character classes, so every probe fails before the group and never
+// backtracks. `min` over several samples rejects scheduler noise on a
+// sub-millisecond measurement.
+function benignBaselineMs(rule: Rule, length: number): number {
+  const text = 'z'.repeat(length);
+  scan(text, [rule]);
+  let ms = Infinity;
+  for (let i = 0; i < 7; i++) {
+    const start = performance.now();
+    scan(text, [rule]);
+    ms = Math.min(ms, performance.now() - start);
+  }
+  return ms;
+}
+
+// A catastrophic probe must cost dramatically more than an ordinary input of the
+// same length on the SAME machine. This ratio is scale-free: hardware speed and
+// CPU contention slow both measurements together and cancel out, where an
+// absolute-millisecond threshold does not. The measured factor runs into the
+// thousands; this bound keeps orders of magnitude of headroom while still failing
+// loudly if a probe stops being adversarial.
+const CATASTROPHIC_RATIO = 50;
+
+// Below any genuine scan cost, so it only replaces an unmeasurably fast baseline
+// that rounded to zero and never distorts a real measurement — it exists purely
+// to keep the ratio's denominator above zero.
+const MIN_BASELINE_MS = 1e-6;
+
+// The worst probe's slowdown over a same-length benign baseline for `rule`.
+function backtrackRatio(rule: Rule): { ratio: number; ms: number; benignMs: number } {
+  const { ms, probe } = worstProbeMs(rule);
+  const benignMs = Math.max(benignBaselineMs(rule, probe.length), MIN_BASELINE_MS);
+  return { ratio: ms / benignMs, ms, benignMs };
+}
+
 describe('bundled rules survive adversarial input', () => {
   it('discovers every bundled rule', () => {
     // Guards against the suite silently shrinking to zero if discovery breaks.
@@ -239,13 +279,20 @@ describe('the probe battery itself', () => {
   // adversarial (a refactor drops the terminator, shrinks the lengths, …) —
   // 101 green tests that check nothing.
   //
-  // A pattern belongs here only if it blows the budget on an early SHORT probe.
-  // The assertion is a lower bound on time, so the case runs for as long as the
-  // pattern is slow, and how slow is hardware-dependent: `(.*a){20}$` costs
-  // ~1.2s on one machine and over 5s on the Windows runner, where it exceeded
-  // the test timeout. It proved nothing the two below do not, so it is not
-  // worth a multi-second case. Add a pattern here only after checking what its
-  // first matching probe costs.
+  // Each case proves the battery drives a catastrophic pattern to backtrack far
+  // past ordinary input by asserting a RATIO — worst probe time over a
+  // same-length benign baseline on the same machine — not an absolute
+  // millisecond threshold. Wall-clock ms shifts with hardware and CPU load, and
+  // which pattern sits closest to a fixed line shifts with it; the ratio does
+  // not, because both measurements move together.
+  //
+  // A pattern belongs here only if `worstProbeMs` crosses BUDGET_MS on an early
+  // SHORT probe. That first over-budget probe runs to completion, so its cost
+  // must stay well under the vitest timeout: `(.*a){20}$` costs ~1.2s on one
+  // machine and over 5s on the Windows runner, where it exceeded the timeout. It
+  // proved nothing the cases below do not, so it is not worth a multi-second
+  // probe. Add a pattern here only after checking what its first matching probe
+  // costs.
   it.each([
     ['nested quantifier', '^(a+)+$'],
     ['adjacent quantifiers in a quantified group', '(x+x+)+y'],
@@ -256,7 +303,13 @@ describe('the probe battery itself', () => {
     // thing standing between one of these and `rules/`.
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    expect(worstProbeMs(parsed.data).ms).toBeGreaterThan(BUDGET_MS);
+    const { ratio, ms, benignMs } = backtrackRatio(parsed.data);
+    expect(
+      ratio,
+      `worst probe ran ${ms.toFixed(1)}ms vs a ${benignMs.toFixed(3)}ms same-length ` +
+        `baseline (ratio ${ratio.toFixed(0)}×); the probe battery should drive this ` +
+        `pattern to backtrack orders of magnitude past ordinary input.`,
+    ).toBeGreaterThan(CATASTROPHIC_RATIO);
   });
 
   // The fixed lowercase-and-digit alphabet cannot see these: a literal prefix
@@ -273,7 +326,13 @@ describe('the probe battery itself', () => {
     const parsed = parseRegexRule(pattern);
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    expect(worstProbeMs(parsed.data).ms).toBeGreaterThan(BUDGET_MS);
+    const { ratio, ms, benignMs } = backtrackRatio(parsed.data);
+    expect(
+      ratio,
+      `worst probe ran ${ms.toFixed(1)}ms vs a ${benignMs.toFixed(3)}ms same-length ` +
+        `baseline (ratio ${ratio.toFixed(0)}×); the probe battery should drive this ` +
+        `pattern to backtrack orders of magnitude past ordinary input.`,
+    ).toBeGreaterThan(CATASTROPHIC_RATIO);
   });
 
   it('the fixed alphabet alone would miss the alphabet-specific patterns', () => {

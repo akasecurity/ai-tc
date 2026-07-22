@@ -67,6 +67,13 @@ export function Donut({
  * the parent via `preserveAspectRatio="none"` — no ResizeObserver needed — so it
  * drops into a stat tile or a narrow table cell. `vectorEffect` keeps the stroke
  * an even width despite the non-uniform scale.
+ *
+ * Decorative by default. Pass `labels` (one per point, index-aligned to `data`)
+ * to make it hoverable: the nearest point gets a marker dot and a tooltip with
+ * its label + value. The dot and tooltip are absolutely-positioned HTML (a circle
+ * inside the stretched SVG would render as an ellipse); x positions are
+ * percentages of the same viewBox fractions the path uses, so they track the
+ * non-uniform scale.
  */
 export function Sparkline({
   data,
@@ -74,14 +81,21 @@ export function Sparkline({
   height = 34,
   fill = true,
   strokeWidth = 2,
+  labels,
+  formatValue,
 }: {
   data: number[];
   color: string;
   height?: number;
   fill?: boolean;
   strokeWidth?: number;
+  /** Per-point hover labels (same length as `data`); omit for a decorative line. */
+  labels?: string[];
+  /** Tooltip value formatter (defaults to String). */
+  formatValue?: (v: number) => string;
 }) {
   const gradientId = `spark-${useId().replace(/:/g, '')}`;
+  const [hover, setHover] = useState<number | null>(null);
   const viewW = 100;
   const pad = 2;
   const max = Math.max(...data);
@@ -104,8 +118,9 @@ export function Sparkline({
       .y1((d) => d[1])
       .curve(curveMonotoneX)(points) ?? undefined;
 
-  return (
-    // Decorative: the trend is a supporting glyph beside a labeled value.
+  const svg = (
+    // Decorative: the trend is a supporting glyph beside a labeled value; the
+    // hover tooltip (when enabled) is a pointer affordance on top of that.
     <svg
       aria-hidden
       width="100%"
@@ -133,6 +148,66 @@ export function Sparkline({
         vectorEffect="non-scaling-stroke"
       />
     </svg>
+  );
+
+  // Defensive: hover only when every point has a label — a mis-aligned labels
+  // array degrades to the decorative line rather than mislabeling points.
+  const interactive = labels?.length === data.length && data.length > 0;
+  if (!interactive) return svg;
+
+  const hoverValue = hover === null ? undefined : data[hover];
+  const hoverLabel = hover === null ? undefined : labels[hover];
+
+  return (
+    <div
+      aria-hidden
+      className="relative"
+      onMouseMove={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (rect.width === 0) return;
+        const viewX = ((e.clientX - rect.left) / rect.width) * viewW;
+        const i =
+          data.length <= 1
+            ? 0
+            : Math.round(((viewX - pad) / (viewW - pad * 2)) * (data.length - 1));
+        setHover(Math.min(data.length - 1, Math.max(0, i)));
+      }}
+      onMouseLeave={() => {
+        setHover(null);
+      }}
+    >
+      {svg}
+      {hover !== null && hoverValue !== undefined && hoverLabel !== undefined && (
+        <>
+          <span
+            className="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/80"
+            style={{
+              left: `${String((xAt(hover) / viewW) * 100)}%`,
+              top: yAt(hoverValue),
+              background: color,
+            }}
+          />
+          <div
+            className="pointer-events-none absolute z-10 -translate-x-1/2 whitespace-nowrap"
+            style={{
+              left: `clamp(36px, ${String((xAt(hover) / viewW) * 100)}%, calc(100% - 36px))`,
+              bottom: height + 6,
+              borderRadius: 8,
+              border: `1px solid ${COLORS.border}`,
+              background: COLORS.surface,
+              padding: '4px 8px',
+              fontSize: 12,
+              boxShadow: '0 4px 12px rgb(0 0 0 / 0.08)',
+            }}
+          >
+            <div style={{ color: COLORS.text3, fontSize: 11 }}>{hoverLabel}</div>
+            <div className="font-semibold" style={{ color: COLORS.text2 }}>
+              {(formatValue ?? String)(hoverValue)}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

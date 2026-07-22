@@ -14,9 +14,9 @@
  * touched on the floor-only path, so no historical-review consent is recorded.
  *
  * The applying-frame confirmation is the Not-now analog of the Yes-path
- * apply-suppressions --confirmed line: it reports only the categories tuned (no
- * suppression pass ran, no scan produced counts), so it carries neither a
- * 'routine dismissed' count nor the calibration headline.
+ * apply-suppressions --confirmed line: it reports only the detection categories
+ * set (no suppression pass ran, no scan produced counts), so it carries neither
+ * a 'routine results set aside' count nor the calibration headline.
  *
  * Frame 0.6 (firstrun.js, the no-scan installed summary) closes the journey here:
  * driven with NO --surfaced count, its store-derived stats and 'N worth a look'
@@ -119,27 +119,27 @@ describe('Not-now start-light path, end-to-end', () => {
     // The Not-now branch's start-light card — the copy is unit-owned in
     // render.test.ts / start-light.test.ts; this asserts the frame renders it
     // end-to-end from the built script.
-    expect(startLight).toContain('Start light — set your packs');
+    expect(startLight).toContain('Starting light — your detection categories');
     // The full 8×4 default posture matrix, rendered from the severity-floor defaults.
     expect(startLight).toContain(renderPostureGrid(severityFloorPosture()));
     // Per-pack rationale — a shipped reason line for each pack, never omitted.
-    expect(startLight).toContain('live credentials are the costliest thing to leak');
+    expect(startLight).toContain('keys and credentials are the costliest thing to lose');
     // The frame closes with the re-tune hint.
     expect(startLight).toContain(RE_TUNE_HINT);
   });
 
-  it('applying (0.5): honest no-scan confirmation — categories tuned, no routine/calibration counts', () => {
+  it('applying (0.5): honest no-scan confirmation — detection categories set, no routine/calibration counts', () => {
     // The applying confirmation from onboard.js --floor — the Not-now analog of
     // the Yes-path apply-suppressions --confirmed line. The tuned count is derived
     // from the posture the run actually wrote (read back from the store), so the
     // assertion carries no hardcoded count.
     const categoriesTuned = Object.values(readPosture(journey.storeDir)).filter(Boolean).length;
     expect(applied).toContain(renderCategoriesTuned(categoriesTuned));
-    // No suppression pass ran, so there is no dismissed count to report.
-    expect(applied).not.toContain('routine dismissed');
+    // No suppression pass ran, so there is no routine-results count to report.
+    expect(applied).not.toContain('routine result');
     // No scan ran, so the calibration headline and its counts never appear.
-    expect(applied).not.toContain('Calibrated.');
-    expect(applied).not.toContain('notifications');
+    expect(applied).not.toContain("I went through Claude's recent work");
+    expect(applied).not.toContain('detections');
   });
 
   it('frame JSON: no calibration frame is emitted on the Not-now spine through 0.5', () => {
@@ -155,7 +155,8 @@ describe('Not-now start-light path, end-to-end', () => {
     // The installed-summary heading and, beneath it, the per-category Posture block
     // reflecting exactly the floor posture the 0.5 write established — read back
     // from the store (the honest final-state seam) and rendered into the card.
-    expect(firstRun).toContain('AKA Security installed');
+    // No scan ran, so the card carries the floor-path heading, not the scan one.
+    expect(firstRun).toContain("I've started you on safe defaults");
     const posture = readPosture(journey.storeDir);
     const rows = DetectionCategory.options.flatMap((category) => {
       const action = posture[category];
@@ -165,14 +166,15 @@ describe('Not-now start-light path, end-to-end', () => {
   });
 
   it('installed summary (0.6): store-derived stats and the handoff degrade to the honest no-scan empty-state', () => {
-    // No scan ran, so the numeric Health/Findings/Recommendations tally is replaced
-    // by the honest empty-state line — never a fabricated zero tally. Guard every
-    // count in that tally, so a regression to a fabricated `Findings 0` /
-    // `Recommendations 0` line fails here too, not only the health score.
+    // No scan ran, so the numeric Health/detections/recommendations tally is
+    // replaced by the honest empty-state line — never a fabricated zero tally.
+    // Guard every count in that tally, so a regression to a fabricated
+    // `0 detections` / `0 recommendations` line fails here too, not only the
+    // health score.
     expect(firstRun).toContain('Nothing needs your attention');
     expect(firstRun).not.toMatch(/Health \d+\/100/);
-    expect(firstRun).not.toMatch(/Findings \d+/);
-    expect(firstRun).not.toMatch(/Recommendations \d+/);
+    expect(firstRun).not.toMatch(/\d+ detections/);
+    expect(firstRun).not.toMatch(/\d+ recommendations/);
     // No surfaced count was threaded, so the 'N worth a look' dashboard handoff is
     // withheld entirely — no fabricated or placeholder count.
     expect(firstRun).not.toContain('worth a look');

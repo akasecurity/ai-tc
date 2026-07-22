@@ -17,6 +17,7 @@ import {
 } from '../src/firstrun-core.ts';
 import { readPostureBlock } from '../src/posture.ts';
 import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
+import { parseSurface } from '../src/setup-show.ts';
 
 // Composed at runtime so the repo's own secret scanning doesn't flag this file.
 const AWS_EXAMPLE_KEY = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
@@ -116,7 +117,8 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     const blob = await seedAndRun(['--surfaced', '3', '--live-keys', '2']);
 
     // Additive: the human-readable install card is still present (not replaced).
-    expect(blob).toContain('installed');
+    // A surfaced count means a scan ran — the scan-path heading + divider.
+    expect(blob).toContain("You're all set — tuned to this machine.");
     expect(blob).toContain('First scan complete');
 
     const payload = readFrameJsonBlock(blob);
@@ -181,7 +183,9 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     const blob = await seedAndRun([]);
 
     // The card still renders — only the machine-readable payload is withheld.
-    expect(blob).toContain('installed');
+    // No --surfaced means no scan ran — the floor-path heading + divider.
+    expect(blob).toContain("I've started you on safe defaults");
+    expect(blob).toContain('Safe defaults in place');
     expect(readFrameJsonBlock(blob)).toBeUndefined();
   });
 
@@ -203,8 +207,9 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     }
     const blob = out.join('');
 
-    // The install card still renders as a tidy success state…
-    expect(blob).toContain('installed');
+    // The install card still renders as a tidy success state, on the floor-path
+    // heading — no --surfaced was passed, so no scan ran…
+    expect(blob).toContain("I've started you on safe defaults");
     // …with an honest empty-state stats line, never a fabricated scan tally…
     expect(blob).toContain("you're starting clean");
     expect(blob).not.toContain('worth a look');
@@ -237,15 +242,16 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     }
     const blob = out.join('');
 
-    // The rest of the install card still renders over the live gateway…
-    expect(blob).toContain('installed');
+    // The rest of the install card still renders over the live gateway, on the
+    // scan-path heading — --surfaced was passed, so a scan ran…
+    expect(blob).toContain("You're all set — tuned to this machine.");
     expect(blob).toContain('First scan complete');
-    expect(blob).toContain('Findings');
+    expect(blob).toContain('detections');
     // …and the handoff payload is still emitted.
     expect(SetupHandoffOffer.safeParse(readFrameJsonBlock(blob)).success).toBe(true);
     // …but the Posture section is omitted, not collapsed into the fail-open note.
     expect(blob).not.toContain('Posture');
-    expect(blob).not.toContain("I couldn't read the local store");
+    expect(blob).not.toContain("I couldn't check my records just now");
   });
 
   it('carries no raw detected value into the emitted frame block', async () => {
@@ -254,6 +260,17 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     expect(JSON.stringify(readFrameJsonBlock(blob))).not.toContain(AWS_EXAMPLE_KEY);
     // The card masks matches, so the raw key never appears anywhere on stdout.
     expect(blob).not.toContain(AWS_EXAMPLE_KEY);
+  });
+
+  it('install summary is a SHOW region; the handoff payload stays a frame', async () => {
+    const blob = await seedAndRun(['--surfaced', '2', '--live-keys', '1']);
+    const surface = parseSurface(blob);
+    // The install card (its "Health N/100" line) is relayed verbatim as a SHOW region.
+    expect(surface.shows.some((s) => s.includes('Health'))).toBe(true);
+    // The handoff payload stays a machine-only FRAME, never shown.
+    expect(surface.frames).toHaveLength(1);
+    // The card text never leaks into the untagged status remainder.
+    expect(surface.status).not.toContain('Health');
   });
 
   it('card stats trace to the seeded store, never a fixed literal', async () => {
@@ -287,14 +304,14 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     }
     const blob = out.join('');
 
-    // The 'Findings N' stat is the real whole-store total, not the render-unit
+    // The 'N detections' stat is the real whole-store total, not the render-unit
     // fixture's literal.
     expect(summaryFindings).toBe(2);
-    expect(blob).toContain(`Findings ${String(summaryFindings)}`);
-    expect(blob).not.toContain('Findings 142');
-    // 'Recommendations' mirrors /recommend over the real findings: one per
+    expect(blob).toContain(`${String(summaryFindings)} detections`);
+    expect(blob).not.toContain('142 detections');
+    // 'recommendations' mirrors /recommend over the real findings: one per
     // category (secret + pii) → 2.
-    expect(blob).toContain('Recommendations 2');
+    expect(blob).toContain('2 recommendations');
     // 'Health' is the derived score over the real summary, rendered out of 100 —
     // never a fixed 82/100 sample.
     expect(blob).toMatch(/Health \d+\/100/);
@@ -342,8 +359,15 @@ describe('runFirstRunFailOpen — degrades to the store-unavailable note on a st
 
     // Fail-open: no throw escaped, and the honest store-unavailable note stands in.
     expect(threw).toBeUndefined();
-    expect(blob).toContain("I couldn't read the local store");
+    expect(blob).toContain("I couldn't check my records just now");
     // No fabricated card: the install card's stats never rendered over a dead store.
     expect(blob).not.toContain('installed');
+
+    // The note is relayed as a SHOW region, not left in the untagged status remainder.
+    const surface = parseSurface(blob);
+    expect(surface.shows.some((s) => s.includes("I couldn't check my records just now"))).toBe(
+      true,
+    );
+    expect(surface.status).not.toContain("I couldn't check my records just now");
   });
 });

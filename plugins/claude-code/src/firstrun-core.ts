@@ -23,7 +23,7 @@
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 
 import { readRegisteredCommands } from './command-registry.ts';
-import { fenced } from './present.ts';
+import { fenced, show } from './present.ts';
 import {
   buildHandoffOffer,
   buildRecommendations,
@@ -103,23 +103,29 @@ export async function runFirstRun(deps: FirstRunDeps): Promise<void> {
   const registry = readRegisteredCommands();
 
   deps.stdout(
-    `${fenced(
-      renderFirstRun(
-        {
-          posture: postureBlock,
-          health: healthScore(summary),
-          // The card's "Findings N" stat is the whole-store total — correct here.
-          findings: summary.findings,
-          recommendations,
-          // Only threaded when a scan supplied a count — never as an explicit
-          // undefined (exactOptionalPropertyTypes), so the card omits the handoff
-          // line rather than fabricating a zero.
-          ...(surfaced !== undefined ? { worthALook: surfaced } : {}),
-          topFindings: topFindings(findings),
-        },
-        registry,
+    show(
+      fenced(
+        renderFirstRun(
+          {
+            // A surfaced count means a scan ran and carried a real preview value
+            // through setup — the same signal that gates the handoff payload
+            // below. Its absence means the floor fallback ran instead.
+            calibration: surfaced !== undefined ? 'scan' : 'floor',
+            posture: postureBlock,
+            health: healthScore(summary),
+            // The card's "Findings N" stat is the whole-store total — correct here.
+            findings: summary.findings,
+            recommendations,
+            // Only threaded when a scan supplied a count — never as an explicit
+            // undefined (exactOptionalPropertyTypes), so the card omits the handoff
+            // line rather than fabricating a zero.
+            ...(surfaced !== undefined ? { worthALook: surfaced } : {}),
+            topFindings: topFindings(findings),
+          },
+          registry,
+        ),
       ),
-    )}\n`,
+    ),
   );
 
   // The handoff-offer payload, emitted ALONGSIDE the card above so a
@@ -138,6 +144,6 @@ export async function runFirstRunFailOpen(deps: FirstRunDeps): Promise<void> {
   try {
     await runFirstRun(deps);
   } catch {
-    deps.stdout(`${STORE_UNAVAILABLE_NOTE}\n`);
+    deps.stdout(show(STORE_UNAVAILABLE_NOTE));
   }
 }

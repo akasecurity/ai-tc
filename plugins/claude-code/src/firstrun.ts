@@ -25,6 +25,7 @@ import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { runFirstRunFailOpen } from './firstrun-core.ts';
 import { readPostureBlock } from './posture.ts';
+import { show } from './present.ts';
 import { STORE_UNAVAILABLE_NOTE } from './render.ts';
 
 try {
@@ -43,7 +44,7 @@ try {
 } catch {
   // Config/gateway-resolution/close faults land here; the store-read failure inside
   // runFirstRunFailOpen already degraded to the same note above.
-  process.stdout.write(`${STORE_UNAVAILABLE_NOTE}\n`);
+  process.stdout.write(show(STORE_UNAVAILABLE_NOTE));
 }
 
 process.exit(0);

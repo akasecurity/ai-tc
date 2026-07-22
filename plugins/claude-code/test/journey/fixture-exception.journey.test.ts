@@ -20,7 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { checkFpSignalContract } from '../../eval/prompt-contract.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
-import { REPEATED_FP_KEY, SetupJourney } from './harness.ts';
+import { REPEATED_FP_KEYS, SetupJourney } from './harness.ts';
 
 // The one emitted group, asserted present by the caller first — extracted
 // without a non-null assertion so an actually-missing group fails loud with a
@@ -60,16 +60,21 @@ describe('FP-pattern signal grounds end-to-end over a repeated-value false posit
 
   it('the preview frame carries the masked FP-pattern signal with the expected token, count, and per-value identity', () => {
     expect(preview.status).toBe(0);
-    // The same rule surfaced three hits of the SAME raw value: one genuine
-    // (the stub judge's first-sorted survivor), two marked false positive —
-    // so the emitted group's count is 2, not 1.
+    // The same rule surfaced three hits of three DISTINCT values (dedup does
+    // not collapse them — different fingerprints): one genuine (the stub
+    // judge's first-sorted survivor), two marked false positive — so the
+    // emitted group's count is 2, not 1.
     expect(frame.counts).toEqual({ total: 3, important: 1, routine: 2 });
 
     expect(frame.falsePositivePatterns).toBeDefined();
     expect(frame.falsePositivePatterns).toHaveLength(1);
     const group = soleGroup(frame);
 
-    expect(group.pattern).toBe(safeMaskedMatch(REPEATED_FP_KEY));
+    const [firstKey] = REPEATED_FP_KEYS;
+    if (firstKey === undefined) throw new Error('REPEATED_FP_KEYS must not be empty');
+    // Every key in REPEATED_FP_KEYS masks identically (mask-collision), so any
+    // one of them names the group's expected pattern.
+    expect(group.pattern).toBe(safeMaskedMatch(firstKey));
     expect(group.count).toBe(2);
     expect(group.values).toHaveLength(2);
     for (const value of group.values) {
@@ -79,9 +84,11 @@ describe('FP-pattern signal grounds end-to-end over a repeated-value false posit
       expect(typeof value.keyVersion).toBe('number');
     }
 
-    // The raw value never crosses into the preview's stdout — only its masked
-    // pattern token does.
-    expect(preview.stdout).not.toContain(REPEATED_FP_KEY);
+    // No raw value from the seeded set ever crosses into the preview's
+    // stdout — only the masked pattern token does.
+    for (const raw of REPEATED_FP_KEYS) {
+      expect(preview.stdout).not.toContain(raw);
+    }
   });
 
   it("the checker's FP-signal grounding passes for the real emitted pattern/count and fails for an invented pattern or a fabricated count", () => {

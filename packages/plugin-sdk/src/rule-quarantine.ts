@@ -61,7 +61,15 @@ export async function filterUnsafeRules(
       continue;
     }
 
-    const cached = await gateway.getRuleProbeVerdict(key);
+    let cached;
+    try {
+      cached = await gateway.getRuleProbeVerdict(key);
+    } catch {
+      // A cache-read failure (e.g. a transient store error) is treated as a
+      // cache miss: fall through to measuring the rule fresh rather than
+      // letting the error propagate out and abort the entire scan.
+      cached = undefined;
+    }
     if (cached) {
       if (cached.verdict === 'safe') safe.push(rule);
       else warnQuarantined(rule, cached.worstProbeMs);
@@ -69,12 +77,27 @@ export async function filterUnsafeRules(
     }
 
     if (performance.now() - passStart >= passBudgetMs) {
-      await gateway.setRuleProbeVerdict(key, 'quarantined', passBudgetMs);
+      // The pass budget ran out before this rule could be measured at all —
+      // exclude it from this pass, but do NOT persist a verdict: caching
+      // 'quarantined' here would permanently quarantine a rule that was
+      // never actually timed, just because it was unlucky enough to be late
+      // in the list on a slow or cold-cache pass.
       warnQuarantined(rule, undefined);
       continue;
     }
 
-    const { safe: isSafe, worstMs } = checkRuleTiming(rule);
+    let isSafe: boolean;
+    let worstMs: number;
+    try {
+      ({ safe: isSafe, worstMs } = checkRuleTiming(rule));
+    } catch {
+      // The measurement itself failed (unexpected error inside the probe
+      // battery). This IS a real, if failed, measurement attempt — unlike
+      // the budget-exhausted case above — so quarantine and persist it,
+      // rather than letting the exception escape and skip the whole scan.
+      isSafe = false;
+      worstMs = Number.POSITIVE_INFINITY;
+    }
     await gateway.setRuleProbeVerdict(key, isSafe ? 'safe' : 'quarantined', worstMs);
     if (isSafe) safe.push(rule);
     else warnQuarantined(rule, worstMs);

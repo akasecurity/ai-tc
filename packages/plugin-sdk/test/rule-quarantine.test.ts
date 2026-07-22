@@ -1,7 +1,20 @@
+import type { checkRuleTiming as CheckRuleTiming } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 import { describe, expect, it, vi } from 'vitest';
 
 import { filterUnsafeRules, ruleProbeKey } from '../src/rule-quarantine.ts';
+
+// Wrap the real `checkRuleTiming` in a spy so most tests exercise the actual
+// probe battery unchanged, while the measurement-error test below can force
+// a single call to throw via `mockImplementationOnce` (which reverts to this
+// real implementation for every subsequent call).
+vi.mock('@akasecurity/detections', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, checkRuleTiming: vi.fn(actual.checkRuleTiming as typeof CheckRuleTiming) };
+});
+
+const { checkRuleTiming } = await import('@akasecurity/detections');
+const checkRuleTimingMock = vi.mocked(checkRuleTiming);
 
 function regexRule(id: string, pattern: string): Rule {
   return {
@@ -95,7 +108,7 @@ describe('filterUnsafeRules', () => {
     expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
   });
 
-  it('quarantines remaining unchecked rules once the pass budget is exhausted', async () => {
+  it('excludes remaining unchecked rules once the pass budget is exhausted, without caching a verdict for them', async () => {
     const gateway = fakeCacheGateway();
     const ruleA = regexRule('pack/a', 'AKIA[A-Z0-9]{16}');
     const ruleB = regexRule('pack/b', 'ghp_[A-Za-z0-9]{36}');
@@ -103,12 +116,39 @@ describe('filterUnsafeRules', () => {
     const result = await filterUnsafeRules([ruleA, ruleB], gateway, { passBudgetMs: -1 });
 
     expect(result).toEqual([]);
-    expect(gateway.setRuleProbeVerdict).toHaveBeenCalledTimes(2);
-    for (const call of gateway.setRuleProbeVerdict.mock.results) {
-      expect(call).toBeDefined();
-    }
-    for (const call of gateway.setRuleProbeVerdict.mock.calls) {
-      expect(call[1]).toBe('quarantined');
-    }
+    // Neither rule was ever actually measured (the budget was exhausted
+    // before reaching either), so no verdict should be persisted for
+    // either — persisting 'quarantined' here would permanently and
+    // silently exclude a rule that might be perfectly safe.
+    expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
+    expect(gateway.store.size).toBe(0);
+  });
+
+  it('treats a cache-read failure as a cache miss and still measures the rule', async () => {
+    const gateway = fakeCacheGateway();
+    const rule = regexRule('pack/benign-read-error', 'AKIA[A-Z0-9]{16}');
+    gateway.getRuleProbeVerdict.mockImplementationOnce(() =>
+      Promise.reject(new Error('transient store read error')),
+    );
+
+    const result = await filterUnsafeRules([rule], gateway);
+
+    expect(result).toEqual([rule]);
+    expect(gateway.setRuleProbeVerdict).toHaveBeenCalledTimes(1);
+    expect(gateway.setRuleProbeVerdict.mock.calls[0]?.[1]).toBe('safe');
+  });
+
+  it('quarantines a rule whose timing measurement itself throws, and persists the verdict', async () => {
+    const gateway = fakeCacheGateway();
+    const rule = regexRule('pack/measurement-blows-up', 'AKIA[A-Z0-9]{16}');
+    checkRuleTimingMock.mockImplementationOnce(() => {
+      throw new Error('probe battery exploded');
+    });
+
+    const result = await filterUnsafeRules([rule], gateway);
+
+    expect(result).toEqual([]);
+    expect(gateway.setRuleProbeVerdict).toHaveBeenCalledTimes(1);
+    expect(gateway.setRuleProbeVerdict.mock.calls[0]?.[1]).toBe('quarantined');
   });
 });

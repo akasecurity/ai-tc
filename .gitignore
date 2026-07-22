@@ -21,6 +21,7 @@ plugins/claude-code/scripts/
 
 # local agent-tooling state — not product code
 .wolf/
+.superpowers/
 
 # Claude Code project config stays local — never ship agent-tooling config
 .claude/settings.json

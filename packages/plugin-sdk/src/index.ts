@@ -16,6 +16,7 @@ export {
 export type {
   CaptureRecord,
   DataGateway,
+  RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
 } from './data-gateway.ts';

@@ -6,10 +6,9 @@ import { DetectionCategory, Severity } from './finding.ts';
 export const MatcherType = z.enum(['keyword', 'regex', 'validator']).meta({ id: 'MatcherType' });
 export type MatcherType = z.infer<typeof MatcherType>;
 
-// The one-time ReDoS timing verdict for a regex rule, cached locally so a
-// rule already measured is never re-measured on a later hook invocation.
-// 'safe' means the rule passed the adversarial probe battery within budget;
-// 'quarantined' means it was excluded from the active ruleset.
+// The ReDoS timing verdict for a regex rule. 'safe' means the rule passed
+// the adversarial probe battery within budget; 'quarantined' means it was
+// excluded from the active ruleset.
 export const RuleProbeVerdict = z.enum(['safe', 'quarantined']).meta({ id: 'RuleProbeVerdict' });
 export type RuleProbeVerdict = z.infer<typeof RuleProbeVerdict>;
 

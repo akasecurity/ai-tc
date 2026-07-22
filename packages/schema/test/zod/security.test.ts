@@ -1,13 +1,33 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_TIME_RANGE } from '../../src/zod/ranges.ts';
 import {
   MttrTrendPoint,
   MttrTrendResponse,
   RecentlyResolvedResponse,
   ResolvedFeedItem,
+  SecurityRangeQuery,
   SeveritySummaryItem,
   SeveritySummaryResponse,
+  TopSourcesQuery,
 } from '../../src/zod/security.ts';
+
+describe('range query defaults', () => {
+  it('applies the shared default when range is omitted', () => {
+    expect(SecurityRangeQuery.parse({}).range).toBe(DEFAULT_TIME_RANGE);
+    expect(TopSourcesQuery.parse({}).range).toBe(DEFAULT_TIME_RANGE);
+  });
+
+  it('keeps an explicit range instead of the default', () => {
+    expect(SecurityRangeQuery.parse({ range: '6m' }).range).toBe('6m');
+    expect(TopSourcesQuery.parse({ range: '30d' }).range).toBe('30d');
+  });
+
+  it('rejects an unsupported range rather than falling back', () => {
+    expect(SecurityRangeQuery.safeParse({ range: '1y' }).success).toBe(false);
+    expect(TopSourcesQuery.safeParse({ range: '1y' }).success).toBe(false);
+  });
+});
 
 describe('SeveritySummaryResponse (resolution-aware extension)', () => {
   it('parses the legacy shape (no resolution fields)', () => {

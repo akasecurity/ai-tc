@@ -14,6 +14,7 @@ export * from './local.ts';
 export * from './meta.ts';
 export * from './policy.ts';
 export * from './project-files.ts';
+export * from './ranges.ts';
 export * from './registry.ts';
 export * from './remediation.ts';
 export * from './rule.ts';

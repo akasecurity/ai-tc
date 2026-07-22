@@ -4,7 +4,7 @@ import {
   PageHead,
   rangeToFromIso,
   type SummaryStatItem,
-  TIME_RANGES,
+  TIME_RANGE_OPTIONS,
 } from '@akasecurity/dashboard-ui';
 import { aggregateTokenUsage } from '@akasecurity/schema';
 
@@ -67,7 +67,7 @@ export default async function ActivityPage({
     activity.harnessFacets(rangeFromMs),
   ]);
   const tokenUsage = aggregateTokenUsage(tokenReports);
-  const rangeLabel = TIME_RANGES.find((r) => r.value === range)?.label;
+  const rangeLabel = TIME_RANGE_OPTIONS.find((r) => r.value === range)?.label;
 
   // Honor the pinned ?id whenever one is present — a deep link (e.g. the
   // findings drawer's "View session") must show THAT session even when the

@@ -16,7 +16,7 @@ export {
   RANGE_DAYS,
   rangeToFromIso,
   resolveBlockedWindow,
-  TIME_RANGES,
+  TIME_RANGE_OPTIONS,
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';

@@ -67,8 +67,8 @@ export const IngestRequest = IngestBatch;
 export type IngestRequest = z.infer<typeof IngestRequest>;
 export const IngestResponse = z
   .object({
-    accepted: z.number().int(),
-    duplicates: z.number().int(),
+    accepted: z.number().int().nonnegative(),
+    duplicates: z.number().int().nonnegative(),
   })
   .meta({ id: 'IngestResponse' });
 export type IngestResponse = z.infer<typeof IngestResponse>;

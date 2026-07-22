@@ -20,6 +20,7 @@ import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import { registerBundledPacks } from './rule-packs.ts';
+import { filterUnsafeRules } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
 
 // Global handling-mode ceiling: when true, settings.policy === 'warn' caps
@@ -137,9 +138,15 @@ export function createPluginRuntime(
         categoryActionIndex.set(p.target.category, p.action);
       }
     }
+    // Only bundle.rules (the pulled/custom-pack path) passes through the
+    // runtime timing gate — the compiled-in bundled packs from
+    // getLoadedRules() are already proven safe by the CI adversarial battery
+    // on every commit, so re-checking them here would only add steady-state
+    // cache-lookup overhead for zero additional safety.
+    const safeBundleRules = await filterUnsafeRules(bundle.rules ?? [], gateway);
     rules = bundle.rulesComplete
-      ? (bundle.rules ?? [])
-      : [...getLoadedRules(), ...(bundle.rules ?? [])];
+      ? safeBundleRules
+      : [...getLoadedRules(), ...safeBundleRules];
     bundleExceptions = bundle.exceptions ?? [];
     initialized = true;
   }

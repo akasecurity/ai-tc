@@ -8,7 +8,7 @@
  * regression pin on the wire protocol itself: no hook shape ever carries an
  * `action` key (that's an internal CaptureResult field, never serialized).
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -189,6 +189,25 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
     );
   }
 
+  // ~/.aka exists but is unwritable, so any mkdir/write under it (a fresh
+  // data dir, settings.json, a throttle marker) hits EACCES.
+  function seedReadOnlyAkaHome(home: string): void {
+    const akaDir = join(home, '.aka');
+    mkdirSync(akaDir, { recursive: true });
+    chmodSync(akaDir, 0o555);
+  }
+
+  // chmod back before withTempHome's cleanup rmSync — a read-only dir can
+  // block recursive removal of anything the hook wrote inside it before
+  // hitting the fault.
+  function restoreAkaHome(home: string): void {
+    try {
+      chmodSync(join(home, '.aka'), 0o755);
+    } catch {
+      // Nothing to restore.
+    }
+  }
+
   for (const hook of HOOKS) {
     describe(hook.name, () => {
       it('valid input, corrupt store → exit 0', () => {
@@ -198,6 +217,20 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
           const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
           expect(result.status).toBe(0);
           expectNoActionKey(result.stdout);
+        });
+      });
+
+      it('valid input, read-only ~/.aka → exit 0', () => {
+        withTempHome((home) => {
+          seedReadOnlyAkaHome(home);
+          try {
+            const payload = hook.validPayload(home);
+            const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
+            expect(result.status).toBe(0);
+            expectNoActionKey(result.stdout);
+          } finally {
+            restoreAkaHome(home);
+          }
         });
       });
     });

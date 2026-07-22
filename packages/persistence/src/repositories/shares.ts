@@ -554,7 +554,7 @@ export class SqliteSharesRepository implements SharesReadPort {
         destIds.set(hit.host, destinationId);
       }
 
-      const endpointKey = `${destinationId} ${hit.method} ${hit.url}`;
+      const endpointKey = `${destinationId}\x00${hit.method}\x00${hit.url}`;
       let endpointId = endpointIds.get(endpointKey);
       if (endpointId === undefined) {
         endpointStmt.run({

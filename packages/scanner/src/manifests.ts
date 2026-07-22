@@ -4,16 +4,20 @@
 // SDK dependency is egress evidence on its own, with no URL literal anywhere in
 // the tree. This walk finds those files.
 //
+// File discovery is delegated to walkTree (./walk.ts) so this walk honors
+// SKIP_DIRS and .akaignore — including `!` negations — with exactly the same
+// interpretation the source walk uses, rather than a second implementation
+// that could silently diverge from it.
+//
 // Stat-only: the returned candidates carry the mtime and size the scan ledger
 // needs to decide "unchanged, skip", and nothing is read here. The caller reads
 // content only for the candidates that survive that decision.
-import { type Dirent, readdirSync, statSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { statSync } from 'node:fs';
 
 import type { ManifestKind } from '@akasecurity/plugin-sdk';
 import { manifestKindOf } from '@akasecurity/plugin-sdk';
 
-import { SKIP_DIRS } from './walk.ts';
+import { walkTree } from './walk.ts';
 
 // Matches the source walk's default cap, so one oversized generated manifest
 // costs the same as one oversized source file.
@@ -28,11 +32,12 @@ export interface ManifestCandidate {
 }
 
 /**
- * Find every dependency manifest under `rootDir`, skipping the same directories
- * the source walk skips and any file over `maxFileSizeBytes`. Basenames are
- * classified by `manifestKindOf`, which returns null for lockfiles and for
- * anything this pass does not parse — those are never returned. Best-effort:
- * an unreadable directory or entry is skipped rather than aborting the walk.
+ * Find every dependency manifest under `rootDir`, skipping the same
+ * directories and .akaignore matches the source walk skips, and any file over
+ * `maxFileSizeBytes`. Basenames are classified by `manifestKindOf`, which
+ * returns null for lockfiles and for anything this pass does not parse —
+ * those are never returned. Best-effort: an unreadable directory or entry is
+ * skipped rather than aborting the walk.
  */
 export function collectManifests(
   rootDir: string,
@@ -40,36 +45,18 @@ export function collectManifests(
 ): ManifestCandidate[] {
   const found: ManifestCandidate[] = [];
 
-  const visit = (dir: string): void => {
-    let dirents: Dirent[];
+  for (const file of walkTree(rootDir)) {
+    const kind = manifestKindOf(file.name);
+    if (kind === null) continue;
+
     try {
-      dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
+      const st = statSync(file.path);
+      if (st.size > maxFileSizeBytes) continue;
+      found.push({ path: file.path, kind, mtime: st.mtime.toISOString(), size: st.size });
     } catch {
-      return;
+      continue;
     }
+  }
 
-    for (const entry of dirents) {
-      const fullPath = join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) visit(fullPath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-
-      const kind = manifestKindOf(basename(entry.name));
-      if (kind === null) continue;
-
-      try {
-        const st = statSync(fullPath);
-        if (st.size > maxFileSizeBytes) continue;
-        found.push({ path: fullPath, kind, mtime: st.mtime.toISOString(), size: st.size });
-      } catch {
-        continue;
-      }
-    }
-  };
-
-  visit(rootDir);
   return found;
 }

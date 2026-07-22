@@ -8,7 +8,7 @@
  * regression pin on the wire protocol itself: no hook shape ever carries an
  * `action` key (that's an internal CaptureResult field, never serialized).
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -172,6 +172,34 @@ describe('fail-open: malformed/hostile input never breaks a hook', () => {
         },
         35_000,
       );
+    });
+  }
+});
+
+describe('fail-open: an unavailable store never breaks a hook', () => {
+  // Non-header bytes → the first PRAGMA on open fails SQLITE_NOTADB, the
+  // exact read failure the fail-open path guards against (mirrors
+  // test/journey/harness.ts's corruptStore()).
+  function seedCorruptStore(home: string): void {
+    const storeDir = join(home, '.aka', 'data');
+    mkdirSync(storeDir, { recursive: true });
+    writeFileSync(
+      join(storeDir, 'aka.db'),
+      'AKA fail-open-e2e fixture — not a database\n'.repeat(64),
+    );
+  }
+
+  for (const hook of HOOKS) {
+    describe(hook.name, () => {
+      it('valid input, corrupt store → exit 0', () => {
+        withTempHome((home) => {
+          seedCorruptStore(home);
+          const payload = hook.validPayload(home);
+          const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
+          expect(result.status).toBe(0);
+          expectNoActionKey(result.stdout);
+        });
+      });
     });
   }
 });

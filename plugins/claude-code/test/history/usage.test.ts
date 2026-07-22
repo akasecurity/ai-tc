@@ -18,7 +18,13 @@ import {
 // persistence path (INSERT OR IGNORE + enforced FKs), not a mock.
 function config(dataDir: string): PluginConfig {
   return {
-    settings: { specVersion: 2, runMode: 'standalone', policy: 'redact', historicalAccess: 'full' },
+    settings: {
+      specVersion: 2,
+      runMode: 'standalone',
+      policy: 'redact',
+      historicalAccess: 'full',
+      dataSharesInPlace: true,
+    },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
     settingsDir: dataDir,

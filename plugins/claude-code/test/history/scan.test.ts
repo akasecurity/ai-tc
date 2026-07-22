@@ -22,7 +22,13 @@ const NOW = Date.parse('2026-06-24T00:00:00.000Z');
 
 function config(dataDir: string, historicalAccess: 'full' | 'session-only'): PluginConfig {
   return {
-    settings: { specVersion: 2, runMode: 'standalone', policy: 'redact', historicalAccess },
+    settings: {
+      specVersion: 2,
+      runMode: 'standalone',
+      policy: 'redact',
+      historicalAccess,
+      dataSharesInPlace: true,
+    },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
     settingsDir: dataDir,

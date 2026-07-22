@@ -18,6 +18,7 @@ const {
   openAtRestKeysForPath,
   resolvedAtRestKeysForPath,
   insertResolution,
+  recordProjectEgress,
 } = vi.hoisted(() => ({
   capture: vi.fn(),
   close: vi.fn(),
@@ -28,6 +29,7 @@ const {
   openAtRestKeysForPath: vi.fn(),
   resolvedAtRestKeysForPath: vi.fn(),
   insertResolution: vi.fn(),
+  recordProjectEgress: vi.fn(),
 }));
 
 vi.mock('@akasecurity/plugin-runtime', () => ({
@@ -38,6 +40,7 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
     openAtRestKeysForPath,
     resolvedAtRestKeysForPath,
     insertResolution,
+    recordProjectEgress,
   })),
 }));
 
@@ -46,7 +49,10 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => ({
   createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint })),
 }));
 
-const config = { settings: {} } as PluginConfig;
+// dataSharesInPlace mirrors the schema default, so this suite exercises the
+// same egress-enabled path a real scan takes. The egress writes themselves are
+// asserted in ./egress.test.ts.
+const config = { settings: { dataSharesInPlace: true } } as PluginConfig;
 
 function capturedInputs(): CaptureInput[] {
   return capture.mock.calls.map(([input]) => input as CaptureInput);
@@ -83,6 +89,7 @@ beforeEach(() => {
   rulesetFingerprint.mockResolvedValue('ruleset-v1');
   scanLedger.mockResolvedValue(new Map());
   recordScanned.mockResolvedValue(undefined);
+  recordProjectEgress.mockResolvedValue(undefined);
   // No prior open at-rest findings by default — most tests don't care about
   // the resolver, so this keeps computeResolutions() a no-op (empty diff)
   // unless a test explicitly seeds a prior key.
@@ -130,13 +137,23 @@ describe('scanWorktree — provenance', () => {
 });
 
 describe('scanWorktree — scan ledger', () => {
-  it('requests the ledger for the current ruleset fingerprint', async () => {
-    rulesetFingerprint.mockResolvedValue('ruleset-v42');
+  // The ledger key is a hash DERIVED from the ruleset fingerprint combined with
+  // the egress extraction material, not the bare fingerprint — so an extractor
+  // or registry change invalidates the ledger exactly like a new rule pack does.
+  it('keys the ledger on a derived hash that moves with the ruleset fingerprint', async () => {
     write('src/a.ts', 'const a = 1;');
 
+    rulesetFingerprint.mockResolvedValue('ruleset-v42');
     await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    const keyV42 = scanLedger.mock.calls.at(-1)?.[0] as string;
 
-    expect(scanLedger).toHaveBeenCalledWith('ruleset-v42');
+    rulesetFingerprint.mockResolvedValue('ruleset-v43');
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    const keyV43 = scanLedger.mock.calls.at(-1)?.[0] as string;
+
+    expect(keyV42).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyV42).not.toBe('ruleset-v42');
+    expect(keyV43).not.toBe(keyV42);
   });
 
   it('records a ledger entry for every processed file — including clean ones', async () => {
@@ -150,8 +167,11 @@ describe('scanWorktree — scan ledger', () => {
       join(tmp, 'src/a.ts'),
       join(tmp, 'src/b.ts'),
     ]);
+    // Entries must be written under exactly the key the ledger was READ with —
+    // if the two ever diverged, every scan would miss and re-read the whole tree.
+    const readKey = scanLedger.mock.calls.at(-1)?.[0] as string;
     for (const entry of entries) {
-      expect(entry.rulesetHash).toBe('ruleset-v1');
+      expect(entry.rulesetHash).toBe(readKey);
       expect(entry.contentHash).toMatch(/^[0-9a-f]{64}$/);
       expect(entry.mtime).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     }
@@ -226,6 +246,7 @@ describe('scanWorktree — scan ledger', () => {
   it('rescans everything when the ruleset fingerprint changes (gateway returns no entries)', async () => {
     write('src/a.ts', 'const a = 1;');
     await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+    const firstKey = scanLedger.mock.calls.at(-1)?.[0] as string;
     capture.mockClear();
 
     // A new rule pack: the fingerprint moves, and the gateway (which filters by
@@ -235,10 +256,11 @@ describe('scanWorktree — scan ledger', () => {
 
     const summary = await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
 
-    expect(scanLedger).toHaveBeenLastCalledWith('ruleset-v2');
+    const secondKey = scanLedger.mock.calls.at(-1)?.[0] as string;
+    expect(secondKey).not.toBe(firstKey);
     expect(capture).toHaveBeenCalledTimes(1);
     expect(summary.scanned).toBe(1);
-    expect(recordedEntries().at(-1)?.rulesetHash).toBe('ruleset-v2');
+    expect(recordedEntries().at(-1)?.rulesetHash).toBe(secondKey);
   });
 
   it('ledgers files skipped by the cross-repo content-hash dedup', async () => {

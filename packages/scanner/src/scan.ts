@@ -10,22 +10,37 @@
 // scanAllRepos shares one gateway + runtime across all discovered repos so
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
-import { existsSync } from 'node:fs';
-import { isAbsolute, relative } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
   DataGateway,
+  FileEgressHits,
+  ManifestKind,
   PluginConfig,
   PluginRuntime,
   ScanLedgerEntry,
   ScanLedgerState,
   SourceTool,
 } from '@akasecurity/plugin-sdk';
-import { contentHashOf, createPluginRuntime } from '@akasecurity/plugin-sdk';
+import {
+  contentHashOf,
+  createPluginRuntime,
+  EGRESS_CODE_EXTENSIONS,
+  EGRESS_VERSION_MATERIAL,
+  extractEgress,
+  extractManifestSdks,
+  isVendoredPath,
+  resolveEgress,
+  resolveRepoIdentity,
+  resolveWorktreeRoot,
+  toPosix,
+} from '@akasecurity/plugin-sdk';
 
 import type { DiscoverOptions } from './discover.ts';
 import { discoverGitRepos } from './discover.ts';
+import { collectManifests } from './manifests.ts';
 import { computeResolutions } from './resolve.ts';
 import { type WalkOptions, walkSourceFiles } from './walk.ts';
 
@@ -68,9 +83,107 @@ interface LedgerContext {
   rulesetHash: string;
 }
 
-async function loadLedger(gateway: DataGateway, runtime: PluginRuntime): Promise<LedgerContext> {
-  const rulesetHash = await runtime.rulesetFingerprint();
+// The ledger fingerprint spans everything that decides what a re-read would
+// produce: the detection ruleset, the egress extractor + provider registry, and
+// whether egress extraction runs at all. Folding the toggle in matters because
+// the ledger keeps advancing while egress is switched off — without it, files
+// left untouched during the off period would carry ledger rows that suppress
+// the re-read forever, so their egress would never be extracted once it is
+// switched back on.
+async function loadLedger(
+  gateway: DataGateway,
+  runtime: PluginRuntime,
+  dataSharesInPlace: boolean,
+): Promise<LedgerContext> {
+  const egressMaterial = `${dataSharesInPlace ? 'egress:on' : 'egress:off'}\n${EGRESS_VERSION_MATERIAL}`;
+  const rulesetHash = contentHashOf(
+    `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}`,
+  );
   return { previous: await gateway.scanLedger(rulesetHash), rulesetHash };
+}
+
+// The project identity every recorded egress row is keyed and relativized on.
+// `root` is the worktree root, not the scan root, so a scan started from a
+// subdirectory produces the same stored keys as a scan of the whole repo.
+interface EgressProject {
+  root: string;
+  projectKey: string;
+  project: string;
+}
+
+// Derived exactly like the CLI/web-ui pipeline's: the two must agree byte for
+// byte or one project splits into two rows that never reconcile each other.
+// identity.url is the remote URL, or the worktree root PATH when the repo has
+// no remote — the 'git:' prefix keeps that path-shaped fallback from aliasing
+// the 'path:' key a non-git scan of the same directory produces.
+function resolveEgressProject(rootDir: string): EgressProject | null {
+  try {
+    const identity = resolveRepoIdentity(rootDir);
+    const worktreeRoot = resolveWorktreeRoot(rootDir);
+    if (identity && worktreeRoot) {
+      return { root: worktreeRoot, projectKey: `git:${identity.url}`, project: identity.name };
+    }
+    // Keyed on the realpath so two symlinked routes to one directory share a
+    // key; relativization still uses the directory as the walker saw it.
+    const realRoot = realpathSync(rootDir);
+    return { root: rootDir, projectKey: `path:${realRoot}`, project: basename(realRoot) };
+  } catch {
+    return null;
+  }
+}
+
+// A stored path key, or null when the file sits outside the project root —
+// reconciliation is scoped to paths under it, so a '../' key could never be
+// replaced or cleared by a later scan.
+function egressKey(root: string, absPath: string): string | null {
+  const rel = toPosix(relative(root, absPath));
+  return rel === '' || rel.startsWith('../') ? null : rel;
+}
+
+// Per-run egress accumulator. `scannedFiles` is the reconciliation universe:
+// the write replaces exactly these files' stored rows (plus deletions) and
+// preserves everything else, so a file must be listed here whenever its content
+// was read — including when it produced no hits, which is how a URL that was
+// removed from a file gets cleared.
+interface EgressAccumulator {
+  project: EgressProject;
+  files: FileEgressHits[];
+  scannedFiles: string[];
+  deletedFiles: string[];
+}
+
+// Open an accumulator for this scan, or null when the project identity cannot
+// be resolved (a root that vanished mid-scan) — egress is a side benefit of a
+// scan and never breaks the scan that triggered it.
+function startEgress(rootDir: string): EgressAccumulator | null {
+  const project = resolveEgressProject(rootDir);
+  if (project === null) return null;
+  return { project, files: [], scannedFiles: [], deletedFiles: [] };
+}
+
+// Extract one just-read file's egress. Code files yield URL/IP hits; manifests
+// yield SDK dependencies. Files containing NUL bytes are binary and are skipped.
+function collectFileEgress(
+  acc: EgressAccumulator,
+  absPath: string,
+  content: string,
+  manifestKind: ManifestKind | null,
+): void {
+  const file = egressKey(acc.project.root, absPath);
+  if (file === null) return;
+  acc.scannedFiles.push(file);
+
+  if (content.includes('\u0000')) return;
+
+  const vendored = isVendoredPath(file);
+  if (manifestKind !== null) {
+    const sdkHits = extractManifestSdks(content, manifestKind);
+    if (sdkHits.length > 0) acc.files.push({ file, vendored, endpoints: [], sdkHits });
+    return;
+  }
+  if (!EGRESS_CODE_EXTENSIONS.has(extname(absPath))) return;
+  const endpoints = extractEgress(content);
+  if (endpoints.length > 0) acc.files.push({ file, vendored, endpoints, sdkHits: [] });
 }
 
 // Re-scan resolver: diff a path's previously-open at-rest finding_keys against
@@ -153,21 +266,26 @@ function isUnderRoot(path: string, rootDir: string): boolean {
 
 // Deleted files never appear in the walk (it only yields files that exist), so
 // they need their own sweep: any path this repo previously ledgered that no
-// longer exists on disk is resolved with an empty current-keys set.
+// longer exists on disk is resolved with an empty current-keys set. Returns the
+// absolute paths it swept, so the egress write can clear their stored rows too.
 async function sweepDeletedFiles(
   gateway: DataGateway,
   rootDir: string,
   previous: Map<string, ScanLedgerState>,
-): Promise<void> {
+): Promise<string[]> {
+  const deleted: string[] = [];
   for (const path of previous.keys()) {
     if (!isUnderRoot(path, rootDir) || existsSync(path)) continue;
+    deleted.push(path);
     await resolveRemovedFindings(gateway, path, [], { deleted: true });
   }
+  return deleted;
 }
 
 async function scanDir(
   runtime: PluginRuntime,
   gateway: DataGateway,
+  config: PluginConfig,
   seen: Set<string>,
   ledger: LedgerContext,
   rootDir: string,
@@ -180,6 +298,13 @@ async function scanDir(
   let skipped = 0;
   let findings = 0;
   let gitignoredFindings = 0;
+
+  // The Data Shares kill-switch, read straight off the parsed settings the
+  // plugin config already carries. Resolved once, up front, so a disabled
+  // toggle skips extraction itself rather than extracting and discarding.
+  const egress: EgressAccumulator | null = config.settings.dataSharesInPlace
+    ? startEgress(rootDir)
+    : null;
 
   // Tier-1 skip, before the file is even read: same path + mtime as the ledger
   // means unchanged since the last scan under this ruleset. Composed with any
@@ -214,6 +339,12 @@ async function scanDir(
       updates.push(ledgerEntry);
       continue;
     }
+
+    // Egress extraction happens HERE, at the read point — past the tier-1/2
+    // skips but BEFORE the tier-3 dedup below. A file whose content duplicates
+    // an already-seen file still contains this project's egress, so hooking
+    // extraction to capture instead would silently drop it.
+    if (egress) collectFileEgress(egress, file.path, file.content, null);
 
     // Content-hash dedup across files/repos and previously recorded events.
     // Still ledger the path: identical content means identical (no) findings.
@@ -275,9 +406,89 @@ async function scanDir(
     });
   }
 
+  // Dependency manifests carry SDK evidence but no source extension, so the
+  // source walk never yields them. They are ledgered exactly like walked files
+  // and never go through capture — they are egress evidence, not code to scan.
+  if (egress) scanManifests(egress, ledger, updates);
+
+  const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.previous);
+  if (egress) {
+    for (const path of deleted) {
+      const key = egressKey(egress.project.root, path);
+      if (key !== null) egress.deletedFiles.push(key);
+    }
+  }
+
+  // Egress commits BEFORE the ledger. If the write fails the ledger batch is
+  // skipped entirely, so the next scan re-reads these files and retries;
+  // finding capture is idempotent by content hash, so re-running it is free.
+  // Advancing the ledger past a failed write would hide the gap forever.
+  if (!(await commitEgress(gateway, egress))) {
+    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+  }
+
   await gateway.recordScanned(updates);
-  await sweepDeletedFiles(gateway, rootDir, ledger.previous);
   return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+}
+
+// Ledger + extract every dependency manifest under the project root. Mirrors
+// the walked-file tiers: an unchanged mtime skips without reading, and content
+// that hashes the same only refreshes the recorded mtime. A manifest that is
+// skipped at either tier stays out of `scannedFiles`, so ledger-mode
+// reconciliation preserves the rows it already has.
+function scanManifests(
+  egress: EgressAccumulator,
+  ledger: LedgerContext,
+  updates: ScanLedgerEntry[],
+): void {
+  for (const manifest of collectManifests(egress.project.root)) {
+    const prev = ledger.previous.get(manifest.path);
+    if (prev?.mtime === manifest.mtime) continue;
+
+    let content: string;
+    try {
+      content = readFileSync(manifest.path, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const hash = contentHashOf(content);
+    updates.push({
+      path: manifest.path,
+      mtime: manifest.mtime,
+      contentHash: hash,
+      rulesetHash: ledger.rulesetHash,
+    });
+    if (prev?.contentHash === hash) continue;
+
+    collectFileEgress(egress, manifest.path, content, manifest.kind);
+  }
+}
+
+// Write the run's egress. Returns false only when the write was attempted and
+// failed — the signal to skip this run's ledger commit. A disabled toggle or an
+// empty run is a success: nothing to record is not a failure, and freezing the
+// ledger on a deliberate skip would re-read the whole tree on every scan.
+async function commitEgress(
+  gateway: DataGateway,
+  egress: EgressAccumulator | null,
+): Promise<boolean> {
+  if (!egress) return true;
+  const { project, files, scannedFiles, deletedFiles } = egress;
+  if (scannedFiles.length === 0 && deletedFiles.length === 0 && files.length === 0) return true;
+
+  try {
+    await gateway.recordProjectEgress({
+      projectKey: project.projectKey,
+      project: project.project,
+      projectId: null,
+      reconcile: { mode: 'ledger', scannedFiles, deletedFiles },
+      hits: resolveEgress(files),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function scanWorktree(
@@ -289,8 +500,8 @@ export async function scanWorktree(
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   try {
     const seen = await gateway.knownContentHashes();
-    const ledger = await loadLedger(gateway, runtime);
-    return await scanDir(runtime, gateway, seen, ledger, rootDir, opts);
+    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
+    return await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
   } finally {
     await runtime.close();
   }
@@ -317,9 +528,9 @@ export async function scanAllRepos(
     const seen = await gateway.knownContentHashes();
     // Ledger paths are absolute, so one load covers every repo; scanDir records
     // its updates per repo, so a long --discover sweep keeps partial progress.
-    const ledger = await loadLedger(gateway, runtime);
+    const ledger = await loadLedger(gateway, runtime, config.settings.dataSharesInPlace);
     for (const rootDir of repoDirs) {
-      const repoSummary = await scanDir(runtime, gateway, seen, ledger, rootDir, opts);
+      const repoSummary = await scanDir(runtime, gateway, config, seen, ledger, rootDir, opts);
       summary.repos.push({ rootDir, summary: repoSummary });
       summary.totalScanned += repoSummary.scanned;
       summary.totalSkipped += repoSummary.skipped;

@@ -5,16 +5,42 @@
 import { resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
+// An 'error' event on an EventEmitter with no listener throws — and because it
+// fires asynchronously, that throw lands as an uncaughtException outside any
+// `try { await main() } catch {}` wrapper, turning a stalled/broken stdin into
+// a non-zero exit instead of the fail-open contract every hook promises. A
+// stalled stdin with no error either is just as bad: nothing here ever
+// rejects or times out, so it hangs to the harness's own kill budget. Resolve
+// with whatever was read so far on either 'error' or a 5s timeout (half the
+// 10s hook budget), so a broken or stalled caller degrades to "scan whatever
+// arrived" instead of a crash or a full hang.
+//
+// The 'error' listener is deliberately never removed, even after settling:
+// hooks call readStdin() once and exit shortly after, so one leftover no-op
+// listener for the rest of the process's life is free — and it means ANY
+// stdin error, no matter when it lands relative to the read, is caught.
 export async function readStdin(): Promise<string> {
   return new Promise<string>((resolve) => {
     let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk: string) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => {
+    let settled = false;
+
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.removeListener('data', onData);
+      process.stdin.removeListener('end', finish);
       resolve(data);
-    });
+    };
+    const onData = (chunk: string): void => {
+      data += chunk;
+    };
+    const timer = setTimeout(finish, 5_000);
+
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', onData);
+    process.stdin.on('end', finish);
+    process.stdin.on('error', finish);
   });
 }
 
@@ -43,9 +69,20 @@ export function getString(record: Record<string, unknown>, key: string): string 
 // original (possibly secret-bearing) payload passes through untouched.
 export function emit(output: unknown): Promise<void> {
   return new Promise((resolve) => {
-    process.stdout.write(JSON.stringify(output), () => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
       resolve();
-    });
+    };
+    // Same hazard as readStdin: an unhandled 'error' on stdout (e.g. EPIPE if
+    // the caller closed its end) is an uncaughtException, not a rejection —
+    // resolve instead so the hook still exits 0 rather than crashing on
+    // write. Deliberately never removed, for the same reason: a hook process
+    // exits right after, so one leftover no-op listener is free, and it
+    // means any later stdout error before exit is caught too.
+    process.stdout.on('error', finish);
+    process.stdout.write(JSON.stringify(output), finish);
   });
 }
 

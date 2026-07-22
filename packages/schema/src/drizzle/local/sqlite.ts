@@ -422,7 +422,7 @@ export const shareDestination = sqliteTable(
   'share_destination',
   {
     id: text(COL.id).primaryKey(),
-    kind: text(COL.kind, { enum: ['provider', 'internal', 'ip'] }).notNull(),
+    kind: text(COL.kind, { enum: ['provider', 'internal', 'external', 'ip'] }).notNull(),
     name: text(COL.name).notNull(),
     host: text(COL.host).notNull(),
     category: text(COL.category).notNull(),
@@ -480,6 +480,11 @@ export const shareCallSite = sqliteTable(
       .notNull()
       .references(() => shareEndpoint.id),
     project: text(COL.project).notNull(),
+    // Stable per-project reconcile key ('git:<repo identity>' or
+    // 'path:<absolute root>'). `project` is a display name and never keys
+    // reconciliation. The default exists so the column can be added to stores
+    // that already hold rows; writers always supply it explicitly.
+    projectKey: text(COL.projectKey).notNull().default(''),
     file: text(COL.file).notNull(),
     line: integer(COL.line).notNull(),
     snippet: text(COL.snippet).notNull(),
@@ -495,7 +500,7 @@ export const shareCallSite = sqliteTable(
   },
   (t) => [
     index('idx_share_call_site_endpoint').on(t.endpointId),
-    uniqueIndex('uq_share_call_site').on(t.endpointId, t.project, t.file, t.line),
+    uniqueIndex('uq_share_call_site').on(t.endpointId, t.projectKey, t.file, t.line),
   ],
 );
 
@@ -507,6 +512,10 @@ export const egressDecisionOverride = sqliteTable(
     destinationId: text(COL.destinationId)
       .notNull()
       .references(() => shareDestination.id),
+    // The decision's host, so it survives destination pruning and re-attaches
+    // when the same host is detected again. NULL on rows written before the
+    // column existed, which are matched by destination_id instead.
+    host: text(COL.host),
     decision: text(COL.decision).notNull(),
     createdAt: integer(COL.createdAt)
       .notNull()
@@ -515,7 +524,14 @@ export const egressDecisionOverride = sqliteTable(
       .notNull()
       .$defaultFn(() => Date.now()),
   },
-  (t) => [uniqueIndex('uq_egress_decision_override').on(t.destinationId)],
+  (t) => [
+    uniqueIndex('uq_egress_decision_override').on(t.destinationId),
+    // PARTIAL on host IS NOT NULL: one decision per host, while any number of
+    // host-NULL rows coexist.
+    uniqueIndex('uq_egress_decision_override_host')
+      .on(t.host)
+      .where(sql`\`host\` IS NOT NULL`),
+  ],
 );
 
 // ─── Inventory API (asset model) — tenant-free local store ───────────────────

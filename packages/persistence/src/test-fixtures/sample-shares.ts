@@ -207,6 +207,35 @@ const SAMPLE_DESTS: SeedDest[] = [
     ],
   },
   {
+    kind: 'external',
+    name: 'analytics-vendor.com',
+    host: 'analytics-vendor.com',
+    category: 'External domain',
+    trust: 'unverified',
+    note: 'Public domain with no provider-registry match. Ownership unverified.',
+    network: { port: null, geo: null, ptr: null },
+    lastSeenMinAgo: 45,
+    endpoints: [
+      {
+        // A websocket stream referenced without method evidence: 'REF' method,
+        // 'wss' transport — secure, so it must NOT count toward `insecure`.
+        method: 'REF',
+        transport: 'wss',
+        url: 'wss://stream.analytics-vendor.com/v1/events',
+        dataClass: 'telemetry',
+        lastSeenMinAgo: 45,
+        sites: [
+          {
+            project: 'crm-sync',
+            file: 'src/stream/client.ts',
+            line: 27,
+            snippet: 'new WebSocket("wss://stream.analytics-vendor.com/v1/events")',
+          },
+        ],
+      },
+    ],
+  },
+  {
     kind: 'ip',
     name: '203.0.113.6',
     host: '203.0.113.6',
@@ -251,8 +280,8 @@ export function seedSampleShares(db: DatabaseSync, now: number = Date.now()): vo
   );
   const insSite = db.prepare(
     `INSERT OR IGNORE INTO share_call_site
-       (id, endpoint_id, project, file, line, snippet, dynamic, vendored, project_id, created_at, updated_at)
-     VALUES (:id, :endpointId, :project, :file, :line, :snippet, :dynamic, :vendored, :projectId, :now, :now)`,
+       (id, endpoint_id, project, project_key, file, line, snippet, dynamic, vendored, project_id, created_at, updated_at)
+     VALUES (:id, :endpointId, :project, :projectKey, :file, :line, :snippet, :dynamic, :vendored, :projectId, :now, :now)`,
   );
   const insDecision = db.prepare(
     `INSERT OR IGNORE INTO egress_decision_override
@@ -302,6 +331,10 @@ export function seedSampleShares(db: DatabaseSync, now: number = Date.now()): vo
           id: shareCallSiteId(epId, site.project, site.file, site.line),
           endpointId: epId,
           project: site.project,
+          // The corpus carries three distinct projects; mirroring the display
+          // name into the reconcile key keeps them separable under the
+          // project_key-scoped unique index.
+          projectKey: site.project,
           file: site.file,
           line: site.line,
           snippet: site.snippet,

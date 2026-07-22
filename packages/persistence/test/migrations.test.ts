@@ -609,3 +609,213 @@ describe('migration 0006 (installed_packs write gate)', () => {
     }
   });
 });
+
+// ─── Migration 0011 (egress writer) ──────────────────────────────────────────
+
+const EGRESS_WRITER_TAG = '0011_egress_writer';
+
+// The columns an index covers, in index order.
+function indexColumns(db: DatabaseSync, index: string): string[] {
+  // PRAGMA can't be parameterized; the name comes from our own DDL constants.
+  return (db.prepare(`PRAGMA index_info(${index})`).all() as { name: string }[]).map((c) => c.name);
+}
+
+// A store as a pre-0011 binary left it: every earlier migration applied and
+// tag-tracked, user_version stamped at that count, 0011 genuinely pending.
+function preEgressWriterStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('CREATE TABLE migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== EGRESS_WRITER_TAG);
+  for (const migration of earlier) {
+    for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(migration.tag, 1);
+  }
+  db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
+  return db;
+}
+
+describe('migration 0011 (egress writer schema)', () => {
+  it('a fresh store carries project_key, host, and the re-keyed call-site index', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+
+      // table_xinfo, not table_info — the probe the applier itself uses.
+      expect(columnNames(db, 'share_call_site', { includeGenerated: true })).toContain(
+        'project_key',
+      );
+      expect(columnNames(db, 'egress_decision_override', { includeGenerated: true })).toContain(
+        'host',
+      );
+
+      // The unique call-site key is now project_key-scoped, not display-name-scoped.
+      expect(schemaObjectExists(db, 'index', 'uq_share_call_site')).toBe(true);
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+
+      // The host-keyed override index is additive; the legacy destination-keyed
+      // unique index that already-shipped binaries write against SURVIVES.
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override_host')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override')).toBe(true);
+
+      expect(appliedTags(db)).toContain(EGRESS_WRITER_TAG);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('project_key is NOT NULL DEFAULT \'\' so the ALTER is legal on existing rows', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const column = (
+        db.prepare('PRAGMA table_xinfo(share_call_site)').all() as {
+          name: string;
+          notnull: number;
+          dflt_value: string | null;
+        }[]
+      ).find((c) => c.name === 'project_key');
+      expect(column?.notnull).toBe(1);
+      expect(column?.dflt_value).toBe("''");
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a pre-0011 store in place, preserving its existing call sites', () => {
+    const db = preEgressWriterStore();
+    try {
+      // A row written by the pre-0011 binary, under the old 4-column key.
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_endpoint (id, destination_id, method, transport, url, data_class, last_seen, created_at, updated_at)
+         VALUES ('ep-1', 'dest-1', 'POST', 'https', 'https://api.example.com/v1', 'none', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-1', 'ep-1', 'payments-api', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+
+      applyMigrations(db);
+
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
+      // The pre-existing row survives and backfills to the column default.
+      expect(db.prepare('SELECT project_key FROM share_call_site WHERE id = ?').get('cs-1')).toEqual(
+        { project_key: '' },
+      );
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+
+      // And the upgraded store is idempotent from here on.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('survives a pending store whose uq_share_call_site was dropped out of band', () => {
+    // The exact shape `DROP INDEX IF EXISTS` exists to absorb: 0011 is genuinely
+    // pending (neither new column present), so its non-index statements all run —
+    // but the index the DROP targets is already gone. A bare DROP INDEX throws
+    // here, and on the plugin hook path that throw is swallowed fail-open, so
+    // capture would silently stop.
+    const db = preEgressWriterStore();
+    try {
+      db.exec('DROP INDEX uq_share_call_site');
+      expect(schemaObjectExists(db, 'index', 'uq_share_call_site')).toBe(false);
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+      expect(appliedTags(db)).toContain(EGRESS_WRITER_TAG);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps the legacy ON CONFLICT (destination_id) override upsert working', () => {
+    // Already-shipped binaries write egress_decision_override with this exact
+    // statement shape and no `host`. 0011 is additive precisely so they keep
+    // working; their rows are host-NULL and read as legacy.
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+      applyMigrations(db);
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+
+      const legacyUpsert = `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+         VALUES (?, 'dest-1', ?, 100, 100)
+         ON CONFLICT (destination_id) DO UPDATE SET
+           decision = excluded.decision,
+           updated_at = excluded.updated_at`;
+      db.prepare(legacyUpsert).run('ov-1', 'block');
+      db.prepare(legacyUpsert).run('ov-2', 'allow');
+
+      expect(
+        db.prepare('SELECT id, decision, host FROM egress_decision_override').all(),
+      ).toEqual([{ id: 'ov-1', decision: 'allow', host: null }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the host index is PARTIAL so several legacy host-NULL rows coexist', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+      applyMigrations(db);
+      for (const id of ['dest-1', 'dest-2']) {
+        db.prepare(
+          `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+           VALUES (?, 'provider', 'API', ?, 'saas', 'recognized', 100, 100, 100)`,
+        ).run(id, `${id}.example.com`);
+        db.prepare(
+          `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+           VALUES (?, ?, 'block', 100, 100)`,
+        ).run(`ov-${id}`, id);
+      }
+      // Two host-NULL rows are fine; a duplicate non-null host is not.
+      expect(
+        (
+          db.prepare('SELECT count(*) AS n FROM egress_decision_override').get() as { n: number }
+        ).n,
+      ).toBe(2);
+      db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+        'api.example.com',
+        'ov-dest-1',
+      );
+      expect(() => {
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          'api.example.com',
+          'ov-dest-2',
+        );
+      }).toThrow(/UNIQUE/i);
+    } finally {
+      db.close();
+    }
+  });
+});

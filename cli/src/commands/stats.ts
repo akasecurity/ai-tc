@@ -49,7 +49,10 @@ export async function runStats(argv: string[]): Promise<void> {
 
   out.write(`\nEnforcement (${range}): ${String(enforcement.total)} intercepted\n`);
   for (const a of enforcement.actions) {
-    const delta = a.delta === 0 ? '' : ` (${a.delta > 0 ? '+' : ''}${String(a.delta)} wk/wk)`;
+    // The delta is period-over-period against the preceding window of equal
+    // length, so the label follows the selected range rather than naming a week.
+    const delta =
+      a.delta === 0 ? '' : ` (${a.delta > 0 ? '+' : ''}${String(a.delta)} vs prior ${range})`;
     out.write(`  ${a.kind.padEnd(9)} ${String(a.count)}${delta}\n`);
   }
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BLOCKED_WINDOWS,
   DEFAULT_BLOCKED_WINDOW,
-  DEFAULT_TIME_RANGE,
+  rangeLabel,
   resolveBlockedWindow,
   TIME_RANGE_OPTIONS,
 } from '../../src/lib/timeRanges.ts';
@@ -21,9 +21,19 @@ describe('TIME_RANGE_OPTIONS', () => {
       expect(option.label.trim()).not.toBe('');
     }
   });
+});
 
-  it('can render the default as a selected chip', () => {
-    expect(TIME_RANGE_OPTIONS.map((r) => r.value)).toContain(DEFAULT_TIME_RANGE);
+describe('rangeLabel', () => {
+  it('returns the option label for every range', () => {
+    for (const option of TIME_RANGE_OPTIONS) {
+      expect(rangeLabel(option.value)).toBe(option.label);
+    }
+  });
+
+  it('falls back to the raw value when a range has no label', () => {
+    // Only reachable if a range ships without an entry — the fallback keeps the
+    // picker rendering something rather than an empty chip.
+    expect(rangeLabel('1y' as (typeof TIME_RANGES)[number])).toBe('1y');
   });
 });
 

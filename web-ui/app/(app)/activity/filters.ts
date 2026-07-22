@@ -1,5 +1,10 @@
-import { DEFAULT_TIME_RANGE, rangeToFromIso, type TimeRange } from '@akasecurity/dashboard-ui';
-import { Harness, type ListActivitySessionsQuery, parseTimeRange } from '@akasecurity/schema';
+import {
+  DEFAULT_TIME_RANGE,
+  parseTimeRange,
+  rangeToFromIso,
+  type TimeRange,
+} from '@akasecurity/dashboard-ui';
+import { Harness, type ListActivitySessionsQuery } from '@akasecurity/schema';
 
 // The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=&empty=1)
 // so the Server Component re-queries the local store on every change — the same

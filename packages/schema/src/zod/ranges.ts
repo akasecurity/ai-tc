@@ -21,8 +21,15 @@ export type TimeRange = z.infer<typeof TimeRange>;
 export const DEFAULT_TIME_RANGE: TimeRange = '7d';
 
 // Lookback per range, in days. 3m/6m are 90/180-day rolling approximations (no
-// calendar-month math) — fine for a rolling dashboard window.
-export const RANGE_DAYS: Record<TimeRange, number> = { '7d': 7, '30d': 30, '3m': 90, '6m': 180 };
+// calendar-month math) — fine for a rolling dashboard window. `satisfies` keeps
+// a missing range a compile error; `as const` keeps the table read-only, since
+// four packages now share this one object.
+export const RANGE_DAYS = {
+  '7d': 7,
+  '30d': 30,
+  '3m': 90,
+  '6m': 180,
+} as const satisfies Record<TimeRange, number>;
 
 const TIME_RANGE_OR_DEFAULT = TimeRange.catch(DEFAULT_TIME_RANGE);
 
@@ -32,6 +39,6 @@ const TIME_RANGE_OR_DEFAULT = TimeRange.catch(DEFAULT_TIME_RANGE);
  * a range off the outside world parse it here, so a missing or unsupported
  * value resolves to the same window on every surface.
  */
-export function parseTimeRange(value: unknown): TimeRange {
+export function parseTimeRange(value: string | undefined): TimeRange {
   return TIME_RANGE_OR_DEFAULT.parse(value);
 }

@@ -27,6 +27,15 @@ describe('range query defaults', () => {
     expect(SecurityRangeQuery.safeParse({ range: '1y' }).success).toBe(false);
     expect(TopSourcesQuery.safeParse({ range: '1y' }).success).toBe(false);
   });
+
+  // Both re-declare an inline enum rather than reusing `TimeRange`, which carries
+  // a component id: an id here would emit a $ref and drop the sibling `default`
+  // from the generated parameter. Reusing TimeRange passes lint, typecheck, and
+  // every assertion above, so only this pins the constraint.
+  it('keeps the range parameter id-less so it expands inline', () => {
+    expect(SecurityRangeQuery.shape.range.meta()?.id).toBeUndefined();
+    expect(TopSourcesQuery.shape.range.meta()?.id).toBeUndefined();
+  });
 });
 
 describe('SeveritySummaryResponse (resolution-aware extension)', () => {

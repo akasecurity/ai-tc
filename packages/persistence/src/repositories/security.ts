@@ -53,9 +53,17 @@ const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported:
   { provider: 'api', coverage: 0, supported: false },
 ];
 
-// 7d/30d bucket by day; 3m/6m by week.
+// Bucket size per range. A table rather than a ternary so adding a range to
+// TIME_RANGES is a compile error here too, the way a missing RANGE_DAYS entry is.
+const GRANULARITY = {
+  '7d': 'day',
+  '30d': 'day',
+  '3m': 'week',
+  '6m': 'week',
+} as const satisfies Record<TimeRange, TimeseriesGranularity>;
+
 function granularityFor(range: TimeRange): TimeseriesGranularity {
-  return range === '7d' || range === '30d' ? 'day' : 'week';
+  return GRANULARITY[range];
 }
 
 // UTC midnight of the given epoch-ms (epoch 0 is itself a UTC midnight).

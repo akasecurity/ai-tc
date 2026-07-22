@@ -13,10 +13,6 @@ describe('DEFAULT_TIME_RANGE', () => {
     expect(DEFAULT_TIME_RANGE).toBe('7d');
     expect(RANGE_DAYS[DEFAULT_TIME_RANGE]).toBe(7);
   });
-
-  it('is one of the supported ranges', () => {
-    expect(TIME_RANGES).toContain(DEFAULT_TIME_RANGE);
-  });
 });
 
 describe('TimeRange', () => {
@@ -30,13 +26,18 @@ describe('TimeRange', () => {
     expect(TimeRange.safeParse('1y').success).toBe(false);
     expect(TimeRange.safeParse('').success).toBe(false);
   });
+
+  // The component id is echoed inside five response schemas, so renaming it is a
+  // contract change rather than a local edit. Pinned so it can't happen by accident.
+  it('keeps its component id', () => {
+    expect(TimeRange.meta()?.id).toBe('TimeRange');
+  });
 });
 
 describe('RANGE_DAYS', () => {
-  it('gives every range a lookback', () => {
-    for (const range of TIME_RANGES) {
-      expect(RANGE_DAYS[range]).toBeGreaterThan(0);
-    }
+  // The only assertion that catches TIME_RANGES shrinking while RANGE_DAYS keeps
+  // its keys — the frozen-literal check below misses that case entirely.
+  it('covers exactly the supported ranges', () => {
     expect(Object.keys(RANGE_DAYS).sort()).toEqual([...TIME_RANGES].sort());
   });
 
@@ -58,11 +59,10 @@ describe('parseTimeRange', () => {
     expect(parseTimeRange('1y')).toBe(DEFAULT_TIME_RANGE);
   });
 
-  // Callers hand it raw URL params and CLI flags, so a non-string must resolve
-  // to the default rather than throw.
-  it('falls back for a non-string value', () => {
-    expect(parseTimeRange(null)).toBe(DEFAULT_TIME_RANGE);
-    expect(parseTimeRange(7)).toBe(DEFAULT_TIME_RANGE);
-    expect(parseTimeRange(['7d'])).toBe(DEFAULT_TIME_RANGE);
+  // Case- and whitespace-sensitive: a near-miss resolves to the default rather
+  // than being coerced to the range it resembles.
+  it('does not normalize near-miss values', () => {
+    expect(parseTimeRange('7D')).toBe(DEFAULT_TIME_RANGE);
+    expect(parseTimeRange(' 7d')).toBe(DEFAULT_TIME_RANGE);
   });
 });

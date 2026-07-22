@@ -6,16 +6,16 @@ import {
   type MttrChartPoint,
   MttrTrendCardView,
   PageHead,
+  parseTimeRange,
+  rangeLabel,
   RecentlyResolvedCardView,
   ScanCoverageCardView,
   SeverityCardView,
   TopSourcesCardView,
 } from '@akasecurity/dashboard-ui';
-import { parseTimeRange } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
-import { rangeLabel } from '../../lib/range';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
 
 // node:sqlite (via @akasecurity/persistence) runs only on the Node.js runtime.

@@ -6,9 +6,16 @@
 // stands for — belongs to @akasecurity/schema and is re-exported here, so the
 // picker and the query contracts read one set of constants, not two copies.
 
-import { RANGE_DAYS, type TimeRange } from '@akasecurity/schema';
+import {
+  DEFAULT_TIME_RANGE,
+  parseTimeRange,
+  RANGE_DAYS,
+  type TimeRange,
+} from '@akasecurity/schema';
 
-export { DEFAULT_TIME_RANGE, RANGE_DAYS, type TimeRange } from '@akasecurity/schema';
+// Named once, then passed through, so this package is a single import surface
+// for the range vocabulary — a consumer needn't know which half lives where.
+export { DEFAULT_TIME_RANGE, parseTimeRange, RANGE_DAYS, type TimeRange };
 
 export interface TimeRangeOption {
   value: TimeRange;
@@ -22,6 +29,14 @@ export const TIME_RANGE_OPTIONS: TimeRangeOption[] = [
   { value: '3m', label: 'Last 3 months' },
   { value: '6m', label: 'Last 6 months' },
 ];
+
+/**
+ * A range → the label the UI shows for it. Falls back to the raw value, which
+ * only surfaces if a range ever ships without an entry above.
+ */
+export function rangeLabel(range: TimeRange): string {
+  return TIME_RANGE_OPTIONS.find((r) => r.value === range)?.label ?? range;
+}
 
 const DAY_MS = 86_400_000;
 

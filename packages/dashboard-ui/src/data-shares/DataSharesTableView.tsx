@@ -78,6 +78,7 @@ function GroupRow({
   return (
     <TableRow
       onClick={onOpen}
+      aria-label={`View details for destination ${d.name}`}
       className={cn('cursor-pointer', selected ? 'bg-primary-tint' : 'hover:bg-surface-2')}
     >
       <TableCell className="w-9">
@@ -160,6 +161,7 @@ function EndpointRow({
   return (
     <TableRow
       onClick={onClick}
+      aria-label={`View details for endpoint ${ep.method} ${ep.url}`}
       className={cn(
         'cursor-pointer',
         selected ? 'bg-primary-tint' : 'bg-surface-2 hover:bg-surface-3',

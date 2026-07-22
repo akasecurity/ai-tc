@@ -53,6 +53,7 @@ export function ExceptionsTableView({
             <TableRow
               key={ex.id}
               className="cursor-pointer"
+              aria-label={`View details for exception ${ex.id.slice(0, 8)}`}
               onClick={() => {
                 onSelect(ex.id);
               }}

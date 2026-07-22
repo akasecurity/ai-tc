@@ -60,11 +60,9 @@ export const ListEventsResponse = z
   .meta({ id: 'ListEventsResponse' });
 export type ListEventsResponse = z.infer<typeof ListEventsResponse>;
 
-// POST /v1/events — ingest a batch of events. IngestRequest aliases
-// IngestBatch — the component is registered once as `IngestBatch` (see
-// event.ts) and refs there. IngestResponse is tenant-free (accepted/duplicate
-// counts only) and is the public ingest contract alongside
-// IngestInventoryRequest / RecordAuditEventRequest below.
+// IngestRequest aliases IngestBatch, which registers the shared `IngestBatch`
+// component once (see event.ts). IngestResponse reports how many events were
+// accepted and how many were dropped as duplicates.
 export const IngestRequest = IngestBatch;
 export type IngestRequest = z.infer<typeof IngestRequest>;
 export const IngestResponse = z

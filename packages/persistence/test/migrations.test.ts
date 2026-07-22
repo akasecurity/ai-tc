@@ -620,6 +620,33 @@ function indexColumns(db: DatabaseSync, index: string): string[] {
   return (db.prepare(`PRAGMA index_info(${index})`).all() as { name: string }[]).map((c) => c.name);
 }
 
+// The NOT NULL flag of one column, as table_xinfo reports it.
+function columnNotNull(db: DatabaseSync, table: string, column: string): number | undefined {
+  return (
+    db.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; notnull: number }[]
+  ).find((c) => c.name === column)?.notnull;
+}
+
+// The ON DELETE action of the outbound foreign key on `column`.
+function foreignKeyOnDelete(db: DatabaseSync, table: string, column: string): string | undefined {
+  return (
+    db.prepare(`PRAGMA foreign_key_list(${table})`).all() as { from: string; on_delete: string }[]
+  ).find((fk) => fk.from === column)?.on_delete;
+}
+
+// One destination + one override row on it, written the way an already-shipped
+// binary does (destination_id only, no host).
+function seedOverride(db: DatabaseSync, destId: string, host: string): void {
+  db.prepare(
+    `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+     VALUES (?, 'provider', 'API', ?, 'saas', 'recognized', 100, 100, 100)`,
+  ).run(destId, host);
+  db.prepare(
+    `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+     VALUES (?, ?, 'block', 100, 100)`,
+  ).run(`ov-${destId}`, destId);
+}
+
 // A store as a pre-0011 binary left it: every earlier migration applied and
 // tag-tracked, user_version stamped at that count, 0011 genuinely pending.
 function preEgressWriterStore(): DatabaseSync {
@@ -669,6 +696,71 @@ describe('migration 0011 (egress writer schema)', () => {
     }
   });
 
+  it('makes destination_id nullable with ON DELETE SET NULL so overrides outlive a prune', () => {
+    // The pair that makes host-keyed survival possible at all: a NOT NULL
+    // destination_id under a NO ACTION foreign key would make deleting a pruned
+    // destination raise FOREIGN KEY constraint failed instead.
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      expect(columnNotNull(db, 'egress_decision_override', 'destination_id')).toBe(0);
+      expect(foreignKeyOnDelete(db, 'egress_decision_override', 'destination_id')).toBe('SET NULL');
+
+      db.exec('PRAGMA foreign_keys = ON');
+      seedOverride(db, 'dest-1', 'api.example.com');
+      db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+        'api.example.com',
+        'ov-dest-1',
+      );
+
+      expect(() => {
+        db.prepare('DELETE FROM share_destination WHERE id = ?').run('dest-1');
+      }).not.toThrow();
+      expect(
+        db.prepare('SELECT destination_id, host, decision FROM egress_decision_override').all(),
+      ).toEqual([{ destination_id: null, host: 'api.example.com', decision: 'block' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('orphaned rows stay distinct under uq_egress_decision_override, one per host', () => {
+    // SQLite treats NULLs as distinct in a unique index, so any number of
+    // survived rows coexist on the destination-keyed index. The host-keyed
+    // index is partial on host IS NOT NULL, so one-decision-per-host still
+    // holds across them.
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      db.exec('PRAGMA foreign_keys = ON');
+      for (const n of ['1', '2']) {
+        seedOverride(db, `dest-${n}`, `h${n}.example.com`);
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          `h${n}.example.com`,
+          `ov-dest-${n}`,
+        );
+      }
+      db.exec('DELETE FROM share_destination');
+
+      expect(
+        db
+          .prepare(
+            'SELECT count(*) AS n FROM egress_decision_override WHERE destination_id IS NULL',
+          )
+          .get(),
+      ).toEqual({ n: 2 });
+      // …but the two orphans still cannot claim the same host.
+      expect(() => {
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          'h1.example.com',
+          'ov-dest-2',
+        );
+      }).toThrow(/UNIQUE/i);
+    } finally {
+      db.close();
+    }
+  });
+
   it('project_key is NOT NULL DEFAULT \'\' so the ALTER is legal on existing rows', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -703,6 +795,11 @@ describe('migration 0011 (egress writer schema)', () => {
         `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
          VALUES ('cs-1', 'ep-1', 'payments-api', 'src/a.ts', 1, 'fetch()', 100, 100)`,
       );
+      // …and an override on it, in the pre-0011 shape (no host column yet).
+      db.exec(
+        `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+         VALUES ('ov-1', 'dest-1', 'block', 100, 100)`,
+      );
 
       applyMigrations(db);
 
@@ -717,6 +814,17 @@ describe('migration 0011 (egress writer schema)', () => {
         'file',
         'line',
       ]);
+
+      // The override table is REBUILT (nullable destination_id, ON DELETE SET
+      // NULL) and its rows are copied across, host-NULL like the writer left them.
+      expect(
+        db.prepare('SELECT destination_id, host, decision FROM egress_decision_override').all(),
+      ).toEqual([{ destination_id: 'dest-1', host: null, decision: 'block' }]);
+      expect(columnNotNull(db, 'egress_decision_override', 'destination_id')).toBe(0);
+      expect(foreignKeyOnDelete(db, 'egress_decision_override', 'destination_id')).toBe('SET NULL');
+      // The rebuild drops the old table's indexes with it; both are back.
+      expect(indexColumns(db, 'uq_egress_decision_override')).toEqual(['destination_id']);
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override_host')).toBe(true);
 
       // And the upgraded store is idempotent from here on.
       expect(() => {
@@ -754,11 +862,22 @@ describe('migration 0011 (egress writer schema)', () => {
     }
   });
 
-  it('keeps the legacy ON CONFLICT (destination_id) override upsert working', () => {
-    // Already-shipped binaries write egress_decision_override with this exact
-    // statement shape and no `host`. 0011 is additive precisely so they keep
-    // working; their rows are host-NULL and read as legacy.
-    const db = new DatabaseSync(':memory:');
+  // Already-shipped binaries write egress_decision_override with this exact
+  // statement shape and no `host`. Their ON CONFLICT target is the
+  // destination-keyed unique index, which the rebuild recreates — so the upsert
+  // must keep working against the now-nullable column, on a fresh store and on
+  // one the rebuild upgraded in place alike.
+  const LEGACY_UPSERT = `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+     VALUES (?, 'dest-1', ?, 100, 100)
+     ON CONFLICT (destination_id) DO UPDATE SET
+       decision = excluded.decision,
+       updated_at = excluded.updated_at`;
+
+  it.each([
+    ['a fresh store', () => new DatabaseSync(':memory:')],
+    ['a store upgraded in place', preEgressWriterStore],
+  ])('keeps the legacy ON CONFLICT (destination_id) override upsert working on %s', (_, open) => {
+    const db = open();
     try {
       db.exec('PRAGMA foreign_keys = ON');
       applyMigrations(db);
@@ -767,17 +886,12 @@ describe('migration 0011 (egress writer schema)', () => {
          VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
       );
 
-      const legacyUpsert = `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
-         VALUES (?, 'dest-1', ?, 100, 100)
-         ON CONFLICT (destination_id) DO UPDATE SET
-           decision = excluded.decision,
-           updated_at = excluded.updated_at`;
-      db.prepare(legacyUpsert).run('ov-1', 'block');
-      db.prepare(legacyUpsert).run('ov-2', 'allow');
+      db.prepare(LEGACY_UPSERT).run('ov-1', 'block');
+      db.prepare(LEGACY_UPSERT).run('ov-2', 'allow');
 
-      expect(
-        db.prepare('SELECT id, decision, host FROM egress_decision_override').all(),
-      ).toEqual([{ id: 'ov-1', decision: 'allow', host: null }]);
+      expect(db.prepare('SELECT id, decision, host FROM egress_decision_override').all()).toEqual([
+        { id: 'ov-1', decision: 'allow', host: null },
+      ]);
     } finally {
       db.close();
     }

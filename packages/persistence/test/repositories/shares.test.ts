@@ -211,18 +211,39 @@ describe('SqliteSharesRepository over the sample dataset', () => {
 });
 
 describe('host-keyed egress decisions', () => {
-  it('re-attaches a decision to a destination by host, not by destination id', async () => {
-    // The point of the host column: a destination pruned and re-detected gets a
-    // fresh id, so an override still pointing at the OLD id must follow the host.
+  it('matches a host-bearing override by host, not by its destination id', async () => {
+    // Both destinations here are LIVE — this is the matching rule, not survival
+    // (covered below). A row carrying a host attaches to whichever destination
+    // holds that host, and its own destination_id is ignored: `ol` only matches
+    // host-NULL rows, so the row cannot also drag the decision onto b.example.com.
     const current = insertScanDestination('a.example.com');
     const stale = insertScanDestination('b.example.com');
     insertOverride(stale, 'a.example.com', 'block');
 
     expect((await shares.getDestination(current))?.status).toBe('blocked');
     expect((await shares.getDestination(current))?.isCustom).toBe(true);
-    // The row's own destination_id must NOT drag the decision onto b.example.com.
     expect((await shares.getDestination(stale))?.status).toBe('allowed');
     expect((await shares.getDestination(stale))?.isCustom).toBe(false);
+  });
+
+  it('survives its destination being pruned and re-attaches when the host returns', async () => {
+    // The point of the host column, end to end. destination_id is nullable
+    // under ON DELETE SET NULL, so pruning the destination clears the pointer
+    // rather than raising FOREIGN KEY constraint failed — and the surviving
+    // row re-attaches by host when the same host is detected under a fresh id.
+    const original = insertScanDestination('pruned.example.com');
+    insertOverride(original, 'pruned.example.com', 'block');
+
+    db.prepare('DELETE FROM share_destination WHERE id = ?').run(original);
+
+    expect(
+      db.prepare('SELECT destination_id, host, decision FROM egress_decision_override').all(),
+    ).toEqual([{ destination_id: null, host: 'pruned.example.com', decision: 'block' }]);
+
+    const rediscovered = insertScanDestination('pruned.example.com');
+    expect(rediscovered).not.toBe(original);
+    expect((await shares.getDestination(rediscovered))?.status).toBe('blocked');
+    expect((await shares.getDestination(rediscovered))?.isCustom).toBe(true);
   });
 
   it('still honours a legacy host-NULL override via destination_id', async () => {

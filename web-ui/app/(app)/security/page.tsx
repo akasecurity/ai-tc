@@ -6,6 +6,8 @@ import {
   type MttrChartPoint,
   MttrTrendCardView,
   PageHead,
+  parseTimeRange,
+  rangeLabel,
   RecentlyResolvedCardView,
   ScanCoverageCardView,
   SeverityCardView,
@@ -14,7 +16,6 @@ import {
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
-import { parseRange, rangeLabel } from '../../lib/range';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
 
 // node:sqlite (via @akasecurity/persistence) runs only on the Node.js runtime.
@@ -37,7 +38,7 @@ export default async function SecurityPage({
 }: {
   searchParams: Promise<{ range?: string }>;
 }) {
-  const range = parseRange((await searchParams).range);
+  const range = parseTimeRange((await searchParams).range);
   const label = rangeLabel(range);
   const security = db().security;
 

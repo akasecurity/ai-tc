@@ -4,9 +4,10 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import {
   aggregateTokenUsage,
-  SECURITY_RANGES,
-  type SecurityRange,
+  parseTimeRange,
+  RANGE_DAYS,
   type SeveritySummaryResponse,
+  type TimeRange,
   type TokenUsageSummary,
 } from '@akasecurity/schema';
 
@@ -14,16 +15,6 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { compactTokens, totalCostLabel, usdCost } from '../lib/tokens.ts';
 
 const DAY_MS = 86_400_000;
-
-// Range → lookback in days, for scoping the token-usage block to the same window
-// the enforcement counters use. Keyed by the schema's SecurityRange values.
-const RANGE_DAYS: Record<SecurityRange, number> = { '7d': 7, '30d': 30, '3m': 90, '6m': 180 };
-
-function parseRange(value: string | undefined): SecurityRange {
-  return (SECURITY_RANGES as readonly string[]).includes(value ?? '')
-    ? (value as SecurityRange)
-    : '7d';
-}
 
 // `aka stats` — print local-store aggregates: findings by severity + enforcement
 // actions in a range, installed-pack counts, and the latest findings. All reads
@@ -34,7 +25,7 @@ export async function runStats(argv: string[]): Promise<void> {
     options: { ...HOME_OPTION, range: { type: 'string' } },
   });
   const home = homeBase(values.home);
-  const range = parseRange(values.range);
+  const range = parseTimeRange(values.range);
 
   const db = openLocalDatabase(dataDir(home));
   const tokenFromMs = Date.now() - RANGE_DAYS[range] * DAY_MS;
@@ -58,7 +49,10 @@ export async function runStats(argv: string[]): Promise<void> {
 
   out.write(`\nEnforcement (${range}): ${String(enforcement.total)} intercepted\n`);
   for (const a of enforcement.actions) {
-    const delta = a.delta === 0 ? '' : ` (${a.delta > 0 ? '+' : ''}${String(a.delta)} wk/wk)`;
+    // The delta is period-over-period against the preceding window of equal
+    // length, so the label follows the selected range rather than naming a week.
+    const delta =
+      a.delta === 0 ? '' : ` (${a.delta > 0 ? '+' : ''}${String(a.delta)} vs prior ${range})`;
     out.write(`  ${a.kind.padEnd(9)} ${String(a.count)}${delta}\n`);
   }
 
@@ -116,7 +110,7 @@ const TOP_MODELS = 6;
 // then the top models by spend. Token counts are exact; cost is DERIVED at read
 // time — a `—` means unknown pricing (local / non-Anthropic), so a `≥` total is a
 // lower bound. Exported for the unit test (same pattern as renderFindingsSummary).
-export function renderTokenUsage(summary: TokenUsageSummary, range: SecurityRange): string {
+export function renderTokenUsage(summary: TokenUsageSummary, range: TimeRange): string {
   if (summary.models.length === 0) {
     return `Token usage (${range}): none recorded`;
   }

@@ -1,23 +1,24 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import type {
-  EnforcementActionKind,
-  EnforcementActionsResponse,
-  FindingsTimeseriesPoint,
-  FindingsTimeseriesResponse,
-  MttrTrendPoint,
-  MttrTrendResponse,
-  Provider,
-  RecentlyResolvedResponse,
-  ResolvedFeedItem,
-  ScanCoverageResponse,
-  SecurityRange,
-  Severity,
-  SeveritySummaryResponse,
-  SourceKind,
-  TimeseriesGranularity,
-  TopSource,
-  TopSourcesResponse,
+import {
+  type EnforcementActionKind,
+  type EnforcementActionsResponse,
+  type FindingsTimeseriesPoint,
+  type FindingsTimeseriesResponse,
+  type MttrTrendPoint,
+  type MttrTrendResponse,
+  type Provider,
+  RANGE_DAYS,
+  type RecentlyResolvedResponse,
+  type ResolvedFeedItem,
+  type ScanCoverageResponse,
+  type Severity,
+  type SeveritySummaryResponse,
+  type SourceKind,
+  type TimeRange,
+  type TimeseriesGranularity,
+  type TopSource,
+  type TopSourcesResponse,
 } from '@akasecurity/schema';
 
 import { allRows } from '../internal/rows.ts';
@@ -29,10 +30,6 @@ const DAY_MS = 86_400_000;
 // All severities, highest-first — the contract requires every level present
 // (count may be 0), so we project onto this fixed list, not just what GROUP BY found.
 const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
-
-// Window length per range, in days. 3m/6m use 90/180-day rolling approximations
-// (no calendar-month math) — fine for a rolling dashboard window.
-const RANGE_DAYS: Record<SecurityRange, number> = { '7d': 7, '30d': 30, '3m': 90, '6m': 180 };
 
 // finding.actionTaken → enforcement kind. Partial: allow/log are not enforcement
 // and have no entry, so a lookup returns undefined (the caller guards).
@@ -56,9 +53,17 @@ const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported:
   { provider: 'api', coverage: 0, supported: false },
 ];
 
-// 7d/30d bucket by day; 3m/6m by week.
-function granularityFor(range: SecurityRange): TimeseriesGranularity {
-  return range === '7d' || range === '30d' ? 'day' : 'week';
+// Bucket size per range. A table rather than a ternary so adding a range to
+// TIME_RANGES is a compile error here too, the way a missing RANGE_DAYS entry is.
+const GRANULARITY = {
+  '7d': 'day',
+  '30d': 'day',
+  '3m': 'week',
+  '6m': 'week',
+} as const satisfies Record<TimeRange, TimeseriesGranularity>;
+
+function granularityFor(range: TimeRange): TimeseriesGranularity {
+  return GRANULARITY[range];
 }
 
 // UTC midnight of the given epoch-ms (epoch 0 is itself a UTC midnight).
@@ -189,11 +194,11 @@ export class SqliteSecurityRepository implements SecurityViews {
 
   // Range is echoed but does not change the result today — coverage is a constant
   // business fact (see SCAN_COVERAGE), not a measured per-window metric.
-  scanCoverage(range: SecurityRange): Promise<ScanCoverageResponse> {
+  scanCoverage(range: TimeRange): Promise<ScanCoverageResponse> {
     return Promise.resolve({ range, providers: SCAN_COVERAGE.map((p) => ({ ...p })) });
   }
 
-  enforcementActions(range: SecurityRange): Promise<EnforcementActionsResponse> {
+  enforcementActions(range: TimeRange): Promise<EnforcementActionsResponse> {
     const lenMs = RANGE_DAYS[range] * DAY_MS;
     const now = this.now();
     const currentStart = now - lenMs;
@@ -222,7 +227,7 @@ export class SqliteSecurityRepository implements SecurityViews {
     return Promise.resolve({ range, total, actions });
   }
 
-  findingsTimeseries(range: SecurityRange): Promise<FindingsTimeseriesResponse> {
+  findingsTimeseries(range: TimeRange): Promise<FindingsTimeseriesResponse> {
     const granularity = granularityFor(range);
     const bucketMs = (granularity === 'day' ? 1 : 7) * DAY_MS;
     const lenDays = RANGE_DAYS[range];
@@ -267,7 +272,7 @@ export class SqliteSecurityRepository implements SecurityViews {
   // outright. One raw-row query (fetch every trackable finding + its latest
   // resolution's status/method/resolved_at) + pure-JS filter/bucket/mean,
   // mirroring this file's other methods.
-  mttrTrend(range: SecurityRange): Promise<MttrTrendResponse> {
+  mttrTrend(range: TimeRange): Promise<MttrTrendResponse> {
     const granularity = granularityFor(range);
     const bucketMs = (granularity === 'day' ? 1 : 7) * DAY_MS;
     const lenDays = RANGE_DAYS[range];
@@ -364,7 +369,7 @@ export class SqliteSecurityRepository implements SecurityViews {
   }
 
   topSources(
-    range: SecurityRange,
+    range: TimeRange,
     opts: { limit?: number; kind?: SourceKind } = {},
   ): Promise<TopSourcesResponse> {
     const limit = opts.limit ?? 5;

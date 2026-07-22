@@ -5,6 +5,7 @@
 import { z } from 'zod';
 
 import { Severity } from './finding.ts';
+import { DEFAULT_TIME_RANGE, TIME_RANGES, TimeRange } from './ranges.ts';
 
 // GET /v1/security/findings/severity-summary
 //
@@ -38,23 +39,13 @@ export const SeveritySummaryResponse = z
   .meta({ id: 'SeveritySummaryResponse' });
 export type SeveritySummaryResponse = z.infer<typeof SeveritySummaryResponse>;
 
-// ---------------------------------------------------------------------------
-// Shared `range` query param for the range-driven widgets.
-//
-// SECURITY_RANGES is the single source of values. SecurityRange carries a
-// component id because it is echoed inside response bodies; the query schema
-// re-declares an INLINE enum (no id) so the OpenAPI generator expands `range`
-// as a plain parameter instead of a $ref (params cannot be a $ref).
-// ---------------------------------------------------------------------------
-export const SECURITY_RANGES = ['7d', '30d', '3m', '6m'] as const;
-
-export const SecurityRange = z.enum(SECURITY_RANGES).meta({ id: 'SecurityRange' });
-export type SecurityRange = z.infer<typeof SecurityRange>;
-
 // An unsupported value fails Zod validation → 400 (shared VALIDATION_ERROR
 // envelope, consistent with every other query param in this API).
+//
+// The inline enum is deliberate: `TimeRange` carries a component id, so it would
+// emit as a $ref and the sibling `default` would be dropped from the parameter.
 export const SecurityRangeQuery = z.object({
-  range: z.enum(SECURITY_RANGES).default('7d'),
+  range: z.enum(TIME_RANGES).default(DEFAULT_TIME_RANGE),
 });
 export type SecurityRangeQuery = z.infer<typeof SecurityRangeQuery>;
 
@@ -81,7 +72,7 @@ export type EnforcementAction = z.infer<typeof EnforcementAction>;
 
 export const EnforcementActionsResponse = z
   .object({
-    range: SecurityRange,
+    range: TimeRange,
     // Sum of actions[].count in the window.
     total: z.number().int().nonnegative(),
     // One entry per kind, always all three present (count may be 0).
@@ -112,7 +103,7 @@ export type FindingsTimeseriesPoint = z.infer<typeof FindingsTimeseriesPoint>;
 
 export const FindingsTimeseriesResponse = z
   .object({
-    range: SecurityRange,
+    range: TimeRange,
     granularity: TimeseriesGranularity,
     points: z.array(FindingsTimeseriesPoint),
   })
@@ -141,7 +132,7 @@ export type MttrTrendPoint = z.infer<typeof MttrTrendPoint>;
 
 export const MttrTrendResponse = z
   .object({
-    range: SecurityRange,
+    range: TimeRange,
     granularity: TimeseriesGranularity,
     points: z.array(MttrTrendPoint),
   })
@@ -198,14 +189,14 @@ export type TopSource = z.infer<typeof TopSource>;
 
 export const TopSourcesResponse = z
   .object({
-    range: SecurityRange,
+    range: TimeRange,
     items: z.array(TopSource),
   })
   .meta({ id: 'TopSourcesResponse' });
 export type TopSourcesResponse = z.infer<typeof TopSourcesResponse>;
 
 export const TopSourcesQuery = z.object({
-  range: z.enum(SECURITY_RANGES).default('7d'),
+  range: z.enum(TIME_RANGES).default(DEFAULT_TIME_RANGE),
   limit: z.coerce.number().int().min(1).max(50).default(5),
   // Omit for both kinds.
   kind: z.enum(SOURCE_KINDS).optional(),
@@ -237,7 +228,7 @@ export type ScanCoverageProvider = z.infer<typeof ScanCoverageProvider>;
 
 export const ScanCoverageResponse = z
   .object({
-    range: SecurityRange,
+    range: TimeRange,
     providers: z.array(ScanCoverageProvider),
   })
   .meta({ id: 'ScanCoverageResponse' });

@@ -48,12 +48,12 @@ import type {
   ProjectTreeResponse,
   RecentlyResolvedResponse,
   ScanCoverageResponse,
-  SecurityRange,
   SessionTokenReport,
   SeveritySummaryResponse,
   ShareDestinationDetail,
   SharesStats,
   SourceKind,
+  TimeRange,
   TopSourcesResponse,
 } from '@akasecurity/schema';
 
@@ -138,14 +138,14 @@ export interface DetectionsReadPort {
  */
 export interface SecurityViews {
   severitySummary(): Promise<SeveritySummaryResponse>;
-  enforcementActions(range: SecurityRange): Promise<EnforcementActionsResponse>;
-  findingsTimeseries(range: SecurityRange): Promise<FindingsTimeseriesResponse>;
-  mttrTrend(range: SecurityRange): Promise<MttrTrendResponse>;
+  enforcementActions(range: TimeRange): Promise<EnforcementActionsResponse>;
+  findingsTimeseries(range: TimeRange): Promise<FindingsTimeseriesResponse>;
+  mttrTrend(range: TimeRange): Promise<MttrTrendResponse>;
   topSources(
-    range: SecurityRange,
+    range: TimeRange,
     opts?: { limit?: number; kind?: SourceKind },
   ): Promise<TopSourcesResponse>;
-  scanCoverage(range: SecurityRange): Promise<ScanCoverageResponse>;
+  scanCoverage(range: TimeRange): Promise<ScanCoverageResponse>;
   recentlyResolved(limit?: number): Promise<RecentlyResolvedResponse>;
 }
 

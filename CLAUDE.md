@@ -58,7 +58,8 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass; network ONLY via package-manager
                      shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
-@akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types)
+@akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types, plus the pure
+                     shared constants and formatters — no I/O)
                      (bundler-agnostic presentational views; props-driven, no data fetching)
 @akasecurity/ui-kit        → @radix-ui/react-*, Tailwind (design-token UI primitives)
 

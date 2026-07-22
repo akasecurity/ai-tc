@@ -1,27 +1,44 @@
-// Shared time-range filter options, used by the TimeRangeSelect component and
-// any page that drives widgets off a range. Kept out of page modules so the
-// component doesn't depend on a specific page.
+// Display labels for the time-range picker, used by the TimeRangeSelect
+// component and any page that drives widgets off a range. Kept out of page
+// modules so the component doesn't depend on a specific page.
+//
+// The vocabulary itself — the values, the default, and the lookback each range
+// stands for — belongs to @akasecurity/schema and is re-exported here, so the
+// picker and the query contracts read one set of constants, not two copies.
 
-export type TimeRange = '7d' | '30d' | '3m' | '6m';
+import {
+  DEFAULT_TIME_RANGE,
+  parseTimeRange,
+  RANGE_DAYS,
+  type TimeRange,
+} from '@akasecurity/schema';
+
+// Named once, then passed through, so this package is a single import surface
+// for the range vocabulary — a consumer needn't know which half lives where.
+export { DEFAULT_TIME_RANGE, parseTimeRange, RANGE_DAYS, type TimeRange };
 
 export interface TimeRangeOption {
   value: TimeRange;
   label: string;
 }
 
-export const TIME_RANGES: TimeRangeOption[] = [
+/** Each range paired with the label the picker renders for it. */
+export const TIME_RANGE_OPTIONS: TimeRangeOption[] = [
   { value: '7d', label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
   { value: '3m', label: 'Last 3 months' },
   { value: '6m', label: 'Last 6 months' },
 ];
 
-export const DEFAULT_TIME_RANGE: TimeRange = '7d';
+/**
+ * A range → the label the UI shows for it. Falls back to the raw value, which
+ * only surfaces if a range ever ships without an entry above.
+ */
+export function rangeLabel(range: TimeRange): string {
+  return TIME_RANGE_OPTIONS.find((r) => r.value === range)?.label ?? range;
+}
 
 const DAY_MS = 86_400_000;
-
-/** The `from` lower bound each range covers, in days. */
-export const RANGE_DAYS: Record<TimeRange, number> = { '7d': 7, '30d': 30, '3m': 90, '6m': 180 };
 
 /**
  * A time-range chip → the ISO `from` lower bound (`now − N days`) an API filters

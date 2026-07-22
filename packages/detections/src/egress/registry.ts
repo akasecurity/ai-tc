@@ -772,6 +772,8 @@ function sdkMatches(ecosystem: EgressEcosystem, pkg: string, ident: string): boo
 }
 
 // PEP-503 normalization: lowercase, collapse runs of -._ to a single '-'.
-function normalizePypi(name: string): string {
+// Shared with manifests.ts, which normalizes the identifiers it extracts the
+// same way so resolveSdk matches regardless of which spelling a manifest used.
+export function normalizePypi(name: string): string {
   return name.toLowerCase().replace(/[-_.]+/g, '-');
 }

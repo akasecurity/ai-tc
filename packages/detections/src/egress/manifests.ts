@@ -10,6 +10,7 @@
 import type { EgressEcosystem } from '@akasecurity/schema';
 
 import { redactSnippet } from './extract.ts';
+import { normalizePypi } from './registry.ts';
 
 /** One dependency-manifest file kind this module knows how to parse. */
 export type ManifestKind =
@@ -72,7 +73,11 @@ const EXACT_KIND_BY_BASENAME: Readonly<Record<string, ManifestKind>> = {
  */
 export function manifestKindOf(basename: string): ManifestKind | null {
   if (LOCKFILE_BASENAMES.has(basename)) return null;
-  const exact = EXACT_KIND_BY_BASENAME[basename];
+  // Object.hasOwn guards against basenames that collide with inherited
+  // Object.prototype members ('constructor', 'toString', 'valueOf',
+  // 'hasOwnProperty', '__proto__') — a plain bracket lookup resolves those
+  // through the prototype chain instead of returning undefined.
+  const exact = Object.hasOwn(EXACT_KIND_BY_BASENAME, basename) ? EXACT_KIND_BY_BASENAME[basename] : undefined;
   if (exact !== undefined) return exact;
   if (basename.endsWith('.csproj')) return 'csproj';
   return null;
@@ -103,6 +108,8 @@ export function extractManifestSdks(text: string, kind: ManifestKind): ManifestS
       return extractCsproj(text);
     case 'packages.config':
       return extractPackagesConfig(text);
+    default:
+      return [];
   }
 }
 
@@ -110,21 +117,23 @@ function makeHit(ecosystem: EgressEcosystem, pkg: string, line: number, rawLine:
   return { ecosystem, pkg, line, snippet: redactSnippet(rawLine) };
 }
 
-// PEP-503 normalization: lowercase, collapse runs of -._ to a single '-', so
-// 'sentry_sdk', 'sentry-sdk' and 'SENTRY_SDK' all emit the same pkg value.
-// registry.ts applies the same normalization to its own SDK identifiers, so
-// resolveSdk matches regardless of which form a manifest used.
-function normalizePypi(name: string): string {
-  return name.toLowerCase().replace(/[-_.]+/g, '-');
-}
-
 // ── package.json (npm) ───────────────────────────────────────────────────
 
 function extractPackageJson(text: string): ManifestSdkHit[] {
   const parsed = parseJson(text);
   if (parsed === null) return [];
-  const pkgs = new Set([...objectKeys(parsed.dependencies), ...objectKeys(parsed.optionalDependencies)]);
-  return [...pkgs].map((pkg) => hitAtQuotedKey('npm', pkg, text));
+  const seen = new Set<string>();
+  const hits: ManifestSdkHit[] = [];
+  for (const pkg of objectKeys(parsed.dependencies)) {
+    seen.add(pkg);
+    hits.push(hitAtQuotedKey('npm', pkg, text, 'dependencies'));
+  }
+  for (const pkg of objectKeys(parsed.optionalDependencies)) {
+    if (seen.has(pkg)) continue;
+    seen.add(pkg);
+    hits.push(hitAtQuotedKey('npm', pkg, text, 'optionalDependencies'));
+  }
+  return hits;
 }
 
 // ── requirements.txt (pypi) ──────────────────────────────────────────────
@@ -199,17 +208,42 @@ function quotedStrings(line: string): string[] {
 
 // ── go.mod (go) ───────────────────────────────────────────────────────────
 
-// Matches a module-path line inside a `require ( ... )` block as well as a
-// single-line `require <path> <version>` statement — the optional keyword
-// prefix is the only difference between the two forms.
-const GO_REQUIRE_LINE = /^\s*(?:require\s+)?([\w./-]+)\s+v\d/;
+// go.mod has four block-form directives — require, exclude, replace, retract
+// — that share the same `<keyword> (\n ... \n)` shape. Only require lines
+// name a real dependency; exclude/replace/retract bodies name module paths
+// too (an excluded version, a replacement target, a retracted range) but
+// none of those are things the project actually talks to.
+const GO_BLOCK_OPEN = /^\s*(require|exclude|replace|retract)\s*\(/;
+const GO_BLOCK_CLOSE = /^\s*\)/;
+const GO_REQUIRE_SINGLE_LINE = /^\s*require\s+([\w./-]+)\s+v\d/;
+const GO_MODULE_VERSION_LINE = /^\s*([\w./-]+)\s+v\d/;
 
 function extractGoMod(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
+  let blockKeyword: string | null = null;
+
   eachLine(text, (rawLine, lineNumber) => {
-    const path = GO_REQUIRE_LINE.exec(rawLine)?.[1];
-    if (path !== undefined) hits.push(makeHit('go', path, lineNumber, rawLine));
+    if (blockKeyword === null) {
+      const open = GO_BLOCK_OPEN.exec(rawLine)?.[1];
+      if (open !== undefined) {
+        blockKeyword = open;
+        return;
+      }
+      const path = GO_REQUIRE_SINGLE_LINE.exec(rawLine)?.[1];
+      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, rawLine));
+      return;
+    }
+
+    if (GO_BLOCK_CLOSE.test(rawLine)) {
+      blockKeyword = null;
+      return;
+    }
+    if (blockKeyword === 'require') {
+      const path = GO_MODULE_VERSION_LINE.exec(rawLine)?.[1];
+      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, rawLine));
+    }
   });
+
   return hits;
 }
 
@@ -236,9 +270,14 @@ const LEADING_TEXT = /^([^<]*)/;
 function extractPomXml(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
   const stack: string[] = [];
+  let inComment = false;
 
   eachLine(text, (rawLine, lineNumber) => {
-    for (const match of rawLine.matchAll(XML_TAG)) {
+    const stripped = stripXmlComments(rawLine, inComment);
+    inComment = stripped.inComment;
+    const visible = stripped.visible;
+
+    for (const match of visible.matchAll(XML_TAG)) {
       const name = match[2];
       if (name === undefined) continue;
       const closing = match[1] === '/';
@@ -252,7 +291,7 @@ function extractPomXml(text: string): ManifestSdkHit[] {
       if (selfClosing) continue;
 
       if (name === 'groupId') {
-        const after = rawLine.slice(match.index + match[0].length);
+        const after = visible.slice(match.index + match[0].length);
         const value = LEADING_TEXT.exec(after)?.[1]?.trim() ?? '';
         if (value !== '' && isProjectDependencyGroupId(stack)) {
           hits.push(makeHit('maven', value, lineNumber, rawLine));
@@ -359,7 +398,7 @@ function extractComposerJson(text: string): ManifestSdkHit[] {
   const parsed = parseJson(text);
   if (parsed === null) return [];
   const pkgs = objectKeys(parsed.require).filter((pkg) => pkg !== 'php' && !pkg.startsWith('ext-'));
-  return pkgs.map((pkg) => hitAtQuotedKey('composer', pkg, text));
+  return pkgs.map((pkg) => hitAtQuotedKey('composer', pkg, text, 'require'));
 }
 
 // ── .csproj (nuget) ───────────────────────────────────────────────────────
@@ -368,8 +407,11 @@ const CSPROJ_PACKAGE_REFERENCE = /<PackageReference\s+Include="([^"]+)"/;
 
 function extractCsproj(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
+  let inComment = false;
   eachLine(text, (rawLine, lineNumber) => {
-    const name = CSPROJ_PACKAGE_REFERENCE.exec(rawLine)?.[1];
+    const stripped = stripXmlComments(rawLine, inComment);
+    inComment = stripped.inComment;
+    const name = CSPROJ_PACKAGE_REFERENCE.exec(stripped.visible)?.[1];
     if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, rawLine));
   });
   return hits;
@@ -381,14 +423,43 @@ const PACKAGES_CONFIG_PACKAGE = /<package\s+id="([^"]+)"/;
 
 function extractPackagesConfig(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
+  let inComment = false;
   eachLine(text, (rawLine, lineNumber) => {
-    const name = PACKAGES_CONFIG_PACKAGE.exec(rawLine)?.[1];
+    const stripped = stripXmlComments(rawLine, inComment);
+    inComment = stripped.inComment;
+    const name = PACKAGES_CONFIG_PACKAGE.exec(stripped.visible)?.[1];
     if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, rawLine));
   });
   return hits;
 }
 
 // ── shared helpers ────────────────────────────────────────────────────────
+
+// Removes XML comment text from one line, carrying the "still inside a
+// multi-line <!-- ... --> block" state across calls so a commented-out
+// element spanning several lines is never read as live markup. A line with a
+// same-line '<!--'...'-->' pair loses only the commented span; text before
+// and after it stays visible.
+function stripXmlComments(line: string, inComment: boolean): { visible: string; inComment: boolean } {
+  let visible = '';
+  let rest = line;
+  let comment = inComment;
+
+  for (;;) {
+    if (comment) {
+      const end = rest.indexOf('-->');
+      if (end === -1) return { visible, inComment: true };
+      rest = rest.slice(end + 3);
+      comment = false;
+      continue;
+    }
+    const start = rest.indexOf('<!--');
+    if (start === -1) return { visible: visible + rest, inComment: false };
+    visible += rest.slice(0, start);
+    rest = rest.slice(start + 4);
+    comment = true;
+  }
+}
 
 function eachLine(text: string, fn: (rawLine: string, lineNumber: number) => void): void {
   const lines = text.split('\n');
@@ -426,11 +497,17 @@ function objectKeys(value: unknown): string[] {
   return Object.keys(value);
 }
 
-// Line of a JSON manifest's first '"<pkg>"' occurrence — the keys this module
-// reads always came from parsing that same text, so the quoted form is always
-// present somewhere in it.
-function hitAtQuotedKey(ecosystem: EgressEcosystem, pkg: string, text: string): ManifestSdkHit {
-  const index = text.indexOf(`"${pkg}"`);
+// Line of a JSON manifest's '"<pkg>"' occurrence inside the named owning
+// section (e.g. 'dependencies', 'optionalDependencies', 'require') — scoped
+// to that section's own key so a same-named entry in an earlier sibling
+// section (devDependencies, require-dev, ...) is never mistaken for the
+// production one. The keys this module reads always came from parsing that
+// same text, so the quoted form is always present somewhere at or after the
+// section key.
+function hitAtQuotedKey(ecosystem: EgressEcosystem, pkg: string, text: string, sectionKey: string): ManifestSdkHit {
+  const sectionStart = text.indexOf(`"${sectionKey}"`);
+  const searchFrom = sectionStart === -1 ? 0 : sectionStart;
+  const index = text.indexOf(`"${pkg}"`, searchFrom);
   if (index === -1) return makeHit(ecosystem, pkg, 1, pkg);
   return makeHit(ecosystem, pkg, lineNumberAt(text, index), lineContaining(text, index));
 }

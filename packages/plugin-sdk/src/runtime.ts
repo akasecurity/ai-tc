@@ -20,6 +20,7 @@ import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import { registerBundledPacks } from './rule-packs.ts';
+import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
 
 // Global handling-mode ceiling: when true, settings.policy === 'warn' caps
@@ -137,9 +138,27 @@ export function createPluginRuntime(
         categoryActionIndex.set(p.target.category, p.action);
       }
     }
-    rules = bundle.rulesComplete
-      ? (bundle.rules ?? [])
-      : [...getLoadedRules(), ...(bundle.rules ?? [])];
+    // The compiled-in bundled packs are already proven safe by the CI
+    // adversarial battery on every commit, so they bypass the runtime timing
+    // gate entirely — whether they arrive via getLoadedRules() or because the
+    // installed snapshot that delivered bundle.rules IS those same bundled
+    // packs. Re-checking them at runtime would let a cold-cache pass budget
+    // quarantine a legitimate rule (e.g. a secret matcher) on slow hardware,
+    // silently disabling detection. Only genuinely pulled/custom-pack rules —
+    // those whose probe key is not among the bundled set — reach the gate.
+    const bundledProbeKeys = new Set(
+      getLoadedRules()
+        .map(ruleProbeKey)
+        .filter((key): key is string => key !== undefined),
+    );
+    const incoming = bundle.rules ?? [];
+    const ciVerified = incoming.filter((rule) => {
+      const key = ruleProbeKey(rule);
+      return key !== undefined && bundledProbeKeys.has(key);
+    });
+    const needsGate = incoming.filter((rule) => !ciVerified.includes(rule));
+    const safeBundleRules = [...ciVerified, ...(await filterUnsafeRules(needsGate, gateway))];
+    rules = bundle.rulesComplete ? safeBundleRules : [...getLoadedRules(), ...safeBundleRules];
     bundleExceptions = bundle.exceptions ?? [];
     initialized = true;
   }

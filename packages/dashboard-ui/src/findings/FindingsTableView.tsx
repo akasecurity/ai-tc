@@ -144,6 +144,7 @@ export function FindingsTableView({
                     onClick={() => {
                       onSelectGroup(group);
                     }}
+                    aria-label={`View details for ${group.subtype} finding`}
                     className={cn(
                       'cursor-pointer hover:bg-surface-2',
                       isGroupSelected && 'bg-surface-2',
@@ -175,6 +176,7 @@ export function FindingsTableView({
                         onClick={() => {
                           onSelectInstance(group, instance);
                         }}
+                        aria-label={`View details for ${group.subtype} finding in ${instance.repo}`}
                         className={cn(
                           'cursor-pointer hover:bg-surface-2',
                           selection?.instance?.id === instance.id

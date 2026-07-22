@@ -38,6 +38,7 @@ import type {
   ProjectFilesScan,
   ResolvedInventory,
   Rule,
+  RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
   ToolCallInput,
@@ -399,6 +400,21 @@ export class StandaloneDataGateway implements DataGateway {
 
   recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
     this.db.scanLedger.upsertEntries(entries);
+    return Promise.resolve();
+  }
+
+  getRuleProbeVerdict(
+    ruleKey: string,
+  ): Promise<{ verdict: RuleProbeVerdict; worstProbeMs: number } | undefined> {
+    return Promise.resolve(this.db.ruleProbeCache.getVerdict(ruleKey));
+  }
+
+  setRuleProbeVerdict(
+    ruleKey: string,
+    verdict: RuleProbeVerdict,
+    worstProbeMs: number,
+  ): Promise<void> {
+    this.db.ruleProbeCache.setVerdict(ruleKey, verdict, worstProbeMs);
     return Promise.resolve();
   }
 

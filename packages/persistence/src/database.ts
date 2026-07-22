@@ -38,6 +38,7 @@ import { SqlitePoliciesRepository } from './repositories/policies.ts';
 import { SqlitePolicyCatalogRepository } from './repositories/policy-catalog.ts';
 import { SqliteProjectFilesRepository } from './repositories/project-files.ts';
 import { SqliteResolutionsRepository } from './repositories/resolutions.ts';
+import { SqliteRuleProbeCacheRepository } from './repositories/rule-probe-cache.ts';
 import { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
 import { SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
@@ -78,6 +79,10 @@ export interface LocalDatabase {
   // helpers. Read/written by the scanner's resolution diff + the CLI/web-ui
   // resolution surfaces.
   readonly resolutions: SqliteResolutionsRepository;
+  // Runtime ReDoS timing cache — see SqliteRuleProbeCacheRepository. Read and
+  // written by the plugin SDK's rule-registration filter, never by the
+  // dashboard.
+  readonly ruleProbeCache: SqliteRuleProbeCacheRepository;
   // Read-only Security dashboard aggregations (severity/enforcement/timeseries/
   // top-sources/scan-coverage) over events+findings. Read by the OSS web-ui + CLI.
   readonly security: SqliteSecurityRepository;
@@ -217,6 +222,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   const scanLedger = new SqliteScanLedgerRepository(db);
   const exceptions = new SqliteExceptionsRepository(db);
   const resolutions = new SqliteResolutionsRepository(db);
+  const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
   const security = new SqliteSecurityRepository(db);
   const detections = new SqliteDetectionsRepository(db);
   const shares = new SqliteSharesRepository(db);
@@ -410,6 +416,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     scanLedger,
     exceptions,
     resolutions,
+    ruleProbeCache,
     security,
     detections,
     shares,

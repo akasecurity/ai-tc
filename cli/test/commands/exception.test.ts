@@ -102,6 +102,11 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
       db.resolutions.insertResolution(input);
       return Promise.resolve();
     },
+    getRuleProbeVerdict: (ruleKey) => Promise.resolve(db.ruleProbeCache.getVerdict(ruleKey)),
+    setRuleProbeVerdict: (ruleKey, verdict, worstProbeMs) => {
+      db.ruleProbeCache.setVerdict(ruleKey, verdict, worstProbeMs);
+      return Promise.resolve();
+    },
     close: () => Promise.resolve(),
   };
 }

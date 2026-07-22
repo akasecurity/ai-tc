@@ -16,6 +16,7 @@ export {
 export type {
   CaptureRecord,
   DataGateway,
+  RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
 } from './data-gateway.ts';
@@ -56,6 +57,8 @@ export {
   registerRulePack,
   uniqueRuleIds,
 } from './rule-packs.ts';
+export type { RuleProbeGateway } from './rule-quarantine.ts';
+export { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 export type { CaptureOptions, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';

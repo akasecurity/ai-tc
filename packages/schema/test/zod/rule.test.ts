@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Rule } from '../../src/zod/rule.ts';
+import { Rule, RuleProbeVerdict } from '../../src/zod/rule.ts';
 
 function keywordRule(matcher: Record<string, unknown>) {
   return {
@@ -42,5 +42,17 @@ describe('Rule keyword matcher contract', () => {
       keywordRule({ keywords: ['SELECT * FROM ', 'SELECT COUNT(*) FROM ', 'i make $'] }),
     );
     expect(parsed.matcher.type).toBe('keyword');
+  });
+});
+
+describe('RuleProbeVerdict', () => {
+  it('accepts safe and quarantined', () => {
+    expect(RuleProbeVerdict.safeParse('safe').success).toBe(true);
+    expect(RuleProbeVerdict.safeParse('quarantined').success).toBe(true);
+  });
+
+  it('rejects any other value', () => {
+    expect(RuleProbeVerdict.safeParse('unknown').success).toBe(false);
+    expect(RuleProbeVerdict.safeParse('').success).toBe(false);
   });
 });

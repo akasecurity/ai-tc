@@ -29,6 +29,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'SqlitePoliciesRepository',
   'SqlitePolicyCatalogRepository',
   'SqliteResolutionsRepository',
+  'SqliteRuleProbeCacheRepository',
   'SqliteScanLedgerRepository',
   'SqliteSecurityRepository',
   'SqliteSharesRepository',

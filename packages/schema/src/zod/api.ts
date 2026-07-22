@@ -7,7 +7,7 @@
 // individual OpenAPI `parameters`, which cannot be a `$ref`, so they stay inline.
 import { z } from 'zod';
 
-import { Event } from './event.ts';
+import { Event, IngestBatch } from './event.ts';
 import { Finding } from './finding.ts';
 import {
   AssetDetail,
@@ -59,6 +59,21 @@ export const ListEventsResponse = z
   })
   .meta({ id: 'ListEventsResponse' });
 export type ListEventsResponse = z.infer<typeof ListEventsResponse>;
+
+// POST /v1/events — ingest a batch of events. IngestRequest aliases
+// IngestBatch — the component is registered once as `IngestBatch` (see
+// event.ts) and refs there. IngestResponse is tenant-free (accepted/duplicate
+// counts only) and is the public ingest contract alongside
+// IngestInventoryRequest / RecordAuditEventRequest below.
+export const IngestRequest = IngestBatch;
+export type IngestRequest = z.infer<typeof IngestRequest>;
+export const IngestResponse = z
+  .object({
+    accepted: z.number().int(),
+    duplicates: z.number().int(),
+  })
+  .meta({ id: 'IngestResponse' });
+export type IngestResponse = z.infer<typeof IngestResponse>;
 
 // GET /v1/findings
 export const ListFindingsQuery = z.object({

@@ -12,7 +12,7 @@ import {
 } from '../src/migrations.ts';
 
 // The six token-usage generated columns are defined in THREE places that must stay
-// in lockstep: the canonical `0010_token_usage_audit_columns` migration in
+// in lockstep: the canonical `0001_adorable_marten_broadcloak` migration in
 // `@akasecurity/schema` (packages/schema/src/drizzle/sqlite-ddl.ts, generated from the
 // drizzle defs in packages/schema/src/drizzle/local/sqlite.ts), and the
 // re-hardcoded ALTER copy in `migrations.ts` (TOKEN_USAGE_COLUMNS). The copy exists
@@ -21,7 +21,7 @@ import {
 //
 // This is the drift guard. We can't import the canonical column list cleanly
 // (sqlite-ddl exposes only the whole-file migration SQL, not a structured column
-// set), so the expected names are hardcoded here. If the 0010 migration adds,
+// set), so the expected names are hardcoded here. If that migration adds,
 // removes, or renames a token column, mirror it in BOTH places and update this list
 // — the test fails loudly the moment the persistence copy drifts in count or name.
 const EXPECTED_TOKEN_COLUMN_NAMES = [

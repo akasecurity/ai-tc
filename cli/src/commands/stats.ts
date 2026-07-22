@@ -22,7 +22,7 @@ const RANGE_DAYS: Record<SecurityRange, number> = { '7d': 7, '30d': 30, '3m': 90
 function parseRange(value: string | undefined): SecurityRange {
   return (SECURITY_RANGES as readonly string[]).includes(value ?? '')
     ? (value as SecurityRange)
-    : '30d';
+    : '7d';
 }
 
 // `aka stats` — print local-store aggregates: findings by severity + enforcement

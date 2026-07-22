@@ -83,7 +83,7 @@ export function buildActivityParams(opts: {
   if (q) sp.set('q', q);
   for (const h of opts.harness) sp.append('harness', h);
   // Omit only the actual default (what parseRange returns for a missing param),
-  // else a non-default range like 7d gets dropped and the next server render
+  // else a non-default range like 30d gets dropped and the next server render
   // resets it to DEFAULT_TIME_RANGE.
   if (opts.range !== DEFAULT_TIME_RANGE) sp.set('range', opts.range);
   if (opts.id) sp.set('id', opts.id);

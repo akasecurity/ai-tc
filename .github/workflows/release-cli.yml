@@ -146,9 +146,11 @@ jobs:
         env:
           NPM_CONFIG_PROVENANCE: 'true'
 
-      # The install one-liners fetch the bootstrap scripts from the `cli-latest`
-      # tag, so a successful stable publish must move it to this release commit.
-      # Pre-releases leave it on the last stable release.
+      # The binary installer one-liners fetch install.sh/install.ps1 from the
+      # `bin-latest` tag (moved by release-binaries.yml), NOT `cli-latest`.
+      # `cli-latest` is kept as a stable alias for the npm CLI channel: a
+      # successful stable publish moves it to this commit; pre-releases leave it
+      # on the last stable release.
       - name: Point cli-latest at this release
         if: github.event_name == 'push'
         run: |

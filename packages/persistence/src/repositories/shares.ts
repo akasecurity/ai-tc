@@ -213,6 +213,7 @@ export class SqliteSharesRepository implements SharesReadPort {
     const byKind: SharesStats['byKind'] = {
       provider: kindCounts.get('provider') ?? 0,
       internal: kindCounts.get('internal') ?? 0,
+      external: kindCounts.get('external') ?? 0,
       ip: kindCounts.get('ip') ?? 0,
     };
 

@@ -78,5 +78,30 @@
     "label": "an over-long line is truncated to 200 characters",
     "line": "// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "expect": "// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+    "label": "a backtick-quoted bearer token in a template literal is masked, not leaked",
+    "line": "const h = {Authorization: `Bearer sk_live_51H8xyzABCDEFGHIJ`}",
+    "expect": "const h = {Authorization: `Bearer ••••`}"
+  },
+  {
+    "label": "an api_key value embedded in a backtick template literal is masked",
+    "line": "const u = `https://api.acme-corp.com/v1?api_key=abc123`;",
+    "expect": "const u = `https://api.acme-corp.com/v1?api_key=••••`;"
+  },
+  {
+    "label": "an apikey value wrapped in backticks is masked like the quoted forms",
+    "line": "apikey=`XYZ987`",
+    "expect": "apikey=`••••`"
+  },
+  {
+    "label": "a Bearer-prefixed value joined by a hyphen, with no space delimiter, is still masked",
+    "line": "Authorization: Bearer-prefixed-secret",
+    "expect": "Authorization: ••••"
+  },
+  {
+    "label": "a Bearer-prefixed value joined by a dot, with no space delimiter, is still masked",
+    "line": "Authorization: Bearer.abcdefgh",
+    "expect": "Authorization: ••••"
   }
 ]

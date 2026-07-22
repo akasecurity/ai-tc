@@ -60,7 +60,7 @@
     ]
   },
   {
-    "label": "a mail-context line yields the smtp transport",
+    "label": "a mail-context line yields the smtp transport (the Host keyword admits the line; mail alone is a transport keyword, not a host-context keyword)",
     "text": "const mailRelayHost = \"203.0.113.25\";",
     "expect": [
       {

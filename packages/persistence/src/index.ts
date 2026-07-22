@@ -81,7 +81,10 @@ export { SqliteResolutionsRepository } from './repositories/resolutions.ts';
 export type { ScanLedgerEntry, ScanLedgerState } from './repositories/scan-ledger.ts';
 export { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
 export { SqliteSecurityRepository } from './repositories/security.ts';
-export { SqliteSharesRepository } from './repositories/shares.ts';
+export {
+  MAX_EGRESS_CALL_SITES_PER_PROJECT,
+  SqliteSharesRepository,
+} from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
 export { applyOnboarding, readWorkspaceSettings } from './settings.ts';

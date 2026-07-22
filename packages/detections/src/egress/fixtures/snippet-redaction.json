@@ -103,5 +103,135 @@
     "label": "a Bearer-prefixed value joined by a dot, with no space delimiter, is still masked",
     "line": "Authorization: Bearer.abcdefgh",
     "expect": "Authorization: ••••"
+  },
+  {
+    "label": "a quoted Basic credential is masked and the Basic keyword survives",
+    "line": "const r = await fetch('https://api.acme.com/v1/x', { headers: { Authorization: 'Basic ZGV2OnMzY3JldFAhc3M=' } });",
+    "expect": "const r = await fetch('https://api.acme.com/v1/x', { headers: { Authorization: 'Basic ••••' } });"
+  },
+  {
+    "label": "a backtick-quoted Basic credential is masked the same way",
+    "line": "const h = {Authorization: `Basic ZGV2OnMzY3JldFAhc3M=`}",
+    "expect": "const h = {Authorization: `Basic ••••`}"
+  },
+  {
+    "label": "a double-quoted Basic credential is masked the same way",
+    "line": "headers: { \"Authorization\": \"Basic ZGV2OnMzY3JldFAhc3M=\" }",
+    "expect": "headers: { \"Authorization\": \"Basic ••••\" }"
+  },
+  {
+    "label": "a quoted Token scheme credential is masked and the Token keyword survives",
+    "line": "fetch('https://a.com', { headers: { Authorization: 'Token 9f8a7b6c5d4e3f2a1b0c' } })",
+    "expect": "fetch('https://a.com', { headers: { Authorization: 'Token ••••' } })"
+  },
+  {
+    "label": "a backtick-quoted Token scheme credential is masked the same way",
+    "line": "const h = {Authorization: `Token 9f8a7b6c5d4e3f2a1b0c`}",
+    "expect": "const h = {Authorization: `Token ••••`}"
+  },
+  {
+    "label": "a quoted Digest credential is masked and the Digest keyword survives",
+    "line": "headers: { Authorization: 'Digest dXNlcjpyZWFsbTpwYXNz' }",
+    "expect": "headers: { Authorization: 'Digest ••••' }"
+  },
+  {
+    "label": "a backtick-quoted Digest credential is masked the same way",
+    "line": "const h = {Authorization: `Digest dXNlcjpyZWFsbTpwYXNz`}",
+    "expect": "const h = {Authorization: `Digest ••••`}"
+  },
+  {
+    "label": "a quoted ApiKey scheme credential is masked and the ApiKey keyword survives",
+    "line": "headers: { Authorization: 'ApiKey k-9f8a7b6c5d4e' }",
+    "expect": "headers: { Authorization: 'ApiKey ••••' }"
+  },
+  {
+    "label": "a backtick-quoted ApiKey scheme credential is masked the same way",
+    "line": "const h = {Authorization: `ApiKey k-9f8a7b6c5d4e`}",
+    "expect": "const h = {Authorization: `ApiKey ••••`}"
+  },
+  {
+    "label": "a quoted SSWS credential is masked and the SSWS keyword survives",
+    "line": "headers: { Authorization: 'SSWS 00QCjAl4MlV-WPXM' }",
+    "expect": "headers: { Authorization: 'SSWS ••••' }"
+  },
+  {
+    "label": "a backtick-quoted SSWS credential is masked the same way",
+    "line": "const h = {Authorization: `SSWS 00QCjAl4MlV-WPXM`}",
+    "expect": "const h = {Authorization: `SSWS ••••`}"
+  },
+  {
+    "label": "a quoted AWS4-HMAC-SHA256 credential is masked and the scheme keyword survives",
+    "line": "headers: { Authorization: 'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE' }",
+    "expect": "headers: { Authorization: 'AWS4-HMAC-SHA256 ••••' }"
+  },
+  {
+    "label": "a backtick-quoted AWS4-HMAC-SHA256 credential is masked the same way",
+    "line": "const h = {Authorization: `AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE`}",
+    "expect": "const h = {Authorization: `AWS4-HMAC-SHA256 ••••`}"
+  },
+  {
+    "label": "a camelCase privateKey value is masked",
+    "line": "const c = new Client({ endpoint: 'https://api.acme.com', privateKey: 'MIIEvQIBADANBgkq' });",
+    "expect": "const c = new Client({ endpoint: 'https://api.acme.com', privateKey: '••••' });"
+  },
+  {
+    "label": "a snake_case private_key value is masked",
+    "line": "{ private_key: 'MIIEvQIBADANBgkq' }",
+    "expect": "{ private_key: '••••' }"
+  },
+  {
+    "label": "a backtick-quoted private_key value is masked",
+    "line": "const k = `private_key=MIIEvQIBADANBgkq`;",
+    "expect": "const k = `private_key=••••`;"
+  },
+  {
+    "label": "a credential value is masked",
+    "line": "{ credential: 'abc123XYZ' }",
+    "expect": "{ credential: '••••' }"
+  },
+  {
+    "label": "a plural credentials value is masked",
+    "line": "credentials: \"abc123XYZ\"",
+    "expect": "credentials: \"••••\""
+  },
+  {
+    "label": "a pwd value is masked",
+    "line": "{ pwd: 'hunter2' }",
+    "expect": "{ pwd: '••••' }"
+  },
+  {
+    "label": "a Slack webhook path is masked down to its routing prefix",
+    "line": "const WEBHOOK = 'https://hooks.slack.com/services/EXAMPLE-WORKSPACE/EXAMPLE-CHANNEL/EXAMPLE-TOKEN-not-real';",
+    "expect": "const WEBHOOK = 'https://hooks.slack.com/services/••••';"
+  },
+  {
+    "label": "a backtick-quoted Slack webhook path is masked the same way",
+    "line": "await fetch(`https://hooks.slack.com/services/EXAMPLE-WORKSPACE/EXAMPLE-CHANNEL/EXAMPLE-TOKEN-not-real`);",
+    "expect": "await fetch(`https://hooks.slack.com/services/••••`);"
+  },
+  {
+    "label": "a Discord webhook id and token are masked",
+    "line": "const D = 'https://discord.com/api/webhooks/000000000000000000/EXAMPLE-WEBHOOK-token-not-real';",
+    "expect": "const D = 'https://discord.com/api/webhooks/••••';"
+  },
+  {
+    "label": "a Zapier catch-hook path is masked",
+    "line": "const Z = 'https://hooks.zapier.com/hooks/catch/000000/example-not-real/';",
+    "expect": "const Z = 'https://hooks.zapier.com/hooks/••••';"
+  },
+  {
+    "label": "a Teams inbound webhook path is masked",
+    "line": "const T = 'https://outlook.office.com/webhook/example-id/IncomingWebhook/EXAMPLE-not-real';",
+    "expect": "const T = 'https://outlook.office.com/webhook/••••';"
+  },
+  {
+    "label": "NEGATIVE: a non-webhook path on a webhook host keeps its segments",
+    "line": "const api = 'https://discord.com/api/v10/users/@me';",
+    "expect": "const api = 'https://discord.com/api/v10/users/@me';"
+  },
+  {
+    "label": "NEGATIVE: a scheme keyword opening an ordinary sentence keeps its next word",
+    "line": "// Basic auth is disabled; Digest handshakes are rejected outright",
+    "expect": "// Basic auth is disabled; Digest handshakes are rejected outright"
   }
 ]

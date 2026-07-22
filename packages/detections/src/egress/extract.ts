@@ -98,14 +98,75 @@ const IP_SMTP_CONTEXT = /\b(smtp|mail)\b/i;
 
 // Redaction. Values are masked, keys are kept readable. The quote class
 // covers backtick-quoted (template literal) values the same as single- and
-// double-quoted ones. A value that starts with `Bearer` followed by a space,
-// quote, or backtick is left for the bearer rule below, which masks the
-// token while keeping the scheme keyword visible; a `Bearer`-prefixed value
-// with no such delimiter (e.g. `Bearer-x`, `Bearer.x`) is masked here instead.
+// double-quoted ones.
+
+// Field names whose value is a credential, shared by both value rules below so
+// the two can never cover different key sets.
+const SECRET_KEY_NAMES =
+  'api[_-]?key|apikey|private[_-]?key|access[_-]?key|access[_-]?token|token|secret|credentials?|password|passwd|pwd|authorization|sig|signature|sas|assertion';
+
+// HTTP authorization schemes that place the credential after the scheme
+// keyword. Any scheme here keeps its keyword readable and loses its credential.
+const AUTH_SCHEMES = 'Bearer|Basic|Token|Digest|ApiKey|SSWS|AWS4-HMAC-SHA256';
+
 const USERINFO = /:\/\/[^@/\s]+@/g;
-const SECRET_VALUE =
-  /((?:api[_-]?key|apikey|token|secret|password|passwd|authorization|access[_-]?key|access[_-]?token|sig|signature|sas|assertion)['"`]?\s*[:=]\s*['"`]?)(?!Bearer[\s'"`])[^\s'"`&]+/gi;
+
+// `<field>: <value>`. A value that opens with a scheme keyword followed by a
+// space, quote, or backtick is left to AUTH_SCHEME_VALUE, which keeps the
+// keyword visible; a scheme-prefixed value with no such delimiter (`Bearer-x`,
+// `Bearer.x`) names no separate credential and is masked whole here.
+const SECRET_VALUE = new RegExp(
+  `((?:${SECRET_KEY_NAMES})['"\`]?\\s*[:=]\\s*['"\`]?)(?!(?:${AUTH_SCHEMES})[\\s'"\`])[^\\s'"\`&]+`,
+  'gi',
+);
+
+// `Authorization: <scheme> <credential>`. Anchored on the field name so an
+// ordinary sentence opening with a scheme word ("token bucket refill rate")
+// keeps its next word.
+const AUTH_SCHEME_VALUE = new RegExp(
+  `((?:${SECRET_KEY_NAMES})['"\`]?\\s*[:=]\\s*['"\`]?)(${AUTH_SCHEMES})\\s+[^\\s'"\`]+`,
+  'gi',
+);
+
+// A bearer token carrying no field name in front of it.
 const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+
+// Webhook endpoints whose URL path segments ARE the credential: anyone holding
+// the full path can post to the channel. The routing prefix stays readable and
+// everything after it is masked, in the stored URL and in the snippet alike.
+const WEBHOOK_SECRET_PATHS: readonly { hosts: readonly string[]; prefix: string }[] = [
+  { hosts: ['hooks.slack.com'], prefix: '/services/' },
+  {
+    hosts: ['discord.com', 'discordapp.com', 'ptb.discord.com', 'canary.discord.com'],
+    prefix: '/api/webhooks/',
+  },
+  { hosts: ['hooks.zapier.com'], prefix: '/hooks/' },
+  { hosts: ['outlook.office.com', 'outlook.office365.com'], prefix: '/webhook/' },
+];
+
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Built from WEBHOOK_SECRET_PATHS so the snippet rule and the URL rule can
+// never drift apart. The tail class mirrors URL_CANDIDATE's terminator set.
+const WEBHOOK_URL = new RegExp(
+  `(https?://(?:${WEBHOOK_SECRET_PATHS.flatMap((entry) =>
+    entry.hosts.map((host) => `${escapeRegExp(host)}${escapeRegExp(entry.prefix)}`),
+  ).join('|')}))[^\\s'"\`<>()[\\]{},;]+`,
+  'gi',
+);
+
+// Mask the credential-bearing tail of a known webhook path, or return the path
+// untouched when the host/prefix pair is not one of them.
+function maskWebhookPath(host: string, pathname: string): string {
+  for (const entry of WEBHOOK_SECRET_PATHS) {
+    if (entry.hosts.includes(host) && pathname.startsWith(entry.prefix)) {
+      return `${entry.prefix}${MASK}`;
+    }
+  }
+  return pathname;
+}
 
 const VENDORED_PATH = /(^|\/)(vendor|third_party|external)\//;
 
@@ -116,14 +177,17 @@ export function isVendoredPath(file: string): boolean {
 
 /**
  * Strip credentials and secret values out of one source line and cap it at
- * SNIPPET_MAX characters. `Authorization: Bearer <token>` keeps the scheme
- * keyword and masks the token.
+ * SNIPPET_MAX characters. `Authorization: <scheme> <credential>` keeps the
+ * scheme keyword and masks the credential; a webhook URL keeps its routing
+ * prefix and loses the path segments that authorize posting to it.
  */
 export function redactSnippet(line: string): string {
   return line
     .trim()
     .replace(USERINFO, '://')
+    .replace(WEBHOOK_URL, `$1${MASK}`)
     .replace(SECRET_VALUE, `$1${MASK}`)
+    .replace(AUTH_SCHEME_VALUE, `$1$2 ${MASK}`)
     .replace(BEARER_TOKEN, `Bearer ${MASK}`)
     .slice(0, SNIPPET_MAX);
 }
@@ -187,7 +251,8 @@ interface ParsedDestination {
 }
 
 // Normalize one raw URL candidate: collapse placeholder spans to `${var}`,
-// parse it, and rebuild it without userinfo, query, or fragment. Returns null
+// parse it, and rebuild it without userinfo, query, or fragment, masking the
+// credential-bearing tail of a known webhook path on the way. Returns null
 // for an unparseable candidate or a placeholder in the authority (a fully
 // dynamic host names no destination).
 function parseCandidate(candidate: string, scheme: string): ParsedDestination | null {
@@ -213,7 +278,8 @@ function parseCandidate(candidate: string, scheme: string): ParsedDestination | 
   if (host === '' || host.includes(VAR_SENTINEL)) return null;
 
   const authority = parsed.host.toLowerCase();
-  const url = `${transport}://${authority}${parsed.pathname}`.split(VAR_SENTINEL).join(VAR_TOKEN);
+  const path = maskWebhookPath(host, parsed.pathname);
+  const url = `${transport}://${authority}${path}`.split(VAR_SENTINEL).join(VAR_TOKEN);
 
   return {
     url,

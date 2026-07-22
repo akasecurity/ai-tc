@@ -401,5 +401,69 @@
         "line": 1
       }
     ]
+  },
+  {
+    "label": "a Slack webhook keeps its host and routing prefix but not the token segments",
+    "text": "const WEBHOOK = 'https://hooks.slack.com/services/EXAMPLE-WORKSPACE/EXAMPLE-CHANNEL/EXAMPLE-TOKEN-not-real';",
+    "expect": [
+      {
+        "url": "https://hooks.slack.com/services/••••",
+        "host": "hooks.slack.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1,
+        "snippet": "const WEBHOOK = 'https://hooks.slack.com/services/••••';"
+      }
+    ]
+  },
+  {
+    "label": "a Discord webhook keeps its host and routing prefix but not the id or token",
+    "text": "await fetch('https://discord.com/api/webhooks/000000000000000000/EXAMPLE-WEBHOOK-token-not-real', { method: 'POST' });",
+    "expect": [
+      {
+        "url": "https://discord.com/api/webhooks/••••",
+        "host": "discord.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1,
+        "snippet": "await fetch('https://discord.com/api/webhooks/••••', { method: 'POST' });"
+      }
+    ]
+  },
+  {
+    "label": "a Zapier catch hook keeps its host and routing prefix but not the hook path",
+    "text": "const Z = 'https://hooks.zapier.com/hooks/catch/000000/example-not-real/';",
+    "expect": [
+      {
+        "url": "https://hooks.zapier.com/hooks/••••",
+        "host": "hooks.zapier.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1,
+        "snippet": "const Z = 'https://hooks.zapier.com/hooks/••••';"
+      }
+    ]
+  },
+  {
+    "label": "a non-webhook path on a webhook host keeps every segment",
+    "text": "const me = 'https://discord.com/api/v10/users/@me';",
+    "expect": [
+      {
+        "url": "https://discord.com/api/v10/users/@me",
+        "host": "discord.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1,
+        "snippet": "const me = 'https://discord.com/api/v10/users/@me';"
+      }
+    ]
   }
 ]

@@ -11,10 +11,12 @@ export const BUDGET_MS = 100;
 
 // Two FIXED probe tiers, because the two failure modes need opposite inputs.
 //
-// Exponential backtracking blows up on SHORT input — 26 chars is already
-// seconds — so a long probe would hang the run instead of failing it. Each
-// unit is a near-miss run capped with a character that forces the match to
-// fail, which is what drives the backtracking.
+// Exponential backtracking blows up on SHORT input — 25 chars is already
+// well over the budget — so a longer probe would hang the run instead of
+// failing it (a single scan() cannot be interrupted mid-exec). Each unit is a
+// near-miss run capped with a character that forces the match to fail, which
+// is what drives the backtracking. The upper length stays low enough that even
+// the slowest CI runner finishes one scan in seconds, not tens of seconds.
 const EXPONENTIAL_UNITS = [
   'a',
   '0',
@@ -33,7 +35,7 @@ const EXPONENTIAL_UNITS = [
   '\t',
 ];
 export const EXPONENTIAL_PROBES = EXPONENTIAL_UNITS.flatMap((unit) =>
-  [24, 26].map((len) => unit.repeat(Math.ceil(len / unit.length)).slice(0, len) + '!'),
+  [23, 25].map((len) => unit.repeat(Math.ceil(len / unit.length)).slice(0, len) + '!'),
 );
 
 // Quadratic backtracking only shows up at scale — this is the tier that
@@ -98,7 +100,7 @@ function fuelChars(pattern: string): string[] {
 
 // Adversarial inputs derived from the pattern itself: `<prefix><fuel×N><term>`,
 // where `term` is a character the fuel class does not contain, forcing the
-// repeated group to fail and backtrack. Exponential-scale only (26/28 chars) —
+// repeated group to fail and backtrack. Exponential-scale only (23/25 chars) —
 // a long derived probe would false-positive on rules that are linear-but-slow
 // on a big input of their own alphabet.
 function derivedProbes(pattern: string): string[] {
@@ -109,7 +111,7 @@ function derivedProbes(pattern: string): string[] {
   for (const f of fuel) {
     for (const term of terminators) {
       if (term === f) continue;
-      for (const len of [26, 28]) probes.push(prefix + f.repeat(len) + term);
+      for (const len of [23, 25]) probes.push(prefix + f.repeat(len) + term);
     }
   }
   return probes;

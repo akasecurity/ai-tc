@@ -89,7 +89,13 @@ beforeEach(() => {
   rulesetFingerprint.mockResolvedValue('ruleset-v1');
   scanLedger.mockResolvedValue(new Map());
   recordScanned.mockResolvedValue(undefined);
-  recordProjectEgress.mockResolvedValue(undefined);
+  recordProjectEgress.mockResolvedValue({
+    destinations: 0,
+    endpoints: 0,
+    callSites: 0,
+    truncated: false,
+    droppedFiles: [],
+  });
   // No prior open at-rest findings by default — most tests don't care about
   // the resolver, so this keeps computeResolutions() a no-op (empty diff)
   // unless a test explicitly seeds a prior key.

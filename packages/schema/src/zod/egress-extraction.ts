@@ -114,6 +114,12 @@ export const EgressWriteSummary = z
     endpoints: z.number().int().nonnegative(),
     callSites: z.number().int().nonnegative(),
     truncated: z.boolean(),
+    /**
+     * Files the cap dropped whole. Their stored rows were left untouched, so a
+     * ledger-keeping caller must withhold their ledger entries and read them
+     * again next scan.
+     */
+    droppedFiles: z.array(z.string()).default([]),
   })
   .meta({ id: 'EgressWriteSummary' });
 export type EgressWriteSummary = z.infer<typeof EgressWriteSummary>;

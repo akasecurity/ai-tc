@@ -5,6 +5,7 @@ import type {
   ConfigScanRecord,
   DayActivity,
   DetectedFindingWithKey,
+  EgressWriteSummary,
   FindingView,
   HealthSummary,
   IngestEvent,
@@ -169,6 +170,11 @@ export interface DataGateway {
   // on failure rather than swallowing it: the caller pairs a failed write with
   // skipping its scan-ledger commit, so the next scan retries the same files
   // instead of treating them as already processed.
-  recordProjectEgress(input: RecordProjectEgressInput): Promise<void>;
+  //
+  // The summary comes back rather than being discarded because a write can
+  // succeed while still declining some of its input: `droppedFiles` names the
+  // files the per-write cap left unrecorded, and a ledger-keeping caller must
+  // withhold exactly those ledger entries or it will never read them again.
+  recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary>;
   close(): Promise<void>;
 }

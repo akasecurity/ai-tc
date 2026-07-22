@@ -423,11 +423,12 @@ async function scanDir(
   // skipped entirely, so the next scan re-reads these files and retries;
   // finding capture is idempotent by content hash, so re-running it is free.
   // Advancing the ledger past a failed write would hide the gap forever.
-  if (!(await commitEgress(gateway, egress))) {
+  const committed = await commitEgress(gateway, egress);
+  if (committed === null) {
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
 
-  await gateway.recordScanned(updates);
+  await gateway.recordScanned(ledgerable(updates, egress, committed));
   return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
 }
 
@@ -465,30 +466,55 @@ function scanManifests(
   }
 }
 
-// Write the run's egress. Returns false only when the write was attempted and
+// Write the run's egress. Returns null only when the write was attempted and
 // failed — the signal to skip this run's ledger commit. A disabled toggle or an
 // empty run is a success: nothing to record is not a failure, and freezing the
 // ledger on a deliberate skip would re-read the whole tree on every scan.
+//
+// On success it returns the project-relative files the write declined to
+// record (empty in the ordinary case). `projectId` is null because this
+// pipeline resolves no source project; the writer treats that as "inherit",
+// so passing null keeps whatever link the CLI pipeline already stored.
 async function commitEgress(
   gateway: DataGateway,
   egress: EgressAccumulator | null,
-): Promise<boolean> {
-  if (!egress) return true;
+): Promise<ReadonlySet<string> | null> {
+  if (!egress) return EMPTY_DROPPED;
   const { project, files, scannedFiles, deletedFiles } = egress;
-  if (scannedFiles.length === 0 && deletedFiles.length === 0 && files.length === 0) return true;
+  if (scannedFiles.length === 0 && deletedFiles.length === 0 && files.length === 0) {
+    return EMPTY_DROPPED;
+  }
 
   try {
-    await gateway.recordProjectEgress({
+    const summary = await gateway.recordProjectEgress({
       projectKey: project.projectKey,
       project: project.project,
       projectId: null,
       reconcile: { mode: 'ledger', scannedFiles, deletedFiles },
       hits: resolveEgress(files),
     });
-    return true;
+    return new Set(summary.droppedFiles);
   } catch {
-    return false;
+    return null;
   }
+}
+
+const EMPTY_DROPPED: ReadonlySet<string> = new Set<string>();
+
+// Hold back the ledger entries for files whose hits the egress write declined.
+// Ledgering a dropped file would tier-1 skip it on every later scan, so its
+// egress would never be written at all; withholding the entry costs one re-read
+// next scan and lets the project converge across runs.
+function ledgerable(
+  updates: readonly ScanLedgerEntry[],
+  egress: EgressAccumulator | null,
+  dropped: ReadonlySet<string>,
+): ScanLedgerEntry[] {
+  if (!egress || dropped.size === 0) return [...updates];
+  return updates.filter((entry) => {
+    const key = egressKey(egress.project.root, entry.path);
+    return key === null || !dropped.has(key);
+  });
 }
 
 export async function scanWorktree(

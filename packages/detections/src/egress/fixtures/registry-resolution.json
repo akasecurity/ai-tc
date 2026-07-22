@@ -205,6 +205,66 @@
       "label": "[2001:db8::1] (bracketed public IPv6 literal) is kind ip — URL authority form",
       "host": "[2001:db8::1]",
       "expect": { "kind": "ip", "trust": "ip", "name": "[2001:db8::1]", "category": "Unresolved host" }
+    },
+    {
+      "label": "febf::1 (top edge of fe80::/10 link-local) is excluded",
+      "host": "febf::1",
+      "expect": null
+    },
+    {
+      "label": "fdff::1 (top edge of fc00::/7 unique-local) is excluded",
+      "host": "fdff::1",
+      "expect": null
+    },
+    {
+      "label": "fec0::1 (just above fe80::/10) is kind ip, not excluded",
+      "host": "fec0::1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "fec0::1", "category": "Unresolved host" }
+    },
+    {
+      "label": "fe7f::1 (just below fe80::/10) is kind ip, not excluded",
+      "host": "fe7f::1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "fe7f::1", "category": "Unresolved host" }
+    },
+    {
+      "label": "2001:DB8::1 (uppercase, RFC-canonical documentation spelling) is kind ip",
+      "host": "2001:DB8::1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "2001:db8::1", "category": "Unresolved host" }
+    },
+    {
+      "label": "fe80::1%eth0 (zone-indexed link-local, bare form) is excluded",
+      "host": "fe80::1%eth0",
+      "expect": null
+    },
+    {
+      "label": "[fe80::1%eth0] (zone-indexed link-local, URL authority form) is excluded",
+      "host": "[fe80::1%eth0]",
+      "expect": null
+    },
+    {
+      "label": "fc::1 (abbreviated group 00fc::, not fc00::/7) is kind ip, not excluded",
+      "host": "fc::1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "fc::1", "category": "Unresolved host" }
+    },
+    {
+      "label": "fe8::1 (abbreviated group 0fe8::, not fe80::/10) is kind ip, not excluded",
+      "host": "fe8::1",
+      "expect": { "kind": "ip", "trust": "ip", "name": "fe8::1", "category": "Unresolved host" }
+    },
+    {
+      "label": "::ffff:127.0.0.1 (IPv4-mapped loopback) is excluded",
+      "host": "::ffff:127.0.0.1",
+      "expect": null
+    },
+    {
+      "label": "::ffff:8.8.8.8 (IPv4-mapped public address) is kind ip",
+      "host": "::ffff:8.8.8.8",
+      "expect": { "kind": "ip", "trust": "ip", "name": "::ffff:8.8.8.8", "category": "Unresolved host" }
+    },
+    {
+      "label": "db:8080 (colon-bearing, fails every IP-literal check) resolves external, never the trusted single-label internal fallback",
+      "host": "db:8080",
+      "expect": { "kind": "external", "trust": "unverified", "name": "db:8080", "category": "External domain" }
     }
   ],
   "sdks": [

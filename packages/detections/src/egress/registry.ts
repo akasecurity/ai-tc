@@ -618,21 +618,28 @@ export function isPrivateOrReservedIPv4(host: string): boolean {
 }
 
 // Strips the brackets a URL authority wraps an IPv6 literal in ('[::1]' ->
-// '::1'); any other string passes through unchanged.
-function stripIPv6Brackets(host: string): string {
-  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+// '::1'), strips a zone index ('fe80::1%eth0' -> 'fe80::1' — RFC 4007 scopes
+// the zone to a local interface name, so it carries no address-range
+// information), and lowercases hex digits. Any other string is only
+// lowercased.
+function normalizeIPv6Literal(host: string): string {
+  const unbracketed = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  const zoneIndex = unbracketed.indexOf('%');
+  const unzoned = zoneIndex === -1 ? unbracketed : unbracketed.slice(0, zoneIndex);
+  return unzoned.toLowerCase();
 }
 
 const IPV6_HEX_GROUP = /^[0-9a-f]{1,4}$/;
 
 /**
- * True when `host` (optionally bracketed, e.g. '[::1]') is a syntactically
- * valid IPv6 literal: colon-separated hex groups, with at most one '::' run
- * standing in for one or more omitted all-zero groups, resolving to exactly
- * 8 groups.
+ * True when `host` — optionally bracketed (e.g. '[::1]'), optionally
+ * zone-indexed (e.g. 'fe80::1%eth0'), and case-insensitive — is a
+ * syntactically valid IPv6 literal: colon-separated hex groups, with at most
+ * one '::' run standing in for one or more omitted all-zero groups,
+ * resolving to exactly 8 groups.
  */
 export function isValidIPv6(host: string): boolean {
-  const h = stripIPv6Brackets(host);
+  const h = normalizeIPv6Literal(host);
   if (!h.includes(':')) return false;
 
   const collapsedHalves = h.split('::');
@@ -646,25 +653,44 @@ export function isValidIPv6(host: string): boolean {
 }
 
 /**
- * True when a valid IPv6 literal (optionally bracketed) falls in the
- * loopback (::1), link-local (fe80::/10), or unique-local (fc00::/7) range.
- * Callers must confirm `isValidIPv6` first.
+ * True when a valid IPv6 literal (optionally bracketed, optionally
+ * zone-indexed) falls in the loopback (::1), link-local (fe80::/10), or
+ * unique-local (fc00::/7) range. The leading group is zero-padded to 4
+ * digits before the range test, so an abbreviated group such as 'fc'
+ * (address 00fc::, not fc00::) is not mistaken for membership. Callers must
+ * confirm `isValidIPv6` first.
  */
 export function isPrivateOrReservedIPv6(host: string): boolean {
-  const h = stripIPv6Brackets(host).toLowerCase();
+  const h = normalizeIPv6Literal(host);
   if (h === '::1') return true;
-  const firstGroup = h.split(':')[0] ?? '';
+  const firstGroup = (h.split(':')[0] ?? '').padStart(4, '0');
   if (firstGroup.startsWith('fc') || firstGroup.startsWith('fd')) return true;
   if (firstGroup.startsWith('fe') && '89ab'.includes(firstGroup[2] ?? '')) return true;
   return false;
 }
 
+const IPV4_MAPPED_IPV6 = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/;
+
+// Extracts the embedded dotted-quad from an IPv4-mapped IPv6 literal
+// ('::ffff:127.0.0.1' -> '127.0.0.1', optionally bracketed/zone-indexed);
+// null for any other string. The caller still validates the extracted
+// address with `isValidIPv4` — a syntax match here does not imply the
+// embedded octets are in range.
+function ipv4MappedAddress(host: string): string | null {
+  const match = IPV4_MAPPED_IPV6.exec(normalizeIPv6Literal(host));
+  return match?.[1] ?? null;
+}
+
 /**
  * Classify one host: registry match → provider/recognized; a public IPv4 or
- * IPv6 literal → ip/ip; an internal signal (TLD, single label, or a
- * caller-supplied internalDomain) → internal/internal; anything else public
- * → external/unverified. Excluded hosts (loopback/private/reserved,
- * schema-identifier hosts) resolve to `null`.
+ * IPv6 literal (including an IPv4-mapped IPv6 literal, e.g. '::ffff:8.8.8.8')
+ * → ip/ip; an internal signal (a single-label host with no colon, an
+ * internal TLD, or a caller-supplied internalDomain) → internal/internal;
+ * anything else public → external/unverified. Excluded hosts
+ * (loopback/private/reserved, schema-identifier hosts) resolve to `null`. A
+ * host containing ':' never qualifies for the single-label internal rule, so
+ * an IPv6-shaped literal that fails every literal check above still resolves
+ * external/unverified — never the trusted-internal fallback.
  */
 export function resolveHost(
   host: string,
@@ -679,6 +705,12 @@ export function resolveHost(
 
   if (isValidIPv6(h)) {
     if (isPrivateOrReservedIPv6(h)) return null;
+    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+  }
+
+  const mappedIPv4 = ipv4MappedAddress(h);
+  if (mappedIPv4 !== null && isValidIPv4(mappedIPv4)) {
+    if (isPrivateOrReservedIPv4(mappedIPv4)) return null;
     return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
   }
 
@@ -699,7 +731,7 @@ export function resolveHost(
 
   const internalDomains = opts?.internalDomains ?? [];
   const isInternal =
-    !h.includes('.') ||
+    (!h.includes('.') && !h.includes(':')) ||
     INTERNAL_TLDS.some((tld) => hostMatchesSuffix(h, tld)) ||
     internalDomains.some((domain) => hostMatchesSuffix(h, domain.toLowerCase()));
   if (isInternal) {

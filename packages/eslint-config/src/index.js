@@ -37,4 +37,33 @@ export const base = tseslint.config(
   prettier,
 );
 
+// OSS/enterprise dependency wall (see CLAUDE.md "Package dependency rules"):
+// packages that ship in the public oss/ tree must never import enterprise-only
+// modules — @akasecurity/client (the tenant-aware HTTP client), drizzle-orm and
+// @akasecurity/schema-enterprise (the Postgres/tenancy layer). Apply this to
+// every OSS package except the plugin, which is the documented exception
+// allowed to use @akasecurity/client to sync to a backend when attached.
+const ENTERPRISE_IMPORT_MESSAGE =
+  'OSS packages must never import enterprise-only modules (this keeps tenancy/auth/Postgres code out of the public oss/ tree). See CLAUDE.md "Package dependency rules".';
+
+/** @type {import('typescript-eslint').ConfigArray} */
+export const noEnterpriseImports = tseslint.config({
+  rules: {
+    'no-restricted-imports': [
+      'error',
+      {
+        paths: [
+          { name: '@akasecurity/client', message: ENTERPRISE_IMPORT_MESSAGE },
+          { name: 'drizzle-orm', message: ENTERPRISE_IMPORT_MESSAGE },
+          { name: '@akasecurity/schema-enterprise', message: ENTERPRISE_IMPORT_MESSAGE },
+        ],
+        patterns: [
+          { group: ['drizzle-orm/*'], message: ENTERPRISE_IMPORT_MESSAGE },
+          { group: ['@akasecurity/schema-enterprise/*'], message: ENTERPRISE_IMPORT_MESSAGE },
+        ],
+      },
+    ],
+  },
+});
+
 export default base;

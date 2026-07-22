@@ -85,6 +85,11 @@ const HOOKS: readonly HookCase[] = [
       }),
   },
   {
+    // Unlike the other four hooks, stop.ts never opens the store in-process —
+    // it only triggers a detached, unref'd reconcile.js worker. Its two
+    // store-condition rows below still verify the PARENT process fails open
+    // (which it does unconditionally), not that a corrupt/read-only store is
+    // observed synchronously.
     name: 'stop',
     validPayload: (home) => {
       const cwd = projectDir(home);

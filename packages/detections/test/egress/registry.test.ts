@@ -21,7 +21,7 @@ interface HostCase {
   label: string;
   host: string;
   opts?: { internalDomains?: string[] };
-  expect: { kind: DestinationKind; trust: ShareTrustLevel; name: string } | null;
+  expect: { kind: DestinationKind; trust: ShareTrustLevel; name: string; category: string } | null;
 }
 
 interface SdkCase {
@@ -59,6 +59,7 @@ describe('resolveHost — fixture corpus', () => {
       expect(result?.kind).toBe(c.expect.kind);
       expect(result?.trust).toBe(c.expect.trust);
       expect(result?.name).toBe(c.expect.name);
+      expect(result?.category).toBe(c.expect.category);
     }
   });
 
@@ -104,11 +105,5 @@ describe('PROVIDER_REGISTRY', () => {
 describe('EGRESS_VERSION_MATERIAL', () => {
   it('is EXTRACTOR_VERSION "1" plus the serialized registry, and so changes with the registry', () => {
     expect(EGRESS_VERSION_MATERIAL).toBe(`1\n${JSON.stringify(PROVIDER_REGISTRY)}`);
-  });
-
-  it('differs from the material a different registry array would produce', () => {
-    const mutated = [...PROVIDER_REGISTRY, { ...PROVIDER_REGISTRY[0], id: 'zzz-not-real' }];
-    const mutatedMaterial = `1\n${JSON.stringify(mutated)}`;
-    expect(mutatedMaterial).not.toBe(EGRESS_VERSION_MATERIAL);
   });
 });

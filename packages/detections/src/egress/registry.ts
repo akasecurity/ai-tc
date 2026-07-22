@@ -617,12 +617,54 @@ export function isPrivateOrReservedIPv4(host: string): boolean {
   return false;
 }
 
+// Strips the brackets a URL authority wraps an IPv6 literal in ('[::1]' ->
+// '::1'); any other string passes through unchanged.
+function stripIPv6Brackets(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+const IPV6_HEX_GROUP = /^[0-9a-f]{1,4}$/;
+
 /**
- * Classify one host: registry match → provider/recognized; a public IPv4
- * literal → ip/ip; an internal signal (TLD, single label, or a caller-supplied
- * internalDomain) → internal/internal; anything else public → external/
- * unverified. Excluded hosts (loopback/private/reserved, schema-identifier
- * hosts) resolve to `null`.
+ * True when `host` (optionally bracketed, e.g. '[::1]') is a syntactically
+ * valid IPv6 literal: colon-separated hex groups, with at most one '::' run
+ * standing in for one or more omitted all-zero groups, resolving to exactly
+ * 8 groups.
+ */
+export function isValidIPv6(host: string): boolean {
+  const h = stripIPv6Brackets(host);
+  if (!h.includes(':')) return false;
+
+  const collapsedHalves = h.split('::');
+  if (collapsedHalves.length > 2) return false;
+
+  const sides = collapsedHalves.length === 2 ? collapsedHalves : [h];
+  const groups = sides.flatMap((side) => (side === '' ? [] : side.split(':')));
+  if (!groups.every((g) => IPV6_HEX_GROUP.test(g))) return false;
+
+  return collapsedHalves.length === 2 ? groups.length <= 7 : groups.length === 8;
+}
+
+/**
+ * True when a valid IPv6 literal (optionally bracketed) falls in the
+ * loopback (::1), link-local (fe80::/10), or unique-local (fc00::/7) range.
+ * Callers must confirm `isValidIPv6` first.
+ */
+export function isPrivateOrReservedIPv6(host: string): boolean {
+  const h = stripIPv6Brackets(host).toLowerCase();
+  if (h === '::1') return true;
+  const firstGroup = h.split(':')[0] ?? '';
+  if (firstGroup.startsWith('fc') || firstGroup.startsWith('fd')) return true;
+  if (firstGroup.startsWith('fe') && '89ab'.includes(firstGroup[2] ?? '')) return true;
+  return false;
+}
+
+/**
+ * Classify one host: registry match → provider/recognized; a public IPv4 or
+ * IPv6 literal → ip/ip; an internal signal (TLD, single label, or a
+ * caller-supplied internalDomain) → internal/internal; anything else public
+ * → external/unverified. Excluded hosts (loopback/private/reserved,
+ * schema-identifier hosts) resolve to `null`.
  */
 export function resolveHost(
   host: string,
@@ -632,6 +674,11 @@ export function resolveHost(
 
   if (isValidIPv4(h)) {
     if (isPrivateOrReservedIPv4(h)) return null;
+    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+  }
+
+  if (isValidIPv6(h)) {
+    if (isPrivateOrReservedIPv6(h)) return null;
     return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
   }
 

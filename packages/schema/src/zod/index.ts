@@ -3,6 +3,7 @@ export * from './api.ts';
 export * from './config-inventory.ts';
 export * from './detection.ts';
 export * from './detection-build.ts';
+export * from './egress-extraction.ts';
 export * from './event.ts';
 export * from './exception.ts';
 export * from './finding.ts';

@@ -48,7 +48,7 @@ describe('SqliteSharesRepository over the sample dataset', () => {
       callSites: 8,
       needsReview: 2,
       insecure: 1,
-      byKind: { provider: 2, internal: 2, ip: 1 },
+      byKind: { provider: 2, internal: 2, external: 0, ip: 1 },
       byTrust: { recognized: 2, internal: 1, unverified: 1, ip: 1 },
     });
   });

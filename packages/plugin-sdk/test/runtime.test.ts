@@ -46,7 +46,13 @@ const PULLED_RULE: Rule = {
 };
 
 function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
-  return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'session-only' };
+  return {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy,
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+  };
 }
 
 function bundle(rules: Rule[] = []): PolicyBundle {

@@ -510,6 +510,7 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     runMode: 'standalone',
     policy: 'redact',
     historicalAccess: 'session-only',
+    dataSharesInPlace: true,
   };
 
   // Seed the installed pack (so an installed_packs row exists), then optionally

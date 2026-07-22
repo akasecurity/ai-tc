@@ -1,6 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
+import type {
+  DataClass,
+  DestinationKind,
+  DestinationNetwork,
+  EgressDecision,
+  HttpMethod,
+  ShareTrustLevel,
+  Transport,
+} from '@akasecurity/schema';
+
 import { normalizeHost, shareCallSiteId, shareDestinationId, shareEndpointId } from '../ids.ts';
 import { sampleProjectId } from './sample-ids.ts';
 
@@ -22,23 +32,23 @@ interface SeedSite {
   projectId?: string | null;
 }
 interface SeedEndpoint {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-  transport: 'https' | 'http' | 'sftp' | 'grpc' | 'smtp';
+  method: HttpMethod;
+  transport: Transport;
   url: string;
   template?: boolean;
-  dataClass: 'secrets' | 'pii' | 'customer' | 'source' | 'telemetry' | 'logs' | 'metrics' | 'none';
+  dataClass: DataClass;
   lastSeenMinAgo: number;
   sites: SeedSite[];
 }
 interface SeedDest {
-  kind: 'provider' | 'internal' | 'ip';
+  kind: DestinationKind;
   name: string;
   host: string;
   category: string;
-  trust: 'recognized' | 'internal' | 'unverified' | 'ip';
+  trust: ShareTrustLevel;
   note?: string | null;
-  network?: { port: number | null; geo: string | null; ptr: string | null } | null;
-  decision?: 'allow' | 'block';
+  network?: DestinationNetwork | null;
+  decision?: EgressDecision;
   lastSeenMinAgo: number;
   endpoints: SeedEndpoint[];
 }

@@ -26,3 +26,4 @@ plugins/claude-code/scripts/
 # Claude Code project config stays local — never ship agent-tooling config
 .claude/settings.json
 .claude/rules/
+.worktrees/

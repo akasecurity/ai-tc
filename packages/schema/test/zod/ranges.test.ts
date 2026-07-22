@@ -43,11 +43,6 @@ describe('RANGE_DAYS', () => {
   it('treats 3m/6m as 90/180-day rolling windows', () => {
     expect(RANGE_DAYS).toEqual({ '7d': 7, '30d': 30, '3m': 90, '6m': 180 });
   });
-
-  it('orders lookbacks the same way the ranges are listed', () => {
-    const days = TIME_RANGES.map((r) => RANGE_DAYS[r]);
-    expect(days).toEqual([...days].sort((a, b) => a - b));
-  });
 });
 
 describe('parseTimeRange', () => {

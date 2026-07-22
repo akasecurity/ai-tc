@@ -40,7 +40,11 @@ const AKAIGNORE_FILENAME = '.akaignore';
 // almost never worth scanning. Not an absolute invariant: a repo whose
 // first-party code genuinely lives in e.g. vendor/ can re-include it with a
 // `!vendor/` negation in .akaignore.
-const SKIP_DIRS = new Set([
+//
+// Exported so the manifest walk (./manifests.ts) skips the same trees as this
+// one — a dependency manifest under node_modules is another package's, not
+// this project's.
+export const SKIP_DIRS = new Set([
   ...COMMON_SKIP_DIRS,
   '.git',
   'dist',

@@ -115,6 +115,7 @@ describe('recordProjectEgress — git project', () => {
       endpoints: 2,
       callSites: 2,
       truncated: false,
+      droppedFiles: [],
     });
 
     const sites = storedSites(store);

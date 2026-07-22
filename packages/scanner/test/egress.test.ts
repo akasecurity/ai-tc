@@ -129,7 +129,13 @@ beforeEach(() => {
   openAtRestKeysForPath.mockResolvedValue([]);
   resolvedAtRestKeysForPath.mockResolvedValue([]);
   insertResolution.mockResolvedValue(undefined);
-  recordProjectEgress.mockResolvedValue(undefined);
+  recordProjectEgress.mockResolvedValue({
+    destinations: 0,
+    endpoints: 0,
+    callSites: 0,
+    truncated: false,
+    droppedFiles: [],
+  });
 
   scanLedger.mockImplementation((rulesetHash: string) =>
     Promise.resolve(
@@ -301,6 +307,46 @@ describe('scanWorktree — egress write failure ordering', () => {
     expect(recordProjectEgress).toHaveBeenCalledTimes(2);
     expect(scannedFilesOf(lastEgressInput())).toEqual(['src/pay.ts']);
     expect(recordScanned).toHaveBeenCalledTimes(1);
+  });
+
+  // A write can succeed while still declining part of its input. A file whose
+  // hits the cap dropped keeps its stored rows, so ledgering it would tier-1
+  // skip it on every later scan and its egress would never be written at all.
+  it('withholds the ledger entry for a file the write dropped, and re-reads it next scan', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/big.ts', STRIPE_CALL);
+    const config = configWith(true);
+
+    recordProjectEgress.mockResolvedValueOnce({
+      destinations: 1,
+      endpoints: 1,
+      callSites: 1,
+      truncated: true,
+      droppedFiles: ['src/big.ts'],
+    });
+
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    // The recorded file advances; the dropped one does not.
+    expect([...ledgerRows.keys()].map((p) => p.replace(`${repo}/`, ''))).toEqual(['src/pay.ts']);
+
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    // Second scan re-reads only the withheld file — the ledgered one tier-1 skips.
+    expect(recordProjectEgress).toHaveBeenCalledTimes(2);
+    expect(scannedFilesOf(lastEgressInput())).toEqual(['src/big.ts']);
+  });
+
+  it('advances the whole ledger batch when the write drops nothing', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/big.ts', STRIPE_CALL);
+
+    await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
+
+    expect([...ledgerRows.keys()].map((p) => p.replace(`${repo}/`, '')).sort()).toEqual([
+      'src/big.ts',
+      'src/pay.ts',
+    ]);
   });
 });
 

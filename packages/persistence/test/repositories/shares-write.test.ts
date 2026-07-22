@@ -125,6 +125,14 @@ function callSites(projectKey?: string): { projectKey: string; file: string; lin
   return rows as unknown as { projectKey: string; file: string; line: number }[];
 }
 
+function projectIds(projectKey: string): (string | null)[] {
+  return (
+    db
+      .prepare('SELECT project_id AS projectId FROM share_call_site WHERE project_key = ?')
+      .all(projectKey) as unknown as { projectId: string | null }[]
+  ).map((r) => r.projectId);
+}
+
 function hosts(): string[] {
   const rows = db.prepare('SELECT host FROM share_destination ORDER BY host').all();
   return (rows as unknown as { host: string }[]).map((r) => r.host);
@@ -173,7 +181,13 @@ describe('recordProjectEgress — fresh write', () => {
       }),
     ]);
 
-    expect(summary).toEqual({ destinations: 1, endpoints: 2, callSites: 2, truncated: false });
+    expect(summary).toEqual({
+      destinations: 1,
+      endpoints: 2,
+      callSites: 2,
+      truncated: false,
+      droppedFiles: [],
+    });
     expect(hosts()).toEqual(['api.stripe.com']);
     expect(urls()).toEqual([
       'https://api.stripe.com/v1/charges',
@@ -225,7 +239,13 @@ describe('recordProjectEgress — fresh write', () => {
 
   it('records nothing and reports zeroes for an empty hit list', () => {
     const summary = walk('git:alpha', []);
-    expect(summary).toEqual({ destinations: 0, endpoints: 0, callSites: 0, truncated: false });
+    expect(summary).toEqual({
+      destinations: 0,
+      endpoints: 0,
+      callSites: 0,
+      truncated: false,
+      droppedFiles: [],
+    });
     expect(hosts()).toEqual([]);
   });
 });
@@ -274,7 +294,13 @@ describe('recordProjectEgress — walk mode', () => {
 
     const summary = walk('git:alpha', [hit({ file: 'src/pay.ts', line: 12 })]);
 
-    expect(summary).toEqual({ destinations: 1, endpoints: 1, callSites: 1, truncated: false });
+    expect(summary).toEqual({
+      destinations: 1,
+      endpoints: 1,
+      callSites: 1,
+      truncated: false,
+      droppedFiles: [],
+    });
     expect(hosts()).toEqual(['api.stripe.com']);
     expect(urls()).toEqual(['https://api.stripe.com/v1/charges']);
     expect(callSites('git:alpha')).toEqual([
@@ -411,7 +437,13 @@ describe('recordProjectEgress — ledger mode', () => {
 
     const summary = ledger('git:alpha', [], [], []);
 
-    expect(summary).toEqual({ destinations: 2, endpoints: 2, callSites: 2, truncated: false });
+    expect(summary).toEqual({
+      destinations: 2,
+      endpoints: 2,
+      callSites: 2,
+      truncated: false,
+      droppedFiles: [],
+    });
     expect(callSites('git:alpha')).toEqual([
       { projectKey: 'git:alpha', file: 'huge.ts', line: 2 },
       { projectKey: 'git:alpha', file: 'vendor/dep.ts', line: 1 },
@@ -504,7 +536,13 @@ describe('recordProjectEgress — project isolation', () => {
 
     const summary = walk('git:alpha', []);
 
-    expect(summary).toEqual({ destinations: 0, endpoints: 0, callSites: 0, truncated: false });
+    expect(summary).toEqual({
+      destinations: 0,
+      endpoints: 0,
+      callSites: 0,
+      truncated: false,
+      droppedFiles: [],
+    });
     expect(callSites()).toEqual([{ projectKey: 'git:beta', file: 'src/b.ts', line: 2 }]);
     expect(hosts()).toEqual(['api.stripe.com']);
     expect(urls()).toEqual(['https://api.stripe.com/v1/charges']);
@@ -518,7 +556,13 @@ describe('recordProjectEgress — project isolation', () => {
 
     const summary = walk('git:alpha', [hit({ file: 'src/a.ts', line: 1 })]);
 
-    expect(summary).toEqual({ destinations: 1, endpoints: 1, callSites: 1, truncated: false });
+    expect(summary).toEqual({
+      destinations: 1,
+      endpoints: 1,
+      callSites: 1,
+      truncated: false,
+      droppedFiles: [],
+    });
   });
 
   it('two projects on the same file path keep separate call sites', () => {
@@ -635,6 +679,23 @@ describe('recordProjectEgress — payload refresh', () => {
     expect(row).toMatchObject({ projectId: 'p2', snippet: 'new', vendored: 1 });
     expect(callSites('git:alpha')).toHaveLength(1);
   });
+
+  // The CLI pipeline resolves a source project and supplies its id; the plugin
+  // scanner resolves none and passes null. Both write the same rows for the same
+  // repo, so a null must not erase the link on every alternating scan.
+  it('keeps a stored project id when the next write supplies none', () => {
+    walk('git:alpha', [hit({ file: 'a.ts', line: 1 })], '', 'proj-1');
+    ledger('git:alpha', [hit({ file: 'a.ts', line: 1 })], ['a.ts']);
+
+    expect(projectIds('git:alpha')).toEqual(['proj-1']);
+  });
+
+  it('still lets a later write replace one project id with another', () => {
+    walk('git:alpha', [hit({ file: 'a.ts', line: 1 })], '', 'proj-1');
+    walk('git:alpha', [hit({ file: 'a.ts', line: 1 })], '', 'proj-2');
+
+    expect(projectIds('git:alpha')).toEqual(['proj-2']);
+  });
 });
 
 // ─── Cap ─────────────────────────────────────────────────────────────────────
@@ -661,6 +722,57 @@ describe('recordProjectEgress — cap', () => {
       hit({ file: 'src/big.ts', line: i + 1 }),
     );
     expect(walk('git:alpha', many).truncated).toBe(false);
+  });
+
+  it('walk mode reports no dropped files — its cut lands mid-file by design', () => {
+    const many = Array.from({ length: MAX_EGRESS_CALL_SITES_PER_PROJECT + 1 }, (_, i) =>
+      hit({ file: 'src/big.ts', line: i + 1 }),
+    );
+    expect(walk('git:alpha', many).droppedFiles).toEqual([]);
+  });
+
+  // Ledger mode names the files it deletes and its caller ledgers them, so a
+  // mid-file cut would delete rows the write then declines to re-insert AND
+  // mark the file done. The cut lands on a file boundary and the dropped file
+  // is named, so its rows survive untouched and the caller can withhold it.
+  it('ledger mode cuts on a file boundary and names the files it dropped', () => {
+    const kept = ['src/f1.ts', 'src/f2.ts', 'src/f3.ts', 'src/f4.ts', 'src/f5.ts'];
+    const per = MAX_EGRESS_CALL_SITES_PER_PROJECT / kept.length;
+    const many = kept.flatMap((file) =>
+      Array.from({ length: per }, (_, i) => hit({ file, line: i + 1 })),
+    );
+    many.push(hit({ file: 'src/over.ts', line: 1 }));
+
+    const summary = ledger('git:alpha', many, [...kept, 'src/over.ts']);
+
+    expect(summary.truncated).toBe(true);
+    expect(summary.droppedFiles).toEqual(['src/over.ts']);
+    expect(summary.callSites).toBe(MAX_EGRESS_CALL_SITES_PER_PROJECT);
+    // Every kept file is stored whole — no file is left half-recorded.
+    for (const file of kept) {
+      expect(callSites('git:alpha').filter((c) => c.file === file)).toHaveLength(per);
+    }
+  });
+
+  it('leaves a dropped file the rows it already had instead of deleting them', () => {
+    ledger('git:alpha', [hit({ file: 'src/over.ts', line: 7 })], ['src/over.ts']);
+    expect(callSites('git:alpha')).toEqual([
+      { projectKey: 'git:alpha', file: 'src/over.ts', line: 7 },
+    ]);
+
+    const many = Array.from({ length: MAX_EGRESS_CALL_SITES_PER_PROJECT }, (_, i) =>
+      hit({ file: 'src/f1.ts', line: i + 1 }),
+    );
+    many.push(hit({ file: 'src/over.ts', line: 1 }));
+
+    const summary = ledger('git:alpha', many, ['src/f1.ts', 'src/over.ts']);
+
+    expect(summary.droppedFiles).toEqual(['src/over.ts']);
+    // The pre-existing row survives: the reconcile delete skipped the file it
+    // was not going to re-insert.
+    expect(callSites('git:alpha').filter((c) => c.file === 'src/over.ts')).toEqual([
+      { projectKey: 'git:alpha', file: 'src/over.ts', line: 7 },
+    ]);
   });
 });
 

@@ -70,8 +70,13 @@ export async function runScan(path: string): Promise<ScanResult> {
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
+  revalidatePath('/data-shares');
 
-  if (noPacksError !== undefined) return { ok: false, error: noPacksError };
+  // The walk and the egress write already ran — egress extraction does not
+  // depend on the ruleset — so the recorded destinations ride along with the
+  // pack-state error rather than being dropped.
+  if (noPacksError !== undefined)
+    return { ok: false, error: noPacksError, egress: egress ?? undefined };
 
   return {
     ok: true,

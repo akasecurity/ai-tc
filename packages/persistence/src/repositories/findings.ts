@@ -17,6 +17,7 @@ import {
   applyFindingFilters,
   buildFindingGroups,
   computeFindingFacets,
+  countInstancesByStatus,
   DEFAULT_GROUPED_FINDINGS_LIMIT,
   deriveFindingStatus,
   ENFORCEABLE_CATEGORIES,
@@ -42,9 +43,10 @@ const PREVIEW_INSTANCES_PER_GROUP = 200;
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
 // default ',' is what the aggregate queries below emit.
 const CONCAT_SEP = ',';
-// Separates the fields of one encoded deriveFindingStatus input tuple. Both this
-// and CONCAT_SEP are absent from the enum values being encoded (event.kind,
-// finding_resolution.status).
+// Separates the fields of one encoded deriveFindingStatus input tuple (and its
+// trailing instance count). Both this and CONCAT_SEP are absent from the enum
+// values being encoded (event.kind, finding_resolution.status) and from the
+// count digits.
 const TUPLE_SEP = '|';
 
 function splitConcat(value: string | null): string[] {
@@ -297,7 +299,9 @@ export class SqliteFindingsRepository
    * applies the requested filters, and sorts by severity then recency. Filtering
    * and faceting run in JS via the shared @akasecurity/schema helpers. `totals`
    * reflect the full filtered set; `items` is the requested
-   * page (default 50); no cursor (nextCursor is always null).
+   * page (default 50); no cursor (nextCursor is always null). Under a `status`
+   * filter, `totals.findings` counts only instances whose derived status was
+   * requested, and each item's instance preview is narrowed the same way.
    *
    * Two reads, neither of which materializes a row per finding:
    *   1. one aggregate row per rule_id, folding EVERY instance into the numbers
@@ -382,6 +386,7 @@ export class SqliteFindingsRepository
       severity: query.severity,
       providers: query.provider,
       actions: query.action,
+      statuses: query.status,
       subtype: query.subtype,
       q: query.q,
     };
@@ -390,13 +395,42 @@ export class SqliteFindingsRepository
     const facets = computeFindingFacets(allGroups, filterOpts);
     const sorted = sortFindingGroups(applyFindingFilters(allGroups, filterOpts));
 
+    // Under a status filter, `findings` counts only the instances whose DERIVED
+    // status was requested — a group folds to 'open' on the strength of a few
+    // open instances, and counting its whole tally would report instances the
+    // filter excluded. The per-status counts come from the aggregate's
+    // statusInputs; the whole-group instanceCount is the unfiltered total.
+    const statusFilter = query.status ?? [];
     const totals = {
-      findings: sorted.reduce((acc, g) => acc + g.instanceCount, 0),
+      findings: sorted.reduce((acc, g) => {
+        if (statusFilter.length === 0) return acc + g.instanceCount;
+        const agg = aggregates.get(g.id);
+        return (
+          acc +
+          (agg
+            ? (countInstancesByStatus(agg.statusInputs, statusFilter) ?? g.instanceCount)
+            : g.instanceCount)
+        );
+      }, 0),
       groups: sorted.length,
     };
 
     const limit = query.limit ?? DEFAULT_GROUPED_FINDINGS_LIMIT;
-    const items = sorted.slice(0, limit);
+    // Under a status filter, narrow each group's instance PREVIEW to the
+    // requested statuses so every rendered location matches the filter (the
+    // group-level folds still describe the whole group). The preview holds only
+    // the newest PREVIEW_INSTANCES_PER_GROUP rows, so it can end up EMPTY for a
+    // group the filter correctly kept — every matching instance may be older
+    // than the preview window; views render an explicit notice for that case.
+    const statusSet = statusFilter.length > 0 ? new Set<string>(statusFilter) : null;
+    const items = sorted.slice(0, limit).map((g) =>
+      statusSet
+        ? {
+            ...g,
+            instances: g.instances.filter((i) => i.status !== undefined && statusSet.has(i.status)),
+          }
+        : g,
+    );
 
     return Promise.resolve({
       totals,
@@ -412,22 +446,28 @@ export class SqliteFindingsRepository
    * buildFindingGroups cannot recover from a preview. Bounded by the number of
    * distinct rule_ids (the installed packs' rules), not by the store's size.
    *
-   * The per-instance sets ride back as group_concat lists of RAW DB values —
-   * source_tool, action_taken, and the (kind, has-key, latest-status) triples
-   * deriveFindingStatus consumes. Aggregating the status INPUTS rather than a
-   * status keeps the classifier itself in @akasecurity/schema, where
-   * severitySummary's SQL and this query can't drift apart on what 'resolved'
-   * means (see resolution-sql.ts). Each of those sets is bounded by an enum, so
+   * A single scan, folded in two levels: the inner SELECT groups by
+   * (rule_id, status tuple) so each (kind, has-key, latest-status) combination
+   * carries its instance count — countInstancesByStatus needs those counts for
+   * status-scoped totals — and the outer SELECT folds the tuples back to one
+   * row per rule. The per-instance sets ride back as group_concat lists of RAW
+   * DB values — source_tool, action_taken, and the tuples deriveFindingStatus
+   * consumes. Aggregating the status INPUTS rather than a status keeps the
+   * classifier itself in @akasecurity/schema, where severitySummary's SQL and
+   * this query can't drift apart on what 'resolved' means (see
+   * resolution-sql.ts). The concat-of-concats can repeat a value across
+   * tuples; the schema mappers dedupe, and each set is bounded by an enum, so
    * a group's row stays small however many findings it holds.
    *
    * `withSearchText` is the exception, and the one column here that does NOT
-   * stay small: the group's distinct repos/filePaths, whose size tracks how many
-   * distinct paths a rule fired across — for a rule hitting mostly-unique paths
-   * that is a string proportional to the store (~8MB over 200k distinct paths,
-   * and buildHaystack lowercases a second copy). It buys `q` the ability to
-   * match an instance outside the preview, which searching the preview alone
-   * would silently lose, so it is fetched only when the request actually
-   * carries a `q`.
+   * stay small: the group's per-tuple-distinct repos/filePaths, whose size
+   * tracks how many distinct paths a rule fired across — for a rule hitting
+   * mostly-unique paths that is a string proportional to the store (~8MB over
+   * 200k distinct paths, and buildHaystack lowercases a second copy). It buys
+   * `q` the ability to match an instance outside the preview, which searching
+   * the preview alone would silently lose, so it is fetched only when the
+   * request actually carries a `q`. (Substring matching is unaffected by a
+   * path repeating across tuples.)
    */
   private groupAggregates(
     withSearchText: boolean,
@@ -435,7 +475,7 @@ export class SqliteFindingsRepository
   ): Map<string, FindingGroupAggregate> {
     // Tool names ride as their display label ("via Bash") to mirror
     // buildHaystack — see its doc for why the bare name is not searched.
-    const searchTextColumns = withSearchText
+    const innerSearchColumns = withSearchText
       ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
            group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files,
            group_concat(DISTINCT 'via ' || json_extract(e.metadata, '$.toolName')) AS tool_names`
@@ -443,23 +483,33 @@ export class SqliteFindingsRepository
 
     const rows = this.db
       .prepare(
-        `SELECT f.rule_id AS rule_id,
-                count(*) AS instance_count,
-                max(e.occurred_at) AS latest_at,
-                group_concat(DISTINCT e.source_tool) AS source_tools,
-                group_concat(DISTINCT f.action_taken) AS actions_taken,
-                group_concat(DISTINCT (
-                  e.kind || '${TUPLE_SEP}' ||
-                  (CASE WHEN f.finding_key IS NULL THEN '' ELSE 'k' END) || '${TUPLE_SEP}' ||
-                  coalesce(latest.status, '')
-                )) AS status_inputs
-                ${searchTextColumns}
-           FROM findings f
-           JOIN events e ON e.id = f.event_id
-           LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
-             ON latest.finding_key = f.finding_key
-          ${scope.predicate}
-          GROUP BY f.rule_id`,
+        `SELECT rule_id,
+                sum(tuple_count) AS instance_count,
+                max(latest_at) AS latest_at,
+                group_concat(source_tools) AS source_tools,
+                group_concat(actions_taken) AS actions_taken,
+                group_concat(status_tuple || '${TUPLE_SEP}' || tuple_count) AS status_inputs,
+                group_concat(repos) AS repos,
+                group_concat(files) AS files,
+                group_concat(tool_names) AS tool_names
+           FROM (
+             SELECT f.rule_id AS rule_id,
+                    e.kind || '${TUPLE_SEP}' ||
+                      (CASE WHEN f.finding_key IS NULL THEN '' ELSE 'k' END) || '${TUPLE_SEP}' ||
+                      coalesce(latest.status, '') AS status_tuple,
+                    count(*) AS tuple_count,
+                    max(e.occurred_at) AS latest_at,
+                    group_concat(DISTINCT e.source_tool) AS source_tools,
+                    group_concat(DISTINCT f.action_taken) AS actions_taken
+                    ${innerSearchColumns}
+               FROM findings f
+               JOIN events e ON e.id = f.event_id
+               LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+                 ON latest.finding_key = f.finding_key
+              ${scope.predicate}
+              GROUP BY f.rule_id, status_tuple
+           )
+          GROUP BY rule_id`,
       )
       .all(scope.params) as unknown as FindingAggregateRowJoined[];
 
@@ -471,13 +521,15 @@ export class SqliteFindingsRepository
           sourceTools: splitConcat(r.source_tools),
           actionsTaken: splitConcat(r.actions_taken),
           statusInputs: splitConcat(r.status_inputs).map((tuple) => {
-            const [kind = '', keyMarker = '', latestStatus = ''] = tuple.split(TUPLE_SEP);
+            const [kind = '', keyMarker = '', latestStatus = '', count = ''] =
+              tuple.split(TUPLE_SEP);
             return {
               // deriveFindingStatus only distinguishes null from non-null here,
               // so the marker stands in for the key itself (never rendered).
               kind,
               findingKey: keyMarker === '' ? null : keyMarker,
               latestResolutionStatus: latestStatus === '' ? null : latestStatus,
+              count: Number(count),
             };
           }),
           latestDetectedAt: epochMillisToIso(r.latest_at),

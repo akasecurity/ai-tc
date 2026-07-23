@@ -434,7 +434,7 @@ export const shareDestination = sqliteTable(
   'share_destination',
   {
     id: text(COL.id).primaryKey(),
-    kind: text(COL.kind, { enum: ['provider', 'internal', 'ip'] }).notNull(),
+    kind: text(COL.kind, { enum: ['provider', 'internal', 'external', 'ip'] }).notNull(),
     name: text(COL.name).notNull(),
     host: text(COL.host).notNull(),
     category: text(COL.category).notNull(),
@@ -492,6 +492,11 @@ export const shareCallSite = sqliteTable(
       .notNull()
       .references(() => shareEndpoint.id),
     project: text(COL.project).notNull(),
+    // Stable per-project reconcile key ('git:<repo identity>' or
+    // 'path:<absolute root>'). `project` is a display name and never keys
+    // reconciliation. The default exists so the column can be added to stores
+    // that already hold rows; writers always supply it explicitly.
+    projectKey: text(COL.projectKey).notNull().default(''),
     file: text(COL.file).notNull(),
     line: integer(COL.line).notNull(),
     snippet: text(COL.snippet).notNull(),
@@ -507,7 +512,11 @@ export const shareCallSite = sqliteTable(
   },
   (t) => [
     index('idx_share_call_site_endpoint').on(t.endpointId),
-    uniqueIndex('uq_share_call_site').on(t.endpointId, t.project, t.file, t.line),
+    // Per-project reconcile, last-seen confirmation and totals all filter on
+    // project_key alone; uq_share_call_site leads with endpoint_id and cannot
+    // serve that seek. endpoint_id trails so those queries stay covering.
+    index('idx_share_call_site_project').on(t.projectKey, t.endpointId),
+    uniqueIndex('uq_share_call_site').on(t.endpointId, t.projectKey, t.file, t.line),
   ],
 );
 
@@ -516,9 +525,17 @@ export const egressDecisionOverride = sqliteTable(
   'egress_decision_override',
   {
     id: text(COL.id).primaryKey(),
-    destinationId: text(COL.destinationId)
-      .notNull()
-      .references(() => shareDestination.id),
+    // Nullable, ON DELETE SET NULL: pruning a destination clears this pointer
+    // instead of blocking the delete, so a host-keyed row outlives the
+    // destination it was made on.
+    destinationId: text(COL.destinationId).references(() => shareDestination.id, {
+      onDelete: 'set null',
+    }),
+    // The decision's host. It is what the read joins on, so a row survives its
+    // destination being pruned and re-attaches when the same host is detected
+    // again under a fresh id. NULL on rows written before the column existed,
+    // which are matched by destination_id instead.
+    host: text(COL.host),
     decision: text(COL.decision).notNull(),
     createdAt: integer(COL.createdAt)
       .notNull()
@@ -527,7 +544,14 @@ export const egressDecisionOverride = sqliteTable(
       .notNull()
       .$defaultFn(() => Date.now()),
   },
-  (t) => [uniqueIndex('uq_egress_decision_override').on(t.destinationId)],
+  (t) => [
+    uniqueIndex('uq_egress_decision_override').on(t.destinationId),
+    // PARTIAL on host IS NOT NULL: one decision per host, while any number of
+    // host-NULL rows coexist.
+    uniqueIndex('uq_egress_decision_override_host')
+      .on(t.host)
+      .where(sql`\`host\` IS NOT NULL`),
+  ],
 );
 
 // ─── Inventory API (asset model) — tenant-free local store ───────────────────

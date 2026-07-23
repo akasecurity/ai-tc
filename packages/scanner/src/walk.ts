@@ -11,6 +11,11 @@
 //                    gitignore syntax, hard skip — no read, no ledger entry,
 //                    no finding. A negation (`!vendor/`) also re-includes a
 //                    directory from the default SKIP_DIRS floor.
+//
+// The SKIP_DIRS/.akaignore discovery walk is exported as walkTree so every
+// caller that needs to find files under a root directory — walkSourceFiles
+// here and collectManifests (./manifests.ts) — shares one interpretation of
+// the on-disk ignore files instead of each re-implementing it.
 import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, relative, sep } from 'node:path';
 
@@ -40,7 +45,12 @@ const AKAIGNORE_FILENAME = '.akaignore';
 // almost never worth scanning. Not an absolute invariant: a repo whose
 // first-party code genuinely lives in e.g. vendor/ can re-include it with a
 // `!vendor/` negation in .akaignore.
-const SKIP_DIRS = new Set([
+//
+// Consulted by walkTree below, which every file-discovery walk in this
+// package — including the manifest walk (./manifests.ts) — goes through, so
+// a dependency manifest under node_modules is skipped as another package's,
+// not this project's, exactly like a source file would be.
+export const SKIP_DIRS = new Set([
   ...COMMON_SKIP_DIRS,
   '.git',
   'dist',
@@ -127,18 +137,35 @@ function evaluate(layers: IgnoreLayer[], absPath: string, isDir: boolean): Ignor
   return state;
 }
 
-// Lazily walk all source files under rootDir. Each file is read once and
-// yielded; callers stream through it to bound peak memory. Best-effort: any
-// unreadable entry is silently skipped so a permission error on one file never
-// aborts the whole scan.
-//
-// (If the walker ever scans non-source files like .env, the .gitignore
-// mark-don't-skip stance becomes even more load-bearing — gitignored config is
-// exactly where secrets live.)
-export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> {
-  const rootDir = opts.rootDir ?? process.cwd();
-  const extensions = opts.extensions ?? SOURCE_EXTENSIONS;
-  const maxBytes = opts.maxFileSizeBytes ?? DEFAULT_MAX_BYTES;
+/** One file surfaced by walkTree, before any caller-specific filtering. */
+export interface TreeFile {
+  path: string; // absolute
+  name: string; // basename
+  // True when trackGitignore was requested and the file sits under a
+  // .gitignore match. Always false when trackGitignore is off — no
+  // .gitignore file is even read in that mode.
+  gitignored: boolean;
+}
+
+export interface TreeWalkOptions {
+  // Host-supplied programmatic excludes, gitignore syntax, anchored at
+  // rootDir — the same outermost skip layer walkSourceFiles has always
+  // accepted (see WalkOptions.excludePatterns). On-disk .akaignore files are
+  // appended after it, so their negations win.
+  excludePatterns?: string[] | undefined;
+  // Also accumulate .gitignore layers per directory and report each file's
+  // gitignored status. Off by default: only walkSourceFiles needs the mark,
+  // so a caller that doesn't ask for it never pays for reading .gitignore.
+  trackGitignore?: boolean;
+}
+
+// Lazily discover every file under rootDir that survives the SKIP_DIRS floor
+// and any .akaignore hard-skip (including `!` negations) — the one
+// interpretation of those two things every walker in this package shares.
+// Best-effort: any unreadable directory is silently skipped so a permission
+// error never aborts the whole walk.
+export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generator<TreeFile> {
+  const trackGitignore = opts.trackGitignore ?? false;
 
   // Host-supplied excludePatterns form the OUTERMOST skip layer: on-disk
   // .akaignore files are appended after it, so their negations win.
@@ -155,7 +182,7 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
     markLayers: IgnoreLayer[],
     skipLayers: IgnoreLayer[],
     inIgnoredDir: boolean,
-  ): Generator<WalkedFile> {
+  ): Generator<TreeFile> {
     let dirents: Dirent[];
     try {
       dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
@@ -163,7 +190,8 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
       return;
     }
 
-    const markLayer = inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore');
+    const markLayer =
+      trackGitignore && !inIgnoredDir ? readIgnoreLayer(dir, '.gitignore') : undefined;
     const dirMarkLayers = markLayer ? [...markLayers, markLayer] : markLayers;
     const skipLayer = readIgnoreLayer(dir, AKAIGNORE_FILENAME);
     const dirSkipLayers = skipLayer ? [...skipLayers, skipLayer] : skipLayers;
@@ -179,60 +207,89 @@ export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> 
         if (skipState !== 'unignored' && (SKIP_DIRS.has(name) || skipState === 'ignored')) {
           continue;
         }
-        const dirIgnored = inIgnoredDir || evaluate(dirMarkLayers, fullPath, true) === 'ignored';
+        const dirIgnored =
+          trackGitignore && (inIgnoredDir || evaluate(dirMarkLayers, fullPath, true) === 'ignored');
         yield* visit(fullPath, dirMarkLayers, dirSkipLayers, dirIgnored);
         continue;
       }
 
       if (!entry.isFile()) continue;
 
-      // extname handles dotfiles (.eslintrc → '') and extension-less names
-      // (Makefile → '') — both fall out at the allowlist check.
-      const ext = extname(name);
-      if (!extensions.has(ext)) continue;
-
       // .akaignore skip — before stat/read, so an excluded file costs nothing.
+      // Applies uniformly to every file this walk discovers; extension or
+      // basename filtering is entirely the caller's job.
       if (evaluate(dirSkipLayers, fullPath, false) === 'ignored') continue;
 
-      let size: number;
-      let mtime: Date;
-      try {
-        const st = statSync(fullPath);
-        size = st.size;
-        mtime = st.mtime;
-      } catch {
-        continue;
-      }
-
-      if (size > maxBytes) continue;
-
-      const meta: WalkedFileMeta = {
-        path: fullPath,
-        // Posix-separated like every stored relative path (and the ignore
-        // matching above) — native separators must not leak into the contract.
-        relativePath: relative(rootDir, fullPath).split(sep).join('/'),
-        mtime: mtime.toISOString(),
-        size,
-        gitignored: inIgnoredDir || evaluate(dirMarkLayers, fullPath, false) === 'ignored',
-      };
-      if (opts.shouldRead && !opts.shouldRead(meta)) continue;
-
-      let content: string;
-      try {
-        content = readFileSync(fullPath, 'utf8');
-      } catch {
-        continue;
-      }
-
       yield {
-        path: meta.path,
-        relativePath: meta.relativePath,
-        content,
-        mtime: meta.mtime,
-        gitignored: meta.gitignored,
+        path: fullPath,
+        name,
+        gitignored:
+          trackGitignore &&
+          (inIgnoredDir || evaluate(dirMarkLayers, fullPath, false) === 'ignored'),
       };
     }
   }
 
   yield* visit(rootDir, [], rootSkipLayers, false);
+}
+
+// Lazily walk all source files under rootDir. Each file is read once and
+// yielded; callers stream through it to bound peak memory.
+//
+// (If the walker ever scans non-source files like .env, the .gitignore
+// mark-don't-skip stance becomes even more load-bearing — gitignored config is
+// exactly where secrets live.)
+export function* walkSourceFiles(opts: WalkOptions = {}): Generator<WalkedFile> {
+  const rootDir = opts.rootDir ?? process.cwd();
+  const extensions = opts.extensions ?? SOURCE_EXTENSIONS;
+  const maxBytes = opts.maxFileSizeBytes ?? DEFAULT_MAX_BYTES;
+
+  for (const file of walkTree(rootDir, {
+    excludePatterns: opts.excludePatterns,
+    trackGitignore: true,
+  })) {
+    // extname handles dotfiles (.eslintrc → '') and extension-less names
+    // (Makefile → '') — both fall out at the allowlist check.
+    const ext = extname(file.name);
+    if (!extensions.has(ext)) continue;
+
+    let size: number;
+    let mtime: Date;
+    try {
+      const st = statSync(file.path);
+      size = st.size;
+      mtime = st.mtime;
+    } catch {
+      continue;
+    }
+
+    if (size > maxBytes) continue;
+
+    const meta: WalkedFileMeta = {
+      path: file.path,
+      // Posix-separated like every stored relative path (and the ignore
+      // matching inside walkTree) — native separators must not leak into the
+      // contract.
+      relativePath: relative(rootDir, file.path).split(sep).join('/'),
+      mtime: mtime.toISOString(),
+      size,
+      gitignored: file.gitignored,
+    };
+    if (opts.shouldRead && !opts.shouldRead(meta)) continue;
+
+    let content: string;
+    try {
+      content = readFileSync(file.path, 'utf8');
+    } catch {
+      continue;
+    }
+
+    yield {
+      path: meta.path,
+      relativePath: meta.relativePath,
+      content,
+      mtime: meta.mtime,
+      gitignored: meta.gitignored,
+    };
+  }
 }

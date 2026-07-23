@@ -43,6 +43,7 @@ function config(dataDir: string): PluginConfig {
       runMode: 'standalone',
       policy: 'redact',
       historicalAccess: 'session-only',
+      dataSharesInPlace: true,
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

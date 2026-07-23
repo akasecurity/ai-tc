@@ -116,6 +116,7 @@ export const COL = {
   dataClass: 'data_class',
   endpointId: 'endpoint_id',
   project: 'project',
+  projectKey: 'project_key',
   file: 'file',
   line: 'line',
   snippet: 'snippet',

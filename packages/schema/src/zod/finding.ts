@@ -236,8 +236,10 @@ export const FindingFacets = z
     subtype: z.array(FindingFacetItem),
     provider: z.array(FindingFacetItem),
     action: z.array(FindingFacetItem),
-    // Counts by the group's derived status; groups with no status (legacy rows
-    // that predate the resolution feature) are counted under no value.
+    // Counts by the group's derived status. The SQLite store derives a status
+    // for every instance, so every group lands in a bucket; a status-less
+    // group (possible only for callers whose rows carry no statuses) is
+    // counted under no value.
     status: z.array(FindingFacetItem),
   })
   .meta({ id: 'FindingFacets' });

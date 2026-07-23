@@ -71,4 +71,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0010_events_session_expression_index',
     sql: "-- Custom migration: partial expression index for session-scoped finding reads.\n--\n-- sessionFindingsCount, the session-scoped listGroupedFindings paths, and the\n-- insert-time session dedup all filter live-capture events by\n--   json_extract(e.metadata, '$.sessionId') = :sessionId\n-- — previously a full findings-join scan with a JSON parse per row. The\n-- IS NOT NULL predicate keeps the index to session-stamped events only (an\n-- equality probe implies non-null, so SQLite still uses it).\nCREATE INDEX `idx_events_session_id` ON `events` (json_extract(`metadata`, '$.sessionId')) WHERE json_extract(`metadata`, '$.sessionId') IS NOT NULL;\n",
   },
+  {
+    tag: '0011_chunky_glorian',
+    sql: 'ALTER TABLE `inspection_findings` ADD `finding_key` text;--> statement-breakpoint\nALTER TABLE `inspection_findings` ADD `first_detected_at` integer;--> statement-breakpoint\nCREATE UNIQUE INDEX `uq_inspection_findings_key` ON `inspection_findings` (`finding_key`);',
+  },
 ];

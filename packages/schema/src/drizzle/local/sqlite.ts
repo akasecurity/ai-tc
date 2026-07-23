@@ -406,8 +406,20 @@ export const inspectionFindings = sqliteTable(
     maskedMatch: text(COL.maskedMatch).notNull(),
     actionTaken: text(COL.actionTaken).notNull(),
     confidence: real(COL.confidence).notNull(),
+    // Stable, content-addressed key correlating a finding across re-scans, mirroring
+    // findings.findingKey. Nullable and UNIQUE (not just indexed): SQLite never
+    // equates two NULLs in a unique index, so legacy/in-flight NULL rows coexist
+    // freely. Not yet populated — no writer sets it.
+    findingKey: text(COL.findingKey),
+    // Preserved first-detection time (epoch millis), mirroring
+    // findings.firstDetectedAt. Nullable — added via a plain ADD COLUMN with no
+    // backfill. Not yet populated — no writer sets it.
+    firstDetectedAt: integer(COL.firstDetectedAt),
   },
-  (t) => [index('idx_inspection_findings_event').on(t.auditEventId)],
+  (t) => [
+    index('idx_inspection_findings_event').on(t.auditEventId),
+    uniqueIndex('uq_inspection_findings_key').on(t.findingKey),
+  ],
 );
 
 // ─── Data Shares (outbound egress) — tenant-free local mirror ────────────────

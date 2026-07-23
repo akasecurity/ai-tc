@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  captureId,
   classifiedDataId,
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
   llmCallId,
   normalizeHost,
+  promptId,
   shareCallSiteId,
   shareDestinationId,
   shareEndpointId,
@@ -107,6 +109,53 @@ describe('llmCallId (deterministic transcript-row id)', () => {
   it('distinct sessions get distinct ids for the same message id', () => {
     expect(llmCallId('sess_abc123', 'msg_01HZXYZ')).not.toBe(
       llmCallId('sess_other', 'msg_01HZXYZ'),
+    );
+  });
+});
+
+// `promptId` is the run-grouping key the tool_call/llm_call attribute bags
+// reference as `run_key` — content-addressed on (session, transcript promptUuid)
+// so every leaf spawned by the same user turn resolves to the same key.
+describe('promptId (run-grouping key)', () => {
+  it('is stable / deterministic for the same (session, promptUuid)', () => {
+    const id = promptId('sess_abc123', 'e7f1a2b3-uuid-turn-1');
+    expect(id).toBe('ac7c33f6b1ab5c75a093798e1df5a596daeda2517410d43194d30258f2acfeeb');
+    expect(promptId('sess_abc123', 'e7f1a2b3-uuid-turn-1')).toBe(id);
+  });
+
+  it('distinct sessions get distinct ids for the same promptUuid', () => {
+    expect(promptId('sess_other', 'e7f1a2b3-uuid-turn-1')).toBe(
+      '8edeec77eb6f07eab4da4842d3d5d135706ce4cec26389d79f28516c80bdfeaa',
+    );
+  });
+
+  it('distinct promptUuids within a session get distinct ids', () => {
+    expect(promptId('sess_abc123', 'different-uuid')).toBe(
+      '5e5cd041a99ef68efca87e856926c5b8b3367aabc1ffbeec2915bb7bff66e4e6',
+    );
+  });
+});
+
+// `captureId` content-addresses a capture on its own text hash, scoped to the
+// owning session so identical content in two sessions never collapses onto one
+// row. A `null` session (a capture taken outside any harness session) folds
+// onto a fixed sentinel instead of shortening the join.
+describe('captureId (content-addressed, session-scoped)', () => {
+  it('is stable / deterministic for the same (session, contentHash)', () => {
+    const id = captureId('sess_abc123', 'contenthash123');
+    expect(id).toBe('ea59d6af9254316e6ecde67786230b0ca0d2f6f7434bdaf4261c2d2a786e0502');
+    expect(captureId('sess_abc123', 'contenthash123')).toBe(id);
+  });
+
+  it('a null session folds onto the fixed sentinel rather than being dropped', () => {
+    expect(captureId(null, 'contenthash123')).toBe(
+      '36331fde9271bda6dfd25c812eab2a6b3624069ccfd2ed8a7f2df465edc2e099',
+    );
+  });
+
+  it('a different content hash yields a different id', () => {
+    expect(captureId('sess_abc123', 'contenthash456')).toBe(
+      'd11a7703f7bd6c8f7b9494aee3447f940adab9d8a0028ab8ac2cc80bbf2d6555',
     );
   });
 });

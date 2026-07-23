@@ -8,12 +8,14 @@ export {
   rotateFingerprintKey,
 } from './fingerprint.ts';
 export {
+  captureId,
   classifiedDataId,
   inspectionDefinitionId,
   inspectionFindingId,
   inventoryId,
   llmCallId,
   normalizeHost,
+  promptId,
   shareCallSiteId,
   shareDestinationId,
   shareEndpointId,

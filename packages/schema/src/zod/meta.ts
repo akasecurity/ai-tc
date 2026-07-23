@@ -252,6 +252,48 @@ export const ToolCallAttributes = z
   .catchall(z.unknown());
 export type ToolCallAttributes = z.infer<typeof ToolCallAttributes>;
 
+// The attribute bag a capture (prompt / response / code_change / tool_use) rides
+// as an `audit_events` row. Mirrors the `ToolCallAttributes` style — every field
+// `.optional()`, `.catchall(z.unknown())`, and NO `.meta({ id })` (a validated
+// bag, not a routed shape; an orphan id would leak into the OpenAPI client, the
+// local.ts gotcha). `session_id` is deliberately NOT here: a capture's owning
+// session is the row's `root_session_id`/`parent_id` FK, not an attribute — the
+// same reason `LlmCallInput`/`ToolCallInput` carry `sessionId` as a top-level
+// field rather than in their bags.
+export const CaptureAttributes = z
+  .object({
+    // The harness/tool that produced the capture (`claude-code`, `cli`, …). A
+    // column on the legacy `events` table; here it rides the bag because a
+    // capture-typed audit row has no equivalent column of its own.
+    source_tool: z.string().optional(),
+    file_path: z.string().optional(),
+    repo: z.string().optional(),
+    // The host tool whose input/output was scanned (e.g. 'Bash', 'WebFetch') —
+    // gives a non-file capture a display location ("via Bash") when file_path
+    // is absent. The tool NAME only, never its arguments/output.
+    tool_name: z.string().optional(),
+    // Presence-only provenance flag: set when the file is excluded by the
+    // repo's .gitignore. Omitted (not false) for tracked files.
+    gitignored: z.boolean().optional(),
+    // Set ONLY when the capture is a COMPLETE file snapshot (a worktree scan
+    // reading from disk), never a partial fragment (a hook-captured edit).
+    whole_file: z.boolean().optional(),
+    // Distributed-tracing correlation: `correlation_id` ties the capture back to
+    // the request that produced it; `trace_id` is the originating span's W3C
+    // trace id when telemetry is enabled.
+    correlation_id: z.uuid().optional(),
+    trace_id: z
+      .string()
+      .regex(/^[0-9a-f]{32}$/)
+      .optional(),
+    // Ids of the detection exceptions that downgraded findings in this capture
+    // to 'allow' — the enforcement audit trail's link back to the grant that
+    // authorized the bypass.
+    exception_ids: z.array(z.guid()).optional(),
+  })
+  .catchall(z.unknown());
+export type CaptureAttributes = z.infer<typeof CaptureAttributes>;
+
 // One detected-secret hit to attach to a tool_call as an `inspection_finding`
 // (Layer 2b). Carries the rule IDENTITY (not a definition id) + the masked hit; the
 // content-addressed inspection_definition / classified_data / inspection_finding ids

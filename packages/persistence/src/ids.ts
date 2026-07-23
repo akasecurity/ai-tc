@@ -93,6 +93,32 @@ export function inspectionFindingId(
   );
 }
 
+// sha256(session_id + prompt_uuid): the run-grouping key the `tool_call` /
+// `llm_call` attribute bags reference as `run_key` — every leaf spawned by the
+// same user turn shares it. Content-addressed on the transcript's own per-turn
+// uuid (the natural key the reconciler already maps `parentUuid → promptId`
+// from) plus the session, so the same turn always resolves to the same key
+// across reconcile passes.
+export function promptId(sessionId: string, promptUuid: string): string {
+  return sha256Hex(canonicalIdentity(['audit_event_prompt', sessionId, promptUuid]));
+}
+
+// Folded into `captureId`'s identity in place of a real session id. A capture
+// taken outside any harness session (e.g. a CLI worktree scan) still needs a
+// stable tuple length, so the missing component becomes this fixed literal
+// rather than being dropped from the join.
+const NO_SESSION = 'no_session';
+
+// sha256(session_id + content_hash): a capture (a prompt/response/code-change/
+// tool-use record) is content-addressed on the hash of its own text, scoped to
+// the session it belongs to so identical content captured in two different
+// sessions never collapses onto one row. `sessionId` is `null` for a
+// session-less capture, which folds onto the fixed `NO_SESSION` sentinel above
+// instead of shortening the join.
+export function captureId(sessionId: string | null, contentHash: string): string {
+  return sha256Hex(canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash]));
+}
+
 // Data Shares dimensions — id derivations for share destinations,
 // endpoints, and call-sites. Structurally stable (fixed prefixes, fixed
 // canonicalIdentity join order) so a future local-store egress scan derives

@@ -76,6 +76,7 @@ describe('StandaloneDataGateway', () => {
     // falls back to its compiled-in bundled packs.
     expect(bundle.rules).toEqual([]);
     expect(bundle.rulesComplete).toBeUndefined();
+    expect(bundle.ruleVersions).toBeUndefined();
     // One seeded policy per default category.
     const categories = bundle.policies
       .map((p) => ('category' in p.target ? p.target.category : null))
@@ -108,6 +109,8 @@ describe('StandaloneDataGateway', () => {
     const bundle = await gw.getPolicyBundle();
     expect(bundle.rulesComplete).toBe(true);
     expect(bundle.rules?.map((r) => r.id)).toEqual(['secrets/aws']);
+    // The installed pack's real version, not the rule file format constant.
+    expect(bundle.ruleVersions).toEqual({ 'secrets/aws': '2.0.0' });
     await gw.close();
   });
 

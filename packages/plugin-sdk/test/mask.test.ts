@@ -50,4 +50,18 @@ describe('scanText', () => {
     expect(masked).toBe('npm run build');
     expect(findings).toEqual([]);
   });
+
+  it('stamps the real installed pack version when one is known for the matched rule', () => {
+    const { findings } = scanText(`aws configure set aws_access_key_id ${AWS_KEY}`, {
+      'secrets/aws-access-key': '2.3.1',
+    });
+    const f = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(f?.ruleVersion).toBe('2.3.1');
+  });
+
+  it('falls back to the rule file format version when no pack version is known', () => {
+    const { findings } = scanText(`aws configure set aws_access_key_id ${AWS_KEY}`);
+    const f = findings.find((f) => f.ruleId === 'secrets/aws-access-key');
+    expect(f?.ruleVersion).toBe('1');
+  });
 });

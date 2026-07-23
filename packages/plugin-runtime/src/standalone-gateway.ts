@@ -206,14 +206,27 @@ export class StandaloneDataGateway implements DataGateway {
   //     "detect nothing" (that is expressed by disabling packs, handled above);
   //   - otherwise → the enabled packs' validated rules, marked complete.
   private installedScanRules():
-    { rules: Rule[]; ruleActions: Map<string, ActionTaken>; complete: true } | undefined {
+    | {
+        rules: Rule[];
+        ruleActions: Map<string, ActionTaken>;
+        ruleVersions: Map<string, string>;
+        complete: true;
+      }
+    | undefined {
     try {
       const snapshot = this.db.installedPacks.installedRuleset();
       if (snapshot.installedPacks === 0) return undefined;
-      if (snapshot.enabledPacks === 0) return { rules: [], ruleActions: new Map(), complete: true };
+      if (snapshot.enabledPacks === 0) {
+        return { rules: [], ruleActions: new Map(), ruleVersions: new Map(), complete: true };
+      }
       if (snapshot.invalidRules > 0) return undefined;
       if (snapshot.rules.length === 0) return undefined;
-      return { rules: snapshot.rules, ruleActions: snapshot.ruleActions, complete: true };
+      return {
+        rules: snapshot.rules,
+        ruleActions: snapshot.ruleActions,
+        ruleVersions: snapshot.ruleVersions,
+        complete: true,
+      };
     } catch {
       return undefined;
     }
@@ -265,6 +278,7 @@ export class StandaloneDataGateway implements DataGateway {
       policies: [...policies, ...rulePolicies],
       rules: installed ? installed.rules : [],
       ...(installed ? { rulesComplete: true } : {}),
+      ...(installed ? { ruleVersions: Object.fromEntries(installed.ruleVersions) } : {}),
       ...(exceptions !== undefined ? { exceptions } : {}),
       customKeywords,
       fetchedAt: new Date().toISOString(),

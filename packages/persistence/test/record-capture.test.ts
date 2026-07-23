@@ -415,3 +415,97 @@ describe('recordCapture — inspection_definitions upsert', () => {
     db.close();
   });
 });
+
+// audit_events now mixes the four capture kinds with the transcript
+// reconciler's structural `tool_call`/`llm_call` rows, all carrying the same
+// `root_session_id`. The session-dedup that suppresses a value crossing several
+// capture surfaces in one action must therefore constrain to capture kinds:
+// otherwise a reconciler `tool_call` finding suppresses a later same-session
+// capture, and — since the surviving `tool_call` row is excluded by every
+// capture-kind read view — the finding disappears from the product entirely.
+describe('recordCapture — session dedup is scoped to capture kinds', () => {
+  const RULE = 'secrets/aws-access-key';
+
+  it('does NOT let a reconciler tool_call finding suppress a same-session capture', () => {
+    const db = openLocalDatabase(dir);
+    const sessionId = randomUUID();
+    const started = new Date().toISOString();
+
+    // Session root (self-FK target for the session-scoped rows below).
+    db.auditEvents.insertAuditEvent({ id: sessionId, eventType: 'session', startedAt: started });
+
+    // A transcript-reconciler finding for (rule, masked value) on a NON-capture
+    // `tool_call` audit event in this session.
+    const toolCallEventId = randomUUID();
+    db.auditEvents.insertAuditEvent({
+      id: toolCallEventId,
+      eventType: 'tool_call',
+      startedAt: started,
+      parentId: sessionId,
+      rootSessionId: sessionId,
+    });
+    const defId = db.inspectionDefinitions.upsert({
+      ruleId: RULE,
+      version: 'transcript-1',
+      name: RULE,
+      category: 'secret',
+      severity: 'critical',
+      definition: '{}',
+    });
+    db.inspectionFindings.insertFinding({
+      id: randomUUID(),
+      auditEventId: toolCallEventId,
+      inspectionDefinitionId: defId,
+      span: { start: 0, end: 20 },
+      maskedMatch: MASKED,
+      actionTaken: 'block',
+      confidence: 0.9,
+    });
+
+    // The user then writes that same secret to a file in the same session.
+    const ev = event({
+      kind: 'code_change',
+      contentHash: 'hash-live-capture',
+      metadata: { sessionId },
+    });
+    db.recordCapture(ev, [finding({ ruleId: RULE, maskedMatch: MASKED })]);
+
+    const r = raw();
+    // The live capture's finding survived and is attached to a code_change row.
+    const onCapture = r
+      .prepare(
+        `SELECT count(*) AS n FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+          WHERE f.masked_match = ? AND e.event_type = 'code_change'`,
+      )
+      .get(MASKED) as { n: number };
+    expect(onCapture.n).toBe(1);
+    // Both rows coexist: the reconciler's tool_call one and the live capture.
+    const total = r
+      .prepare('SELECT count(*) AS n FROM inspection_findings WHERE masked_match = ?')
+      .get(MASKED) as { n: number };
+    expect(total.n).toBe(2);
+    r.close();
+    db.close();
+  });
+
+  it('still suppresses the same value crossing two capture surfaces in one session', () => {
+    const db = openLocalDatabase(dir);
+    const sessionId = randomUUID();
+
+    // Same (rule, masked value) captured first on a prompt, then a tool_use, in
+    // one session — the legitimate cross-surface dedup the guard must preserve.
+    const p = event({ kind: 'prompt', contentHash: 'hash-prompt-dup', metadata: { sessionId } });
+    db.recordCapture(p, [finding({ ruleId: RULE, maskedMatch: MASKED })]);
+    const t = event({ kind: 'tool_use', contentHash: 'hash-tooluse-dup', metadata: { sessionId } });
+    db.recordCapture(t, [finding({ ruleId: RULE, maskedMatch: MASKED })]);
+
+    const r = raw();
+    const total = r
+      .prepare('SELECT count(*) AS n FROM inspection_findings WHERE masked_match = ?')
+      .get(MASKED) as { n: number };
+    expect(total.n).toBe(1); // deduped across capture surfaces
+    r.close();
+    db.close();
+  });
+});

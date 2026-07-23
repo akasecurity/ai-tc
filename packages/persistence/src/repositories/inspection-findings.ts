@@ -5,6 +5,16 @@ import { toInspectionFindingRow } from '@akasecurity/schema';
 
 import { bindParams } from '../internal/rows.ts';
 
+// audit_events holds structural rows (session, tool_call, llm_call,
+// config_scan) alongside the four capture kinds a finding can be recorded
+// against. A session-scoped dedup that joins inspection_findings to
+// audit_events must constrain to this set — otherwise a transcript-reconciler
+// tool_call finding (which also carries root_session_id) can suppress a live
+// capture, and the surviving tool_call row is then excluded by every
+// capture-kind read view, so the finding disappears from the product entirely.
+// Mirrors the identical constant in findings.ts / security.ts.
+const CAPTURE_EVENT_TYPES_SQL = `'prompt','response','code_change','tool_use'`;
+
 /**
  * Inspection finding (a hit of a definition against an audit event) writer. The
  * row references its audit event, its inspection definition version, and
@@ -80,12 +90,20 @@ export class SqliteInspectionFindingsRepository {
     // instead of a metadata blob. Used to suppress a value that crosses
     // several surfaces within one action (prompt → tool call) — see
     // recordCapture's session-dedup call site.
+    //
+    // The `event_type IN (…)` guard is load-bearing: unlike the legacy
+    // `events` table (which held only capture kinds), audit_events also holds
+    // the transcript reconciler's `tool_call`/`llm_call` rows, which carry the
+    // same `root_session_id`. Without the guard a reconciler finding would
+    // dedup-suppress a later same-session capture, and the surviving tool_call
+    // row is excluded by every capture-kind read — so the finding would vanish.
     this.sessionDupStmt = db.prepare(
       `SELECT 1 FROM inspection_findings f
          JOIN audit_events e ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
         WHERE d.rule_id = :ruleId AND f.masked_match = :maskedMatch
           AND e.root_session_id = :sessionId
+          AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
         LIMIT 1`,
     );
 

@@ -1,0 +1,9 @@
+plugins {
+    id 'java'
+}
+
+dependencies {
+    implementation platform("io.sentry:sentry-bom:7.14.0")
+    implementation "io.sentry:sentry"
+    testImplementation "org.junit.jupiter:junit-jupiter:5.11.0"
+}

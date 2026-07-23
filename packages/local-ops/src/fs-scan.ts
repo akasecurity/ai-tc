@@ -1,8 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { basename, extname, join, relative, sep } from 'node:path';
 
-import { maskMatch, redact, scan } from '@akasecurity/detections';
+import type { FileEgressHits } from '@akasecurity/detections';
+import {
+  EGRESS_CODE_EXTENSIONS,
+  extractEgress,
+  extractManifestSdks,
+  isVendoredPath,
+  LOCKFILE_BASENAMES,
+  manifestKindOf,
+  maskMatch,
+  redact,
+  scan,
+} from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import type {
   ActionTaken,
@@ -190,6 +201,39 @@ export interface ScanPathResult {
   scanned: number;
   findings: number;
   files: ScannedFileFindings[];
+  // Raw per-file egress extraction for every walked file that produced a hit.
+  // `file` is the ABSOLUTE walked path here; the recording pass relativizes it
+  // to the project root before anything reaches the store.
+  egress: { files: FileEgressHits[] };
+}
+
+// What the egress pass extracts from one already-read file, or null when the
+// file is out of scope. URL/IP extraction runs on code extensions only;
+// manifests go through manifestKindOf, which returns null for lockfiles so
+// their registry URLs are never extracted; a file carrying a NUL byte is
+// treated as binary and yields nothing.
+function extractFileEgress(file: string, text: string): FileEgressHits | null {
+  if (text.includes('\u0000')) return null;
+
+  const name = basename(file);
+  // Lockfiles are regenerated dependency-resolution output — every transitive
+  // package's registry URL is packaging noise, not egress. manifestKindOf
+  // already returns null for these basenames, and none of them currently
+  // carry a code extension, so this early-out changes nothing observable
+  // today; it exists so the exclusion still holds if a future lockfile
+  // basename ever does carry one, instead of relying on that gap staying
+  // empty by chance.
+  if (LOCKFILE_BASENAMES.has(name)) return null;
+
+  const kind = manifestKindOf(name);
+  const sdkHits = kind === null ? [] : extractManifestSdks(text, kind);
+  // A manifest is never also scanned for URL literals: package.json's own
+  // registry/repository URLs are packaging metadata, not egress.
+  const endpoints =
+    kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file)) ? extractEgress(text) : [];
+
+  if (endpoints.length === 0 && sdkHits.length === 0) return null;
+  return { file, vendored: isVendoredPath(file), endpoints, sdkHits };
 }
 
 /**
@@ -204,6 +248,7 @@ export function scanPathIntoStore(
   let scanned = 0;
   let findingCount = 0;
   const files: ScannedFileFindings[] = [];
+  const egressFiles: FileEgressHits[] = [];
   for (const { path: file, gitignored } of collectFiles(target)) {
     let text: string;
     try {
@@ -212,6 +257,11 @@ export function scanPathIntoStore(
       continue; // unreadable / binary — skip
     }
     scanned++;
+    // Egress rides every file whose content was read, before the finding
+    // early-out below — a file with no detection match still has destinations.
+    const fileEgress = extractFileEgress(file, text);
+    if (fileEgress) egressFiles.push(fileEgress);
+
     const matches = scan(text, opts.rules);
     if (matches.length === 0) continue;
 
@@ -245,5 +295,5 @@ export function scanPathIntoStore(
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;
   }
-  return { scanned, findings: findingCount, files };
+  return { scanned, findings: findingCount, files, egress: { files: egressFiles } };
 }

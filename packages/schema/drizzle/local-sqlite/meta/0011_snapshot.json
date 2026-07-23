@@ -1947,6 +1947,14 @@
           ],
           "isUnique": false
         },
+        "idx_share_call_site_project": {
+          "name": "idx_share_call_site_project",
+          "columns": [
+            "project_key",
+            "endpoint_id"
+          ],
+          "isUnique": false
+        },
         "uq_share_call_site": {
           "name": "uq_share_call_site",
           "columns": [

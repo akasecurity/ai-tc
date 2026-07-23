@@ -21,6 +21,7 @@ ALTER TABLE `share_call_site` ADD `project_key` text DEFAULT '' NOT NULL;--> sta
 UPDATE `share_call_site` SET `project_key` = 'legacy:' || `project`;--> statement-breakpoint
 DROP INDEX IF EXISTS `uq_share_call_site`;--> statement-breakpoint
 CREATE UNIQUE INDEX `uq_share_call_site` ON `share_call_site` (`endpoint_id`,`project_key`,`file`,`line`);--> statement-breakpoint
+CREATE INDEX `idx_share_call_site_project` ON `share_call_site` (`project_key`,`endpoint_id`);--> statement-breakpoint
 ALTER TABLE `egress_decision_override` ADD `host` text;--> statement-breakpoint
 PRAGMA foreign_keys=OFF;--> statement-breakpoint
 CREATE TABLE `__new_egress_decision_override` (

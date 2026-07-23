@@ -500,6 +500,10 @@ export const shareCallSite = sqliteTable(
   },
   (t) => [
     index('idx_share_call_site_endpoint').on(t.endpointId),
+    // Per-project reconcile, last-seen confirmation and totals all filter on
+    // project_key alone; uq_share_call_site leads with endpoint_id and cannot
+    // serve that seek. endpoint_id trails so those queries stay covering.
+    index('idx_share_call_site_project').on(t.projectKey, t.endpointId),
     uniqueIndex('uq_share_call_site').on(t.endpointId, t.projectKey, t.file, t.line),
   ],
 );

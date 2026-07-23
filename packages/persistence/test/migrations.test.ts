@@ -688,6 +688,14 @@ describe('migration 0011 (egress writer schema)', () => {
         'line',
       ]);
 
+      // Per-project reconcile/confirm/totals filter on project_key alone, which
+      // the endpoint_id-leading unique index cannot seek on.
+      expect(schemaObjectExists(db, 'index', 'idx_share_call_site_project')).toBe(true);
+      expect(indexColumns(db, 'idx_share_call_site_project')).toEqual([
+        'project_key',
+        'endpoint_id',
+      ]);
+
       // The host-keyed override index is additive; the legacy destination-keyed
       // unique index that already-shipped binaries write against SURVIVES.
       expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override_host')).toBe(true);
@@ -816,6 +824,11 @@ describe('migration 0011 (egress writer schema)', () => {
         'project_key',
         'file',
         'line',
+      ]);
+      // The project-key index is created on an upgraded store too, not only a fresh one.
+      expect(indexColumns(db, 'idx_share_call_site_project')).toEqual([
+        'project_key',
+        'endpoint_id',
       ]);
 
       // The override table is REBUILT (nullable destination_id, ON DELETE SET

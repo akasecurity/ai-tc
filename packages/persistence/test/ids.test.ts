@@ -55,11 +55,11 @@ describe('meta-id content addressing (golden vectors)', () => {
   });
 });
 
-// D-TFID: the finding id is keyed on the RULE id, not the inspection_definition
-// id, so a re-detected hit keeps the same id across a rule version bump — only
-// the definition reference (refreshed via the insert's ON CONFLICT DO UPDATE)
+// The finding id is keyed on the RULE id, not the inspection_definition id, so
+// a re-detected hit keeps the same id across a rule version bump — only the
+// definition reference (refreshed via the insert's ON CONFLICT DO UPDATE)
 // tracks the new version. See the inspectionFindingId doc comment in ids.ts.
-describe('inspectionFindingId (D-TFID: keyed on ruleId, not definitionId)', () => {
+describe('inspectionFindingId (keyed on ruleId, not definitionId)', () => {
   it('is stable / deterministic for the same (event, rule, span)', () => {
     const id = inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34);
     expect(id).toBe('cbd5462dd06a3b6f9507781966976e7e73db2218a550895e905f1a8977f2352d');

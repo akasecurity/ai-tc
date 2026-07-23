@@ -308,11 +308,11 @@ describe('audit events + inspection findings', () => {
     db.close();
   });
 
-  // D-TFID: the finding id is content-addressed on (auditEventId, ruleId, span),
-  // not the inspection_definition id, so a pack update that bumps the rule's
-  // version re-detects the SAME finding id — the insert's
-  // ON CONFLICT DO UPDATE must refresh the stale definition reference rather
-  // than leaving it pointed at the pre-bump row.
+  // The finding id is content-addressed on (auditEventId, ruleId, span), not the
+  // inspection_definition id, so a pack update that bumps the rule's version
+  // re-detects the SAME finding id — the insert's ON CONFLICT DO UPDATE must
+  // refresh the stale definition reference rather than leaving it pointed at
+  // the pre-bump row.
   it('insertFinding refreshes inspection_definition_id on conflict (re-detection under a bumped rule version)', () => {
     const db = openLocalDatabase(dir);
     db.ensureInventory(context);

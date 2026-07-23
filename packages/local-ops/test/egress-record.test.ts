@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { manifestKindOf } from '@akasecurity/detections';
 import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
+import { resolveNonGitProject } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordProjectEgress } from '../src/egress-record.ts';
@@ -283,6 +285,37 @@ describe('recordProjectEgress — non-git target', () => {
     const sites = storedSites(store);
     expect(sites[0]?.projectKey).toBe(`path:${realpathSync(root)}`);
     expect(sites[0]?.file).toBe('pay.ts');
+  });
+});
+
+describe('recordProjectEgress — non-git project boundary (subtree convergence)', () => {
+  it('keys a subtree scan and a root scan on one manifest-anchored project', () => {
+    // The finding: a non-git subtree scan minted a SECOND project key that no
+    // scan could reconcile. With a package.json boundary, a root scan and a
+    // src/ subtree scan must land on ONE key with matching relative paths.
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ dependencies: { stripe: '^14.0.0' } }),
+    );
+    writeCall(join(root, 'src', 'pay.ts'), 'api.stripe.com');
+
+    // The scanner derives its non-git identity from this same shared resolver,
+    // so this is byte-for-byte the key the plugin pipeline produces here.
+    const expectedKey = `path:${realpathSync(root)}`;
+    expect(resolveNonGitProject(root, manifestKindOf).projectKey).toBe(expectedKey);
+
+    scanAndRecord(db, root, base);
+    let sites = storedSites(store);
+    expect(new Set(sites.map((s) => s.projectKey))).toEqual(new Set([expectedKey]));
+    expect(sites.some((s) => s.file === 'src/pay.ts')).toBe(true);
+
+    // Subtree scan of the SAME project: it used to store `path:.../src` + a bare
+    // `pay.ts`; now it reconciles onto the one key with `src/pay.ts`.
+    scanAndRecord(db, join(root, 'src'), base);
+    sites = storedSites(store);
+    expect(new Set(sites.map((s) => s.projectKey))).toEqual(new Set([expectedKey]));
+    expect(sites.some((s) => s.file === 'src/pay.ts')).toBe(true);
+    expect(sites.every((s) => s.file !== 'pay.ts')).toBe(true);
   });
 });
 

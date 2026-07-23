@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { PluginConfig, RecordProjectEgressInput } from '@akasecurity/plugin-sdk';
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { loadConfig, manifestKindOf, resolveNonGitProject } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scanWorktree } from '../src/scan.ts';
@@ -408,6 +408,39 @@ describe('scanWorktree — manifest walk honors .akaignore', () => {
     expect(input.hits.some((h) => h.site.file === 'pkg/package.json' && h.method === 'SDK')).toBe(
       true,
     );
+  });
+});
+
+describe('scanWorktree — non-git project boundary (subtree convergence)', () => {
+  it('keys a subtree scan exactly like a root scan for a non-git, manifest-anchored project', async () => {
+    // A non-git tree (no .git) anchored by package.json. The plugin scanner and
+    // the CLI/web-ui pipeline both derive this from the shared resolveNonGitProject,
+    // so their key and relative paths match byte for byte.
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj, { recursive: true });
+    write(proj, 'package.json', STRIPE_MANIFEST);
+    write(proj, 'src/pay.ts', STRIPE_CALL);
+    const config = configWith(true);
+
+    const expectedKey = `path:${realpathSync(proj)}`;
+    expect(resolveNonGitProject(proj, manifestKindOf).projectKey).toBe(expectedKey);
+
+    await scanWorktree(config, { rootDir: proj, sourceTool: 'claude-code' });
+    const rootInput = lastEgressInput();
+    expect(rootInput.projectKey).toBe(expectedKey);
+    expect(rootInput.hits.some((h) => h.site.file === 'src/pay.ts')).toBe(true);
+
+    // Fresh ledger + call log, then scan rooted INSIDE the project at src/.
+    ledgerRows = new Map();
+    recordProjectEgress.mockClear();
+    await scanWorktree(config, { rootDir: join(proj, 'src'), sourceTool: 'claude-code' });
+
+    const subInput = lastEgressInput();
+    // Same key as the root scan — the subtree no longer mints `path:.../src`.
+    expect(subInput.projectKey).toBe(expectedKey);
+    // 'src/pay.ts', never a bare 'pay.ts': relative to the resolved project root.
+    expect(subInput.hits.some((h) => h.site.file === 'src/pay.ts')).toBe(true);
+    expect(subInput.hits.every((h) => h.site.file !== 'pay.ts')).toBe(true);
   });
 });
 

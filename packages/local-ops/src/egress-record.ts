@@ -1,11 +1,16 @@
-import { realpathSync, statSync } from 'node:fs';
-import { basename, dirname, relative, resolve } from 'node:path';
+import { statSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
-import { isVendoredPath, resolveEgress } from '@akasecurity/detections';
+import { isVendoredPath, manifestKindOf, resolveEgress } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { defaultDataDir, readWorkspaceSettings } from '@akasecurity/persistence';
-import { resolveRepoIdentity, resolveWorktreeRoot, toPosix } from '@akasecurity/plugin-sdk';
+import {
+  resolveNonGitProject,
+  resolveRepoIdentity,
+  resolveWorktreeRoot,
+  toPosix,
+} from '@akasecurity/plugin-sdk';
 import type { EgressWriteSummary } from '@akasecurity/schema';
 
 // The egress-recording pass shared by `aka scan` and the web-ui's Scan page:
@@ -74,13 +79,15 @@ export function recordProjectEgress(
         attributes: {},
       });
     } else {
-      root = targetDir;
-      // Keyed on the realpath so two symlinked routes to one directory share a
-      // key, and so two directories with the same basename never collide.
-      // Relativization still uses `root` as the walker saw it.
-      const realRoot = realpathSync(targetDir);
-      projectKey = `path:${realRoot}`;
-      project = basename(realRoot);
+      // A non-git target anchors on its nearest project boundary: the highest
+      // ancestor carrying a dependency manifest. A scan of any subtree inside
+      // the project then resolves here, so `/proj` and `/proj/src` key on one
+      // project instead of two rows neither scan can reconcile. With no manifest
+      // above the target, the target itself is the root and scans at different
+      // depths cannot reconcile — there is no project boundary to find. `root`
+      // and the `path:` key move to the resolved root together, so stored paths
+      // always match the key.
+      ({ root, projectKey, project } = resolveNonGitProject(targetDir, manifestKindOf));
       projectId = null;
     }
 

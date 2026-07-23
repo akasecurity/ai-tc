@@ -27,6 +27,7 @@ import type {
   ConfigInventoryReport,
   ConfigScanRecord,
   DayActivity,
+  EgressWriteSummary,
   FindingView,
   HealthSummary,
   InstalledPackInput,
@@ -419,9 +420,8 @@ export class StandaloneDataGateway implements DataGateway {
   // Bare forward — no toggle read here. The plugin-path kill-switch is
   // enforced by the caller, which already holds the parsed workspace
   // settings; this class only ever sees `dataDir`, not the settings base.
-  recordProjectEgress(input: RecordProjectEgressInput): Promise<void> {
-    this.db.shares.recordProjectEgress(input);
-    return Promise.resolve();
+  recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary> {
+    return Promise.resolve(this.db.shares.recordProjectEgress(input));
   }
 
   close(): Promise<void> {

@@ -553,6 +553,79 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
     expect(group?.status).toBe('open');
   });
 
+  // The Status toolbar filter is a store-side filter like severity/provider —
+  // it must narrow items, totals AND the other facets, not just the page the
+  // caller already fetched.
+  describe('status filter', () => {
+    beforeEach(() => {
+      // in-flight ⇒ handled
+      record({
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        sourceTool: 'claude-code',
+        ruleId: 'handled-rule',
+        repo: 'acme/api',
+        filePath: 'a.ts',
+      });
+      // at-rest, tracked, unresolved ⇒ open
+      recordAtRest({ findingKey: 'key-open', ruleId: 'open-rule' });
+      // at-rest, tracked, resolved ⇒ resolved
+      recordAtRest({ findingKey: 'key-resolved', ruleId: 'resolved-rule' });
+      db.resolutions.insertResolution({
+        findingKey: 'key-resolved',
+        status: 'resolved',
+        method: 'fixed-at-source',
+        resolvedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+        evidence: '',
+      });
+    });
+
+    it('keeps only groups whose derived status was requested', async () => {
+      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      expect(res.items.map((g) => g.id)).toEqual(['open-rule']);
+    });
+
+    it('keeps the union when several statuses are requested', async () => {
+      const res = await db.findings.listGroupedFindings({ status: ['open', 'resolved'] });
+      expect(res.items.map((g) => g.id).sort()).toEqual(['open-rule', 'resolved-rule']);
+    });
+
+    it('narrows totals to the filtered set (not just the fetched page)', async () => {
+      expect((await db.findings.listGroupedFindings({})).totals).toEqual({
+        findings: 3,
+        groups: 3,
+      });
+      expect((await db.findings.listGroupedFindings({ status: ['open'] })).totals).toEqual({
+        findings: 1,
+        groups: 1,
+      });
+    });
+
+    it('reports a status facet excluding its own filter, and applies it to the others', async () => {
+      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      // The status facet still counts every status, so the user can switch…
+      expect(new Map(res.facets.status.map((f) => [f.value, f.count]))).toEqual(
+        new Map([
+          ['handled', 1],
+          ['open', 1],
+          ['resolved', 1],
+        ]),
+      );
+      // …while the action facet DOES honor the status filter (open-rule only).
+      expect(res.facets.action).toEqual([{ value: 'blocked', count: 1 }]);
+    });
+
+    it('composes with the other filters', async () => {
+      const res = await db.findings.listGroupedFindings({
+        status: ['open'],
+        severity: ['critical'],
+      });
+      expect(res.items.map((g) => g.id)).toEqual(['open-rule']);
+      expect(
+        (await db.findings.listGroupedFindings({ status: ['open'], severity: ['low'] })).items,
+      ).toEqual([]);
+    });
+  });
+
   it('a group with mixed instance statuses derives its group status via open-dominates precedence', async () => {
     // Same ruleId, two instances: one in-flight (handled), one at-rest and
     // still open — the group must read 'open' even though one instance is

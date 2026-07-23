@@ -382,6 +382,7 @@ export class SqliteFindingsRepository
       severity: query.severity,
       providers: query.provider,
       actions: query.action,
+      statuses: query.status,
       subtype: query.subtype,
       q: query.q,
     };

@@ -54,6 +54,11 @@ export interface InstalledRuleset {
   // actually drives enforcement instead of being overridden by the seeded
   // per-category defaults. Only ids present in `rules` appear here.
   ruleActions: Map<string, ActionTaken>;
+  // Per valid rule (by id): the version of the installed pack it came from. The
+  // standalone gateway carries this onto the policy bundle so a captured
+  // finding is stamped with the pack's real version instead of the rule file
+  // format constant. Only ids present in `rules` appear here.
+  ruleVersions: Map<string, string>;
 }
 
 // A cheap order-independent fingerprint of an inventory: one
@@ -384,9 +389,14 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * JSON-level failure therefore counts as invalid.
    */
   installedRuleset(): InstalledRuleset {
-    const rows = allRows<{ enabled: number; policyId: string | null; rulesJson: string }>(
+    const rows = allRows<{
+      enabled: number;
+      policyId: string | null;
+      rulesJson: string;
+      version: string;
+    }>(
       this.db.prepare(
-        `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson FROM installed_packs`,
+        `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson, version FROM installed_packs`,
       ),
     );
 
@@ -396,6 +406,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       rules: [],
       invalidRules: 0,
       ruleActions: new Map(),
+      ruleVersions: new Map(),
     };
     for (const row of rows) {
       if (!intToBool(row.enabled)) continue;
@@ -418,6 +429,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
         if (parsed.success) {
           out.rules.push(parsed.data);
           out.ruleActions.set(parsed.data.id, action);
+          out.ruleVersions.set(parsed.data.id, row.version);
         } else out.invalidRules += 1;
       }
     }

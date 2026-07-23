@@ -281,7 +281,11 @@ export function openLocalDatabase(dir: string): LocalDatabase {
       // same session never duplicates it. All four capture kinds
       // (prompt/response/code_change/tool_use) map onto AuditEventType as
       // themselves — see the superset invariant documented there.
-      const auditEventId = captureId(sessionId ?? null, event.contentHash);
+      const auditEventId = captureId(
+        sessionId ?? null,
+        event.contentHash,
+        event.metadata?.filePath ?? null,
+      );
       auditEvents.insertAuditEvent({
         id: auditEventId,
         eventType: event.kind,

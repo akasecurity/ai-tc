@@ -112,7 +112,7 @@ export class SqliteInspectionFindingsRepository {
     // a fresh random `id` and carries no `finding_key` (nothing to re-scan
     // against), so neither of insertStmt's ON CONFLICT clauses ever fires for
     // it — unlike a content-addressed audit event (captureId(sessionId,
-    // contentHash)), which resolves an exact resubmission onto the SAME row
+    // contentHash, filePath)), which resolves an exact resubmission onto the SAME row
     // via INSERT OR IGNORE, a resubmitted in-flight finding would otherwise
     // duplicate on every replay of the identical capture. This check restores
     // that idempotency at the finding level: scoped to one audit event (never
@@ -121,14 +121,14 @@ export class SqliteInspectionFindingsRepository {
     // distinct hits of the same value within one capture (e.g. a secret
     // pasted twice in one prompt) are still both kept.
     //
-    // The `finding_key` guard keeps that intra-event idempotency from
-    // OVER-reaching. The audit id is content-addressed, so identical bytes
-    // captured at two DIFFERENT paths (a secret duplicated across files)
-    // collapse onto ONE audit_events row — yet each hit carries its own
-    // path-scoped `finding_key`. Matching on the key too stops the second path
-    // from being taken for a replay of the first and dropped. An in-flight
-    // finding carries no key, so `:findingKey IS NULL` leaves the guard inert
-    // and the span-keyed behavior above unchanged.
+    // The `finding_key` guard narrows this within-event check to the incoming
+    // finding's own key. captureId folds the file path into the audit id (see
+    // ids.ts), so identical bytes at two DIFFERENT paths already resolve to
+    // DISTINCT audit rows — this guard is not what separates them. It still
+    // earns its keep WITHIN one audit row: a keyed at-rest re-detection matches
+    // only its own finding_key, not another key's hit at the same span, while a
+    // keyless in-flight finding passes `:findingKey IS NULL` and keeps the
+    // span-keyed behavior above unchanged.
     this.eventDupStmt = db.prepare(
       `SELECT 1 FROM inspection_findings f
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -150,10 +150,11 @@ export class SqliteInspectionFindingsRepository {
 
   // True when this exact detection (rule + masked value + span) is already
   // recorded against the given audit event. When the finding carries a
-  // `finding_key`, the match is scoped to it too, so identical content captured
-  // at two paths (which collapse onto one content-addressed audit event) is not
-  // deduped away; a keyless in-flight finding passes `null` and keeps the
-  // span-only behavior.
+  // `finding_key`, the match is scoped to it too, so two distinct keys on the
+  // same audit row are kept apart; a keyless in-flight finding passes `null`
+  // and keeps the span-only behavior. (Identical bytes at two DIFFERENT paths
+  // land on distinct audit events — captureId folds the path — so they never
+  // reach this same-event check.)
   isEventDuplicate(
     auditEventId: string,
     ruleId: string,

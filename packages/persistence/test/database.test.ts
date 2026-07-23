@@ -157,7 +157,7 @@ describe('recordCapture', () => {
     // audit event, not the write's) since the write's repeats were dropped.
     const findings = await db.findings.recentFindings();
     expect(findings).toHaveLength(2);
-    const promptAuditEventId = captureId(sessionId, 'hash-prompt');
+    const promptAuditEventId = captureId(sessionId, 'hash-prompt', null);
     expect(findings.every((f) => f.eventId === promptAuditEventId)).toBe(true);
     expect(new Set(findings.map((f) => f.ruleId))).toEqual(
       new Set(['core-pii/email', 'core-pii/ssn']),

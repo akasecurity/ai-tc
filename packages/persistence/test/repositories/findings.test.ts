@@ -415,11 +415,12 @@ function recordAtRest(opts: {
   };
   db.recordCapture(event, [finding]);
   // recordCapture mints the audit_events row's own id as a content-address of
-  // (sessionId, contentHash) — NOT the caller-supplied event.id — so a raw
-  // read of inspection_findings.audit_event_id must be compared against this,
-  // not against eventId. This helper never sets metadata.sessionId, so the
-  // session component is always the null/no-session case.
-  const auditEventId = captureId(null, contentHash);
+  // (sessionId, contentHash, filePath) — NOT the caller-supplied event.id — so
+  // a raw read of inspection_findings.audit_event_id must be compared against
+  // this, not against eventId. This helper never sets metadata.sessionId, so the
+  // session component is always the null/no-session case; the path component is
+  // the same filePath written into the event metadata above.
+  const auditEventId = captureId(null, contentHash, opts.filePath ?? 'src/a.ts');
   return { eventId, findingId, auditEventId };
 }
 
@@ -508,14 +509,13 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
 });
 
 // A secret duplicated across two files (`.env` copied to `.env.local`, a config
-// vendored into two packages, a fixture cloned) hashes to ONE contentHash, so
-// recordCapture content-addresses both captures onto a SINGLE audit_events row.
-// The two hits still carry DISTINCT finding_keys (the key is path-scoped), so
-// the event-level dedup must key on finding_key: otherwise the second file's
-// finding is taken for a replay of the first and silently dropped — never
-// counted, tracked, or remediable.
+// vendored into two packages, a fixture cloned) hashes to ONE contentHash. With
+// the file path folded into captureId, the two captures land on DISTINCT audit
+// events, so the Findings view surfaces BOTH affected paths by name — not just
+// the first-written one — and each finding stays independently tracked by its
+// own path-scoped finding_key.
 describe('insertFindings — duplicate content at distinct paths', () => {
-  it('keeps both findings when identical content at two paths collapses onto one audit event', async () => {
+  it('surfaces both paths as distinct audit events for byte-identical content', async () => {
     const contentHash = randomUUID();
     const keyA = findingKeyFor('aws-key', 'src/a.env', 'fp-1');
     const keyB = findingKeyFor('aws-key', 'src/b.env', 'fp-1');
@@ -528,21 +528,20 @@ describe('insertFindings — duplicate content at distinct paths', () => {
       occurredAt: '2026-01-02T00:00:00.000Z',
     });
 
-    // Both files collapse onto ONE content-addressed audit event...
+    // captureId folds in the path, so identical content at two paths no longer
+    // collapses onto the first-written row — each path owns its audit event.
     const rowsA = findingRowsByKey(keyA);
     const rowsB = findingRowsByKey(keyB);
     expect(rowsA).toHaveLength(1);
     expect(rowsB).toHaveLength(1);
-    expect(rowsA[0]?.event_id).toBe(rowsB[0]?.event_id);
+    expect(rowsA[0]?.event_id).not.toBe(rowsB[0]?.event_id);
 
-    // ...but each path keeps its own finding row, so neither is dropped. (The
-    // displayed file path is the shared audit event's — both instances read
-    // 'src/a.env' — because file_path lives on that content-collapsed row, not
-    // on the finding; surfacing the second path by name is a captureId concern,
-    // out of scope for this finding-level dedup fix.)
+    // Both findings are kept AND both paths surface by name (each finding reads
+    // its own audit event's file_path, not a shared collapsed row's).
     const res = await db.findings.listGroupedFindings({});
     expect(res.totals).toEqual({ findings: 2, groups: 1 });
     expect(res.items[0]?.instanceCount).toBe(2);
+    expect(res.items[0]?.instances.map((i) => i.file).sort()).toEqual(['src/a.env', 'src/b.env']);
   });
 });
 

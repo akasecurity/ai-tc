@@ -70,7 +70,7 @@ describe('recordCapture — audit/inspection trio', () => {
     const ev = event({ kind: 'code_change', contentHash: 'hash-1' });
     db.recordCapture(ev, [finding()]);
 
-    const auditEventId = captureId(null, 'hash-1');
+    const auditEventId = captureId(null, 'hash-1', null);
     const r = raw();
     expect(count(r, 'audit_events')).toBe(1);
     expect(count(r, 'inspection_findings')).toBe(1);
@@ -112,7 +112,7 @@ describe('recordCapture — audit/inspection trio', () => {
       const ev = event({ kind, contentHash: `hash-${kind}` });
       db.recordCapture(ev, []);
 
-      const auditEventId = captureId(null, `hash-${kind}`);
+      const auditEventId = captureId(null, `hash-${kind}`, null);
       const r = raw();
       const row = r
         .prepare('SELECT event_type FROM audit_events WHERE id = ?')
@@ -153,7 +153,7 @@ describe('recordCapture — audit/inspection trio', () => {
     });
     db.recordCapture(ev, []);
 
-    const auditEventId = captureId(sessionId, 'hash-attrs');
+    const auditEventId = captureId(sessionId, 'hash-attrs', 'src/index.ts');
     const r = raw();
     const row = r.prepare('SELECT attributes FROM audit_events WHERE id = ?').get(auditEventId) as {
       attributes: string;
@@ -194,11 +194,11 @@ describe('recordCapture — audit/inspection trio', () => {
       metadata: { sessionId },
     });
     db.recordCapture(withSession, []);
-    const withSessionId = captureId(sessionId, 'hash-with-session');
+    const withSessionId = captureId(sessionId, 'hash-with-session', null);
 
     const withoutSession = event({ kind: 'prompt', contentHash: 'hash-no-session' });
     db.recordCapture(withoutSession, []);
-    const withoutSessionId = captureId(null, 'hash-no-session');
+    const withoutSessionId = captureId(null, 'hash-no-session', null);
 
     const r = raw();
     const a = r
@@ -235,7 +235,7 @@ describe('recordCapture — orphan-session FK trap', () => {
       db.recordCapture(ev, [finding({ findingKey: 'fk-orphan-1' })]);
     }).not.toThrow();
 
-    const auditEventId = captureId(sessionId, 'hash-orphan');
+    const auditEventId = captureId(sessionId, 'hash-orphan', null);
     const r = raw();
     // The capture itself persisted — not silently dropped by a rolled-back txn.
     const captureRow = r
@@ -358,7 +358,7 @@ describe('recordCapture — finding_key reconciliation', () => {
     expect(row.masked_match).toBe('AKIA…NEW'); // refreshed
     expect(row.action_taken).toBe('redact'); // refreshed
     expect(row.confidence).toBe(0.5); // refreshed
-    expect(row.audit_event_id).toBe(captureId(sessionId, 'hash-v2')); // refreshed to latest capture
+    expect(row.audit_event_id).toBe(captureId(sessionId, 'hash-v2', 'src/config.ts')); // refreshed to latest capture
     expect(row.first_detected_at).toBe(new Date(first.occurredAt).getTime()); // preserved
     r.close();
     db.close();
@@ -373,6 +373,82 @@ describe('recordCapture — finding_key reconciliation', () => {
 
     const r = raw();
     expect(count(r, 'inspection_findings')).toBe(2); // NULL never conflicts in a unique index
+    r.close();
+    db.close();
+  });
+});
+
+// A secret duplicated across two files (a .env copied to .env.local, a config
+// vendored into two packages, a cloned fixture) hashes to ONE contentHash.
+// captureId folds the file path into the audit-event id so the two files get
+// DISTINCT audit rows and the store surfaces BOTH affected paths — not just the
+// first-written one that INSERT OR IGNORE would otherwise keep.
+describe('recordCapture — identical content at distinct paths', () => {
+  function filePaths(r: DatabaseSync): (string | null)[] {
+    return (
+      r
+        .prepare(`SELECT json_extract(attributes, '$.file_path') AS p FROM audit_events ORDER BY p`)
+        .all() as { p: string | null }[]
+    ).map((x) => x.p);
+  }
+
+  it('mints a DISTINCT audit_events row per path for byte-identical content', () => {
+    const db = openLocalDatabase(dir);
+    const a = event({
+      kind: 'code_change',
+      contentHash: 'dup-hash',
+      metadata: { filePath: 'src/a.env' },
+    });
+    const b = event({
+      kind: 'code_change',
+      contentHash: 'dup-hash',
+      metadata: { filePath: 'src/b.env' },
+    });
+    db.recordCapture(a, [finding({ findingKey: 'fk-dup-a' })]);
+    db.recordCapture(b, [finding({ findingKey: 'fk-dup-b' })]);
+
+    const r = raw();
+    // Two rows, each carrying its OWN path — not one row keeping only the first.
+    expect(count(r, 'audit_events')).toBe(2);
+    expect(filePaths(r)).toEqual(['src/a.env', 'src/b.env']);
+    expect(count(r, 'inspection_findings')).toBe(2);
+    r.close();
+    db.close();
+  });
+
+  it('keeps ONE row when identical content is re-captured at the SAME path (idempotent)', () => {
+    const db = openLocalDatabase(dir);
+    const mk = (): IngestEvent =>
+      event({ kind: 'code_change', contentHash: 'same-hash', metadata: { filePath: 'src/x.env' } });
+    db.recordCapture(mk(), [finding({ findingKey: 'fk-same' })]);
+    db.recordCapture(mk(), [finding({ findingKey: 'fk-same' })]);
+
+    const r = raw();
+    expect(count(r, 'audit_events')).toBe(1);
+    r.close();
+    db.close();
+  });
+
+  it('folds pathless captures onto a fixed sentinel so identical-content pathless captures still collapse', () => {
+    const db = openLocalDatabase(dir);
+    const sessionId = randomUUID();
+    db.auditEvents.insertAuditEvent({
+      id: sessionId,
+      eventType: 'session',
+      startedAt: new Date().toISOString(),
+    });
+    // Two pathless captures (no filePath), same session, same bytes → one row:
+    // both fold onto the no-file sentinel, so Option A does not over-split them.
+    const p1 = event({ kind: 'prompt', contentHash: 'pathless-hash', metadata: { sessionId } });
+    const p2 = event({ kind: 'prompt', contentHash: 'pathless-hash', metadata: { sessionId } });
+    db.recordCapture(p1, []);
+    db.recordCapture(p2, []);
+
+    const r = raw();
+    const captures = r
+      .prepare(`SELECT count(*) AS n FROM audit_events WHERE event_type = 'prompt'`)
+      .get() as { n: number };
+    expect(captures.n).toBe(1);
     r.close();
     db.close();
   });

@@ -109,14 +109,28 @@ export function promptId(sessionId: string, promptUuid: string): string {
 // rather than being dropped from the join.
 const NO_SESSION = 'no_session';
 
-// sha256(session_id + content_hash): a capture (a prompt/response/code-change/
-// tool-use record) is content-addressed on the hash of its own text, scoped to
-// the session it belongs to so identical content captured in two different
-// sessions never collapses onto one row. `sessionId` is `null` for a
-// session-less capture, which folds onto the fixed `NO_SESSION` sentinel above
-// instead of shortening the join.
-export function captureId(sessionId: string | null, contentHash: string): string {
-  return sha256Hex(canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash]));
+// Folded into `captureId`'s identity in place of a real file path. A capture
+// with no path (a prompt/response, or a Bash/WebFetch tool_use) still needs a
+// stable tuple length, so the missing component becomes this fixed literal
+// rather than being dropped from the join — mirroring NO_SESSION above.
+const NO_FILE = 'no_file';
+
+// sha256(session_id + content_hash + file_path): a capture (a prompt/response/
+// code-change/tool-use record) is content-addressed on the hash of its own
+// text, scoped to the session it belongs to so identical content captured in
+// two different sessions never collapses onto one row, AND to its file path so
+// the SAME bytes at two different paths (a secret duplicated across files) get
+// two rows rather than collapsing onto the first-written one. `sessionId` /
+// `filePath` are `null` for a session-less / path-less capture, each folding
+// onto its fixed sentinel above instead of shortening the join.
+export function captureId(
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null,
+): string {
+  return sha256Hex(
+    canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash, filePath ?? NO_FILE]),
+  );
 }
 
 // Data Shares dimensions — id derivations for share destinations,

@@ -137,26 +137,39 @@ describe('promptId (run-grouping key)', () => {
 });
 
 // `captureId` content-addresses a capture on its own text hash, scoped to the
-// owning session so identical content in two sessions never collapses onto one
-// row. A `null` session (a capture taken outside any harness session) folds
-// onto a fixed sentinel instead of shortening the join.
-describe('captureId (content-addressed, session-scoped)', () => {
-  it('is stable / deterministic for the same (session, contentHash)', () => {
-    const id = captureId('sess_abc123', 'contenthash123');
-    expect(id).toBe('ea59d6af9254316e6ecde67786230b0ca0d2f6f7434bdaf4261c2d2a786e0502');
-    expect(captureId('sess_abc123', 'contenthash123')).toBe(id);
+// owning session AND its file path, so identical content in two sessions — or
+// the same bytes at two different paths (a secret duplicated across files) —
+// never collapses onto one row. A `null` session or `null` path folds onto a
+// fixed sentinel instead of shortening the join.
+describe('captureId (content-addressed; session- and path-scoped)', () => {
+  it('is stable / deterministic for the same (session, contentHash, path)', () => {
+    const id = captureId('sess_abc123', 'contenthash123', null);
+    expect(id).toBe('f526a0273e164ac92df66131c3b020c96c5ad39f52f4139166e64506b0e4bc43');
+    expect(captureId('sess_abc123', 'contenthash123', null)).toBe(id);
   });
 
-  it('a null session folds onto the fixed sentinel rather than being dropped', () => {
-    expect(captureId(null, 'contenthash123')).toBe(
-      '36331fde9271bda6dfd25c812eab2a6b3624069ccfd2ed8a7f2df465edc2e099',
+  it('a null session and null path fold onto fixed sentinels rather than being dropped', () => {
+    expect(captureId(null, 'contenthash123', null)).toBe(
+      'e8c744efbc9118506a33b518172f478acd8323c5d52659187bae72bbd7da2da9',
     );
   });
 
   it('a different content hash yields a different id', () => {
-    expect(captureId('sess_abc123', 'contenthash456')).toBe(
-      'd11a7703f7bd6c8f7b9494aee3447f940adab9d8a0028ab8ac2cc80bbf2d6555',
+    expect(captureId('sess_abc123', 'contenthash456', null)).toBe(
+      'ffb66881265eac2054d53471637d396ac302dcc8ee2ab93f0ec4077a0339dc56',
     );
+  });
+
+  it('the file path folds into the id: same (session, contentHash), different path → different id', () => {
+    const withPath = captureId('sess_abc123', 'contenthash123', 'src/config.ts');
+    expect(withPath).toBe('e74c748bdc5a9f37425a268b26585281932e658110eedecd47fe4ed60e496cac');
+    // Distinct from the path-less capture of the same content...
+    expect(withPath).not.toBe(captureId('sess_abc123', 'contenthash123', null));
+    // ...and from the same content at another path (the duplicate-file case).
+    expect(captureId('sess_abc123', 'contenthash123', 'src/other.ts')).toBe(
+      'efe5c464154dd878aec64ee02477d68cb80a6cae3c00e6b59dfaaac7c5cd913b',
+    );
+    expect(captureId('sess_abc123', 'contenthash123', 'src/other.ts')).not.toBe(withPath);
   });
 });
 

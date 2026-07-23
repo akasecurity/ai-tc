@@ -64,15 +64,21 @@ export function toolCallId(sessionId: string, toolUseId: string): string {
   return sha256Hex(canonicalIdentity(['audit_event_tool_call', sessionId, toolUseId]));
 }
 
-// sha256(audit_event + definition + span): a transcript-derived inspection finding
+// sha256(audit_event + rule + span): a transcript-derived inspection finding
 // (one detected secret hit on a tool_call) is re-scanned on every reconcile pass, so
 // unlike the config-scan path (which mints randomUUID per fresh scan event) this MUST
-// be content-addressed — a re-read of the same hit (same tool_call, same rule
-// version, same span) yields the same id and no-ops via INSERT OR IGNORE. NOT keyed
-// on the matched value: the id never encodes secret content.
+// be content-addressed — a re-read of the same hit (same tool_call, same rule,
+// same span) yields the same id and no-ops via the finding insert's ON CONFLICT.
+// Keyed on the RULE id, not the inspection_definition id: a rule's definition mints
+// a fresh id per version (see `inspectionDefinitionId`), so keying on the definition
+// would mint a new finding id every time a pack update bumped the rule's version —
+// the same hit would look like a brand-new finding rather than the SAME finding
+// whose definition reference merely needs refreshing (the insert's
+// ON CONFLICT ... DO UPDATE handles that refresh). NOT keyed on the matched value:
+// the id never encodes secret content.
 export function inspectionFindingId(
   auditEventId: string,
-  definitionId: string,
+  ruleId: string,
   spanStart: number,
   spanEnd: number,
 ): string {
@@ -80,7 +86,7 @@ export function inspectionFindingId(
     canonicalIdentity([
       'inspection_finding',
       auditEventId,
-      definitionId,
+      ruleId,
       String(spanStart),
       String(spanEnd),
     ]),

@@ -155,7 +155,7 @@ export class StandaloneDataGateway implements DataGateway {
       });
       const classifiedDataId = this.db.classifiedData.upsert({ class: insp.category });
       this.db.inspectionFindings.insertFinding({
-        id: inspectionFindingId(auditEventId, definitionId, insp.span.start, insp.span.end),
+        id: inspectionFindingId(auditEventId, insp.ruleId, insp.span.start, insp.span.end),
         auditEventId,
         inspectionDefinitionId: definitionId,
         classifiedDataId,

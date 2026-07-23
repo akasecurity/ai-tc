@@ -14,11 +14,16 @@ export class SqliteInspectionFindingsRepository {
   private readonly insertStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
-    // ON CONFLICT(id) DO NOTHING: config-scan mints a random id per fresh scan
-    // (never conflicts), but the transcript reconciler mints a CONTENT-ADDRESSED
-    // id (`inspectionFindingId`) so a re-read of the same hit no-ops instead of
-    // conflicting and tearing down the whole reconcile transaction. Scoped to the
-    // PK conflict on purpose — unlike a blanket `INSERT OR IGNORE`, a genuine
+    // ON CONFLICT(id) DO UPDATE SET inspection_definition_id = excluded.…:
+    // config-scan mints a random id per fresh scan (never conflicts), but the
+    // transcript reconciler mints a CONTENT-ADDRESSED id (`inspectionFindingId`,
+    // keyed on the RULE id rather than the definition id) so a re-read of the same
+    // hit conflicts on re-detection instead of tearing down the whole reconcile
+    // transaction. The conflict refreshes `inspection_definition_id` to whatever
+    // definition fired THIS time: without that, a finding re-detected under a
+    // bumped rule version would keep pointing at the stale definition row, and its
+    // stored severity/category would never track a pack update. Scoped to the PK
+    // conflict on purpose — unlike a blanket `INSERT OR IGNORE`, a genuine
     // constraint bug (FK miss / NOT NULL / CHECK) still throws instead of being
     // silently swallowed.
     this.insertStmt = db.prepare(
@@ -28,7 +33,7 @@ export class SqliteInspectionFindingsRepository {
        VALUES
          (:id, :auditEventId, :inspectionDefinitionId, :classifiedDataId,
           :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence)
-       ON CONFLICT(id) DO NOTHING`,
+       ON CONFLICT(id) DO UPDATE SET inspection_definition_id = excluded.inspection_definition_id`,
     );
   }
 

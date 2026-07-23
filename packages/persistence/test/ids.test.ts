@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifiedDataId,
   inspectionDefinitionId,
+  inspectionFindingId,
   inventoryId,
   llmCallId,
   normalizeHost,
@@ -51,6 +52,36 @@ describe('meta-id content addressing (golden vectors)', () => {
       inventoryId('harness', 'my-laptop.local'),
     );
     expect(inventoryId('host', 'my-laptop.local')).not.toBe(inventoryId('host', 'other.local'));
+  });
+});
+
+// D-TFID: the finding id is keyed on the RULE id, not the inspection_definition
+// id, so a re-detected hit keeps the same id across a rule version bump — only
+// the definition reference (refreshed via the insert's ON CONFLICT DO UPDATE)
+// tracks the new version. See the inspectionFindingId doc comment in ids.ts.
+describe('inspectionFindingId (D-TFID: keyed on ruleId, not definitionId)', () => {
+  it('is stable / deterministic for the same (event, rule, span)', () => {
+    const id = inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34);
+    expect(id).toBe('cbd5462dd06a3b6f9507781966976e7e73db2218a550895e905f1a8977f2352d');
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34)).toBe(id);
+  });
+
+  it('a different span yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 0, 10)).toBe(
+      '601c07cac2fde2b3f31aeb24c232edc2b6df491ec5b96bdea1ad1ee03d51de38',
+    );
+  });
+
+  it('a different rule id yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.other-rule', 14, 34)).toBe(
+      '94fafd16668051ecd84567af36457b175f338d1d6a58eb835f38a6474e870172',
+    );
+  });
+
+  it('a different audit event yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34)).not.toBe(
+      inspectionFindingId('audit_evt_other', 'aka.secrets.aws-access-key', 14, 34),
+    );
   });
 });
 

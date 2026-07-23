@@ -21,14 +21,20 @@ import { scanPathIntoStore } from '../src/fs-scan.ts';
 // with `scanPathIntoStore`, record it with `recordProjectEgress`, then read the
 // store back through the Data Shares read port the dashboard uses.
 //
-// The corpus under fixtures/egress-corpus/ carries one dependency manifest per
-// supported ecosystem (npm, PyPI, Go, Maven, Gradle, RubyGems, Cargo, Composer,
-// NuGet) plus URL and bare-IP literals in five languages, and a planted
+// The corpus under fixtures/egress-corpus/ covers all eight supported
+// ecosystems across nine manifest formats — package.json (npm),
+// requirements.txt (PyPI), go.mod (Go), pom.xml and build.gradle (both Maven),
+// Gemfile (RubyGems), Cargo.toml (Cargo), composer.json (Composer) and
+// Api.csproj (NuGet) — plus URL and bare-IP literals in five languages, and a
+// planted
 // look-alike negative beside almost every positive: a provider SDK in
 // devDependencies, a plugin coordinate in pom.xml's <build> block, a
 // commented-out gem and PackageReference, a provider in Cargo's
 // [dev-dependencies] and Composer's require-dev, provider hosts inside a
-// lockfile, and a non-excluded host in a Markdown file.
+// lockfile, and a non-excluded host in a Markdown file. go.mod's `exclude`
+// directive is the one negative that cannot sit in EXPECTED_ABSENT — it names
+// the same provider as its `require` sibling — so it is guarded instead by the
+// s3.amazonaws.com SDK endpoint staying at x1.
 //
 // EXPECTED_LEDGER below is asserted as an EXACT equality, not a subset. A
 // missing provider is a recall failure and an extra host is a precision
@@ -73,8 +79,10 @@ const EXPECTED_LEDGER: ExpectedDestination[] = [
     transports: ['http', 'ws'],
     dataClasses: ['none'],
     endpoints: [
-      'POST http http://api.acme-partner.com/upload x1',
-      'POST ws ws://api.acme-partner.com/status x1',
+      // Both are bare `const` literals; the fetch below them uses the binding,
+      // not the literal, so no verb is proven at either site.
+      'REF http http://api.acme-partner.com/upload x1',
+      'REF ws ws://api.acme-partner.com/status x1',
     ],
   },
   {
@@ -85,7 +93,7 @@ const EXPECTED_LEDGER: ExpectedDestination[] = [
     name: 'Datadog',
     category: 'Observability',
     transports: ['https'],
-    dataClasses: ['logs'],
+    dataClasses: ['telemetry'],
     endpoints: ['SDK https https://api.datadoghq.com x1'],
   },
   {
@@ -108,7 +116,7 @@ const EXPECTED_LEDGER: ExpectedDestination[] = [
     name: 'Stripe',
     category: 'Payments',
     transports: ['https'],
-    dataClasses: ['customer'],
+    dataClasses: ['pii'],
     endpoints: [
       'POST https https://api.stripe.com/v1/charges x1',
       'SDK https https://api.stripe.com x4',
@@ -142,8 +150,8 @@ const EXPECTED_LEDGER: ExpectedDestination[] = [
     host: 's3.amazonaws.com',
     kind: 'provider',
     trust: 'recognized',
-    name: 'Amazon S3',
-    category: 'Cloud storage',
+    name: 'Amazon Web Services',
+    category: 'Cloud platform',
     transports: ['https'],
     dataClasses: ['secrets'],
     endpoints: ['SDK https https://s3.amazonaws.com x1'],

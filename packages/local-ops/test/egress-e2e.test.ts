@@ -271,6 +271,7 @@ describe('egress acceptance corpus — destination ledger', () => {
       endpoints: 14,
       callSites: 20,
       truncated: false,
+      droppedFiles: [],
     });
     expect(await readLedger(db)).toEqual(EXPECTED_LEDGER);
   });

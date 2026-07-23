@@ -1,0 +1,11 @@
+[package]
+name = "settlement-ingest"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+sentry = "0.34"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+mongodb = "3.1"

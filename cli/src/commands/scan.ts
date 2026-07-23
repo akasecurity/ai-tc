@@ -1,9 +1,17 @@
 import { statSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 
-import type { ProjectInventoryResult, ScanPathResult } from '@akasecurity/local-ops';
-import { recordProjectInventory, scanPathIntoStore } from '@akasecurity/local-ops';
-import { openLocalDatabase } from '@akasecurity/persistence';
+import type {
+  EgressRecordResult,
+  ProjectInventoryResult,
+  ScanPathResult,
+} from '@akasecurity/local-ops';
+import {
+  recordProjectEgress,
+  recordProjectInventory,
+  scanPathIntoStore,
+} from '@akasecurity/local-ops';
+import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
 import { Severity } from '@akasecurity/schema';
 
@@ -21,7 +29,9 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //   --format json         machine-readable result on stdout (findings carry the
 //                         masked match + span, never the raw secret; `inventory`
 //                         reports the project row + file tree recorded for the
-//                         repo containing the target, null outside a git repo)
+//                         repo containing the target, null outside a git repo;
+//                         `egress` reports the destinations/endpoints/call sites
+//                         written for the project, null when nothing was recorded)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
 
@@ -37,6 +47,20 @@ export function renderInventoryLine(inv: ProjectInventoryResult): string {
   if (inv.fileCount === 0) return `Inventory: ${inv.name} · file tree unchanged`;
   const partial = inv.truncated ? ' (partial walk)' : '';
   return `Inventory: ${inv.name} · ${String(inv.fileCount)} project file(s) recorded${partial}`;
+}
+
+// The text-mode summary of what the egress-recording pass wrote. A null
+// result (the Data Shares toggle is off, the target has no resolvable
+// project, or the write failed) means nothing to report, not an error, and
+// renders no line at all.
+export function renderEgressLine(egress: EgressRecordResult): string {
+  const cap = egress.truncated
+    ? ` (capped at ${String(MAX_EGRESS_CALL_SITES_PER_PROJECT)} call sites)`
+    : '';
+  return (
+    `Data shares: ${String(egress.destinations)} destination(s) · ` +
+    `${String(egress.endpoints)} endpoint(s) · ${String(egress.callSites)} call site(s)${cap}`
+  );
 }
 
 export function runScan(argv: string[]): void {
@@ -88,6 +112,7 @@ export function runScan(argv: string[]): void {
 
   let result: ScanPathResult;
   let inventory: ProjectInventoryResult | null;
+  let egress: EgressRecordResult | null;
   try {
     // Evaluate the bundled packs via the process-global registry, but resolve each
     // finding's action from the installed snapshot's per-pack policy (ruleActions)
@@ -98,6 +123,10 @@ export function runScan(argv: string[]): void {
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
     inventory = recordProjectInventory(db, target);
+    // Record the destinations/endpoints/call sites the walk extracted
+    // (fail-open; `home` is the settings base so a --home scan reads that
+    // home's own kill-switch, never the caller's real ~/.aka).
+    egress = recordProjectEgress(db, target, result.egress, home);
   } finally {
     db.close();
   }
@@ -124,14 +153,27 @@ export function runScan(argv: string[]): void {
           truncated: inventory.truncated,
         }
       : null;
+    const egressJson = egress
+      ? {
+          destinations: egress.destinations,
+          endpoints: egress.endpoints,
+          callSites: egress.callSites,
+          truncated: egress.truncated,
+        }
+      : null;
     process.stdout.write(
-      `${JSON.stringify({ target, scanned: result.scanned, findings, inventory: inventoryJson }, null, 2)}\n`,
+      `${JSON.stringify(
+        { target, scanned: result.scanned, findings, inventory: inventoryJson, egress: egressJson },
+        null,
+        2,
+      )}\n`,
     );
   } else {
     process.stdout.write(
       `Scanned ${String(result.scanned)} file(s) under ${target} · ${String(result.findings)} finding(s) recorded\n`,
     );
     if (inventory) process.stdout.write(`${renderInventoryLine(inventory)}\n`);
+    if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
   }
 
   if (failOn !== undefined) {

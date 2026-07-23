@@ -48,7 +48,13 @@ function zeroSummary(): ScanSummary {
 function baseDeps(overrides: Partial<BackfillDeps> = {}): BackfillDeps {
   const { io } = fakeIo();
   const config: PluginConfig = {
-    settings: { specVersion: 2, runMode: 'standalone', policy: 'redact', historicalAccess: 'full' },
+    settings: {
+      specVersion: 2,
+      runMode: 'standalone',
+      policy: 'redact',
+      historicalAccess: 'full',
+      dataSharesInPlace: true,
+    },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
     settingsDir: dataDir,
@@ -148,6 +154,7 @@ describe('runBackfill — triage mode', () => {
         runMode: 'standalone',
         policy: 'redact',
         historicalAccess: 'session-only',
+        dataSharesInPlace: true,
       },
       dataDir,
       dbPath: join(dataDir, 'aka.db'),

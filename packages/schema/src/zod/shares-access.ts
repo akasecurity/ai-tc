@@ -65,7 +65,8 @@ export function isCustomDecision(
 /**
  * Derives the posture review reasons for a destination: `raw_ip` when trust is
  * 'ip', `unverified_domain` when trust is 'unverified', `plaintext_transport`
- * when at least one endpoint uses 'http'. Independent of any egress decision
+ * when at least one endpoint uses an unencrypted transport ('http' or 'ws';
+ * 'https' and 'wss' are encrypted). Independent of any egress decision
  * override — this is posture, not decision (an `allow` override still leaves
  * `needsReview: true` when the underlying posture is risky).
  */
@@ -76,7 +77,7 @@ export function deriveReviewReasons(
   const reasons: ReviewReason[] = [];
   if (trust === 'ip') reasons.push('raw_ip');
   if (trust === 'unverified') reasons.push('unverified_domain');
-  if (transports.includes('http')) reasons.push('plaintext_transport');
+  if (transports.includes('http') || transports.includes('ws')) reasons.push('plaintext_transport');
   return reasons;
 }
 

@@ -13,12 +13,17 @@ import { Badge, cn } from '@akasecurity/ui-kit';
 import { BracesIcon, BuildingIcon, PinIcon, ServerIcon } from '../shared/icons.tsx';
 import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } from './meta.ts';
 
-/** Colored HTTP-method tag (mono, method-colored). */
+/**
+ * Colored method tag (mono, method-colored). 'SDK' and 'REF' are evidence tags
+ * rather than verbs — see HttpMethod in @akasecurity/schema.
+ */
 const METHOD_TONE: Record<HttpMethod, string> = {
   GET: 'bg-sev-low-fill text-sev-low',
   POST: 'bg-ok-fill text-ok',
   PUT: 'bg-sev-high-fill text-sev-high',
   DELETE: 'bg-sev-critical-fill text-sev-critical',
+  SDK: 'bg-ok-fill text-ok',
+  REF: 'bg-sev-medium-fill text-sev-medium',
 };
 export function MethodTag({ method }: { method: HttpMethod }) {
   return (
@@ -89,7 +94,8 @@ export function TrustTag({ trust }: { trust: ShareTrustLevel }) {
 /**
  * Destination mark: a colored lettermark for known providers (derived from
  * name/host, since the API sends neither), or a tinted icon tile (server /
- * building / pin) for internal domains and raw IPs.
+ * building / pin) for internal domains, external domains and raw IPs. External
+ * destinations take the unverified treatment, never internal's.
  */
 export function DestMark({
   kind,
@@ -116,10 +122,12 @@ export function DestMark({
     );
   }
   const iconStyle = { width: size * 0.5, height: size * 0.5 };
+  // 'external' is matched on the kind, not only on its 'unverified' trust, so a
+  // later trust reclassification cannot silently drop it to the internal mark.
   const mark =
     kind === 'ip' ? (
       <PinIcon aria-hidden focusable={false} style={iconStyle} />
-    ) : trust === 'unverified' ? (
+    ) : kind === 'external' || trust === 'unverified' ? (
       <BuildingIcon aria-hidden focusable={false} style={iconStyle} />
     ) : (
       <ServerIcon aria-hidden focusable={false} style={iconStyle} />

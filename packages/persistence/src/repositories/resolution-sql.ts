@@ -5,26 +5,41 @@
 // insertion order), never by "does ANY row exist" — otherwise a fixed-at-source
 // key that is later redetected (the same secret re-added) would stay invisibly
 // "caught" under its stale resolved row forever. See SqliteResolutionsRepository's
-// class doc for the full invariant, and keep the two consumers in lockstep:
+// class doc for the full invariant, and keep every consumer in lockstep:
 //
 //   - SqliteSecurityRepository.severitySummary (caught / open-at-rest buckets)
+//   - SqliteSecurityRepository.mttrTrend (latest status/method/resolved_at)
+//   - SqliteSecurityRepository.recentlyResolved (latest status/method/resolved_at)
 //   - SqliteFindingsRepository.listGroupedFindings (per-finding status column)
+//   - SqliteResolutionsRepository.openAtRestKeysForPath /
+//     resolvedAtRestKeysForPath (latest status)
 //
-// Both build on these fragments so the dashboard's severity card and its
-// findings list can never disagree about which resolution row "wins".
+// All build on these fragments so the dashboard's severity card, its MTTR
+// trend, its recently-resolved feed, and its findings list can never disagree
+// about which resolution row "wins".
+
+// The finding_resolution columns a correlated latest-row lookup may select —
+// constrained to a union so the column name can never become an interpolated,
+// unvalidated identifier.
+export type ResolutionColumn = 'status' | 'method' | 'resolved_at';
 
 /**
- * Correlated-subquery form: the latest resolution status for one finding row,
- * usable inside a SELECT list or WHERE clause. `findingsAlias` is the alias of
- * the `findings` table in the enclosing query (e.g. 'f').
+ * Correlated-subquery form: the latest resolution row's `column` for one
+ * finding row, usable inside a SELECT list or WHERE clause. `findingsAlias`
+ * is the alias of the `findings` table in the enclosing query (e.g. 'f').
  */
-export function latestResolutionStatusSql(findingsAlias: string): string {
+export function latestResolutionColumnSql(column: ResolutionColumn, findingsAlias: string): string {
   return `(
-    SELECT fr.status FROM finding_resolution fr
+    SELECT fr.${column} FROM finding_resolution fr
      WHERE fr.finding_key = ${findingsAlias}.finding_key
      ORDER BY fr.created_at DESC, fr.rowid DESC
      LIMIT 1
   )`;
+}
+
+/** Thin wrapper over {@link latestResolutionColumnSql} for the common `status`-only case. */
+export function latestResolutionStatusSql(findingsAlias: string): string {
+  return latestResolutionColumnSql('status', findingsAlias);
 }
 
 /**

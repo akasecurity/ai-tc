@@ -23,7 +23,7 @@ import {
 
 import { allRows } from '../internal/rows.ts';
 import type { SecurityViews } from '../ports.ts';
-import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
+import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionColumnSql } from './resolution-sql.ts';
 
 const DAY_MS = 86_400_000;
 
@@ -297,24 +297,9 @@ export class SqliteSecurityRepository implements SecurityViews {
         // the parent event's occurred_at defends against any legacy/edge row the
         // backfill left null.
         `SELECT COALESCE(f.first_detected_at, e.occurred_at) AS first_detected_at, f.severity AS severity,
-                (
-                  SELECT fr.status FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_status,
-                (
-                  SELECT fr.method FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_method,
-                (
-                  SELECT fr.resolved_at FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_resolved_at
+                ${latestResolutionColumnSql('status', 'f')} AS latest_status,
+                ${latestResolutionColumnSql('method', 'f')} AS latest_method,
+                ${latestResolutionColumnSql('resolved_at', 'f')} AS latest_resolved_at
          FROM findings f JOIN events e ON e.id = f.event_id
          WHERE f.finding_key IS NOT NULL
            AND EXISTS (
@@ -432,33 +417,13 @@ export class SqliteSecurityRepository implements SecurityViews {
                 f.severity AS severity,
                 json_extract(e.metadata, '$.filePath') AS path,
                 COALESCE(f.first_detected_at, e.occurred_at) AS first_detected_at,
-                (
-                  SELECT fr.resolved_at FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_resolved_at
+                ${latestResolutionColumnSql('resolved_at', 'f')} AS latest_resolved_at
          FROM findings f JOIN events e ON e.id = f.event_id
          WHERE e.kind = 'code_change'
            AND f.finding_key IS NOT NULL
-           AND (
-             SELECT fr.status FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) = 'resolved'
-           AND (
-             SELECT fr.method FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) = 'fixed-at-source'
-           AND (
-             SELECT fr.resolved_at FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) IS NOT NULL
+           AND ${latestResolutionColumnSql('status', 'f')} = 'resolved'
+           AND ${latestResolutionColumnSql('method', 'f')} = 'fixed-at-source'
+           AND ${latestResolutionColumnSql('resolved_at', 'f')} IS NOT NULL
          ORDER BY latest_resolved_at DESC
          LIMIT :limit`,
       ),

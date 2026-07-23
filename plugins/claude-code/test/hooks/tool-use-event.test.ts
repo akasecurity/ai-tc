@@ -97,10 +97,19 @@ function openStore(dir: string): DataGateway {
   return gateway;
 }
 
+// Constrained to the four capture kinds: a session-scoped capture also stubs a
+// structural 'session' row onto audit_events (the self-FK root a capture hangs
+// off), which never existed in the legacy events table — without this
+// predicate the stub would double the row count below.
 function eventRows(dataDir: string): { kind: string; content: string }[] {
   const db = new DatabaseSync(join(dataDir, 'aka.db'));
   try {
-    return db.prepare('SELECT kind, content FROM events').all() as unknown as {
+    return db
+      .prepare(
+        `SELECT event_type AS kind, content FROM audit_events
+         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+      )
+      .all() as unknown as {
       kind: string;
       content: string;
     }[];

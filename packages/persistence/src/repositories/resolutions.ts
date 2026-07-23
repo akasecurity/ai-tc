@@ -95,16 +95,16 @@ export class SqliteResolutionsRepository {
         ORDER BY created_at DESC, rowid DESC
         LIMIT 1`,
     );
-    // At-rest = the finding's parent event is a code_change whose
-    // metadata.filePath matches. "Open" = the key's LATEST resolution row
+    // At-rest = the finding's parent audit event is a code_change whose
+    // attributes.file_path matches. "Open" = the key's LATEST resolution row
     // (if any) does not have status 'resolved' — see the class doc for why
     // this is "latest wins", not "any row exists".
     this.openAtRestStmt = db.prepare(
       `SELECT DISTINCT f.finding_key AS finding_key
-         FROM findings f
-         JOIN events e ON e.id = f.event_id
-        WHERE e.kind = 'code_change'
-          AND json_extract(e.metadata, '$.filePath') = :path
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+        WHERE e.event_type = 'code_change'
+          AND json_extract(e.attributes, '$.file_path') = :path
           AND f.finding_key IS NOT NULL
           AND ${latestResolutionStatusSql('f')} IS NOT 'resolved'`,
     );
@@ -113,10 +113,10 @@ export class SqliteResolutionsRepository {
     // candidates (a currently-produced key that needs re-opening).
     this.resolvedAtRestStmt = db.prepare(
       `SELECT DISTINCT f.finding_key AS finding_key
-         FROM findings f
-         JOIN events e ON e.id = f.event_id
-        WHERE e.kind = 'code_change'
-          AND json_extract(e.metadata, '$.filePath') = :path
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+        WHERE e.event_type = 'code_change'
+          AND json_extract(e.attributes, '$.file_path') = :path
           AND f.finding_key IS NOT NULL
           AND ${latestResolutionStatusSql('f')} = 'resolved'`,
     );

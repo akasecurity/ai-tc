@@ -80,8 +80,8 @@ function hasDrift(
 
 /**
  * Detections read views over the tenant-free local store — the read side of
- * the Detections page. Reads installed_packs (+ findings⋈events for the 30-day
- * count, + available_packs for update availability) and shapes the finished
+ * the Detections page. Reads installed_packs (+ inspection_findings⋈audit_events
+ * for the 30-day count, + available_packs for update availability) and shapes the finished
  * @akasecurity/schema responses via the shared pure builders, so read surfaces
  * never diverge.
  *
@@ -229,8 +229,14 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
     );
   }
 
-  // Findings whose parent event occurred in the last 30 days and whose rule_id is
-  // in the given set. Mirrors the security repo's findings⋈events window join.
+  // Findings whose parent audit event occurred in the last 30 days, is one of
+  // the four capture kinds, and whose definition's rule_id is in the given set.
+  // Mirrors the security repo's inspection_findings⋈audit_events window join.
+  // rule_id lives on inspection_definitions, not the finding row, so the join
+  // chains through it. audit_events also holds structural rows (session, run,
+  // tool_call, llm_call, source_lookup, config_scan) that never had a legacy
+  // events counterpart, so the event_type predicate keeps this count identical
+  // to the old findings⋈events one.
   private countFindingsLast30d(ruleIds: string[]): number {
     // WHERE rule_id IN () is invalid SQL and the answer is always 0.
     if (ruleIds.length === 0) return 0;
@@ -239,8 +245,12 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
     return countScalar(
       this.db,
       `SELECT count(*) AS n
-         FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.occurred_at >= ? AND f.rule_id IN (${inClause})`,
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         WHERE e.started_at >= ?
+           AND e.event_type IN ('prompt','response','code_change','tool_use')
+           AND d.rule_id IN (${inClause})`,
       [since, ...ruleIds],
     );
   }

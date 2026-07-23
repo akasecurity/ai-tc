@@ -27,14 +27,22 @@ const RULES: Rule[] = [
   },
 ];
 
-// The raw at-rest event rows, straight from the store file — the tests assert
-// on what actually hit disk, independent of any read port.
-function storedEvents(dir: string): { content: string; metadata: string | null }[] {
+// The raw at-rest audit-event rows, straight from the store file — the tests
+// assert on what actually hit disk, independent of any read port. Constrained
+// to the four capture kinds — audit_events also holds structural rows (session,
+// run, tool_call, llm_call, source_lookup, config_scan) that scanPathIntoStore
+// never writes, but the predicate keeps intent explicit.
+function storedEvents(dir: string): { content: string; attributes: string | null }[] {
   const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
   try {
-    return raw.prepare('SELECT content, metadata FROM events').all() as unknown as {
+    return raw
+      .prepare(
+        `SELECT content, attributes FROM audit_events
+         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+      )
+      .all() as unknown as {
       content: string;
-      metadata: string | null;
+      attributes: string | null;
     }[];
   } finally {
     raw.close();
@@ -208,9 +216,9 @@ describe('scanPathIntoStore', () => {
 
       const events = storedEvents(store);
       expect(events).toHaveLength(1);
-      const metadata: unknown = JSON.parse(events[0]?.metadata ?? '{}');
-      expect(metadata).toMatchObject({
-        filePath: join(root, 'scratch.env'),
+      const attributes: unknown = JSON.parse(events[0]?.attributes ?? '{}');
+      expect(attributes).toMatchObject({
+        file_path: join(root, 'scratch.env'),
         gitignored: true,
       });
     } finally {

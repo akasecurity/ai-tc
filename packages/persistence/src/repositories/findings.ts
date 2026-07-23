@@ -38,6 +38,14 @@ import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 // the table to count, so time grows with it while memory does not.
 const PREVIEW_INSTANCES_PER_GROUP = 200;
 
+// audit_events holds structural rows (session, tool_call, llm_call,
+// config_scan) alongside the four capture kinds this repository's findings
+// come from. Every read below joins inspection_findings to audit_events, so
+// every read must constrain to this set — the old `events` table held only
+// these four kinds, so this predicate is what keeps the numbers identical to
+// the pre-repoint reads over `findings ⋈ events`.
+const CAPTURE_EVENT_TYPES_SQL = `'prompt','response','code_change','tool_use'`;
+
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
 // default ',' is what the aggregate queries below emit.
@@ -53,7 +61,7 @@ function splitConcat(value: string | null): string[] {
 
 // One groupAggregates() row: the whole-group folds for a single rule_id. The
 // group_concat columns are null when the group has no non-null value for that
-// column (e.g. events whose metadata carries no repo).
+// column (e.g. audit_events whose attributes carry no repo).
 interface FindingAggregateRowJoined {
   rule_id: string;
   instance_count: number;
@@ -230,10 +238,15 @@ export class SqliteFindingsRepository
     const limit = opts?.limit ?? 50;
     const rows = allRows<FindingRowJoined>(
       this.db.prepare(
-        `SELECT f.id, f.event_id, f.rule_id, f.category, f.severity, f.masked_match,
-                f.action_taken, f.confidence, e.occurred_at, e.source_tool, e.kind
-         FROM findings f JOIN events e ON e.id = f.event_id
-         ORDER BY e.occurred_at DESC, f.rowid DESC
+        `SELECT f.id, f.audit_event_id AS event_id, d.rule_id, d.category, d.severity,
+                f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
+                json_extract(e.attributes, '$.source_tool') AS source_tool,
+                e.event_type AS kind
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+         ORDER BY e.started_at DESC, f.rowid DESC
          LIMIT :limit`,
       ),
       { limit },
@@ -256,26 +269,35 @@ export class SqliteFindingsRepository
   }
 
   /** Live-enforced findings recorded for one session — a bare COUNT over the
-   * session-stamped events (served by idx_events_session_id), so the Activity
+   * session-stamped audit_events (served by idx_audit_session), so the Activity
    * page can label its findings link without the grouped pipeline. */
   sessionFindingsCount(sessionId: string): Promise<number> {
     if (!sessionId) return Promise.resolve(0);
     return Promise.resolve(
       countScalar(
         this.db,
-        `SELECT count(*) AS n FROM findings f
-           JOIN events e ON e.id = f.event_id
-          WHERE json_extract(e.metadata, '$.sessionId') = :sessionId`,
+        `SELECT count(*) AS n FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+          WHERE e.root_session_id = :sessionId
+            AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`,
         { sessionId },
       ),
     );
   }
 
-  /** Per-rule transcript firing tally for one session — reads the OTHER finding
-   * store (inspection_findings, keyed to audit_events): every detection the
-   * transcript pass recorded, counted per firing rather than per unique value.
-   * Rides on session-scoped grouped responses so the findings view can
-   * reconcile the Activity page's tally with the deduped groups it lists. */
+  /** Per-rule transcript firing tally for one session — every detection the
+   * transcript-reconciler pass recorded against the session's `tool_call` rows,
+   * counted per firing rather than per unique value. Rides on session-scoped
+   * grouped responses so the findings view can reconcile the Activity page's
+   * tally with the deduped groups it lists.
+   *
+   * `inspection_findings`/`audit_events` are now the SAME physical tables the
+   * rest of this class reads for the live-capture list above (they used to be
+   * a separate store), so this excludes the four capture kinds those rows
+   * already carry — without that exclusion, every live-capture finding in the
+   * session would be tallied here too, double-counting against the grouped
+   * list this response rides alongside. The reconciler attaches its findings
+   * only to `tool_call` rows, which the exclusion leaves untouched. */
   private sessionFirings(sessionId: string): Record<string, number> {
     return Object.fromEntries(
       countBy(
@@ -285,6 +307,7 @@ export class SqliteFindingsRepository
            JOIN audit_events e ON e.id = f.audit_event_id
            JOIN inspection_definitions d ON d.id = f.inspection_definition_id
           WHERE e.root_session_id = :sessionId
+            AND e.event_type NOT IN (${CAPTURE_EVENT_TYPES_SQL})
           GROUP BY d.rule_id`,
         { sessionId },
       ),
@@ -292,9 +315,13 @@ export class SqliteFindingsRepository
   }
 
   /**
-   * Grouped findings for the dashboard — joins findings⋈events (repo/file/
-   * toolName from event metadata), groups by ruleId, computes per-filter-excluded facets,
-   * applies the requested filters, and sorts by severity then recency. Filtering
+   * Grouped findings for the dashboard — joins inspection_findings⋈audit_events
+   * ⋈inspection_definitions (repo/file/toolName from the audit event's
+   * attributes bag, rule_id/category/severity from the definition), scoped to
+   * the four capture kinds (audit_events also holds structural/reconciler/scan
+   * rows this list must never surface), groups by ruleId, computes
+   * per-filter-excluded facets, applies the requested filters, and sorts by
+   * severity then recency. Filtering
    * and faceting run in JS via the shared @akasecurity/schema helpers. `totals`
    * reflect the full filtered set; `items` is the requested
    * page (default 50); no cursor (nextCursor is always null).
@@ -313,9 +340,12 @@ export class SqliteFindingsRepository
     // The session scope is a SQL predicate, not a JS filter: totals, facets and
     // the per-group aggregates must all speak for the session only, and the
     // aggregate query never materializes a row per finding to filter in JS.
-    const sessionPredicate = query.sessionId
-      ? `WHERE json_extract(e.metadata, '$.sessionId') = :sessionId`
-      : '';
+    // The capture-kind constraint is unconditional (see CAPTURE_EVENT_TYPES_SQL)
+    // — audit_events carries structural/reconciler/scan rows this list must
+    // never surface, the same universe the old `events` table was already
+    // limited to.
+    const sessionPredicate = query.sessionId ? ` AND e.root_session_id = :sessionId` : '';
+    const predicate = `WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})${sessionPredicate}`;
     const sessionParams: Record<string, string> = query.sessionId
       ? { sessionId: query.sessionId }
       : {};
@@ -324,7 +354,7 @@ export class SqliteFindingsRepository
     // rather than the rule count, so fetch it only for a request that can use
     // it (see groupAggregates).
     const aggregates = this.groupAggregates(query.q !== undefined && query.q !== '', {
-      predicate: sessionPredicate,
+      predicate,
       params: sessionParams,
     });
 
@@ -333,24 +363,26 @@ export class SqliteFindingsRepository
         `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
                 occurred_at, source_tool, repo, file, tool_name, kind, finding_key, latest_status
          FROM (
-           SELECT f.id AS id, f.rule_id AS rule_id, f.category AS category,
-                  f.severity AS severity, f.masked_match AS masked_match,
+           SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
+                  d.severity AS severity, f.masked_match AS masked_match,
                   f.action_taken AS action_taken, f.confidence AS confidence,
-                  e.occurred_at AS occurred_at, e.source_tool AS source_tool,
-                  json_extract(e.metadata, '$.repo') AS repo,
-                  json_extract(e.metadata, '$.filePath') AS file,
-                  json_extract(e.metadata, '$.toolName') AS tool_name,
-                  e.kind AS kind, f.finding_key AS finding_key,
+                  e.started_at AS occurred_at,
+                  json_extract(e.attributes, '$.source_tool') AS source_tool,
+                  json_extract(e.attributes, '$.repo') AS repo,
+                  json_extract(e.attributes, '$.file_path') AS file,
+                  json_extract(e.attributes, '$.tool_name') AS tool_name,
+                  e.event_type AS kind, f.finding_key AS finding_key,
                   latest.status AS latest_status,
                   ROW_NUMBER() OVER (
-                    PARTITION BY f.rule_id
-                    ORDER BY e.occurred_at DESC, f.id DESC
+                    PARTITION BY d.rule_id
+                    ORDER BY e.started_at DESC, f.id DESC
                   ) AS rn
-             FROM findings f
-             JOIN events e ON e.id = f.event_id
+             FROM inspection_findings f
+             JOIN audit_events e ON e.id = f.audit_event_id
+             JOIN inspection_definitions d ON d.id = f.inspection_definition_id
              LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
                ON latest.finding_key = f.finding_key
-             ${sessionPredicate}
+             ${predicate}
          )
          WHERE rn <= :cap
          ORDER BY occurred_at DESC, id DESC`,
@@ -436,30 +468,31 @@ export class SqliteFindingsRepository
     // Tool names ride as their display label ("via Bash") to mirror
     // buildHaystack — see its doc for why the bare name is not searched.
     const searchTextColumns = withSearchText
-      ? `, group_concat(DISTINCT json_extract(e.metadata, '$.repo')) AS repos,
-           group_concat(DISTINCT json_extract(e.metadata, '$.filePath')) AS files,
-           group_concat(DISTINCT 'via ' || json_extract(e.metadata, '$.toolName')) AS tool_names`
+      ? `, group_concat(DISTINCT json_extract(e.attributes, '$.repo')) AS repos,
+           group_concat(DISTINCT json_extract(e.attributes, '$.file_path')) AS files,
+           group_concat(DISTINCT 'via ' || json_extract(e.attributes, '$.tool_name')) AS tool_names`
       : `, NULL AS repos, NULL AS files, NULL AS tool_names`;
 
     const rows = this.db
       .prepare(
-        `SELECT f.rule_id AS rule_id,
+        `SELECT d.rule_id AS rule_id,
                 count(*) AS instance_count,
-                max(e.occurred_at) AS latest_at,
-                group_concat(DISTINCT e.source_tool) AS source_tools,
+                max(e.started_at) AS latest_at,
+                group_concat(DISTINCT json_extract(e.attributes, '$.source_tool')) AS source_tools,
                 group_concat(DISTINCT f.action_taken) AS actions_taken,
                 group_concat(DISTINCT (
-                  e.kind || '${TUPLE_SEP}' ||
+                  e.event_type || '${TUPLE_SEP}' ||
                   (CASE WHEN f.finding_key IS NULL THEN '' ELSE 'k' END) || '${TUPLE_SEP}' ||
                   coalesce(latest.status, '')
                 )) AS status_inputs
                 ${searchTextColumns}
-           FROM findings f
-           JOIN events e ON e.id = f.event_id
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+           JOIN inspection_definitions d ON d.id = f.inspection_definition_id
            LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
              ON latest.finding_key = f.finding_key
           ${scope.predicate}
-          GROUP BY f.rule_id`,
+          GROUP BY d.rule_id`,
       )
       .all(scope.params) as unknown as FindingAggregateRowJoined[];
 
@@ -499,13 +532,24 @@ export class SqliteFindingsRepository
   }
 
   healthSummary(): Promise<HealthSummary> {
-    const total = countScalar(this.db, 'SELECT count(*) AS n FROM findings');
+    const total = countScalar(
+      this.db,
+      `SELECT count(*) AS n FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+        WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`,
+    );
     const byAction = Object.fromEntries(ACTION_TAKEN_KEYS.map((a) => [a, 0])) as Record<
       ActionTaken,
       number
     >;
     const grouped = allRows<{ action_taken: string; c: number }>(
-      this.db.prepare('SELECT action_taken, count(*) AS c FROM findings GROUP BY action_taken'),
+      this.db.prepare(
+        `SELECT f.action_taken AS action_taken, count(*) AS c
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+          WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+          GROUP BY f.action_taken`,
+      ),
     );
     for (const row of grouped) {
       if (row.action_taken in byAction) byAction[row.action_taken as ActionTaken] = row.c;
@@ -524,12 +568,15 @@ export class SqliteFindingsRepository
     const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
     const sevRows = allRows<{ severity: string; c: number }>(
       this.db.prepare(
-        `SELECT f.severity AS severity, count(*) AS c
-         FROM findings f
+        `SELECT d.severity AS severity, count(*) AS c
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
-         WHERE latest.status IS NULL OR latest.status != 'resolved'
-         GROUP BY f.severity`,
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+           AND (latest.status IS NULL OR latest.status != 'resolved')
+         GROUP BY d.severity`,
       ),
     );
     for (const row of sevRows) {
@@ -564,9 +611,11 @@ export class SqliteFindingsRepository
       c: number;
     }>(
       this.db.prepare(
-        `SELECT date(e.occurred_at / 1000, 'unixepoch') AS day, f.action_taken AS action, count(*) AS c
-         FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.occurred_at >= :since
+        `SELECT date(e.started_at / 1000, 'unixepoch') AS day, f.action_taken AS action, count(*) AS c
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         WHERE e.started_at >= :since
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
          GROUP BY day, f.action_taken`,
       ),
       { since },

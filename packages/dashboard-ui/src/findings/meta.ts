@@ -142,8 +142,13 @@ export const FINDING_STATUS_META: Record<FindingStatus, FindingStatusMeta> = {
   dismissed: { label: 'Dismissed', badge: 'default' },
 };
 
-/** Statuses in display order — drives the Status filter. */
-export const FINDING_STATUSES: FindingStatus[] = ['open', 'handled', 'resolved', 'dismissed'];
+/**
+ * Statuses in display order — drives the Status filter. Derived from
+ * FINDING_STATUS_META (an exhaustive Record over FindingStatus, so adding an
+ * enum member is a compile error there and automatically appears here); the
+ * literal's key order IS the display order.
+ */
+export const FINDING_STATUSES = Object.keys(FINDING_STATUS_META) as FindingStatus[];
 
 /**
  * Filters a single group's instances by the SAME statuses that decided the
@@ -153,11 +158,12 @@ export const FINDING_STATUSES: FindingStatus[] = ['open', 'handled', 'resolved',
  * that don't match — which is confusing under a filter that promised to narrow
  * the view down to those statuses. An empty/absent selection is a no-op.
  *
- * Never returns empty for a group the store already deemed visible:
- * `foldGroupStatus` (findings-group-build.ts) only ever assigns a group's
- * status to a candidate value when at least one instance actually carries it,
- * so a group whose status is among `statuses` is guaranteed to have at least
- * one matching instance.
+ * CAN return empty for a group the store correctly kept: the group's status
+ * folds over EVERY instance, while `group.instances` is only a preview of the
+ * newest — every instance carrying a requested status may be older than the
+ * preview window (the store pre-narrows the preview the same way, so this is
+ * a pass-through then). Views render an explicit notice for that case rather
+ * than an empty expansion.
  */
 export function filterInstancesByStatus(
   instances: FindingInstance[],

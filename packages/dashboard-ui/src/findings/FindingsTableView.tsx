@@ -77,8 +77,11 @@ export function FindingsTableView({
   sessionFirings?: Record<string, number>;
   /**
    * The statuses the caller's Status filter selected (empty/absent ⇒ no status
-   * filter). The store already dropped every group whose status is not among
-   * them; this narrows an expanded group's instance rows to match.
+   * filter). The store already dropped every non-matching group and pre-narrows
+   * each group's instance preview; this re-applies the same narrowing for
+   * callers that don't, and drives the explicit notice when a kept group's
+   * preview holds no matching instance (every match can be older than the
+   * preview window).
    */
   statusFilter?: readonly string[];
 }) {
@@ -86,16 +89,14 @@ export function FindingsTableView({
     <Card className="flex flex-col overflow-hidden shadow-sm h-full">
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error ? (
-          <p className="py-8 text-center text-sm text-sev-critical px-4">
+          <p className="py-8 text-center text-sm text-sev-critical">
             Error loading findings: {error}
           </p>
         ) : isLoading ? (
-          <p className="py-8 text-center text-sm text-text-3 px-4">Loading findings…</p>
+          <p className="py-8 text-center text-sm text-text-3">Loading findings…</p>
         ) : groups.length === 0 ? (
           (emptyState ?? (
-            <p className="py-8 text-center text-sm text-text-3 px-4">
-              No findings match these filters.
-            </p>
+            <p className="py-8 text-center text-sm text-text-3">No findings match these filters.</p>
           ))
         ) : (
           <Table>
@@ -111,6 +112,7 @@ export function FindingsTableView({
               {groups.map((group) => {
                 const expanded = expandedIds.has(group.id);
                 const isGroupSelected = selection?.finding.id === group.id && !selection.instance;
+                const visibleInstances = filterInstancesByStatus(group.instances, statusFilter);
                 return (
                   <Fragment key={group.id}>
                     <TableRow
@@ -143,7 +145,7 @@ export function FindingsTableView({
                       ))}
                     </TableRow>
                     {expanded &&
-                      filterInstancesByStatus(group.instances, statusFilter).map((instance) => (
+                      visibleInstances.map((instance) => (
                         <TableRow
                           key={instance.id}
                           onClick={() => {
@@ -178,17 +180,32 @@ export function FindingsTableView({
                         </TableCell>
                       </TableRow>
                     )}
-                    {/* `instances` is the newest slice of a large group, not all
-                      of it — say so rather than ending the rows silently. */}
-                    {expanded && group.instances.length < group.instanceCount && (
+                    {/* The group's status folds over EVERY instance while the
+                      rows above are only the newest preview — under a status
+                      filter every matching instance can sit outside it. Say so
+                      rather than expanding to nothing. */}
+                    {expanded && visibleInstances.length === 0 && (
                       <TableRow className="bg-surface-2/50 hover:bg-surface-2/50">
                         <TableCell />
                         <TableCell colSpan={columns.length} className="text-xs text-text-3">
-                          Showing the {group.instances.length} most recent of {group.instanceCount}{' '}
-                          locations.
+                          No locations with the selected status among the most recently detected —
+                          the status column reflects all {group.instanceCount} locations.
                         </TableCell>
                       </TableRow>
                     )}
+                    {/* `instances` is the newest slice of a large group, not all
+                      of it — say so rather than ending the rows silently. */}
+                    {expanded &&
+                      visibleInstances.length > 0 &&
+                      visibleInstances.length < group.instanceCount && (
+                        <TableRow className="bg-surface-2/50 hover:bg-surface-2/50">
+                          <TableCell />
+                          <TableCell colSpan={columns.length} className="text-xs text-text-3">
+                            Showing the {visibleInstances.length} most recent of{' '}
+                            {group.instanceCount} locations.
+                          </TableCell>
+                        </TableRow>
+                      )}
                   </Fragment>
                 );
               })}
@@ -196,10 +213,12 @@ export function FindingsTableView({
           </Table>
         )}
 
-        {/* The server's fetched-page cap over the full filtered set. */}
+        {/* The server's fetched-page cap over the full filtered set. `groups`
+          are grouped rows, so the unit is types — the toolbar's findings tally
+          counts instances and would disagree with this number. */}
         {hasMore && (
           <p className="mt-4 text-center text-xs text-text-3">
-            Showing the first {groups.length} findings — refine the filters to narrow results.
+            Showing the first {groups.length} types — refine the filters to narrow results.
           </p>
         )}
       </div>

@@ -21,9 +21,13 @@ export type FindingsSearchParams = Record<string, ParamValue>;
 
 const asArray = (v: ParamValue): string[] => (Array.isArray(v) ? v : v ? [v] : []);
 
-/** Drop values not in the enum — hand-edited/stale URLs can't inject unknowns. */
+/**
+ * Drop values not in the enum and dedupe — hand-edited/stale URLs can't inject
+ * unknowns, and a double-appended value (?status=open&status=open) can't make
+ * the toolbar badge count one selection twice.
+ */
 const keepKnown = (values: string[], allowed: readonly string[]): string[] =>
-  values.filter((v) => allowed.includes(v));
+  [...new Set(values)].filter((v) => allowed.includes(v));
 
 /**
  * URL search params → the toolbar's five filter dimensions. Severity/provider/
@@ -35,7 +39,9 @@ const keepKnown = (values: string[], allowed: readonly string[]): string[] =>
 export function parseFindingsFilters(sp: FindingsSearchParams): FindingsFilters {
   return {
     severity: keepKnown(asArray(sp.severity), Severity.options),
-    type: asArray(sp.type),
+    // Free string, so no enum check — but deduped for the same badge-count
+    // reason as keepKnown.
+    type: [...new Set(asArray(sp.type))],
     provider: keepKnown(asArray(sp.provider), FindingProvider.options),
     action: keepKnown(asArray(sp.action), FindingAction.options),
     status: keepKnown(asArray(sp.status), FindingStatus.options),

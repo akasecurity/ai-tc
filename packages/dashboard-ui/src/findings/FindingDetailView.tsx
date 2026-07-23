@@ -121,11 +121,14 @@ export function FindingDetailView({
                 />
               ))}
             </div>
-            {/* `instances` is the newest slice of a large group, not all of it. */}
+            {/* `instances` is the newest slice of a large group, not all of it —
+              and under a status filter the store narrows it further, possibly
+              to none (every matching location older than the preview). */}
             {finding.instances.length < finding.instanceCount && (
               <p className="pt-2 text-xs text-text-3">
-                Showing the {finding.instances.length} most recent of {finding.instanceCount}{' '}
-                locations.
+                {finding.instances.length === 0
+                  ? `No locations here match the current filters — the group has ${String(finding.instanceCount)} locations in total.`
+                  : `Showing the ${String(finding.instances.length)} most recent of ${String(finding.instanceCount)} locations.`}
               </p>
             )}
           </div>

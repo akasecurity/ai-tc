@@ -418,6 +418,7 @@ export interface FindingFilterOptions {
   severity?: string[] | undefined;
   providers?: string[] | undefined;
   actions?: string[] | undefined;
+  statuses?: string[] | undefined;
   q?: string | undefined;
   subtype?: string[] | undefined;
 }
@@ -506,6 +507,16 @@ export function applyFindingFilters(
     filtered = filtered.filter((g) => subtypeSet.has(g.subtype));
   }
 
+  // Status: matches the GROUP's folded status (see foldGroupStatus), not "any
+  // instance matches" as provider/action do — the Status column shows exactly
+  // this one value, so a filtered row's badge always reads a requested status.
+  // A group with no status (no instance carries one — legacy rows) matches no
+  // specific status.
+  if (opts.statuses && opts.statuses.length > 0) {
+    const statusSet = new Set(opts.statuses);
+    filtered = filtered.filter((g) => g.status !== undefined && statusSet.has(g.status));
+  }
+
   // q: case-insensitive substring over the group's cached search haystack
   // (subtype, category, maskedMatch, policy name, id, and each instance's
   // repo/file/id) — see groupHaystack.
@@ -548,6 +559,7 @@ export function computeFindingFacets(
   const forSeverity = applyFindingFilters(allGroups, {
     providers: opts.providers,
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
   });
@@ -558,6 +570,7 @@ export function computeFindingFacets(
 
   const forProvider = applyFindingFilters(allGroups, {
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
     severity: opts.severity,
@@ -569,6 +582,7 @@ export function computeFindingFacets(
 
   const forAction = applyFindingFilters(allGroups, {
     providers: opts.providers,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
     severity: opts.severity,
@@ -581,11 +595,26 @@ export function computeFindingFacets(
   const forSubtype = applyFindingFilters(allGroups, {
     providers: opts.providers,
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     severity: opts.severity,
   });
   const subtypeMap = new Map<string, number>();
   for (const g of forSubtype) subtypeMap.set(g.subtype, (subtypeMap.get(g.subtype) ?? 0) + 1);
+
+  // Groups with no status contribute to no bucket — the filter can't select
+  // them either, so a count they can never reach would misstate the dimension.
+  const forStatus = applyFindingFilters(allGroups, {
+    providers: opts.providers,
+    actions: opts.actions,
+    q: opts.q,
+    subtype: opts.subtype,
+    severity: opts.severity,
+  });
+  const statusMap = new Map<string, number>();
+  for (const g of forStatus) {
+    if (g.status !== undefined) statusMap.set(g.status, (statusMap.get(g.status) ?? 0) + 1);
+  }
 
   const toItems = (m: Map<string, number>): FindingFacetItem[] =>
     [...m.entries()].map(([value, count]) => ({ value, count }));
@@ -595,5 +624,6 @@ export function computeFindingFacets(
     provider: toItems(providerMap),
     action: toItems(actionMap),
     subtype: toItems(subtypeMap),
+    status: toItems(statusMap),
   };
 }

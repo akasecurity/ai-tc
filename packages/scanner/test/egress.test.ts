@@ -231,6 +231,22 @@ describe('scanWorktree — egress relativization', () => {
     for (const key of scannedFilesOf(subInput)) expect(rootKeys).toContain(key);
     for (const hit of subInput.hits) expect(rootHitFiles).toContain(hit.site.file);
   });
+
+  it('confines the manifest walk to the scan root, like the source walk and the sweep', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/package.json', STRIPE_MANIFEST);
+    write(repo, 'pkg/package.json', STRIPE_MANIFEST);
+
+    await scanWorktree(configWith(true), { rootDir: join(repo, 'src'), sourceTool: 'claude-code' });
+
+    const keys = scannedFilesOf(lastEgressInput());
+    // In-scope manifest is collected, still keyed on the worktree root.
+    expect(keys).toContain('src/package.json');
+    // A manifest outside the scan target is neither read nor reconciled: the
+    // deletion sweep is scoped to rootDir, so it could never clear those rows
+    // later, and a ledger-mode write would treat them as an unvisited universe.
+    expect(keys).not.toContain('pkg/package.json');
+  });
 });
 
 describe('scanWorktree — egress ledger reuse', () => {

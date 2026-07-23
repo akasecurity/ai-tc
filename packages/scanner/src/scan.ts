@@ -414,7 +414,7 @@ async function scanDir(
   // Dependency manifests carry SDK evidence but no source extension, so the
   // source walk never yields them. They are ledgered exactly like walked files
   // and never go through capture — they are egress evidence, not code to scan.
-  if (egress) scanManifests(egress, ledger, updates);
+  if (egress) scanManifests(egress, ledger, updates, rootDir);
 
   const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.previous);
   if (egress) {
@@ -437,17 +437,22 @@ async function scanDir(
   return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
 }
 
-// Ledger + extract every dependency manifest under the project root. Mirrors
-// the walked-file tiers: an unchanged mtime skips without reading, and content
-// that hashes the same only refreshes the recorded mtime. A manifest that is
-// skipped at either tier stays out of `scannedFiles`, so ledger-mode
-// reconciliation preserves the rows it already has.
+// Ledger + extract every dependency manifest under the SCAN root — the same
+// universe the source walk and the deletion sweep cover, so a subtree scan
+// never ledgers or reconciles a manifest that its own sweep could not later
+// clear. Keys still derive from the project root, so a subtree scan's manifest
+// rows reconcile against a whole-repo scan's. Mirrors the walked-file tiers: an
+// unchanged mtime skips without reading, and content that hashes the same only
+// refreshes the recorded mtime. A manifest that is skipped at either tier stays
+// out of `scannedFiles`, so ledger-mode reconciliation preserves the rows it
+// already has.
 function scanManifests(
   egress: EgressAccumulator,
   ledger: LedgerContext,
   updates: ScanLedgerEntry[],
+  rootDir: string,
 ): void {
-  for (const manifest of collectManifests(egress.project.root)) {
+  for (const manifest of collectManifests(rootDir)) {
     const prev = ledger.previous.get(manifest.path);
     if (prev?.mtime === manifest.mtime) continue;
 

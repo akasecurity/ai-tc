@@ -40,6 +40,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'captureId',
   'classifiedDataId',
   'compareBinaryVersions',
+  'computeFindingKey',
   'dataDir',
   'dbPath',
   'defaultDataDir',

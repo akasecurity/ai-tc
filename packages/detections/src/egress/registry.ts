@@ -26,7 +26,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'Payments',
     hostSuffixes: ['stripe.com'],
     apiBase: 'https://api.stripe.com',
-    defaultDataClasses: ['customer', 'pii'],
+    defaultDataClasses: ['pii', 'customer'],
     sdks: {
       npm: ['stripe'],
       pypi: ['stripe'],
@@ -43,7 +43,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'Observability',
     hostSuffixes: ['datadoghq.com', 'datadoghq.eu'],
     apiBase: 'https://api.datadoghq.com',
-    defaultDataClasses: ['logs', 'metrics', 'telemetry'],
+    defaultDataClasses: ['telemetry', 'logs', 'metrics'],
     sdks: {
       npm: ['dd-trace', '@datadog/browser-logs'],
       pypi: ['datadog', 'ddtrace'],
@@ -93,7 +93,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'LLM provider',
     hostSuffixes: ['openai.com'],
     apiBase: 'https://api.openai.com',
-    defaultDataClasses: ['source', 'pii'],
+    defaultDataClasses: ['pii', 'source'],
     sdks: {
       npm: ['openai'],
       pypi: ['openai'],
@@ -111,7 +111,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'LLM provider',
     hostSuffixes: ['anthropic.com'],
     apiBase: 'https://api.anthropic.com',
-    defaultDataClasses: ['source', 'pii'],
+    defaultDataClasses: ['pii', 'source'],
     sdks: {
       npm: ['@anthropic-ai/sdk'],
       pypi: ['anthropic'],
@@ -120,9 +120,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
   },
   {
-    id: 'aws-s3',
-    name: 'Amazon S3',
-    category: 'Cloud storage',
+    id: 'aws',
+    name: 'Amazon Web Services',
+    category: 'Cloud platform',
     hostSuffixes: ['amazonaws.com'],
     apiBase: 'https://s3.amazonaws.com',
     defaultDataClasses: ['secrets', 'customer'],
@@ -281,7 +281,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: 'posthog',
     name: 'PostHog',
     category: 'Analytics',
-    hostSuffixes: ['posthog.com', 'i.posthog.com'],
+    hostSuffixes: ['posthog.com'],
     apiBase: 'https://us.i.posthog.com',
     defaultDataClasses: ['customer', 'telemetry'],
     sdks: {
@@ -313,7 +313,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'Observability',
     hostSuffixes: ['grafana.net'],
     apiBase: 'https://grafana.net',
-    defaultDataClasses: ['metrics', 'logs'],
+    defaultDataClasses: ['logs', 'metrics'],
     sdks: {
       npm: ['@grafana/faro-web-sdk'],
     },
@@ -430,7 +430,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'Backend platform',
     hostSuffixes: ['supabase.co', 'supabase.com'],
     apiBase: 'https://api.supabase.com',
-    defaultDataClasses: ['customer', 'pii'],
+    defaultDataClasses: ['pii', 'customer'],
     sdks: {
       npm: ['@supabase/supabase-js'],
       pypi: ['supabase'],
@@ -530,7 +530,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'LLM provider',
     hostSuffixes: ['cohere.com', 'cohere.ai'],
     apiBase: 'https://api.cohere.com',
-    defaultDataClasses: ['source', 'pii'],
+    defaultDataClasses: ['pii', 'source'],
     sdks: {
       npm: ['cohere-ai'],
       pypi: ['cohere'],
@@ -543,7 +543,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     category: 'LLM provider',
     hostSuffixes: ['mistral.ai'],
     apiBase: 'https://api.mistral.ai',
-    defaultDataClasses: ['source', 'pii'],
+    defaultDataClasses: ['pii', 'source'],
     sdks: {
       npm: ['@mistralai/mistralai'],
       pypi: ['mistralai'],
@@ -580,7 +580,6 @@ const EXCLUDED_HOST_SUFFIXES = [
   'example.org',
   'example.net',
   'w3.org',
-  'www.w3.org',
   'schemas.openxmlformats.org',
   'schemas.microsoft.com',
   'schemas.android.com',

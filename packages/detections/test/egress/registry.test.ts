@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { DestinationKind, EgressEcosystem, ShareTrustLevel } from '@akasecurity/schema';
+import { DATA_CLASS_ORDER } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -95,6 +96,28 @@ describe('PROVIDER_REGISTRY', () => {
     for (const p of PROVIDER_REGISTRY) {
       expect(p.hostSuffixes.length).toBeGreaterThanOrEqual(1);
       expect(p.defaultDataClasses.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it('lists every defaultDataClasses array most-sensitive first', () => {
+    // resolveEgress stores defaultDataClasses[0] as the endpoint's dataClass, so
+    // an out-of-rank array under-classifies the destination.
+    for (const p of PROVIDER_REGISTRY) {
+      const byRank = [...p.defaultDataClasses].sort(
+        (a, b) => DATA_CLASS_ORDER.indexOf(a) - DATA_CLASS_ORDER.indexOf(b),
+      );
+      expect(p.defaultDataClasses, `${p.id} is not sorted by sensitivity`).toEqual(byRank);
+    }
+  });
+
+  it('carries no hostSuffix already covered by another suffix on the same entry', () => {
+    for (const p of PROVIDER_REGISTRY) {
+      for (const suffix of p.hostSuffixes) {
+        const covered = p.hostSuffixes.some(
+          (other) => other !== suffix && suffix.endsWith(`.${other}`),
+        );
+        expect(covered, `${p.id} lists ${suffix}, already matched by a broader suffix`).toBe(false);
+      }
     }
   });
 });

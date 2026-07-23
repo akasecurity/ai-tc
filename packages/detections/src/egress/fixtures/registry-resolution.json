@@ -41,7 +41,7 @@
       }
     },
     {
-      "label": "evilstripe.com is NOT Stripe — mid-label suffix must not match",
+      "label": "evilstripe.com is NOT Stripe \u2014 mid-label suffix must not match",
       "host": "evilstripe.com",
       "expect": {
         "kind": "external",
@@ -51,7 +51,7 @@
       }
     },
     {
-      "label": "evildatadoghq.com is NOT Datadog — same suffix hazard, different provider",
+      "label": "evildatadoghq.com is NOT Datadog \u2014 same suffix hazard, different provider",
       "host": "evildatadoghq.com",
       "expect": {
         "kind": "external",
@@ -103,7 +103,9 @@
     {
       "label": "goodcode.us resolves internal only when the caller supplies it as an internalDomain",
       "host": "goodcode.us",
-      "opts": { "internalDomains": ["goodcode.us"] },
+      "opts": {
+        "internalDomains": ["goodcode.us"]
+      },
       "expect": {
         "kind": "internal",
         "trust": "internal",
@@ -122,7 +124,7 @@
       }
     },
     {
-      "label": "acme-partner.com has no registry match and no internal signal — external, not internal",
+      "label": "acme-partner.com has no registry match and no internal signal \u2014 external, not internal",
       "host": "acme-partner.com",
       "expect": {
         "kind": "external",
@@ -142,7 +144,7 @@
       }
     },
     {
-      "label": "198.51.100.23 is a public IPv4 literal — kind ip",
+      "label": "198.51.100.23 is a public IPv4 literal \u2014 kind ip",
       "host": "198.51.100.23",
       "expect": {
         "kind": "ip",
@@ -152,9 +154,14 @@
       }
     },
     {
-      "label": "172.32.0.1 is just outside the private 172.16-31 range — kind ip, not excluded",
+      "label": "172.32.0.1 is just outside the private 172.16-31 range \u2014 kind ip, not excluded",
       "host": "172.32.0.1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "172.32.0.1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "172.32.0.1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "localhost is excluded",
@@ -282,7 +289,7 @@
       }
     },
     {
-      "label": "[2001:db8::1] (bracketed public IPv6 literal) is kind ip — URL authority form",
+      "label": "[2001:db8::1] (bracketed public IPv6 literal) is kind ip \u2014 URL authority form",
       "host": "[2001:db8::1]",
       "expect": {
         "kind": "ip",
@@ -304,12 +311,22 @@
     {
       "label": "fec0::1 (just above fe80::/10) is kind ip, not excluded",
       "host": "fec0::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "fec0::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "fec0::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "fe7f::1 (just below fe80::/10) is kind ip, not excluded",
       "host": "fe7f::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "fe7f::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "fe7f::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "2001:DB8::1 (uppercase, RFC-canonical documentation spelling) is kind ip",
@@ -334,12 +351,22 @@
     {
       "label": "fc::1 (abbreviated group 00fc::, not fc00::/7) is kind ip, not excluded",
       "host": "fc::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "fc::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "fc::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "fe8::1 (abbreviated group 0fe8::, not fe80::/10) is kind ip, not excluded",
       "host": "fe8::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "fe8::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "fe8::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "::ffff:127.0.0.1 (IPv4-mapped loopback) is excluded",
@@ -364,6 +391,26 @@
         "trust": "unverified",
         "name": "db:8080",
         "category": "External domain"
+      }
+    },
+    {
+      "label": "s3.amazonaws.com resolves to the coarse AWS bucket",
+      "host": "s3.amazonaws.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Amazon Web Services",
+        "category": "Cloud platform"
+      }
+    },
+    {
+      "label": "a non-S3 AWS service host resolves to the same coarse AWS bucket, not to S3",
+      "host": "dynamodb.us-east-1.amazonaws.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Amazon Web Services",
+        "category": "Cloud platform"
       }
     }
   ],
@@ -399,7 +446,7 @@
       "expectId": "stripe"
     },
     {
-      "label": "go:github.com/stripe/stripe-go-extra does NOT match — prefix must respect the '/' boundary",
+      "label": "go:github.com/stripe/stripe-go-extra does NOT match \u2014 prefix must respect the '/' boundary",
       "ecosystem": "go",
       "pkg": "github.com/stripe/stripe-go-extra",
       "expectId": null
@@ -411,7 +458,7 @@
       "expectId": "stripe"
     },
     {
-      "label": "maven:com.stripeextra does NOT match — prefix must respect the '.' boundary",
+      "label": "maven:com.stripeextra does NOT match \u2014 prefix must respect the '.' boundary",
       "ecosystem": "maven",
       "pkg": "com.stripeextra",
       "expectId": null
@@ -429,7 +476,7 @@
       "expectId": "stripe"
     },
     {
-      "label": "rubygems:Stripe (capitalized) does NOT match — rubygems is case-sensitive exact",
+      "label": "rubygems:Stripe (capitalized) does NOT match \u2014 rubygems is case-sensitive exact",
       "ecosystem": "rubygems",
       "pkg": "Stripe",
       "expectId": null

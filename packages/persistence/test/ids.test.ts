@@ -140,22 +140,35 @@ describe('promptId (run-grouping key)', () => {
 // owning session so identical content in two sessions never collapses onto one
 // row. A `null` session (a capture taken outside any harness session) folds
 // onto a fixed sentinel instead of shortening the join.
-describe('captureId (content-addressed, session-scoped)', () => {
-  it('is stable / deterministic for the same (session, contentHash)', () => {
+describe('captureId (content-addressed, session-scoped, path-scoped)', () => {
+  it('is stable / deterministic for the same (session, contentHash, path)', () => {
     const id = captureId('sess_abc123', 'contenthash123');
-    expect(id).toBe('ea59d6af9254316e6ecde67786230b0ca0d2f6f7434bdaf4261c2d2a786e0502');
+    expect(id).toBe('812cee34ea16443f934a56575707669789d250a65563622d537c47af36b1fd35');
     expect(captureId('sess_abc123', 'contenthash123')).toBe(id);
   });
 
   it('a null session folds onto the fixed sentinel rather than being dropped', () => {
     expect(captureId(null, 'contenthash123')).toBe(
-      '36331fde9271bda6dfd25c812eab2a6b3624069ccfd2ed8a7f2df465edc2e099',
+      '68787b92f533cd97454be0f5f56d043badd2481be6fc15ce3b0792a89a853078',
     );
   });
 
   it('a different content hash yields a different id', () => {
     expect(captureId('sess_abc123', 'contenthash456')).toBe(
-      'd11a7703f7bd6c8f7b9494aee3447f940adab9d8a0028ab8ac2cc80bbf2d6555',
+      '7a7a1bc5f2bc39f58615aa418669072a923318b480e0e1fafcf7e02e54a15454',
+    );
+  });
+
+  it('a different file path yields a different id — two identical-content files stay distinct', () => {
+    expect(captureId('sess_abc123', 'contenthash123', 'src/a.ts')).toBe(
+      '90eef03a6239d77df1c36f3b74b3f253ed6480cdd03909d82715adb0783f5674',
+    );
+    expect(captureId('sess_abc123', 'contenthash123', 'src/a.ts')).not.toBe(
+      captureId('sess_abc123', 'contenthash123', 'src/b.ts'),
+    );
+    // A path-less capture folds onto the NO_PATH sentinel (the default).
+    expect(captureId('sess_abc123', 'contenthash123', null)).toBe(
+      captureId('sess_abc123', 'contenthash123'),
     );
   });
 });

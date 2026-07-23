@@ -43,16 +43,17 @@ export function latestResolutionStatusSql(findingsAlias: string): string {
 }
 
 /**
- * Derived-table form: one (finding_key, status) row per key holding its latest
- * resolution status, for LEFT JOINing when a query aggregates over many
- * findings at once (a correlated subquery per row would re-run the lookup for
- * every finding). ROW_NUMBER over (created_at DESC, rowid DESC) implements the
- * same latest-wins ordering as the correlated form; rn = 1 also makes the join
- * safe against double-counting a key that accumulated several append-only rows.
+ * Derived-table form: one (finding_key, status, method, resolved_at) row per key
+ * holding its latest resolution, for LEFT JOINing when a query aggregates over
+ * many findings at once (a correlated subquery per row would re-run the lookup
+ * for every finding — and per resolution column, several times per row). ROW_NUMBER
+ * over (created_at DESC, rowid DESC) implements the same latest-wins ordering as
+ * the correlated form; rn = 1 also makes the join safe against double-counting a
+ * key that accumulated several append-only rows.
  */
 export const LATEST_RESOLUTION_BY_KEY_SQL = `(
-  SELECT finding_key, status FROM (
-    SELECT fr.finding_key, fr.status,
+  SELECT finding_key, status, method, resolved_at FROM (
+    SELECT fr.finding_key, fr.status, fr.method, fr.resolved_at,
            ROW_NUMBER() OVER (
              PARTITION BY fr.finding_key
              ORDER BY fr.created_at DESC, fr.rowid DESC

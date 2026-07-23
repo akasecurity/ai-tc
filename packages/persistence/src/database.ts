@@ -15,7 +15,7 @@ import type {
   ResolvedInventory,
 } from '@akasecurity/schema';
 import {
-  CAPTURE_DEFINITION_VERSION,
+  captureDefinitionVersion,
   isoToEpochMillis,
   toCaptureAttributes,
   toCaptureDefinitionInput,
@@ -253,35 +253,25 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     failOpenTransaction(db, () => {
       const sessionId = event.metadata?.sessionId;
 
-      // A capture parented under a session stamps root_session_id — a self-FK
-      // on audit_events, enforced by PRAGMA foreign_keys=ON. SessionStart's own
-      // root write is itself fail-open, and its once-per-session claim marks
-      // "attempted" rather than "succeeded" — a failed first attempt is never
-      // retried — so a session with no root row yet is a real, permanent
-      // condition, not a transient race. `INSERT OR IGNORE` (what
-      // insertAuditEvent's insert uses) does NOT suppress a foreign-key
-      // violation — only UNIQUE/PK/NOT NULL/CHECK — so without this stub the
-      // capture insert below would raise SQLITE_CONSTRAINT, and
-      // failOpenTransaction would roll back and silently drop the ENTIRE
-      // capture (the audit event AND every one of its findings), not just the
-      // session link. First-write-wins (the same INSERT OR IGNORE on the id
-      // PK) makes this a harmless no-op once the real root lands; the stub
-      // itself carries no dimensions and no attributes, so a real root
-      // arriving later is never shadowed by stale data.
+      // Plant the session's structural root before the capture's own row FKs
+      // onto it (see auditEvents.ensureSessionRoot for why this ordering is
+      // load-bearing — INSERT OR IGNORE does not suppress a foreign-key
+      // violation, so without the root the whole capture would roll back).
       if (sessionId) {
-        auditEvents.insertAuditEvent({
-          id: sessionId,
-          eventType: 'session',
-          startedAt: event.occurredAt,
-        });
+        auditEvents.ensureSessionRoot(sessionId, event.occurredAt);
       }
 
       // The capture's own audit row. Content-addressed on (sessionId,
-      // contentHash) — captureId — so re-ingesting identical content in the
-      // same session never duplicates it. All four capture kinds
-      // (prompt/response/code_change/tool_use) map onto AuditEventType as
+      // contentHash, filePath) — captureId — so re-ingesting identical content in
+      // the same session never duplicates it, yet two DISTINCT files with
+      // byte-identical content stay two rows (see captureId). All four capture
+      // kinds (prompt/response/code_change/tool_use) map onto AuditEventType as
       // themselves — see the superset invariant documented there.
-      const auditEventId = captureId(sessionId ?? null, event.contentHash);
+      const auditEventId = captureId(
+        sessionId ?? null,
+        event.contentHash,
+        event.metadata?.filePath ?? null,
+      );
       auditEvents.insertAuditEvent({
         id: auditEventId,
         eventType: event.kind,
@@ -295,10 +285,11 @@ export function openLocalDatabase(dir: string): LocalDatabase {
 
       // Definitions first, keyed by (ruleId, version) — mirrors
       // recordConfigScan's structure — so each finding resolves its
-      // content-addressed definition id without minting one itself. Every
-      // finding here shares the fixed CAPTURE_DEFINITION_VERSION (this path's
-      // DetectedFinding shape carries no rule name/version of its own), so the
-      // map collapses to one definition upsert per distinct ruleId.
+      // content-addressed definition id without minting one itself. The capture
+      // path's version folds in category+severity (captureDefinitionVersion), so
+      // the map collapses to one definition upsert per distinct
+      // (ruleId, category, severity) — a pack update that reclassifies a rule
+      // mints a new definition row rather than being frozen at first-write.
       const definitionIds = new Map<string, string>();
       for (const finding of detected) {
         // Scope dedup to the event's session so one sensitive value crossing
@@ -327,7 +318,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
         ) {
           continue;
         }
-        const key = `${finding.ruleId}@${CAPTURE_DEFINITION_VERSION}`;
+        const key = `${finding.ruleId}@${captureDefinitionVersion(finding)}`;
         let definitionId = definitionIds.get(key);
         if (!definitionId) {
           definitionId = inspectionDefinitions.upsert(toCaptureDefinitionInput(finding));

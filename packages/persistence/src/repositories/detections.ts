@@ -8,7 +8,12 @@ import type {
   ListDetectionsResponse,
   Rule,
 } from '@akasecurity/schema';
-import { buildDetectionsList, rowToDetectionDetail, splitDetectionId } from '@akasecurity/schema';
+import {
+  buildDetectionsList,
+  CAPTURE_EVENT_TYPES_SQL,
+  rowToDetectionDetail,
+  splitDetectionId,
+} from '@akasecurity/schema';
 
 import { safeJson } from '../internal/json.ts';
 import { allRows, countScalar, getRow, intToBool } from '../internal/rows.ts';
@@ -249,7 +254,7 @@ export class SqliteDetectionsRepository implements DetectionsReadPort {
          JOIN audit_events e ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          WHERE e.started_at >= ?
-           AND e.event_type IN ('prompt','response','code_change','tool_use')
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
            AND d.rule_id IN (${inClause})`,
       [since, ...ruleIds],
     );

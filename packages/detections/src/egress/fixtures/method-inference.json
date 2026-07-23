@@ -350,5 +350,80 @@
         "line": 1
       }
     ]
+  },
+  {
+    "label": "a method key past the URL's own statement is not evidence",
+    "text": "const ENDPOINT = 'https://api.acme-corp.com/v1';\nconst auditOptions = { method: 'POST' };",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a method key past a semicolon-less statement break is not evidence",
+    "text": "const endpoint = 'https://api.acme-corp.com/v1'\nconst auditOptions = { method: 'POST' }",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a constant inside a callback does not borrow a later sibling's method",
+    "text": "describe('suite', () => {\n  const ENDPOINT = 'https://api.acme-corp.com/v1';\n  const opts = { method: 'POST' };\n});",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a method key that is a sibling of the url key IS evidence",
+    "text": "const request = {\n  url: 'https://api.acme-corp.com/v1',\n  method: 'POST',\n};",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a url wrapped in a helper call still takes its call's method",
+    "text": "fetch(buildUrl('https://api.acme-corp.com/v1'), { method: 'POST' });",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
   }
 ]

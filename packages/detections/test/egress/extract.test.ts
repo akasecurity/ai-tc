@@ -125,6 +125,28 @@ describe('extractEgress — general shape', () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]?.snippet.length).toBe(SNIPPET_MAX);
   });
+
+  it('keeps the hit inside the snippet when it sits far along a long line', () => {
+    // A minified bundle puts a whole file on one line. Capping from the start
+    // of the line would store 200 characters that never mention the hit.
+    const padding = 'y'.repeat(400);
+    const hits = extractEgress(`// ${padding}; const u = 'https://api.acme-corp.com/v1';`);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.snippet.length).toBe(SNIPPET_MAX);
+    expect(hits[0]?.snippet).toContain('https://api.acme-corp.com/v1');
+  });
+
+  it('masks a secret that falls outside the snippet window', () => {
+    // Redaction runs over the whole line, so a credential the window never
+    // shows cannot reappear when the window moves.
+    const padding = 'y'.repeat(400);
+    const hits = extractEgress(
+      `const k = 'api_key=SUPERSECRET'; // ${padding}; const u = 'https://api.acme-corp.com/v1';`,
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.snippet).toContain('https://api.acme-corp.com/v1');
+    expect(hits[0]?.snippet).not.toContain('SUPERSECRET');
+  });
 });
 
 describe('redactSnippet — fixture corpus', () => {

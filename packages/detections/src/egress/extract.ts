@@ -90,6 +90,12 @@ const OPTIONS_METHOD = /method\s*[:=]\s*['"](GET|POST|PUT|DELETE)/i;
 const CLIENT_OPENER = /\b(fetch|urlopen|got|ky)\s*\(\s*['"`]*$/i;
 const ANY_METHOD_KEY = /\bmethod\s*[:=]/i;
 
+// End of the statement the URL sits in: a semicolon, or a line break starting a
+// new binding or block. A `method:` key past one of these describes a later,
+// unrelated expression, so it proves nothing about this URL.
+const STATEMENT_BREAK =
+  /;|\n\s*(?:(?:const|let|var|val|function|func|fn|def|class|return|export|import|if|for|while|switch|try|public|private)\b|\w+\s*=[^=])/;
+
 // Bare dotted-quad literals, with an optional port.
 const IPV4_CANDIDATE = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g;
 const IP_HOST_CONTEXT = /\b(host|hostname|server|address|endpoint|ip|url|uri)\b/i;
@@ -175,21 +181,46 @@ export function isVendoredPath(file: string): boolean {
   return VENDORED_PATH.test(file);
 }
 
-/**
- * Strip credentials and secret values out of one source line and cap it at
- * SNIPPET_MAX characters. `Authorization: <scheme> <credential>` keeps the
- * scheme keyword and masks the credential; a webhook URL keeps its routing
- * prefix and loses the path segments that authorize posting to it.
- */
-export function redactSnippet(line: string): string {
+function redactLine(line: string): string {
   return line
     .trim()
     .replace(USERINFO, '://')
     .replace(WEBHOOK_URL, `$1${MASK}`)
     .replace(SECRET_VALUE, `$1${MASK}`)
     .replace(AUTH_SCHEME_VALUE, `$1$2 ${MASK}`)
-    .replace(BEARER_TOKEN, `Bearer ${MASK}`)
-    .slice(0, SNIPPET_MAX);
+    .replace(BEARER_TOKEN, `Bearer ${MASK}`);
+}
+
+/**
+ * Strip credentials and secret values out of one source line and cap it at
+ * SNIPPET_MAX characters. `Authorization: <scheme> <credential>` keeps the
+ * scheme keyword and masks the credential; a webhook URL keeps its routing
+ * prefix and loses the path segments that authorize posting to it.
+ *
+ * `anchor` is the hit's offset within `line`; the cap window is centered on it
+ * so a hit far along a very long line — a minified bundle puts a whole file on
+ * one line — still lands inside the stored evidence. Redaction always runs over
+ * the whole line first, so masking never depends on where the window falls.
+ */
+export function redactSnippet(line: string, anchor = 0): string {
+  const redacted = redactLine(line);
+  if (redacted.length <= SNIPPET_MAX) return redacted;
+
+  const lead = line.length - line.trimStart().length;
+  const trimmed = line.trim();
+  // Masking only ever shortens, so an unchanged length means nothing matched
+  // and offsets carry over untouched. Otherwise re-redact the prefix to find
+  // where the anchor landed; that pass is only reached on a line long enough
+  // to need windowing that also carried a secret.
+  const mapped =
+    redacted.length === trimmed.length
+      ? anchor - lead
+      : redactLine(trimmed.slice(0, Math.max(0, anchor - lead))).length;
+  const start = Math.min(
+    Math.max(0, mapped - Math.floor(SNIPPET_MAX / 2)),
+    redacted.length - SNIPPET_MAX,
+  );
+  return redacted.slice(start, start + SNIPPET_MAX);
 }
 
 /**
@@ -203,8 +234,9 @@ export function extractEgress(text: string): RawEndpointHit[] {
   // Derived once per line rather than once per hit: a minified bundle puts
   // every hit in a file on a single very long line.
   const lineTextOf = memoizeByLine((index) => lineTextAt(text, lineStarts, index));
-  const snippetOf = memoizeByLine((index) => redactSnippet(lineTextOf(index)));
   const ipContextOf = memoizeByLine((index) => ipLineContext(lineTextOf(index)));
+  const snippetAt = (index: number, offset: number): string =>
+    redactSnippet(lineTextOf(index), offset - (lineStarts[index] ?? 0));
 
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const start = match.index;
@@ -224,7 +256,7 @@ export function extractEgress(text: string): RawEndpointHit[] {
       ...parsed,
       method: inferMethod(text, start, start + matched.length),
       line: index + 1,
-      snippet: snippetOf(index),
+      snippet: snippetAt(index, start),
     });
   }
 
@@ -236,7 +268,7 @@ export function extractEgress(text: string): RawEndpointHit[] {
     const parsed = parseBareIp(match[0], ipContextOf(index));
     if (parsed === null) continue;
 
-    hits.push({ ...parsed, method: 'REF', line: index + 1, snippet: snippetOf(index) });
+    hits.push({ ...parsed, method: 'REF', line: index + 1, snippet: snippetAt(index, start) });
   }
 
   return hits.sort(compareHits);
@@ -358,10 +390,12 @@ function identifierWords(line: string): string {
 
 // Methods are evidence, never fabrication: a bare client call counts as GET
 // only when the whole call is visible, the URL is its only argument, and it
-// carries no method key. Anything the windows cannot prove is a plain
-// reference — including a call that passes a second argument such as an
-// options object, since that object's own contents (e.g. its HTTP method)
-// sit outside the window this pass can see.
+// carries no method key. A `method:` key after the URL counts only while it is
+// still inside the URL's own statement — otherwise a bare `const ENDPOINT =
+// '…'` followed by an unrelated `{ method: 'POST' }` would borrow that verb.
+// Anything the windows cannot prove is a plain reference — including a call
+// that passes a second argument such as an options object, since that object's
+// own contents (e.g. its HTTP method) sit outside the window this pass can see.
 function inferMethod(text: string, start: number, end: number): HttpMethod {
   const before = text.slice(Math.max(0, start - BEFORE_WINDOW), start);
   const after = text.slice(end, end + AFTER_WINDOW);
@@ -373,7 +407,9 @@ function inferMethod(text: string, start: number, end: number): HttpMethod {
   if (firstArgument?.[1] !== undefined) return verbOf(firstArgument[1]);
 
   const options = OPTIONS_METHOD.exec(after);
-  if (options?.[1] !== undefined) return verbOf(options[1]);
+  if (options?.[1] !== undefined && !STATEMENT_BREAK.test(after.slice(0, options.index))) {
+    return verbOf(options[1]);
+  }
 
   if (CLIENT_OPENER.test(before)) {
     const close = callCloseIndex(after);

@@ -92,7 +92,8 @@ export class StandaloneDataGateway implements DataGateway {
 
   // The id is minted inside the repository from the natural key — the plugin can't
   // import @akasecurity/persistence to compute it, so the gateway is the boundary that
-  // hands the natural key across. INSERT OR IGNORE → idempotent re-reads.
+  // hands the natural key across. UPSERT-take-MAX → idempotent re-reads that also
+  // converge a streaming partial/final split (see insertLlmCall).
   recordLlmCall(input: LlmCallInput): Promise<void> {
     this.db.auditEvents.insertLlmCall(input);
     return Promise.resolve();
@@ -137,7 +138,9 @@ export class StandaloneDataGateway implements DataGateway {
   // caller's transaction (Layer 2b). The audit-event id the findings FK into is the
   // SAME content-addressed `toolCallId` the leaf insert mints, so both re-read
   // idempotently. Definitions/classified-data are idempotent upserts; findings are
-  // content-addressed INSERT OR IGNORE.
+  // content-addressed upserts (ON CONFLICT(id) DO UPDATE SET inspection_definition_id),
+  // so a re-detection under a bumped rule version repoints the definition FK rather
+  // than no-opping.
   private writeToolCall(input: ToolCallInput): void {
     this.db.auditEvents.insertToolCall(input);
     if (input.inspections.length === 0) return;

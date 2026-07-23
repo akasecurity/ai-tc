@@ -14,8 +14,14 @@ import type {
   ProjectFilesScan,
   ResolvedInventory,
 } from '@akasecurity/schema';
-import { isoToEpochMillis } from '@akasecurity/schema';
+import {
+  CAPTURE_DEFINITION_VERSION,
+  isoToEpochMillis,
+  toCaptureAttributes,
+  toCaptureDefinitionInput,
+} from '@akasecurity/schema';
 
+import { captureId } from './ids.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
@@ -106,18 +112,20 @@ export interface LocalDatabase {
   // embedded audit timeline) reconstructed from the audit_events store. Read by the
   // OSS web-ui.
   readonly activity: SqliteActivityRepository;
-  // Meta data-model repositories. The live capture path writes
-  // events/findings; these populate the generalized
-  // inventory/audit/inspection tables.
+  // Meta data-model repositories — the generalized inventory/audit/inspection
+  // tables recordCapture (below) and recordConfigScan write into.
   readonly inventory: SqliteInventoryRepository;
   readonly sourceProject: SqliteSourceProjectRepository;
   readonly auditEvents: SqliteAuditEventsRepository;
   readonly classifiedData: SqliteClassifiedDataRepository;
   readonly inspectionDefinitions: SqliteInspectionDefinitionsRepository;
   readonly inspectionFindings: SqliteInspectionFindingsRepository;
-  // Atomic event + findings write. findings are already-masked DetectedFinding[]
-  // (the SDK masks before calling). Fail-open: a locked/corrupt DB or a bad row
-  // rolls back and is swallowed — dropping telemetry never breaks a session.
+  // Atomic capture write: one audit_events row (event_type = the capture's
+  // kind) plus one inspection_findings row per already-masked
+  // DetectedFinding[] (the SDK masks before calling), resolving each finding's
+  // inspection_definitions row from its ruleId. Fail-open: a locked/corrupt DB
+  // or a bad row rolls back and is swallowed — dropping telemetry never breaks
+  // a session.
   recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
@@ -243,11 +251,73 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
     failOpenTransaction(db, () => {
-      events.insertEvent(event);
-      // Scope dedup to the event's session so one sensitive value crossing
-      // several surfaces in one action (prompt → tool call) is recorded once.
       const sessionId = event.metadata?.sessionId;
-      findings.insertFindings(detected, sessionId ? { sessionId } : {});
+
+      // A capture parented under a session stamps root_session_id — a self-FK
+      // on audit_events, enforced by PRAGMA foreign_keys=ON. SessionStart's own
+      // root write is itself fail-open, and its once-per-session claim marks
+      // "attempted" rather than "succeeded" — a failed first attempt is never
+      // retried — so a session with no root row yet is a real, permanent
+      // condition, not a transient race. `INSERT OR IGNORE` (what
+      // insertAuditEvent's insert uses) does NOT suppress a foreign-key
+      // violation — only UNIQUE/PK/NOT NULL/CHECK — so without this stub the
+      // capture insert below would raise SQLITE_CONSTRAINT, and
+      // failOpenTransaction would roll back and silently drop the ENTIRE
+      // capture (the audit event AND every one of its findings), not just the
+      // session link. First-write-wins (the same INSERT OR IGNORE on the id
+      // PK) makes this a harmless no-op once the real root lands; the stub
+      // itself carries no dimensions and no attributes, so a real root
+      // arriving later is never shadowed by stale data.
+      if (sessionId) {
+        auditEvents.insertAuditEvent({
+          id: sessionId,
+          eventType: 'session',
+          startedAt: event.occurredAt,
+        });
+      }
+
+      // The capture's own audit row. Content-addressed on (sessionId,
+      // contentHash) — captureId — so re-ingesting identical content in the
+      // same session never duplicates it. All four capture kinds
+      // (prompt/response/code_change/tool_use) map onto AuditEventType as
+      // themselves — see the superset invariant documented there.
+      const auditEventId = captureId(sessionId ?? null, event.contentHash);
+      auditEvents.insertAuditEvent({
+        id: auditEventId,
+        eventType: event.kind,
+        startedAt: event.occurredAt,
+        parentId: sessionId,
+        rootSessionId: sessionId,
+        content: event.content,
+        contentHash: event.contentHash,
+        attributes: toCaptureAttributes(event),
+      });
+
+      // Definitions first, keyed by (ruleId, version) — mirrors
+      // recordConfigScan's structure — so each finding resolves its
+      // content-addressed definition id without minting one itself. Every
+      // finding here shares the fixed CAPTURE_DEFINITION_VERSION (this path's
+      // DetectedFinding shape carries no rule name/version of its own), so the
+      // map collapses to one definition upsert per distinct ruleId.
+      const definitionIds = new Map<string, string>();
+      for (const finding of detected) {
+        const key = `${finding.ruleId}@${CAPTURE_DEFINITION_VERSION}`;
+        let definitionId = definitionIds.get(key);
+        if (!definitionId) {
+          definitionId = inspectionDefinitions.upsert(toCaptureDefinitionInput(finding));
+          definitionIds.set(key, definitionId);
+        }
+        inspectionFindings.insertFinding({
+          id: finding.id,
+          auditEventId,
+          inspectionDefinitionId: definitionId,
+          span: finding.span,
+          maskedMatch: finding.maskedMatch,
+          actionTaken: finding.actionTaken,
+          confidence: finding.confidence,
+          findingKey: finding.findingKey ?? undefined,
+        });
+      }
     });
   }
 

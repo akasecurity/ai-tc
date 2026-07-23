@@ -1,6 +1,8 @@
 // Local-mode contracts: the plugin-owned ~/.aka settings + machine-local
 // identity, plus pure row mappers from the wire shapes (IngestEvent /
-// DetectedFinding) to the SQLite `events`/`findings` tables.
+// DetectedFinding) to the SQLite `events`/`findings` tables, and from the same
+// wire shapes onto the generalized audit/inspection tables the live capture
+// path (recordCapture) writes today.
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
@@ -22,6 +24,7 @@ import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding } from './finding.ts';
 import type {
   AuditEventInput,
+  CaptureAttributes,
   ClassifiedDataInput,
   InspectionDefinitionInput,
   InspectionFindingInput,
@@ -236,6 +239,73 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     maskedMatch: input.maskedMatch,
     actionTaken: input.actionTaken,
     confidence: input.confidence,
+    findingKey: input.findingKey ?? null,
+    firstDetectedAt: input.firstDetectedAt ? isoToEpochMillis(input.firstDetectedAt) : null,
+  };
+}
+
+// --- capture-path (recordCapture) mappers -----------------------------------
+// The live hook capture path writes IngestEvent + DetectedFinding[] straight
+// into the generalized audit_events/inspection_definitions/inspection_findings
+// trio (see LocalDatabase.recordCapture in @akasecurity/persistence). These two
+// mappers are the legacy-shape -> generalized-shape reshapers for that path,
+// mirroring toEventRow/toFindingRow's role for the retired events/findings pair.
+
+// IngestEvent -> the audit_events row's `attributes` bag for a capture leaf
+// (prompt/response/code_change/tool_use). Every legacy EventMetadata key maps
+// onto its snake_case CaptureAttributes name, EXCEPT `sessionId` — that becomes
+// the row's `root_session_id`/`parent_id` FK, never an attribute (the same
+// reason ToolCallInput/LlmCallInput carry `sessionId` as a top-level field
+// rather than in their bags). `source_tool` has no metadata source of its own:
+// it comes from the event's own `sourceTool` column, mirrored onto the bag
+// because a capture-typed audit row has no equivalent column of its own.
+export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
+  const metadata = event.metadata;
+  return {
+    source_tool: event.sourceTool,
+    ...(metadata?.repo !== undefined ? { repo: metadata.repo } : {}),
+    ...(metadata?.filePath !== undefined ? { file_path: metadata.filePath } : {}),
+    ...(metadata?.toolName !== undefined ? { tool_name: metadata.toolName } : {}),
+    ...(metadata?.gitignored !== undefined ? { gitignored: metadata.gitignored } : {}),
+    ...(metadata?.wholeFile !== undefined ? { whole_file: metadata.wholeFile } : {}),
+    ...(metadata?.correlationId !== undefined ? { correlation_id: metadata.correlationId } : {}),
+    ...(metadata?.traceId !== undefined ? { trace_id: metadata.traceId } : {}),
+    ...(metadata?.exceptionIds !== undefined ? { exception_ids: metadata.exceptionIds } : {}),
+    // `model`/`turnIndex` have no dedicated CaptureAttributes field (no writer
+    // has ever populated either), but every legacy metadata key still rides
+    // the bag rather than being silently dropped — CaptureAttributes'
+    // `.catchall(z.unknown())` carries the long tail.
+    ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
+    ...(metadata?.turnIndex !== undefined ? { turn_index: metadata.turnIndex } : {}),
+  };
+}
+
+// The placeholder rule-definition version every capture-path finding mints
+// under. DetectedFindingWithKey (the legacy findings/capture shape) carries no
+// rule name or version — those exist only on the transcript reconciler's
+// ToolCallInspection (see mask.ts's ScanFinding) — so this fixed literal is the
+// closest available stand-in for a rule format that has, itself, so far only
+// ever shipped as `specVersion: 1` (see Rule in rule.ts). Every finding for the
+// same rule collapses onto ONE definition row: inspectionDefinitions.upsert is
+// an idempotent upsert keyed on (ruleId, version).
+export const CAPTURE_DEFINITION_VERSION = '1';
+
+// DetectedFindingWithKey -> the InspectionDefinitionInput its finding resolves
+// against, at the capture path's coarser (ruleId-only) granularity. No display
+// name is available at this boundary either, so the rule id doubles as its own
+// name and `definition` carries only the bare identity — the same
+// identity-only fallback style as the transcript reconciler's writeToolCall
+// (`definition: JSON.stringify({ ruleId })`).
+export function toCaptureDefinitionInput(
+  finding: DetectedFindingWithKey,
+): InspectionDefinitionInput {
+  return {
+    ruleId: finding.ruleId,
+    version: CAPTURE_DEFINITION_VERSION,
+    name: finding.ruleId,
+    category: finding.category,
+    severity: finding.severity,
+    definition: JSON.stringify({ ruleId: finding.ruleId }),
   };
 }
 

@@ -10,8 +10,8 @@
 // scanAllRepos shares one gateway + runtime across all discovered repos so
 // deduplication is global — the same file appearing in multiple repos (e.g. a
 // vendored copy) is only sent to the detection engine once.
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, extname, isAbsolute, relative } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { extname, isAbsolute, relative } from 'node:path';
 
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type {
@@ -32,7 +32,9 @@ import {
   extractEgress,
   extractManifestSdks,
   isVendoredPath,
+  manifestKindOf,
   resolveEgress,
+  resolveNonGitProject,
   resolveRepoIdentity,
   resolveWorktreeRoot,
   toPosix,
@@ -115,7 +117,9 @@ interface EgressProject {
 // byte or one project splits into two rows that never reconcile each other.
 // identity.url is the remote URL, or the worktree root PATH when the repo has
 // no remote — the 'git:' prefix keeps that path-shaped fallback from aliasing
-// the 'path:' key a non-git scan of the same directory produces.
+// the 'path:' key a non-git scan of the same directory produces. The non-git
+// branch uses the same shared resolver as the CLI/web-ui pipeline, so both key
+// and relativize a subtree scan on the same project boundary.
 function resolveEgressProject(rootDir: string): EgressProject | null {
   try {
     const identity = resolveRepoIdentity(rootDir);
@@ -123,10 +127,11 @@ function resolveEgressProject(rootDir: string): EgressProject | null {
     if (identity && worktreeRoot) {
       return { root: worktreeRoot, projectKey: `git:${identity.url}`, project: identity.name };
     }
-    // Keyed on the realpath so two symlinked routes to one directory share a
-    // key; relativization still uses the directory as the walker saw it.
-    const realRoot = realpathSync(rootDir);
-    return { root: rootDir, projectKey: `path:${realRoot}`, project: basename(realRoot) };
+    // A non-git scan anchors on the nearest project boundary (highest ancestor
+    // carrying a dependency manifest), so a subtree scan and a root scan resolve
+    // to one project; with no manifest above the target the target itself is the
+    // root and different-depth scans cannot reconcile — no boundary to find.
+    return resolveNonGitProject(rootDir, manifestKindOf);
   } catch {
     return null;
   }

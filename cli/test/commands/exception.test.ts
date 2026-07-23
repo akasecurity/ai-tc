@@ -107,6 +107,14 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
       db.ruleProbeCache.setVerdict(ruleKey, verdict, worstProbeMs);
       return Promise.resolve();
     },
+    recordProjectEgress: () =>
+      Promise.resolve({
+        destinations: 0,
+        endpoints: 0,
+        callSites: 0,
+        truncated: false,
+        droppedFiles: [],
+      }),
     close: () => Promise.resolve(),
   };
 }

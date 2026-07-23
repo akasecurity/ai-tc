@@ -1,0 +1,511 @@
+[
+  {
+    "label": "package.json — dependencies and optionalDependencies keys are extracted",
+    "kind": "package.json",
+    "text": [
+      "{",
+      "  \"name\": \"app\",",
+      "  \"dependencies\": {",
+      "    \"stripe\": \"^14.0.0\",",
+      "    \"@sentry/node\": \"^7.0.0\"",
+      "  },",
+      "  \"optionalDependencies\": {",
+      "    \"@datadog/browser-logs\": \"^5.0.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [
+      { "ecosystem": "npm", "pkg": "stripe", "line": 4 },
+      { "ecosystem": "npm", "pkg": "@sentry/node", "line": 5 },
+      { "ecosystem": "npm", "pkg": "@datadog/browser-logs", "line": 8 }
+    ]
+  },
+  {
+    "label": "package.json — devDependencies-only file yields nothing",
+    "kind": "package.json",
+    "text": [
+      "{",
+      "  \"name\": \"app\",",
+      "  \"devDependencies\": {",
+      "    \"eslint\": \"^9.0.0\",",
+      "    \"vitest\": \"^2.0.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": []
+  },
+  {
+    "label": "package.json — a devDependencies entry with the same name as a dependencies entry attributes the production line",
+    "kind": "package.json",
+    "text": [
+      "{",
+      "  \"devDependencies\": {",
+      "    \"stripe\": \"^13.0.0\"",
+      "  },",
+      "  \"dependencies\": {",
+      "    \"stripe\": \"^14.0.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [{ "ecosystem": "npm", "pkg": "stripe", "line": 6 }]
+  },
+  {
+    "label": "requirements.txt — plain pinned lines",
+    "kind": "requirements.txt",
+    "text": ["sentry-sdk==1.40.0", "requests>=2.28,<3"],
+    "expect": [
+      { "ecosystem": "pypi", "pkg": "sentry-sdk", "line": 1 },
+      { "ecosystem": "pypi", "pkg": "requests", "line": 2 }
+    ]
+  },
+  {
+    "label": "requirements.txt — underscore and uppercase spellings PEP-503-normalize the same",
+    "kind": "requirements.txt",
+    "text": ["sentry_sdk==1.40.0", "SENTRY_SDK>=1.30.0"],
+    "expect": [
+      { "ecosystem": "pypi", "pkg": "sentry-sdk", "line": 1 },
+      { "ecosystem": "pypi", "pkg": "sentry-sdk", "line": 2 }
+    ]
+  },
+  {
+    "label": "requirements.txt — comment-only lines yield nothing",
+    "kind": "requirements.txt",
+    "text": ["# pinned production deps", "# sentry-sdk==1.40.0"],
+    "expect": []
+  },
+  {
+    "label": "requirements.txt — option lines (-r, -e, --hash) yield nothing",
+    "kind": "requirements.txt",
+    "text": ["-r base.txt", "-e .", "--hash=sha256:deadbeef"],
+    "expect": []
+  },
+  {
+    "label": "pyproject.toml — PEP 621 dependencies array",
+    "kind": "pyproject.toml",
+    "text": [
+      "[project]",
+      "name = \"myapp\"",
+      "dependencies = [",
+      "  \"sentry-sdk>=1.40.0\",",
+      "  \"requests>=2.28\",",
+      "]"
+    ],
+    "expect": [
+      { "ecosystem": "pypi", "pkg": "sentry-sdk", "line": 4 },
+      { "ecosystem": "pypi", "pkg": "requests", "line": 5 }
+    ]
+  },
+  {
+    "label": "pyproject.toml — poetry dependencies table excludes the python key",
+    "kind": "pyproject.toml",
+    "text": ["[tool.poetry.dependencies]", "python = \"^3.10\"", "sentry_sdk = \"^1.40.0\""],
+    "expect": [{ "ecosystem": "pypi", "pkg": "sentry-sdk", "line": 3 }]
+  },
+  {
+    "label": "pyproject.toml — [build-system] requires is not a dependency",
+    "kind": "pyproject.toml",
+    "text": [
+      "[build-system]",
+      "requires = [\"setuptools>=61.0\", \"wheel\"]",
+      "build-backend = \"setuptools.build_meta\""
+    ],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a require block lists module paths, including a major-version suffix",
+    "kind": "go.mod",
+    "text": [
+      "module github.com/acme/app",
+      "",
+      "go 1.21",
+      "",
+      "require (",
+      "\tgithub.com/stripe/stripe-go/v75 v75.11.0",
+      "\tgithub.com/aws/aws-sdk-go v1.44.0",
+      ")"
+    ],
+    "expect": [
+      { "ecosystem": "go", "pkg": "github.com/stripe/stripe-go/v75", "line": 6 },
+      { "ecosystem": "go", "pkg": "github.com/aws/aws-sdk-go", "line": 7 }
+    ]
+  },
+  {
+    "label": "go.mod — single-line require statement",
+    "kind": "go.mod",
+    "text": ["require github.com/twilio/twilio-go v1.10.0"],
+    "expect": [{ "ecosystem": "go", "pkg": "github.com/twilio/twilio-go", "line": 1 }]
+  },
+  {
+    "label": "go.mod — replace directive is not a dependency",
+    "kind": "go.mod",
+    "text": ["replace github.com/foo/bar => github.com/foo/bar v1.2.3"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — exclude directive is not a dependency",
+    "kind": "go.mod",
+    "text": ["exclude github.com/pkg/errors v0.9.0"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — an exclude block's module/version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["exclude (", "\tgithub.com/pkg/errors v0.9.0", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a replace block's module/version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["replace (", "\tgithub.com/stripe/stripe-go v72.0.0 => ./fork", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a retract block's version lines are not dependencies",
+    "kind": "go.mod",
+    "text": ["retract (", "\tv1.0.1", ")"],
+    "expect": []
+  },
+  {
+    "label": "go.mod — a require block is still extracted correctly when followed by an exclude block",
+    "kind": "go.mod",
+    "text": [
+      "require (",
+      "\tgithub.com/stripe/stripe-go v72.0.0",
+      ")",
+      "exclude (",
+      "\tgithub.com/pkg/errors v0.9.0",
+      ")"
+    ],
+    "expect": [{ "ecosystem": "go", "pkg": "github.com/stripe/stripe-go", "line": 2 }]
+  },
+  {
+    "label": "pom.xml — a dependencies/dependency groupId is extracted while the project's own coordinates, a parent groupId, a dependencyManagement groupId, and a build-plugin groupId are all ignored",
+    "kind": "pom.xml",
+    "text": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<project>",
+      "  <groupId>com.acme.orders</groupId>",
+      "  <artifactId>orders-service</artifactId>",
+      "  <version>1.0.0</version>",
+      "",
+      "  <parent>",
+      "    <groupId>com.acme.platform</groupId>",
+      "    <artifactId>platform-parent</artifactId>",
+      "    <version>3.2.1</version>",
+      "  </parent>",
+      "",
+      "  <dependencyManagement>",
+      "    <dependencies>",
+      "      <dependency>",
+      "        <groupId>org.springframework</groupId>",
+      "        <artifactId>spring-bom</artifactId>",
+      "        <version>6.0.0</version>",
+      "        <type>pom</type>",
+      "        <scope>import</scope>",
+      "      </dependency>",
+      "    </dependencies>",
+      "  </dependencyManagement>",
+      "",
+      "  <dependencies>",
+      "    <dependency>",
+      "      <groupId>com.stripe</groupId>",
+      "      <artifactId>stripe-java</artifactId>",
+      "      <version>22.0.0</version>",
+      "    </dependency>",
+      "  </dependencies>",
+      "",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>com.google.cloud.tools</groupId>",
+      "        <artifactId>jib-maven-plugin</artifactId>",
+      "        <version>3.3.1</version>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.stripe", "line": 27 }]
+  },
+  {
+    "label": "pom.xml — a dependencyManagement-only file yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencyManagement>",
+      "    <dependencies>",
+      "      <dependency>",
+      "        <groupId>org.springframework</groupId>",
+      "        <artifactId>spring-bom</artifactId>",
+      "      </dependency>",
+      "    </dependencies>",
+      "  </dependencyManagement>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — a build-plugins-only file yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <build>",
+      "    <plugins>",
+      "      <plugin>",
+      "        <groupId>com.google.cloud.tools</groupId>",
+      "        <artifactId>jib-maven-plugin</artifactId>",
+      "      </plugin>",
+      "    </plugins>",
+      "  </build>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — the project's own coordinates and a parent block with no dependencies yield nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <groupId>com.acme.orders</groupId>",
+      "  <parent>",
+      "    <groupId>com.acme.platform</groupId>",
+      "  </parent>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — a dependency's own groupId is extracted while its nested exclusion groupId is ignored",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencies>",
+      "    <dependency>",
+      "      <groupId>com.twilio.sdk</groupId>",
+      "      <artifactId>twilio</artifactId>",
+      "      <exclusions>",
+      "        <exclusion>",
+      "          <groupId>commons-logging</groupId>",
+      "          <artifactId>commons-logging</artifactId>",
+      "        </exclusion>",
+      "      </exclusions>",
+      "    </dependency>",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.twilio.sdk", "line": 4 }]
+  },
+  {
+    "label": "pom.xml — a single-line commented-out dependency block yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencies>",
+      "    <!-- <dependency><groupId>com.stripe</groupId></dependency> -->",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — a multi-line commented-out dependency block yields nothing",
+    "kind": "pom.xml",
+    "text": [
+      "<project>",
+      "  <dependencies>",
+      "    <!--",
+      "    <dependency>",
+      "      <groupId>com.stripe</groupId>",
+      "      <artifactId>stripe-java</artifactId>",
+      "    </dependency>",
+      "    -->",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "build.gradle — Groovy DSL implementation with a plain string coordinate",
+    "kind": "build.gradle",
+    "text": ["implementation 'com.stripe:stripe-java:20.0.0'"],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.stripe", "line": 1 }]
+  },
+  {
+    "label": "build.gradle — platform() BOM form extracts the wrapped coordinate's group id",
+    "kind": "build.gradle",
+    "text": ["    implementation platform('com.stripe:stripe-bom:1.0')"],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.stripe", "line": 1 }]
+  },
+  {
+    "label": "build.gradle — Kotlin DSL call-style coordinate",
+    "kind": "build.gradle",
+    "text": ["implementation(\"com.datadoghq:dd-trace-api:1.0.0\")"],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.datadoghq", "line": 1 }]
+  },
+  {
+    "label": "build.gradle — a commented-out dependency line yields nothing",
+    "kind": "build.gradle",
+    "text": ["// implementation 'com.stripe:stripe-java:20.0.0'"],
+    "expect": []
+  },
+  {
+    "label": "build.gradle — testImplementation is not one of the tracked configurations",
+    "kind": "build.gradle",
+    "text": ["testImplementation 'com.stripe:stripe-java:20.0.0'"],
+    "expect": []
+  },
+  {
+    "label": "build.gradle — compileOnly does not match on the 'compile' prefix",
+    "kind": "build.gradle",
+    "text": ["compileOnly 'com.stripe:stripe-java:20.0.0'"],
+    "expect": []
+  },
+  {
+    "label": "Gemfile — single- and double-quoted gem declarations",
+    "kind": "Gemfile",
+    "text": ["gem 'sentry-ruby', '~> 5.0'", "gem \"twilio-ruby\""],
+    "expect": [
+      { "ecosystem": "rubygems", "pkg": "sentry-ruby", "line": 1 },
+      { "ecosystem": "rubygems", "pkg": "twilio-ruby", "line": 2 }
+    ]
+  },
+  {
+    "label": "Gemfile — a commented-out gem line yields nothing",
+    "kind": "Gemfile",
+    "text": ["# gem 'sentry-ruby'"],
+    "expect": []
+  },
+  {
+    "label": "Gemfile — a source line is not a gem declaration",
+    "kind": "Gemfile",
+    "text": ["source 'https://rubygems.org'"],
+    "expect": []
+  },
+  {
+    "label": "Cargo.toml — a plain [dependencies] table lists one crate per line",
+    "kind": "Cargo.toml",
+    "text": [
+      "[dependencies]",
+      "sentry = \"0.32\"",
+      "tokio = { version = \"1\", features = [\"full\"] }"
+    ],
+    "expect": [
+      { "ecosystem": "cargo", "pkg": "sentry", "line": 2 },
+      { "ecosystem": "cargo", "pkg": "tokio", "line": 3 }
+    ]
+  },
+  {
+    "label": "Cargo.toml — a dotted [dependencies.crate] table names the crate in the header, not its detail fields",
+    "kind": "Cargo.toml",
+    "text": ["[dependencies.sentry]", "version = \"0.32\"", "features = [\"backtrace\"]"],
+    "expect": [{ "ecosystem": "cargo", "pkg": "sentry", "line": 1 }]
+  },
+  {
+    "label": "Cargo.toml — [dev-dependencies] yields nothing",
+    "kind": "Cargo.toml",
+    "text": ["[dev-dependencies]", "mockall = \"0.11\""],
+    "expect": []
+  },
+  {
+    "label": "Cargo.toml — [workspace.dependencies] yields nothing",
+    "kind": "Cargo.toml",
+    "text": ["[workspace.dependencies]", "serde = \"1.0\""],
+    "expect": []
+  },
+  {
+    "label": "composer.json — require keys excluding php and ext-*",
+    "kind": "composer.json",
+    "text": [
+      "{",
+      "  \"require\": {",
+      "    \"sentry/sentry\": \"^4.0\",",
+      "    \"php\": \">=8.1\",",
+      "    \"ext-json\": \"*\"",
+      "  }",
+      "}"
+    ],
+    "expect": [{ "ecosystem": "composer", "pkg": "sentry/sentry", "line": 3 }]
+  },
+  {
+    "label": "composer.json — a require block of only php and an ext-* extension yields nothing",
+    "kind": "composer.json",
+    "text": [
+      "{",
+      "  \"require\": {",
+      "    \"php\": \">=8.1\",",
+      "    \"ext-curl\": \"*\"",
+      "  }",
+      "}"
+    ],
+    "expect": []
+  },
+  {
+    "label": "composer.json — a require-dev entry with the same name as a require entry attributes the production line",
+    "kind": "composer.json",
+    "text": [
+      "{",
+      "  \"require-dev\": {",
+      "    \"sentry/sentry\": \"^3.0\"",
+      "  },",
+      "  \"require\": {",
+      "    \"sentry/sentry\": \"^4.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [{ "ecosystem": "composer", "pkg": "sentry/sentry", "line": 6 }]
+  },
+  {
+    "label": "csproj — a self-closing PackageReference",
+    "kind": "csproj",
+    "text": ["<PackageReference Include=\"Sentry\" Version=\"4.0.0\" />"],
+    "expect": [{ "ecosystem": "nuget", "pkg": "Sentry", "line": 1 }]
+  },
+  {
+    "label": "csproj — a PackageReference with a nested Version element",
+    "kind": "csproj",
+    "text": [
+      "<PackageReference Include=\"Stripe.net\">",
+      "  <Version>40.0.0</Version>",
+      "</PackageReference>"
+    ],
+    "expect": [{ "ecosystem": "nuget", "pkg": "Stripe.net", "line": 1 }]
+  },
+  {
+    "label": "csproj — an Update-only PackageReference (central package management) yields nothing",
+    "kind": "csproj",
+    "text": ["<PackageReference Update=\"Sentry\" Version=\"4.0.0\" />"],
+    "expect": []
+  },
+  {
+    "label": "csproj — a commented-out PackageReference yields nothing",
+    "kind": "csproj",
+    "text": ["<!-- <PackageReference Include=\"Stripe.net\" /> -->"],
+    "expect": []
+  },
+  {
+    "label": "packages.config — a package element",
+    "kind": "packages.config",
+    "text": [
+      "<packages>",
+      "  <package id=\"Sentry\" version=\"4.0.0\" targetFramework=\"net472\" />",
+      "</packages>"
+    ],
+    "expect": [{ "ecosystem": "nuget", "pkg": "Sentry", "line": 2 }]
+  },
+  {
+    "label": "packages.config — an empty packages element yields nothing",
+    "kind": "packages.config",
+    "text": ["<packages>", "</packages>"],
+    "expect": []
+  },
+  {
+    "label": "packages.config — a commented-out package element yields nothing",
+    "kind": "packages.config",
+    "text": [
+      "<packages>",
+      "  <!-- <package id=\"Stripe.net\" version=\"1.0\" /> -->",
+      "</packages>"
+    ],
+    "expect": []
+  }
+]

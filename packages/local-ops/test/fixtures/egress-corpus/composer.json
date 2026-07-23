@@ -1,0 +1,12 @@
+{
+  "name": "acme/settlement-web",
+  "type": "project",
+  "require": {
+    "php": "^8.3",
+    "stripe/stripe-php": "^15.6"
+  },
+  "require-dev": {
+    "auth0/auth0-php": "^8.11",
+    "phpunit/phpunit": "^11.3"
+  }
+}

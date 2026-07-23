@@ -31,8 +31,9 @@ import {
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
 describe('DestinationKind enum', () => {
-  it('accepts provider, internal, ip', () => {
-    for (const v of ['provider', 'internal', 'ip']) {
+  it('accepts all 4 values in grouping order', () => {
+    expect(DestinationKind.options).toEqual(['provider', 'internal', 'external', 'ip']);
+    for (const v of DestinationKind.options) {
       expect(DestinationKind.safeParse(v).success).toBe(true);
     }
   });
@@ -43,8 +44,9 @@ describe('DestinationKind enum', () => {
 });
 
 describe('Transport enum', () => {
-  it('accepts https, http, sftp, grpc, smtp', () => {
-    for (const v of ['https', 'http', 'sftp', 'grpc', 'smtp']) {
+  it('accepts all 7 scheme-mapped transports', () => {
+    expect(Transport.options).toEqual(['https', 'http', 'sftp', 'grpc', 'smtp', 'ws', 'wss']);
+    for (const v of Transport.options) {
       expect(Transport.safeParse(v).success).toBe(true);
     }
   });
@@ -137,13 +139,17 @@ describe('ReviewReason enum', () => {
 });
 
 describe('HttpMethod enum', () => {
-  it('accepts GET, POST, PUT, DELETE', () => {
-    for (const v of ['GET', 'POST', 'PUT', 'DELETE']) {
+  it('accepts the 4 verbs plus the SDK/REF evidence tags', () => {
+    expect(HttpMethod.options).toEqual(['GET', 'POST', 'PUT', 'DELETE', 'SDK', 'REF']);
+    for (const v of HttpMethod.options) {
       expect(HttpMethod.safeParse(v).success).toBe(true);
     }
   });
 
   it('rejects invalid values', () => {
+    // The enum is an evidence tag, not an HTTP verb list: 'SDK' (manifest-derived)
+    // and 'REF' (URL seen without method evidence) are members, while verbs the
+    // extractor never emits — such as PATCH — are not.
     expect(HttpMethod.safeParse('PATCH').success).toBe(false);
   });
 });
@@ -209,6 +215,16 @@ describe('EndpointSummary', () => {
     expect(EndpointSummary.safeParse({ ...validEndpoint, lastSeen: 'not-a-date' }).success).toBe(
       false,
     );
+  });
+
+  it('round-trips a manifest-derived SDK endpoint over a websocket transport', () => {
+    const result = EndpointSummary.safeParse({
+      ...validEndpoint,
+      method: 'SDK',
+      transport: 'wss',
+      url: 'wss://stream.example-provider.com/v1/events',
+    });
+    expect(result.success).toBe(true);
   });
 });
 
@@ -291,6 +307,22 @@ describe('ShareDestinationSummary', () => {
     expect(ShareDestinationSummary.safeParse(ipSummary).success).toBe(true);
   });
 
+  it('parses an external destination summary carrying unverified trust', () => {
+    const externalSummary = {
+      ...validSummary,
+      id: 'acme-partner',
+      kind: 'external',
+      name: 'api.acme-partner.com',
+      host: 'api.acme-partner.com',
+      category: 'External domain',
+      trust: 'unverified',
+      status: 'review',
+      transports: ['https'],
+      review: { needsReview: true, reasons: ['unverified_domain'] },
+    };
+    expect(ShareDestinationSummary.safeParse(externalSummary).success).toBe(true);
+  });
+
   it('rejects an invalid trust value', () => {
     expect(
       ShareDestinationSummary.safeParse({ ...validSummary, trust: 'known-good' }).success,
@@ -358,15 +390,30 @@ describe('NeedsReviewResponse', () => {
 describe('SharesStats', () => {
   it('parses a realistic stats payload', () => {
     const result = SharesStats.safeParse({
-      destinations: 12,
+      destinations: 13,
       endpoints: 18,
       callSites: 23,
       needsReview: 3,
       insecure: 1,
-      byKind: { provider: 8, internal: 2, ip: 2 },
-      byTrust: { recognized: 8, internal: 1, unverified: 1, ip: 2 },
+      byKind: { provider: 8, internal: 2, external: 1, ip: 2 },
+      byTrust: { recognized: 8, internal: 1, unverified: 2, ip: 2 },
     });
     expect(result.success).toBe(true);
+  });
+
+  it('rejects missing byKind keys', () => {
+    // byKind is a closed literal object, so it must be extended in lockstep with
+    // DestinationKind or a kind silently stops being summed.
+    const result = SharesStats.safeParse({
+      destinations: 0,
+      endpoints: 0,
+      callSites: 0,
+      needsReview: 0,
+      insecure: 0,
+      byKind: { provider: 0, internal: 0, ip: 0 },
+      byTrust: { recognized: 0, internal: 0, unverified: 0, ip: 0 },
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects missing byTrust keys', () => {
@@ -376,7 +423,7 @@ describe('SharesStats', () => {
       callSites: 0,
       needsReview: 0,
       insecure: 0,
-      byKind: { provider: 0, internal: 0, ip: 0 },
+      byKind: { provider: 0, internal: 0, external: 0, ip: 0 },
       byTrust: { recognized: 0, internal: 0 },
     });
     expect(result.success).toBe(false);

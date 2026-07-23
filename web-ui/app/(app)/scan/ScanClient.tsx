@@ -65,6 +65,21 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
             )}
           </div>
         )}
+        {/* Outside the ok/error branches above: egress extraction does not read
+            the ruleset, so destinations are recorded — and worth surfacing —
+            even when the scan had no usable packs to run. */}
+        {result?.egress && (
+          <p className="mt-2 text-xs text-text-2">
+            Data shares: {String(result.egress.destinations)} destination
+            {result.egress.destinations === 1 ? '' : 's'} · {String(result.egress.endpoints)}{' '}
+            endpoint{result.egress.endpoints === 1 ? '' : 's'} · {String(result.egress.callSites)}{' '}
+            call site{result.egress.callSites === 1 ? '' : 's'} recorded
+            {result.egress.truncated ? ' (capped)' : ''}.{' '}
+            <Link href="/data-shares" className="font-semibold text-primary underline">
+              View data shares
+            </Link>
+          </p>
+        )}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0b18469c-3b09-4bf3-86be-768ba9082671",
+  "id": "b420c253-c8c2-4472-bbdb-d8b77f986293",
   "prevId": "9d597686-38f9-4bdd-8d62-cebd626ff250",
   "tables": {
     "audit_events": {
@@ -412,7 +412,14 @@
           "name": "destination_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "host": {
+          "name": "host",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "decision": {
@@ -444,6 +451,14 @@
             "destination_id"
           ],
           "isUnique": true
+        },
+        "uq_egress_decision_override_host": {
+          "name": "uq_egress_decision_override_host",
+          "columns": [
+            "host"
+          ],
+          "isUnique": true,
+          "where": "`host` IS NOT NULL"
         }
       },
       "foreignKeys": {
@@ -457,7 +472,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1171,20 +1186,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "finding_key": {
-          "name": "finding_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "first_detected_at": {
-          "name": "first_detected_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -1194,13 +1195,6 @@
             "audit_event_id"
           ],
           "isUnique": false
-        },
-        "uq_inspection_findings_key": {
-          "name": "uq_inspection_findings_key",
-          "columns": [
-            "finding_key"
-          ],
-          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -1878,6 +1872,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "project_key": {
+          "name": "project_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
         "file": {
           "name": "file",
           "type": "text",
@@ -1945,11 +1947,19 @@
           ],
           "isUnique": false
         },
+        "idx_share_call_site_project": {
+          "name": "idx_share_call_site_project",
+          "columns": [
+            "project_key",
+            "endpoint_id"
+          ],
+          "isUnique": false
+        },
         "uq_share_call_site": {
           "name": "uq_share_call_site",
           "columns": [
             "endpoint_id",
-            "project",
+            "project_key",
             "file",
             "line"
           ],

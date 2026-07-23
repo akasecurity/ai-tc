@@ -5,6 +5,7 @@ import type {
   ConfigScanRecord,
   DayActivity,
   DetectedFindingWithKey,
+  EgressWriteSummary,
   FindingView,
   HealthSummary,
   IngestEvent,
@@ -12,6 +13,7 @@ import type {
   InventoryFacets,
   LlmCallInput,
   PolicyBundle,
+  RecordProjectEgressInput,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
@@ -184,5 +186,16 @@ export interface DataGateway {
   // (SqliteResolutionsRepository.insertResolution) — the
   // resolutions ledger is local, like the scan ledger it derives from.
   insertResolution(input: ResolutionInput): Promise<void>;
+  // Record one project's statically-extracted egress (destinations, endpoints,
+  // call sites) into the local store. Unlike most gateway writes this THROWS
+  // on failure rather than swallowing it: the caller pairs a failed write with
+  // skipping its scan-ledger commit, so the next scan retries the same files
+  // instead of treating them as already processed.
+  //
+  // The summary comes back rather than being discarded because a write can
+  // succeed while still declining some of its input: `droppedFiles` names the
+  // files the per-write cap left unrecorded, and a ledger-keeping caller must
+  // withhold exactly those ledger entries or it will never read them again.
+  recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary>;
   close(): Promise<void>;
 }

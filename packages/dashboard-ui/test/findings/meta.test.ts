@@ -1,9 +1,4 @@
-import type {
-  FindingAction,
-  FindingGroup,
-  FindingInstance,
-  FindingStatus,
-} from '@akasecurity/schema';
+import type { FindingAction, FindingInstance, FindingStatus } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { formatConfidence } from '../../src/findings/FindingDetailView.tsx';
@@ -11,30 +6,10 @@ import {
   ACTION_META,
   CATEGORY_LABEL,
   categoryStyle,
-  filterGroupsByStatus,
   filterInstancesByStatus,
+  FINDING_STATUSES,
   SEVERITIES,
 } from '../../src/findings/meta.ts';
-
-// Minimal FindingGroup fixture — only `id` and `status` vary per test; the rest
-// are placeholder values satisfying the required shape.
-function buildGroup(id: string, status?: FindingStatus): FindingGroup {
-  return {
-    id,
-    category: 'secret',
-    subtype: 'aws-key',
-    severity: 'high',
-    match: { maskedValue: '****', contextPrefix: '' },
-    detection: { id: 'aws-key', name: null },
-    policy: { id: 'category:secret', name: 'secret' },
-    instanceCount: 1,
-    providers: ['api'],
-    aggregateAction: 'allowed',
-    latestDetectedAt: '2026-01-01T00:00:00.000Z',
-    instances: [],
-    ...(status ? { status } : {}),
-  };
-}
 
 // Minimal FindingInstance fixture — only `id` and `status` vary per test.
 function buildInstance(id: string, status?: FindingStatus): FindingInstance {
@@ -80,11 +55,15 @@ describe('ACTION_META', () => {
   });
 });
 
-describe('CATEGORY_LABEL / SEVERITIES', () => {
+describe('CATEGORY_LABEL / SEVERITIES / FINDING_STATUSES', () => {
   it('labels categories and orders severities critical→low', () => {
     expect(CATEGORY_LABEL.secret).toBe('Secret');
     expect(CATEGORY_LABEL.pii).toBe('PII');
     expect(SEVERITIES).toEqual(['critical', 'high', 'medium', 'low']);
+  });
+
+  it('orders statuses open→dismissed for the Status filter', () => {
+    expect(FINDING_STATUSES).toEqual(['open', 'handled', 'resolved', 'dismissed']);
   });
 });
 
@@ -100,34 +79,6 @@ describe('formatConfidence', () => {
   });
 });
 
-describe('filterGroupsByStatus', () => {
-  const groups: FindingGroup[] = [
-    buildGroup('g-open', 'open'),
-    buildGroup('g-handled', 'handled'),
-    buildGroup('g-resolved', 'resolved'),
-    buildGroup('g-dismissed', 'dismissed'),
-    buildGroup('g-legacy'), // no status (predates the resolution feature)
-  ];
-
-  it('keeps only groups whose derived status matches the given status', () => {
-    expect(filterGroupsByStatus(groups, 'open')).toEqual([groups[0]]);
-    expect(filterGroupsByStatus(groups, 'resolved')).toEqual([groups[2]]);
-  });
-
-  it('excludes a legacy group with no status when filtering by a specific status', () => {
-    const legacyOnly = groups.filter((g) => g.id === 'g-legacy');
-    expect(filterGroupsByStatus(legacyOnly, 'open')).toEqual([]);
-  });
-
-  it('returns every group unchanged for "all"', () => {
-    expect(filterGroupsByStatus(groups, 'all')).toEqual(groups);
-  });
-
-  it('returns every group unchanged when no status filter is given', () => {
-    expect(filterGroupsByStatus(groups, undefined)).toEqual(groups);
-  });
-});
-
 describe('filterInstancesByStatus', () => {
   const instances: FindingInstance[] = [
     buildInstance('i-open', 'open'),
@@ -137,29 +88,36 @@ describe('filterInstancesByStatus', () => {
     buildInstance('i-legacy'), // no status (predates the resolution feature)
   ];
 
-  it('keeps only instances whose own status matches the given status', () => {
-    expect(filterInstancesByStatus(instances, 'open')).toEqual([instances[0]]);
-    expect(filterInstancesByStatus(instances, 'handled')).toEqual([instances[1]]);
+  it('keeps only instances whose own status is among the selected ones', () => {
+    expect(filterInstancesByStatus(instances, ['open'])).toEqual([instances[0]]);
+    expect(filterInstancesByStatus(instances, ['handled'])).toEqual([instances[1]]);
   });
 
-  it('excludes a legacy instance with no status when filtering by a specific status', () => {
+  it('keeps the union when several statuses are selected', () => {
+    expect(filterInstancesByStatus(instances, ['open', 'resolved'])).toEqual([
+      instances[0],
+      instances[2],
+    ]);
+  });
+
+  it('excludes a legacy instance with no status when a status is selected', () => {
     const legacyOnly = instances.filter((i) => i.id === 'i-legacy');
-    expect(filterInstancesByStatus(legacyOnly, 'open')).toEqual([]);
+    expect(filterInstancesByStatus(legacyOnly, ['open'])).toEqual([]);
   });
 
-  it('returns every instance unchanged for "all"', () => {
-    expect(filterInstancesByStatus(instances, 'all')).toEqual(instances);
+  it('returns every instance unchanged for an empty selection', () => {
+    expect(filterInstancesByStatus(instances, [])).toEqual(instances);
   });
 
   it('returns every instance unchanged when no status filter is given', () => {
     expect(filterInstancesByStatus(instances, undefined)).toEqual(instances);
   });
 
-  it('never empties out a group that filterGroupsByStatus already deemed visible', () => {
-    // deriveGroupStatus only assigns a candidate status to a group when at
+  it('never empties out a group the store already deemed visible', () => {
+    // foldGroupStatus only assigns a candidate status to a group when at
     // least one instance carries it — so filtering that SAME group's
     // instances by the SAME status can never yield an empty expanded list.
     const mixed = [buildInstance('i1', 'handled'), buildInstance('i2', 'dismissed')];
-    expect(filterInstancesByStatus(mixed, 'handled')).toHaveLength(1);
+    expect(filterInstancesByStatus(mixed, ['handled'])).toHaveLength(1);
   });
 });

@@ -1,0 +1,211 @@
+[
+  {
+    "label": "a host: keyword line yields a public bare IPv4 as an http reference",
+    "text": "host: '198.51.100.23'",
+    "expect": [
+      {
+        "url": "http://198.51.100.23",
+        "host": "198.51.100.23",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an sftp-context line yields the sftp transport and keeps the port",
+    "text": "SFTP_SERVER = \"203.0.113.9:22\"",
+    "expect": [
+      {
+        "url": "sftp://203.0.113.9:22",
+        "host": "203.0.113.9",
+        "port": 22,
+        "transport": "sftp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an scp-context line yields the sftp transport",
+    "text": "SCP_TARGET_HOST = \"203.0.113.44\"",
+    "expect": [
+      {
+        "url": "sftp://203.0.113.44",
+        "host": "203.0.113.44",
+        "port": null,
+        "transport": "sftp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an ssh-context camelCase identifier yields the sftp transport",
+    "text": "const sshHost = '203.0.113.45';",
+    "expect": [
+      {
+        "url": "sftp://203.0.113.45",
+        "host": "203.0.113.45",
+        "port": null,
+        "transport": "sftp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a mail-context line yields the smtp transport (the Host keyword admits the line; mail alone is a transport keyword, not a host-context keyword)",
+    "text": "const mailRelayHost = \"203.0.113.25\";",
+    "expect": [
+      {
+        "url": "smtp://203.0.113.25",
+        "host": "203.0.113.25",
+        "port": null,
+        "transport": "smtp",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a camelCase host identifier is recognized as context",
+    "text": "const hostName = \"198.51.100.99\";",
+    "expect": [
+      {
+        "url": "http://198.51.100.99",
+        "host": "198.51.100.99",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a uri keyword with a port yields http and a separate port",
+    "text": "DB_URI = \"198.51.100.31:5432\"",
+    "expect": [
+      {
+        "url": "http://198.51.100.31:5432",
+        "host": "198.51.100.31",
+        "port": 5432,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a snake_case ip keyword is recognized as context",
+    "text": "client_ip = \"198.51.100.77\"",
+    "expect": [
+      {
+        "url": "http://198.51.100.77",
+        "host": "198.51.100.77",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "an IP inside an already-captured URL is not emitted a second time",
+    "text": "const r = await fetch('http://198.51.100.23:8080/health');",
+    "expect": [
+      {
+        "url": "http://198.51.100.23:8080/health",
+        "host": "198.51.100.23",
+        "port": 8080,
+        "transport": "http",
+        "method": "GET",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a URL IP and a separate bare IP on one line yield one hit each",
+    "text": "const url = 'http://198.51.100.23/x'; const fallbackHost = '203.0.113.9';",
+    "expect": [
+      {
+        "url": "http://198.51.100.23/x",
+        "host": "198.51.100.23",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      },
+      {
+        "url": "http://203.0.113.9",
+        "host": "203.0.113.9",
+        "port": null,
+        "transport": "http",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "NEGATIVE: a dotted-quad version string has no host context keyword",
+    "text": "version = \"1.2.3.4\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a bare IP in prose has no host context keyword",
+    "text": "// bumped to 8.8.8.8 yesterday",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a private 10.* address is excluded",
+    "text": "server = \"10.0.0.8\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a private 192.168.* address is excluded",
+    "text": "endpoint = \"192.168.1.10\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a private 172.16-31.* address is excluded",
+    "text": "host = \"172.16.0.5\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a loopback address is excluded",
+    "text": "host = \"127.0.0.1\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a link-local metadata address is excluded",
+    "text": "const metadataHost = \"169.254.169.254\";",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: an unspecified 0.* address is excluded",
+    "text": "host = \"0.0.0.0\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: a multicast address is excluded",
+    "text": "host = \"224.0.0.1\"",
+    "expect": []
+  },
+  {
+    "label": "NEGATIVE: an octet above 255 is not a valid IPv4 literal",
+    "text": "host = \"256.1.1.1\"",
+    "expect": []
+  }
+]

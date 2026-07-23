@@ -234,11 +234,18 @@ export interface FindingGroupAggregate {
   sourceTools: string[];
   /** Distinct raw findings.action_taken values across ALL instances. */
   actionsTaken: string[];
-  /** deriveFindingStatus inputs, one per distinct combination in the group. */
+  /**
+   * deriveFindingStatus inputs, one per distinct combination in the group.
+   * `count` is how many instances carry that combination — it powers
+   * countInstancesByStatus (status-scoped totals). Optional so callers that
+   * don't track counts keep compiling; without it the status-scoped count
+   * falls back to the whole-group instanceCount.
+   */
   statusInputs: {
     kind: string;
     findingKey: string | null;
     latestResolutionStatus: string | null;
+    count?: number;
   }[];
   /** Max occurredAt (ISO) across ALL instances. */
   latestDetectedAt: string;
@@ -418,15 +425,17 @@ export interface FindingFilterOptions {
   severity?: string[] | undefined;
   providers?: string[] | undefined;
   actions?: string[] | undefined;
+  statuses?: string[] | undefined;
   q?: string | undefined;
   subtype?: string[] | undefined;
 }
 
 // The lowercased free-text haystack for a group is immutable once the group is
-// built, but applyFindingFilters runs up to 5× per request (once per facet
-// dimension + the final filtered set). Memoise it per group object so the
-// join/lowercase happens once instead of once per pass. Keyed weakly so groups
-// are collected with the request that produced them (no cross-request leak).
+// built, but applyFindingFilters runs several times per request (once per facet
+// dimension in computeFindingFacets, plus the final filtered set). Memoise it
+// per group object so the join/lowercase happens once instead of once per pass.
+// Keyed weakly so groups are collected with the request that produced them (no
+// cross-request leak).
 const haystackCache = new WeakMap<FindingGroup, string>();
 
 /**
@@ -478,6 +487,29 @@ function groupActions(g: FindingGroup): FindingAction[] {
   return actions;
 }
 
+/**
+ * Instances in `statusInputs` whose DERIVED status is among `statuses` —
+ * the status-scoped complement of a group's whole-group instanceCount, so a
+ * status-filtered response can report how many instances actually carry a
+ * requested status rather than the group's full tally.
+ *
+ * Returns null when any entry lacks a `count` (a caller that doesn't track
+ * per-combination counts) — the caller falls back to the unscoped count
+ * rather than reporting a partial sum as exact.
+ */
+export function countInstancesByStatus(
+  statusInputs: FindingGroupAggregate['statusInputs'],
+  statuses: readonly string[],
+): number | null {
+  const statusSet = new Set(statuses);
+  let sum = 0;
+  for (const input of statusInputs) {
+    if (input.count === undefined) return null;
+    if (statusSet.has(deriveFindingStatus(input))) sum += input.count;
+  }
+  return sum;
+}
+
 export function applyFindingFilters(
   groups: FindingGroup[],
   opts: FindingFilterOptions,
@@ -504,6 +536,18 @@ export function applyFindingFilters(
   if (opts.subtype && opts.subtype.length > 0) {
     const subtypeSet = new Set(opts.subtype);
     filtered = filtered.filter((g) => subtypeSet.has(g.subtype));
+  }
+
+  // Status: matches the GROUP's folded status (see foldGroupStatus), not "any
+  // instance matches" as provider/action do — the Status column shows exactly
+  // this one value, so a filtered row's badge always reads a requested status.
+  // The undefined guard is defensive for callers that build groups from rows
+  // without statuses (FindingGroup.status is optional in the contract); the
+  // SQLite store derives a status for every instance, so its groups always
+  // carry one.
+  if (opts.statuses && opts.statuses.length > 0) {
+    const statusSet = new Set(opts.statuses);
+    filtered = filtered.filter((g) => g.status !== undefined && statusSet.has(g.status));
   }
 
   // q: case-insensitive substring over the group's cached search haystack
@@ -548,6 +592,7 @@ export function computeFindingFacets(
   const forSeverity = applyFindingFilters(allGroups, {
     providers: opts.providers,
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
   });
@@ -558,6 +603,7 @@ export function computeFindingFacets(
 
   const forProvider = applyFindingFilters(allGroups, {
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
     severity: opts.severity,
@@ -569,6 +615,7 @@ export function computeFindingFacets(
 
   const forAction = applyFindingFilters(allGroups, {
     providers: opts.providers,
+    statuses: opts.statuses,
     q: opts.q,
     subtype: opts.subtype,
     severity: opts.severity,
@@ -581,11 +628,28 @@ export function computeFindingFacets(
   const forSubtype = applyFindingFilters(allGroups, {
     providers: opts.providers,
     actions: opts.actions,
+    statuses: opts.statuses,
     q: opts.q,
     severity: opts.severity,
   });
   const subtypeMap = new Map<string, number>();
   for (const g of forSubtype) subtypeMap.set(g.subtype, (subtypeMap.get(g.subtype) ?? 0) + 1);
+
+  // A status-less group (possible only for callers whose rows carry no
+  // statuses — the SQLite store always derives one) contributes to no bucket:
+  // the filter can't select it either, so a count it can never reach would
+  // misstate the dimension.
+  const forStatus = applyFindingFilters(allGroups, {
+    providers: opts.providers,
+    actions: opts.actions,
+    q: opts.q,
+    subtype: opts.subtype,
+    severity: opts.severity,
+  });
+  const statusMap = new Map<string, number>();
+  for (const g of forStatus) {
+    if (g.status !== undefined) statusMap.set(g.status, (statusMap.get(g.status) ?? 0) + 1);
+  }
 
   const toItems = (m: Map<string, number>): FindingFacetItem[] =>
     [...m.entries()].map(([value, count]) => ({ value, count }));
@@ -595,5 +659,6 @@ export function computeFindingFacets(
     provider: toItems(providerMap),
     action: toItems(actionMap),
     subtype: toItems(subtypeMap),
+    status: toItems(statusMap),
   };
 }

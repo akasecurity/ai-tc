@@ -50,9 +50,11 @@ export const TRANSPORT_META: Record<Transport, TransportMeta> = {
   sftp: { label: 'SFTP', icon: UploadIcon, secure: true },
   grpc: { label: 'gRPC', icon: RouteIcon, secure: true },
   smtp: { label: 'SMTP', icon: InboxIcon, secure: true },
+  ws: { label: 'WS', icon: GlobeIcon, secure: false },
+  wss: { label: 'WSS', icon: LockIcon, secure: true },
 };
 
-/** True when any transport in the set is plaintext/insecure (only `http`). */
+/** True when any transport in the set is plaintext/insecure (`http` or `ws`). */
 export function hasInsecureTransport(transports: Transport[]): boolean {
   return transports.some((t) => !TRANSPORT_META[t].secure);
 }
@@ -94,9 +96,10 @@ export const TRUST_META: Record<ShareTrustLevel, TrustMeta> = {
 export const KIND_LABEL: Record<DestinationKind, string> = {
   provider: 'Providers',
   internal: 'Internal & corporate domains',
+  external: 'External domains',
   ip: 'Raw IP addresses',
 };
-export const KIND_ORDER: DestinationKind[] = ['provider', 'internal', 'ip'];
+export const KIND_ORDER: DestinationKind[] = ['provider', 'internal', 'external', 'ip'];
 
 // ─── Review reasons ──────────────────────────────────────────────────────────
 
@@ -118,10 +121,15 @@ export function flagReason(reasons: ReviewReason[]): string {
 
 // ─── Destination mark ────────────────────────────────────────────────────────
 
-/** Icon-tile fill+text tone for a non-provider destination mark. */
+/**
+ * Icon-tile fill+text tone for a non-provider destination mark. External
+ * destinations take the unverified tone, never internal's — matched on the kind
+ * rather than only on their 'unverified' trust, so a later trust
+ * reclassification cannot silently drop them to the internal tint.
+ */
 export function destMarkStyle(d: { kind: DestinationKind; trust: ShareTrustLevel }): string {
   if (d.kind === 'ip') return 'bg-sev-critical-fill text-sev-critical';
-  if (d.trust === 'unverified') return 'bg-sev-high-fill text-sev-high';
+  if (d.kind === 'external' || d.trust === 'unverified') return 'bg-sev-high-fill text-sev-high';
   return 'bg-primary-tint text-primary';
 }
 

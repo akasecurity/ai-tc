@@ -584,6 +584,20 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
       expect(res.items.map((g) => g.id)).toEqual(['open-rule']);
     });
 
+    it('treats an empty status selection as no filter at all', async () => {
+      // Pins the "empty array == filter absent" contract at the persistence
+      // boundary: every group returns, totals stay unscoped, and no group's
+      // instance preview is narrowed.
+      const res = await db.findings.listGroupedFindings({ status: [] });
+      expect(res.items.map((g) => g.id).sort()).toEqual([
+        'handled-rule',
+        'open-rule',
+        'resolved-rule',
+      ]);
+      expect(res.totals).toEqual({ findings: 3, groups: 3 });
+      expect(res.items.every((g) => g.instances.length === 1)).toBe(true);
+    });
+
     it('keeps the union when several statuses are requested', async () => {
       const res = await db.findings.listGroupedFindings({ status: ['open', 'resolved'] });
       expect(res.items.map((g) => g.id).sort()).toEqual(['open-rule', 'resolved-rule']);

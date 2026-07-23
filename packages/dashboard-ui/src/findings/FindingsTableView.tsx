@@ -35,6 +35,10 @@ import { ProviderChips, ProviderTag } from './ProviderChips.tsx';
  * Fully presentational: selection/expansion state is owned by the caller and
  * flows in as props. Loading/empty/error and the "showing first N" affordance
  * are rendered here so the page stays a thin composition.
+ *
+ * Layout contract: the card fills its container's height and scrolls the rows
+ * internally, so the caller must mount it in a height-constrained parent (an
+ * unbroken h-full/min-h-0 chain) — without one the card has no height to fill.
  */
 export function FindingsTableView({
   groups,

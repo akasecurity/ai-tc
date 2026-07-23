@@ -1187,6 +1187,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
         runMode: 'standalone',
         policy: 'redact',
         historicalAccess: 'session-only',
+        dataSharesInPlace: true,
       },
       dataDir,
       dbPath: join(dataDir, 'aka.db'),

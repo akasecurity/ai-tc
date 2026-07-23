@@ -142,56 +142,44 @@ export const FINDING_STATUS_META: Record<FindingStatus, FindingStatusMeta> = {
   dismissed: { label: 'Dismissed', badge: 'default' },
 };
 
-/** Status filter options in display order, 'all' first (the default/no-op filter). */
-export const STATUS_FILTER_OPTIONS: { value: FindingStatus | 'all'; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'open', label: 'Open' },
-  { value: 'handled', label: 'Handled' },
-  { value: 'resolved', label: 'Resolved' },
-  { value: 'dismissed', label: 'Dismissed' },
-];
-
 /**
- * Filters groups by their derived (group-level) status. 'all' or omitting the
- * filter returns every group unchanged; a specific status keeps only groups
- * whose `status` matches exactly — a group with no status (legacy, predates
- * the resolution feature) never matches a specific status filter.
+ * Statuses in display order — drives the Status filter. Derived from
+ * FINDING_STATUS_META (an exhaustive Record over FindingStatus, so adding an
+ * enum member is a compile error there and automatically appears here); the
+ * literal's key order IS the display order.
  */
-export function filterGroupsByStatus(
-  groups: FindingGroup[],
-  status: FindingStatus | 'all' | undefined,
-): FindingGroup[] {
-  if (!status || status === 'all') return groups;
-  return groups.filter((g) => g.status === status);
-}
+export const FINDING_STATUSES = Object.keys(FINDING_STATUS_META) as FindingStatus[];
 
 /**
- * Filters a single group's instances by the SAME status filter that decided
- * the group itself is visible under `filterGroupsByStatus`. Without this, an
- * expanded group under an active filter shows every instance regardless of
- * status — including ones that don't match — which is confusing under a
- * filter that promised to narrow the view down to one status.
+ * Filters a single group's instances by the SAME statuses that decided the
+ * group itself is visible (the store matches a group's derived status against
+ * them — see applyFindingFilters). Without this, an expanded group under an
+ * active filter shows every instance regardless of status — including ones
+ * that don't match — which is confusing under a filter that promised to narrow
+ * the view down to those statuses. An empty/absent selection is a no-op.
  *
- * Never returns empty for a group `filterGroupsByStatus` already deemed
- * visible: `foldGroupStatus` (findings-group-build.ts) only ever assigns a
- * group's status to a candidate value when at least one instance actually
- * carries it, so a group whose status equals `status` is guaranteed to have
- * at least one matching instance.
+ * CAN return empty for a group the store correctly kept: the group's status
+ * folds over EVERY instance, while `group.instances` is only a preview of the
+ * newest — every instance carrying a requested status may be older than the
+ * preview window (the store pre-narrows the preview the same way, so this is
+ * a pass-through then). Views render an explicit notice for that case rather
+ * than an empty expansion.
  */
 export function filterInstancesByStatus(
   instances: FindingInstance[],
-  status: FindingStatus | 'all' | undefined,
+  statuses: readonly string[] | undefined,
 ): FindingInstance[] {
-  if (!status || status === 'all') return instances;
-  return instances.filter((i) => i.status === status);
+  if (!statuses || statuses.length === 0) return instances;
+  return instances.filter((i) => i.status !== undefined && statuses.includes(i.status));
 }
 
-/** The four multi-select filter dimensions of the findings toolbar. */
+/** The five multi-select filter dimensions of the findings toolbar. */
 export interface FindingsFilters {
   severity: string[];
   type: string[];
   provider: string[];
   action: string[];
+  status: string[];
 }
 
 export const EMPTY_FILTERS: FindingsFilters = {
@@ -199,6 +187,7 @@ export const EMPTY_FILTERS: FindingsFilters = {
   type: [],
   provider: [],
   action: [],
+  status: [],
 };
 
 /** Column-visibility map: column id → visible. Absent id ⇒ visible. */

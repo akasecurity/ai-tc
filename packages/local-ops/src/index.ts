@@ -6,6 +6,8 @@ export {
   installClaudePlugin,
   updateClaudePlugin,
 } from './claude-plugin.ts';
+export type { EgressRecordResult } from './egress-record.ts';
+export { recordProjectEgress } from './egress-record.ts';
 export type { RunResult } from './exec.ts';
 export { binExists, runCapture, runInherit } from './exec.ts';
 export type {

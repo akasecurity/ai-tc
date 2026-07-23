@@ -46,7 +46,13 @@ const PULLED_RULE: Rule = {
 };
 
 function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
-  return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'session-only' };
+  return {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy,
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+  };
 }
 
 function bundle(rules: Rule[] = []): PolicyBundle {
@@ -106,6 +112,14 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
+    recordProjectEgress: () =>
+      Promise.resolve({
+        destinations: 0,
+        endpoints: 0,
+        callSites: 0,
+        truncated: false,
+        droppedFiles: [],
+      }),
     close: () => Promise.resolve(),
   };
 }

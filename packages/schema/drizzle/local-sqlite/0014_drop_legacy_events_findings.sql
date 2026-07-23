@@ -47,6 +47,15 @@ SELECT
   started_at AS occurred_at,
   content_hash,
   content,
+  -- Plugin-local bookkeeping column that `ensureSyncedAtColumn` adds to the
+  -- real `events` table at open time. A pre-cutover binary runs that probe on
+  -- EVERY open; without this projection its `columnNames('events')` check
+  -- misses `synced_at` and issues `ALTER TABLE events ADD COLUMN` against this
+  -- view, which SQLite rejects ("Cannot add a column to a view") — a hard,
+  -- non-fail-open crash of the whole open, the exact skew failure these views
+  -- exist to prevent. Projecting it (always NULL; no reader consumes it)
+  -- short-circuits that ALTER.
+  NULL AS synced_at,
   json_object(
     'sessionId', root_session_id,
     'repo', json_extract(attributes, '$.repo'),

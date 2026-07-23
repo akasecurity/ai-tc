@@ -52,7 +52,8 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O — NO fetch client, NO Drizzle)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
-                     @akasecurity/plugin-sdk (repo-identity + project-file walkers only)
+                     @akasecurity/plugin-sdk (repo-identity, project-file walkers, and posix
+                     path normalization only)
                      (shared CLI/web-ui operations: update report + apply via npm/claude
                      child processes, the agent-plugin registry, the fs scan pipeline,
                      the project-inventory pass; network ONLY via package-manager

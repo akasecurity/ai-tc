@@ -39,11 +39,11 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const MIGRATION_0012_TAG = '0012_legacy_history_backfill_support';
-const MIGRATION_0013_TAG = '0013_drop_legacy_events_findings';
+const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
+const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
 
 // Builds a REAL on-disk store frozen just before the backfill/drop pair —
-// every migration through 0011 applied, legacy `events`/`findings` still real
+// every migration through 0012 applied, legacy `events`/`findings` still real
 // tables — so a test can seed pre-cutover rows into them exactly like an
 // already-installed binary would have, then hand the same file to
 // openLocalDatabase and observe the real open-time behavior (backfill,
@@ -54,8 +54,8 @@ function seedPreCutoverFile(): string {
   const raw = new DatabaseSync(file);
   raw.exec('PRAGMA foreign_keys = ON');
   for (const migration of SQLITE_MIGRATIONS) {
-    if (migration.tag === MIGRATION_0012_TAG) continue;
     if (migration.tag === MIGRATION_0013_TAG) continue;
+    if (migration.tag === MIGRATION_0014_TAG) continue;
     raw.exec(migration.sql);
   }
   raw.close();
@@ -114,12 +114,23 @@ describe('legacy events/findings compatibility views', () => {
       expect(schemaObjectExists(raw, 'view', 'findings')).toBe(true);
 
       // The legacy column SHAPE survives on the view: every column an
-      // already-shipped repository's SQL names by column list.
+      // already-shipped repository's SQL names by column list, plus the
+      // plugin-local `synced_at` a pre-cutover binary's ensureSyncedAtColumn
+      // probes for (projected NULL so that probe never ALTERs the view).
       const eventsColumns = (raw.prepare('PRAGMA table_info(events)').all() as { name: string }[])
         .map((c) => c.name)
         .sort();
       expect(eventsColumns).toEqual(
-        ['id', 'source_tool', 'kind', 'occurred_at', 'content_hash', 'content', 'metadata'].sort(),
+        [
+          'id',
+          'source_tool',
+          'kind',
+          'occurred_at',
+          'content_hash',
+          'content',
+          'synced_at',
+          'metadata',
+        ].sort(),
       );
       const findingsColumns = (
         raw.prepare('PRAGMA table_info(findings)').all() as { name: string }[]
@@ -187,6 +198,45 @@ describe('legacy events/findings compatibility views', () => {
       expect(schemaObjectExists(raw, 'view', 'findings')).toBe(true);
       // One row per reopen — every recordCapture call actually persisted.
       expect((raw.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(5);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('the events view exposes synced_at so a pre-cutover binary never ALTERs the view', () => {
+    // A pre-cutover binary still ships ensureSyncedAtColumn(db, 'events'), which
+    // ALTERs `events` to add its plugin-local `synced_at` column whenever that
+    // column is absent. Against a store a newer binary already dropped `events`
+    // on, `events` is a VIEW — and `ALTER TABLE <view> ADD COLUMN` is rejected
+    // by SQLite ("Cannot add a column to a view"), a hard, NON-fail-open crash
+    // of the whole open (it propagates out of applyMigrations/openLocalDatabase),
+    // i.e. exactly the skew crash these views exist to prevent. The view
+    // projects `synced_at` so the old probe's column guard short-circuits.
+    // (The new binary's own ensureSyncedAtColumn was separately fixed to skip a
+    // view; this covers the already-installed OLD binary, which cannot be.)
+    openLocalDatabase(dir).close(); // a fresh store drops `events` -> view now
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    try {
+      const cols = (raw.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map(
+        (c) => c.name,
+      );
+      // The projected column an old ensureSyncedAtColumn(db, 'events') looks for.
+      expect(cols).toContain('synced_at');
+
+      // The exact pre-cutover probe: it ALTERs only when the column is absent,
+      // so with the projection present it is a no-op and never throws.
+      expect(() => {
+        if (!cols.includes('synced_at')) {
+          raw.exec('ALTER TABLE events ADD COLUMN synced_at integer');
+        }
+      }).not.toThrow();
+
+      // The fatal error the projection avoids: ALTERing the view unconditionally
+      // (what the old probe would do without the projection) is what crashes.
+      expect(() => {
+        raw.exec('ALTER TABLE events ADD COLUMN synced_at integer');
+      }).toThrow(/view/i);
     } finally {
       raw.close();
     }

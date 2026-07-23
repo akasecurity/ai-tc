@@ -624,6 +624,60 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
         (await db.findings.listGroupedFindings({ status: ['open'], severity: ['low'] })).items,
       ).toEqual([]);
     });
+
+    it('scopes totals and the instance preview to matching instances on a mixed-status group', async () => {
+      // Two more in-flight (handled) instances on open-rule: the group still
+      // folds to open (open dominates), but only ONE of its three instances IS
+      // open — the tally and the preview must not report the other two.
+      record({
+        occurredAt: '2026-01-04T00:00:00.000Z',
+        sourceTool: 'claude-code',
+        ruleId: 'open-rule',
+        repo: 'acme/api',
+        filePath: 'b.ts',
+      });
+      record({
+        occurredAt: '2026-01-05T00:00:00.000Z',
+        sourceTool: 'claude-code',
+        ruleId: 'open-rule',
+        repo: 'acme/api',
+        filePath: 'c.ts',
+      });
+
+      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const group = res.items.find((g) => g.id === 'open-rule');
+      expect(group?.status).toBe('open');
+      // instanceCount stays the whole-group tally; the preview and the totals
+      // are status-scoped.
+      expect(group?.instanceCount).toBe(3);
+      expect(group?.instances.map((i) => i.status)).toEqual(['open']);
+      expect(res.totals).toEqual({ findings: 1, groups: 1 });
+    });
+
+    it('keeps a group whose matching instances all sit outside the preview (empty narrowed preview)', async () => {
+      // More in-flight (handled) instances than the preview holds, all NEWER
+      // than open-rule's one open instance: the preview window is entirely
+      // handled, yet the group folds to open on the strength of the older row.
+      // The filter must keep the group, totals must count only the open
+      // instance, and the narrowed preview is legitimately EMPTY — the view
+      // layer renders an explicit notice for this case.
+      for (let i = 0; i < 205; i++) {
+        record({
+          occurredAt: new Date(Date.parse('2026-02-01T00:00:00.000Z') + i * 1000).toISOString(),
+          sourceTool: 'claude-code',
+          ruleId: 'open-rule',
+          repo: 'acme/api',
+          filePath: `bulk/f${String(i)}.ts`,
+        });
+      }
+
+      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const group = res.items.find((g) => g.id === 'open-rule');
+      expect(group?.status).toBe('open');
+      expect(group?.instanceCount).toBe(206);
+      expect(group?.instances).toEqual([]);
+      expect(res.totals).toEqual({ findings: 1, groups: 1 });
+    });
   });
 
   it('a group with mixed instance statuses derives its group status via open-dominates precedence', async () => {

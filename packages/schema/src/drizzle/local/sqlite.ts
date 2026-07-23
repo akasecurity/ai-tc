@@ -367,6 +367,10 @@ export const auditEvents = sqliteTable(
     index('idx_audit_session_type')
       .on(t.rootSessionId, t.startedAt)
       .where(sql`event_type = 'llm_call'`),
+    // Serves the time-range read family that scans a single event_type across
+    // a start/end window (e.g. the Activity timeline, token rollups by day)
+    // without a full-table scan.
+    index('idx_audit_type_t').on(t.eventType, t.startedAt),
   ],
 );
 

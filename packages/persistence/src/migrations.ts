@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
+import type { EventKind, EventMetadata, SourceTool } from '@akasecurity/schema';
+import { SQLITE_MIGRATIONS, toCaptureAttributes } from '@akasecurity/schema';
 
 import {
   columnNames,
@@ -10,7 +11,8 @@ import {
   indexExists,
   schemaObjectExists,
 } from './db/migrations/introspection.ts';
-import { sourceProjectId } from './ids.ts';
+import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
+import { bindParams } from './internal/rows.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 
@@ -194,6 +196,11 @@ export function applyMigrations(db: DatabaseSync): void {
   // already exist.
   ensureTokenUsageColumns(db);
   reconcileSourceProjectIds(db);
+  // Copies whatever the retired events/findings pair still holds onto the
+  // generalized audit_events/inspection_definitions/inspection_findings trio —
+  // see runLegacyHistoryBackfill. Batched and resumable, so it never turns one
+  // open into an unbounded pass over a large pre-existing store.
+  runLegacyHistoryBackfill(db);
 }
 
 // SQLite generated-column DDL for the six token-usage facets: the four counts are
@@ -358,6 +365,285 @@ export function reconcileSourceProjectIds(db: DatabaseSync): void {
     // Same channel as the applier's loud paths — visible in a plugin session even
     // though the failure is swallowed.
     akaWarn(`source_project id reconcile failed: ${String(error)}`);
+  }
+}
+
+// --- legacy history backfill -------------------------------------------------
+// Copies whatever the retired `events`/`findings` pair still holds onto the
+// generalized `audit_events`/`inspection_definitions`/`inspection_findings`
+// trio recordCapture now writes. The legacy tables are frozen (recordCapture
+// no longer writes them), so this is a one-time drain, not an ongoing sync —
+// but the store it drains can already be large, so the drain itself is
+// batched and rowid-watermarked (`legacy_copy_watermark`, added by migration
+// 0012) rather than a single pass: copying a large store's entire history in
+// one transaction on the hook path — a hard 10s timeout, `busy_timeout` of
+// only 2000ms — would be a zero-progress kill-and-retry loop. Each call here
+// instead moves at most LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows per table,
+// committing every LEGACY_BACKFILL_BATCH_SIZE rows, so a crash or a slow disk
+// mid-copy loses at most one uncommitted batch — the next open resumes from
+// the watermark instead of restarting. A store already fully drained costs one
+// cheap rowid-range probe per table on every open.
+
+// Rows committed per transaction: small enough that one commit is cheap even
+// under the hook's timeout, large enough that a modest local store finishes in
+// a handful of opens. Exported so migrations.test.ts can size a fixture that
+// exercises resumption without guessing at (or duplicating) the real cap.
+export const LEGACY_BACKFILL_BATCH_SIZE = 200;
+
+// Row budget per legacy table, per call: bounds one open's worth of work to a
+// small constant regardless of how much history the store holds.
+export const LEGACY_BACKFILL_MAX_ROWS_PER_CALL = 1000;
+
+function getLegacyCopyWatermark(db: DatabaseSync, source: 'events' | 'findings'): number {
+  const row = db
+    .prepare('SELECT last_rowid AS lastRowid FROM legacy_copy_watermark WHERE source = ?')
+    .get(source) as { lastRowid: number } | undefined;
+  return row?.lastRowid ?? 0;
+}
+
+function setLegacyCopyWatermark(
+  db: DatabaseSync,
+  source: 'events' | 'findings',
+  lastRowid: number,
+): void {
+  db.prepare(
+    `INSERT INTO legacy_copy_watermark (source, last_rowid) VALUES (?, ?)
+     ON CONFLICT(source) DO UPDATE SET last_rowid = excluded.last_rowid`,
+  ).run(source, lastRowid);
+}
+
+// A legacy `events.metadata` blob is either NULL or JSON matching EventMetadata
+// (camelCase keys) — see toEventRow. A row a pre-validation build once wrote
+// could in principle hold malformed JSON; failing to parse it must not cost
+// the row its place in history, so this degrades to "no metadata" rather than
+// throwing (the event's own content/timestamps/ids still copy either way).
+function parseLegacyEventMetadata(raw: string | null): EventMetadata | undefined {
+  if (raw === null) return undefined;
+  try {
+    return JSON.parse(raw) as EventMetadata;
+  } catch {
+    return undefined;
+  }
+}
+
+// The audit_events `attributes` bag for one legacy `events` row, reusing the
+// exact capture-path mapping recordCapture writes new rows with (toCaptureAttributes)
+// so a migrated row and a freshly-captured one carry the same shape.
+function toLegacyAuditAttributesJson(row: {
+  id: string;
+  sourceTool: string;
+  kind: string;
+  occurredAt: number;
+  contentHash: string;
+  content: string;
+  metadata: EventMetadata | undefined;
+}): string {
+  return JSON.stringify(
+    toCaptureAttributes({
+      id: row.id,
+      sourceTool: row.sourceTool as SourceTool,
+      kind: row.kind as EventKind,
+      occurredAt: new Date(row.occurredAt).toISOString(),
+      contentHash: row.contentHash,
+      content: row.content,
+      metadata: row.metadata,
+    }),
+  );
+}
+
+// Copies legacy `events` rows into `audit_events`, oldest-rowid-first, up to
+// LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows this call, committing every
+// LEGACY_BACKFILL_BATCH_SIZE rows. Legacy ids are kept, so INSERT OR IGNORE
+// keyed on `id` makes re-copying an already-migrated row a no-op. `sessionId`
+// becomes both `parent_id` and `root_session_id` (mirroring recordCapture) —
+// migration 0012 already synthesized a stub root for every legacy sessionId
+// that had none, so this FK always resolves. Returns true once every legacy
+// `events` row up to this call's view of the table has been copied — the
+// signal `copyLegacyFindings` uses before it starts, so a finding's
+// `audit_event_id` is never inserted ahead of the row it references.
+function copyLegacyEvents(db: DatabaseSync): boolean {
+  const selectStmt = db.prepare(
+    `SELECT rowid AS rowid, id, source_tool AS sourceTool, kind, occurred_at AS occurredAt,
+            content_hash AS contentHash, content, metadata
+     FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  );
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO audit_events
+       (id, parent_id, root_session_id, event_type, started_at, content, content_hash, attributes)
+     VALUES (:id, :parentId, :rootSessionId, :eventType, :startedAt, :content, :contentHash, :attributes)`,
+  );
+
+  let watermark = getLegacyCopyWatermark(db, 'events');
+  let processed = 0;
+  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
+    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as {
+      rowid: number;
+      id: string;
+      sourceTool: string;
+      kind: string;
+      occurredAt: number;
+      contentHash: string;
+      content: string;
+      metadata: string | null;
+    }[];
+    if (rows.length === 0) return true;
+
+    withTransaction(
+      db,
+      () => {
+        for (const row of rows) {
+          const metadata = parseLegacyEventMetadata(row.metadata);
+          const sessionId = metadata?.sessionId ?? null;
+          insertStmt.run(
+            bindParams({
+              id: row.id,
+              parentId: sessionId,
+              rootSessionId: sessionId,
+              eventType: row.kind,
+              startedAt: row.occurredAt,
+              content: row.content,
+              contentHash: row.contentHash,
+              attributes: toLegacyAuditAttributesJson({ ...row, metadata }),
+            }),
+          );
+        }
+        watermark = rows[rows.length - 1]?.rowid ?? watermark;
+        setLegacyCopyWatermark(db, 'events', watermark);
+      },
+      'IMMEDIATE',
+    );
+    processed += rows.length;
+    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return true;
+  }
+  return false;
+}
+
+// Copies legacy `findings` rows into `inspection_findings`, oldest-rowid-first,
+// up to LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows this call, committing every
+// LEGACY_BACKFILL_BATCH_SIZE rows. The legacy table has no
+// `inspection_definitions` row to point at — it carried `rule_id` plus a
+// per-row `category`/`severity` inline — so this synthesizes ONE definition
+// per DISTINCT (rule_id, category, severity) tuple seen (never one per
+// rule_id: the same rule legitimately holds rows with different severities
+// across pack updates, and collapsing them would silently relabel history).
+// `version` is `unmigrated/<category>/<severity>`, distinct per tuple so the
+// content-addressed definition id (sha256 of rule_id + version, minted the
+// same way inspectionDefinitionId always is) never collides across tuples.
+//
+// The insert upserts on `finding_key`, not just `id`: post-cutover capture can
+// already have written the SAME deterministic finding_key under a fresh
+// (never-reused) id, so a plain insert would collide on the unique index —
+// this reconciles the two rows' first_detected_at down to the EARLIEST of the
+// two instead, tolerating either side being NULL.
+function copyLegacyFindings(db: DatabaseSync): void {
+  const selectStmt = db.prepare(
+    `SELECT rowid AS rowid, id, event_id AS eventId, rule_id AS ruleId, category, severity,
+            span_start AS spanStart, span_end AS spanEnd, masked_match AS maskedMatch,
+            action_taken AS actionTaken, confidence, finding_key AS findingKey,
+            first_detected_at AS firstDetectedAt
+     FROM findings WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  );
+  const definitionStmt = db.prepare(
+    `INSERT OR IGNORE INTO inspection_definitions
+       (id, rule_id, name, category, severity, definition, version)
+     VALUES (:id, :ruleId, :name, :category, :severity, :definition, :version)`,
+  );
+  const findingStmt = db.prepare(
+    `INSERT INTO inspection_findings
+       (id, audit_event_id, inspection_definition_id, classified_data_id,
+        span_start, span_end, masked_match, action_taken, confidence,
+        finding_key, first_detected_at)
+     VALUES
+       (:id, :auditEventId, :inspectionDefinitionId, NULL,
+        :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence,
+        :findingKey, :firstDetectedAt)
+     ON CONFLICT(id) DO NOTHING
+     ON CONFLICT (finding_key) DO UPDATE SET
+       first_detected_at = CASE
+         WHEN first_detected_at IS NULL THEN excluded.first_detected_at
+         WHEN excluded.first_detected_at IS NULL THEN first_detected_at
+         ELSE min(first_detected_at, excluded.first_detected_at)
+       END`,
+  );
+
+  let watermark = getLegacyCopyWatermark(db, 'findings');
+  let processed = 0;
+  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
+    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as {
+      rowid: number;
+      id: string;
+      eventId: string;
+      ruleId: string;
+      category: string;
+      severity: string;
+      spanStart: number;
+      spanEnd: number;
+      maskedMatch: string;
+      actionTaken: string;
+      confidence: number;
+      findingKey: string | null;
+      firstDetectedAt: number | null;
+    }[];
+    if (rows.length === 0) return;
+
+    withTransaction(
+      db,
+      () => {
+        const definitionIds = new Map<string, string>();
+        for (const row of rows) {
+          const tupleKey = JSON.stringify([row.ruleId, row.category, row.severity]);
+          let definitionId = definitionIds.get(tupleKey);
+          if (definitionId === undefined) {
+            const version = `unmigrated/${row.category}/${row.severity}`;
+            definitionId = inspectionDefinitionId(row.ruleId, version);
+            definitionStmt.run(
+              bindParams({
+                id: definitionId,
+                ruleId: row.ruleId,
+                name: row.ruleId,
+                category: row.category,
+                severity: row.severity,
+                definition: '',
+                version,
+              }),
+            );
+            definitionIds.set(tupleKey, definitionId);
+          }
+          findingStmt.run(
+            bindParams({
+              id: row.id,
+              auditEventId: row.eventId,
+              inspectionDefinitionId: definitionId,
+              spanStart: row.spanStart,
+              spanEnd: row.spanEnd,
+              maskedMatch: row.maskedMatch,
+              actionTaken: row.actionTaken,
+              confidence: row.confidence,
+              findingKey: row.findingKey,
+              firstDetectedAt: row.firstDetectedAt,
+            }),
+          );
+        }
+        watermark = rows[rows.length - 1]?.rowid ?? watermark;
+        setLegacyCopyWatermark(db, 'findings', watermark);
+      },
+      'IMMEDIATE',
+    );
+    processed += rows.length;
+    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return;
+  }
+}
+
+// Fail-open entry point: any failure (a locked store, a malformed row that
+// slips past the defenses above) is logged and swallowed, never blocking the
+// open. Findings only start once events reports fully caught up, so a
+// finding's audit_event_id is never inserted ahead of its parent row.
+export function runLegacyHistoryBackfill(db: DatabaseSync): void {
+  try {
+    const eventsCaughtUp = copyLegacyEvents(db);
+    if (eventsCaughtUp) copyLegacyFindings(db);
+  } catch (error) {
+    akaWarn(`legacy history backfill failed: ${String(error)}`);
   }
 }
 

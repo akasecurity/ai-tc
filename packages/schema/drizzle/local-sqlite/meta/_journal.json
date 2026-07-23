@@ -85,6 +85,13 @@
       "when": 1784787892099,
       "tag": "0011_chunky_glorian",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1784799393968,
+      "tag": "0012_legacy_history_backfill_support",
+      "breakpoints": true
     }
   ]
 }

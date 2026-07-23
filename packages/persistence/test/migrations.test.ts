@@ -4,9 +4,11 @@ import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { columnNames, schemaObjectExists } from '../src/db/migrations/introspection.ts';
-import { sourceProjectId } from '../src/ids.ts';
+import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
 import {
   applyMigrations,
+  LEGACY_BACKFILL_BATCH_SIZE,
+  LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
@@ -726,6 +728,389 @@ describe('migration 0006 (installed_packs write gate)', () => {
       expect(
         (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
       ).toBe(SQLITE_MIGRATIONS.length);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ─── Migration 0012 + the legacy history backfill ───────────────────────────
+
+const MIGRATION_0012_TAG = '0012_legacy_history_backfill_support';
+
+// A store on the previous binary version: every migration through 0011
+// applied, 0012 (and the legacy history it would drain) still pending.
+function preBackfillStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  for (const migration of SQLITE_MIGRATIONS) {
+    if (migration.tag === MIGRATION_0012_TAG) continue;
+    db.exec(migration.sql);
+  }
+  return db;
+}
+
+function insertLegacyEvent(
+  db: DatabaseSync,
+  id: string,
+  occurredAt: number,
+  metadata: Record<string, unknown> | null,
+  overrides: { sourceTool?: string; kind?: string; content?: string } = {},
+): void {
+  db.prepare(
+    `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    overrides.sourceTool ?? 'claude-code',
+    overrides.kind ?? 'prompt',
+    occurredAt,
+    `hash-${id}`,
+    overrides.content ?? `content for ${id}`,
+    metadata === null ? null : JSON.stringify(metadata),
+  );
+}
+
+function insertLegacyFinding(
+  db: DatabaseSync,
+  id: string,
+  eventId: string,
+  overrides: {
+    ruleId?: string;
+    category?: string;
+    severity?: string;
+    findingKey?: string | null;
+    firstDetectedAt?: number | null;
+  } = {},
+): void {
+  db.prepare(
+    `INSERT INTO findings
+       (id, event_id, rule_id, category, severity, span_start, span_end,
+        masked_match, action_taken, confidence, finding_key, first_detected_at)
+     VALUES (?, ?, ?, ?, ?, 0, 10, 'AKIA…MPLE', 'redact', 0.9, ?, ?)`,
+  ).run(
+    id,
+    eventId,
+    overrides.ruleId ?? 'secrets/aws-access-key',
+    overrides.category ?? 'secret',
+    overrides.severity ?? 'critical',
+    overrides.findingKey ?? null,
+    overrides.firstDetectedAt ?? null,
+  );
+}
+
+describe('migration 0012 + legacy history backfill', () => {
+  it('adds the watermark table and the audit_events replacement indexes', () => {
+    const db = preBackfillStore();
+    try {
+      applyMigrations(db);
+      expect(schemaObjectExists(db, 'table', 'legacy_copy_watermark')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'idx_audit_type_t')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'idx_audit_code_change_path')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it(
+    'migrates rows current code can no longer produce: an orphan session, NULL metadata, ' +
+      'a NULL finding_key/first_detected_at row, and a finding_key collision with a ' +
+      'post-cutover live row — without ever touching the legacy tables',
+    () => {
+      const db = preBackfillStore();
+      try {
+        // A session-scoped event whose session root never made it into
+        // audit_events — current code always stubs the root first (see
+        // recordCapture), but a store from before that safeguard can hold one.
+        insertLegacyEvent(db, 'ev-orphan-1', 1_000, { sessionId: 'sess-orphan' }, {});
+        insertLegacyEvent(
+          db,
+          'ev-orphan-2',
+          2_000,
+          { sessionId: 'sess-orphan', filePath: 'src/a.ts' },
+          { kind: 'code_change' },
+        );
+        // A NULL-metadata event: no session, no attributes beyond source_tool.
+        insertLegacyEvent(db, 'ev-no-meta', 3_000, null, { sourceTool: 'cli' });
+
+        // Pre-finding_key-era row: both nullable columns genuinely NULL.
+        insertLegacyFinding(db, 'f-ancient', 'ev-orphan-1', {
+          findingKey: null,
+          firstDetectedAt: null,
+        });
+
+        // A legacy row whose finding_key ALREADY has a row in
+        // inspection_findings from a post-cutover live capture — the exact
+        // reconciliation the upsert exists for.
+        insertLegacyFinding(db, 'f-legacy-key', 'ev-no-meta', {
+          ruleId: 'secrets/generic-token',
+          category: 'secret',
+          severity: 'high',
+          findingKey: 'shared-key-1',
+          firstDetectedAt: 500,
+        });
+        db.exec(
+          `INSERT INTO audit_events (id, event_type, started_at) VALUES ('live-evt', 'tool_call', 900)`,
+        );
+        db.exec(
+          `INSERT INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES ('live-def', 'secrets/generic-token', 'Generic token', 'secret', 'high', '{}', '1')`,
+        );
+        db.prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence, finding_key, first_detected_at)
+           VALUES ('live-finding', 'live-evt', 'live-def', 5, 20, 'TOKEN…', 'warn', 0.8, ?, 2000)`,
+        ).run('shared-key-1');
+
+        const legacyEventCountBefore = (
+          db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }
+        ).n;
+        const legacyFindingCountBefore = (
+          db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }
+        ).n;
+
+        applyMigrations(db);
+
+        // Constraint 1: the legacy tables are untouched — this is a copy, not a move.
+        expect((db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(
+          legacyEventCountBefore,
+        );
+        expect((db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }).n).toBe(
+          legacyFindingCountBefore,
+        );
+
+        // The orphan session got a synthesized root, timed at the earliest
+        // event recorded under it — BEFORE either event was copied (the FK
+        // that copy needs already resolves).
+        expect(
+          db
+            .prepare(
+              'SELECT event_type, root_session_id, started_at FROM audit_events WHERE id = ?',
+            )
+            .get('sess-orphan'),
+        ).toMatchObject({ event_type: 'session', root_session_id: null, started_at: 1_000 });
+
+        const orphanEvent = db
+          .prepare('SELECT root_session_id, parent_id, attributes FROM audit_events WHERE id = ?')
+          .get('ev-orphan-2') as { root_session_id: string; parent_id: string; attributes: string };
+        expect(orphanEvent.root_session_id).toBe('sess-orphan');
+        expect(orphanEvent.parent_id).toBe('sess-orphan');
+        expect(JSON.parse(orphanEvent.attributes)).toMatchObject({
+          source_tool: 'claude-code',
+          file_path: 'src/a.ts',
+        });
+
+        const noMetaEvent = db
+          .prepare('SELECT root_session_id, parent_id, attributes FROM audit_events WHERE id = ?')
+          .get('ev-no-meta') as {
+          root_session_id: string | null;
+          parent_id: string | null;
+          attributes: string;
+        };
+        expect(noMetaEvent.root_session_id).toBeNull();
+        expect(noMetaEvent.parent_id).toBeNull();
+        expect(JSON.parse(noMetaEvent.attributes)).toMatchObject({ source_tool: 'cli' });
+
+        // The ancient NULL-key/NULL-first_detected_at row copied verbatim,
+        // resolved onto a synthesized "unmigrated" definition whose id matches
+        // a fresh, independent call to inspectionDefinitionId for the same
+        // (rule_id, category, severity) tuple — the empirical id-parity check.
+        const ancient = db
+          .prepare(
+            `SELECT f.finding_key AS findingKey, f.first_detected_at AS firstDetectedAt,
+                    f.inspection_definition_id AS definitionId,
+                    d.rule_id AS ruleId, d.name, d.category, d.severity, d.definition, d.version
+             FROM inspection_findings f JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+             WHERE f.id = 'f-ancient'`,
+          )
+          .get() as {
+          findingKey: string | null;
+          firstDetectedAt: number | null;
+          definitionId: string;
+          ruleId: string;
+          name: string;
+          category: string;
+          severity: string;
+          definition: string;
+          version: string;
+        };
+        expect(ancient.findingKey).toBeNull();
+        expect(ancient.firstDetectedAt).toBeNull();
+        expect(ancient).toMatchObject({
+          ruleId: 'secrets/aws-access-key',
+          name: 'secrets/aws-access-key',
+          category: 'secret',
+          severity: 'critical',
+          definition: '',
+          version: 'unmigrated/secret/critical',
+        });
+        expect(ancient.definitionId).toBe(
+          inspectionDefinitionId('secrets/aws-access-key', 'unmigrated/secret/critical'),
+        );
+
+        // The finding_key collision: exactly one surviving row, under the
+        // LIVE row's id (the legacy row's OTHER columns never overwrite it),
+        // with first_detected_at reconciled down to the earlier of the two.
+        const findingRows = db
+          .prepare(
+            `SELECT id, finding_key AS findingKey, first_detected_at AS firstDetectedAt,
+                    audit_event_id AS auditEventId
+             FROM inspection_findings ORDER BY id`,
+          )
+          .all() as {
+          id: string;
+          findingKey: string | null;
+          firstDetectedAt: number | null;
+          auditEventId: string;
+        }[];
+        expect(findingRows.map((r) => r.id)).toEqual(['f-ancient', 'live-finding']);
+        const merged = findingRows.find((r) => r.findingKey === 'shared-key-1');
+        expect(merged).toMatchObject({
+          id: 'live-finding',
+          firstDetectedAt: 500,
+          auditEventId: 'live-evt',
+        });
+
+        // Distinct finding_key count preserved: one real key (shared-key-1);
+        // NULLs never count as a key.
+        expect(
+          (
+            db
+              .prepare(
+                'SELECT count(DISTINCT finding_key) AS n FROM inspection_findings WHERE finding_key IS NOT NULL',
+              )
+              .get() as { n: number }
+          ).n,
+        ).toBe(1);
+
+        // Both legacy tables fully drained: the watermark sits at each
+        // table's last rowid.
+        const eventsMaxRowid = (
+          db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }
+        ).r;
+        const findingsMaxRowid = (
+          db.prepare('SELECT max(rowid) AS r FROM findings').get() as { r: number }
+        ).r;
+        expect(
+          db
+            .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'events'")
+            .get(),
+        ).toMatchObject({ r: eventsMaxRowid });
+        expect(
+          db
+            .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'findings'")
+            .get(),
+        ).toMatchObject({ r: findingsMaxRowid });
+
+        // Re-running is a no-op: same row counts, same watermark, no throw.
+        expect(() => {
+          applyMigrations(db);
+        }).not.toThrow();
+        expect(
+          (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+        ).toBe(2);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('never starts the findings copy until the events copy has fully caught up', () => {
+    // More events than one call's budget, so the events copy itself needs two
+    // opens — and findings referencing the LAST (not-yet-copied) events, so
+    // if the findings copy ran anyway on the first call, it would either
+    // throw on the audit_events FK (swallowed, but making zero progress
+    // forever) or — were the FK not enforced — insert a dangling reference.
+    const db = preBackfillStore();
+    try {
+      const totalEvents = LEGACY_BACKFILL_MAX_ROWS_PER_CALL + 50;
+      for (let i = 0; i < totalEvents; i += 1) {
+        insertLegacyEvent(db, `ev-${String(i)}`, i, null);
+      }
+      for (let i = totalEvents - 20; i < totalEvents; i += 1) {
+        insertLegacyFinding(db, `f-${String(i)}`, `ev-${String(i)}`, {
+          findingKey: `key-${String(i)}`,
+        });
+      }
+
+      // First open: events copy hits its per-call cap without catching up,
+      // so findings must not run at all this call.
+      applyMigrations(db);
+      expect((db.prepare('SELECT count(*) AS n FROM audit_events').get() as { n: number }).n).toBe(
+        LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
+      );
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(0);
+
+      // Second open: events finish, and findings copies in the same call.
+      applyMigrations(db);
+      expect((db.prepare('SELECT count(*) AS n FROM audit_events').get() as { n: number }).n).toBe(
+        totalEvents,
+      );
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(20);
+
+      // Third open: no-op.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(20);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('resumes a batched findings copy across opens and is idempotent once caught up', () => {
+    const db = preBackfillStore();
+    try {
+      // A handful of events (well under one call's budget) so the events
+      // copy finishes in the first call, then findings alone spans two.
+      for (let i = 0; i < 5; i += 1) {
+        insertLegacyEvent(db, `ev-${String(i)}`, 1_000 + i, null);
+      }
+      const totalFindings = LEGACY_BACKFILL_MAX_ROWS_PER_CALL + 300;
+      expect(totalFindings % LEGACY_BACKFILL_BATCH_SIZE).not.toBe(0); // exercises a partial final page
+      for (let i = 0; i < totalFindings; i += 1) {
+        insertLegacyFinding(db, `f-${String(i)}`, `ev-${String(i % 5)}`, {
+          findingKey: `key-${String(i)}`,
+          firstDetectedAt: i,
+        });
+      }
+
+      // First open: migration 0012 applies, events fully copy, findings
+      // copies exactly one call's worth and stops — NOT the whole table.
+      applyMigrations(db);
+      const afterFirst = (
+        db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }
+      ).n;
+      expect(afterFirst).toBe(LEGACY_BACKFILL_MAX_ROWS_PER_CALL);
+
+      // Second open ("reopen"): resumes from the watermark and finishes.
+      applyMigrations(db);
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(totalFindings);
+      expect(
+        (
+          db.prepare('SELECT count(DISTINCT finding_key) AS n FROM inspection_findings').get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(totalFindings);
+
+      // Third open: fully caught up, re-running is a cheap no-op.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(totalFindings);
     } finally {
       db.close();
     }

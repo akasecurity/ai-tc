@@ -13,6 +13,7 @@ import type {
   LlmCallInput,
   PolicyBundle,
   ResolvedInventory,
+  RuleProbeVerdict,
   SessionTokenReport,
   ToolCallInput,
 } from '@akasecurity/schema';
@@ -46,6 +47,15 @@ export interface ScanLedgerEntry {
 export interface ScanLedgerState {
   mtime: string;
   contentHash: string;
+}
+
+// One rule's cached ReDoS timing verdict. Structurally identical to
+// @akasecurity/persistence's RuleProbeCacheEntry — persistence cannot depend
+// on the SDK, so the port shape lives here and structural typing joins them
+// in plugin-runtime.
+export interface RuleProbeVerdictEntry {
+  verdict: RuleProbeVerdict;
+  worstProbeMs: number;
 }
 
 /**
@@ -146,6 +156,17 @@ export interface DataGateway {
   // a new detection rule invalidates every skip.
   scanLedger(rulesetHash: string): Promise<Map<string, ScanLedgerState>>;
   recordScanned(entries: ScanLedgerEntry[]): Promise<void>;
+  // The one-time ReDoS timing verdict for a regex rule (keyed by a content
+  // hash of its pattern+flags), so a rule already measured safe — or
+  // quarantined — is never re-measured on a later hook invocation. Only
+  // pulled/custom-pack regex rules are ever looked up here; bundled rules are
+  // gated by the CI adversarial battery instead and never reach this cache.
+  getRuleProbeVerdict(ruleKey: string): Promise<RuleProbeVerdictEntry | undefined>;
+  setRuleProbeVerdict(
+    ruleKey: string,
+    verdict: RuleProbeVerdict,
+    worstProbeMs: number,
+  ): Promise<void>;
   // The re-scan resolver's read side: at-rest finding_keys for `path` whose
   // LATEST disposition is not 'resolved' (SqliteResolutionsRepository.
   // openAtRestKeysForPath — latest-resolution-wins, not "any row exists"; see

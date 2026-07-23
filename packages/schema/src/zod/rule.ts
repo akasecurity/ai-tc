@@ -6,6 +6,12 @@ import { DetectionCategory, Severity } from './finding.ts';
 export const MatcherType = z.enum(['keyword', 'regex', 'validator']).meta({ id: 'MatcherType' });
 export type MatcherType = z.infer<typeof MatcherType>;
 
+// The ReDoS timing verdict for a regex rule. 'safe' means the rule passed
+// the adversarial probe battery within budget; 'quarantined' means it was
+// excluded from the active ruleset.
+export const RuleProbeVerdict = z.enum(['safe', 'quarantined']).meta({ id: 'RuleProbeVerdict' });
+export type RuleProbeVerdict = z.infer<typeof RuleProbeVerdict>;
+
 export const KeywordMatcher = z.object({
   type: z.literal('keyword'),
   // An empty keyword matches at every position, yielding one zero-length span
@@ -43,10 +49,18 @@ function matchesEmptyString(pattern: string, flags: string): boolean {
   }
 }
 
+// The longest pattern in the bundled rule packs is ~650 characters (a
+// multi-alternative cloud-connection-string rule); 2000 leaves generous
+// headroom for legitimate rules while still rejecting absurdly long patterns
+// at the contract boundary before they ever reach the engine or a publish
+// pipeline — both larger compile cost and more surface for pathological
+// backtracking scale with pattern size.
+const MAX_PATTERN_LENGTH = 2000;
+
 export const RegexMatcher = z
   .object({
     type: z.literal('regex'),
-    pattern: z.string(),
+    pattern: z.string().min(1).max(MAX_PATTERN_LENGTH),
     flags: z.string().default('gi'),
     captureGroup: z.number().int().nonnegative().optional(),
   })

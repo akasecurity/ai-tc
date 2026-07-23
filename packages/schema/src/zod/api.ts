@@ -7,7 +7,7 @@
 // individual OpenAPI `parameters`, which cannot be a `$ref`, so they stay inline.
 import { z } from 'zod';
 
-import { Event } from './event.ts';
+import { Event, IngestBatch } from './event.ts';
 import { Finding } from './finding.ts';
 import {
   AssetDetail,
@@ -59,6 +59,19 @@ export const ListEventsResponse = z
   })
   .meta({ id: 'ListEventsResponse' });
 export type ListEventsResponse = z.infer<typeof ListEventsResponse>;
+
+// IngestRequest aliases IngestBatch, which registers the shared `IngestBatch`
+// component once (see event.ts). IngestResponse reports how many events were
+// accepted and how many were dropped as duplicates.
+export const IngestRequest = IngestBatch;
+export type IngestRequest = z.infer<typeof IngestRequest>;
+export const IngestResponse = z
+  .object({
+    accepted: z.number().int().nonnegative(),
+    duplicates: z.number().int().nonnegative(),
+  })
+  .meta({ id: 'IngestResponse' });
+export type IngestResponse = z.infer<typeof IngestResponse>;
 
 // GET /v1/findings
 export const ListFindingsQuery = z.object({

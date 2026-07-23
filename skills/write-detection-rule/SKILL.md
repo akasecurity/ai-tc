@@ -45,6 +45,21 @@ The check is scoped to the whole match only, so a `captureGroup` rule may still 
 around its capture: `key=(\w*)` is valid, because the overall match still needs the literal
 `key=` to advance.
 
+### ReDoS protection
+
+Two defenses stop a catastrophic regex from hanging a scan:
+
+- **Authoring time.** Every bundled rule is measured against an adversarial
+  probe battery in CI (`packages/detections/test/security/redos.test.ts`) — a
+  rule that backtracks catastrophically fails the build before it can land in
+  `rules/`.
+- **Runtime.** A regex rule that arrives from a pulled or custom pack (never
+  seen by the CI battery) is measured once against the same probe battery when
+  it is first loaded, and the verdict is cached locally. A rule that exceeds
+  the timing budget is excluded from the active ruleset and logged to stderr
+  (`[aka] quarantined rule ...`) — never silently skipped, and never allowed
+  to hang a scan.
+
 ### Optional gating fields
 
 **appliesTo** — language/file scoping: `{ "appliesTo": { "extensions": [".py", ".ts"] } }`.

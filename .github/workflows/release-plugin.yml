@@ -112,9 +112,17 @@ jobs:
       # exchange this job's OIDC token for a short-lived publish credential — no
       # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
       # attestation binding the published package to this repository and workflow.
+      # Pre-release versions (any `-` suffix) publish under the `rc` dist-tag;
+      # stable versions publish under `latest`.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
-        run: pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks
+        run: |
+          version=$(node -p "require('./plugins/claude-code/package.json').version")
+          case "$version" in
+            *-*) dist_tag="rc" ;;
+            *)   dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks --tag "$dist_tag"
         env:
           NPM_CONFIG_PROVENANCE: 'true'
 
@@ -162,6 +170,12 @@ jobs:
       # built-in GITHUB_TOKEN can publish to this repo's Packages; setup-node wrote
       # the matching auth token into .npmrc.
       - name: Publish to GitHub Packages
-        run: pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks
+        run: |
+          version=$(node -p "require('./plugins/claude-code/package.json').version")
+          case "$version" in
+            *-*) dist_tag="rc" ;;
+            *)   dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -205,7 +205,9 @@ describe('SqliteSharesRepository over the sample dataset', () => {
 
     // Clearing removes the host-keyed row too, reverting to the trust default.
     expect(shares.setEgressDecision(ipId, null)).toBe(true);
-    expect(db.prepare('SELECT count(*) AS n FROM egress_decision_override').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT count(*) AS n FROM egress_decision_override').get()).toEqual({
+      n: 0,
+    });
     expect((await shares.getDestination(ipId))?.status).toBe('review');
   });
 });

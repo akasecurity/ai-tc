@@ -656,7 +656,10 @@ function preEgressWriterStore(): DatabaseSync {
   const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== EGRESS_WRITER_TAG);
   for (const migration of earlier) {
     for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
-    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(migration.tag, 1);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+      migration.tag,
+      1,
+    );
   }
   db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
   return db;
@@ -761,7 +764,7 @@ describe('migration 0011 (egress writer schema)', () => {
     }
   });
 
-  it('project_key is NOT NULL DEFAULT \'\' so the ALTER is legal on existing rows', () => {
+  it("project_key is NOT NULL DEFAULT '' so the ALTER is legal on existing rows", () => {
     const db = new DatabaseSync(':memory:');
     try {
       applyMigrations(db);
@@ -805,9 +808,9 @@ describe('migration 0011 (egress writer schema)', () => {
 
       expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
       // The pre-existing row survives and backfills to the column default.
-      expect(db.prepare('SELECT project_key FROM share_call_site WHERE id = ?').get('cs-1')).toEqual(
-        { project_key: '' },
-      );
+      expect(
+        db.prepare('SELECT project_key FROM share_call_site WHERE id = ?').get('cs-1'),
+      ).toEqual({ project_key: '' });
       expect(indexColumns(db, 'uq_share_call_site')).toEqual([
         'endpoint_id',
         'project_key',
@@ -914,9 +917,7 @@ describe('migration 0011 (egress writer schema)', () => {
       }
       // Two host-NULL rows are fine; a duplicate non-null host is not.
       expect(
-        (
-          db.prepare('SELECT count(*) AS n FROM egress_decision_override').get() as { n: number }
-        ).n,
+        (db.prepare('SELECT count(*) AS n FROM egress_decision_override').get() as { n: number }).n,
       ).toBe(2);
       db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
         'api.example.com',

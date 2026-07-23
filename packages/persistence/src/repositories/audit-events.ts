@@ -95,6 +95,22 @@ export class SqliteAuditEventsRepository {
     );
   }
 
+  // Idempotent stub of a session's structural root. Session-scoped leaves
+  // (captures, llm_call, tool_call) FK parent_id/root_session_id onto this row;
+  // INSERT OR IGNORE does NOT suppress a foreign-key violation (only
+  // UNIQUE/PK/NOT NULL/CHECK), so a session-scoped insert with no root row
+  // raises SQLITE_CONSTRAINT and rolls its whole transaction back — silently
+  // dropping the write under failOpenTransaction. SessionStart's own root write
+  // is itself fail-open and marks "attempted", not "succeeded", so a session
+  // with no root row yet is a real, permanent condition, not a transient race.
+  // The stub carries no dimensions/attributes; an authoritative root
+  // (SessionStart / the reconciler's buildSessionRoot) wins by first-write-wins
+  // on the id PK, so the stub never shadows real data. This is the single named
+  // home for that FK invariant — call it before writing any session-scoped row.
+  ensureSessionRoot(sessionId: string, startedAt: string): void {
+    this.insertAuditEvent({ id: sessionId, eventType: 'session', startedAt });
+  }
+
   // Insert one transcript-derived `llm_call` leaf. Unlike `insertAuditEvent`
   // (which takes a caller-supplied random id), the id here is MINTED internally
   // from the natural key — `llmCallId(sessionId, messageId)` — tenant-free like the

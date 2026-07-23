@@ -17,12 +17,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aka-audit-events-'));
   db = openLocalDatabase(dir);
   // The leaves FK parent_id/root_session_id onto the session root, so seed it
-  // the way the reconciler's ensure-root step does.
-  db.auditEvents.insertAuditEvent({
-    id: SESSION_ID,
-    eventType: 'session',
-    startedAt: '2026-06-01T00:00:00.000Z',
-  });
+  // the way the reconciler's ensure-root step does — through the shared seam.
+  db.auditEvents.ensureSessionRoot(SESSION_ID, '2026-06-01T00:00:00.000Z');
 });
 
 afterEach(() => {
@@ -86,5 +82,42 @@ describe('malformed startedAt tolerance', () => {
     db.auditEvents.insertLlmCall(llmCall('msg_ts', '2026-06-01T03:00:00.000Z'));
     const row = db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_ts'));
     expect(row?.started_at).toBe(Date.parse('2026-06-01T03:00:00.000Z'));
+  });
+});
+
+describe('ensureSessionRoot', () => {
+  it('plants a root a session-scoped leaf can FK onto', () => {
+    // A session distinct from the beforeEach seed, with no root yet.
+    db.auditEvents.ensureSessionRoot('s-new', '2026-06-02T00:00:00.000Z');
+    expect(() => {
+      db.auditEvents.insertLlmCall({
+        sessionId: 's-new',
+        messageId: 'm1',
+        parentId: 's-new',
+        rootSessionId: 's-new',
+        startedAt: '2026-06-02T00:00:01.000Z',
+        attributes: { output_tokens: 5 },
+      });
+    }).not.toThrow();
+    // The FK resolved: the leaf actually persisted.
+    expect(db.auditEvents.findById(llmCallId('s-new', 'm1'))).toBeDefined();
+    const root = db.auditEvents.findById('s-new');
+    expect(root?.event_type).toBe('session');
+  });
+
+  it('is first-write-wins and never clobbers an authoritative root', () => {
+    // A rich, authoritative root arrives first (dimensions + a later timeline).
+    db.auditEvents.insertAuditEvent({
+      id: 's-rich',
+      eventType: 'session',
+      startedAt: '2026-06-01T00:00:00.000Z',
+      attributes: { provider: 'demo' },
+    });
+    // A later stub must be a no-op — not overwrite started_at nor drop attributes.
+    db.auditEvents.ensureSessionRoot('s-rich', '2030-01-01T00:00:00.000Z');
+
+    const row = db.auditEvents.findById('s-rich');
+    expect(row?.started_at).toBe(Date.parse('2026-06-01T00:00:00.000Z'));
+    expect(row?.attributes ?? '').toContain('demo');
   });
 });

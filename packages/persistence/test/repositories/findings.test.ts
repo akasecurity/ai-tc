@@ -16,6 +16,7 @@ import type {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
+import { captureId } from '../../src/ids.ts';
 import { DB_FILENAME } from '../../src/paths.ts';
 
 // Mirrors @akasecurity/plugin-sdk's computeFindingKey formula
@@ -382,16 +383,17 @@ function recordAtRest(opts: {
   maskedMatch?: string;
   actionTaken?: ActionTaken;
   occurredAt?: string;
-}): { eventId: string; findingId: string } {
+}): { eventId: string; findingId: string; auditEventId: string } {
   const eventId = randomUUID();
   const findingId = randomUUID();
+  const contentHash = randomUUID();
   const metadata: EventMetadata = { filePath: opts.filePath ?? 'src/a.ts' };
   const event: IngestEvent = {
     id: eventId,
     sourceTool: 'claude-code',
     kind: 'code_change',
     occurredAt: opts.occurredAt ?? '2026-01-01T00:00:00.000Z',
-    contentHash: randomUUID(),
+    contentHash,
     content: 'x',
     metadata,
   };
@@ -408,16 +410,26 @@ function recordAtRest(opts: {
     ...(opts.findingKey !== undefined ? { findingKey: opts.findingKey } : {}),
   };
   db.recordCapture(event, [finding]);
-  return { eventId, findingId };
+  // recordCapture mints the audit_events row's own id as a content-address of
+  // (sessionId, contentHash, filePath) — NOT the caller-supplied event.id — so a
+  // raw read of inspection_findings.audit_event_id must be compared against
+  // this, not against eventId. This helper never sets metadata.sessionId, so the
+  // session component is always the null/no-session case; the file path is folded
+  // in so two identical-content files stay distinct captures.
+  const auditEventId = captureId(null, contentHash, metadata.filePath ?? null);
+  return { eventId, findingId, auditEventId };
 }
 
-// Raw findings rows for a finding_key, read over a second connection to the
-// same file (mirrors resolutions.test.ts's pattern).
+// Raw inspection_findings rows for a finding_key, read over a second
+// connection to the same file (mirrors resolutions.test.ts's pattern).
 function findingRowsByKey(key: string): { id: string; event_id: string; action_taken: string }[] {
   const raw = new DatabaseSync(join(dir, DB_FILENAME));
   try {
     return raw
-      .prepare('SELECT id, event_id, action_taken FROM findings WHERE finding_key = :key')
+      .prepare(
+        `SELECT id, audit_event_id AS event_id, action_taken
+           FROM inspection_findings WHERE finding_key = :key`,
+      )
       .all({ key }) as unknown as { id: string; event_id: string; action_taken: string }[];
   } finally {
     raw.close();
@@ -440,7 +452,7 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
 
     expect(rowsAfterSecond).toHaveLength(1); // no duplicate row
     expect(rowsAfterSecond[0]?.id).toBe(first.findingId); // original row id retained
-    expect(rowsAfterSecond[0]?.event_id).toBe(second.eventId); // reconciled onto the latest scan
+    expect(rowsAfterSecond[0]?.event_id).toBe(second.auditEventId); // reconciled onto the latest scan
   });
 
   it('is deterministic across two independent derivations of the same inputs', () => {
@@ -482,7 +494,9 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
 
     const raw = new DatabaseSync(join(dir, DB_FILENAME));
     try {
-      const rows = raw.prepare('SELECT id FROM findings WHERE finding_key IS NULL').all();
+      const rows = raw
+        .prepare('SELECT id FROM inspection_findings WHERE finding_key IS NULL')
+        .all();
       expect(rows).toHaveLength(2);
     } finally {
       raw.close();
@@ -786,14 +800,24 @@ function seedBulk(intoDir: string, opts: { ruleId?: string } = {}): void {
   const raw = new DatabaseSync(join(intoDir, DB_FILENAME));
   try {
     raw.exec('PRAGMA busy_timeout = 5000');
+    // One shared inspection_definitions row for the rule — rule_id/category/
+    // severity live there now, not on the finding row.
+    raw
+      .prepare(
+        `INSERT OR IGNORE INTO inspection_definitions
+           (id, rule_id, name, category, severity, definition, version)
+         VALUES (?, ?, ?, 'secret', 'critical', '{}', '1')`,
+      )
+      .run(`def-${ruleId}`, ruleId, ruleId);
     const insertEvent = raw.prepare(
-      `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
-       VALUES (?, ?, 'prompt', ?, ?, 'x', ?)`,
+      `INSERT INTO audit_events (id, event_type, started_at, content, attributes)
+       VALUES (?, 'prompt', ?, 'x', ?)`,
     );
     const insertFinding = raw.prepare(
-      `INSERT INTO findings (id, event_id, rule_id, category, severity, span_start, span_end,
-                             masked_match, action_taken, confidence, finding_key, first_detected_at)
-       VALUES (?, ?, ?, 'secret', 'critical', 0, 1, 'masked', ?, 0.9, NULL, ?)`,
+      `INSERT INTO inspection_findings
+         (id, audit_event_id, inspection_definition_id, span_start, span_end,
+          masked_match, action_taken, confidence, finding_key, first_detected_at)
+       VALUES (?, ?, ?, 0, 1, 'masked', ?, 0.9, NULL, ?)`,
     );
     raw.exec('BEGIN');
     for (let i = 0; i < BULK; i++) {
@@ -801,20 +825,19 @@ function seedBulk(intoDir: string, opts: { ruleId?: string } = {}): void {
       const occurredAt = Date.UTC(2026, 0, 1) + i * 60_000;
       insertEvent.run(
         eventId,
-        // The lone cursor instance is the oldest row in the store...
-        i === 0 ? 'cursor' : 'claude-code',
         occurredAt,
-        `hash-${String(i)}`,
         JSON.stringify({
+          // The lone cursor instance is the oldest row in the store...
+          source_tool: i === 0 ? 'cursor' : 'claude-code',
           repo: i === 0 ? 'acme/ancient' : 'acme/api',
-          filePath: `src/f${String(i)}.ts`,
+          file_path: `src/f${String(i)}.ts`,
         }),
       );
       // ...as is the lone redacted one.
       insertFinding.run(
         `bulk-f-${String(i)}`,
         eventId,
-        ruleId,
+        `def-${ruleId}`,
         i === 0 ? 'redact' : 'block',
         occurredAt,
       );

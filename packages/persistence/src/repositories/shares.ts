@@ -6,11 +6,15 @@ import type {
   DataClass,
   DestinationKind,
   EgressDecision,
+  EgressReconcile,
+  EgressWriteSummary,
   EndpointSummary,
   HttpMethod,
   ListShareDestinationsQuery,
   ListShareDestinationsResponse,
   NeedsReviewResponse,
+  RecordProjectEgressInput,
+  ResolvedEgressHit,
   ReviewDestination,
   ShareDestinationDetail,
   ShareDestinationGroup,
@@ -30,10 +34,21 @@ import {
 } from '@akasecurity/schema';
 
 import { safeJson } from '../internal/json.ts';
-import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
-import { containsPattern, placeholders } from '../internal/sql-text.ts';
+import { allRows, boolToInt, countBy, countScalar, getRow } from '../internal/rows.ts';
+import { containsPattern, escapeLikePattern, placeholders } from '../internal/sql-text.ts';
 import { withTransaction } from '../internal/transactions.ts';
 import type { SharesReadPort } from '../ports.ts';
+
+/**
+ * Upper bound on the call sites one write records for a project. Hits past it
+ * are dropped in input order and the write reports `truncated: true`, so a
+ * runaway project is capped visibly instead of silently. Where the drop lands —
+ * mid-file or on a file boundary — depends on the reconcile mode; see capHits.
+ */
+export const MAX_EGRESS_CALL_SITES_PER_PROJECT = 5000;
+
+/** Bind variables per `IN (…)` delete; longer file lists are split across statements. */
+const IN_CHUNK = 500;
 
 // Section order for the grouped listing — provider → internal → external → ip.
 // A kind missing here is dropped from the response, not just left unlabelled.
@@ -96,6 +111,70 @@ interface CallSiteRow {
 
 function parseNetwork(networkJson: string | null): ShareDestinationSummary['network'] {
   return safeJson<ShareDestinationSummary['network']>(networkJson, null);
+}
+
+/**
+ * Apply MAX_EGRESS_CALL_SITES_PER_PROJECT to one write's hits.
+ *
+ * Walk mode slices flat: it re-derives the project's whole hit set on every run
+ * and keeps no ledger, so the hits past the cap come back next scan and the
+ * first ones are the useful ones to keep.
+ *
+ * Ledger mode cuts at a FILE boundary instead, because there the delete set and
+ * the ledger are both named per file. A file is wholly recorded or wholly
+ * dropped, and a dropped one is reported so the caller can leave its rows in
+ * place and refuse to ledger it. A single file whose own hits exceed the cap is
+ * dropped rather than half-kept: half a generated blob's destinations is not a
+ * usable inventory of it, and storing it would ledger the file as done.
+ */
+function capHits(
+  all: readonly ResolvedEgressHit[],
+  mode: EgressReconcile['mode'],
+): { hits: ResolvedEgressHit[]; droppedFiles: string[]; truncated: boolean } {
+  if (all.length <= MAX_EGRESS_CALL_SITES_PER_PROJECT) {
+    return { hits: [...all], droppedFiles: [], truncated: false };
+  }
+  if (mode === 'walk') {
+    return {
+      hits: all.slice(0, MAX_EGRESS_CALL_SITES_PER_PROJECT),
+      droppedFiles: [],
+      truncated: true,
+    };
+  }
+
+  const byFile = new Map<string, ResolvedEgressHit[]>();
+  for (const hit of all) {
+    const bucket = byFile.get(hit.site.file);
+    if (bucket === undefined) byFile.set(hit.site.file, [hit]);
+    else bucket.push(hit);
+  }
+
+  const hits: ResolvedEgressHit[] = [];
+  const droppedFiles: string[] = [];
+  for (const [file, bucket] of byFile) {
+    if (hits.length + bucket.length > MAX_EGRESS_CALL_SITES_PER_PROJECT) droppedFiles.push(file);
+    else hits.push(...bucket);
+  }
+  return { hits, droppedFiles, truncated: true };
+}
+
+/**
+ * Take the dropped files back out of a ledger-mode reconcile set, so the write
+ * neither deletes nor re-creates their rows. Walk mode names no files — it
+ * deletes by path prefix and recomputes the whole subtree every run — so it is
+ * returned unchanged and its truncation stays a plain per-write cap.
+ */
+function withoutDroppedFiles(
+  reconcile: EgressReconcile,
+  droppedFiles: readonly string[],
+): EgressReconcile {
+  if (reconcile.mode === 'walk' || droppedFiles.length === 0) return reconcile;
+  const dropped = new Set(droppedFiles);
+  return {
+    mode: 'ledger',
+    scannedFiles: reconcile.scannedFiles.filter((file) => !dropped.has(file)),
+    deletedFiles: reconcile.deletedFiles.filter((file) => !dropped.has(file)),
+  };
 }
 
 function toEndpointSummary(row: EndpointRow): EndpointSummary {
@@ -375,6 +454,322 @@ export class SqliteSharesRepository implements SharesReadPort {
       'IMMEDIATE',
     );
     return existed;
+  }
+
+  /**
+   * Record one project's statically-extracted egress: reconcile the previously
+   * stored call sites against this scan, upsert destination → endpoint → call
+   * site for every hit, confirm `last_seen` on everything the project still
+   * references, and drop what no longer has evidence.
+   *
+   * Reconciliation keys on `projectKey` alone; `project` and `projectId` are
+   * display payload and never scope a delete. The whole write is one
+   * transaction: a failure leaves the project's previous inventory exactly as
+   * it was, and THROWS rather than reporting a partial write — callers decide
+   * their own fail-open behavior, and the scanner additionally withholds its
+   * ledger commit so the next scan retries.
+   *
+   * Over-cap input is truncated at a FILE boundary, and the files that lost
+   * their hits are both excluded from the reconcile delete and named in
+   * `droppedFiles`. That pairing is what keeps truncation non-destructive on
+   * the ledger path: a dropped file keeps whatever rows it already had, and its
+   * caller withholds the ledger entry so the next scan reads it again.
+   */
+  recordProjectEgress(input: RecordProjectEgressInput): EgressWriteSummary {
+    const { hits, droppedFiles, truncated } = capHits(input.hits, input.reconcile.mode);
+    const reconcile = withoutDroppedFiles(input.reconcile, droppedFiles);
+    const now = Date.now();
+
+    let summary: EgressWriteSummary = {
+      destinations: 0,
+      endpoints: 0,
+      callSites: 0,
+      truncated,
+      droppedFiles,
+    };
+    withTransaction(
+      this.db,
+      () => {
+        // Read BEFORE the reconcile delete: ledger mode deletes the rows it is
+        // about to re-insert, so a project id carried only by those rows would
+        // be gone by the time the insert needs it.
+        const projectId = input.projectId ?? this.knownProjectId(input.projectKey);
+        this.reconcileCallSites(input.projectKey, reconcile);
+        this.upsertHits(input, hits, projectId, now);
+        this.confirmLastSeen(input.projectKey, now);
+        this.pruneOrphans();
+        summary = { ...this.projectTotals(input.projectKey), truncated, droppedFiles };
+      },
+      'IMMEDIATE',
+    );
+    return summary;
+  }
+
+  // ─── Egress write internals ──────────────────────────────────────────────────
+
+  /**
+   * Clear the stored call sites this scan is responsible for re-creating.
+   *
+   * Each pipeline may only delete rows its own walker could have produced. The
+   * fs walk behind 'walk' mode never descends into dot-directories, so its
+   * delete excludes dot-path files — those rows are the plugin scanner's to
+   * reconcile, and deleting them here would make the two pipelines erase each
+   * other's rows on every alternating scan. 'ledger' mode names its files
+   * outright and never mass-deletes, so rows the fs walk contributed for files
+   * the scanner skips (vendored, oversize) survive it.
+   */
+  private reconcileCallSites(projectKey: string, reconcile: EgressReconcile): void {
+    if (reconcile.mode === 'walk') {
+      const prefix = reconcile.walkedPrefix.replace(/\/+$/, '');
+      this.db
+        .prepare(
+          `DELETE FROM share_call_site
+           WHERE project_key = :key
+             AND (:prefix = '' OR file = :prefix OR file LIKE :subtree ESCAPE '\\')
+             AND file NOT LIKE '.%'
+             AND file NOT LIKE '%/.%'`,
+        )
+        // The prefix is a path, so '_' and '%' in a directory name must match
+        // literally rather than as LIKE wildcards over a sibling directory.
+        .run({ key: projectKey, prefix, subtree: `${escapeLikePattern(prefix)}/%` });
+      return;
+    }
+
+    const files = [...new Set([...reconcile.scannedFiles, ...reconcile.deletedFiles])];
+    for (let i = 0; i < files.length; i += IN_CHUNK) {
+      const chunk = files.slice(i, i + IN_CHUNK);
+      this.db
+        .prepare(
+          `DELETE FROM share_call_site
+           WHERE project_key = ? AND file IN (${placeholders(chunk.length)})`,
+        )
+        .run(projectKey, ...chunk);
+    }
+  }
+
+  /**
+   * Upsert every hit as destination → endpoint → call site. Destinations key on
+   * `host` and endpoints on `(destination_id, method, url)`, both shared across
+   * projects; only the call site carries `project_key`. A destination's `note`
+   * is user-owned and never overwritten. The id caches keep one upsert per
+   * distinct host and endpoint, so the first hit for a host supplies its
+   * classification for this batch.
+   */
+  private upsertHits(
+    input: RecordProjectEgressInput,
+    hits: ResolvedEgressHit[],
+    projectId: string | null,
+    now: number,
+  ): void {
+    if (hits.length === 0) return;
+
+    const destStmt = this.db.prepare(
+      `INSERT INTO share_destination
+         (id, kind, name, host, category, trust, network_json, last_seen, provenance,
+          created_at, updated_at)
+       VALUES (:id, :kind, :name, :host, :category, :trust, :networkJson, :now, 'scan', :now, :now)
+       ON CONFLICT (host) DO UPDATE SET
+         kind = excluded.kind,
+         name = excluded.name,
+         category = excluded.category,
+         trust = excluded.trust,
+         network_json = excluded.network_json,
+         last_seen = excluded.last_seen,
+         updated_at = excluded.updated_at`,
+    );
+    const destIdStmt = this.db.prepare('SELECT id FROM share_destination WHERE host = ?');
+    const endpointStmt = this.db.prepare(
+      `INSERT INTO share_endpoint
+         (id, destination_id, method, transport, url, template, data_class, last_seen,
+          created_at, updated_at)
+       VALUES (:id, :destinationId, :method, :transport, :url, :template, :dataClass, :now,
+               :now, :now)
+       ON CONFLICT (destination_id, method, url) DO UPDATE SET
+         transport = excluded.transport,
+         template = excluded.template,
+         data_class = excluded.data_class,
+         last_seen = excluded.last_seen,
+         updated_at = excluded.updated_at`,
+    );
+    const endpointIdStmt = this.db.prepare(
+      'SELECT id FROM share_endpoint WHERE destination_id = ? AND method = ? AND url = ?',
+    );
+    // ON CONFLICT, not a plain INSERT: two hits can land on the same endpoint,
+    // file and line, and a UNIQUE failure would abort the whole scan's egress.
+    //
+    // `project_id` is COALESCEd rather than overwritten so a row this write did
+    // not delete keeps its link when no id could be resolved at all.
+    const siteStmt = this.db.prepare(
+      `INSERT INTO share_call_site
+         (id, endpoint_id, project, project_key, file, line, snippet, dynamic, vendored,
+          project_id, created_at, updated_at)
+       VALUES (:id, :endpointId, :project, :projectKey, :file, :line, :snippet, :dynamic,
+               :vendored, :projectId, :now, :now)
+       ON CONFLICT (endpoint_id, project_key, file, line) DO UPDATE SET
+         snippet = excluded.snippet,
+         dynamic = excluded.dynamic,
+         vendored = excluded.vendored,
+         project = excluded.project,
+         project_id = COALESCE(excluded.project_id, share_call_site.project_id),
+         updated_at = excluded.updated_at`,
+    );
+
+    const destIds = new Map<string, string>();
+    const endpointIds = new Map<string, string>();
+
+    for (const hit of hits) {
+      let destinationId = destIds.get(hit.host);
+      if (destinationId === undefined) {
+        destStmt.run({
+          id: randomUUID(),
+          kind: hit.kind,
+          name: hit.name,
+          host: hit.host,
+          category: hit.category,
+          trust: hit.trust,
+          networkJson: hit.network === null ? null : JSON.stringify(hit.network),
+          now,
+        });
+        destinationId = getRow<{ id: string }>(destIdStmt, [hit.host])?.id ?? '';
+        destIds.set(hit.host, destinationId);
+      }
+
+      const endpointKey = `${destinationId}\x00${hit.method}\x00${hit.url}`;
+      let endpointId = endpointIds.get(endpointKey);
+      if (endpointId === undefined) {
+        endpointStmt.run({
+          id: randomUUID(),
+          destinationId,
+          method: hit.method,
+          transport: hit.transport,
+          url: hit.url,
+          template: boolToInt(hit.template),
+          dataClass: hit.dataClass,
+          now,
+        });
+        endpointId =
+          getRow<{ id: string }>(endpointIdStmt, [destinationId, hit.method, hit.url])?.id ?? '';
+        endpointIds.set(endpointKey, endpointId);
+      }
+
+      siteStmt.run({
+        id: randomUUID(),
+        endpointId,
+        project: input.project,
+        projectKey: input.projectKey,
+        file: hit.site.file,
+        line: hit.site.line,
+        snippet: hit.site.snippet,
+        dynamic: boolToInt(hit.site.dynamic),
+        vendored: boolToInt(hit.site.vendored),
+        projectId,
+        now,
+      });
+    }
+  }
+
+  /**
+   * The source-project id this project's stored call sites already carry, if
+   * any. Only the pipeline that resolves a source project supplies one; the
+   * other passes null and inherits this, so the link stops flapping between a
+   * real id and NULL depending on which pipeline ran last. The value is a
+   * per-project attribute stored redundantly on each row, so any row's is
+   * representative.
+   */
+  private knownProjectId(projectKey: string): string | null {
+    return (
+      getRow<{ projectId: string | null }>(
+        this.db.prepare(
+          `SELECT project_id AS projectId FROM share_call_site
+           WHERE project_key = ? AND project_id IS NOT NULL LIMIT 1`,
+        ),
+        [projectKey],
+      )?.projectId ?? null
+    );
+  }
+
+  /**
+   * Stamp `last_seen` on every endpoint and destination this project still
+   * references — including rows the scan preserved rather than re-wrote, so a
+   * ledger-skipped file's references don't decay into "stale" on the page.
+   */
+  private confirmLastSeen(projectKey: string, now: number): void {
+    this.db
+      .prepare(
+        `UPDATE share_endpoint SET last_seen = :now, updated_at = :now
+         WHERE id IN (SELECT DISTINCT endpoint_id FROM share_call_site WHERE project_key = :key)`,
+      )
+      .run({ now, key: projectKey });
+    this.db
+      .prepare(
+        `UPDATE share_destination SET last_seen = :now, updated_at = :now
+         WHERE id IN (SELECT DISTINCT e.destination_id
+                      FROM share_endpoint e
+                      JOIN share_call_site c ON c.endpoint_id = e.id
+                      WHERE c.project_key = :key)`,
+      )
+      .run({ now, key: projectKey });
+  }
+
+  /**
+   * Drop rows left without evidence: endpoints with no call site, then
+   * destinations with no endpoint. Call sites are the only evidence either one
+   * has, so a row that lost its last one belongs to no project any more.
+   *
+   * Overrides are deleted between the two steps, and only the ones written
+   * before the host column existed. Those match a destination by id alone;
+   * because the id link is released on delete rather than cascading, leaving
+   * them would accumulate rows that match neither join arm and that nothing can
+   * reach again. Host-bearing rows deliberately survive — the host is what
+   * re-attaches a user's decision when the destination comes back.
+   */
+  private pruneOrphans(): void {
+    this.db.exec(
+      `DELETE FROM share_endpoint
+       WHERE NOT EXISTS (SELECT 1 FROM share_call_site c WHERE c.endpoint_id = share_endpoint.id)`,
+    );
+    this.db.exec(
+      `DELETE FROM egress_decision_override
+       WHERE host IS NULL
+         AND destination_id IN (
+           SELECT d.id FROM share_destination d
+           WHERE NOT EXISTS (SELECT 1 FROM share_endpoint e WHERE e.destination_id = d.id))`,
+    );
+    this.db.exec(
+      `DELETE FROM share_destination
+       WHERE NOT EXISTS (
+         SELECT 1 FROM share_endpoint e WHERE e.destination_id = share_destination.id)`,
+    );
+  }
+
+  /**
+   * Live totals for one project. Destinations and endpoints are shared across
+   * projects and carry no project column, so both are counted through the call
+   * sites that reference them.
+   */
+  private projectTotals(
+    projectKey: string,
+  ): Omit<EgressWriteSummary, 'truncated' | 'droppedFiles'> {
+    return {
+      destinations: countScalar(
+        this.db,
+        `SELECT count(DISTINCT e.destination_id) AS n
+         FROM share_endpoint e
+         JOIN share_call_site c ON c.endpoint_id = e.id
+         WHERE c.project_key = ?`,
+        [projectKey],
+      ),
+      endpoints: countScalar(
+        this.db,
+        'SELECT count(DISTINCT endpoint_id) AS n FROM share_call_site WHERE project_key = ?',
+        [projectKey],
+      ),
+      callSites: countScalar(
+        this.db,
+        'SELECT count(*) AS n FROM share_call_site WHERE project_key = ?',
+        [projectKey],
+      ),
+    };
   }
 
   // ─── Raw fetchers ────────────────────────────────────────────────────────────

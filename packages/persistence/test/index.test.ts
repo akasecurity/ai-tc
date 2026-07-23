@@ -13,6 +13,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'DATA_FILE_MODE',
   'DB_FILENAME',
   'DuplicateActiveExceptionError',
+  'MAX_EGRESS_CALL_SITES_PER_PROJECT',
   'SqliteActivityRepository',
   'SqliteAuditEventsRepository',
   'SqliteClassifiedDataRepository',

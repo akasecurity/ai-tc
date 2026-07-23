@@ -38,9 +38,10 @@ export const ProviderRegistryEntry = z
   .meta({ id: 'ProviderRegistryEntry' });
 export type ProviderRegistryEntry = z.infer<typeof ProviderRegistryEntry>;
 
-// One source location that produced an egress hit. `file` is a posix path relative
-// to the worktree root (git) or the walked root directory (non-git) — the ONE
-// relativization rule both pipelines share.
+// One source location that produced an egress hit. `file` is a posix path
+// relative to the worktree root (git) or to the walked root directory (non-git).
+// Both pipelines relativize the same way, so the same file yields the same path
+// whichever one recorded it.
 export const EgressCallSiteHit = z
   .object({
     file: z.string(),
@@ -74,8 +75,9 @@ export type ResolvedEgressHit = z.infer<typeof ResolvedEgressHit>;
 // How a write reconciles previously stored rows.
 // 'walk': the caller walked the complete subtree under walkedPrefix ('' = project
 //   root; a file target passes its own relative path) — stored call sites under
-//   that prefix are replaced, EXCEPT dot-path files, which only the scanner's
-//   walker can see (walker-universe invariant).
+//   that prefix are replaced. Dot-path files are excluded from that replacement:
+//   this walker never descends into them, so it must not delete rows only the
+//   other walker can re-create.
 // 'ledger': replace exactly scannedFiles ∪ deletedFiles; everything else is
 //   preserved (the scanner's ledger-skip path).
 export const EgressReconcile = z

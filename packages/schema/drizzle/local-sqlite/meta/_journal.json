@@ -78,6 +78,13 @@
       "when": 1784297543348,
       "tag": "0010_events_session_expression_index",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1784738949927,
+      "tag": "0011_egress_writer",
+      "breakpoints": true
     }
   ]
 }

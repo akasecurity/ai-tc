@@ -8,6 +8,8 @@ import { CheckIcon, ChevronDownIcon, SearchIcon, SlidersIcon } from '../shared/i
 import { PROVIDERS } from '../shared/Provider.tsx';
 import {
   type ColumnVisibility,
+  FINDING_STATUS_META,
+  FINDING_STATUSES,
   type FindingColumn,
   type FindingsFilters,
   SEVERITIES,
@@ -42,7 +44,7 @@ function withSelected(
   return [...options, ...missing];
 }
 
-/** Filter bar shown above the findings table — severity / type / provider / action. */
+/** Filter bar shown above the findings table — severity / type / provider / action / status. */
 export function FindingsToolbarView({
   facets,
   filters,
@@ -60,14 +62,21 @@ export function FindingsToolbarView({
   findingCount: number;
   typeCount: number;
 }) {
-  // Severities always render in display order; counts come from the facet
-  // (absent ⇒ 0). Type/provider/action are facet-driven, each run through
+  // Severities and statuses are closed enums, so they always render in display
+  // order with counts from the facet (absent ⇒ 0) — no value can drop out of
+  // the list. Type/provider/action are facet-driven, each run through
   // withSelected so a selected value the facet omits stays deselectable.
   const severityCount = new Map(facets.severity.map((f) => [f.value, f.count]));
   const severityOptions: Option[] = SEVERITIES.map((s) => ({
     value: s,
     label: capitalize(s),
     count: severityCount.get(s) ?? 0,
+  }));
+  const statusCount = new Map(facets.status.map((f) => [f.value, f.count]));
+  const statusOptions: Option[] = FINDING_STATUSES.map((s) => ({
+    value: s,
+    label: FINDING_STATUS_META[s].label,
+    count: statusCount.get(s) ?? 0,
   }));
   const typeOptions = withSelected(
     facets.subtype.map((f) => ({ value: f.value, label: f.value, count: f.count })),
@@ -134,6 +143,14 @@ export function FindingsToolbarView({
         selected={filters.action}
         onChange={(next) => {
           set('action', next);
+        }}
+      />
+      <MultiSelectFilter
+        label="Status"
+        options={statusOptions}
+        selected={filters.status}
+        onChange={(next) => {
+          set('status', next);
         }}
       />
       <span className="h-6 bg-border w-px" />

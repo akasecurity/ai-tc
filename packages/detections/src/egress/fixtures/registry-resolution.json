@@ -269,6 +269,21 @@
       "expect": null
     },
     {
+      "label": ":: (IPv6 unspecified) is excluded, like 0.0.0.0 on the v4 side",
+      "host": "::",
+      "expect": null
+    },
+    {
+      "label": "[::] (bracketed IPv6 unspecified) is excluded",
+      "host": "[::]",
+      "expect": null
+    },
+    {
+      "label": "ff02::1 (IPv6 multicast) is excluded, like 224.0.0.0/4 on the v4 side",
+      "host": "ff02::1",
+      "expect": null
+    },
+    {
       "label": "fe80::1 (IPv6 link-local) is excluded",
       "host": "fe80::1",
       "expect": null

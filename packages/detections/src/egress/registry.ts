@@ -653,18 +653,20 @@ export function isValidIPv6(host: string): boolean {
 
 /**
  * True when a valid IPv6 literal (optionally bracketed, optionally
- * zone-indexed) falls in the loopback (::1), link-local (fe80::/10), or
- * unique-local (fc00::/7) range. The leading group is zero-padded to 4
- * digits before the range test, so an abbreviated group such as 'fc'
+ * zone-indexed) falls in the unspecified (::), loopback (::1), unique-local
+ * (fc00::/7), link-local (fe80::/10), or multicast (ff00::/8) range — the
+ * IPv6 counterparts of the IPv4 ranges above. The leading group is zero-padded
+ * to 4 digits before the range test, so an abbreviated group such as 'fc'
  * (address 00fc::, not fc00::) is not mistaken for membership. Callers must
  * confirm `isValidIPv6` first.
  */
 export function isPrivateOrReservedIPv6(host: string): boolean {
   const h = normalizeIPv6Literal(host);
-  if (h === '::1') return true;
+  if (h === '::' || h === '::1') return true;
   const firstGroup = (h.split(':')[0] ?? '').padStart(4, '0');
   if (firstGroup.startsWith('fc') || firstGroup.startsWith('fd')) return true;
   if (firstGroup.startsWith('fe') && '89ab'.includes(firstGroup[2] ?? '')) return true;
+  if (firstGroup.startsWith('ff')) return true;
   return false;
 }
 

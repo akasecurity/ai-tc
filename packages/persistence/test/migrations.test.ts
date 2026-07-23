@@ -188,6 +188,128 @@ describe('applyMigrations finding resolution', () => {
   });
 });
 
+describe('applyMigrations inspection_findings identity columns (0011)', () => {
+  // The FK parents inspection_findings requires: one audit_events row, one
+  // inspection_definitions row.
+  function seedInspectionFindingParents(
+    db: DatabaseSync,
+    eventId: string,
+    definitionId: string,
+  ): void {
+    db.prepare(
+      `INSERT INTO audit_events (id, event_type, started_at) VALUES (?, 'tool_call', 0)`,
+    ).run(eventId);
+    db.prepare(
+      `INSERT INTO inspection_definitions
+         (id, rule_id, name, category, severity, definition, version)
+       VALUES (?, 'aws-key', 'AWS Key', 'secret', 'critical', '{}', '1')`,
+    ).run(definitionId);
+  }
+
+  function insertFinding(
+    db: DatabaseSync,
+    id: string,
+    eventId: string,
+    definitionId: string,
+    findingKey: string | null,
+  ): void {
+    db.prepare(
+      `INSERT INTO inspection_findings
+         (id, audit_event_id, inspection_definition_id, span_start, span_end,
+          masked_match, action_taken, confidence, finding_key)
+       VALUES (?, ?, ?, 0, 1, '••', 'log', 1, ?)`,
+    ).run(id, eventId, definitionId, findingKey);
+  }
+
+  it('prepares an ON CONFLICT (finding_key) upsert against inspection_findings', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+
+      // Preparation only — nothing writes finding_key yet, so this must not
+      // run. A partial index would make this exact statement fail to prepare
+      // ("ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+      // constraint"), so successful preparation alone pins the full-index shape.
+      expect(() => {
+        db.prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence, finding_key)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (finding_key) DO UPDATE SET masked_match = excluded.masked_match`,
+        );
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('lets two key-less inspection_findings rows coexist under the unique index', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    try {
+      applyMigrations(db);
+      seedInspectionFindingParents(db, 'evt-1', 'def-1');
+
+      expect(() => {
+        insertFinding(db, 'f1', 'evt-1', 'def-1', null);
+        insertFinding(db, 'f2', 'evt-1', 'def-1', null);
+      }).not.toThrow();
+
+      const rows = db
+        .prepare('SELECT id FROM inspection_findings WHERE finding_key IS NULL ORDER BY id')
+        .all() as { id: string }[];
+      expect(rows).toEqual([{ id: 'f1' }, { id: 'f2' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adopts the 0011 tag when its columns and unique index already exist out of band', () => {
+    const migration011 = SQLITE_MIGRATIONS.find((m) => m.tag === '0011_chunky_glorian');
+    if (migration011 === undefined) throw new Error('0011_chunky_glorian migration not found');
+
+    const db = new DatabaseSync(':memory:');
+    try {
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === '0011_chunky_glorian') continue;
+        db.exec(migration.sql);
+      }
+      // Out-of-band acquisition of 0011's evidence: the exact DDL it would run,
+      // applied directly rather than through the ledger (e.g. a drizzle-push
+      // dev store).
+      db.exec(migration011.sql);
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(appliedTags(db)).toContain('0011_chunky_glorian');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('executes 0011 when its columns and index are absent', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === '0011_chunky_glorian') continue;
+        db.exec(migration.sql);
+      }
+
+      applyMigrations(db);
+
+      expect(appliedTags(db)).toContain('0011_chunky_glorian');
+      expect(columnNames(db, 'inspection_findings')).toEqual(
+        expect.arrayContaining(['finding_key', 'first_detected_at']),
+      );
+      expect(schemaObjectExists(db, 'index', 'uq_inspection_findings_key')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('source_project id reconcile', () => {
   const URL = 'https://github.com/akasecurity/ai-tc.git';
   // What the legacy derivation produced: sha256 over [randomTenantId, …] — the

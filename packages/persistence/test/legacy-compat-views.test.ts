@@ -22,7 +22,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
@@ -32,6 +32,13 @@ import {
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
 } from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
+
+// This suite drives real on-disk SQLite migrations, a batched history backfill,
+// and pre-drop backups against temp stores — all fsync-bound work. On a
+// slow-flush filesystem (e.g. Windows CI, where flushes are slow and highly
+// variable) the heaviest cases run past vitest's 20s default, so give the whole
+// file generous headroom rather than let legitimate slow-disk timing trip it.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 let dir: string;
 
@@ -56,6 +63,12 @@ const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
 function seedPreCutoverFile(): string {
   const file = join(dir, DB_FILENAME);
   const raw = new DatabaseSync(file);
+  // Throwaway temp store: skip the per-statement fsync the default durable
+  // journal does for every migration DDL. That fsync is what dominates this
+  // fixture's cost on a slow-flush filesystem; the rows still commit to the
+  // file, which is all the openLocalDatabase reopen below needs.
+  raw.exec('PRAGMA journal_mode = MEMORY');
+  raw.exec('PRAGMA synchronous = OFF');
   raw.exec('PRAGMA foreign_keys = ON');
   for (const migration of SQLITE_MIGRATIONS) {
     if (migration.tag === MIGRATION_0013_TAG) continue;

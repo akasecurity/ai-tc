@@ -16,20 +16,34 @@ const forkSection = setupMd.slice(forkStart, forkEnd === -1 ? undefined : forkEn
 
 // The prompt-authored 0.3 scan-offer copy lives in commands/setup.md, so a
 // regression is otherwise only visible in the manual walkthrough. These guards
-// pin the verbatim strings the wizard shows at the scan offer.
+// pin the verbatim strings the wizard shows at the scan offer — including the
+// privacy-critical disclosure that the scan sends raw, unmasked values to the
+// model API via the `claude` CLI, which must be stated before consent.
 describe('setup.md 0.3 scan-offer copy', () => {
-  it('carries the scope disclosure verbatim', () => {
+  it('carries the scan-offer question verbatim', () => {
     expect(setupMd).toContain(
-      "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next.",
+      "I'll scan Claude's recent work — transcripts, temp files, agent memory — and send what I find to the model to rate it, so I can tune what I bring you next.",
     );
   });
 
   it('carries the Yes-option subtitle verbatim', () => {
-    expect(setupMd).toContain("tune what I bring you, based on Claude's real work here");
+    expect(setupMd).toContain(
+      'scan my real work here; raw findings go to the model to be rated, then tune what you bring me',
+    );
   });
 
   it('carries the Not-now-option subtitle verbatim', () => {
     expect(setupMd).toContain("start light and I'll learn as we go");
+  });
+
+  it('discloses the model-API egress plainly before the consent picker', () => {
+    // Whitespace-normalized so the assertion is not coupled to prose line wrapping.
+    const flat = setupMd.replace(/\s+/g, ' ');
+    expect(flat).toContain(
+      'sends the raw, unmasked values — including any secrets — to the model API through the `claude` CLI',
+    );
+    expect(flat).toContain('they are **not** kept on the machine');
+    expect(flat).toContain('Do not present the picker until you have said this');
   });
 });
 

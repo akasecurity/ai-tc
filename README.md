@@ -4,7 +4,7 @@
 
 **AKA Security — We secure agent harnesses at the source.**
 
-AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught and kept on your machine, not sent to a model or a third party.
+AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught and kept on your machine, not sent to a model or a third party.[^egress]
 
 ![Open source](https://img.shields.io/badge/Open_source-232F3E?style=flat-square)
 ![Local](https://img.shields.io/badge/Local-232F3E?style=flat-square)
@@ -63,7 +63,9 @@ In Claude Code:
 
 ### Claude Desktop
 
-Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and nothing leaves your machine to scan it.
+Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and nothing leaves your machine to scan it.[^egress]
+
+[^egress]: Detection and enforcement run locally — no AKA server, no account, no built-in network client (`fetch` is banned in the source). Three narrow paths do reach the network, all through child processes: package-manager installs/updates (`npm`/`claude`), the plugin's `npm audit signatures` supply-chain check, and the **opt-in** `/aka:setup` calibration, whose judge step sends the raw findings an initial history scan discovers — including any secrets — to the model API through the `claude` CLI to rate false positives and severity. That's the same model provider your agent already uses, and it happens only on explicit, revocable consent.
 
 ## Docs
 

@@ -15,10 +15,14 @@ dashboard. Everything the user sees is derived from their _actual_ history — n
 a fabricated or demo number. When there isn't enough history to judge, the wizard
 falls back to a conservative severity-derived floor instead of guessing.
 
-The false-positive/severity judgment itself runs in a **separate, transient
-subprocess that writes no transcript** — the raw (unmasked) finding values are
-never read into this conversation or your scannable history. You act only on the
-raw-free plan that subprocess prints back.
+The false-positive/severity judgment needs the raw (unmasked) finding values to
+rate them accurately, so it **sends them to the model API** through a separate
+`claude` CLI subprocess. That subprocess writes no transcript, so the raw values
+never enter this conversation or your scannable history — but they **do leave the
+machine**, sent to the model provider like any other Claude prompt. You act only
+on the raw-free plan the subprocess prints back. The scan that produces those
+values is offered for explicit consent in step 1, and that consent must state the
+model-API egress plainly before it is given.
 
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
@@ -63,8 +67,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/intro.js" "${CLAUDE_PLUGIN_ROOT}/.claude-plu
 Before showing any recommended posture — the start-light default table in
 step 2 or the calibrated posture in step 4 — look at the **current project's**
 working tree yourself, with your own Read/Glob tools. There is no script for
-this: it is your own reasoning over facts you read directly, not the isolated
-triage subprocess's raw-free plan, and it needs no user interaction.
+this: it is your own reasoning over facts you read directly, not the triage
+subprocess's raw-free plan, and it needs no user interaction.
 
 **In scope:** the manifest's declared frameworks/dependencies
 (`package.json` or equivalent), payment or other third-party API SDKs among
@@ -101,7 +105,7 @@ posture the user reads, not a separate write. Persisting a tightened level happe
 only where the wizard already writes a per-category override — the adjust fork's
 `onboard.js --posture` write (step 4b), where the user picks each category's level
 explicitly. The keep-defaults path writes the severity floor (`--floor`, step 2)
-and the calibrated accept path applies the isolated subprocess's saved plan
+and the calibrated accept path applies the triage subprocess's saved plan
 verbatim (`--confirmed --plan`, step 5); neither carries the tightening on its
 own, so a tightened level the user wants persisted is chosen through the adjust
 fork. Do **not** bolt on an extra `onboard.js --posture` overlay to auto-re-persist
@@ -124,18 +128,28 @@ interactive picker. The plugin can't draw its own selectable UI (it can't
 capture keystrokes), so do **not** print a fake option list or ask the user to
 "reply with a number"; let the picker collect the answer.
 
-**Want me to look over what Claude's been up to?** — "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next."
+**Disclose the model-API egress plainly before you show the picker — this is what
+the user is consenting to, so it must be visible before they choose.** State it in
+your own words, without softening it: if they say yes, AKA scans the last 30 days
+of Claude history, and to rate what it finds it **sends the raw, unmasked values —
+including any secrets — to the model API through the `claude` CLI**. That is real
+network egress to the model provider (the same one your Claude session already
+uses), not a purely local review. The raw values are kept out of your local Claude
+transcript, but they are **not** kept on the machine. (Findings are also recorded,
+masked, to the local store.) Do not present the picker until you have said this.
+
+**Want me to look over what Claude's been up to?** — "I'll scan Claude's recent work — transcripts, temp files, agent memory — and send what I find to the model to rate it, so I can tune what I bring you next."
 
 Offer exactly two options:
 
-- **Yes, take a look** — "tune what I bring you, based on Claude's real work here"
+- **Yes, take a look** — "scan my real work here; raw findings go to the model to be rated, then tune what you bring me"
 - **Not now** — "start light and I'll learn as we go"
 
 Choosing **Yes, take a look** records the same historical-review consent the wizard has
-always recorded — the identical scope, the one-time grant, and the
-revocable-under-Policies semantics — so the simpler question broadens nothing
-about what AKA may access. Those granular scope and revocation details stay
-inspectable on request and in the dashboard.
+always recorded — the identical scope (which includes the model-API judgment disclosed
+above), the one-time grant, and the revocable-under-Policies semantics — so the simpler
+question broadens nothing about what AKA may access. Those granular scope and revocation
+details stay inspectable on request and in the dashboard.
 
 ## 2. Save the answer, then branch
 
@@ -221,7 +235,7 @@ it.
      step 6 already follows when no calibration frame was emitted). Step 7
      then runs as written.
 
-## 3. Run the evidence triage — isolated judgment, nothing written yet
+## 3. Run the evidence triage — off-transcript judgment, nothing written yet
 
 Pipe the backfill's triage stream straight into the `apply-suppressions`
 adapter in **PREVIEW** mode (no `--confirmed`):
@@ -233,8 +247,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/backfill.js" --triage | node "${CLAUDE_PLUGI
 The backfill sweeps prior Claude Code transcripts (last 30 days, all projects)
 and streams one masked-plus-raw triage hit per line; masked findings are
 recorded to the local store as a side effect. The adapter runs the
-false-positive/severity **judgment in a separate transient subprocess** (no
-transcript), then prints back a **raw-free plan** you can safely show the user:
+false-positive/severity **judgment in a separate `claude` subprocess that sends
+the raw hits to the model API** (writing no local transcript), then prints back a
+**raw-free plan** you can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),
 the per-category reasoning, the masked false positives it would suppress, any
 categories it skipped, and its notes.
@@ -269,7 +284,8 @@ names its pattern and count from — never invent either off-signal.
 
 Everything you show the user in step 4 comes from **this command's output**. You
 never read the raw finding values yourself — do not echo, quote, or reconstruct
-them; by design they stay inside the isolated subprocess.
+them; the judge subprocess sends them to the model API and returns only the
+raw-free plan, so they never enter this conversation.
 
 **Failed or truncated triage — never proceed silently (fallback).** If this
 command exits non-zero, or the adapter reports a truncated / sentinel-less

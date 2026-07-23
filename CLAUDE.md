@@ -6,8 +6,10 @@ AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names 
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
 plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. Nothing leaves
-the machine — there is no account, no network hop, and no backend to stand up.
+`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
+paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
+sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 
 ## Tech stack
 
@@ -38,7 +40,11 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply, and the Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source. Network access happens **only through child processes**, and there are three such paths:
+
+1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
+2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends the raw, unmasked finding values to the model API** so it can rate false positives and severity. This runs only on the user's explicit, revocable opt-in during setup. It suppresses its own transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — the raw values are not kept on the machine, because the whole point is to reach the model. Consent copy must say so plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 
 ## Package dependency rules
 

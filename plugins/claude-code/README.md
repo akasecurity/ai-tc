@@ -7,7 +7,9 @@
 
 The Claude Code plugin for **[AI Traffic Control](https://github.com/akasecurity/ai-tc)** (`ai-tc`). It hooks into a Claude Code session and inspects its traffic — prompts, tool calls, tool results, file reads — scanning each event against your rule packs and applying inline **warn / redact / block** policies. Every event is recorded to a local SQLite store at `~/.aka/data/aka.db`.
 
-Detection runs entirely on your machine. There's no account and no backend — nothing leaves your computer to be scanned.
+Detection runs entirely on your machine. There's no account and no backend — nothing leaves your computer to be scanned.[^egress]
+
+[^egress]: Live detection and enforcement run locally. The one exception is the **opt-in** `/aka:setup` calibration below: to rate what an initial history scan finds, its judge step sends the raw (unmasked) findings — including any secrets — to the model API through the `claude` CLI, the same provider your Claude session already uses. It runs only on explicit, revocable consent and keeps those values out of your local transcript, but they do leave the machine.
 
 ## Install
 

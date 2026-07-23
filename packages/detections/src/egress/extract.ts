@@ -85,7 +85,11 @@ const TRANSPORT_BY_SCHEME: Readonly<Record<string, Transport>> = {
 const BEFORE_WINDOW = 200;
 const AFTER_WINDOW = 300;
 const VERB_METHOD_OPENER = /\.\s*(get|post|put|delete)\s*\(\s*['"`]*$/i;
-const VERB_FIRST_ARGUMENT = /["'](GET|POST|PUT|DELETE)["']\s*,[^)]{0,150}$/i;
+// A closing bracket between the verb and the URL means the verb's own list or
+// call ended first, so the verb belongs to something else — a `['GET','POST']`
+// constant, a `case 'GET', 'POST':`, a SQL VALUES tuple. The capture feeds the
+// same statement-locality gate the after-window rule uses.
+const VERB_FIRST_ARGUMENT = /["'](GET|POST|PUT|DELETE)["']\s*,([^)\]};]{0,150})$/i;
 const OPTIONS_METHOD = /method\s*[:=]\s*['"](GET|POST|PUT|DELETE)/i;
 const CLIENT_OPENER = /\b(fetch|urlopen|got|ky)\s*\(\s*['"`]*$/i;
 const ANY_METHOD_KEY = /\bmethod\s*[:=]/i;
@@ -404,7 +408,9 @@ function inferMethod(text: string, start: number, end: number): HttpMethod {
   if (opener?.[1] !== undefined) return verbOf(opener[1]);
 
   const firstArgument = VERB_FIRST_ARGUMENT.exec(before);
-  if (firstArgument?.[1] !== undefined) return verbOf(firstArgument[1]);
+  if (firstArgument?.[1] !== undefined && !STATEMENT_BREAK.test(firstArgument[2] ?? '')) {
+    return verbOf(firstArgument[1]);
+  }
 
   const options = OPTIONS_METHOD.exec(after);
   if (options?.[1] !== undefined && !STATEMENT_BREAK.test(after.slice(0, options.index))) {

@@ -425,5 +425,95 @@
         "line": 1
       }
     ]
+  },
+  {
+    "label": "a verb list literal before an unrelated call is not method evidence",
+    "text": "const METHODS = ['GET', 'POST']; api('https://api.acme-corp.com/v1')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 1
+      }
+    ]
+  },
+  {
+    "label": "a verb list literal on an earlier line is not method evidence",
+    "text": "const METHODS = ['GET', 'POST'];\napi('https://api.acme-corp.com/v1')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a verb enum is not method evidence",
+    "text": "enum Method { GET = 'GET', POST = 'POST' }\nconst ENDPOINT = 'https://api.acme-corp.com/v1';",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a go verb slice is not method evidence",
+    "text": "var methods = []string{\"GET\",\"POST\"}\nurl := \"https://api.acme-corp.com/v1\"",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "REF",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "a verb list before a real verb-first call does not steal its verb",
+    "text": "const METHODS = ['GET', 'POST'];\nresp = requests.request('PUT', 'https://api.acme-corp.com/v1')",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "PUT",
+        "template": false,
+        "line": 2
+      }
+    ]
+  },
+  {
+    "label": "verb-first argument: http.NewRequestWithContext(ctx, \"POST\", url) yields POST",
+    "text": "req, err := http.NewRequestWithContext(ctx, \"POST\", \"https://api.acme-corp.com/v1\", body)",
+    "expect": [
+      {
+        "url": "https://api.acme-corp.com/v1",
+        "host": "api.acme-corp.com",
+        "port": null,
+        "transport": "https",
+        "method": "POST",
+        "template": false,
+        "line": 1
+      }
+    ]
   }
 ]

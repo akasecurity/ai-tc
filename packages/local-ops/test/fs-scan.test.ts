@@ -1,15 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
+  computeFindingKey,
   DB_FILENAME,
   fingerprintValue,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
 } from '@akasecurity/persistence';
-import { computeFindingKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -298,6 +298,40 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
         filePath: join(root, 'app.ts'),
         valueFingerprint: fingerprintValue(fpKey, SECRET),
       });
+      expect(rows[0]?.finding_key).toBe(expected);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const absFile = join(root, 'app.ts');
+    // A relative directory target — the shape `aka scan src` / `aka scan .` pass
+    // (the CLI/web-ui forward the user's raw path unresolved). resolve() is
+    // lexical, so resolve(relative(cwd, root)) === root exactly (no realpath), and
+    // the stored path/key must therefore be the ABSOLUTE ones the plugin mints.
+    const relTarget = relative(process.cwd(), root);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, relTarget, { rules: RULES, dataDir: store });
+
+      // The stored event records the ABSOLUTE file path, not the relative target.
+      const [event] = storedEvents(store);
+      const metadata: unknown = JSON.parse(event?.metadata ?? '{}');
+      expect(metadata).toMatchObject({ filePath: absFile });
+
+      // finding_key is byte-identical to an absolute-path recomputation — the
+      // same value the plugin (absolute paths) and an absolute-target scan mint,
+      // so a relative-target scan reconciles onto the same row.
+      const fpKey = loadOrCreateFingerprintKey(store);
+      const expected = computeFindingKey({
+        ruleId: 'test/aws-key',
+        filePath: absFile,
+        valueFingerprint: fingerprintValue(fpKey, SECRET),
+      });
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
       expect(rows[0]?.finding_key).toBe(expected);
     } finally {
       db.close();

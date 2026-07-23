@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative } from 'node:path';
+import { basename, extname, join, relative, resolve } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
 import {
@@ -15,8 +15,12 @@ import {
   scan,
 } from '@akasecurity/detections';
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
-import { fingerprintValue, loadOrCreateFingerprintKey } from '@akasecurity/persistence';
-import { computeFindingKey, toPosix } from '@akasecurity/plugin-sdk';
+import {
+  computeFindingKey,
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+} from '@akasecurity/persistence';
+import { toPosix } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -283,7 +287,15 @@ export function scanPathIntoStore(
     return fingerprintKey;
   }
 
-  for (const { path: file, gitignored } of collectFiles(target)) {
+  // Absolutize the walk root before any path reaches computeFindingKey /
+  // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
+  // path, but the plugin's worktree scanner keys on ABSOLUTE paths and
+  // computeFindingKey only normalizes backslashes — so a relative target would
+  // mint a different finding_key for the same file+secret and never reconcile
+  // (ON CONFLICT (finding_key)) across the two tools. resolve() is relative to
+  // process.cwd() — the same base the callers' statSync(target) already uses —
+  // and is a no-op on the already-absolute paths the web-ui folder picker passes.
+  for (const { path: file, gitignored } of collectFiles(resolve(target))) {
     let text: string;
     try {
       text = readFileSync(file, 'utf8');

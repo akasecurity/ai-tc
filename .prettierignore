@@ -19,5 +19,10 @@ pnpm-lock.yaml
 # drizzle-kit generated migration metadata (journals/snapshots) — not prettier-managed
 **/drizzle/**/meta
 
+# Scanner-input fixture corpora. These files are data, not sources: their exact
+# byte layout is what the extraction assertions read (line numbers, snippets,
+# manifest scoping), so reformatting one silently changes the test's subject.
+packages/local-ops/test/fixtures
+
 .wolf/
 .gitattributes

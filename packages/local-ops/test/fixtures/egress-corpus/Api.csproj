@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Stripe.net" Version="46.2.0" />
+    <!-- Re-enable once the identity migration lands.
+    <PackageReference Include="Okta.Sdk" Version="8.0.4" />
+    -->
+  </ItemGroup>
+
+</Project>

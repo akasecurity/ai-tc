@@ -42,7 +42,8 @@ import type { SharesReadPort } from '../ports.ts';
 /**
  * Upper bound on the call sites one write records for a project. Hits past it
  * are dropped in input order and the write reports `truncated: true`, so a
- * runaway project is capped visibly instead of silently.
+ * runaway project is capped visibly instead of silently. Where the drop lands —
+ * mid-file or on a file boundary — depends on the reconcile mode; see capHits.
  */
 export const MAX_EGRESS_CALL_SITES_PER_PROJECT = 5000;
 
@@ -110,6 +111,70 @@ interface CallSiteRow {
 
 function parseNetwork(networkJson: string | null): ShareDestinationSummary['network'] {
   return safeJson<ShareDestinationSummary['network']>(networkJson, null);
+}
+
+/**
+ * Apply MAX_EGRESS_CALL_SITES_PER_PROJECT to one write's hits.
+ *
+ * Walk mode slices flat: it re-derives the project's whole hit set on every run
+ * and keeps no ledger, so the hits past the cap come back next scan and the
+ * first ones are the useful ones to keep.
+ *
+ * Ledger mode cuts at a FILE boundary instead, because there the delete set and
+ * the ledger are both named per file. A file is wholly recorded or wholly
+ * dropped, and a dropped one is reported so the caller can leave its rows in
+ * place and refuse to ledger it. A single file whose own hits exceed the cap is
+ * dropped rather than half-kept: half a generated blob's destinations is not a
+ * usable inventory of it, and storing it would ledger the file as done.
+ */
+function capHits(
+  all: readonly ResolvedEgressHit[],
+  mode: EgressReconcile['mode'],
+): { hits: ResolvedEgressHit[]; droppedFiles: string[]; truncated: boolean } {
+  if (all.length <= MAX_EGRESS_CALL_SITES_PER_PROJECT) {
+    return { hits: [...all], droppedFiles: [], truncated: false };
+  }
+  if (mode === 'walk') {
+    return {
+      hits: all.slice(0, MAX_EGRESS_CALL_SITES_PER_PROJECT),
+      droppedFiles: [],
+      truncated: true,
+    };
+  }
+
+  const byFile = new Map<string, ResolvedEgressHit[]>();
+  for (const hit of all) {
+    const bucket = byFile.get(hit.site.file);
+    if (bucket === undefined) byFile.set(hit.site.file, [hit]);
+    else bucket.push(hit);
+  }
+
+  const hits: ResolvedEgressHit[] = [];
+  const droppedFiles: string[] = [];
+  for (const [file, bucket] of byFile) {
+    if (hits.length + bucket.length > MAX_EGRESS_CALL_SITES_PER_PROJECT) droppedFiles.push(file);
+    else hits.push(...bucket);
+  }
+  return { hits, droppedFiles, truncated: true };
+}
+
+/**
+ * Take the dropped files back out of a ledger-mode reconcile set, so the write
+ * neither deletes nor re-creates their rows. Walk mode names no files — it
+ * deletes by path prefix and recomputes the whole subtree every run — so it is
+ * returned unchanged and its truncation stays a plain per-write cap.
+ */
+function withoutDroppedFiles(
+  reconcile: EgressReconcile,
+  droppedFiles: readonly string[],
+): EgressReconcile {
+  if (reconcile.mode === 'walk' || droppedFiles.length === 0) return reconcile;
+  const dropped = new Set(droppedFiles);
+  return {
+    mode: 'ledger',
+    scannedFiles: reconcile.scannedFiles.filter((file) => !dropped.has(file)),
+    deletedFiles: reconcile.deletedFiles.filter((file) => !dropped.has(file)),
+  };
 }
 
 function toEndpointSummary(row: EndpointRow): EndpointSummary {
@@ -403,10 +468,16 @@ export class SqliteSharesRepository implements SharesReadPort {
    * it was, and THROWS rather than reporting a partial write — callers decide
    * their own fail-open behavior, and the scanner additionally withholds its
    * ledger commit so the next scan retries.
+   *
+   * Over-cap input is truncated at a FILE boundary, and the files that lost
+   * their hits are both excluded from the reconcile delete and named in
+   * `droppedFiles`. That pairing is what keeps truncation non-destructive on
+   * the ledger path: a dropped file keeps whatever rows it already had, and its
+   * caller withholds the ledger entry so the next scan reads it again.
    */
   recordProjectEgress(input: RecordProjectEgressInput): EgressWriteSummary {
-    const truncated = input.hits.length > MAX_EGRESS_CALL_SITES_PER_PROJECT;
-    const hits = truncated ? input.hits.slice(0, MAX_EGRESS_CALL_SITES_PER_PROJECT) : input.hits;
+    const { hits, droppedFiles, truncated } = capHits(input.hits, input.reconcile.mode);
+    const reconcile = withoutDroppedFiles(input.reconcile, droppedFiles);
     const now = Date.now();
 
     let summary: EgressWriteSummary = {
@@ -414,15 +485,20 @@ export class SqliteSharesRepository implements SharesReadPort {
       endpoints: 0,
       callSites: 0,
       truncated,
+      droppedFiles,
     };
     withTransaction(
       this.db,
       () => {
-        this.reconcileCallSites(input.projectKey, input.reconcile);
-        this.upsertHits(input, hits, now);
+        // Read BEFORE the reconcile delete: ledger mode deletes the rows it is
+        // about to re-insert, so a project id carried only by those rows would
+        // be gone by the time the insert needs it.
+        const projectId = input.projectId ?? this.knownProjectId(input.projectKey);
+        this.reconcileCallSites(input.projectKey, reconcile);
+        this.upsertHits(input, hits, projectId, now);
         this.confirmLastSeen(input.projectKey, now);
         this.pruneOrphans();
-        summary = { ...this.projectTotals(input.projectKey), truncated };
+        summary = { ...this.projectTotals(input.projectKey), truncated, droppedFiles };
       },
       'IMMEDIATE',
     );
@@ -482,6 +558,7 @@ export class SqliteSharesRepository implements SharesReadPort {
   private upsertHits(
     input: RecordProjectEgressInput,
     hits: ResolvedEgressHit[],
+    projectId: string | null,
     now: number,
   ): void {
     if (hits.length === 0) return;
@@ -519,6 +596,9 @@ export class SqliteSharesRepository implements SharesReadPort {
     );
     // ON CONFLICT, not a plain INSERT: two hits can land on the same endpoint,
     // file and line, and a UNIQUE failure would abort the whole scan's egress.
+    //
+    // `project_id` is COALESCEd rather than overwritten so a row this write did
+    // not delete keeps its link when no id could be resolved at all.
     const siteStmt = this.db.prepare(
       `INSERT INTO share_call_site
          (id, endpoint_id, project, project_key, file, line, snippet, dynamic, vendored,
@@ -530,7 +610,7 @@ export class SqliteSharesRepository implements SharesReadPort {
          dynamic = excluded.dynamic,
          vendored = excluded.vendored,
          project = excluded.project,
-         project_id = excluded.project_id,
+         project_id = COALESCE(excluded.project_id, share_call_site.project_id),
          updated_at = excluded.updated_at`,
     );
 
@@ -582,10 +662,30 @@ export class SqliteSharesRepository implements SharesReadPort {
         snippet: hit.site.snippet,
         dynamic: boolToInt(hit.site.dynamic),
         vendored: boolToInt(hit.site.vendored),
-        projectId: input.projectId,
+        projectId,
         now,
       });
     }
+  }
+
+  /**
+   * The source-project id this project's stored call sites already carry, if
+   * any. Only the pipeline that resolves a source project supplies one; the
+   * other passes null and inherits this, so the link stops flapping between a
+   * real id and NULL depending on which pipeline ran last. The value is a
+   * per-project attribute stored redundantly on each row, so any row's is
+   * representative.
+   */
+  private knownProjectId(projectKey: string): string | null {
+    return (
+      getRow<{ projectId: string | null }>(
+        this.db.prepare(
+          `SELECT project_id AS projectId FROM share_call_site
+           WHERE project_key = ? AND project_id IS NOT NULL LIMIT 1`,
+        ),
+        [projectKey],
+      )?.projectId ?? null
+    );
   }
 
   /**
@@ -647,7 +747,9 @@ export class SqliteSharesRepository implements SharesReadPort {
    * projects and carry no project column, so both are counted through the call
    * sites that reference them.
    */
-  private projectTotals(projectKey: string): Omit<EgressWriteSummary, 'truncated'> {
+  private projectTotals(
+    projectKey: string,
+  ): Omit<EgressWriteSummary, 'truncated' | 'droppedFiles'> {
     return {
       destinations: countScalar(
         this.db,

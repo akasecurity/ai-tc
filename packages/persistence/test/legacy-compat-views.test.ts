@@ -26,7 +26,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
-import { LEGACY_BACKFILL_MAX_ROWS_PER_CALL } from '../src/migrations.ts';
+import {
+  applyLegacyDropMigration,
+  backupBeforeLegacyDrop,
+  LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
+} from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
 
 let dir: string;
@@ -550,4 +554,88 @@ describe('legacy events/findings compatibility views', () => {
       }
     },
   );
+
+  it('re-running the legacy drop against post-drop schema is a no-op (concurrent serialization loser)', () => {
+    const file = seedPreCutoverFile();
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    try {
+      // Empty legacy tables => already drained. First call is the winner.
+      applyLegacyDropMigration(db, undefined);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'findings')).toBe(true);
+      // Second call mimics the serialization loser holding the write lock over
+      // the winner's post-drop schema; the in-txn ledger recheck must no-op it
+      // instead of throwing "no such index" / "use DROP VIEW".
+      expect(() => {
+        applyLegacyDropMigration(db, undefined);
+      }).not.toThrow();
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the legacy drop completes (not defers) when an events index is absent — DROP INDEX IF EXISTS', () => {
+    // The adopted-tag / absent-index divergence, applied directly so the drop
+    // sees the missing index (going through openLocalDatabase would rebuild the
+    // 0010 index first). With a bare DROP INDEX this throws "no such index",
+    // which the fail-open wrapper then swallows and DEFERS the drop (no view) —
+    // so IF EXISTS is what lets the drop actually complete here.
+    const file = seedPreCutoverFile();
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    db.exec('DROP INDEX `idx_events_session_id`');
+    try {
+      expect(() => {
+        applyLegacyDropMigration(db, undefined);
+      }).not.toThrow();
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('pre-drop backup is a sidecar-free snapshot that includes WAL-resident committed rows', () => {
+    const file = join(dir, DB_FILENAME);
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('CREATE TABLE audit_events (id INTEGER PRIMARY KEY, v TEXT)');
+    for (let i = 0; i < 5; i += 1) {
+      db.prepare('INSERT INTO audit_events (v) VALUES (?)').run(`r${String(i)}`);
+    }
+    // Committed but WAL-resident (never checkpointed): a raw copy of the main db
+    // file would miss these rows and copy the -wal sidecar into a torn set.
+    expect(existsSync(`${file}-wal`)).toBe(true);
+
+    const backup = backupBeforeLegacyDrop(db, file);
+    try {
+      expect(existsSync(backup)).toBe(true);
+      // The property a copyFileSync-of-main-only backup violates.
+      expect(existsSync(`${backup}-wal`)).toBe(false);
+      expect(existsSync(`${backup}-shm`)).toBe(false);
+      // The WAL-resident committed rows were captured.
+      const snap = new DatabaseSync(backup);
+      try {
+        expect(
+          (snap.prepare('SELECT count(*) AS n FROM audit_events').get() as { n: number }).n,
+        ).toBe(5);
+      } finally {
+        snap.close();
+      }
+      // The live handle stays usable afterward.
+      expect(() => {
+        db.prepare('INSERT INTO audit_events (v) VALUES (?)').run('after');
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
 });

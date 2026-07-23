@@ -19,10 +19,13 @@
 --
 -- The 0009/0010 expression indexes existed only over the legacy `events`
 -- table; DROP TABLE below would remove them implicitly, but they are
--- dropped explicitly first so the intent reads clearly.
-DROP INDEX `idx_events_code_change_path`;
+-- dropped explicitly first so the intent reads clearly. IF EXISTS so a store
+-- that reached here with an index missing out of band (an adopted-tag store
+-- whose physical index was never built) does not throw a deterministic "no
+-- such index" out of the fail-open drop path.
+DROP INDEX IF EXISTS `idx_events_code_change_path`;
 --> statement-breakpoint
-DROP INDEX `idx_events_session_id`;
+DROP INDEX IF EXISTS `idx_events_session_id`;
 --> statement-breakpoint
 -- `findings.event_id` references `events.id` — drop the child first.
 DROP TABLE `findings`;

@@ -1,4 +1,3 @@
-import { copyFileSync } from 'node:fs';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { EventKind, EventMetadata, SourceTool } from '@akasecurity/schema';
@@ -238,7 +237,7 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
 // backupLegacyStore's shape in database.ts. A failed backup defers the drop
 // entirely rather than proceeding without one — history is never destroyed
 // on a best-effort basis.
-function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): void {
+export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): void {
   const migration = SQLITE_MIGRATIONS.find((m) => m.tag === LEGACY_DROP_MIGRATION_TAG);
   // Should not happen in a released build (schema and persistence version
   // together), but a missing migration must never crash an open.
@@ -251,33 +250,55 @@ function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): v
       return;
     }
   }
-  withTransaction(
-    db,
-    () => {
-      for (const statement of splitStatements(migration.sql)) {
-        db.exec(statement);
-      }
-      db.prepare('INSERT OR IGNORE INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
-        migration.tag,
-        Date.now(),
-      );
-    },
-    'IMMEDIATE',
-  );
+  // Fail-open, like runLegacyHistoryBackfill: after the backfill has fully
+  // drained both tables the drop is always safe to retry on a later open, so a
+  // failure here must NEVER propagate out of applyMigrations / openLocalDatabase
+  // and crash the host session.
+  try {
+    withTransaction(
+      db,
+      () => {
+        // In-transaction ledger recheck. The CLI, its spawned web-ui, and the
+        // plugin all open the same store; two up-to-date binaries can both pass
+        // the drained check and reach BEGIN IMMEDIATE. busy_timeout serializes
+        // them: the winner drops the tables, creates the views, and commits the
+        // 0014 tag; the loser then holds the write lock over the winner's
+        // POST-DROP schema, where replaying DROP INDEX / DROP TABLE `events`
+        // throws ("no such index" / "use DROP VIEW" — IF EXISTS does not save a
+        // DROP TABLE against a view). Re-reading the committed ledger inside the
+        // IMMEDIATE transaction sees the winner's row and no-ops the whole DDL.
+        const alreadyDropped = db
+          .prepare('SELECT 1 FROM migration_ledger WHERE tag = ?')
+          .get(migration.tag);
+        if (alreadyDropped) return;
+        for (const statement of splitStatements(migration.sql)) {
+          db.exec(statement);
+        }
+        db.prepare('INSERT OR IGNORE INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+          migration.tag,
+          Date.now(),
+        );
+      },
+      'IMMEDIATE',
+    );
+  } catch (error) {
+    akaWarn(`legacy events/findings drop failed; deferring: ${String(error)}`);
+  }
 }
 
-// Copies (never moves) the live store aside immediately before the
-// irreversible legacy-table drop — mirrors backupLegacyStore's shape in
-// database.ts (the other pre-destructive file copy in this codebase), except
-// the store stays open and in place afterward; only backupLegacyStore's
-// foreign-lineage reset actually moves the file. WAL-mode means a recently
-// committed row can still be sitting in the `-wal` sidecar rather than the
-// main file, so checkpoint (merge the WAL back in) before copying, or the
-// backup can silently miss it.
-function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
-  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+// Snapshots the live store aside immediately before the irreversible
+// legacy-table drop, while it stays open and in place. VACUUM INTO writes a
+// consistent, fully-materialized SINGLE-file copy through its own read
+// transaction — no `-wal`/`-shm` sidecars — so it captures committed WAL frames
+// that a raw copy of the main file would miss, without needing the WAL
+// checkpointed (a TRUNCATE checkpoint can be blocked by a concurrent reader and
+// return busy without throwing, leaving a raw copy silently torn/incomplete
+// under the product's multi-process open model). The bound parameter avoids any
+// path-quoting hazard. A failure still throws and is caught by the caller, which
+// defers the drop.
+export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
   const backup = `${file}.pre-drop.${String(Date.now())}.bak`;
-  copyFileSync(file, backup);
+  db.prepare('VACUUM INTO ?').run(backup);
   return backup;
 }
 

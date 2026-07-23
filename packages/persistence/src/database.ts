@@ -323,6 +323,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
             finding.maskedMatch,
             finding.span.start,
             finding.span.end,
+            finding.findingKey ?? null,
           )
         ) {
           continue;

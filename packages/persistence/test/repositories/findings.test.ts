@@ -383,10 +383,14 @@ function recordAtRest(opts: {
   maskedMatch?: string;
   actionTaken?: ActionTaken;
   occurredAt?: string;
+  // Pass the SAME contentHash to two calls to model identical bytes captured at
+  // two paths: recordCapture content-addresses the audit row on (session,
+  // contentHash), so both calls then resolve onto ONE audit_events row.
+  contentHash?: string;
 }): { eventId: string; findingId: string; auditEventId: string } {
   const eventId = randomUUID();
   const findingId = randomUUID();
-  const contentHash = randomUUID();
+  const contentHash = opts.contentHash ?? randomUUID();
   const metadata: EventMetadata = { filePath: opts.filePath ?? 'src/a.ts' };
   const event: IngestEvent = {
     id: eventId,
@@ -500,6 +504,45 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
     } finally {
       raw.close();
     }
+  });
+});
+
+// A secret duplicated across two files (`.env` copied to `.env.local`, a config
+// vendored into two packages, a fixture cloned) hashes to ONE contentHash, so
+// recordCapture content-addresses both captures onto a SINGLE audit_events row.
+// The two hits still carry DISTINCT finding_keys (the key is path-scoped), so
+// the event-level dedup must key on finding_key: otherwise the second file's
+// finding is taken for a replay of the first and silently dropped — never
+// counted, tracked, or remediable.
+describe('insertFindings — duplicate content at distinct paths', () => {
+  it('keeps both findings when identical content at two paths collapses onto one audit event', async () => {
+    const contentHash = randomUUID();
+    const keyA = findingKeyFor('aws-key', 'src/a.env', 'fp-1');
+    const keyB = findingKeyFor('aws-key', 'src/b.env', 'fp-1');
+
+    recordAtRest({ contentHash, filePath: 'src/a.env', findingKey: keyA });
+    recordAtRest({
+      contentHash,
+      filePath: 'src/b.env',
+      findingKey: keyB,
+      occurredAt: '2026-01-02T00:00:00.000Z',
+    });
+
+    // Both files collapse onto ONE content-addressed audit event...
+    const rowsA = findingRowsByKey(keyA);
+    const rowsB = findingRowsByKey(keyB);
+    expect(rowsA).toHaveLength(1);
+    expect(rowsB).toHaveLength(1);
+    expect(rowsA[0]?.event_id).toBe(rowsB[0]?.event_id);
+
+    // ...but each path keeps its own finding row, so neither is dropped. (The
+    // displayed file path is the shared audit event's — both instances read
+    // 'src/a.env' — because file_path lives on that content-collapsed row, not
+    // on the finding; surfacing the second path by name is a captureId concern,
+    // out of scope for this finding-level dedup fix.)
+    const res = await db.findings.listGroupedFindings({});
+    expect(res.totals).toEqual({ findings: 2, groups: 1 });
+    expect(res.items[0]?.instanceCount).toBe(2);
   });
 });
 

@@ -120,12 +120,22 @@ export class SqliteInspectionFindingsRepository {
     // reconciliation is for), and keyed on span too, so two genuinely
     // distinct hits of the same value within one capture (e.g. a secret
     // pasted twice in one prompt) are still both kept.
+    //
+    // The `finding_key` guard keeps that intra-event idempotency from
+    // OVER-reaching. The audit id is content-addressed, so identical bytes
+    // captured at two DIFFERENT paths (a secret duplicated across files)
+    // collapse onto ONE audit_events row — yet each hit carries its own
+    // path-scoped `finding_key`. Matching on the key too stops the second path
+    // from being taken for a replay of the first and dropped. An in-flight
+    // finding carries no key, so `:findingKey IS NULL` leaves the guard inert
+    // and the span-keyed behavior above unchanged.
     this.eventDupStmt = db.prepare(
       `SELECT 1 FROM inspection_findings f
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
         WHERE f.audit_event_id = :auditEventId AND d.rule_id = :ruleId
           AND f.masked_match = :maskedMatch
           AND f.span_start = :spanStart AND f.span_end = :spanEnd
+          AND (:findingKey IS NULL OR f.finding_key = :findingKey)
         LIMIT 1`,
     );
   }
@@ -139,16 +149,28 @@ export class SqliteInspectionFindingsRepository {
   }
 
   // True when this exact detection (rule + masked value + span) is already
-  // recorded against the given audit event.
+  // recorded against the given audit event. When the finding carries a
+  // `finding_key`, the match is scoped to it too, so identical content captured
+  // at two paths (which collapse onto one content-addressed audit event) is not
+  // deduped away; a keyless in-flight finding passes `null` and keeps the
+  // span-only behavior.
   isEventDuplicate(
     auditEventId: string,
     ruleId: string,
     maskedMatch: string,
     spanStart: number,
     spanEnd: number,
+    findingKey: string | null,
   ): boolean {
     return (
-      this.eventDupStmt.get({ auditEventId, ruleId, maskedMatch, spanStart, spanEnd }) !== undefined
+      this.eventDupStmt.get({
+        auditEventId,
+        ruleId,
+        maskedMatch,
+        spanStart,
+        spanEnd,
+        findingKey,
+      }) !== undefined
     );
   }
 

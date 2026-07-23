@@ -544,6 +544,40 @@ describe('recentlyResolved', () => {
     expect(res.items[0]?.detectedAt).toBe(new Date(NOW - 10 * DAY_MS).toISOString());
     expect(res.items[0]?.path).toBe('src/multi.ts');
   });
+
+  it('reads resolvedAt from the LATEST resolution row when a key has several resolved rows', async () => {
+    // Guards the single-JOIN refactor: status/method/resolved_at must all come
+    // from the SAME latest row of the shared derived table, not be aggregated or
+    // sourced from different rows per column.
+    record({
+      daysAgo: 8,
+      kind: 'code_change',
+      findingKey: 'key-multi-res',
+      filePath: 'src/m.ts',
+      severity: 'high',
+      ruleId: 'aws-secret-key',
+    });
+    // Earlier resolution row with a DISTINCT (older) resolved_at.
+    db.resolutions.insertResolution({
+      findingKey: 'key-multi-res',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW - 6 * DAY_MS,
+      evidence: '',
+    });
+    // Newest resolution row — its resolved_at must win.
+    db.resolutions.insertResolution({
+      findingKey: 'key-multi-res',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW - DAY_MS,
+      evidence: '',
+    });
+
+    const res = await security().recentlyResolved();
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]?.resolvedAt).toBe(new Date(NOW - DAY_MS).toISOString());
+  });
 });
 
 describe('scanCoverage', () => {

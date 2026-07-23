@@ -5,6 +5,7 @@ import {
   applyFindingFilters,
   buildFindingGroups,
   computeFindingFacets,
+  countInstancesByStatus,
   type GroupableFindingRow,
   sortFindingGroups,
   toApiAction,
@@ -381,6 +382,31 @@ describe('computeFindingFacets', () => {
     it('reports no statuses for groups that carry none', () => {
       expect(computeFindingFacets(groups, {}).status).toEqual([]);
     });
+  });
+});
+
+describe('countInstancesByStatus', () => {
+  // (kind, findingKey, latestResolutionStatus) → derived status:
+  // prompt/∅/∅ → handled · code_change/key/∅ → open · code_change/key/resolved → resolved
+  const inputs = [
+    { kind: 'prompt', findingKey: null, latestResolutionStatus: null, count: 200 },
+    { kind: 'code_change', findingKey: 'k', latestResolutionStatus: null, count: 3 },
+    { kind: 'code_change', findingKey: 'k', latestResolutionStatus: 'resolved', count: 5 },
+  ];
+
+  it('sums the counts of combinations whose derived status is selected', () => {
+    expect(countInstancesByStatus(inputs, ['open'])).toBe(3);
+    expect(countInstancesByStatus(inputs, ['handled'])).toBe(200);
+    expect(countInstancesByStatus(inputs, ['open', 'resolved'])).toBe(8);
+  });
+
+  it('returns 0 when no combination matches', () => {
+    expect(countInstancesByStatus(inputs, ['dismissed'])).toBe(0);
+  });
+
+  it('returns null when a combination carries no count (caller falls back to instanceCount)', () => {
+    const noCounts = [{ kind: 'prompt', findingKey: null, latestResolutionStatus: null }];
+    expect(countInstancesByStatus(noCounts, ['handled'])).toBeNull();
   });
 });
 

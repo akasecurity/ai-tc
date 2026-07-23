@@ -234,11 +234,18 @@ export interface FindingGroupAggregate {
   sourceTools: string[];
   /** Distinct raw findings.action_taken values across ALL instances. */
   actionsTaken: string[];
-  /** deriveFindingStatus inputs, one per distinct combination in the group. */
+  /**
+   * deriveFindingStatus inputs, one per distinct combination in the group.
+   * `count` is how many instances carry that combination — it powers
+   * countInstancesByStatus (status-scoped totals). Optional so callers that
+   * don't track counts keep compiling; without it the status-scoped count
+   * falls back to the whole-group instanceCount.
+   */
   statusInputs: {
     kind: string;
     findingKey: string | null;
     latestResolutionStatus: string | null;
+    count?: number;
   }[];
   /** Max occurredAt (ISO) across ALL instances. */
   latestDetectedAt: string;
@@ -424,10 +431,11 @@ export interface FindingFilterOptions {
 }
 
 // The lowercased free-text haystack for a group is immutable once the group is
-// built, but applyFindingFilters runs up to 5× per request (once per facet
-// dimension + the final filtered set). Memoise it per group object so the
-// join/lowercase happens once instead of once per pass. Keyed weakly so groups
-// are collected with the request that produced them (no cross-request leak).
+// built, but applyFindingFilters runs several times per request (once per facet
+// dimension in computeFindingFacets, plus the final filtered set). Memoise it
+// per group object so the join/lowercase happens once instead of once per pass.
+// Keyed weakly so groups are collected with the request that produced them (no
+// cross-request leak).
 const haystackCache = new WeakMap<FindingGroup, string>();
 
 /**
@@ -479,6 +487,29 @@ function groupActions(g: FindingGroup): FindingAction[] {
   return actions;
 }
 
+/**
+ * Instances in `statusInputs` whose DERIVED status is among `statuses` —
+ * the status-scoped complement of a group's whole-group instanceCount, so a
+ * status-filtered response can report how many instances actually carry a
+ * requested status rather than the group's full tally.
+ *
+ * Returns null when any entry lacks a `count` (a caller that doesn't track
+ * per-combination counts) — the caller falls back to the unscoped count
+ * rather than reporting a partial sum as exact.
+ */
+export function countInstancesByStatus(
+  statusInputs: FindingGroupAggregate['statusInputs'],
+  statuses: readonly string[],
+): number | null {
+  const statusSet = new Set(statuses);
+  let sum = 0;
+  for (const input of statusInputs) {
+    if (input.count === undefined) return null;
+    if (statusSet.has(deriveFindingStatus(input))) sum += input.count;
+  }
+  return sum;
+}
+
 export function applyFindingFilters(
   groups: FindingGroup[],
   opts: FindingFilterOptions,
@@ -510,8 +541,10 @@ export function applyFindingFilters(
   // Status: matches the GROUP's folded status (see foldGroupStatus), not "any
   // instance matches" as provider/action do — the Status column shows exactly
   // this one value, so a filtered row's badge always reads a requested status.
-  // A group with no status (no instance carries one — legacy rows) matches no
-  // specific status.
+  // The undefined guard is defensive for callers that build groups from rows
+  // without statuses (FindingGroup.status is optional in the contract); the
+  // SQLite store derives a status for every instance, so its groups always
+  // carry one.
   if (opts.statuses && opts.statuses.length > 0) {
     const statusSet = new Set(opts.statuses);
     filtered = filtered.filter((g) => g.status !== undefined && statusSet.has(g.status));
@@ -602,8 +635,10 @@ export function computeFindingFacets(
   const subtypeMap = new Map<string, number>();
   for (const g of forSubtype) subtypeMap.set(g.subtype, (subtypeMap.get(g.subtype) ?? 0) + 1);
 
-  // Groups with no status contribute to no bucket — the filter can't select
-  // them either, so a count they can never reach would misstate the dimension.
+  // A status-less group (possible only for callers whose rows carry no
+  // statuses — the SQLite store always derives one) contributes to no bucket:
+  // the filter can't select it either, so a count it can never reach would
+  // misstate the dimension.
   const forStatus = applyFindingFilters(allGroups, {
     providers: opts.providers,
     actions: opts.actions,

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative, sep } from 'node:path';
+import { basename, extname, join, relative } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
 import {
@@ -15,6 +15,7 @@ import {
   scan,
 } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
+import { toPosix } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   DetectedFinding,
@@ -92,7 +93,7 @@ function evaluate(layers: IgnoreLayer[], absPath: string, isDir: boolean): Ignor
   let state: IgnoreState = 'unmatched';
   for (const layer of layers) {
     // The ignore package expects posix-style relative paths.
-    const rel = relative(layer.base, absPath).split(sep).join('/') + (isDir ? '/' : '');
+    const rel = toPosix(relative(layer.base, absPath)) + (isDir ? '/' : '');
     const verdict = layer.matcher.test(rel);
     if (verdict.ignored) state = 'ignored';
     else if (verdict.unignored) state = 'unignored';
@@ -233,7 +234,11 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
     kind === null && EGRESS_CODE_EXTENSIONS.has(extname(file)) ? extractEgress(text) : [];
 
   if (endpoints.length === 0 && sdkHits.length === 0) return null;
-  return { file, vendored: isVendoredPath(file), endpoints, sdkHits };
+  // isVendoredPath matches forward-slash segments, so the walked path is
+  // normalized before the test. `file` is absolute here, so the match also sees
+  // segments above the scan root; the recording pass recomputes the flag from
+  // the project-relative key it stores.
+  return { file, vendored: isVendoredPath(toPosix(file)), endpoints, sdkHits };
 }
 
 /**

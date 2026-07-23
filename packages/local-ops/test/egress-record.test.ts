@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { manifestKindOf } from '@akasecurity/detections';
 import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
-import { resolveNonGitProject } from '@akasecurity/plugin-sdk';
+import { resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordProjectEgress } from '../src/egress-record.ts';
@@ -339,9 +339,12 @@ describe('recordProjectEgress — key collision safety', () => {
     const key = storedSites(store)[0]?.projectKey;
     expect(key?.startsWith('git:')).toBe(true);
     expect(key).not.toBe(`path:${realpathSync(repo)}`);
-    // The identity is the worktree root path, so only the prefix distinguishes
-    // it from a non-git walk of the same directory.
-    expect(key).toBe(`git:${repo}`);
+    // The identity is the worktree root path, posix-normalized: resolveRepoIdentity
+    // normalizes its path fallback, and that same string is written to
+    // source_project.url beside the key. Outside win32 that is the raw path, so
+    // this key and the non-git key for the directory differ by prefix alone; on
+    // win32 they differ by separator flavour as well.
+    expect(key).toBe(`git:${toPosix(repo)}`);
   });
 });
 

@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import type { PluginConfig, RecordProjectEgressInput } from '@akasecurity/plugin-sdk';
-import { loadConfig, manifestKindOf, resolveNonGitProject } from '@akasecurity/plugin-sdk';
+import { loadConfig, manifestKindOf, resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scanWorktree } from '../src/scan.ts';
@@ -109,6 +109,13 @@ function scannedFilesOf(input: RecordProjectEgressInput): string[] {
   if (input.reconcile.mode !== 'ledger')
     throw new Error(`expected ledger mode, got ${input.reconcile.mode}`);
   return [...input.reconcile.scannedFiles].sort();
+}
+
+// Ledger rows are keyed on absolute native paths. Compare them as repo-relative
+// posix keys — stripping a hardcoded '/' prefix cannot produce those on a
+// backslash-separator host.
+function ledgerKeys(): string[] {
+  return [...ledgerRows.keys()].map((p) => toPosix(relative(repo, p)));
 }
 
 function deletedFilesOf(input: RecordProjectEgressInput): string[] {
@@ -344,7 +351,7 @@ describe('scanWorktree — egress write failure ordering', () => {
     await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
 
     // The recorded file advances; the dropped one does not.
-    expect([...ledgerRows.keys()].map((p) => p.replace(`${repo}/`, ''))).toEqual(['src/pay.ts']);
+    expect(ledgerKeys()).toEqual(['src/pay.ts']);
 
     await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
 
@@ -359,10 +366,7 @@ describe('scanWorktree — egress write failure ordering', () => {
 
     await scanWorktree(configWith(true), { rootDir: repo, sourceTool: 'claude-code' });
 
-    expect([...ledgerRows.keys()].map((p) => p.replace(`${repo}/`, '')).sort()).toEqual([
-      'src/big.ts',
-      'src/pay.ts',
-    ]);
+    expect(ledgerKeys().sort()).toEqual(['src/big.ts', 'src/pay.ts']);
   });
 });
 

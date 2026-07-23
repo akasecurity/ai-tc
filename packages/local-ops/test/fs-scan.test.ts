@@ -342,4 +342,21 @@ describe('scanPathIntoStore — egress collection', () => {
       db.close();
     }
   });
+
+  it('leaves call sites outside a vendored tree unmarked', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(
+      join(root, 'src', 'pay.ts'),
+      `fetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n`,
+    );
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: [] });
+      expect(result.egress.files).toHaveLength(1);
+      expect(result.egress.files[0]?.vendored).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
 });

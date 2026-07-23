@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 
 import { recordProjectInventory, scanPathIntoStore } from '@akasecurity/local-ops';
+import { dataDir } from '@akasecurity/persistence';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -53,6 +54,10 @@ export async function runScan(path: string): Promise<ScanResult> {
     // detection's assigned Monitor/Warn/Redact/Block (not the per-category default).
     ruleActions: ruleset.ruleActions,
     sourceTool: 'cli',
+    // Same ~/.aka/data directory as db()'s store, so a finding's finding_key
+    // uses the plugin's keyed-HMAC fingerprint and reconciles onto the same
+    // row on re-scan instead of duplicating (see scanPathIntoStore).
+    dataDir: dataDir(),
   });
   // Keep the Inventory page's project + file tree fresh for the repo just
   // scanned (fail-open, no-op outside a git repo).

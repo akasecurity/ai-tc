@@ -84,7 +84,8 @@ export function runScan(argv: string[]): void {
   }
 
   registerBundledPacks();
-  const db = openLocalDatabase(dataDir(home));
+  const storeDir = dataDir(home);
+  const db = openLocalDatabase(storeDir);
 
   let result: ScanPathResult;
   let inventory: ProjectInventoryResult | null;
@@ -94,7 +95,10 @@ export function runScan(argv: string[]): void {
     // so at-rest labels match the plugin's per-pack enforcement; rules not in the
     // snapshot fall back to the per-category default.
     const { ruleActions } = db.installedPacks.installedRuleset();
-    result = scanPathIntoStore(db, target, { ruleActions, sourceTool: 'cli' });
+    // dataDir: same directory as the plugin's fingerprint key, so a file the
+    // plugin already scanned and one `aka scan` re-scans reconcile onto the
+    // same finding_key instead of duplicating (see scanPathIntoStore).
+    result = scanPathIntoStore(db, target, { ruleActions, sourceTool: 'cli', dataDir: storeDir });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
     inventory = recordProjectInventory(db, target);

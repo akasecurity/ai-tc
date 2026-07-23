@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  DB_FILENAME,
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+  openLocalDatabase,
+} from '@akasecurity/persistence';
+import { computeFindingKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -35,6 +41,21 @@ function storedEvents(dir: string): { content: string; metadata: string | null }
     return raw.prepare('SELECT content, metadata FROM events').all() as unknown as {
       content: string;
       metadata: string | null;
+    }[];
+  } finally {
+    raw.close();
+  }
+}
+
+// The raw at-rest findings rows, straight from the store file — used to assert
+// on row COUNT (does a re-scan duplicate?) and on finding_key directly, which
+// no read port surfaces today.
+function storedFindings(dir: string): { id: string; finding_key: string | null }[] {
+  const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+  try {
+    return raw.prepare('SELECT id, finding_key FROM findings').all() as unknown as {
+      id: string;
+      finding_key: string | null;
     }[];
   } finally {
     raw.close();
@@ -213,6 +234,63 @@ describe('scanPathIntoStore', () => {
         filePath: join(root, 'scratch.env'),
         gitignored: true,
       });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
+  // The regression test for the bug this fix closes: without a finding_key,
+  // ON CONFLICT (finding_key) never fires (SQLite never equates two NULLs in a
+  // unique index), so every re-scan of an unchanged file minted a fresh row.
+  it('reconciles a re-scan of an unchanged file onto the same row instead of duplicating', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still produces a non-null finding_key with no fingerprint key available (no dataDir)', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES }); // no dataDir option passed
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('derives finding_key via the shared computeFindingKey/fingerprintValue formula — parity with the plugin', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      const rows = storedFindings(store);
+
+      // Independently recompute the key from the same on-disk fingerprint key
+      // scanPathIntoStore just minted at `store`, using the exact functions the
+      // plugin's createPluginRuntime.capture() calls (computeFindingKey +
+      // fingerprintValue) — not a copy. A byte-identical match here is the
+      // whole point of importing rather than reimplementing.
+      const fpKey = loadOrCreateFingerprintKey(store);
+      const expected = computeFindingKey({
+        ruleId: 'test/aws-key',
+        filePath: join(root, 'app.ts'),
+        valueFingerprint: fingerprintValue(fpKey, SECRET),
+      });
+      expect(rows[0]?.finding_key).toBe(expected);
     } finally {
       db.close();
     }

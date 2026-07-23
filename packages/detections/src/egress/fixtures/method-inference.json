@@ -46,12 +46,7 @@
   },
   {
     "label": "verb-method opener reaches across a newline to a templated url",
-    "text": [
-      "axios.post(",
-      "  `https://api.acme-corp.com/v1/events/${id}`,",
-      "  payload,",
-      ")"
-    ],
+    "text": ["axios.post(", "  `https://api.acme-corp.com/v1/events/${id}`,", "  payload,", ")"],
     "expect": [
       {
         "url": "https://api.acme-corp.com/v1/events/${var}",
@@ -328,12 +323,7 @@
   },
   {
     "label": "a multi-line bare client call with a second options argument is not a proven bare call: REF, not a fabricated GET",
-    "text": [
-      "fetch(",
-      " 'https://a.io/x',",
-      " requestOptions,",
-      ");"
-    ],
+    "text": ["fetch(", " 'https://a.io/x',", " requestOptions,", ");"],
     "expect": [
       {
         "url": "https://a.io/x",

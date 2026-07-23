@@ -96,9 +96,9 @@ describeExtractionCorpus('extractEgress — bare-IP corpus', 'ip-extraction.json
 
 describe('extractEgress — general shape', () => {
   it('returns nothing for text with no destination literal', () => {
-    expect(extractEgress('export function add(a: number, b: number) {\n  return a + b;\n}\n')).toEqual(
-      [],
-    );
+    expect(
+      extractEgress('export function add(a: number, b: number) {\n  return a + b;\n}\n'),
+    ).toEqual([]);
   });
 
   it('returns hits in line order', () => {

@@ -1,9 +1,8 @@
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type {
   ActionTaken,
   DayActivity,
-  DetectedFindingWithKey,
   FindingGroupAggregate,
   FindingStatus,
   FindingView,
@@ -24,7 +23,6 @@ import {
   ENFORCEABLE_CATEGORIES,
   epochMillisToIso,
   sortFindingGroups,
-  toFindingRow,
 } from '@akasecurity/schema';
 
 import { allRows, countBy, countScalar } from '../internal/rows.ts';
@@ -125,109 +123,19 @@ interface FindingRowJoined {
 }
 
 /**
- * Dedup scope for a findings write — currently the Claude session the event
- * belongs to (events carry it in `metadata.sessionId`). When a `sessionId` is
- * present, a finding whose (rule, masked value) already fired earlier in the
- * same session is skipped on write, so one sensitive value that crosses several
- * surfaces in a single action — e.g. a secret typed into a prompt and then
- * written to a file — is recorded once, not once per surface. Events without a
- * session (no `sessionId`) are never deduped: we only collapse on positive
- * evidence that two findings belong to the same flow.
- */
-export interface FindingWriteScope {
-  sessionId?: string;
-}
-
-/**
- * Findings table writer + the read surfaces (/findings, /health, /audit), bound
- * to one open DB. Writes take already-masked DetectedFinding[] (the raw secret
- * never reaches this layer — the SDK masks before calling). The local store is
- * tenant-free (single tenant), so there is no tenant predicate on any query.
+ * Findings read surfaces (/findings, /health, /audit) over the generalized
+ * `inspection_findings`⋈`audit_events`⋈`inspection_definitions` join, bound to
+ * one open DB. The legacy `findings` table this class once wrote directly no
+ * longer exists (recordCapture writes `inspection_findings` via
+ * SqliteInspectionFindingsRepository instead — see database.ts); a dropped-
+ * then-viewed compatibility shape backs any already-shipped binary that still
+ * writes the old table by name. The local store is tenant-free (single
+ * tenant), so there is no tenant predicate on any query.
  */
 export class SqliteFindingsRepository
   implements FindingsReadPort, DashboardViews, GroupedFindingsView
 {
-  private readonly insertStmt: StatementSync;
-  private readonly sessionDupStmt: StatementSync;
-
-  constructor(private readonly db: DatabaseSync) {
-    // ON CONFLICT (finding_key): finding_key is nullable and UNIQUE
-    // (uq_findings_key) — SQLite never equates two NULLs in a unique index, so
-    // in-flight/legacy findings (findingKey null) always insert a fresh row,
-    // while an at-rest finding with a real key reconciles onto its prior row
-    // (same `id`, refreshed everything else) instead of duplicating — a re-scan
-    // of an already-detected finding updates in place. ruleId is left out of
-    // the update set: it is baked into finding_key itself, so a conflict can
-    // never carry a different one.
-    // first_detected_at is set ON INSERT from the finding's parent event's
-    // occurred_at via a correlated subquery (the event is always inserted before
-    // its findings in recordCapture, and the event_id FK guarantees it exists),
-    // and is DELIBERATELY EXCLUDED from the ON CONFLICT update set — so a
-    // re-detection of the same finding_key under a later event keeps the ORIGINAL
-    // first-detection time (event_id/everything else refreshes; the detection
-    // clock does not). This is what lets MTTR / the recently-resolved feed measure
-    // from first sighting rather than the latest re-scan.
-    this.insertStmt = db.prepare(
-      `INSERT INTO findings (id, event_id, rule_id, category, severity, span_start, span_end, masked_match, action_taken, confidence, finding_key, first_detected_at)
-       VALUES (:id, :eventId, :ruleId, :category, :severity, :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence, :findingKey,
-               (SELECT occurred_at FROM events WHERE id = :eventId))
-       ON CONFLICT (finding_key) DO UPDATE SET
-         event_id = excluded.event_id,
-         category = excluded.category,
-         severity = excluded.severity,
-         span_start = excluded.span_start,
-         span_end = excluded.span_end,
-         masked_match = excluded.masked_match,
-         action_taken = excluded.action_taken,
-         confidence = excluded.confidence`,
-    );
-    // Has this (rule, masked value) already been recorded in this session? Joins
-    // to events for the session id (findings have no timestamp/session of their
-    // own). Used to suppress cross-surface repeats — see FindingWriteScope.
-    this.sessionDupStmt = db.prepare(
-      `SELECT 1 FROM findings f JOIN events e ON e.id = f.event_id
-       WHERE f.rule_id = :ruleId AND f.masked_match = :maskedMatch
-         AND json_extract(e.metadata, '$.sessionId') = :sessionId
-       LIMIT 1`,
-    );
-  }
-
-  insertFindings(findings: DetectedFindingWithKey[], scope: FindingWriteScope = {}): void {
-    for (const finding of findings) {
-      if (scope.sessionId && this.isSessionDuplicate(finding, scope.sessionId)) continue;
-      // Bind only the columns insertStmt's SQL names, explicitly coercing
-      // findingKey's `| undefined` to `null` — node:sqlite's named-param binder
-      // rejects `undefined` outright, and toFindingRow already does this
-      // coercion, but bind explicitly here too so this call stays correct even
-      // if a caller hands in a raw row.
-      const row = toFindingRow(finding);
-      this.insertStmt.run({
-        id: row.id,
-        eventId: row.eventId,
-        ruleId: row.ruleId,
-        category: row.category,
-        severity: row.severity,
-        spanStart: row.spanStart,
-        spanEnd: row.spanEnd,
-        maskedMatch: row.maskedMatch,
-        actionTaken: row.actionTaken,
-        confidence: row.confidence,
-        findingKey: row.findingKey ?? null,
-      });
-    }
-  }
-
-  // True when an earlier event in the same session already recorded a finding
-  // with the same rule and masked value. The current event is inserted before
-  // its findings, but carries no findings yet, so this never self-matches.
-  private isSessionDuplicate(finding: DetectedFindingWithKey, sessionId: string): boolean {
-    const hit = this.sessionDupStmt.get({
-      ruleId: finding.ruleId,
-      maskedMatch: finding.maskedMatch,
-      sessionId,
-    });
-    return hit !== undefined;
-  }
+  constructor(private readonly db: DatabaseSync) {}
 
   recentFindings(opts?: { limit?: number }): Promise<FindingView[]> {
     const limit = opts?.limit ?? 50;

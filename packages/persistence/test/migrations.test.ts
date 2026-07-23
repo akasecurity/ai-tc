@@ -50,6 +50,16 @@ function appliedTags(db: DatabaseSync): string[] {
     .sort();
 }
 
+// The legacy-drop migration is intentionally excluded from every "replay every
+// migration's raw SQL directly" simulation below (mirroring how
+// preBackfillStore excludes MIGRATION_0013_TAG further down): it drops
+// `events`/`findings`, and 0000's own evidence (the CREATE TABLE for both)
+// would otherwise read as PARTIALLY present the moment applyMigrations runs
+// for real — an unrelated divergence throw that has nothing to do with
+// whatever a given test is actually exercising. `applyMigrations` applies it
+// separately once the (here, trivially empty) legacy tables report drained.
+const LEGACY_DROP_MIGRATION_TAG = '0014_drop_legacy_events_findings';
+
 describe('applyMigrations tag ledger', () => {
   it('records every applied tag on a fresh store and stamps user_version for downgrade compat', () => {
     const db = new DatabaseSync(':memory:');
@@ -75,6 +85,7 @@ describe('applyMigrations tag ledger', () => {
       // egress_decision_override already exists") and never applies 0002.
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0002_groovy_big_bertha') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length - 1)}`);
@@ -128,7 +139,10 @@ describe('applyMigrations tag ledger', () => {
     try {
       // A store fully migrated by the old applier: all DDL present, state only in
       // user_version, no ledger. Any replay would throw "already exists".
-      for (const migration of SQLITE_MIGRATIONS) db.exec(migration.sql);
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        db.exec(migration.sql);
+      }
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length)}`);
 
       expect(() => {
@@ -146,7 +160,10 @@ describe('applyMigrations tag ledger', () => {
       // An early-adopter shape: the 0001 token columns exist (the out-of-band
       // ensureTokenUsageColumns backfill) but its index was never created. That
       // must not read as divergence — adopt the tag and backfill the index.
-      for (const migration of SQLITE_MIGRATIONS) db.exec(migration.sql);
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        db.exec(migration.sql);
+      }
       db.exec('DROP INDEX idx_audit_session_type');
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length)}`);
 
@@ -276,6 +293,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0011's evidence: the exact DDL it would run,
@@ -297,6 +315,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
 
@@ -675,6 +694,7 @@ describe('migration 0006 (installed_packs write gate)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0006_magenta_flatman') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0006's evidence: table + column, NO trigger.
@@ -1118,12 +1138,16 @@ describe('migration 0011 (egress writer schema)', () => {
 const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
 
 // A store on the previous binary version: every migration through 0012
-// applied, 0013 (and the legacy history it would drain) still pending.
+// applied, 0013 (the legacy history it would drain) still pending, and the
+// legacy-drop migration (0014) ALSO still pending — the real events/findings
+// tables have to stay real and writable so the insertLegacyEvent/
+// insertLegacyFinding helpers below can seed legacy rows into them.
 function preBackfillStore(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   for (const migration of SQLITE_MIGRATIONS) {
     if (migration.tag === MIGRATION_0013_TAG) continue;
+    if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
     db.exec(migration.sql);
   }
   return db;
@@ -1244,8 +1268,13 @@ describe('migration 0013 + legacy history backfill', () => {
   it('drains a legacy event whose session root was never stubbed (post-0013 skew) without wedging', () => {
     const db = preBackfillStore();
     try {
-      // 0013 runs (nothing to stub) and is ledgered; the store is fully drained.
-      applyMigrations(db);
+      // Set up 0013's backfill infrastructure + stub synthesis WITHOUT the
+      // subsequent legacy drop (applyMigrations would drain then drop `events`
+      // to a view, leaving nothing to insert the skew rows into). 0013 stubs the
+      // sessions that exist NOW (none), matching a fully-drained store.
+      const migration0013 = SQLITE_MIGRATIONS.find((m) => m.tag === MIGRATION_0013_TAG);
+      if (migration0013 === undefined) throw new Error('0013 migration not found');
+      db.exec(migration0013.sql);
 
       // Version skew: a pre-cutover binary writes NEW-session events rows AFTER
       // 0013 (ledgered, never re-run) and before the drop. sess-skew therefore
@@ -1299,7 +1328,8 @@ describe('migration 0013 + legacy history backfill', () => {
   it(
     'migrates rows current code can no longer produce: an orphan session, NULL metadata, ' +
       'a NULL finding_key/first_detected_at row, and a finding_key collision with a ' +
-      'post-cutover live row — without ever touching the legacy tables',
+      'post-cutover live row — draining (and, this store being small enough, also dropping) ' +
+      'the legacy tables without losing any of it',
     () => {
       const db = preBackfillStore();
       try {
@@ -1354,15 +1384,42 @@ describe('migration 0013 + legacy history backfill', () => {
         const legacyFindingCountBefore = (
           db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }
         ).n;
+        // Captured while `events`/`findings` are still real tables — once
+        // this store's small size lets the drop run in the same call below,
+        // their rowids are gone with the tables themselves, so this is the
+        // only point the watermark can still be checked against them.
+        const eventsMaxRowidBefore = (
+          db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }
+        ).r;
+        const findingsMaxRowidBefore = (
+          db.prepare('SELECT max(rowid) AS r FROM findings').get() as { r: number }
+        ).r;
 
         applyMigrations(db);
 
-        // Constraint 1: the legacy tables are untouched — this is a copy, not a move.
+        // This store is small enough to fully drain in the one call above, so
+        // the legacy-drop migration ALSO runs this same call: `events`/
+        // `findings` are no longer real tables, but the compatibility views of
+        // the same name still answer truthfully. `events` is unaffected (every
+        // legacy event here is a capture kind), so its view's count survives
+        // unchanged. `findings` does NOT survive unchanged, and correctly so:
+        // `f-legacy-key` collided on finding_key with `live-finding` (a
+        // tool_call-attached row — never a shape the legacy `findings` table
+        // held), and the upsert below keeps the merged row under
+        // `live-finding`'s id/parent — which the four-capture-kind view
+        // predicate (the same one the legacy table's universe always implied)
+        // correctly excludes. No row is lost — see the inspection_findings
+        // assertions below — it just now surfaces under its real (tool_call)
+        // parent instead of a legacy-shaped one that never applied to it.
+        expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+        expect(schemaObjectExists(db, 'view', 'findings')).toBe(true);
+        expect(schemaObjectExists(db, 'table', 'events')).toBe(false);
+        expect(schemaObjectExists(db, 'table', 'findings')).toBe(false);
         expect((db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(
           legacyEventCountBefore,
         );
         expect((db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }).n).toBe(
-          legacyFindingCountBefore,
+          legacyFindingCountBefore - 1,
         );
 
         // The orphan session got a synthesized root, timed at the earliest
@@ -1470,23 +1527,18 @@ describe('migration 0013 + legacy history backfill', () => {
         ).toBe(1);
 
         // Both legacy tables fully drained: the watermark sits at each
-        // table's last rowid.
-        const eventsMaxRowid = (
-          db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }
-        ).r;
-        const findingsMaxRowid = (
-          db.prepare('SELECT max(rowid) AS r FROM findings').get() as { r: number }
-        ).r;
+        // table's last rowid (captured before the drop above — see
+        // eventsMaxRowidBefore/findingsMaxRowidBefore).
         expect(
           db
             .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'events'")
             .get(),
-        ).toMatchObject({ r: eventsMaxRowid });
+        ).toMatchObject({ r: eventsMaxRowidBefore });
         expect(
           db
             .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'findings'")
             .get(),
-        ).toMatchObject({ r: findingsMaxRowid });
+        ).toMatchObject({ r: findingsMaxRowidBefore });
 
         // Re-running is a no-op: same row counts, same watermark, no throw.
         expect(() => {

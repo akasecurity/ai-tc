@@ -141,6 +141,8 @@ function fakeGateway(
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),
+    getRuleProbeVerdict: () => Promise.resolve(undefined),
+    setRuleProbeVerdict: () => Promise.resolve(),
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),

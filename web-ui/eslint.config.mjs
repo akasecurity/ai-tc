@@ -1,9 +1,11 @@
 // @ts-check
+import { noEnterpriseImports } from '@akasecurity/eslint-config';
 import { react } from '@akasecurity/eslint-config/react';
 import tseslint from 'typescript-eslint';
 
 export default [
   ...react,
+  ...noEnterpriseImports,
   {
     languageOptions: {
       parserOptions: {

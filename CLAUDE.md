@@ -188,6 +188,25 @@ When a change touches the web-ui or any bundled package and the user wants to pu
 Versions are bumped by hand in a `chore(release):` commit (no changesets). The current pre-release
 line is `0.0.2-alpha.N` — a pre-release bump increments `N`.
 
+### Binary (SEA) channel — `bin-v*`
+
+The `aka` CLI also ships as a self-contained **Standalone Executable Application (SEA)** — a native
+binary that embeds the Node runtime, so end users need neither Node nor npm. This is a **separate
+release channel** from the `cli-v*` npm publish:
+
+- **Trigger:** push a tag `bin-v<version>`. It must equal `cli/package.json`'s version —
+  `release-binaries.yml` gates on it and fails the release on a mismatch. `workflow_dispatch` runs a
+  build-only dry run (no Release).
+- **Build:** `release-binaries.yml` builds the SEA on native runners per platform (no cross-compile)
+  — `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64` — via `build:sea` → `bundle:web-ui` →
+  `package:sea` → `archive:sea`.
+- **Assets:** `aka-<version>-<triple>.tar.gz` (`.zip` on Windows) plus an aggregated `SHA256SUMS`.
+  The `tools/installer/` one-liners verify the download against it, fail-closed.
+- **`bin-latest`:** on success the workflow force-moves `bin-latest` to the release commit; the
+  installer one-liners (`install.sh`/`install.ps1`) are fetched from `bin-latest`, not `main`.
+- `cli-v*` (npm) and `bin-v*` (binary) are **independent** — a binary release needs no npm publish
+  and vice versa, though they normally share one version line.
+
 ## Running locally
 
 No server, no Docker, no database engine — just Node and the local SQLite store.

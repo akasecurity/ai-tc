@@ -107,6 +107,8 @@ function fakeGateway(b: PolicyBundle): DataGateway & { records: CaptureRecord[] 
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
     recordScanned: () => Promise.resolve(),
+    getRuleProbeVerdict: () => Promise.resolve(undefined),
+    setRuleProbeVerdict: () => Promise.resolve(),
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
@@ -444,6 +446,29 @@ describe('rulesetFingerprint', () => {
     const rt = createPluginRuntime(broken, settings());
     const first = await rt.rulesetFingerprint();
     expect(first).toMatch(/^unresolved-/);
+    await rt.close();
+  });
+});
+
+describe('runtime rule quarantine', () => {
+  it('excludes a catastrophic pulled-pack regex rule from the active ruleset', async () => {
+    // '(a+)+$' requires only 'a' characters and anchors at the end, so it
+    // WOULD match a run of 'a's if it were registered — proving the finding's
+    // absence below is the quarantine actually excluding the rule, not
+    // coincidental non-matching.
+    const evilRule: Rule = {
+      specVersion: 1,
+      id: 'pulled/evil-redos',
+      name: 'evil redos',
+      category: 'custom',
+      severity: 'low',
+      matcher: { type: 'regex', pattern: '(a+)+$', flags: 'g' },
+    };
+    const gw = fakeGateway({ ...bundle([evilRule]), rulesComplete: true });
+    const rt = createPluginRuntime(gw, settings());
+
+    const decision = await rt.processText('some text ending in aaaa');
+    expect(decision.findings).toEqual([]);
     await rt.close();
   });
 });

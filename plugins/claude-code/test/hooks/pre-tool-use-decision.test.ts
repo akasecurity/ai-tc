@@ -321,6 +321,8 @@ function fakeGateway(b: PolicyBundle): DataGateway {
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
+    getRuleProbeVerdict: () => Promise.resolve(undefined),
+    setRuleProbeVerdict: () => Promise.resolve(),
     recordProjectEgress: () =>
       Promise.resolve({
         destinations: 0,

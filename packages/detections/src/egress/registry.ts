@@ -735,10 +735,22 @@ export function resolveHost(
     INTERNAL_TLDS.some((tld) => hostMatchesSuffix(h, tld)) ||
     internalDomains.some((domain) => hostMatchesSuffix(h, domain.toLowerCase()));
   if (isInternal) {
-    return { kind: 'internal', trust: 'internal', name: h, category: 'Internal services', entry: null };
+    return {
+      kind: 'internal',
+      trust: 'internal',
+      name: h,
+      category: 'Internal services',
+      entry: null,
+    };
   }
 
-  return { kind: 'external', trust: 'unverified', name: h, category: 'External domain', entry: null };
+  return {
+    kind: 'external',
+    trust: 'unverified',
+    name: h,
+    category: 'External domain',
+    entry: null,
+  };
 }
 
 /**

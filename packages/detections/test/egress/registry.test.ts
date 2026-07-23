@@ -12,10 +12,7 @@ import {
   resolveSdk,
 } from '../../src/egress/registry.ts';
 
-const fixturesDir = join(
-  fileURLToPath(new URL('.', import.meta.url)),
-  '../../src/egress/fixtures',
-);
+const fixturesDir = join(fileURLToPath(new URL('.', import.meta.url)), '../../src/egress/fixtures');
 
 interface HostCase {
   label: string;

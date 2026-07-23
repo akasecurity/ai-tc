@@ -3,78 +3,153 @@
     {
       "label": "api.stripe.com resolves to Stripe (subdomain of a bare hostSuffix)",
       "host": "api.stripe.com",
-      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe", "category": "Payments" }
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Stripe",
+        "category": "Payments"
+      }
     },
     {
       "label": "stripe.com resolves to Stripe (exact hostSuffix)",
       "host": "stripe.com",
-      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe", "category": "Payments" }
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Stripe",
+        "category": "Payments"
+      }
     },
     {
       "label": "www.stripe.com resolves to Stripe (another subdomain)",
       "host": "www.stripe.com",
-      "expect": { "kind": "provider", "trust": "recognized", "name": "Stripe", "category": "Payments" }
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Stripe",
+        "category": "Payments"
+      }
     },
     {
       "label": "api.datadoghq.eu resolves to Datadog (second hostSuffix entry)",
       "host": "api.datadoghq.eu",
-      "expect": { "kind": "provider", "trust": "recognized", "name": "Datadog", "category": "Observability" }
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Datadog",
+        "category": "Observability"
+      }
     },
     {
       "label": "evilstripe.com is NOT Stripe — mid-label suffix must not match",
       "host": "evilstripe.com",
-      "expect": { "kind": "external", "trust": "unverified", "name": "evilstripe.com", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "evilstripe.com",
+        "category": "External domain"
+      }
     },
     {
       "label": "evildatadoghq.com is NOT Datadog — same suffix hazard, different provider",
       "host": "evildatadoghq.com",
-      "expect": { "kind": "external", "trust": "unverified", "name": "evildatadoghq.com", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "evildatadoghq.com",
+        "category": "External domain"
+      }
     },
     {
       "label": "db.internal resolves internal via the .internal TLD",
       "host": "db.internal",
-      "expect": { "kind": "internal", "trust": "internal", "name": "db.internal", "category": "Internal services" }
+      "expect": {
+        "kind": "internal",
+        "trust": "internal",
+        "name": "db.internal",
+        "category": "Internal services"
+      }
     },
     {
       "label": "intranet (single-label host) resolves internal",
       "host": "intranet",
-      "expect": { "kind": "internal", "trust": "internal", "name": "intranet", "category": "Internal services" }
+      "expect": {
+        "kind": "internal",
+        "trust": "internal",
+        "name": "intranet",
+        "category": "Internal services"
+      }
     },
     {
       "label": "host.home.arpa resolves internal via the dotted home.arpa TLD",
       "host": "host.home.arpa",
-      "expect": { "kind": "internal", "trust": "internal", "name": "host.home.arpa", "category": "Internal services" }
+      "expect": {
+        "kind": "internal",
+        "trust": "internal",
+        "name": "host.home.arpa",
+        "category": "Internal services"
+      }
     },
     {
       "label": "app.corp resolves internal via the .corp TLD",
       "host": "app.corp",
-      "expect": { "kind": "internal", "trust": "internal", "name": "app.corp", "category": "Internal services" }
+      "expect": {
+        "kind": "internal",
+        "trust": "internal",
+        "name": "app.corp",
+        "category": "Internal services"
+      }
     },
     {
       "label": "goodcode.us resolves internal only when the caller supplies it as an internalDomain",
       "host": "goodcode.us",
       "opts": { "internalDomains": ["goodcode.us"] },
-      "expect": { "kind": "internal", "trust": "internal", "name": "goodcode.us", "category": "Internal services" }
+      "expect": {
+        "kind": "internal",
+        "trust": "internal",
+        "name": "goodcode.us",
+        "category": "Internal services"
+      }
     },
     {
       "label": "goodcode.us with no internalDomains hint resolves external",
       "host": "goodcode.us",
-      "expect": { "kind": "external", "trust": "unverified", "name": "goodcode.us", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "goodcode.us",
+        "category": "External domain"
+      }
     },
     {
       "label": "acme-partner.com has no registry match and no internal signal — external, not internal",
       "host": "acme-partner.com",
-      "expect": { "kind": "external", "trust": "unverified", "name": "acme-partner.com", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "acme-partner.com",
+        "category": "External domain"
+      }
     },
     {
       "label": "an unrecognized public domain with a malformed-IP-looking label still resolves external",
       "host": "999.1.1.1",
-      "expect": { "kind": "external", "trust": "unverified", "name": "999.1.1.1", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "999.1.1.1",
+        "category": "External domain"
+      }
     },
     {
       "label": "198.51.100.23 is a public IPv4 literal — kind ip",
       "host": "198.51.100.23",
-      "expect": { "kind": "ip", "trust": "ip", "name": "198.51.100.23", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "198.51.100.23",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "172.32.0.1 is just outside the private 172.16-31 range — kind ip, not excluded",
@@ -199,12 +274,22 @@
     {
       "label": "2001:db8::1 (bare public IPv6 literal) is kind ip",
       "host": "2001:db8::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "2001:db8::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "2001:db8::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "[2001:db8::1] (bracketed public IPv6 literal) is kind ip — URL authority form",
       "host": "[2001:db8::1]",
-      "expect": { "kind": "ip", "trust": "ip", "name": "[2001:db8::1]", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "[2001:db8::1]",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "febf::1 (top edge of fe80::/10 link-local) is excluded",
@@ -229,7 +314,12 @@
     {
       "label": "2001:DB8::1 (uppercase, RFC-canonical documentation spelling) is kind ip",
       "host": "2001:DB8::1",
-      "expect": { "kind": "ip", "trust": "ip", "name": "2001:db8::1", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "2001:db8::1",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "fe80::1%eth0 (zone-indexed link-local, bare form) is excluded",
@@ -259,12 +349,22 @@
     {
       "label": "::ffff:8.8.8.8 (IPv4-mapped public address) is kind ip",
       "host": "::ffff:8.8.8.8",
-      "expect": { "kind": "ip", "trust": "ip", "name": "::ffff:8.8.8.8", "category": "Unresolved host" }
+      "expect": {
+        "kind": "ip",
+        "trust": "ip",
+        "name": "::ffff:8.8.8.8",
+        "category": "Unresolved host"
+      }
     },
     {
       "label": "db:8080 (colon-bearing, fails every IP-literal check) resolves external, never the trusted single-label internal fallback",
       "host": "db:8080",
-      "expect": { "kind": "external", "trust": "unverified", "name": "db:8080", "category": "External domain" }
+      "expect": {
+        "kind": "external",
+        "trust": "unverified",
+        "name": "db:8080",
+        "category": "External domain"
+      }
     }
   ],
   "sdks": [

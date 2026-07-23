@@ -66,4 +66,21 @@ describe('RegexMatcher', () => {
     expect(Date.now() - start).toBeLessThan(1000);
     expect(spans).toEqual([]);
   });
+
+  it('does not truncate input at or under MAX_REGEX_INPUT_LENGTH (no regression)', () => {
+    const matcher = new RegexMatcher();
+    const text = `${'x'.repeat(199_997)}foo`;
+    const spans = matcher.match(text, regexRule('foo', 'g'));
+    expect(spans).toEqual([{ start: 199_997, end: 200_000 }]);
+  });
+
+  it('ignores a match past MAX_REGEX_INPUT_LENGTH instead of scanning unbounded input', () => {
+    const matcher = new RegexMatcher();
+    // A caller-supplied pattern is only ever run against a bounded prefix of
+    // `text` — this bounds the worst-case cost a pathological pattern can incur
+    // on an arbitrarily large caller-controlled input.
+    const text = `${'x'.repeat(200_001)}foo`;
+    const spans = matcher.match(text, regexRule('foo', 'g'));
+    expect(spans).toEqual([]);
+  });
 });

@@ -78,6 +78,8 @@ export { SqlitePoliciesRepository } from './repositories/policies.ts';
 export { SqlitePolicyCatalogRepository } from './repositories/policy-catalog.ts';
 export type { Resolution, ResolutionInput } from './repositories/resolutions.ts';
 export { SqliteResolutionsRepository } from './repositories/resolutions.ts';
+export type { RuleProbeCacheEntry } from './repositories/rule-probe-cache.ts';
+export { SqliteRuleProbeCacheRepository } from './repositories/rule-probe-cache.ts';
 export type { ScanLedgerEntry, ScanLedgerState } from './repositories/scan-ledger.ts';
 export { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
 export { SqliteSecurityRepository } from './repositories/security.ts';

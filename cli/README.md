@@ -15,14 +15,14 @@ Everything runs on your machine. There's no account, no backend, and nothing lea
 npm install -g @akasecurity/cli
 ```
 
-Or use the bootstrap installer (checks for Node, then installs):
+Or use the bootstrap installer (downloads the self-contained binary — no Node.js required):
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.ps1 | iex
+irm https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.ps1 | iex
 ```
 
 Requires **Node.js 24+** (the CLI uses the built-in `node:sqlite`).

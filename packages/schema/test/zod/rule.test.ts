@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Rule } from '../../src/zod/rule.ts';
+import { Rule, RuleProbeVerdict } from '../../src/zod/rule.ts';
 
 function keywordRule(matcher: Record<string, unknown>) {
   return {
@@ -42,5 +42,50 @@ describe('Rule keyword matcher contract', () => {
       keywordRule({ keywords: ['SELECT * FROM ', 'SELECT COUNT(*) FROM ', 'i make $'] }),
     );
     expect(parsed.matcher.type).toBe('keyword');
+  });
+});
+
+function regexRule(pattern: string) {
+  return {
+    specVersion: 1,
+    id: 'test-pack/test-rule',
+    name: 'test',
+    category: 'secret',
+    severity: 'high',
+    matcher: { type: 'regex', pattern, flags: 'g' },
+  };
+}
+
+describe('Rule regex matcher contract', () => {
+  it('rejects an empty pattern', () => {
+    expect(Rule.safeParse(regexRule('')).success).toBe(false);
+  });
+
+  it('accepts a pattern at the length ceiling', () => {
+    // The longest bundled pattern is ~650 chars (a multi-alternative
+    // cloud-connection-string rule); 2000 is the schema's cap.
+    const parsed = Rule.safeParse(regexRule('a'.repeat(2000)));
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a pattern past the length ceiling', () => {
+    // An unbounded `pattern` string lets a caller submit an absurdly long
+    // regex to any endpoint that validates through this schema (e.g. a
+    // rule-testing API); capping it here rejects that at the contract
+    // boundary regardless of what validates patterns downstream.
+    const parsed = Rule.safeParse(regexRule('a'.repeat(2001)));
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe('RuleProbeVerdict', () => {
+  it('accepts safe and quarantined', () => {
+    expect(RuleProbeVerdict.safeParse('safe').success).toBe(true);
+    expect(RuleProbeVerdict.safeParse('quarantined').success).toBe(true);
+  });
+
+  it('rejects any other value', () => {
+    expect(RuleProbeVerdict.safeParse('unknown').success).toBe(false);
+    expect(RuleProbeVerdict.safeParse('').success).toBe(false);
   });
 });

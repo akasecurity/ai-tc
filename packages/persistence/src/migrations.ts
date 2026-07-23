@@ -176,6 +176,7 @@ export function applyMigrations(db: DatabaseSync): void {
   ensureSyncedAtColumn(db, 'audit_events');
   ensureScanLedgerTable(db);
   ensureBlockedDetectionsTable(db);
+  ensureRuleProbeCacheTable(db);
   // SECURITY INVARIANT — belt-and-suspenders for the installed_packs write
   // gate. The 0006 migration's TRIGGER and gate-seed row are invisible to the
   // evidence probe above (evidenceObjects extracts only tables and ADDed
@@ -443,5 +444,19 @@ function ensureBlockedDetectionsTable(db: DatabaseSync): void {
     session_id TEXT,
     repo TEXT,
     blocked_at INTEGER NOT NULL
+  )`);
+}
+
+// Runtime ReDoS timing cache: one row per rule (by content hash of its
+// pattern+flags) recording the one-time adversarial-probe verdict for a
+// regex rule sourced from a pulled or custom pack. Plugin-local, so like
+// `scan_ledger` it stays out of the canonical schema and is created here,
+// idempotently.
+function ensureRuleProbeCacheTable(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS rule_probe_cache (
+    rule_key TEXT PRIMARY KEY,
+    verdict TEXT NOT NULL,
+    worst_probe_ms REAL NOT NULL,
+    checked_at INTEGER NOT NULL
   )`);
 }

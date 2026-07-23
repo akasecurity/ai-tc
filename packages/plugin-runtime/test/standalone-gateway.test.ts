@@ -381,6 +381,24 @@ describe('StandaloneDataGateway — scan ledger', () => {
   });
 });
 
+describe('rule probe verdict', () => {
+  it('returns undefined for an unseen rule key', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    expect(await gw.getRuleProbeVerdict('unseen')).toBeUndefined();
+    await gw.close();
+  });
+
+  it('round-trips a verdict', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.setRuleProbeVerdict('rule-a', 'quarantined', 150);
+    expect(await gw.getRuleProbeVerdict('rule-a')).toEqual({
+      verdict: 'quarantined',
+      worstProbeMs: 150,
+    });
+    await gw.close();
+  });
+});
+
 describe('staleBinaryNotice (prevention P2)', () => {
   const secretsPack: InstalledPackInput = {
     namespace: 'aka',

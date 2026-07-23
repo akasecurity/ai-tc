@@ -132,19 +132,35 @@ jobs:
       # publish credential — no NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm
       # attach a Sigstore attestation binding the published package to this
       # repository and workflow.
+      # Pre-release versions (any `-` suffix) publish under the `rc` dist-tag;
+      # stable versions publish under `latest`.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
-        run: pnpm --filter @akasecurity/cli publish --no-git-checks
+        run: |
+          version=$(node -p "require('./cli/package.json').version")
+          case "$version" in
+            *-*) dist_tag="rc" ;;
+            *)   dist_tag="latest" ;;
+          esac
+          pnpm --filter @akasecurity/cli publish --no-git-checks --tag "$dist_tag"
         env:
           NPM_CONFIG_PROVENANCE: 'true'
 
-      # The install one-liners fetch the bootstrap scripts from the `cli-latest`
-      # tag, so a successful publish must move it to this release commit.
+      # The binary installer one-liners fetch install.sh/install.ps1 from the
+      # `bin-latest` tag (moved by release-binaries.yml), NOT `cli-latest`.
+      # `cli-latest` is kept as a stable alias for the npm CLI channel: a
+      # successful stable publish moves it to this commit; pre-releases leave it
+      # on the last stable release.
       - name: Point cli-latest at this release
         if: github.event_name == 'push'
         run: |
-          git tag -f cli-latest
-          git push -f origin cli-latest
+          case "${GITHUB_REF_NAME#cli-v}" in
+            *-*) echo "Pre-release — cli-latest stays on the last stable release" ;;
+            *)
+              git tag -f cli-latest
+              git push -f origin cli-latest
+              ;;
+          esac
 
       - name: Create GitHub Release
         if: github.event_name == 'push'

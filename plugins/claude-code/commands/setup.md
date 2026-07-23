@@ -685,23 +685,24 @@ interface + terminal dashboard and on-demand scans."
 - **Not now** — "skip — you can add it anytime with the one-liner below"
 
 **Yes, add it** is the install authorization — run the bootstrap installer
-directly, with no second picker (it ensures Node is available and installs the
-global CLI from the public npm registry). Run the line for their OS:
+directly, with no second picker (it downloads the self-contained `aka` binary for
+their platform — no Node.js or npm required — and links it onto PATH). Run the
+line for their OS:
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/akasecurity/ai-tc/cli-latest/tools/installer/install.ps1 | iex
+irm https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.ps1 | iex
 ```
 
-The one-liner pins to the stable release **tag** (`cli-latest`), never `main` —
-each release points that tag at its published `cli-v*` version, and the bootstrap
-scripts it fetches hold the installer's pinned ref + checksum, so fetching them
-from a mutable branch would defeat the integrity gate. To pin an exact version
-instead, set `AKA_INSTALL_REF=cli-v<version>` before running the line. Until the
-first release is published the one-liner 404s (fail-closed).
+The one-liner pins to the latest published binary release **tag** (`bin-latest`),
+never `main` — each binary release (`bin-v*`) moves that tag to its commit, and
+the installer verifies the downloaded binary against the release's `SHA256SUMS`
+(fail-closed), so a corrupted or tampered download is refused. To pin an exact
+version instead, set `AKA_INSTALL_REF=bin-v<version>` before running the line. If
+no `bin-v*` release exists yet the one-liner fails closed rather than guessing.
 
 After it completes, point them at `aka init` then `aka dashboard`. If they chose
 **Not now**, show the one-liner once so they can add it later, and move on —

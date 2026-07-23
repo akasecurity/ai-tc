@@ -6,11 +6,19 @@
 -- uq_share_call_site out of band would throw here — and on the plugin hook path
 -- that throw is swallowed fail-open, silently stopping capture.
 --
+-- Existing rows carry the old key's discriminator into project_key
+-- ('legacy:' || project), so the new unique index is a re-encoding of the old
+-- one and cannot collide on rows the old one allowed. Leaving them on the
+-- column default would collapse two projects' identical file/line hits onto
+-- one key and abort the whole migration. Writer keys are 'git:'/'path:'-
+-- prefixed, so a backfilled row never collides with a captured one either.
+--
 -- egress_decision_override.destination_id becomes nullable with ON DELETE SET
 -- NULL, which SQLite can only do by rebuilding the table. `host` is ADDed
 -- before the rebuild so the copy has a column to read and so the migration
 -- still presents two probeable columns to the applier's evidence check.
 ALTER TABLE `share_call_site` ADD `project_key` text DEFAULT '' NOT NULL;--> statement-breakpoint
+UPDATE `share_call_site` SET `project_key` = 'legacy:' || `project`;--> statement-breakpoint
 DROP INDEX IF EXISTS `uq_share_call_site`;--> statement-breakpoint
 CREATE UNIQUE INDEX `uq_share_call_site` ON `share_call_site` (`endpoint_id`,`project_key`,`file`,`line`);--> statement-breakpoint
 ALTER TABLE `egress_decision_override` ADD `host` text;--> statement-breakpoint

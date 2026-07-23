@@ -807,10 +807,10 @@ describe('migration 0011 (egress writer schema)', () => {
       applyMigrations(db);
 
       expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
-      // The pre-existing row survives and backfills to the column default.
+      // The pre-existing row survives, backfilled from the old key's project.
       expect(
         db.prepare('SELECT project_key FROM share_call_site WHERE id = ?').get('cs-1'),
-      ).toEqual({ project_key: '' });
+      ).toEqual({ project_key: 'legacy:payments-api' });
       expect(indexColumns(db, 'uq_share_call_site')).toEqual([
         'endpoint_id',
         'project_key',
@@ -833,6 +833,46 @@ describe('migration 0011 (egress writer schema)', () => {
       expect(() => {
         applyMigrations(db);
       }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a pre-0011 store whose call sites differ only by project', () => {
+    // The old key was (endpoint_id, project, file, line), so the same file/line
+    // hitting the same endpoint from two projects was legal. Backfilling both to
+    // one project_key would collide on the new index, abort the migration inside
+    // BEGIN IMMEDIATE, and — on the plugin hook path, where the throw is
+    // swallowed fail-open — stop capture on every later open.
+    const db = preEgressWriterStore();
+    try {
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_endpoint (id, destination_id, method, transport, url, data_class, last_seen, created_at, updated_at)
+         VALUES ('ep-1', 'dest-1', 'POST', 'https', 'https://api.example.com/v1', 'none', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-1', 'ep-1', 'payments-api', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-2', 'ep-1', 'crm-sync', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+
+      // Both rows survive on distinct keys — the re-key never drops a project.
+      expect(db.prepare('SELECT id, project_key FROM share_call_site ORDER BY id').all()).toEqual([
+        { id: 'cs-1', project_key: 'legacy:payments-api' },
+        { id: 'cs-2', project_key: 'legacy:crm-sync' },
+      ]);
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
     } finally {
       db.close();
     }

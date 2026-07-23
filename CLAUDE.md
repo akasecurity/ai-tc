@@ -36,7 +36,16 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. The few places that genuinely need the host environment (the plugin's LLM-provider resolution, the CLI spawning the dashboard server) opt out explicitly in their own ESLint config.
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+
+| Site                                      | Mechanism                         | Why                                         |
+| ----------------------------------------- | --------------------------------- | ------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart     |
+| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server               |
+| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | resolving the transcript root               |
+| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
+
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
 
 ### 4. No network calls
 
@@ -44,7 +53,7 @@ The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
-3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends the raw, unmasked finding values to the model API** so it can rate false positives and severity. This runs only on the user's explicit, revocable opt-in during setup. It suppresses its own transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — the raw values are not kept on the machine, because the whole point is to reach the model. Consent copy must say so plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
+3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends raw, unmasked findings to the model API** so it can rate false positives and severity. The whole `TriageHit` crosses, not just the secret: `rawMatch`, `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts`), and `filePath` (the source transcript's path). A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup; the grant is revocable under Policies, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 
 ## Package dependency rules
 

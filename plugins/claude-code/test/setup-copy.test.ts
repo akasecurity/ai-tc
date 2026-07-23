@@ -36,14 +36,48 @@ describe('setup.md 0.3 scan-offer copy', () => {
     expect(setupMd).toContain("start light and I'll learn as we go");
   });
 
-  it('discloses the model-API egress plainly before the consent picker', () => {
-    // Whitespace-normalized so the assertion is not coupled to prose line wrapping.
-    const flat = setupMd.replace(/\s+/g, ' ');
+  // Whitespace-normalized so these assertions are not coupled to prose line wrapping.
+  const flat = setupMd.replace(/\s+/g, ' ');
+
+  it('discloses the model-API egress plainly', () => {
     expect(flat).toContain(
       'sends the raw, unmasked values — including any secrets — to the model API through the `claude` CLI',
     );
-    expect(flat).toContain('they are **not** kept on the machine');
+    expect(flat).toContain('A copy of each value leaves the machine');
     expect(flat).toContain('Do not present the picker until you have said this');
+  });
+
+  // What crosses is the whole TriageHit, not just the matched secret: rawMatch,
+  // a ±120-char window of the surrounding transcript (history/scan.ts), and the
+  // source transcript's filePath. Copy that names only "the values" understates
+  // the payload, so pin all three.
+  it('names the whole payload, not just the secret', () => {
+    expect(flat).toContain('about 120 characters of the surrounding transcript text');
+    expect(flat).toContain('the path of the transcript file it came from');
+  });
+
+  it('does not present revocation as a recall of what was already sent', () => {
+    expect(flat).toContain('it cannot recall anything already sent');
+  });
+
+  // The transcripts the values were read out of are untouched by the scan — the
+  // earlier "not kept on the machine" phrasing read as a cleanup promise.
+  it('does not imply the scan removes the values from disk', () => {
+    expect(flat).toContain('The transcripts those values came from stay on disk untouched');
+    expect(flat).not.toContain('not kept on the machine');
+  });
+
+  // AC: the disclosure must be visible BEFORE consent is given. Presence alone
+  // would still pass if the paragraph were moved below the option list, so
+  // assert the actual ordering against the picker's own copy.
+  it('places the disclosure ahead of the consent picker', () => {
+    const disclosureAt = flat.indexOf('sends the raw, unmasked values');
+    const questionAt = flat.indexOf("Want me to look over what Claude's been up to?");
+    const yesOptionAt = flat.indexOf('scan my real work here');
+
+    expect(disclosureAt).toBeGreaterThan(-1);
+    expect(questionAt).toBeGreaterThan(disclosureAt);
+    expect(yesOptionAt).toBeGreaterThan(disclosureAt);
   });
 });
 

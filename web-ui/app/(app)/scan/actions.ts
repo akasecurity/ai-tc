@@ -4,7 +4,12 @@ import { readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 
-import { recordProjectInventory, scanPathIntoStore } from '@akasecurity/local-ops';
+import {
+  recordProjectEgress,
+  recordProjectInventory,
+  scanPathIntoStore,
+} from '@akasecurity/local-ops';
+import type { EgressWriteSummary } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -18,6 +23,7 @@ export interface ScanResult {
   ok: boolean;
   scanned?: number;
   findings?: number;
+  egress?: EgressWriteSummary;
   error?: string;
 }
 
@@ -33,19 +39,19 @@ export async function runScan(path: string): Promise<ScanResult> {
 
   // The installed snapshot is the scan authority — the validated
   // enabled ruleset from the DB, passed explicitly (the engine's process-global
-  // registry stays untouched in this long-lived server).
+  // registry stays untouched in this long-lived server). An empty ruleset
+  // (no packs installed/enabled) still walks the target: egress extraction
+  // does not depend on detection rules, so the no-packs guidance below is
+  // surfaced after recording rather than skipping the walk.
   const ruleset = db().installedPacks.installedRuleset();
-  if (ruleset.rules.length === 0) {
-    return {
-      ok: false,
-      error:
-        ruleset.installedPacks === 0
-          ? 'No detection packs installed — run `aka init` first.'
-          : ruleset.enabledPacks === 0
-            ? 'Every detection pack is disabled — enable one on the Detections page.'
-            : 'The installed rule snapshot is unusable — reinstall with `aka init`.',
-    };
-  }
+  const noPacksError =
+    ruleset.rules.length === 0
+      ? ruleset.installedPacks === 0
+        ? 'No detection packs installed — run `aka init` first.'
+        : ruleset.enabledPacks === 0
+          ? 'Every detection pack is disabled — enable one on the Detections page.'
+          : 'The installed rule snapshot is unusable — reinstall with `aka init`.'
+      : undefined;
 
   const result = scanPathIntoStore(db(), target, {
     rules: ruleset.rules,
@@ -57,10 +63,27 @@ export async function runScan(path: string): Promise<ScanResult> {
   // Keep the Inventory page's project + file tree fresh for the repo just
   // scanned (fail-open, no-op outside a git repo).
   recordProjectInventory(db(), target);
+  // Record the destinations/endpoints/call sites the walk extracted into the
+  // Data Shares store (fail-open; null when the toggle is off, the target has
+  // no resolvable project, or the write failed).
+  const egress = recordProjectEgress(db(), target, result.egress);
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
-  return { ok: true, scanned: result.scanned, findings: result.findings };
+  revalidatePath('/data-shares');
+
+  // The walk and the egress write already ran — egress extraction does not
+  // depend on the ruleset — so the recorded destinations ride along with the
+  // pack-state error rather than being dropped.
+  if (noPacksError !== undefined)
+    return { ok: false, error: noPacksError, egress: egress ?? undefined };
+
+  return {
+    ok: true,
+    scanned: result.scanned,
+    findings: result.findings,
+    egress: egress ?? undefined,
+  };
 }
 
 export interface DirEntry {

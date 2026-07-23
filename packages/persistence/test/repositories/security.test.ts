@@ -44,6 +44,12 @@ afterEach(() => {
 // Record one event + one finding. `daysAgo` is relative to NOW (fractional ok).
 // `kind` defaults to 'prompt' (in-flight); pass 'code_change' for an at-rest
 // finding, with `findingKey` set so a resolution row can key onto it.
+// `severity` rides the finding's inspection_definitions row (keyed on ruleId,
+// content-addressed with a fixed version), not the finding row itself —
+// recordCapture upserts that row with INSERT OR IGNORE, so the FIRST severity
+// written under a given ruleId sticks for every later finding sharing it. A
+// test that records more than one severity in the same store must therefore
+// give each severity its own `ruleId` (the default is `'r'`).
 function record(opts: {
   daysAgo: number;
   severity?: Severity;
@@ -98,7 +104,7 @@ describe('severitySummary', () => {
   it('counts by severity, zero-fills every level, and totals (whole-store)', async () => {
     record({ daysAgo: 0, severity: 'critical' });
     record({ daysAgo: 400, severity: 'critical' }); // not range-scoped — still counted
-    record({ daysAgo: 1, severity: 'high' });
+    record({ daysAgo: 1, severity: 'high', ruleId: 'r-high' });
 
     const res = await security().severitySummary();
     // All three are in-flight (default kind 'prompt') — born handled, so every
@@ -119,7 +125,13 @@ describe('severitySummary', () => {
     // At-rest, no resolution row — open, needs remediation.
     record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'key-open' });
     // At-rest, WITH a resolution row — caught.
-    record({ daysAgo: 1, severity: 'high', kind: 'code_change', findingKey: 'key-resolved' });
+    record({
+      daysAgo: 1,
+      severity: 'high',
+      kind: 'code_change',
+      findingKey: 'key-resolved',
+      ruleId: 'r-high',
+    });
     db.resolutions.insertResolution({
       findingKey: 'key-resolved',
       status: 'resolved',
@@ -129,7 +141,13 @@ describe('severitySummary', () => {
     });
     // A second at-rest, unresolved finding at a different severity, to confirm
     // needsRemediation sums across severities.
-    record({ daysAgo: 1, severity: 'medium', kind: 'code_change', findingKey: 'key-open-2' });
+    record({
+      daysAgo: 1,
+      severity: 'medium',
+      kind: 'code_change',
+      findingKey: 'key-open-2',
+      ruleId: 'r-medium',
+    });
 
     const res = await security().severitySummary();
     expect(res.bySeverity).toEqual([
@@ -210,9 +228,9 @@ describe('enforcementActions', () => {
 describe('findingsTimeseries', () => {
   it('buckets by day for 7d, split by severity, zero-filled, low omitted', async () => {
     record({ daysAgo: 0.1, severity: 'critical' }); // today bucket (strictly before NOW)
-    record({ daysAgo: 0.1, severity: 'high' });
-    record({ daysAgo: 2, severity: 'medium' });
-    record({ daysAgo: 2, severity: 'low' }); // omitted from the series
+    record({ daysAgo: 0.1, severity: 'high', ruleId: 'r-high' });
+    record({ daysAgo: 2, severity: 'medium', ruleId: 'r-medium' });
+    record({ daysAgo: 2, severity: 'low', ruleId: 'r-low' }); // omitted from the series
 
     const res = await security().findingsTimeseries('7d');
     expect(res.granularity).toBe('day');
@@ -251,7 +269,13 @@ describe('mttrTrend', () => {
       evidence: '',
     });
     // One high finding resolved two days ago (2026-06-27 bucket).
-    record({ daysAgo: 3, severity: 'high', kind: 'code_change', findingKey: 'key-c' });
+    record({
+      daysAgo: 3,
+      severity: 'high',
+      kind: 'code_change',
+      findingKey: 'key-c',
+      ruleId: 'r-high',
+    });
     db.resolutions.insertResolution({
       findingKey: 'key-c',
       status: 'resolved',

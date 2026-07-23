@@ -1,7 +1,9 @@
 // Meta data-model contracts — Inventory / Audit / Source-Project / Classified
 // Data / Inspection Definition / Inspection Finding: the generalization of
 // the events/findings/rule shapes. These describe the meta tables; the live
-// capture path writes events/findings independently.
+// capture path (recordCapture) writes directly into them — see
+// toCaptureAttributes/toCaptureDefinitionInput in local.ts for the legacy
+// EventMetadata/DetectedFinding -> generalized-shape mapping.
 //
 // `.meta({ id })` is carried ONLY by the schemas API routes reference (the
 // inventory/audit/facets shapes) so they emit as
@@ -429,6 +431,17 @@ export const InspectionFindingInput = z.object({
   maskedMatch: z.string(),
   actionTaken: ActionTaken,
   confidence: z.number().min(0).max(1),
+  // Stable, content-addressed key correlating this finding across re-detections
+  // — mirrors the legacy `findings.finding_key` (uq_inspection_findings_key is
+  // its unique index). Optional: only an at-rest/re-scannable finding carries
+  // one; an in-flight capture (prompt/response) has nothing to re-detect
+  // against and leaves it unset, so every insert is a fresh row.
+  findingKey: z.string().optional(),
+  // The ORIGINAL detection time, preserved across a later re-detection of the
+  // same findingKey — mirrors the legacy `findings.first_detected_at`.
+  // Optional: when omitted, the writer derives it from the referenced audit
+  // event's startedAt on first insert (see SqliteInspectionFindingsRepository).
+  firstDetectedAt: z.iso.datetime().optional(),
 });
 export type InspectionFindingInput = z.infer<typeof InspectionFindingInput>;
 

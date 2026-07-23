@@ -56,7 +56,16 @@ describe('handleCapture (standalone)', () => {
     expect(result.action).toBe('log');
 
     const db = new DatabaseSync(join(dir, 'aka.db'));
-    const row = db.prepare('SELECT content, content_hash FROM events').get() as {
+    // Constrained to the four capture kinds — audit_events also holds
+    // structural rows (session, run, tool_call, llm_call, source_lookup,
+    // config_scan) a bare prompt capture never writes, but the predicate keeps
+    // intent explicit and matches every other re-pointed capture-kind query.
+    const row = db
+      .prepare(
+        `SELECT content, content_hash FROM audit_events
+         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+      )
+      .get() as {
       content: string;
       content_hash: string;
     };

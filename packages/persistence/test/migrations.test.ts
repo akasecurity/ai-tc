@@ -4,10 +4,13 @@ import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { columnNames, schemaObjectExists } from '../src/db/migrations/introspection.ts';
-import { sourceProjectId } from '../src/ids.ts';
+import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
 import {
   applyMigrations,
+  LEGACY_BACKFILL_BATCH_SIZE,
+  LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
+  runLegacyHistoryBackfill,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
 
@@ -47,6 +50,16 @@ function appliedTags(db: DatabaseSync): string[] {
     .sort();
 }
 
+// The legacy-drop migration is intentionally excluded from every "replay every
+// migration's raw SQL directly" simulation below (mirroring how
+// preBackfillStore excludes MIGRATION_0013_TAG further down): it drops
+// `events`/`findings`, and 0000's own evidence (the CREATE TABLE for both)
+// would otherwise read as PARTIALLY present the moment applyMigrations runs
+// for real — an unrelated divergence throw that has nothing to do with
+// whatever a given test is actually exercising. `applyMigrations` applies it
+// separately once the (here, trivially empty) legacy tables report drained.
+const LEGACY_DROP_MIGRATION_TAG = '0014_drop_legacy_events_findings';
+
 describe('applyMigrations tag ledger', () => {
   it('records every applied tag on a fresh store and stamps user_version for downgrade compat', () => {
     const db = new DatabaseSync(':memory:');
@@ -72,6 +85,7 @@ describe('applyMigrations tag ledger', () => {
       // egress_decision_override already exists") and never applies 0002.
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0002_groovy_big_bertha') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length - 1)}`);
@@ -125,7 +139,10 @@ describe('applyMigrations tag ledger', () => {
     try {
       // A store fully migrated by the old applier: all DDL present, state only in
       // user_version, no ledger. Any replay would throw "already exists".
-      for (const migration of SQLITE_MIGRATIONS) db.exec(migration.sql);
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        db.exec(migration.sql);
+      }
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length)}`);
 
       expect(() => {
@@ -143,7 +160,10 @@ describe('applyMigrations tag ledger', () => {
       // An early-adopter shape: the 0001 token columns exist (the out-of-band
       // ensureTokenUsageColumns backfill) but its index was never created. That
       // must not read as divergence — adopt the tag and backfill the index.
-      for (const migration of SQLITE_MIGRATIONS) db.exec(migration.sql);
+      for (const migration of SQLITE_MIGRATIONS) {
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        db.exec(migration.sql);
+      }
       db.exec('DROP INDEX idx_audit_session_type');
       db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length)}`);
 
@@ -273,6 +293,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0011's evidence: the exact DDL it would run,
@@ -294,6 +315,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
 
@@ -672,6 +694,7 @@ describe('migration 0006 (installed_packs write gate)', () => {
     try {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0006_magenta_flatman') continue;
+        if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0006's evidence: table + column, NO trigger.
@@ -1104,6 +1127,526 @@ describe('migration 0011 (egress writer schema)', () => {
           'ov-dest-2',
         );
       }).toThrow(/UNIQUE/i);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ─── Migration 0013 + the legacy history backfill ───────────────────────────
+
+const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
+
+// A store on the previous binary version: every migration through 0012
+// applied, 0013 (the legacy history it would drain) still pending, and the
+// legacy-drop migration (0014) ALSO still pending — the real events/findings
+// tables have to stay real and writable so the insertLegacyEvent/
+// insertLegacyFinding helpers below can seed legacy rows into them.
+function preBackfillStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  for (const migration of SQLITE_MIGRATIONS) {
+    if (migration.tag === MIGRATION_0013_TAG) continue;
+    if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+    db.exec(migration.sql);
+  }
+  return db;
+}
+
+function insertLegacyEvent(
+  db: DatabaseSync,
+  id: string,
+  occurredAt: number,
+  metadata: Record<string, unknown> | null,
+  overrides: { sourceTool?: string; kind?: string; content?: string } = {},
+): void {
+  db.prepare(
+    `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    overrides.sourceTool ?? 'claude-code',
+    overrides.kind ?? 'prompt',
+    occurredAt,
+    `hash-${id}`,
+    overrides.content ?? `content for ${id}`,
+    metadata === null ? null : JSON.stringify(metadata),
+  );
+}
+
+function insertLegacyFinding(
+  db: DatabaseSync,
+  id: string,
+  eventId: string,
+  overrides: {
+    ruleId?: string;
+    category?: string;
+    severity?: string;
+    findingKey?: string | null;
+    firstDetectedAt?: number | null;
+  } = {},
+): void {
+  db.prepare(
+    `INSERT INTO findings
+       (id, event_id, rule_id, category, severity, span_start, span_end,
+        masked_match, action_taken, confidence, finding_key, first_detected_at)
+     VALUES (?, ?, ?, ?, ?, 0, 10, 'AKIA…MPLE', 'redact', 0.9, ?, ?)`,
+  ).run(
+    id,
+    eventId,
+    overrides.ruleId ?? 'secrets/aws-access-key',
+    overrides.category ?? 'secret',
+    overrides.severity ?? 'critical',
+    overrides.findingKey ?? null,
+    overrides.firstDetectedAt ?? null,
+  );
+}
+
+describe('migration 0013 + legacy history backfill', () => {
+  it('adds the watermark table and the audit_events replacement indexes', () => {
+    const db = preBackfillStore();
+    try {
+      applyMigrations(db);
+      expect(schemaObjectExists(db, 'table', 'legacy_copy_watermark')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'idx_audit_type_t')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'idx_audit_code_change_path')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('0013 stub-root synthesis skips a legacy event with malformed metadata', () => {
+    const db = preBackfillStore();
+    try {
+      // A pre-validation build could have written non-JSON into events.metadata.
+      // 0013's stub-root synthesis runs json_extract over EVERY legacy row, and
+      // json_extract throws a hard "malformed JSON" on invalid text — which would
+      // roll back and permanently wedge the migration (applyMigrations is
+      // unwrapped in openLocalDatabase). The `json_valid(metadata)` guard skips
+      // such rows, matching copyLegacyEvents' parseLegacyEventMetadata try/catch.
+      //
+      // Reachability note: the 0010 partial index on events.metadata rejects
+      // malformed metadata strictly earlier (at insert, build, AND applyMigrations
+      // index-backfill time — all verified), so this is only reachable under the
+      // "0010 tag ledgered but the index physically absent" divergence. Model
+      // exactly that by dropping the index, then run 0013's DDL directly (going
+      // through applyMigrations would rebuild the 0010 index and throw first).
+      db.exec('DROP INDEX idx_events_session_id');
+      db.prepare(
+        `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
+         VALUES ('ev-bad-meta', 'claude-code', 'prompt', 4000, 'h', 'c', 'not-json{')`,
+      ).run();
+      insertLegacyEvent(db, 'ev-good', 1000, { sessionId: 'sess-good' });
+
+      const migration = SQLITE_MIGRATIONS.find((m) => m.tag === MIGRATION_0013_TAG);
+      if (migration === undefined) throw new Error('0013 migration not found');
+
+      expect(() => {
+        db.exec(migration.sql);
+      }).not.toThrow();
+
+      // The valid session got its stub root; the malformed row was skipped, not fatal.
+      expect(
+        db.prepare('SELECT event_type FROM audit_events WHERE id = ?').get('sess-good'),
+      ).toMatchObject({ event_type: 'session' });
+      expect(
+        db.prepare('SELECT id FROM audit_events WHERE id = ?').get('ev-bad-meta'),
+      ).toBeUndefined();
+
+      // The JS row-copy still drains the malformed-metadata event (its own
+      // parseLegacyEventMetadata try/catch treats it as session-less), so no
+      // history is lost — it lands with a NULL root.
+      runLegacyHistoryBackfill(db);
+      expect(
+        db.prepare('SELECT root_session_id FROM audit_events WHERE id = ?').get('ev-bad-meta'),
+      ).toMatchObject({ root_session_id: null });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('drains a legacy event whose session root was never stubbed (post-0013 skew) without wedging', () => {
+    const db = preBackfillStore();
+    try {
+      // Set up 0013's backfill infrastructure + stub synthesis WITHOUT the
+      // subsequent legacy drop (applyMigrations would drain then drop `events`
+      // to a view, leaving nothing to insert the skew rows into). 0013 stubs the
+      // sessions that exist NOW (none), matching a fully-drained store.
+      const migration0013 = SQLITE_MIGRATIONS.find((m) => m.tag === MIGRATION_0013_TAG);
+      if (migration0013 === undefined) throw new Error('0013 migration not found');
+      db.exec(migration0013.sql);
+
+      // Version skew: a pre-cutover binary writes NEW-session events rows AFTER
+      // 0013 (ledgered, never re-run) and before the drop. sess-skew therefore
+      // has no audit_events root — an FK the copy must satisfy on demand, or
+      // INSERT OR IGNORE (which does NOT suppress an FK violation) throws, rolls
+      // back the batch + its watermark, and wedges the drain forever.
+      insertLegacyEvent(db, 'ev-skew', 9000, { sessionId: 'sess-skew' }, { kind: 'code_change' });
+      insertLegacyEvent(db, 'ev-skew-2', 9500, { sessionId: 'sess-skew' }, { kind: 'code_change' });
+      expect(
+        db.prepare("SELECT id FROM audit_events WHERE id = 'sess-skew'").get(),
+      ).toBeUndefined();
+
+      expect(() => {
+        runLegacyHistoryBackfill(db);
+      }).not.toThrow();
+
+      // The stub root was minted on demand, the poison row drained, and progress
+      // continued past it.
+      expect(
+        db
+          .prepare("SELECT event_type, root_session_id FROM audit_events WHERE id='sess-skew'")
+          .get(),
+      ).toMatchObject({ event_type: 'session', root_session_id: null });
+      expect(
+        db.prepare("SELECT root_session_id, parent_id FROM audit_events WHERE id='ev-skew'").get(),
+      ).toMatchObject({ root_session_id: 'sess-skew', parent_id: 'sess-skew' });
+      expect(
+        (
+          db
+            .prepare("SELECT count(*) AS n FROM audit_events WHERE id IN ('ev-skew','ev-skew-2')")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(2);
+      // The watermark advanced to the end — proof the drain is not wedged.
+      const wm = (
+        db
+          .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source='events'")
+          .get() as {
+          r: number;
+        }
+      ).r;
+      const maxRow = (db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }).r;
+      expect(wm).toBe(maxRow);
+    } finally {
+      db.close();
+    }
+  });
+
+  it(
+    'migrates rows current code can no longer produce: an orphan session, NULL metadata, ' +
+      'a NULL finding_key/first_detected_at row, and a finding_key collision with a ' +
+      'post-cutover live row — draining (and, this store being small enough, also dropping) ' +
+      'the legacy tables without losing any of it',
+    () => {
+      const db = preBackfillStore();
+      try {
+        // A session-scoped event whose session root never made it into
+        // audit_events — current code always stubs the root first (see
+        // recordCapture), but a store from before that safeguard can hold one.
+        insertLegacyEvent(db, 'ev-orphan-1', 1_000, { sessionId: 'sess-orphan' }, {});
+        insertLegacyEvent(
+          db,
+          'ev-orphan-2',
+          2_000,
+          { sessionId: 'sess-orphan', filePath: 'src/a.ts' },
+          { kind: 'code_change' },
+        );
+        // A NULL-metadata event: no session, no attributes beyond source_tool.
+        insertLegacyEvent(db, 'ev-no-meta', 3_000, null, { sourceTool: 'cli' });
+
+        // Pre-finding_key-era row: both nullable columns genuinely NULL.
+        insertLegacyFinding(db, 'f-ancient', 'ev-orphan-1', {
+          findingKey: null,
+          firstDetectedAt: null,
+        });
+
+        // A legacy row whose finding_key ALREADY has a row in
+        // inspection_findings from a post-cutover live capture — the exact
+        // reconciliation the upsert exists for.
+        insertLegacyFinding(db, 'f-legacy-key', 'ev-no-meta', {
+          ruleId: 'secrets/generic-token',
+          category: 'secret',
+          severity: 'high',
+          findingKey: 'shared-key-1',
+          firstDetectedAt: 500,
+        });
+        db.exec(
+          `INSERT INTO audit_events (id, event_type, started_at) VALUES ('live-evt', 'tool_call', 900)`,
+        );
+        db.exec(
+          `INSERT INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES ('live-def', 'secrets/generic-token', 'Generic token', 'secret', 'high', '{}', '1')`,
+        );
+        db.prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence, finding_key, first_detected_at)
+           VALUES ('live-finding', 'live-evt', 'live-def', 5, 20, 'TOKEN…', 'warn', 0.8, ?, 2000)`,
+        ).run('shared-key-1');
+
+        const legacyEventCountBefore = (
+          db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }
+        ).n;
+        const legacyFindingCountBefore = (
+          db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }
+        ).n;
+        // Captured while `events`/`findings` are still real tables — once
+        // this store's small size lets the drop run in the same call below,
+        // their rowids are gone with the tables themselves, so this is the
+        // only point the watermark can still be checked against them.
+        const eventsMaxRowidBefore = (
+          db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }
+        ).r;
+        const findingsMaxRowidBefore = (
+          db.prepare('SELECT max(rowid) AS r FROM findings').get() as { r: number }
+        ).r;
+
+        applyMigrations(db);
+
+        // This store is small enough to fully drain in the one call above, so
+        // the legacy-drop migration ALSO runs this same call: `events`/
+        // `findings` are no longer real tables, but the compatibility views of
+        // the same name still answer truthfully. `events` is unaffected (every
+        // legacy event here is a capture kind), so its view's count survives
+        // unchanged. `findings` does NOT survive unchanged, and correctly so:
+        // `f-legacy-key` collided on finding_key with `live-finding` (a
+        // tool_call-attached row — never a shape the legacy `findings` table
+        // held), and the upsert below keeps the merged row under
+        // `live-finding`'s id/parent — which the four-capture-kind view
+        // predicate (the same one the legacy table's universe always implied)
+        // correctly excludes. No row is lost — see the inspection_findings
+        // assertions below — it just now surfaces under its real (tool_call)
+        // parent instead of a legacy-shaped one that never applied to it.
+        expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+        expect(schemaObjectExists(db, 'view', 'findings')).toBe(true);
+        expect(schemaObjectExists(db, 'table', 'events')).toBe(false);
+        expect(schemaObjectExists(db, 'table', 'findings')).toBe(false);
+        expect((db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(
+          legacyEventCountBefore,
+        );
+        expect((db.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }).n).toBe(
+          legacyFindingCountBefore - 1,
+        );
+
+        // The orphan session got a synthesized root, timed at the earliest
+        // event recorded under it — BEFORE either event was copied (the FK
+        // that copy needs already resolves).
+        expect(
+          db
+            .prepare(
+              'SELECT event_type, root_session_id, started_at FROM audit_events WHERE id = ?',
+            )
+            .get('sess-orphan'),
+        ).toMatchObject({ event_type: 'session', root_session_id: null, started_at: 1_000 });
+
+        const orphanEvent = db
+          .prepare('SELECT root_session_id, parent_id, attributes FROM audit_events WHERE id = ?')
+          .get('ev-orphan-2') as { root_session_id: string; parent_id: string; attributes: string };
+        expect(orphanEvent.root_session_id).toBe('sess-orphan');
+        expect(orphanEvent.parent_id).toBe('sess-orphan');
+        expect(JSON.parse(orphanEvent.attributes)).toMatchObject({
+          source_tool: 'claude-code',
+          file_path: 'src/a.ts',
+        });
+
+        const noMetaEvent = db
+          .prepare('SELECT root_session_id, parent_id, attributes FROM audit_events WHERE id = ?')
+          .get('ev-no-meta') as {
+          root_session_id: string | null;
+          parent_id: string | null;
+          attributes: string;
+        };
+        expect(noMetaEvent.root_session_id).toBeNull();
+        expect(noMetaEvent.parent_id).toBeNull();
+        expect(JSON.parse(noMetaEvent.attributes)).toMatchObject({ source_tool: 'cli' });
+
+        // The ancient NULL-key/NULL-first_detected_at row copied verbatim,
+        // resolved onto a synthesized "unmigrated" definition whose id matches
+        // a fresh, independent call to inspectionDefinitionId for the same
+        // (rule_id, category, severity) tuple — the empirical id-parity check.
+        const ancient = db
+          .prepare(
+            `SELECT f.finding_key AS findingKey, f.first_detected_at AS firstDetectedAt,
+                    f.inspection_definition_id AS definitionId,
+                    d.rule_id AS ruleId, d.name, d.category, d.severity, d.definition, d.version
+             FROM inspection_findings f JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+             WHERE f.id = 'f-ancient'`,
+          )
+          .get() as {
+          findingKey: string | null;
+          firstDetectedAt: number | null;
+          definitionId: string;
+          ruleId: string;
+          name: string;
+          category: string;
+          severity: string;
+          definition: string;
+          version: string;
+        };
+        expect(ancient.findingKey).toBeNull();
+        expect(ancient.firstDetectedAt).toBeNull();
+        expect(ancient).toMatchObject({
+          ruleId: 'secrets/aws-access-key',
+          name: 'secrets/aws-access-key',
+          category: 'secret',
+          severity: 'critical',
+          definition: '',
+          version: 'unmigrated/secret/critical',
+        });
+        expect(ancient.definitionId).toBe(
+          inspectionDefinitionId('secrets/aws-access-key', 'unmigrated/secret/critical'),
+        );
+
+        // The finding_key collision: exactly one surviving row, under the
+        // LIVE row's id (the legacy row's OTHER columns never overwrite it),
+        // with first_detected_at reconciled down to the earlier of the two.
+        const findingRows = db
+          .prepare(
+            `SELECT id, finding_key AS findingKey, first_detected_at AS firstDetectedAt,
+                    audit_event_id AS auditEventId
+             FROM inspection_findings ORDER BY id`,
+          )
+          .all() as {
+          id: string;
+          findingKey: string | null;
+          firstDetectedAt: number | null;
+          auditEventId: string;
+        }[];
+        expect(findingRows.map((r) => r.id)).toEqual(['f-ancient', 'live-finding']);
+        const merged = findingRows.find((r) => r.findingKey === 'shared-key-1');
+        expect(merged).toMatchObject({
+          id: 'live-finding',
+          firstDetectedAt: 500,
+          auditEventId: 'live-evt',
+        });
+
+        // Distinct finding_key count preserved: one real key (shared-key-1);
+        // NULLs never count as a key.
+        expect(
+          (
+            db
+              .prepare(
+                'SELECT count(DISTINCT finding_key) AS n FROM inspection_findings WHERE finding_key IS NOT NULL',
+              )
+              .get() as { n: number }
+          ).n,
+        ).toBe(1);
+
+        // Both legacy tables fully drained: the watermark sits at each
+        // table's last rowid (captured before the drop above — see
+        // eventsMaxRowidBefore/findingsMaxRowidBefore).
+        expect(
+          db
+            .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'events'")
+            .get(),
+        ).toMatchObject({ r: eventsMaxRowidBefore });
+        expect(
+          db
+            .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source = 'findings'")
+            .get(),
+        ).toMatchObject({ r: findingsMaxRowidBefore });
+
+        // Re-running is a no-op: same row counts, same watermark, no throw.
+        expect(() => {
+          applyMigrations(db);
+        }).not.toThrow();
+        expect(
+          (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+        ).toBe(2);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('never starts the findings copy until the events copy has fully caught up', () => {
+    // More events than one call's budget, so the events copy itself needs two
+    // opens — and findings referencing the LAST (not-yet-copied) events, so
+    // if the findings copy ran anyway on the first call, it would either
+    // throw on the audit_events FK (swallowed, but making zero progress
+    // forever) or — were the FK not enforced — insert a dangling reference.
+    const db = preBackfillStore();
+    try {
+      const totalEvents = LEGACY_BACKFILL_MAX_ROWS_PER_CALL + 50;
+      for (let i = 0; i < totalEvents; i += 1) {
+        insertLegacyEvent(db, `ev-${String(i)}`, i, null);
+      }
+      for (let i = totalEvents - 20; i < totalEvents; i += 1) {
+        insertLegacyFinding(db, `f-${String(i)}`, `ev-${String(i)}`, {
+          findingKey: `key-${String(i)}`,
+        });
+      }
+
+      // First open: events copy hits its per-call cap without catching up,
+      // so findings must not run at all this call.
+      applyMigrations(db);
+      expect((db.prepare('SELECT count(*) AS n FROM audit_events').get() as { n: number }).n).toBe(
+        LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
+      );
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(0);
+
+      // Second open: events finish, and findings copies in the same call.
+      applyMigrations(db);
+      expect((db.prepare('SELECT count(*) AS n FROM audit_events').get() as { n: number }).n).toBe(
+        totalEvents,
+      );
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(20);
+
+      // Third open: no-op.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(20);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('resumes a batched findings copy across opens and is idempotent once caught up', () => {
+    const db = preBackfillStore();
+    try {
+      // A handful of events (well under one call's budget) so the events
+      // copy finishes in the first call, then findings alone spans two.
+      for (let i = 0; i < 5; i += 1) {
+        insertLegacyEvent(db, `ev-${String(i)}`, 1_000 + i, null);
+      }
+      const totalFindings = LEGACY_BACKFILL_MAX_ROWS_PER_CALL + 300;
+      expect(totalFindings % LEGACY_BACKFILL_BATCH_SIZE).not.toBe(0); // exercises a partial final page
+      for (let i = 0; i < totalFindings; i += 1) {
+        insertLegacyFinding(db, `f-${String(i)}`, `ev-${String(i % 5)}`, {
+          findingKey: `key-${String(i)}`,
+          firstDetectedAt: i,
+        });
+      }
+
+      // First open: migration 0013 applies, events fully copy, findings
+      // copies exactly one call's worth and stops — NOT the whole table.
+      applyMigrations(db);
+      const afterFirst = (
+        db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }
+      ).n;
+      expect(afterFirst).toBe(LEGACY_BACKFILL_MAX_ROWS_PER_CALL);
+
+      // Second open ("reopen"): resumes from the watermark and finishes.
+      applyMigrations(db);
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(totalFindings);
+      expect(
+        (
+          db.prepare('SELECT count(DISTINCT finding_key) AS n FROM inspection_findings').get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(totalFindings);
+
+      // Third open: fully caught up, re-running is a cheap no-op.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
+      ).toBe(totalFindings);
     } finally {
       db.close();
     }

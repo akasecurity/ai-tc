@@ -109,14 +109,29 @@ export function promptId(sessionId: string, promptUuid: string): string {
 // rather than being dropped from the join.
 const NO_SESSION = 'no_session';
 
-// sha256(session_id + content_hash): a capture (a prompt/response/code-change/
-// tool-use record) is content-addressed on the hash of its own text, scoped to
-// the session it belongs to so identical content captured in two different
-// sessions never collapses onto one row. `sessionId` is `null` for a
-// session-less capture, which folds onto the fixed `NO_SESSION` sentinel above
-// instead of shortening the join.
-export function captureId(sessionId: string | null, contentHash: string): string {
-  return sha256Hex(canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash]));
+// Folded into `captureId` for a capture with no file path (an in-flight
+// prompt/response). Keeps the tuple length stable exactly like NO_SESSION.
+const NO_PATH = 'no_path';
+
+// sha256(session_id + content_hash + file_path): a capture (a prompt/response/
+// code-change/tool-use record) is content-addressed on the hash of its own
+// text, scoped to the session it belongs to so identical content captured in
+// two different sessions never collapses onto one row. The file path is folded
+// in too: two DISTINCT at-rest files with byte-identical content (e.g.
+// `cp .env .env.bak`, or a shared credential file duplicated across packages)
+// hash to the same content but must resolve to DISTINCT audit-event rows —
+// without the path they collapse onto one row (INSERT OR IGNORE) and the second
+// file's finding is silently suppressed by the event-scoped dedup. `sessionId`
+// and `filePath` are `null` for a session-less / path-less capture and fold
+// onto their sentinels instead of shortening the join.
+export function captureId(
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null = null,
+): string {
+  return sha256Hex(
+    canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash, filePath ?? NO_PATH]),
+  );
 }
 
 // Data Shares dimensions — id derivations for share destinations,

@@ -1,9 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  computeFindingKey,
+  DB_FILENAME,
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+  openLocalDatabase,
+} from '@akasecurity/persistence';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -27,14 +33,37 @@ const RULES: Rule[] = [
   },
 ];
 
-// The raw at-rest event rows, straight from the store file — the tests assert
-// on what actually hit disk, independent of any read port.
-function storedEvents(dir: string): { content: string; metadata: string | null }[] {
+// The raw at-rest audit-event rows, straight from the store file — the tests
+// assert on what actually hit disk, independent of any read port. Constrained
+// to the four capture kinds — audit_events also holds structural rows (session,
+// run, tool_call, llm_call, source_lookup, config_scan) that scanPathIntoStore
+// never writes, but the predicate keeps intent explicit.
+function storedEvents(dir: string): { content: string; attributes: string | null }[] {
   const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
   try {
-    return raw.prepare('SELECT content, metadata FROM events').all() as unknown as {
+    return raw
+      .prepare(
+        `SELECT content, attributes FROM audit_events
+         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+      )
+      .all() as unknown as {
       content: string;
-      metadata: string | null;
+      attributes: string | null;
+    }[];
+  } finally {
+    raw.close();
+  }
+}
+
+// The raw at-rest findings rows, straight from the store file — used to assert
+// on row COUNT (does a re-scan duplicate?) and on finding_key directly, which
+// no read port surfaces today.
+function storedFindings(dir: string): { id: string; finding_key: string | null }[] {
+  const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
+  try {
+    return raw.prepare('SELECT id, finding_key FROM inspection_findings').all() as unknown as {
+      id: string;
+      finding_key: string | null;
     }[];
   } finally {
     raw.close();
@@ -208,11 +237,102 @@ describe('scanPathIntoStore', () => {
 
       const events = storedEvents(store);
       expect(events).toHaveLength(1);
-      const metadata: unknown = JSON.parse(events[0]?.metadata ?? '{}');
-      expect(metadata).toMatchObject({
-        filePath: join(root, 'scratch.env'),
+      const attributes: unknown = JSON.parse(events[0]?.attributes ?? '{}');
+      expect(attributes).toMatchObject({
+        file_path: join(root, 'scratch.env'),
         gitignored: true,
       });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
+  // The regression test for the bug this fix closes: without a finding_key,
+  // ON CONFLICT (finding_key) never fires (SQLite never equates two NULLs in a
+  // unique index), so every re-scan of an unchanged file minted a fresh row.
+  it('reconciles a re-scan of an unchanged file onto the same row instead of duplicating', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).not.toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still produces a non-null finding_key with no fingerprint key available (no dataDir)', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES }); // no dataDir option passed
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('derives finding_key via the shared computeFindingKey/fingerprintValue formula — parity with the plugin', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      const rows = storedFindings(store);
+
+      // Independently recompute the key from the same on-disk fingerprint key
+      // scanPathIntoStore just minted at `store`, using the exact functions the
+      // plugin's createPluginRuntime.capture() calls (computeFindingKey +
+      // fingerprintValue) — not a copy. A byte-identical match here is the
+      // whole point of importing rather than reimplementing.
+      const fpKey = loadOrCreateFingerprintKey(store);
+      const expected = computeFindingKey({
+        ruleId: 'test/aws-key',
+        filePath: join(root, 'app.ts'),
+        valueFingerprint: fingerprintValue(fpKey, SECRET),
+      });
+      expect(rows[0]?.finding_key).toBe(expected);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', () => {
+    writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
+    const absFile = join(root, 'app.ts');
+    // A relative directory target — the shape `aka scan src` / `aka scan .` pass
+    // (the CLI/web-ui forward the user's raw path unresolved). resolve() is
+    // lexical, so resolve(relative(cwd, root)) === root exactly (no realpath), and
+    // the stored path/key must therefore be the ABSOLUTE ones the plugin mints.
+    const relTarget = relative(process.cwd(), root);
+    const db = openLocalDatabase(store);
+    try {
+      scanPathIntoStore(db, relTarget, { rules: RULES, dataDir: store });
+
+      // The stored event records the ABSOLUTE file path, not the relative target.
+      const [event] = storedEvents(store);
+      const attributes: unknown = JSON.parse(event?.attributes ?? '{}');
+      expect(attributes).toMatchObject({ file_path: absFile });
+
+      // finding_key is byte-identical to an absolute-path recomputation — the
+      // same value the plugin (absolute paths) and an absolute-target scan mint,
+      // so a relative-target scan reconciles onto the same row.
+      const fpKey = loadOrCreateFingerprintKey(store);
+      const expected = computeFindingKey({
+        ruleId: 'test/aws-key',
+        filePath: absFile,
+        valueFingerprint: fingerprintValue(fpKey, SECRET),
+      });
+      const rows = storedFindings(store);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.finding_key).toBe(expected);
     } finally {
       db.close();
     }

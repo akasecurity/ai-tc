@@ -220,7 +220,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     );
   }
 
-  applyMigrations(db);
+  applyMigrations(db, file);
   tightenPerms(file);
 
   const events = new SqliteEventsRepository(db);

@@ -14,6 +14,7 @@ import type { DetectedFindingWithKey, IngestEvent } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
+import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 
 let dir: string;
@@ -75,9 +76,17 @@ describe('recordCapture — audit/inspection trio', () => {
     expect(count(r, 'audit_events')).toBe(1);
     expect(count(r, 'inspection_findings')).toBe(1);
     expect(count(r, 'inspection_definitions')).toBe(1);
-    // The cutover is a full replacement, not a dual-write.
-    expect(count(r, 'events')).toBe(0);
-    expect(count(r, 'findings')).toBe(0);
+    // The cutover is a full replacement, not a dual-write: `events`/`findings`
+    // are not real tables at all — a fresh store drops them for the
+    // compatibility views immediately (see migrations.ts's
+    // applyLegacyDropMigration), so there is no separate legacy storage left
+    // to duplicate into. Reading through the views still finds this same one
+    // row (a truthful projection of the audit_events/inspection_findings
+    // write above), not zero and not a second copy.
+    expect(schemaObjectExists(r, 'table', 'events')).toBe(false);
+    expect(schemaObjectExists(r, 'table', 'findings')).toBe(false);
+    expect(count(r, 'events')).toBe(1);
+    expect(count(r, 'findings')).toBe(1);
 
     const auditRow = r
       .prepare(

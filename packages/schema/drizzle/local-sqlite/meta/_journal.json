@@ -92,6 +92,13 @@
       "when": 1784799393968,
       "tag": "0012_legacy_history_backfill_support",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1784980000000,
+      "tag": "0013_drop_legacy_events_findings",
+      "breakpoints": true
     }
   ]
 }

@@ -119,7 +119,8 @@ export function FindingsClient({
     filters.severity.length === 0 &&
     filters.type.length === 0 &&
     filters.provider.length === 0 &&
-    filters.action.length === 0;
+    filters.action.length === 0 &&
+    filters.status.length === 0;
 
   const toggleExpand = (groupId: string) => {
     setExpandedIds((prev) => {
@@ -146,7 +147,7 @@ export function FindingsClient({
     : [];
 
   return (
-    <div className="flex flex-col px-8 pb-10 pt-7">
+    <div className="flex h-full min-h-0 flex-col px-8 pb-10 pt-7">
       <PageHead
         title="Findings"
         sub="Every sensitive-data finding across providers"
@@ -201,7 +202,7 @@ export function FindingsClient({
         </div>
       )}
 
-      <div className="mt-4">
+      <div className="mt-4 min-h-0 flex-1">
         <FindingsTableView
           groups={data.items}
           columns={visibleColumns}
@@ -215,6 +216,7 @@ export function FindingsClient({
             setSelected({ finding: group, instance });
           }}
           hasMore={hasMore}
+          statusFilter={filters.status}
           {...(data.sessionFirings ? { sessionFirings: data.sessionFirings } : {})}
           emptyState={
             noActiveFilters ? (

@@ -61,7 +61,7 @@ function storedEvents(dir: string): { content: string; attributes: string | null
 function storedFindings(dir: string): { id: string; finding_key: string | null }[] {
   const raw = new DatabaseSync(join(dir, DB_FILENAME), { readOnly: true });
   try {
-    return raw.prepare('SELECT id, finding_key FROM findings').all() as unknown as {
+    return raw.prepare('SELECT id, finding_key FROM inspection_findings').all() as unknown as {
       id: string;
       finding_key: string | null;
     }[];

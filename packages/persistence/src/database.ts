@@ -301,6 +301,32 @@ export function openLocalDatabase(dir: string): LocalDatabase {
       // map collapses to one definition upsert per distinct ruleId.
       const definitionIds = new Map<string, string>();
       for (const finding of detected) {
+        // Scope dedup to the event's session so one sensitive value crossing
+        // several surfaces in one action (prompt → tool call) is recorded
+        // once — the legacy cross-surface guarantee, rejoined onto the
+        // generalized tables (see SqliteInspectionFindingsRepository).
+        if (
+          sessionId &&
+          inspectionFindings.isSessionDuplicate(finding.ruleId, finding.maskedMatch, sessionId)
+        ) {
+          continue;
+        }
+        // Guard against resubmitting the identical capture: the audit event
+        // row itself is content-addressed and idempotent (INSERT OR IGNORE),
+        // but an in-flight finding's own row id is a fresh random uuid per
+        // call, so without this check a replayed capture would duplicate its
+        // findings even though its parent event never duplicates.
+        if (
+          inspectionFindings.isEventDuplicate(
+            auditEventId,
+            finding.ruleId,
+            finding.maskedMatch,
+            finding.span.start,
+            finding.span.end,
+          )
+        ) {
+          continue;
+        }
         const key = `${finding.ruleId}@${CAPTURE_DEFINITION_VERSION}`;
         let definitionId = definitionIds.get(key);
         if (!definitionId) {

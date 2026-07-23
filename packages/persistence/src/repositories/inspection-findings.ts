@@ -12,6 +12,8 @@ import { bindParams } from '../internal/rows.ts';
  */
 export class SqliteInspectionFindingsRepository {
   private readonly insertStmt: StatementSync;
+  private readonly sessionDupStmt: StatementSync;
+  private readonly eventDupStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     // TWO conflict targets on one statement, chained — SQLite (3.35+; this
@@ -67,6 +69,68 @@ export class SqliteInspectionFindingsRepository {
          masked_match = excluded.masked_match,
          action_taken = excluded.action_taken,
          confidence = excluded.confidence`,
+    );
+
+    // Has this (rule, masked value) already been recorded somewhere in this
+    // session? Mirrors the legacy `SqliteFindingsRepository.sessionDupStmt`
+    // (which joined findings ⋈ events on `json_extract(e.metadata,
+    // '$.sessionId')`), rejoined onto the generalized trio now that rule_id
+    // lives on inspection_definitions rather than on the finding row itself,
+    // and the session id is audit_events' own `root_session_id` column
+    // instead of a metadata blob. Used to suppress a value that crosses
+    // several surfaces within one action (prompt → tool call) — see
+    // recordCapture's session-dedup call site.
+    this.sessionDupStmt = db.prepare(
+      `SELECT 1 FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+        WHERE d.rule_id = :ruleId AND f.masked_match = :maskedMatch
+          AND e.root_session_id = :sessionId
+        LIMIT 1`,
+    );
+
+    // Has this exact (rule, masked value, span) already been recorded against
+    // THIS audit event? An in-flight finding (prompt/response/tool_use) mints
+    // a fresh random `id` and carries no `finding_key` (nothing to re-scan
+    // against), so neither of insertStmt's ON CONFLICT clauses ever fires for
+    // it — unlike a content-addressed audit event (captureId(sessionId,
+    // contentHash)), which resolves an exact resubmission onto the SAME row
+    // via INSERT OR IGNORE, a resubmitted in-flight finding would otherwise
+    // duplicate on every replay of the identical capture. This check restores
+    // that idempotency at the finding level: scoped to one audit event (never
+    // across two different events, which is exactly what finding_key
+    // reconciliation is for), and keyed on span too, so two genuinely
+    // distinct hits of the same value within one capture (e.g. a secret
+    // pasted twice in one prompt) are still both kept.
+    this.eventDupStmt = db.prepare(
+      `SELECT 1 FROM inspection_findings f
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+        WHERE f.audit_event_id = :auditEventId AND d.rule_id = :ruleId
+          AND f.masked_match = :maskedMatch
+          AND f.span_start = :spanStart AND f.span_end = :spanEnd
+        LIMIT 1`,
+    );
+  }
+
+  // True when an earlier event in the same session already recorded a finding
+  // with the same rule and masked value. The current event's own findings are
+  // inserted one at a time in caller order, so an earlier finding in the SAME
+  // recordCapture call is visible to a later duplicate check within it too.
+  isSessionDuplicate(ruleId: string, maskedMatch: string, sessionId: string): boolean {
+    return this.sessionDupStmt.get({ ruleId, maskedMatch, sessionId }) !== undefined;
+  }
+
+  // True when this exact detection (rule + masked value + span) is already
+  // recorded against the given audit event.
+  isEventDuplicate(
+    auditEventId: string,
+    ruleId: string,
+    maskedMatch: string,
+    spanStart: number,
+    spanEnd: number,
+  ): boolean {
+    return (
+      this.eventDupStmt.get({ auditEventId, ruleId, maskedMatch, spanStart, spanEnd }) !== undefined
     );
   }
 

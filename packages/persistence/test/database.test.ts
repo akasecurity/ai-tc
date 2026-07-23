@@ -9,6 +9,7 @@ import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
+import { captureId } from '../src/ids.ts';
 
 let dir: string;
 
@@ -131,9 +132,17 @@ describe('recordCapture', () => {
     const db = openLocalDatabase(dir);
     const sessionId = randomUUID();
     // Same value flagged on the prompt, then again when written to a file — one
-    // logical action across two surfaces, sharing a session id.
-    const prompt = event({ kind: 'prompt', metadata: { sessionId } });
-    const write = event({ kind: 'code_change', metadata: { sessionId } });
+    // logical action across two surfaces, sharing a session id. Distinct
+    // contentHash per surface (real prompt text vs. a real file diff never
+    // hash the same) so each capture gets its own content-addressed audit
+    // event — the dedup under test is the session-scoped one, not a
+    // coincidental collapse onto a single event.
+    const prompt = event({ kind: 'prompt', metadata: { sessionId }, contentHash: 'hash-prompt' });
+    const write = event({
+      kind: 'code_change',
+      metadata: { sessionId },
+      contentHash: 'hash-write',
+    });
     db.recordCapture(prompt, [
       finding(prompt.id, { ruleId: 'core-pii/email', maskedMatch: 'j*@example.com' }),
       finding(prompt.id, { ruleId: 'core-pii/ssn', maskedMatch: '1******9' }),
@@ -143,11 +152,13 @@ describe('recordCapture', () => {
       finding(write.id, { ruleId: 'core-pii/ssn', maskedMatch: '1******9' }),
     ]);
 
-    // Two distinct (rule, value) findings — not four — and both link to the
-    // first surface that recorded them (the prompt).
+    // Two distinct (rule, value) findings — not four — and both still link to
+    // the first surface that recorded them (the prompt's own content-addressed
+    // audit event, not the write's) since the write's repeats were dropped.
     const findings = await db.findings.recentFindings();
     expect(findings).toHaveLength(2);
-    expect(findings.every((f) => f.eventId === prompt.id)).toBe(true);
+    const promptAuditEventId = captureId(sessionId, 'hash-prompt');
+    expect(findings.every((f) => f.eventId === promptAuditEventId)).toBe(true);
     expect(new Set(findings.map((f) => f.ruleId))).toEqual(
       new Set(['core-pii/email', 'core-pii/ssn']),
     );
@@ -193,7 +204,19 @@ describe('read surfaces', () => {
     const e1 = event();
     const e2 = event();
     db.recordCapture(e1, [finding(e1.id, { actionTaken: 'block', severity: 'critical' })]);
-    db.recordCapture(e2, [finding(e2.id, { actionTaken: 'warn', severity: 'low' })]);
+    // A distinct ruleId (not just a distinct severity): severity/category now
+    // live on the shared inspection_definitions row for a ruleId (mirroring
+    // the detection engine, where a rule's severity is fixed — see
+    // packages/detections/src/engine.ts), so two DIFFERENT severities can only
+    // come from two DIFFERENT rules, never from the same rule firing twice.
+    db.recordCapture(e2, [
+      finding(e2.id, {
+        ruleId: 'core-pii/email',
+        category: 'pii',
+        actionTaken: 'warn',
+        severity: 'low',
+      }),
+    ]);
 
     const health = await db.findings.healthSummary();
     expect(health.findings).toBe(2);
@@ -287,9 +310,9 @@ describe('store hygiene', () => {
     db.recordCapture(ev, [finding(ev.id)]);
     db.close();
 
-    // The findings table holds only the masked value handed in — never a raw one.
+    // inspection_findings holds only the masked value handed in — never a raw one.
     const raw = new DatabaseSync(join(dir, 'aka.db'));
-    const masked = raw.prepare('SELECT masked_match FROM findings').all() as {
+    const masked = raw.prepare('SELECT masked_match FROM inspection_findings').all() as {
       masked_match: string;
     }[];
     raw.close();

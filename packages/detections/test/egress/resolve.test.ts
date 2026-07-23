@@ -46,7 +46,7 @@ describe('resolveEgress — URL/IP hit resolution', () => {
     expect(hits[0]?.host).toBe('api.stripe.com');
     expect(hits[0]?.kind).toBe('provider');
     expect(hits[0]?.trust).toBe('recognized');
-    expect(hits[0]?.dataClass).toBe('customer');
+    expect(hits[0]?.dataClass).toBe('pii');
     expect(hits[0]?.network).toBeNull();
   });
 
@@ -164,7 +164,7 @@ describe('resolveEgress — SDK hit resolution', () => {
     expect(hits[0]?.url).toBe('https://api.stripe.com');
     expect(hits[0]?.template).toBe(false);
     expect(hits[0]?.network).toBeNull();
-    expect(hits[0]?.dataClass).toBe('customer');
+    expect(hits[0]?.dataClass).toBe('pii');
     expect(hits[0]?.site.file).toBe('package.json');
     expect(hits[0]?.site.line).toBe(12);
   });

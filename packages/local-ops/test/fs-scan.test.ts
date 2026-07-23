@@ -177,7 +177,7 @@ describe('scanPathIntoStore', () => {
     const db = openLocalDatabase(store);
     try {
       const result = scanPathIntoStore(db, root, { rules: RULES });
-      expect(result).toEqual({ scanned: 1, findings: 0, files: [] });
+      expect(result).toEqual({ scanned: 1, findings: 0, files: [], egress: { files: [] } });
       expect(storedEvents(store)).toEqual([]);
     } finally {
       db.close();
@@ -291,6 +291,148 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
         valueFingerprint: fingerprintValue(fpKey, SECRET),
       });
       expect(rows[0]?.finding_key).toBe(expected);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// The egress collection pass rides the same walk as detection scanning. What it
+// runs on is decided entirely here — the walker has no extension filter — so
+// these cases pin the gating: code extensions get URL/IP extraction, manifests
+// get SDK extraction, lockfiles and prose files get neither, and a file
+// carrying a NUL byte is treated as binary and skipped.
+describe('scanPathIntoStore — egress collection', () => {
+  // A NUL byte written as an escape so this source file stays plain text.
+  const NUL = '\u0000';
+
+  function writeCorpus(): void {
+    mkdirSync(join(root, 'src'));
+    writeFileSync(
+      join(root, 'src', 'pay.ts'),
+      `export async function charge() {\n  return fetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n}\n`,
+    );
+    writeFileSync(
+      join(root, 'package.json'),
+      `${JSON.stringify({ name: 'demo', dependencies: { stripe: '^14.0.0' } }, null, 2)}\n`,
+    );
+    // Prose: this URL extracts fine in isolation, so its absence proves the
+    // extension gate excludes it rather than the extractor failing to see it.
+    writeFileSync(join(root, 'README.md'), 'See https://api.acme-live.com/x for details.\n');
+    // Lockfile: manifestKindOf returns null and .json is not a code extension.
+    writeFileSync(
+      join(root, 'package-lock.json'),
+      `${JSON.stringify(
+        {
+          packages: {
+            'node_modules/stripe': {
+              resolved: 'https://registry.npmjs.org/stripe/-/stripe-14.0.0.tgz',
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    // Binary guard: an otherwise-extractable URL alongside a NUL byte.
+    writeFileSync(join(root, 'blob.ts'), `${NUL}const u = 'https://api.stripe.com/v1/x';\n`);
+  }
+
+  it('extracts from code files and manifests, skipping prose, lockfiles, and NUL-bearing files', () => {
+    writeCorpus();
+
+    const db = openLocalDatabase(store);
+    try {
+      // No rules at all, so every file takes the "no matches" path: a pass that
+      // only ran after the finding early-out would collect nothing here.
+      const result = scanPathIntoStore(db, root, { rules: [] });
+      expect(result.findings).toBe(0);
+
+      const byFile = new Map(result.egress.files.map((f) => [f.file, f]));
+      expect([...byFile.keys()].sort()).toEqual(
+        [join(root, 'package.json'), join(root, 'src', 'pay.ts')].sort(),
+      );
+
+      const pay = byFile.get(join(root, 'src', 'pay.ts'));
+      expect(pay?.sdkHits).toEqual([]);
+      expect(pay?.endpoints).toHaveLength(1);
+      expect(pay?.endpoints[0]).toMatchObject({
+        host: 'api.stripe.com',
+        url: 'https://api.stripe.com/v1/charges',
+        method: 'POST',
+        transport: 'https',
+        line: 2,
+      });
+
+      const manifest = byFile.get(join(root, 'package.json'));
+      expect(manifest?.endpoints).toEqual([]);
+      expect(manifest?.sdkHits).toHaveLength(1);
+      expect(manifest?.sdkHits[0]).toMatchObject({ ecosystem: 'npm', pkg: 'stripe' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('collects egress for files that produce findings too', () => {
+    writeFileSync(
+      join(root, 'app.ts'),
+      `const key = '${SECRET}';\nfetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n`,
+    );
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: RULES });
+      expect(result.findings).toBe(1);
+      expect(result.egress.files).toHaveLength(1);
+      expect(result.egress.files[0]?.endpoints[0]?.host).toBe('api.stripe.com');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('omits files whose extraction yields nothing', () => {
+    writeFileSync(join(root, 'plain.ts'), 'export const n = 1;\n');
+    writeFileSync(join(root, 'notes.txt'), 'https://api.stripe.com/v1/charges\n');
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: [] });
+      expect(result.scanned).toBe(2);
+      expect(result.egress.files).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('marks vendored call sites from the walked path', () => {
+    mkdirSync(join(root, 'vendor', 'lib'), { recursive: true });
+    writeFileSync(
+      join(root, 'vendor', 'lib', 'client.ts'),
+      `fetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n`,
+    );
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: [] });
+      expect(result.egress.files).toHaveLength(1);
+      expect(result.egress.files[0]?.vendored).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves call sites outside a vendored tree unmarked', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(
+      join(root, 'src', 'pay.ts'),
+      `fetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n`,
+    );
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: [] });
+      expect(result.egress.files).toHaveLength(1);
+      expect(result.egress.files[0]?.vendored).toBe(false);
     } finally {
       db.close();
     }

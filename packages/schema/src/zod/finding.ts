@@ -236,6 +236,11 @@ export const FindingFacets = z
     subtype: z.array(FindingFacetItem),
     provider: z.array(FindingFacetItem),
     action: z.array(FindingFacetItem),
+    // Counts by the group's derived status. The SQLite store derives a status
+    // for every instance, so every group lands in a bucket; a status-less
+    // group (possible only for callers whose rows carry no statuses) is
+    // counted under no value.
+    status: z.array(FindingFacetItem),
   })
   .meta({ id: 'FindingFacets' });
 export type FindingFacets = z.infer<typeof FindingFacets>;
@@ -263,6 +268,10 @@ export const ListGroupedFindingsQuery = z.object({
   subtype: z.array(z.string()).optional(),
   provider: z.array(FindingProvider).optional(),
   action: z.array(FindingAction).optional(),
+  // Matches a group's DERIVED status (see FindingGroup.status), not its
+  // individual instances' — so a filtered group's Status column always reads
+  // one of the requested values.
+  status: z.array(FindingStatus).optional(),
   q: z.string().optional(),
   // Scope to findings whose event carries this session id (the Activity page's
   // session → findings drilldown). Findings without a session never match.

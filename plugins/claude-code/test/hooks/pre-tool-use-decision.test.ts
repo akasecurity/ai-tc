@@ -258,6 +258,7 @@ function settings(): WorkspaceSettings {
     runMode: 'standalone',
     policy: 'redact',
     historicalAccess: 'session-only',
+    dataSharesInPlace: true,
   };
 }
 
@@ -322,6 +323,14 @@ function fakeGateway(b: PolicyBundle): DataGateway {
     insertResolution: () => Promise.resolve(),
     getRuleProbeVerdict: () => Promise.resolve(undefined),
     setRuleProbeVerdict: () => Promise.resolve(),
+    recordProjectEgress: () =>
+      Promise.resolve({
+        destinations: 0,
+        endpoints: 0,
+        callSites: 0,
+        truncated: false,
+        droppedFiles: [],
+      }),
     close: () => Promise.resolve(),
   };
 }

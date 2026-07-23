@@ -36,6 +36,8 @@ export { resolveInventoryContext } from './inventory-resolver.ts';
 export type { ScanFinding } from './mask.ts';
 export { maskText, scanText } from './mask.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
+export type { NonGitProject } from './paths.ts';
+export { resolveNonGitProject, toPosix } from './paths.ts';
 export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export { resolveProjectFiles } from './project-files.ts';
@@ -88,6 +90,26 @@ export {
 // Posture evaluation re-exported for @akasecurity/plugin-runtime, which may not
 // depend on @akasecurity/detections directly (the SDK is its one detections door).
 export { configPostureDefinitions, evaluateConfigPosture } from '@akasecurity/detections';
+// Egress extraction re-exported so the scanner can consume the pure
+// extraction API without importing @akasecurity/detections directly — the
+// scanner's package wall only allows plugin-sdk.
+export type {
+  FileEgressHits,
+  ManifestKind,
+  ManifestSdkHit,
+  RawEndpointHit,
+} from '@akasecurity/detections';
+export {
+  EGRESS_CODE_EXTENSIONS,
+  EGRESS_VERSION_MATERIAL,
+  extractEgress,
+  extractManifestSdks,
+  isVendoredPath,
+  LOCKFILE_BASENAMES,
+  manifestKindOf,
+  resolveEgress,
+} from '@akasecurity/detections';
+export type { RecordProjectEgressInput } from '@akasecurity/schema';
 // Read-projection DTOs now live in @akasecurity/schema; re-exported so the SDK's public
 // surface is unchanged for the renderers that consume them.
 export type {

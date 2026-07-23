@@ -206,8 +206,13 @@ function SectionRow({ group }: { group: ShareDestinationGroup }) {
           <span className="rounded-full border border-border bg-surface-2 px-1.5 text-label py-0.5 font-semibold text-text-2">
             {group.total}
           </span>
-          {group.kind === 'ip' && (
-            <span className="inline-flex items-center gap-1 text-xs text-sev-critical">
+          {(group.kind === 'ip' || group.kind === 'external') && (
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 text-xs',
+                group.kind === 'ip' ? 'text-sev-critical' : 'text-sev-high',
+              )}
+            >
               <AlertIcon aria-hidden focusable={false} className="size-3" />
               review recommended
             </span>

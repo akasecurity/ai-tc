@@ -8,13 +8,18 @@ export { RescanResponse };
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
+/**
+ * Destination grouping. 'external' covers public hosts that match no provider
+ * in the registry and carry no internal signal; they group separately from
+ * 'internal' and carry 'unverified' trust.
+ */
 export const DestinationKind = z
-  .enum(['provider', 'internal', 'ip'])
+  .enum(['provider', 'internal', 'external', 'ip'])
   .meta({ id: 'DestinationKind' });
 export type DestinationKind = z.infer<typeof DestinationKind>;
 
 export const Transport = z
-  .enum(['https', 'http', 'sftp', 'grpc', 'smtp'])
+  .enum(['https', 'http', 'sftp', 'grpc', 'smtp', 'ws', 'wss'])
   .meta({ id: 'Transport' });
 export type Transport = z.infer<typeof Transport>;
 
@@ -48,7 +53,15 @@ export const ReviewReason = z
   .meta({ id: 'ReviewReason' });
 export type ReviewReason = z.infer<typeof ReviewReason>;
 
-export const HttpMethod = z.enum(['GET', 'POST', 'PUT', 'DELETE']).meta({ id: 'HttpMethod' });
+/**
+ * How an endpoint was observed, not just which verb it uses. The four verbs are
+ * method evidence read from the call site; 'SDK' marks an endpoint derived from
+ * a dependency manifest (URL = the provider's registry apiBase) and 'REF' marks
+ * a URL referenced with no method evidence — never a guessed verb.
+ */
+export const HttpMethod = z
+  .enum(['GET', 'POST', 'PUT', 'DELETE', 'SDK', 'REF'])
+  .meta({ id: 'HttpMethod' });
 export type HttpMethod = z.infer<typeof HttpMethod>;
 
 // ─── Shared sub-shapes ────────────────────────────────────────────────────────
@@ -192,7 +205,7 @@ export type ShareDestinationGroup = z.infer<typeof ShareDestinationGroup>;
 
 // ─── Shape 8: ListShareDestinationsResponse ──────────────────────────────────
 
-/** Grouped branch — `groups` ordered provider → internal → ip. */
+/** Grouped branch — `groups` ordered provider → internal → external → ip. */
 export const ListShareDestinationsResponse = z
   .object({ groups: z.array(ShareDestinationGroup) })
   .meta({ id: 'ListShareDestinationsResponse' });
@@ -218,6 +231,7 @@ export const SharesStats = z
     byKind: z.object({
       provider: z.number().int().nonnegative(),
       internal: z.number().int().nonnegative(),
+      external: z.number().int().nonnegative(),
       ip: z.number().int().nonnegative(),
     }),
     byTrust: z.object({

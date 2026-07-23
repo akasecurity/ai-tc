@@ -384,7 +384,11 @@
   {
     "label": "Cargo.toml — a plain [dependencies] table lists one crate per line",
     "kind": "Cargo.toml",
-    "text": ["[dependencies]", "sentry = \"0.32\"", "tokio = { version = \"1\", features = [\"full\"] }"],
+    "text": [
+      "[dependencies]",
+      "sentry = \"0.32\"",
+      "tokio = { version = \"1\", features = [\"full\"] }"
+    ],
     "expect": [
       { "ecosystem": "cargo", "pkg": "sentry", "line": 2 },
       { "ecosystem": "cargo", "pkg": "tokio", "line": 3 }
@@ -425,7 +429,14 @@
   {
     "label": "composer.json — a require block of only php and an ext-* extension yields nothing",
     "kind": "composer.json",
-    "text": ["{", "  \"require\": {", "    \"php\": \">=8.1\",", "    \"ext-curl\": \"*\"", "  }", "}"],
+    "text": [
+      "{",
+      "  \"require\": {",
+      "    \"php\": \">=8.1\",",
+      "    \"ext-curl\": \"*\"",
+      "  }",
+      "}"
+    ],
     "expect": []
   },
   {
@@ -452,7 +463,11 @@
   {
     "label": "csproj — a PackageReference with a nested Version element",
     "kind": "csproj",
-    "text": ["<PackageReference Include=\"Stripe.net\">", "  <Version>40.0.0</Version>", "</PackageReference>"],
+    "text": [
+      "<PackageReference Include=\"Stripe.net\">",
+      "  <Version>40.0.0</Version>",
+      "</PackageReference>"
+    ],
     "expect": [{ "ecosystem": "nuget", "pkg": "Stripe.net", "line": 1 }]
   },
   {
@@ -470,7 +485,11 @@
   {
     "label": "packages.config — a package element",
     "kind": "packages.config",
-    "text": ["<packages>", "  <package id=\"Sentry\" version=\"4.0.0\" targetFramework=\"net472\" />", "</packages>"],
+    "text": [
+      "<packages>",
+      "  <package id=\"Sentry\" version=\"4.0.0\" targetFramework=\"net472\" />",
+      "</packages>"
+    ],
     "expect": [{ "ecosystem": "nuget", "pkg": "Sentry", "line": 2 }]
   },
   {
@@ -482,7 +501,11 @@
   {
     "label": "packages.config — a commented-out package element yields nothing",
     "kind": "packages.config",
-    "text": ["<packages>", "  <!-- <package id=\"Stripe.net\" version=\"1.0\" /> -->", "</packages>"],
+    "text": [
+      "<packages>",
+      "  <!-- <package id=\"Stripe.net\" version=\"1.0\" /> -->",
+      "</packages>"
+    ],
     "expect": []
   }
 ]

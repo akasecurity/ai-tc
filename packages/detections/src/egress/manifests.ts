@@ -77,7 +77,9 @@ export function manifestKindOf(basename: string): ManifestKind | null {
   // Object.prototype members ('constructor', 'toString', 'valueOf',
   // 'hasOwnProperty', '__proto__') — a plain bracket lookup resolves those
   // through the prototype chain instead of returning undefined.
-  const exact = Object.hasOwn(EXACT_KIND_BY_BASENAME, basename) ? EXACT_KIND_BY_BASENAME[basename] : undefined;
+  const exact = Object.hasOwn(EXACT_KIND_BY_BASENAME, basename)
+    ? EXACT_KIND_BY_BASENAME[basename]
+    : undefined;
   if (exact !== undefined) return exact;
   if (basename.endsWith('.csproj')) return 'csproj';
   return null;
@@ -113,7 +115,12 @@ export function extractManifestSdks(text: string, kind: ManifestKind): ManifestS
   }
 }
 
-function makeHit(ecosystem: EgressEcosystem, pkg: string, line: number, rawLine: string): ManifestSdkHit {
+function makeHit(
+  ecosystem: EgressEcosystem,
+  pkg: string,
+  line: number,
+  rawLine: string,
+): ManifestSdkHit {
   return { ecosystem, pkg, line, snippet: redactSnippet(rawLine) };
 }
 
@@ -183,7 +190,8 @@ function extractPyprojectToml(text: string): ManifestSdkHit[] {
     if (inDependenciesArray) {
       for (const spec of quotedStrings(rawLine)) {
         const name = PEP508_NAME.exec(spec)?.[1];
-        if (name !== undefined) hits.push(makeHit('pypi', normalizePypi(name), lineNumber, rawLine));
+        if (name !== undefined)
+          hits.push(makeHit('pypi', normalizePypi(name), lineNumber, rawLine));
       }
       if (rawLine.includes(']')) inDependenciesArray = false;
       return;
@@ -440,7 +448,10 @@ function extractPackagesConfig(text: string): ManifestSdkHit[] {
 // element spanning several lines is never read as live markup. A line with a
 // same-line '<!--'...'-->' pair loses only the commented span; text before
 // and after it stays visible.
-function stripXmlComments(line: string, inComment: boolean): { visible: string; inComment: boolean } {
+function stripXmlComments(
+  line: string,
+  inComment: boolean,
+): { visible: string; inComment: boolean } {
   let visible = '';
   let rest = line;
   let comment = inComment;
@@ -504,7 +515,12 @@ function objectKeys(value: unknown): string[] {
 // production one. The keys this module reads always came from parsing that
 // same text, so the quoted form is always present somewhere at or after the
 // section key.
-function hitAtQuotedKey(ecosystem: EgressEcosystem, pkg: string, text: string, sectionKey: string): ManifestSdkHit {
+function hitAtQuotedKey(
+  ecosystem: EgressEcosystem,
+  pkg: string,
+  text: string,
+  sectionKey: string,
+): ManifestSdkHit {
   const sectionStart = text.indexOf(`"${sectionKey}"`);
   const searchFrom = sectionStart === -1 ? 0 : sectionStart;
   const index = text.indexOf(`"${pkg}"`, searchFrom);

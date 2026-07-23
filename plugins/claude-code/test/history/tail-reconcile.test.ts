@@ -16,7 +16,13 @@ import { reconcileSessionTail } from '../../src/history/usage.ts';
 
 function config(dataDir: string): PluginConfig {
   return {
-    settings: { specVersion: 2, runMode: 'standalone', policy: 'redact', historicalAccess: 'full' },
+    settings: {
+      specVersion: 2,
+      runMode: 'standalone',
+      policy: 'redact',
+      historicalAccess: 'full',
+      dataSharesInPlace: true,
+    },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
     settingsDir: dataDir,

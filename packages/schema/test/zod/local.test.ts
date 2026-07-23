@@ -27,6 +27,15 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     expect(s.onboardedAt).toBeUndefined();
   });
 
+  it('enables in-place Data Shares extraction by default', () => {
+    expect(WorkspaceSettings.parse({}).dataSharesInPlace).toBe(true);
+  });
+
+  it('round-trips the Data Shares kill-switch when explicitly disabled', () => {
+    expect(WorkspaceSettings.parse({ dataSharesInPlace: false }).dataSharesInPlace).toBe(false);
+    expect(WorkspaceSettings.safeParse({ dataSharesInPlace: 'nope' }).success).toBe(false);
+  });
+
   it('defaultWorkspaceSettings() equals the parsed defaults', () => {
     expect(defaultWorkspaceSettings()).toEqual(WorkspaceSettings.parse({}));
   });

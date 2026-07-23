@@ -5,6 +5,7 @@ import {
   applyFindingFilters,
   buildFindingGroups,
   computeFindingFacets,
+  countInstancesByStatus,
   type GroupableFindingRow,
   sortFindingGroups,
   toApiAction,
@@ -111,6 +112,32 @@ const rows: GroupableFindingRow[] = [
     repo: 'acme/api',
     file: 'c.ts',
   },
+];
+
+// One status-carrying row — `rows` above carry none, so the status filter and
+// facet cases build their own groups from these.
+const statusRow = (id: string, ruleId: string, status?: FindingStatus): GroupableFindingRow => ({
+  id,
+  ruleId,
+  category: 'secret',
+  severity: 'critical',
+  maskedMatch: 'AKIA…1',
+  actionTaken: 'block',
+  confidence: 0.9,
+  occurredAt: '2026-01-01T00:00:00.000Z',
+  sourceTool: 'claude-code',
+  repo: 'acme/api',
+  file: 'a.ts',
+  ...(status === undefined ? {} : { status }),
+});
+
+// Three groups: one that folds to open (its handled sibling loses to
+// open-dominates), one resolved, and one legacy group carrying no status.
+const statusFilterRows: GroupableFindingRow[] = [
+  statusRow('s1', 'open-rule', 'open'),
+  statusRow('s2', 'open-rule', 'handled'),
+  statusRow('s3', 'resolved-rule', 'resolved'),
+  statusRow('s4', 'legacy-rule'),
 ];
 
 // A finding captured from tool output (no filePath, only tool attribution).
@@ -266,6 +293,40 @@ describe('applyFindingFilters', () => {
     expect(ids(applyFindingFilters(groups, { q: 'acme/web' }))).toEqual(['aws-key']);
     expect(ids(applyFindingFilters(groups, { q: 'EMAIL' }))).toEqual(['email']);
   });
+
+  describe('status (the group’s own folded status, not any instance)', () => {
+    const statusGroups = buildFindingGroups(statusFilterRows);
+
+    it('keeps only groups whose folded status is selected', () => {
+      expect(ids(applyFindingFilters(statusGroups, { statuses: ['open'] }))).toEqual(['open-rule']);
+      expect(ids(applyFindingFilters(statusGroups, { statuses: ['resolved'] }))).toEqual([
+        'resolved-rule',
+      ]);
+    });
+
+    it('keeps the union when several statuses are selected', () => {
+      expect(ids(applyFindingFilters(statusGroups, { statuses: ['open', 'resolved'] }))).toEqual([
+        'open-rule',
+        'resolved-rule',
+      ]);
+    });
+
+    it('does not match a group on an instance status the fold discarded', () => {
+      // open-rule holds a handled instance, but folds to open — a "handled"
+      // filter must not surface a row whose Status column reads "Open".
+      expect(ids(applyFindingFilters(statusGroups, { statuses: ['handled'] }))).toEqual([]);
+    });
+
+    it('excludes a legacy group carrying no status', () => {
+      expect(ids(applyFindingFilters(statusGroups, { statuses: ['open'] }))).not.toContain(
+        'legacy-rule',
+      );
+    });
+
+    it('returns every group unchanged for an empty selection', () => {
+      expect(applyFindingFilters(statusGroups, { statuses: [] })).toEqual(statusGroups);
+    });
+  });
 });
 
 describe('computeFindingFacets', () => {
@@ -294,6 +355,58 @@ describe('computeFindingFacets', () => {
     expect(f.severity.map((s) => s.value).sort()).toEqual(['critical', 'low']);
     // …but the provider facet DOES apply the severity filter (only email → claudecode).
     expect(f.provider).toEqual([{ value: 'claudecode', count: 1 }]);
+  });
+
+  describe('status facet', () => {
+    const statusGroups = buildFindingGroups(statusFilterRows);
+
+    it('counts groups by their folded status, ignoring status-less groups', () => {
+      const f = computeFindingFacets(statusGroups, {});
+      // legacy-rule carries no status, so it lands in no bucket — the filter
+      // cannot select it either.
+      expect(new Map(f.status.map((s) => [s.value, s.count]))).toEqual(
+        new Map([
+          ['open', 1],
+          ['resolved', 1],
+        ]),
+      );
+    });
+
+    it('excludes its own filter but applies the status filter to the others', () => {
+      const f = computeFindingFacets(statusGroups, { statuses: ['open'] });
+      expect(f.status.map((s) => s.value).sort()).toEqual(['open', 'resolved']);
+      // …while the severity facet narrows to the one open group.
+      expect(f.severity).toEqual([{ value: 'critical', count: 1 }]);
+    });
+
+    it('reports no statuses for groups that carry none', () => {
+      expect(computeFindingFacets(groups, {}).status).toEqual([]);
+    });
+  });
+});
+
+describe('countInstancesByStatus', () => {
+  // (kind, findingKey, latestResolutionStatus) → derived status:
+  // prompt/∅/∅ → handled · code_change/key/∅ → open · code_change/key/resolved → resolved
+  const inputs = [
+    { kind: 'prompt', findingKey: null, latestResolutionStatus: null, count: 200 },
+    { kind: 'code_change', findingKey: 'k', latestResolutionStatus: null, count: 3 },
+    { kind: 'code_change', findingKey: 'k', latestResolutionStatus: 'resolved', count: 5 },
+  ];
+
+  it('sums the counts of combinations whose derived status is selected', () => {
+    expect(countInstancesByStatus(inputs, ['open'])).toBe(3);
+    expect(countInstancesByStatus(inputs, ['handled'])).toBe(200);
+    expect(countInstancesByStatus(inputs, ['open', 'resolved'])).toBe(8);
+  });
+
+  it('returns 0 when no combination matches', () => {
+    expect(countInstancesByStatus(inputs, ['dismissed'])).toBe(0);
+  });
+
+  it('returns null when a combination carries no count (caller falls back to instanceCount)', () => {
+    const noCounts = [{ kind: 'prompt', findingKey: null, latestResolutionStatus: null }];
+    expect(countInstancesByStatus(noCounts, ['handled'])).toBeNull();
   });
 });
 

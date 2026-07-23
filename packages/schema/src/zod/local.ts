@@ -34,8 +34,9 @@ import type {
 import type { Rule } from './rule.ts';
 
 // Bumped whenever WorkspaceSettings gains or loses a field, so the loader can
-// migrate an older settings.json. v2 added historicalAccess.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 2;
+// migrate an older settings.json. v2 added historicalAccess; v3 added
+// dataSharesInPlace.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 3;
 
 // How the plugin runs. Single-valued: the plugin operates entirely against the
 // local store. Kept as an enum so the settings file stays explicit and the
@@ -79,6 +80,9 @@ export const WorkspaceSettings = z.object({
   policy: SimpleDetectionPolicy.default('redact'),
   // Consent for scanning pre-install surfaces; opt-in (see HistoricalAccess).
   historicalAccess: HistoricalAccess.default('session-only'),
+  // In-place egress extraction on the scan paths; disable to stop all Data
+  // Shares writes.
+  dataSharesInPlace: z.boolean().default(true),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
 });

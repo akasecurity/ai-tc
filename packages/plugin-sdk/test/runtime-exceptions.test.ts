@@ -44,7 +44,13 @@ registerRulePack('exception-test-pack', [
 ]);
 
 function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
-  return { specVersion: 1, runMode: 'standalone', policy, historicalAccess: 'full' };
+  return {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy,
+    historicalAccess: 'full',
+    dataSharesInPlace: true,
+  };
 }
 
 function bundle(exceptions?: ExceptionBundleEntry[]): PolicyBundle {
@@ -140,6 +146,14 @@ function fakeGateway(
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),
     insertResolution: () => Promise.resolve(),
+    recordProjectEgress: () =>
+      Promise.resolve({
+        destinations: 0,
+        endpoints: 0,
+        callSites: 0,
+        truncated: false,
+        droppedFiles: [],
+      }),
     close: () => Promise.resolve(),
   };
 }

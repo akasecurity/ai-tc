@@ -36,6 +36,7 @@ function settings(): WorkspaceSettings {
     runMode: 'standalone',
     policy: 'redact',
     historicalAccess: 'session-only',
+    dataSharesInPlace: true,
   };
 }
 

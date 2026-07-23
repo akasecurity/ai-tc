@@ -268,13 +268,13 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
   });
 
   it('adopts the 0011 tag when its columns and unique index already exist out of band', () => {
-    const migration011 = SQLITE_MIGRATIONS.find((m) => m.tag === '0011_chunky_glorian');
-    if (migration011 === undefined) throw new Error('0011_chunky_glorian migration not found');
+    const migration011 = SQLITE_MIGRATIONS.find((m) => m.tag === '0012_handy_the_captain');
+    if (migration011 === undefined) throw new Error('0012_handy_the_captain migration not found');
 
     const db = new DatabaseSync(':memory:');
     try {
       for (const migration of SQLITE_MIGRATIONS) {
-        if (migration.tag === '0011_chunky_glorian') continue;
+        if (migration.tag === '0012_handy_the_captain') continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0011's evidence: the exact DDL it would run,
@@ -285,7 +285,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
       expect(() => {
         applyMigrations(db);
       }).not.toThrow();
-      expect(appliedTags(db)).toContain('0011_chunky_glorian');
+      expect(appliedTags(db)).toContain('0012_handy_the_captain');
     } finally {
       db.close();
     }
@@ -295,13 +295,13 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     const db = new DatabaseSync(':memory:');
     try {
       for (const migration of SQLITE_MIGRATIONS) {
-        if (migration.tag === '0011_chunky_glorian') continue;
+        if (migration.tag === '0012_handy_the_captain') continue;
         db.exec(migration.sql);
       }
 
       applyMigrations(db);
 
-      expect(appliedTags(db)).toContain('0011_chunky_glorian');
+      expect(appliedTags(db)).toContain('0012_handy_the_captain');
       expect(columnNames(db, 'inspection_findings')).toEqual(
         expect.arrayContaining(['finding_key', 'first_detected_at']),
       );
@@ -734,17 +734,395 @@ describe('migration 0006 (installed_packs write gate)', () => {
   });
 });
 
-// ─── Migration 0012 + the legacy history backfill ───────────────────────────
+// ─── Migration 0011 (egress writer) ──────────────────────────────────────────
 
-const MIGRATION_0012_TAG = '0012_legacy_history_backfill_support';
+const EGRESS_WRITER_TAG = '0011_egress_writer';
 
-// A store on the previous binary version: every migration through 0011
-// applied, 0012 (and the legacy history it would drain) still pending.
+// The columns an index covers, in index order.
+function indexColumns(db: DatabaseSync, index: string): string[] {
+  // PRAGMA can't be parameterized; the name comes from our own DDL constants.
+  return (db.prepare(`PRAGMA index_info(${index})`).all() as { name: string }[]).map((c) => c.name);
+}
+
+// The NOT NULL flag of one column, as table_xinfo reports it.
+function columnNotNull(db: DatabaseSync, table: string, column: string): number | undefined {
+  return (
+    db.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; notnull: number }[]
+  ).find((c) => c.name === column)?.notnull;
+}
+
+// The ON DELETE action of the outbound foreign key on `column`.
+function foreignKeyOnDelete(db: DatabaseSync, table: string, column: string): string | undefined {
+  return (
+    db.prepare(`PRAGMA foreign_key_list(${table})`).all() as { from: string; on_delete: string }[]
+  ).find((fk) => fk.from === column)?.on_delete;
+}
+
+// One destination + one override row on it, written the way an already-shipped
+// binary does (destination_id only, no host).
+function seedOverride(db: DatabaseSync, destId: string, host: string): void {
+  db.prepare(
+    `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+     VALUES (?, 'provider', 'API', ?, 'saas', 'recognized', 100, 100, 100)`,
+  ).run(destId, host);
+  db.prepare(
+    `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+     VALUES (?, ?, 'block', 100, 100)`,
+  ).run(`ov-${destId}`, destId);
+}
+
+// A store as a pre-0011 binary left it: every earlier migration applied and
+// tag-tracked, user_version stamped at that count, 0011 genuinely pending.
+function preEgressWriterStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('CREATE TABLE migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== EGRESS_WRITER_TAG);
+  for (const migration of earlier) {
+    for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+      migration.tag,
+      1,
+    );
+  }
+  db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
+  return db;
+}
+
+describe('migration 0011 (egress writer schema)', () => {
+  it('a fresh store carries project_key, host, and the re-keyed call-site index', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+
+      // table_xinfo, not table_info — the probe the applier itself uses.
+      expect(columnNames(db, 'share_call_site', { includeGenerated: true })).toContain(
+        'project_key',
+      );
+      expect(columnNames(db, 'egress_decision_override', { includeGenerated: true })).toContain(
+        'host',
+      );
+
+      // The unique call-site key is now project_key-scoped, not display-name-scoped.
+      expect(schemaObjectExists(db, 'index', 'uq_share_call_site')).toBe(true);
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+
+      // Per-project reconcile/confirm/totals filter on project_key alone, which
+      // the endpoint_id-leading unique index cannot seek on.
+      expect(schemaObjectExists(db, 'index', 'idx_share_call_site_project')).toBe(true);
+      expect(indexColumns(db, 'idx_share_call_site_project')).toEqual([
+        'project_key',
+        'endpoint_id',
+      ]);
+
+      // The host-keyed override index is additive; the legacy destination-keyed
+      // unique index that already-shipped binaries write against SURVIVES.
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override_host')).toBe(true);
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override')).toBe(true);
+
+      expect(appliedTags(db)).toContain(EGRESS_WRITER_TAG);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('makes destination_id nullable with ON DELETE SET NULL so overrides outlive a prune', () => {
+    // The pair that makes host-keyed survival possible at all: a NOT NULL
+    // destination_id under a NO ACTION foreign key would make deleting a pruned
+    // destination raise FOREIGN KEY constraint failed instead.
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      expect(columnNotNull(db, 'egress_decision_override', 'destination_id')).toBe(0);
+      expect(foreignKeyOnDelete(db, 'egress_decision_override', 'destination_id')).toBe('SET NULL');
+
+      db.exec('PRAGMA foreign_keys = ON');
+      seedOverride(db, 'dest-1', 'api.example.com');
+      db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+        'api.example.com',
+        'ov-dest-1',
+      );
+
+      expect(() => {
+        db.prepare('DELETE FROM share_destination WHERE id = ?').run('dest-1');
+      }).not.toThrow();
+      expect(
+        db.prepare('SELECT destination_id, host, decision FROM egress_decision_override').all(),
+      ).toEqual([{ destination_id: null, host: 'api.example.com', decision: 'block' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('orphaned rows stay distinct under uq_egress_decision_override, one per host', () => {
+    // SQLite treats NULLs as distinct in a unique index, so any number of
+    // survived rows coexist on the destination-keyed index. The host-keyed
+    // index is partial on host IS NOT NULL, so one-decision-per-host still
+    // holds across them.
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      db.exec('PRAGMA foreign_keys = ON');
+      for (const n of ['1', '2']) {
+        seedOverride(db, `dest-${n}`, `h${n}.example.com`);
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          `h${n}.example.com`,
+          `ov-dest-${n}`,
+        );
+      }
+      db.exec('DELETE FROM share_destination');
+
+      expect(
+        db
+          .prepare(
+            'SELECT count(*) AS n FROM egress_decision_override WHERE destination_id IS NULL',
+          )
+          .get(),
+      ).toEqual({ n: 2 });
+      // …but the two orphans still cannot claim the same host.
+      expect(() => {
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          'h1.example.com',
+          'ov-dest-2',
+        );
+      }).toThrow(/UNIQUE/i);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("project_key is NOT NULL DEFAULT '' so the ALTER is legal on existing rows", () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const column = (
+        db.prepare('PRAGMA table_xinfo(share_call_site)').all() as {
+          name: string;
+          notnull: number;
+          dflt_value: string | null;
+        }[]
+      ).find((c) => c.name === 'project_key');
+      expect(column?.notnull).toBe(1);
+      expect(column?.dflt_value).toBe("''");
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a pre-0011 store in place, preserving its existing call sites', () => {
+    const db = preEgressWriterStore();
+    try {
+      // A row written by the pre-0011 binary, under the old 4-column key.
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_endpoint (id, destination_id, method, transport, url, data_class, last_seen, created_at, updated_at)
+         VALUES ('ep-1', 'dest-1', 'POST', 'https', 'https://api.example.com/v1', 'none', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-1', 'ep-1', 'payments-api', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+      // …and an override on it, in the pre-0011 shape (no host column yet).
+      db.exec(
+        `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+         VALUES ('ov-1', 'dest-1', 'block', 100, 100)`,
+      );
+
+      applyMigrations(db);
+
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
+      // The pre-existing row survives, backfilled from the old key's project.
+      expect(
+        db.prepare('SELECT project_key FROM share_call_site WHERE id = ?').get('cs-1'),
+      ).toEqual({ project_key: 'legacy:payments-api' });
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+      // The project-key index is created on an upgraded store too, not only a fresh one.
+      expect(indexColumns(db, 'idx_share_call_site_project')).toEqual([
+        'project_key',
+        'endpoint_id',
+      ]);
+
+      // The override table is REBUILT (nullable destination_id, ON DELETE SET
+      // NULL) and its rows are copied across, host-NULL like the writer left them.
+      expect(
+        db.prepare('SELECT destination_id, host, decision FROM egress_decision_override').all(),
+      ).toEqual([{ destination_id: 'dest-1', host: null, decision: 'block' }]);
+      expect(columnNotNull(db, 'egress_decision_override', 'destination_id')).toBe(0);
+      expect(foreignKeyOnDelete(db, 'egress_decision_override', 'destination_id')).toBe('SET NULL');
+      // The rebuild drops the old table's indexes with it; both are back.
+      expect(indexColumns(db, 'uq_egress_decision_override')).toEqual(['destination_id']);
+      expect(schemaObjectExists(db, 'index', 'uq_egress_decision_override_host')).toBe(true);
+
+      // And the upgraded store is idempotent from here on.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a pre-0011 store whose call sites differ only by project', () => {
+    // The old key was (endpoint_id, project, file, line), so the same file/line
+    // hitting the same endpoint from two projects was legal. Backfilling both to
+    // one project_key would collide on the new index, abort the migration inside
+    // BEGIN IMMEDIATE, and — on the plugin hook path, where the throw is
+    // swallowed fail-open — stop capture on every later open.
+    const db = preEgressWriterStore();
+    try {
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_endpoint (id, destination_id, method, transport, url, data_class, last_seen, created_at, updated_at)
+         VALUES ('ep-1', 'dest-1', 'POST', 'https', 'https://api.example.com/v1', 'none', 100, 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-1', 'ep-1', 'payments-api', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+      db.exec(
+        `INSERT INTO share_call_site (id, endpoint_id, project, file, line, snippet, created_at, updated_at)
+         VALUES ('cs-2', 'ep-1', 'crm-sync', 'src/a.ts', 1, 'fetch()', 100, 100)`,
+      );
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+
+      // Both rows survive on distinct keys — the re-key never drops a project.
+      expect(db.prepare('SELECT id, project_key FROM share_call_site ORDER BY id').all()).toEqual([
+        { id: 'cs-1', project_key: 'legacy:payments-api' },
+        { id: 'cs-2', project_key: 'legacy:crm-sync' },
+      ]);
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
+    } finally {
+      db.close();
+    }
+  });
+
+  it('survives a pending store whose uq_share_call_site was dropped out of band', () => {
+    // The exact shape `DROP INDEX IF EXISTS` exists to absorb: 0011 is genuinely
+    // pending (neither new column present), so its non-index statements all run —
+    // but the index the DROP targets is already gone. A bare DROP INDEX throws
+    // here, and on the plugin hook path that throw is swallowed fail-open, so
+    // capture would silently stop.
+    const db = preEgressWriterStore();
+    try {
+      db.exec('DROP INDEX uq_share_call_site');
+      expect(schemaObjectExists(db, 'index', 'uq_share_call_site')).toBe(false);
+
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+
+      expect(indexColumns(db, 'uq_share_call_site')).toEqual([
+        'endpoint_id',
+        'project_key',
+        'file',
+        'line',
+      ]);
+      expect(appliedTags(db)).toContain(EGRESS_WRITER_TAG);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Already-shipped binaries write egress_decision_override with this exact
+  // statement shape and no `host`. Their ON CONFLICT target is the
+  // destination-keyed unique index, which the rebuild recreates — so the upsert
+  // must keep working against the now-nullable column, on a fresh store and on
+  // one the rebuild upgraded in place alike.
+  const LEGACY_UPSERT = `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+     VALUES (?, 'dest-1', ?, 100, 100)
+     ON CONFLICT (destination_id) DO UPDATE SET
+       decision = excluded.decision,
+       updated_at = excluded.updated_at`;
+
+  it.each([
+    ['a fresh store', () => new DatabaseSync(':memory:')],
+    ['a store upgraded in place', preEgressWriterStore],
+  ])('keeps the legacy ON CONFLICT (destination_id) override upsert working on %s', (_, open) => {
+    const db = open();
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+      applyMigrations(db);
+      db.exec(
+        `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+         VALUES ('dest-1', 'provider', 'API', 'api.example.com', 'saas', 'recognized', 100, 100, 100)`,
+      );
+
+      db.prepare(LEGACY_UPSERT).run('ov-1', 'block');
+      db.prepare(LEGACY_UPSERT).run('ov-2', 'allow');
+
+      expect(db.prepare('SELECT id, decision, host FROM egress_decision_override').all()).toEqual([
+        { id: 'ov-1', decision: 'allow', host: null },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the host index is PARTIAL so several legacy host-NULL rows coexist', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+      applyMigrations(db);
+      for (const id of ['dest-1', 'dest-2']) {
+        db.prepare(
+          `INSERT INTO share_destination (id, kind, name, host, category, trust, last_seen, created_at, updated_at)
+           VALUES (?, 'provider', 'API', ?, 'saas', 'recognized', 100, 100, 100)`,
+        ).run(id, `${id}.example.com`);
+        db.prepare(
+          `INSERT INTO egress_decision_override (id, destination_id, decision, created_at, updated_at)
+           VALUES (?, ?, 'block', 100, 100)`,
+        ).run(`ov-${id}`, id);
+      }
+      // Two host-NULL rows are fine; a duplicate non-null host is not.
+      expect(
+        (db.prepare('SELECT count(*) AS n FROM egress_decision_override').get() as { n: number }).n,
+      ).toBe(2);
+      db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+        'api.example.com',
+        'ov-dest-1',
+      );
+      expect(() => {
+        db.prepare('UPDATE egress_decision_override SET host = ? WHERE id = ?').run(
+          'api.example.com',
+          'ov-dest-2',
+        );
+      }).toThrow(/UNIQUE/i);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ─── Migration 0013 + the legacy history backfill ───────────────────────────
+
+const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
+
+// A store on the previous binary version: every migration through 0012
+// applied, 0013 (and the legacy history it would drain) still pending.
 function preBackfillStore(): DatabaseSync {
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   for (const migration of SQLITE_MIGRATIONS) {
-    if (migration.tag === MIGRATION_0012_TAG) continue;
+    if (migration.tag === MIGRATION_0013_TAG) continue;
     db.exec(migration.sql);
   }
   return db;
@@ -799,7 +1177,7 @@ function insertLegacyFinding(
   );
 }
 
-describe('migration 0012 + legacy history backfill', () => {
+describe('migration 0013 + legacy history backfill', () => {
   it('adds the watermark table and the audit_events replacement indexes', () => {
     const db = preBackfillStore();
     try {
@@ -1083,7 +1461,7 @@ describe('migration 0012 + legacy history backfill', () => {
         });
       }
 
-      // First open: migration 0012 applies, events fully copy, findings
+      // First open: migration 0013 applies, events fully copy, findings
       // copies exactly one call's worth and stops — NOT the whole table.
       applyMigrations(db);
       const afterFirst = (

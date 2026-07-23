@@ -84,6 +84,19 @@ describe('applyOnboarding', () => {
     }
   });
 
+  it('round-trips the Data Shares kill-switch through the settings file', () => {
+    // Defaults on, so disabling it must survive the write/read cycle rather than
+    // being re-defaulted back to true on the next read.
+    expect(readWorkspaceSettings(base).dataSharesInPlace).toBe(true);
+
+    const saved = applyOnboarding({ dataSharesInPlace: false }, base);
+    expect(saved.dataSharesInPlace).toBe(false);
+    expect(readWorkspaceSettings(base).dataSharesInPlace).toBe(false);
+
+    expect(applyOnboarding({ dataSharesInPlace: true }, base).dataSharesInPlace).toBe(true);
+    expect(readWorkspaceSettings(base).dataSharesInPlace).toBe(true);
+  });
+
   it('merges additive answers across calls and keeps the original onboardedAt', () => {
     const first = applyOnboarding({ policy: 'warn' }, base);
     const second = applyOnboarding({ historicalAccess: 'full' }, base);

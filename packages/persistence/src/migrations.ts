@@ -375,7 +375,7 @@ export function reconcileSourceProjectIds(db: DatabaseSync): void {
 // no longer writes them), so this is a one-time drain, not an ongoing sync —
 // but the store it drains can already be large, so the drain itself is
 // batched and rowid-watermarked (`legacy_copy_watermark`, added by migration
-// 0012) rather than a single pass: copying a large store's entire history in
+// 0013) rather than a single pass: copying a large store's entire history in
 // one transaction on the hook path — a hard 10s timeout, `busy_timeout` of
 // only 2000ms — would be a zero-progress kill-and-retry loop. Each call here
 // instead moves at most LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows per table,
@@ -456,7 +456,7 @@ function toLegacyAuditAttributesJson(row: {
 // LEGACY_BACKFILL_BATCH_SIZE rows. Legacy ids are kept, so INSERT OR IGNORE
 // keyed on `id` makes re-copying an already-migrated row a no-op. `sessionId`
 // becomes both `parent_id` and `root_session_id` (mirroring recordCapture) —
-// migration 0012 already synthesized a stub root for every legacy sessionId
+// migration 0013 already synthesized a stub root for every legacy sessionId
 // that had none, so this FK always resolves. Returns true once every legacy
 // `events` row up to this call's view of the table has been copied — the
 // signal `copyLegacyFindings` uses before it starts, so a finding's

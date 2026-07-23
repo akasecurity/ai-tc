@@ -340,9 +340,16 @@ describe('legacy events/findings compatibility views', () => {
     // More legacy events than one open's backfill budget, so the FIRST
     // openLocalDatabase call cannot finish draining — the drop must not run.
     const totalEvents = LEGACY_BACKFILL_MAX_ROWS_PER_CALL + 50;
+    // Seed the whole pre-cutover table in a single transaction: as individual
+    // auto-committed INSERTs the fixture pays one journal fsync per row (~1k of
+    // them), which on a slow-flush filesystem overruns the test timeout. The
+    // rows still land with sequential rowids, so the backfill's watermark paging
+    // is unchanged.
+    raw.exec('BEGIN');
     for (let i = 0; i < totalEvents; i += 1) {
       insertLegacyEvent(raw, `ev-${String(i)}`, i, null);
     }
+    raw.exec('COMMIT');
     raw.close();
 
     const first = openLocalDatabase(dir);

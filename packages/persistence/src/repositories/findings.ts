@@ -16,6 +16,7 @@ import {
   ACTION_TAKEN_KEYS,
   applyFindingFilters,
   buildFindingGroups,
+  CAPTURE_EVENT_TYPES_SQL,
   computeFindingFacets,
   countInstancesByStatus,
   DEFAULT_GROUPED_FINDINGS_LIMIT,
@@ -38,14 +39,6 @@ import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 // (distinct rule_ids × this) however large the store grows; SQLite still scans
 // the table to count, so time grows with it while memory does not.
 const PREVIEW_INSTANCES_PER_GROUP = 200;
-
-// audit_events holds structural rows (session, tool_call, llm_call,
-// config_scan) alongside the four capture kinds this repository's findings
-// come from. Every read below joins inspection_findings to audit_events, so
-// every read must constrain to this set — the old `events` table held only
-// these four kinds, so this predicate is what keeps the numbers identical to
-// the pre-repoint reads over `findings ⋈ events`.
-const CAPTURE_EVENT_TYPES_SQL = `'prompt','response','code_change','tool_use'`;
 
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the

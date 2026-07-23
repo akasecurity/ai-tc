@@ -411,11 +411,12 @@ function recordAtRest(opts: {
   };
   db.recordCapture(event, [finding]);
   // recordCapture mints the audit_events row's own id as a content-address of
-  // (sessionId, contentHash) — NOT the caller-supplied event.id — so a raw
-  // read of inspection_findings.audit_event_id must be compared against this,
-  // not against eventId. This helper never sets metadata.sessionId, so the
-  // session component is always the null/no-session case.
-  const auditEventId = captureId(null, contentHash);
+  // (sessionId, contentHash, filePath) — NOT the caller-supplied event.id — so a
+  // raw read of inspection_findings.audit_event_id must be compared against
+  // this, not against eventId. This helper never sets metadata.sessionId, so the
+  // session component is always the null/no-session case; the file path is folded
+  // in so two identical-content files stay distinct captures.
+  const auditEventId = captureId(null, contentHash, metadata.filePath ?? null);
   return { eventId, findingId, auditEventId };
 }
 

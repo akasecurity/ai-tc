@@ -1,19 +1,9 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { InspectionFindingInput } from '@akasecurity/schema';
-import { toInspectionFindingRow } from '@akasecurity/schema';
+import { CAPTURE_EVENT_TYPES_SQL, toInspectionFindingRow } from '@akasecurity/schema';
 
 import { bindParams } from '../internal/rows.ts';
-
-// audit_events holds structural rows (session, tool_call, llm_call,
-// config_scan) alongside the four capture kinds a finding can be recorded
-// against. A session-scoped dedup that joins inspection_findings to
-// audit_events must constrain to this set — otherwise a transcript-reconciler
-// tool_call finding (which also carries root_session_id) can suppress a live
-// capture, and the surviving tool_call row is then excluded by every
-// capture-kind read view, so the finding disappears from the product entirely.
-// Mirrors the identical constant in findings.ts / security.ts.
-const CAPTURE_EVENT_TYPES_SQL = `'prompt','response','code_change','tool_use'`;
 
 /**
  * Inspection finding (a hit of a definition against an audit event) writer. The

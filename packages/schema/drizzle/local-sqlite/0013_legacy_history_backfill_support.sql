@@ -37,6 +37,7 @@ SELECT
 	NULL,
 	min(occurred_at)
 FROM events
-WHERE json_extract(metadata, '$.sessionId') IS NOT NULL
+WHERE json_valid(metadata)
+	AND json_extract(metadata, '$.sessionId') IS NOT NULL
 	AND json_extract(metadata, '$.sessionId') NOT IN (SELECT id FROM audit_events)
 GROUP BY json_extract(metadata, '$.sessionId');

@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { EventKind, EventMetadata, SourceTool } from '@akasecurity/schema';
 import { SQLITE_MIGRATIONS, toCaptureAttributes } from '@akasecurity/schema';
@@ -412,6 +412,45 @@ function setLegacyCopyWatermark(
   ).run(source, lastRowid);
 }
 
+// Shared batched-drain loop for the two legacy copies: reads the source's
+// watermark, then repeatedly pages `selectStmt` (rowid > watermark, LIMIT
+// LEGACY_BACKFILL_BATCH_SIZE) and hands each page to `handleRows` inside a single
+// IMMEDIATE transaction that also advances + persists the watermark — so the row
+// writes and the watermark advance commit atomically and a crash mid-backfill
+// resumes at the last committed page. Returns true once the source is fully
+// caught up (an empty page, or a short final page this call); false when it
+// stopped at LEGACY_BACKFILL_MAX_ROWS_PER_CALL with rows still pending.
+// `Row` is inferred from each caller's `handleRows` callback so both copies keep
+// their own precise row shape without casting; the loop itself only ever touches
+// `rowid`.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
+function drainLegacyTable<Row extends { rowid: number }>(
+  db: DatabaseSync,
+  source: 'events' | 'findings',
+  selectStmt: StatementSync,
+  handleRows: (rows: Row[]) => void,
+): boolean {
+  let watermark = getLegacyCopyWatermark(db, source);
+  let processed = 0;
+  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
+    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as Row[];
+    if (rows.length === 0) return true;
+
+    withTransaction(
+      db,
+      () => {
+        handleRows(rows);
+        watermark = rows[rows.length - 1]?.rowid ?? watermark;
+        setLegacyCopyWatermark(db, source, watermark);
+      },
+      'IMMEDIATE',
+    );
+    processed += rows.length;
+    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return true;
+  }
+  return false;
+}
+
 // A legacy `events.metadata` blob is either NULL or JSON matching EventMetadata
 // (camelCase keys) — see toEventRow. A row a pre-validation build once wrote
 // could in principle hold malformed JSON; failing to parse it must not cost
@@ -455,12 +494,12 @@ function toLegacyAuditAttributesJson(row: {
 // LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows this call, committing every
 // LEGACY_BACKFILL_BATCH_SIZE rows. Legacy ids are kept, so INSERT OR IGNORE
 // keyed on `id` makes re-copying an already-migrated row a no-op. `sessionId`
-// becomes both `parent_id` and `root_session_id` (mirroring recordCapture) —
-// migration 0013 already synthesized a stub root for every legacy sessionId
-// that had none, so this FK always resolves. Returns true once every legacy
-// `events` row up to this call's view of the table has been copied — the
-// signal `copyLegacyFindings` uses before it starts, so a finding's
-// `audit_event_id` is never inserted ahead of the row it references.
+// becomes both `parent_id` and `root_session_id` (mirroring recordCapture); its
+// root row is stubbed on demand first (see stubRootStmt below) so the self-FK
+// always resolves even for a session written after migration 0013 ran. Returns
+// true once every legacy `events` row up to this call's view of the table has
+// been copied — the signal `copyLegacyFindings` uses before it starts, so a
+// finding's `audit_event_id` is never inserted ahead of the row it references.
 function copyLegacyEvents(db: DatabaseSync): boolean {
   const selectStmt = db.prepare(
     `SELECT rowid AS rowid, id, source_tool AS sourceTool, kind, occurred_at AS occurredAt,
@@ -472,50 +511,56 @@ function copyLegacyEvents(db: DatabaseSync): boolean {
        (id, parent_id, root_session_id, event_type, started_at, content, content_hash, attributes)
      VALUES (:id, :parentId, :rootSessionId, :eventType, :startedAt, :content, :contentHash, :attributes)`,
   );
+  // On-demand session-root stub. Migration 0013 synthesized a root for every
+  // legacy sessionId that existed WHEN IT RAN, but under version skew a
+  // pre-cutover binary can write a NEW-session `events` row AFTER 0013
+  // (ledgered, never re-run) and before the drop completes. INSERT OR IGNORE
+  // does NOT suppress a foreign-key violation, so copying that row without its
+  // root row present would throw, roll back the whole batch INCLUDING its
+  // watermark advance, and — since runLegacyHistoryBackfill swallows the throw
+  // and rows are ordered by rowid — wedge the drain on that same batch forever.
+  // Stub the root first (first-write-wins on the id PK, harmless once 0013 or a
+  // real SessionStart planted it) so the copy always makes forward progress.
+  // The runtime equivalent of this stub is auditEvents.ensureSessionRoot.
+  const stubRootStmt = db.prepare(
+    `INSERT OR IGNORE INTO audit_events (id, event_type, started_at) VALUES (?, 'session', ?)`,
+  );
 
-  let watermark = getLegacyCopyWatermark(db, 'events');
-  let processed = 0;
-  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
-    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as {
-      rowid: number;
-      id: string;
-      sourceTool: string;
-      kind: string;
-      occurredAt: number;
-      contentHash: string;
-      content: string;
-      metadata: string | null;
-    }[];
-    if (rows.length === 0) return true;
-
-    withTransaction(
-      db,
-      () => {
-        for (const row of rows) {
-          const metadata = parseLegacyEventMetadata(row.metadata);
-          const sessionId = metadata?.sessionId ?? null;
-          insertStmt.run(
-            bindParams({
-              id: row.id,
-              parentId: sessionId,
-              rootSessionId: sessionId,
-              eventType: row.kind,
-              startedAt: row.occurredAt,
-              content: row.content,
-              contentHash: row.contentHash,
-              attributes: toLegacyAuditAttributesJson({ ...row, metadata }),
-            }),
-          );
-        }
-        watermark = rows[rows.length - 1]?.rowid ?? watermark;
-        setLegacyCopyWatermark(db, 'events', watermark);
-      },
-      'IMMEDIATE',
-    );
-    processed += rows.length;
-    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return true;
-  }
-  return false;
+  return drainLegacyTable(
+    db,
+    'events',
+    selectStmt,
+    (
+      rows: {
+        rowid: number;
+        id: string;
+        sourceTool: string;
+        kind: string;
+        occurredAt: number;
+        contentHash: string;
+        content: string;
+        metadata: string | null;
+      }[],
+    ) => {
+      for (const row of rows) {
+        const metadata = parseLegacyEventMetadata(row.metadata);
+        const sessionId = metadata?.sessionId ?? null;
+        if (sessionId !== null) stubRootStmt.run(sessionId, row.occurredAt);
+        insertStmt.run(
+          bindParams({
+            id: row.id,
+            parentId: sessionId,
+            rootSessionId: sessionId,
+            eventType: row.kind,
+            startedAt: row.occurredAt,
+            content: row.content,
+            contentHash: row.contentHash,
+            attributes: toLegacyAuditAttributesJson({ ...row, metadata }),
+          }),
+        );
+      }
+    },
+  );
 }
 
 // Copies legacy `findings` rows into `inspection_findings`, oldest-rowid-first,
@@ -566,72 +611,67 @@ function copyLegacyFindings(db: DatabaseSync): void {
        END`,
   );
 
-  let watermark = getLegacyCopyWatermark(db, 'findings');
-  let processed = 0;
-  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
-    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as {
-      rowid: number;
-      id: string;
-      eventId: string;
-      ruleId: string;
-      category: string;
-      severity: string;
-      spanStart: number;
-      spanEnd: number;
-      maskedMatch: string;
-      actionTaken: string;
-      confidence: number;
-      findingKey: string | null;
-      firstDetectedAt: number | null;
-    }[];
-    if (rows.length === 0) return;
-
-    withTransaction(
-      db,
-      () => {
-        const definitionIds = new Map<string, string>();
-        for (const row of rows) {
-          const tupleKey = JSON.stringify([row.ruleId, row.category, row.severity]);
-          let definitionId = definitionIds.get(tupleKey);
-          if (definitionId === undefined) {
-            const version = `unmigrated/${row.category}/${row.severity}`;
-            definitionId = inspectionDefinitionId(row.ruleId, version);
-            definitionStmt.run(
-              bindParams({
-                id: definitionId,
-                ruleId: row.ruleId,
-                name: row.ruleId,
-                category: row.category,
-                severity: row.severity,
-                definition: '',
-                version,
-              }),
-            );
-            definitionIds.set(tupleKey, definitionId);
-          }
-          findingStmt.run(
+  drainLegacyTable(
+    db,
+    'findings',
+    selectStmt,
+    (
+      rows: {
+        rowid: number;
+        id: string;
+        eventId: string;
+        ruleId: string;
+        category: string;
+        severity: string;
+        spanStart: number;
+        spanEnd: number;
+        maskedMatch: string;
+        actionTaken: string;
+        confidence: number;
+        findingKey: string | null;
+        firstDetectedAt: number | null;
+      }[],
+    ) => {
+      // Per-page (inside the transaction), so a definition minted for one page
+      // is reused across that page's findings but never leaks its id map across
+      // batches — matching the crash-safe commit cadence.
+      const definitionIds = new Map<string, string>();
+      for (const row of rows) {
+        const tupleKey = JSON.stringify([row.ruleId, row.category, row.severity]);
+        let definitionId = definitionIds.get(tupleKey);
+        if (definitionId === undefined) {
+          const version = `unmigrated/${row.category}/${row.severity}`;
+          definitionId = inspectionDefinitionId(row.ruleId, version);
+          definitionStmt.run(
             bindParams({
-              id: row.id,
-              auditEventId: row.eventId,
-              inspectionDefinitionId: definitionId,
-              spanStart: row.spanStart,
-              spanEnd: row.spanEnd,
-              maskedMatch: row.maskedMatch,
-              actionTaken: row.actionTaken,
-              confidence: row.confidence,
-              findingKey: row.findingKey,
-              firstDetectedAt: row.firstDetectedAt,
+              id: definitionId,
+              ruleId: row.ruleId,
+              name: row.ruleId,
+              category: row.category,
+              severity: row.severity,
+              definition: '',
+              version,
             }),
           );
+          definitionIds.set(tupleKey, definitionId);
         }
-        watermark = rows[rows.length - 1]?.rowid ?? watermark;
-        setLegacyCopyWatermark(db, 'findings', watermark);
-      },
-      'IMMEDIATE',
-    );
-    processed += rows.length;
-    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return;
-  }
+        findingStmt.run(
+          bindParams({
+            id: row.id,
+            auditEventId: row.eventId,
+            inspectionDefinitionId: definitionId,
+            spanStart: row.spanStart,
+            spanEnd: row.spanEnd,
+            maskedMatch: row.maskedMatch,
+            actionTaken: row.actionTaken,
+            confidence: row.confidence,
+            findingKey: row.findingKey,
+            firstDetectedAt: row.firstDetectedAt,
+          }),
+        );
+      }
+    },
+  );
 }
 
 // Fail-open entry point: any failure (a locked store, a malformed row that

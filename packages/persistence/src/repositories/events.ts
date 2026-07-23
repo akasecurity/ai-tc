@@ -1,7 +1,7 @@
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { IngestEvent } from '@akasecurity/schema';
-import { toEventRow } from '@akasecurity/schema';
+import { CAPTURE_EVENT_TYPES_SQL, toEventRow } from '@akasecurity/schema';
 
 import { allRows, bindParams } from '../internal/rows.ts';
 import type { EventsReadPort } from '../ports.ts';
@@ -51,7 +51,7 @@ export class SqliteEventsRepository implements EventsReadPort {
     const rows = allRows<{ content_hash: string }>(
       this.db.prepare(
         `SELECT content_hash FROM audit_events
-         WHERE event_type IN ('prompt','response','code_change','tool_use')`,
+         WHERE event_type IN (${CAPTURE_EVENT_TYPES_SQL})`,
       ),
     );
     return Promise.resolve(new Set(rows.map((r) => r.content_hash)));

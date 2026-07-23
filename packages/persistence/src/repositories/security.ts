@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
+  CAPTURE_EVENT_TYPES_SQL,
   type EnforcementActionKind,
   type EnforcementActionsResponse,
   type FindingsTimeseriesPoint,
@@ -26,14 +27,6 @@ import type { SecurityViews } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
 const DAY_MS = 86_400_000;
-
-// audit_events holds structural rows (session, tool_call, llm_call,
-// config_scan) alongside the four capture kinds these findings come from.
-// Every query below joins inspection_findings to audit_events, so every query
-// must constrain to this set — the old `events` table held only these four
-// kinds, so this predicate is what keeps the numbers identical to the
-// pre-repoint reads over `findings ⋈ events`.
-const CAPTURE_EVENT_TYPES_SQL = `'prompt','response','code_change','tool_use'`;
 
 // All severities, highest-first — the contract requires every level present
 // (count may be 0), so we project onto this fixed list, not just what GROUP BY found.

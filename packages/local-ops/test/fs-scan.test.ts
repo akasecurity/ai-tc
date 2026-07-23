@@ -318,8 +318,8 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
 
       // The stored event records the ABSOLUTE file path, not the relative target.
       const [event] = storedEvents(store);
-      const metadata: unknown = JSON.parse(event?.metadata ?? '{}');
-      expect(metadata).toMatchObject({ filePath: absFile });
+      const attributes: unknown = JSON.parse(event?.attributes ?? '{}');
+      expect(attributes).toMatchObject({ file_path: absFile });
 
       // finding_key is byte-identical to an absolute-path recomputation — the
       // same value the plugin (absolute paths) and an absolute-target scan mint,

@@ -10,6 +10,7 @@ import {
   LEGACY_BACKFILL_BATCH_SIZE,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   reconcileSourceProjectIds,
+  runLegacyHistoryBackfill,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
 
@@ -1185,6 +1186,111 @@ describe('migration 0013 + legacy history backfill', () => {
       expect(schemaObjectExists(db, 'table', 'legacy_copy_watermark')).toBe(true);
       expect(schemaObjectExists(db, 'index', 'idx_audit_type_t')).toBe(true);
       expect(schemaObjectExists(db, 'index', 'idx_audit_code_change_path')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('0013 stub-root synthesis skips a legacy event with malformed metadata', () => {
+    const db = preBackfillStore();
+    try {
+      // A pre-validation build could have written non-JSON into events.metadata.
+      // 0013's stub-root synthesis runs json_extract over EVERY legacy row, and
+      // json_extract throws a hard "malformed JSON" on invalid text — which would
+      // roll back and permanently wedge the migration (applyMigrations is
+      // unwrapped in openLocalDatabase). The `json_valid(metadata)` guard skips
+      // such rows, matching copyLegacyEvents' parseLegacyEventMetadata try/catch.
+      //
+      // Reachability note: the 0010 partial index on events.metadata rejects
+      // malformed metadata strictly earlier (at insert, build, AND applyMigrations
+      // index-backfill time — all verified), so this is only reachable under the
+      // "0010 tag ledgered but the index physically absent" divergence. Model
+      // exactly that by dropping the index, then run 0013's DDL directly (going
+      // through applyMigrations would rebuild the 0010 index and throw first).
+      db.exec('DROP INDEX idx_events_session_id');
+      db.prepare(
+        `INSERT INTO events (id, source_tool, kind, occurred_at, content_hash, content, metadata)
+         VALUES ('ev-bad-meta', 'claude-code', 'prompt', 4000, 'h', 'c', 'not-json{')`,
+      ).run();
+      insertLegacyEvent(db, 'ev-good', 1000, { sessionId: 'sess-good' });
+
+      const migration = SQLITE_MIGRATIONS.find((m) => m.tag === MIGRATION_0013_TAG);
+      if (migration === undefined) throw new Error('0013 migration not found');
+
+      expect(() => {
+        db.exec(migration.sql);
+      }).not.toThrow();
+
+      // The valid session got its stub root; the malformed row was skipped, not fatal.
+      expect(
+        db.prepare('SELECT event_type FROM audit_events WHERE id = ?').get('sess-good'),
+      ).toMatchObject({ event_type: 'session' });
+      expect(
+        db.prepare('SELECT id FROM audit_events WHERE id = ?').get('ev-bad-meta'),
+      ).toBeUndefined();
+
+      // The JS row-copy still drains the malformed-metadata event (its own
+      // parseLegacyEventMetadata try/catch treats it as session-less), so no
+      // history is lost — it lands with a NULL root.
+      runLegacyHistoryBackfill(db);
+      expect(
+        db.prepare('SELECT root_session_id FROM audit_events WHERE id = ?').get('ev-bad-meta'),
+      ).toMatchObject({ root_session_id: null });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('drains a legacy event whose session root was never stubbed (post-0013 skew) without wedging', () => {
+    const db = preBackfillStore();
+    try {
+      // 0013 runs (nothing to stub) and is ledgered; the store is fully drained.
+      applyMigrations(db);
+
+      // Version skew: a pre-cutover binary writes NEW-session events rows AFTER
+      // 0013 (ledgered, never re-run) and before the drop. sess-skew therefore
+      // has no audit_events root — an FK the copy must satisfy on demand, or
+      // INSERT OR IGNORE (which does NOT suppress an FK violation) throws, rolls
+      // back the batch + its watermark, and wedges the drain forever.
+      insertLegacyEvent(db, 'ev-skew', 9000, { sessionId: 'sess-skew' }, { kind: 'code_change' });
+      insertLegacyEvent(db, 'ev-skew-2', 9500, { sessionId: 'sess-skew' }, { kind: 'code_change' });
+      expect(
+        db.prepare("SELECT id FROM audit_events WHERE id = 'sess-skew'").get(),
+      ).toBeUndefined();
+
+      expect(() => {
+        runLegacyHistoryBackfill(db);
+      }).not.toThrow();
+
+      // The stub root was minted on demand, the poison row drained, and progress
+      // continued past it.
+      expect(
+        db
+          .prepare("SELECT event_type, root_session_id FROM audit_events WHERE id='sess-skew'")
+          .get(),
+      ).toMatchObject({ event_type: 'session', root_session_id: null });
+      expect(
+        db.prepare("SELECT root_session_id, parent_id FROM audit_events WHERE id='ev-skew'").get(),
+      ).toMatchObject({ root_session_id: 'sess-skew', parent_id: 'sess-skew' });
+      expect(
+        (
+          db
+            .prepare("SELECT count(*) AS n FROM audit_events WHERE id IN ('ev-skew','ev-skew-2')")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(2);
+      // The watermark advanced to the end — proof the drain is not wedged.
+      const wm = (
+        db
+          .prepare("SELECT last_rowid AS r FROM legacy_copy_watermark WHERE source='events'")
+          .get() as {
+          r: number;
+        }
+      ).r;
+      const maxRow = (db.prepare('SELECT max(rowid) AS r FROM events').get() as { r: number }).r;
+      expect(wm).toBe(maxRow);
     } finally {
       db.close();
     }

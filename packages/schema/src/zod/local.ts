@@ -292,7 +292,19 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
 // ever shipped as `specVersion: 1` (see Rule in rule.ts). Every finding for the
 // same rule collapses onto ONE definition row: inspectionDefinitions.upsert is
 // an idempotent upsert keyed on (ruleId, version).
-export const CAPTURE_DEFINITION_VERSION = '1';
+// The rule-definition version a capture-path finding mints under. The capture
+// shape (DetectedFindingWithKey) carries no real rule name/version, so the
+// version is synthesized from the classification the finding arrived with.
+// Folding category+severity into the version — hence into the content-addressed
+// definition id (sha256 of ruleId + version) — means a pack update that
+// reclassifies a rule mints a NEW definition row instead of being swallowed by
+// the first-write-wins INSERT OR IGNORE, while re-detecting the SAME
+// classification stays idempotent (same version -> same id). Mirrors the
+// migration backfill's `unmigrated/<category>/<severity>` keying, so the live
+// path and the copied history agree on definition identity.
+export function captureDefinitionVersion(finding: DetectedFindingWithKey): string {
+  return `capture/${finding.category}/${finding.severity}`;
+}
 
 // DetectedFindingWithKey -> the InspectionDefinitionInput its finding resolves
 // against, at the capture path's coarser (ruleId-only) granularity. No display
@@ -305,7 +317,7 @@ export function toCaptureDefinitionInput(
 ): InspectionDefinitionInput {
   return {
     ruleId: finding.ruleId,
-    version: CAPTURE_DEFINITION_VERSION,
+    version: captureDefinitionVersion(finding),
     name: finding.ruleId,
     category: finding.category,
     severity: finding.severity,

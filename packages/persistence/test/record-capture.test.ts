@@ -153,7 +153,7 @@ describe('recordCapture — audit/inspection trio', () => {
     });
     db.recordCapture(ev, []);
 
-    const auditEventId = captureId(sessionId, 'hash-attrs');
+    const auditEventId = captureId(sessionId, 'hash-attrs', 'src/index.ts');
     const r = raw();
     const row = r.prepare('SELECT attributes FROM audit_events WHERE id = ?').get(auditEventId) as {
       attributes: string;
@@ -358,7 +358,7 @@ describe('recordCapture — finding_key reconciliation', () => {
     expect(row.masked_match).toBe('AKIA…NEW'); // refreshed
     expect(row.action_taken).toBe('redact'); // refreshed
     expect(row.confidence).toBe(0.5); // refreshed
-    expect(row.audit_event_id).toBe(captureId(sessionId, 'hash-v2')); // refreshed to latest capture
+    expect(row.audit_event_id).toBe(captureId(sessionId, 'hash-v2', 'src/config.ts')); // refreshed to latest capture
     expect(row.first_detected_at).toBe(new Date(first.occurredAt).getTime()); // preserved
     r.close();
     db.close();
@@ -395,7 +395,9 @@ describe('recordCapture — inspection_definitions upsert', () => {
     };
     expect(def.rule_id).toBe('secrets/aws-access-key');
     expect(def.name).toBe('secrets/aws-access-key');
-    expect(def.version).toBe('1');
+    // Version folds in the finding's classification (category/severity) so a
+    // reclassification is not frozen out by the first-write-wins upsert.
+    expect(def.version).toBe('capture/secret/critical');
     r.close();
     db.close();
   });
@@ -411,6 +413,58 @@ describe('recordCapture — inspection_definitions upsert', () => {
     const r = raw();
     expect(count(r, 'inspection_definitions')).toBe(2);
     expect(count(r, 'inspection_findings')).toBe(2);
+    r.close();
+    db.close();
+  });
+
+  it('mints a new definition row when a pack update reclassifies a rule (severity change)', () => {
+    const db = openLocalDatabase(dir);
+    // Same ruleId + category, changed severity across two captures (a pack
+    // update reclassifying high -> critical). Distinct contentHash so the audit
+    // events differ; no sessionId so session dedup is skipped.
+    db.recordCapture(event({ kind: 'code_change', contentHash: 'hash-low' }), [
+      finding({ severity: 'low', maskedMatch: 'AKIA…LOW' }),
+    ]);
+    db.recordCapture(event({ kind: 'code_change', contentHash: 'hash-crit' }), [
+      finding({ severity: 'critical', maskedMatch: 'AKIA…CRIT' }),
+    ]);
+
+    const r = raw();
+    // A new definition row was minted rather than frozen at first-write.
+    expect(
+      (
+        r
+          .prepare('SELECT count(*) AS n FROM inspection_definitions WHERE rule_id = ?')
+          .get('secrets/aws-access-key') as { n: number }
+      ).n,
+    ).toBe(2);
+    // Reads take severity from the definition — each finding reflects the
+    // classification it was captured under (history is not relabeled).
+    const severityFor = (hash: string) =>
+      (
+        r
+          .prepare(
+            `SELECT d.severity AS severity FROM inspection_findings f
+             JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+             JOIN audit_events e ON e.id = f.audit_event_id
+            WHERE e.content_hash = ?`,
+          )
+          .get(hash) as { severity: string }
+      ).severity;
+    expect(severityFor('hash-crit')).toBe('critical');
+    expect(severityFor('hash-low')).toBe('low');
+
+    // Idempotent: re-detecting the SAME classification reuses the existing row.
+    db.recordCapture(event({ kind: 'code_change', contentHash: 'hash-low-2' }), [
+      finding({ severity: 'low', maskedMatch: 'AKIA…LOW2' }),
+    ]);
+    expect(
+      (
+        r
+          .prepare('SELECT count(*) AS n FROM inspection_definitions WHERE rule_id = ?')
+          .get('secrets/aws-access-key') as { n: number }
+      ).n,
+    ).toBe(2);
     r.close();
     db.close();
   });
@@ -505,6 +559,94 @@ describe('recordCapture — session dedup is scoped to capture kinds', () => {
       .prepare('SELECT count(*) AS n FROM inspection_findings WHERE masked_match = ?')
       .get(MASKED) as { n: number };
     expect(total.n).toBe(1); // deduped across capture surfaces
+    r.close();
+    db.close();
+  });
+});
+
+// captureId folds the file path into the audit-event identity, so two DISTINCT
+// at-rest files with byte-identical content stay two rows. Without it, the
+// second file's audit event collapses onto the first (INSERT OR IGNORE) and its
+// finding is skipped by the event-scoped dedup — a silent secret under-report.
+describe('recordCapture — at-rest path disambiguation', () => {
+  it('keeps two identical-content files as two findings with two finding_keys', () => {
+    const db = openLocalDatabase(dir);
+    // No sessionId, so session dedup is out of the way; identical content, same
+    // rule/span/mask — only the path differs.
+    const a = event({
+      kind: 'code_change',
+      contentHash: 'hash-identical',
+      content: 'k <redacted>',
+      metadata: { filePath: 'src/a.ts' },
+    });
+    const b = event({
+      kind: 'code_change',
+      contentHash: 'hash-identical',
+      content: 'k <redacted>',
+      metadata: { filePath: 'src/b.ts' },
+    });
+    db.recordCapture(a, [finding({ findingKey: 'fk-a' })]);
+    db.recordCapture(b, [finding({ findingKey: 'fk-b' })]);
+
+    expect(captureId(null, 'hash-identical', 'src/a.ts')).not.toBe(
+      captureId(null, 'hash-identical', 'src/b.ts'),
+    );
+
+    const r = raw();
+    expect(count(r, 'audit_events')).toBe(2);
+    expect(count(r, 'inspection_findings')).toBe(2);
+    const keys = (
+      r.prepare('SELECT finding_key FROM inspection_findings ORDER BY finding_key').all() as {
+        finding_key: string;
+      }[]
+    ).map((row) => row.finding_key);
+    expect(keys).toEqual(['fk-a', 'fk-b']);
+    // Each finding is attached to its OWN file's audit event.
+    const idA = captureId(null, 'hash-identical', 'src/a.ts');
+    const attachedToA = r
+      .prepare('SELECT finding_key FROM inspection_findings WHERE audit_event_id = ?')
+      .get(idA) as { finding_key: string };
+    expect(attachedToA.finding_key).toBe('fk-a');
+    r.close();
+    db.close();
+  });
+
+  it('still collapses a re-scan of the SAME file (path+content stable) onto one row', () => {
+    const db = openLocalDatabase(dir);
+    const ev = () =>
+      event({
+        kind: 'code_change',
+        contentHash: 'hash-same',
+        content: 'k <redacted>',
+        metadata: { filePath: 'src/same.ts' },
+      });
+    db.recordCapture(ev(), [finding({ findingKey: 'fk-same' })]);
+    db.recordCapture(ev(), [finding({ findingKey: 'fk-same' })]);
+
+    const r = raw();
+    expect(count(r, 'audit_events')).toBe(1);
+    expect(count(r, 'inspection_findings')).toBe(1);
+    r.close();
+    db.close();
+  });
+
+  it('path-less in-flight captures with identical content still collapse (NO_PATH)', () => {
+    const db = openLocalDatabase(dir);
+    const sessionId = randomUUID();
+    const p1 = event({ kind: 'prompt', contentHash: 'hash-pl', metadata: { sessionId } });
+    const p2 = event({ kind: 'prompt', contentHash: 'hash-pl', metadata: { sessionId } });
+    db.recordCapture(p1, []);
+    db.recordCapture(p2, []);
+
+    const r = raw();
+    expect(count(r, 'audit_events')).toBe(2); // session root stub + the one collapsed prompt
+    expect(
+      (
+        r.prepare("SELECT count(*) AS n FROM audit_events WHERE event_type='prompt'").get() as {
+          n: number;
+        }
+      ).n,
+    ).toBe(1);
     r.close();
     db.close();
   });

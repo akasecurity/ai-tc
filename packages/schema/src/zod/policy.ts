@@ -70,6 +70,12 @@ export const PolicyBundle = z
     // on-disk caches — that omit the field still parse; consumers read
     // `bundle.exceptions ?? []`.
     exceptions: z.array(ExceptionBundleEntry).optional(),
+    // Installed pack version, keyed by ruleId, for rules in `rules` that came
+    // from a versioned installed pack. Optional so older backends — and older
+    // on-disk caches — that omit the field still parse; consumers fall back to
+    // the rule's own spec version. NOT the bundle version above — see
+    // installedRuleset's ruleVersions for the source of truth.
+    ruleVersions: z.record(z.string(), z.string()).optional(),
     customKeywords: z.array(z.string()),
     fetchedAt: z.iso.datetime(),
   })

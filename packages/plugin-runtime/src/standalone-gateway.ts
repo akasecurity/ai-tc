@@ -92,7 +92,8 @@ export class StandaloneDataGateway implements DataGateway {
 
   // The id is minted inside the repository from the natural key — the plugin can't
   // import @akasecurity/persistence to compute it, so the gateway is the boundary that
-  // hands the natural key across. INSERT OR IGNORE → idempotent re-reads.
+  // hands the natural key across. UPSERT-take-MAX → idempotent re-reads that also
+  // converge a streaming partial/final split (see insertLlmCall).
   recordLlmCall(input: LlmCallInput): Promise<void> {
     this.db.auditEvents.insertLlmCall(input);
     return Promise.resolve();
@@ -137,7 +138,9 @@ export class StandaloneDataGateway implements DataGateway {
   // caller's transaction (Layer 2b). The audit-event id the findings FK into is the
   // SAME content-addressed `toolCallId` the leaf insert mints, so both re-read
   // idempotently. Definitions/classified-data are idempotent upserts; findings are
-  // content-addressed INSERT OR IGNORE.
+  // content-addressed upserts (ON CONFLICT(id) DO UPDATE SET inspection_definition_id),
+  // so a re-detection under a bumped rule version repoints the definition FK rather
+  // than no-opping.
   private writeToolCall(input: ToolCallInput): void {
     this.db.auditEvents.insertToolCall(input);
     if (input.inspections.length === 0) return;
@@ -157,7 +160,7 @@ export class StandaloneDataGateway implements DataGateway {
       });
       const classifiedDataId = this.db.classifiedData.upsert({ class: insp.category });
       this.db.inspectionFindings.insertFinding({
-        id: inspectionFindingId(auditEventId, definitionId, insp.span.start, insp.span.end),
+        id: inspectionFindingId(auditEventId, insp.ruleId, insp.span.start, insp.span.end),
         auditEventId,
         inspectionDefinitionId: definitionId,
         classifiedDataId,
@@ -208,14 +211,27 @@ export class StandaloneDataGateway implements DataGateway {
   //     "detect nothing" (that is expressed by disabling packs, handled above);
   //   - otherwise → the enabled packs' validated rules, marked complete.
   private installedScanRules():
-    { rules: Rule[]; ruleActions: Map<string, ActionTaken>; complete: true } | undefined {
+    | {
+        rules: Rule[];
+        ruleActions: Map<string, ActionTaken>;
+        ruleVersions: Map<string, string>;
+        complete: true;
+      }
+    | undefined {
     try {
       const snapshot = this.db.installedPacks.installedRuleset();
       if (snapshot.installedPacks === 0) return undefined;
-      if (snapshot.enabledPacks === 0) return { rules: [], ruleActions: new Map(), complete: true };
+      if (snapshot.enabledPacks === 0) {
+        return { rules: [], ruleActions: new Map(), ruleVersions: new Map(), complete: true };
+      }
       if (snapshot.invalidRules > 0) return undefined;
       if (snapshot.rules.length === 0) return undefined;
-      return { rules: snapshot.rules, ruleActions: snapshot.ruleActions, complete: true };
+      return {
+        rules: snapshot.rules,
+        ruleActions: snapshot.ruleActions,
+        ruleVersions: snapshot.ruleVersions,
+        complete: true,
+      };
     } catch {
       return undefined;
     }
@@ -267,6 +283,7 @@ export class StandaloneDataGateway implements DataGateway {
       policies: [...policies, ...rulePolicies],
       rules: installed ? installed.rules : [],
       ...(installed ? { rulesComplete: true } : {}),
+      ...(installed ? { ruleVersions: Object.fromEntries(installed.ruleVersions) } : {}),
       ...(exceptions !== undefined ? { exceptions } : {}),
       customKeywords,
       fetchedAt: new Date().toISOString(),

@@ -35,10 +35,16 @@ export function evidenceObjects(sql: string): EvidenceObject[] {
   return objects;
 }
 
-/** True when a schema object of `kind` named `name` exists in sqlite_master. */
+/**
+ * True when a schema object of `kind` named `name` exists in sqlite_master.
+ * `kind` distinguishes a real table from a same-named VIEW — sqlite_master
+ * tags them with different `type` values, so a probe for `'table'` correctly
+ * reports false once a dropped-then-viewed name (e.g. the legacy `events`/
+ * `findings` compatibility views) is no longer a real table.
+ */
 export function schemaObjectExists(
   db: DatabaseSync,
-  kind: 'table' | 'index',
+  kind: 'table' | 'index' | 'view',
   name: string,
 ): boolean {
   const row = db

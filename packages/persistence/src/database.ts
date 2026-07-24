@@ -14,8 +14,14 @@ import type {
   ProjectFilesScan,
   ResolvedInventory,
 } from '@akasecurity/schema';
-import { isoToEpochMillis } from '@akasecurity/schema';
+import {
+  captureDefinitionVersion,
+  isoToEpochMillis,
+  toCaptureAttributes,
+  toCaptureDefinitionInput,
+} from '@akasecurity/schema';
 
+import { captureId } from './ids.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
@@ -106,18 +112,20 @@ export interface LocalDatabase {
   // embedded audit timeline) reconstructed from the audit_events store. Read by the
   // OSS web-ui.
   readonly activity: SqliteActivityRepository;
-  // Meta data-model repositories. The live capture path writes
-  // events/findings; these populate the generalized
-  // inventory/audit/inspection tables.
+  // Meta data-model repositories — the generalized inventory/audit/inspection
+  // tables recordCapture (below) and recordConfigScan write into.
   readonly inventory: SqliteInventoryRepository;
   readonly sourceProject: SqliteSourceProjectRepository;
   readonly auditEvents: SqliteAuditEventsRepository;
   readonly classifiedData: SqliteClassifiedDataRepository;
   readonly inspectionDefinitions: SqliteInspectionDefinitionsRepository;
   readonly inspectionFindings: SqliteInspectionFindingsRepository;
-  // Atomic event + findings write. findings are already-masked DetectedFinding[]
-  // (the SDK masks before calling). Fail-open: a locked/corrupt DB or a bad row
-  // rolls back and is swallowed — dropping telemetry never breaks a session.
+  // Atomic capture write: one audit_events row (event_type = the capture's
+  // kind) plus one inspection_findings row per already-masked
+  // DetectedFinding[] (the SDK masks before calling), resolving each finding's
+  // inspection_definitions row from its ruleId. Fail-open: a locked/corrupt DB
+  // or a bad row rolls back and is swallowed — dropping telemetry never breaks
+  // a session.
   recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
@@ -212,7 +220,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     );
   }
 
-  applyMigrations(db);
+  applyMigrations(db, file);
   tightenPerms(file);
 
   const events = new SqliteEventsRepository(db);
@@ -243,11 +251,90 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
     failOpenTransaction(db, () => {
-      events.insertEvent(event);
-      // Scope dedup to the event's session so one sensitive value crossing
-      // several surfaces in one action (prompt → tool call) is recorded once.
       const sessionId = event.metadata?.sessionId;
-      findings.insertFindings(detected, sessionId ? { sessionId } : {});
+
+      // Plant the session's structural root before the capture's own row FKs
+      // onto it (see auditEvents.ensureSessionRoot for why this ordering is
+      // load-bearing — INSERT OR IGNORE does not suppress a foreign-key
+      // violation, so without the root the whole capture would roll back).
+      if (sessionId) {
+        auditEvents.ensureSessionRoot(sessionId, event.occurredAt);
+      }
+
+      // The capture's own audit row. Content-addressed on (sessionId,
+      // contentHash, filePath) — captureId — so re-ingesting identical content in
+      // the same session never duplicates it, yet two DISTINCT files with
+      // byte-identical content stay two rows (see captureId). All four capture
+      // kinds (prompt/response/code_change/tool_use) map onto AuditEventType as
+      // themselves — see the superset invariant documented there.
+      const auditEventId = captureId(
+        sessionId ?? null,
+        event.contentHash,
+        event.metadata?.filePath ?? null,
+      );
+      auditEvents.insertAuditEvent({
+        id: auditEventId,
+        eventType: event.kind,
+        startedAt: event.occurredAt,
+        parentId: sessionId,
+        rootSessionId: sessionId,
+        content: event.content,
+        contentHash: event.contentHash,
+        attributes: toCaptureAttributes(event),
+      });
+
+      // Definitions first, keyed by (ruleId, version) — mirrors
+      // recordConfigScan's structure — so each finding resolves its
+      // content-addressed definition id without minting one itself. The capture
+      // path's version folds in category+severity (captureDefinitionVersion), so
+      // the map collapses to one definition upsert per distinct
+      // (ruleId, category, severity) — a pack update that reclassifies a rule
+      // mints a new definition row rather than being frozen at first-write.
+      const definitionIds = new Map<string, string>();
+      for (const finding of detected) {
+        // Scope dedup to the event's session so one sensitive value crossing
+        // several surfaces in one action (prompt → tool call) is recorded
+        // once — the legacy cross-surface guarantee, rejoined onto the
+        // generalized tables (see SqliteInspectionFindingsRepository).
+        if (
+          sessionId &&
+          inspectionFindings.isSessionDuplicate(finding.ruleId, finding.maskedMatch, sessionId)
+        ) {
+          continue;
+        }
+        // Guard against resubmitting the identical capture: the audit event
+        // row itself is content-addressed and idempotent (INSERT OR IGNORE),
+        // but an in-flight finding's own row id is a fresh random uuid per
+        // call, so without this check a replayed capture would duplicate its
+        // findings even though its parent event never duplicates.
+        if (
+          inspectionFindings.isEventDuplicate(
+            auditEventId,
+            finding.ruleId,
+            finding.maskedMatch,
+            finding.span.start,
+            finding.span.end,
+          )
+        ) {
+          continue;
+        }
+        const key = `${finding.ruleId}@${captureDefinitionVersion(finding)}`;
+        let definitionId = definitionIds.get(key);
+        if (!definitionId) {
+          definitionId = inspectionDefinitions.upsert(toCaptureDefinitionInput(finding));
+          definitionIds.set(key, definitionId);
+        }
+        inspectionFindings.insertFinding({
+          id: finding.id,
+          auditEventId,
+          inspectionDefinitionId: definitionId,
+          span: finding.span,
+          maskedMatch: finding.maskedMatch,
+          actionTaken: finding.actionTaken,
+          confidence: finding.confidence,
+          findingKey: finding.findingKey ?? undefined,
+        });
+      }
     });
   }
 

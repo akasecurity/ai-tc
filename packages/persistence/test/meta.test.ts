@@ -8,6 +8,7 @@ import type { AuditEventInput, InventoryInput, SourceProjectInput } from '@akase
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type InventoryContext, openLocalDatabase } from '../src/database.ts';
+import { inspectionFindingId } from '../src/ids.ts';
 
 let dir: string;
 
@@ -303,6 +304,75 @@ describe('audit events + inspection findings', () => {
       }),
     ).toBe(definitionId);
     expect(count(r, 'inspection_definitions')).toBe(1);
+    r.close();
+    db.close();
+  });
+
+  // The finding id is content-addressed on (auditEventId, ruleId, span), not the
+  // inspection_definition id, so a pack update that bumps the rule's version
+  // re-detects the SAME finding id — the insert's ON CONFLICT DO UPDATE must
+  // refresh the stale definition reference rather than leaving it pointed at
+  // the pre-bump row.
+  it('insertFinding refreshes inspection_definition_id on conflict (re-detection under a bumped rule version)', () => {
+    const db = openLocalDatabase(dir);
+    db.ensureInventory(context);
+
+    const auditEventId = randomUUID();
+    db.auditEvents.insertAuditEvent({
+      id: auditEventId,
+      eventType: 'prompt',
+      startedAt: new Date().toISOString(),
+    });
+
+    const oldDefinitionId = db.inspectionDefinitions.upsert({
+      ruleId: 'secrets/aws-access-key',
+      version: '1.0.0',
+      name: 'AWS access key',
+      category: 'secret',
+      severity: 'critical',
+      definition: '{"matcher":"regex"}',
+    });
+    const findingId = inspectionFindingId(auditEventId, 'secrets/aws-access-key', 14, 34);
+    db.inspectionFindings.insertFinding({
+      id: findingId,
+      auditEventId,
+      inspectionDefinitionId: oldDefinitionId,
+      span: { start: 14, end: 34 },
+      maskedMatch: 'AKIA…MPLE',
+      actionTaken: 'block',
+      confidence: 0.9,
+    });
+
+    // The pack bumps the rule's version — a new definition row, same rule id.
+    const newDefinitionId = db.inspectionDefinitions.upsert({
+      ruleId: 'secrets/aws-access-key',
+      version: '1.1.0',
+      name: 'AWS access key',
+      category: 'secret',
+      severity: 'critical',
+      definition: '{"matcher":"regex"}',
+    });
+    expect(newDefinitionId).not.toBe(oldDefinitionId);
+
+    // Same finding id (ruleId is unchanged), re-detected under the new
+    // definition: the conflict refreshes the reference instead of duplicating
+    // the row or leaving it pointed at the stale definition.
+    db.inspectionFindings.insertFinding({
+      id: findingId,
+      auditEventId,
+      inspectionDefinitionId: newDefinitionId,
+      span: { start: 14, end: 34 },
+      maskedMatch: 'AKIA…MPLE',
+      actionTaken: 'block',
+      confidence: 0.9,
+    });
+
+    const r = raw();
+    expect(count(r, 'inspection_findings')).toBe(1);
+    const row = r
+      .prepare('SELECT inspection_definition_id FROM inspection_findings WHERE id = ?')
+      .get(findingId) as { inspection_definition_id: string };
+    expect(row.inspection_definition_id).toBe(newDefinitionId);
     r.close();
     db.close();
   });

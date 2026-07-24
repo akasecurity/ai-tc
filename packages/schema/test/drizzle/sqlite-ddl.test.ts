@@ -19,13 +19,16 @@ interface JournalEntry {
   tag: string;
 }
 
+function readJournalEntries(): JournalEntry[] {
+  return (
+    JSON.parse(readFileSync(join(migrationsDir, 'meta', '_journal.json'), 'utf8')) as {
+      entries: JournalEntry[];
+    }
+  ).entries;
+}
+
 function readSourceMigrations(): { tag: string; sql: string }[] {
-  const journal = JSON.parse(
-    readFileSync(join(migrationsDir, 'meta', '_journal.json'), 'utf8'),
-  ) as {
-    entries: JournalEntry[];
-  };
-  return [...journal.entries]
+  return [...readJournalEntries()]
     .sort((a, b) => a.idx - b.idx)
     .map((e) => ({
       tag: e.tag,
@@ -43,6 +46,26 @@ describe('SQLITE_MIGRATIONS', () => {
   it('is ordered by journal idx (apply order)', () => {
     const tags = SQLITE_MIGRATIONS.map((m) => m.tag);
     expect(tags).toEqual([...tags].sort());
+  });
+
+  // A stack cut before a since-merged migration and then rebased/merged forward
+  // can re-use an idx (two migrations at the same idx) — a collision the
+  // ordered-by-tag test above does NOT catch, because lexically sorted tags can
+  // still equal themselves. Assert the journal's idx values are unique and
+  // contiguous from 0 so a renumber collision fails CI instead of silently
+  // shipping a forked drizzle snapshot lineage.
+  it('journal idx values are unique and contiguous from 0', () => {
+    const idxs = readJournalEntries()
+      .map((e) => e.idx)
+      .sort((a, b) => a - b);
+    expect(new Set(idxs).size).toBe(idxs.length); // no duplicate idx
+    expect(idxs).toEqual(idxs.map((_, i) => i)); // 0,1,2,… no gap
+  });
+
+  it('every journal tag has a migration .sql file on disk (renumber leaves no orphan tag)', () => {
+    for (const e of readJournalEntries()) {
+      expect(() => readFileSync(join(migrationsDir, `${e.tag}.sql`), 'utf8')).not.toThrow();
+    }
   });
 
   it('contains no carriage returns (generator EOL-normalizes)', () => {

@@ -34,6 +34,7 @@ import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
 import { parsePosture } from './onboard-posture.ts';
 import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
+import { MODEL_JUDGE_PAYLOAD_VERSION } from './triage/consent.ts';
 
 // Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
 // positionals are ignored — the wizard only ever passes the ones it knows.
@@ -77,6 +78,16 @@ if (rawHistorical !== undefined) {
   if (!parsed.success)
     fail(`invalid --historical "${rawHistorical}" (expected full or session-only)`);
   else answers.historicalAccess = parsed.data;
+}
+
+// The distinct consent for sending findings to the model API (separate from
+// --historical, which only governs reading transcripts). A boolean flag: its
+// presence records consent against the current payload-shape version.
+if (process.argv.includes('--model-judge-consent')) {
+  answers.modelJudgeConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+  };
 }
 
 const rawPosture = flags.get('posture');

@@ -35,6 +35,7 @@ describe('store-read failure mid-wizard completes fail-open, end-to-end', () => 
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     // A real backfill populates the store from the seeded history.
     const triage = journey.backfillTriage().stdout;

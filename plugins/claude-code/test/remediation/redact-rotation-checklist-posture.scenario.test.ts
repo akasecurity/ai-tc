@@ -65,6 +65,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage).stdout;
     CalibrationFrame.parse(readFrameJsonBlock(preview));
@@ -195,6 +196,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage).stdout;
     CalibrationFrame.parse(readFrameJsonBlock(preview));

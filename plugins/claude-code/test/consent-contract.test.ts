@@ -75,11 +75,19 @@ describe('Leg 1 — "Yes, scan" records the historical-review consent without br
   });
 
   it('persists no scope field beyond the schema — nothing broadened', () => {
-    // The persisted object carries exactly the WorkspaceSettings fields, so the
+    // Every persisted key is a known WorkspaceSettings field, so the
     // single-question surface grants no extra scope key. historicalAccess is the
-    // sole consent-bearing field; the schema encodes the one-time/revocable
-    // semantics in that enum value, not in any additional marker.
-    expect(Object.keys(persistedRaw).sort()).toEqual(Object.keys(WorkspaceSettings.shape).sort());
+    // sole consent-bearing field this leg records; the schema encodes the
+    // one-time/revocable semantics in that enum value, not in any additional
+    // marker. Optional consent fields the schema now defines but this leg never
+    // grants (e.g. modelJudgeConsent — the DISTINCT model-judge egress consent)
+    // are legitimately ABSENT here, so this is a subset check, not equality.
+    const schemaKeys = new Set(Object.keys(WorkspaceSettings.shape));
+    for (const key of Object.keys(persistedRaw)) {
+      expect(schemaKeys.has(key)).toBe(true);
+    }
+    // And this leg specifically did NOT broaden into the model-judge egress.
+    expect(Object.keys(persistedRaw)).not.toContain('modelJudgeConsent');
   });
 
   it('leaves the full-access grant revocable at the same onboarding surface', () => {

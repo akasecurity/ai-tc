@@ -63,6 +63,7 @@ describe('finding narration grounds end-to-end over the real calibration preview
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage);
@@ -208,6 +209,7 @@ describe('fail-open leg: the narration signal is absent — both the calibration
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage);

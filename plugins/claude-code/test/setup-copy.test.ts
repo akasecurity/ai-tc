@@ -33,6 +33,51 @@ describe('setup.md 0.3 scan-offer copy', () => {
   });
 });
 
+// The step-3 model-judge consent gate is prompt-authored orchestration in
+// commands/setup.md: a DISTINCT opt-in, separate from the step-1 historical ask,
+// collected BEFORE the judging pipe. These guards pin the disclosure copy, the
+// picker options, and the consent/decline routing so a regression fails CI rather
+// than only the manual walkthrough.
+describe('setup.md step-3 model-judge consent gate', () => {
+  // The gate's own section — from the step-3 heading up to (not including) the
+  // next '## 4' heading — so the routing guards below stay scoped to step 3.
+  const step3Start = setupMd.indexOf('## 3. Run the evidence triage');
+  const step3End = setupMd.indexOf('\n## 4', step3Start);
+  const step3 = setupMd.slice(step3Start, step3End === -1 ? undefined : step3End);
+
+  it('discloses that rawMatch plus a masked context window is sent, and filePath is not', () => {
+    expect(step3).toContain('`rawMatch`');
+    expect(step3).toContain('**masked**');
+    expect(step3).toContain('**`filePath` is not sent**');
+  });
+
+  it('names it a distinct egress, separate from the historical-read consent', () => {
+    expect(step3).toContain('separate egress');
+    expect(step3).toContain('its own explicit grant');
+  });
+
+  it('carries the consent picker question and both option labels verbatim', () => {
+    expect(step3).toContain('Send findings to the model to sort real leaks from noise?');
+    expect(step3).toContain('Yes, send them');
+    expect(step3).toContain('Not now');
+  });
+
+  it('records consent via onboard.js --model-judge-consent on the Yes path, before the pipe', () => {
+    const consentIdx = step3.indexOf('onboard.js" --model-judge-consent');
+    const pipeIdx = step3.indexOf('backfill.js" --triage | node');
+    expect(consentIdx).toBeGreaterThanOrEqual(0);
+    expect(pipeIdx).toBeGreaterThanOrEqual(0);
+    // Consent is recorded before the judging pipe runs.
+    expect(consentIdx).toBeLessThan(pipeIdx);
+  });
+
+  it('falls back to the severity floor and skips judging on the Not-now decline', () => {
+    expect(step3).toContain('If the user chose "Not now"');
+    expect(step3).toContain('onboard.js" --floor');
+    expect(step3).toContain('do **not** run the pipe');
+  });
+});
+
 // The 0.3b Not-now branch is prompt-authored orchestration in commands/setup.md:
 // on 'Not now' the wizard runs start-light.js, adjusts via AskUserQuestion, writes
 // the chosen posture, and rejoins the spine at the applying frame. These guards pin

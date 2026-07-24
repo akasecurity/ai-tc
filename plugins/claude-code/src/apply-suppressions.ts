@@ -29,6 +29,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { runApply } from './triage/adapter.ts';
+import { isModelJudgeConsentValid } from './triage/consent.ts';
 import { runJudge, spawnClaude } from './triage/judge.ts';
 
 function fail(message: string): never {
@@ -63,6 +64,10 @@ async function main(): Promise<void> {
     readStream: (streamPath) =>
       streamPath !== undefined ? readFileSync(streamPath, 'utf8') : readFileSync(0, 'utf8'),
     runJudge: (hits) => runJudge(hits, { spawn: spawnClaude, loadRubric }),
+    // The distinct model-judge egress consent, read from settings.json. When it
+    // is absent or stale the preview skips the judge instead of sending findings
+    // to the model API.
+    modelJudgeConsent: () => isModelJudgeConsentValid(loadConfig().settings.modelJudgeConsent),
     openDb: () => {
       const db = openLocalDatabase(loadConfig().dataDir);
       return {

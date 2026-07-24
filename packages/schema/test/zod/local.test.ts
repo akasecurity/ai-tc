@@ -40,6 +40,27 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     expect(defaultWorkspaceSettings()).toEqual(WorkspaceSettings.parse({}));
   });
 
+  it('leaves modelJudgeConsent absent by default (opt-in, never assumed)', () => {
+    expect(WorkspaceSettings.parse({}).modelJudgeConsent).toBeUndefined();
+  });
+
+  it('round-trips a valid modelJudgeConsent and rejects a malformed one', () => {
+    const consent = { acknowledgedAt: ISO, payloadVersion: 1 };
+    expect(WorkspaceSettings.parse({ modelJudgeConsent: consent }).modelJudgeConsent).toEqual(
+      consent,
+    );
+    // payloadVersion must be a positive integer; acknowledgedAt an ISO datetime.
+    expect(
+      WorkspaceSettings.safeParse({ modelJudgeConsent: { acknowledgedAt: ISO, payloadVersion: 0 } })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkspaceSettings.safeParse({
+        modelJudgeConsent: { acknowledgedAt: 'not-a-date', payloadVersion: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a fully onboarded file and rejects unknown enum values', () => {
     expect(
       WorkspaceSettings.safeParse({

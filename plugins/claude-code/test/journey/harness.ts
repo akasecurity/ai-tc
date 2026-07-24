@@ -234,6 +234,14 @@ export class SetupJourney {
     return this.run('onboard.js', ['--historical', access]);
   }
 
+  // Consent side effect — record the DISTINCT model-judge egress consent the
+  // wizard collects (step 3) before piping findings into the judge. Separate
+  // from onboardHistorical: without it the apply-suppressions preview skips the
+  // judge cleanly instead of sending anything to the model.
+  onboardModelJudge(): StepResult {
+    return this.run('onboard.js', ['--model-judge-consent']);
+  }
+
   // Out-of-band posture write, e.g. a pack the user hardened before running the
   // wizard — used to prove the confirm write never downgrades it.
   onboardPosture(posture: Record<string, string>): StepResult {

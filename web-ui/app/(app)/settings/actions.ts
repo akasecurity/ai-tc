@@ -1,7 +1,11 @@
 'use server';
 
 import { applyOnboarding } from '@akasecurity/persistence';
-import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+import {
+  HistoricalAccess,
+  MODEL_JUDGE_PAYLOAD_VERSION,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
@@ -20,6 +24,9 @@ export interface SaveSettingsResult {
 export async function saveSettings(input: {
   policy: string;
   historicalAccess: string;
+  // Present (truthy) grants the distinct model-judge egress consent; absent /
+  // undefined revokes it. Re-stamped server-side at the current payload version.
+  modelJudgeConsent?: { acknowledgedAt: string; payloadVersion: number } | undefined;
 }): Promise<SaveSettingsResult> {
   const policy = SimpleDetectionPolicy.safeParse(input.policy);
   const historicalAccess = HistoricalAccess.safeParse(input.historicalAccess);
@@ -27,7 +34,15 @@ export async function saveSettings(input: {
     return { ok: false, error: 'Invalid settings value.' };
   }
   try {
-    applyOnboarding({ policy: policy.data, historicalAccess: historicalAccess.data });
+    applyOnboarding({
+      policy: policy.data,
+      historicalAccess: historicalAccess.data,
+      // Grant records fresh consent at the current payload version; revoke
+      // clears it (undefined ⇒ dropped by the schema on the merged write).
+      modelJudgeConsent: input.modelJudgeConsent
+        ? { acknowledgedAt: new Date().toISOString(), payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION }
+        : undefined,
+    });
   } catch {
     return { ok: false, error: 'Could not write settings.json.' };
   }

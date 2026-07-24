@@ -73,6 +73,10 @@ export interface AdapterDeps {
   readStream: (streamPath: string | undefined) => string;
   // Called ONLY on the preview path. The ephemeral judge subprocess.
   runJudge: (hits: readonly TriageHit[]) => TriageRecommendation;
+  // Whether the user granted the distinct consent to send findings to the model
+  // API. Separate from historical-access (which gates READING transcripts): when
+  // this is false the preview skips the judge cleanly instead of running it.
+  modelJudgeConsent: () => boolean;
   openDb: () => AdapterDb;
   now: () => number;
   createdBy: () => string;
@@ -145,6 +149,15 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // examined, so this must not borrow the looked-and-found-nothing copy above:
     // that would report a clean bill of health for a scan that never ran.
     deps.stdout(show("I didn't review anything — historical access wasn't granted."));
+    return 0;
+  }
+
+  // Sending findings to the model is a distinct opt-in, separate from the
+  // historical-access grant that let the backfill READ these hits. Without it
+  // the judge never runs — emit a clean skip (never throw, never call runJudge),
+  // mirroring the no-consent skip copy above.
+  if (!deps.modelJudgeConsent()) {
+    deps.stdout(show("I didn't send anything to the model — model-judge consent wasn't granted."));
     return 0;
   }
 

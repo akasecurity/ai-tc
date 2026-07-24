@@ -32,8 +32,13 @@ import type { Rule } from './rule.ts';
 
 // Bumped whenever WorkspaceSettings gains or loses a field, so the loader can
 // migrate an older settings.json. v2 added historicalAccess; v3 added
-// dataSharesInPlace.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 3;
+// dataSharesInPlace; v4 added modelJudgeConsent.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 4;
+
+// The payload-shape version the /aka:setup model-judge sends to the model API.
+// Recorded alongside a user's modelJudgeConsent so a consent granted against an
+// older payload shape stops counting once this is bumped.
+export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
 // How the plugin runs. Single-valued: the plugin operates entirely against the
 // local store. Kept as an enum so the settings file stays explicit and the
@@ -82,6 +87,16 @@ export const WorkspaceSettings = z.object({
   dataSharesInPlace: z.boolean().default(true),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
+  // Records that the user consented to sending findings to the model API for
+  // the /aka:setup judge, along with the payload-shape version they agreed to.
+  // Absent until granted; a stale payloadVersion means the consent no longer
+  // covers the current payload and must be re-granted.
+  modelJudgeConsent: z
+    .object({
+      acknowledgedAt: z.iso.datetime(),
+      payloadVersion: z.number().int().positive(),
+    })
+    .optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 

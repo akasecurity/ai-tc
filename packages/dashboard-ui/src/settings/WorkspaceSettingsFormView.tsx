@@ -1,5 +1,6 @@
 'use client';
 import type { WorkspaceSettings } from '@akasecurity/schema';
+import { MODEL_JUDGE_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -43,6 +44,33 @@ const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[] = [
     value: 'full',
     label: 'Full',
     description: 'Pre-install surfaces (existing configs, history) may be scanned too.',
+  },
+];
+
+// The distinct consent for the /aka:setup model-judge egress — separate from
+// historical access, which only governs READING local transcripts. This grants
+// or revokes sending findings to the model API for triage.
+type ModelJudgeChoice = 'granted' | 'revoked';
+
+export const MODEL_JUDGE_SECTION_LABEL = 'Model-judge consent';
+
+export const MODEL_JUDGE_SECTION_DESCRIPTION =
+  'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
+  'send findings to the model API to sort real leaks from noise. The file path is never sent ' +
+  'and the surrounding context is masked.';
+
+export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not granted',
+    description:
+      'The setup scan will not send findings to the model API (default — never assumed).',
+  },
+  {
+    value: 'granted',
+    label: 'Granted',
+    description:
+      'The setup scan may send each finding and a masked context window to the model API to sort real leaks from noise.',
   },
 ];
 
@@ -90,7 +118,13 @@ function ChoiceGroup<T extends string>({
 
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
-  onSave: (changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'>) => void;
+  // modelJudgeConsent is spelled explicitly (not folded into the Pick) so a
+  // revoke can pass an explicit `undefined` under exactOptionalPropertyTypes.
+  onSave: (
+    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'> & {
+      modelJudgeConsent?: WorkspaceSettings['modelJudgeConsent'];
+    },
+  ) => void;
   busy?: boolean;
   error?: string | null;
   saved?: boolean;
@@ -109,7 +143,13 @@ export function WorkspaceSettingsFormView({
 }: WorkspaceSettingsFormViewProps) {
   const [policy, setPolicy] = useState(settings.policy);
   const [historicalAccess, setHistoricalAccess] = useState(settings.historicalAccess);
-  const dirty = policy !== settings.policy || historicalAccess !== settings.historicalAccess;
+  const initialModelJudge: ModelJudgeChoice =
+    settings.modelJudgeConsent !== undefined ? 'granted' : 'revoked';
+  const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  const dirty =
+    policy !== settings.policy ||
+    historicalAccess !== settings.historicalAccess ||
+    modelJudge !== initialModelJudge;
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -132,6 +172,17 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <SectionLabel>{MODEL_JUDGE_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{MODEL_JUDGE_SECTION_DESCRIPTION}</p>
+        <ChoiceGroup
+          name="modelJudgeConsent"
+          choices={MODEL_JUDGE_CHOICES}
+          value={modelJudge}
+          onChange={setModelJudge}
+        />
+      </section>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
@@ -139,7 +190,19 @@ export function WorkspaceSettingsFormView({
           size="sm"
           disabled={!dirty || busy}
           onClick={() => {
-            onSave({ policy, historicalAccess });
+            onSave({
+              policy,
+              historicalAccess,
+              // Grant records consent at the current payload version; revoke
+              // clears it (undefined ⇒ omitted on the next settings write).
+              modelJudgeConsent:
+                modelJudge === 'granted'
+                  ? {
+                      acknowledgedAt: new Date().toISOString(),
+                      payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+                    }
+                  : undefined,
+            });
           }}
         >
           {busy ? 'Saving…' : 'Save changes'}

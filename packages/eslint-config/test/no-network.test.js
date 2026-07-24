@@ -63,11 +63,20 @@ const EXPECTED_MODULES = [
   'node-fetch',
 ];
 const EXPECTED_GLOBALS = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'WebTransport'];
+// The npm HTTP clients whose subpaths must also be banned (`paths` is exact, so
+// a deep import like `axios/lib/adapters/http.js` slips the root ban). Pinned so
+// dropping a `<client>/*` group is a reviewed change, not a silent shrink.
+const EXPECTED_MODULE_PATTERNS = ['axios/*', 'undici/*', 'got/*', 'node-fetch/*'];
 
 describe('ban set (drift guards)', () => {
   it('no-restricted-imports bans exactly the expected module set', () => {
     const actual = noNetworkImports()[1].paths.map((p) => p.name);
     expect([...actual].sort()).toEqual([...EXPECTED_MODULES].sort());
+  });
+
+  it('no-restricted-imports bans exactly the expected subpath patterns', () => {
+    const actual = noNetworkImports()[1].patterns.map((p) => p.group[0]);
+    expect([...actual].sort()).toEqual([...EXPECTED_MODULE_PATTERNS].sort());
   });
 
   it('no-restricted-globals bans exactly the expected global set', () => {
@@ -203,6 +212,46 @@ describe('no-network static imports', () => {
   });
 });
 
+describe('no-network subpath imports (npm HTTP clients)', () => {
+  // `paths` is exact-match, so the root ban misses a deep import; a `<client>/*`
+  // pattern closes it. These pin that the subpath ban fires in every import form.
+  it.each([
+    'axios/lib/adapters/http.js',
+    'undici/types/dispatcher',
+    'got/dist/source',
+    'node-fetch/lib/index.js',
+  ])('flags a deep static import of %s', (mod) => {
+    const messages = lintNetwork(`import x from '${mod}';`);
+    expect(messages.map((m) => m.ruleId)).toContain('no-restricted-imports');
+  });
+
+  it('flags a deep dynamic import and a deep require of a client subpath', () => {
+    expect(
+      lintNetwork("await import('axios/lib/adapters/http.js');").map((m) => m.ruleId),
+    ).toContain('no-restricted-syntax');
+    expect(lintNetwork("require('undici/types/dispatcher');").map((m) => m.ruleId)).toContain(
+      'no-restricted-syntax',
+    );
+  });
+
+  it('does NOT flag a package that merely shares a name prefix, or a local subpath', () => {
+    // `got/*` must not match `got-cha`; a local-store subpath is fine.
+    expect(lintNetwork("import g from 'got-cha/client';")).toHaveLength(0);
+    expect(lintNetwork("import { x } from '@akasecurity/persistence/read';")).toHaveLength(0);
+  });
+
+  it('the subpath ban is allow-aware (opting out a client clears its subpaths)', () => {
+    expect(
+      lintNetwork("import x from 'axios/lib/adapters/http.js';", { allow: ['axios'] }),
+    ).toHaveLength(0);
+    expect(lintNetwork("await import('axios/lib/x.js');", { allow: ['axios'] })).toHaveLength(0);
+    // but a different client stays banned under the same opt-out
+    expect(
+      lintNetwork("import u from 'undici/x.js';", { allow: ['axios'] }).map((m) => m.ruleId),
+    ).toContain('no-restricted-imports');
+  });
+});
+
 describe('no-network dynamic imports and require', () => {
   it.each(EXPECTED_MODULES)("flags a dynamic import('%s')", (mod) => {
     const messages = lintNetwork(`await import('${mod}');`);
@@ -288,5 +337,19 @@ describe('noEnterpriseImports merge', () => {
     });
     expect(messages).toHaveLength(1);
     expect(messages[0].message).toContain('enterprise-only');
+  });
+
+  it('keeps BOTH pattern groups (network subpaths + enterprise) after the merge', () => {
+    // The network `<client>/*` groups are prepended to noEnterpriseImports' own
+    // `patterns` (drizzle-orm/*, schema-enterprise/*). A regressed merge that
+    // declared only enterprise patterns would drop the network subpath ban.
+    const deep = lintWithRules("import x from 'axios/lib/adapters/http.js';", {
+      'no-restricted-imports': ruleValue,
+    });
+    expect(deep.map((m) => m.ruleId)).toContain('no-restricted-imports');
+    const ent = lintWithRules("import s from 'drizzle-orm/sqlite-core';", {
+      'no-restricted-imports': ruleValue,
+    });
+    expect(ent.map((m) => m.ruleId)).toContain('no-restricted-imports');
   });
 });

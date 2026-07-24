@@ -57,6 +57,13 @@ const NETWORK_MODULES = [
   'node-fetch',
 ];
 
+// The npm HTTP clients from NETWORK_MODULES. `no-restricted-imports` `paths`
+// matches only the exact specifier, so a deep import (`axios/lib/adapters/http.js`)
+// would slip the root ban; a `<client>/*` pattern closes every subpath. Node
+// builtins need no equivalent — they expose no deep network specifier beyond the
+// `node:dns/promises` form already listed above.
+const NETWORK_PACKAGE_CLIENTS = ['axios', 'undici', 'got', 'node-fetch'];
+
 // Escape a specifier for embedding in the esquery attribute regexes below. The
 // character class includes `/` so a subpath specifier like `node:dns/promises`
 // cannot close the `/…/` regex literal early.
@@ -77,7 +84,13 @@ export function noNetworkGlobals() {
 /**
  * The `no-restricted-properties` rule value that bans container-global access to
  * the network primitives (e.g. `globalThis.fetch`, `window.WebSocket`), closing
- * the member-access bypass that `no-restricted-globals` cannot see.
+ * the member-access bypass that `no-restricted-globals` cannot see. It also
+ * covers computed indexing (`globalThis['fetch']`) and destructuring
+ * (`const { fetch } = globalThis`) — `no-restricted-properties` matches those
+ * forms too. The one residual is a false positive, not a bypass: the rule keys
+ * on the identifier name, so a local variable named `window`/`self`/`global`/
+ * `globalThis`/`navigator` carrying a `.fetch`/`.sendBeacon` property would be
+ * flagged (none exist today).
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function noNetworkProperties() {
@@ -99,8 +112,10 @@ export function noNetworkProperties() {
  * with any caller-supplied `paths`/`patterns`. Flat config never merges two
  * `no-restricted-imports` entries — the last one matching a file wins outright —
  * so a config layered on top of `base` must fold its extra restrictions in here
- * rather than declaring a second entry. `allow` drops specific specifiers so a
- * file with a genuine local-only use can opt out of just those.
+ * rather than declaring a second entry — including caller `patterns`, which the
+ * npm-client subpath bans below are prepended to. `allow` drops specific
+ * specifiers (and the matching `<client>/*` subpath group) so a file with a
+ * genuine local-only use can opt out of just those.
  * @param {{
  *   allow?: readonly string[],
  *   paths?: { name: string, message: string }[],
@@ -120,26 +135,41 @@ export function noNetworkImports(opts = {}) {
         })),
         ...paths,
       ],
-      patterns,
+      patterns: [
+        ...NETWORK_PACKAGE_CLIENTS.filter((name) => !allow.includes(name)).map((name) => ({
+          group: [`${name}/*`],
+          message: NO_NETWORK_MESSAGE,
+        })),
+        ...patterns,
+      ],
     },
   ]);
 }
 
 /**
  * The `no-restricted-syntax` rule value that bans *dynamic* access to the
- * network modules — `import('node:http')` and `require('axios')` — which the
- * static `no-restricted-imports` rule cannot see. A non-literal specifier
- * (`import(url)`) and `require.resolve(...)` are intentionally not matched.
- * `allow` drops specific specifiers, symmetric with `noNetworkImports`, so a
- * file that opts out of a static import can opt out of the dynamic form too.
+ * network modules — `import('node:http')` and `require('axios')`, plus any npm-
+ * client subpath (`import('axios/lib/adapters/http.js')`) — which the static
+ * `no-restricted-imports` rule cannot see. Intentionally NOT matched, since an
+ * esquery selector cannot follow a binding and the ban targets accidents rather
+ * than deliberate evasion: a non-literal specifier (`import(url)`, a template
+ * literal), `require.resolve(...)`, and an aliased/indirected require
+ * (`const req = createRequire(...); req('node:http')`). `allow` drops specific
+ * specifiers, symmetric with `noNetworkImports`, so a file that opts out of a
+ * static import can opt out of the dynamic form too.
  * @param {{ allow?: readonly string[] }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function noNetworkSyntax(opts = {}) {
   const { allow = [] } = opts;
-  const pattern = NETWORK_MODULES.filter((name) => !allow.includes(name))
-    .map(escapeForSelector)
-    .join('|');
+  const exact = NETWORK_MODULES.filter((name) => !allow.includes(name)).map(escapeForSelector);
+  // The npm clients also match any subpath, mirroring the `<client>/*` static
+  // ban. `escapeForSelector` escapes the trailing `/` so it cannot close the
+  // `/…/` regex literal early.
+  const clientSubpaths = NETWORK_PACKAGE_CLIENTS.filter((name) => !allow.includes(name)).map(
+    (name) => `${escapeForSelector(`${name}/`)}.*`,
+  );
+  const pattern = [...exact, ...clientSubpaths].join('|');
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
     {

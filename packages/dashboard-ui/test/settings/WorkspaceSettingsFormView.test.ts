@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { SETTINGS_PAGE_SUB } from '../../src/settings/copy.ts';
 import {
   HANDLING_SECTION_DESCRIPTION,
   POLICY_CHOICES,
@@ -7,11 +8,14 @@ import {
 
 // The global handling toggle (settings.policy) no longer drives runtime
 // enforcement — per-category Policies do. Guard against the copy regressing to
-// the old claims that this control has a live, altering effect.
-describe('WorkspaceSettingsFormView handling copy', () => {
-  const allCopy = [HANDLING_SECTION_DESCRIPTION, ...POLICY_CHOICES.map((c) => c.description)].join(
-    ' ',
-  );
+// the old claims that this control has a live, altering effect. The page head
+// (SETTINGS_PAGE_SUB) is folded in too, so it can't resurrect those claims either.
+describe('Settings copy', () => {
+  const allCopy = [
+    SETTINGS_PAGE_SUB,
+    HANDLING_SECTION_DESCRIPTION,
+    ...POLICY_CHOICES.map((c) => c.description),
+  ].join(' ');
 
   it('drops the now-false "nothing is altered" claim', () => {
     expect(allCopy).not.toMatch(/nothing is altered/i);

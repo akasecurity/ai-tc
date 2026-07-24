@@ -271,6 +271,7 @@ export {
 } from './updates/UpdateStatusCardView.tsx';
 
 // Settings views — the web twin of the `/aka:setup` wizard's editable knobs.
+export { SETTINGS_PAGE_SUB } from './settings/copy.ts';
 export {
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,

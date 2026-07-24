@@ -94,15 +94,46 @@ describe('runJudge', () => {
     });
 
     expect(seenArgv).toEqual(['-p', '--no-session-persistence', '--output-format', 'json']);
-    // The full raw hit (rawMatch + context) rides on stdin — that is the point;
+    // rawMatch rides on stdin — the rubric judges the actual value;
     // SKIP_PROMPT_HISTORY + --no-session-persistence keep it out of any
     // transcript, and stdin (unlike argv) keeps it off the process list and out
-    // of ARG_MAX.
+    // of ARG_MAX. filePath is dropped and context is masked before it crosses
+    // (covered below), so rawMatch is the only raw field that leaves.
     expect(seenStdin).toContain('AKIAIOSFODNN7EXAMPLE');
     expect(seenStdin).toContain('RUBRIC BODY');
     expect(seenEnv.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
 
     expect(rec.perCategory[0]?.action).toBe('block');
+  });
+
+  it('drops filePath from the judge payload (it encodes the OS username and project dirs)', () => {
+    let seenStdin = '';
+    runJudge([{ ...hit, filePath: '/Users/alicesecret/projects/topsecret/session.jsonl' }], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(seenStdin).not.toContain('alicesecret');
+    expect(seenStdin).not.toContain('topsecret');
+    expect(seenStdin).not.toContain('filePath');
+  });
+
+  it('masks a secret that appears only in the context window; rawMatch stays legible', () => {
+    // A second, distinct AWS key living ONLY in the surrounding context — not the
+    // finding's own value. It must not cross to the model.
+    const contextOnlySecret = ['AKIA', 'ZYXWVUTSRQPONMLK'].join('');
+    let seenStdin = '';
+    runJudge([{ ...hit, context: `aws_a=${hit.rawMatch} aws_b=${contextOnlySecret}` }], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(seenStdin).toContain(hit.rawMatch);
+    expect(seenStdin).not.toContain(contextOnlySecret);
   });
 
   it('passes the prompt on stdin, never in argv', () => {

@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { maskText } from '@akasecurity/plugin-sdk';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 
 import { parseRecommendation } from './parse-verdict.ts';
@@ -146,9 +147,22 @@ export interface JudgeDeps {
 // argv) so a large hit set never trips the OS's ARG_MAX and so raw can't leak
 // via a spawn error's argv-echoing `.message`. judgeEnv()'s env is what keeps
 // the prompt out of any transcript. Always cleans up the darwin config dir.
+// Minimize a hit before it crosses to the model. The rubric judges the actual
+// value, so rawMatch stays; the model does not need the provenance. filePath
+// encodes the OS username and every project directory name, so it is dropped.
+// context is a raw text window masked only for other overlapping findings, so it
+// is re-run through the full detection engine (maskText) to mask every secret in
+// the window. rawMatch is then the only raw field that leaves the machine.
+// maskText is fail-secure: a masking fault over-redacts, never leaks.
+export function toJudgePayload(hit: TriageHit): TriageHit {
+  const payload: TriageHit = { ...hit, context: maskText(hit.context) };
+  delete payload.filePath;
+  return payload;
+}
+
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
   const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
-  const hitsJsonl = hits.map((h) => JSON.stringify(h)).join('\n');
+  const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;

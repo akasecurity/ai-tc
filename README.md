@@ -6,6 +6,8 @@
 
 AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught locally: live detection and enforcement never send them to a model or a third party. The one exception is the opt-in `/aka:setup` calibration, which does send what its history scan finds to the model API to be rated.[^egress]
 
+`ai-tc` is the detection engine. For harness posture — safe-default permissions, structural command guards, and credential deny rules for Claude Code — pair it with [claude-tools](https://github.com/akasecurity/claude-tools). The two compose: posture from claude-tools, detection from ai-tc.
+
 ![Open source](https://img.shields.io/badge/Open_source-232F3E?style=flat-square)
 ![Local](https://img.shields.io/badge/Local-232F3E?style=flat-square)
 ![Claude Code + Claude Desktop](https://img.shields.io/badge/Claude_Code_+_Claude_Desktop-232F3E?style=flat-square)

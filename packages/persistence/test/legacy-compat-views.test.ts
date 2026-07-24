@@ -22,7 +22,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
@@ -32,6 +32,13 @@ import {
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
 } from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
+
+// This suite drives real on-disk SQLite migrations, a batched history backfill,
+// and pre-drop backups against temp stores — all fsync-bound work. On a
+// slow-flush filesystem (e.g. Windows CI, where flushes are slow and highly
+// variable) the heaviest cases run past vitest's 20s default, so give the whole
+// file generous headroom rather than let legitimate slow-disk timing trip it.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 let dir: string;
 

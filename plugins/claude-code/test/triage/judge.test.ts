@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { judgeEnv, parseVerdict, runJudge } from '../../src/triage/judge.ts';
+import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
 
 // A `claude -p --output-format json` envelope with `result` set to `text`.
 const envelope = (text: string): string => JSON.stringify({ result: text, is_error: false });
@@ -134,6 +134,20 @@ describe('runJudge', () => {
     });
     expect(seenStdin).toContain(hit.rawMatch);
     expect(seenStdin).not.toContain(contextOnlySecret);
+    // Positive check: masking stays SELECTIVE, not a blanket redaction. If
+    // maskText fell back to its fail-secure `[REDACTED]` path, the two assertions
+    // above would still hold while the window the judge relies on was gone — so
+    // pin that the non-secret structure of the context survives.
+    expect(seenStdin).toContain('aws_a=');
+  });
+
+  it('does not mutate the source hit (filePath/context survive for the writeback path)', () => {
+    // deriveSurfacedSecretFindings reads filePath/context off the ORIGINAL hits
+    // after runJudge; toJudgePayload must project a copy, never mutate in place.
+    const src: TriageHit = { ...hit, filePath: '/Users/x/p/session.jsonl' };
+    toJudgePayload(src);
+    expect(src.filePath).toBe('/Users/x/p/session.jsonl');
+    expect(src.context).toBe(hit.context);
   });
 
   it('passes the prompt on stdin, never in argv', () => {

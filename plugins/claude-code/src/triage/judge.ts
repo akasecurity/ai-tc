@@ -141,12 +141,6 @@ export interface JudgeDeps {
   loadRubric?: () => string;
 }
 
-// Build the judge prompt (rubric + raw hits as JSONL) and run it through the
-// ephemeral subprocess, returning the parsed verdict. The RAW hits ride in the
-// prompt on purpose (the rubric needs them); the prompt rides on stdin (not
-// argv) so a large hit set never trips the OS's ARG_MAX and so raw can't leak
-// via a spawn error's argv-echoing `.message`. judgeEnv()'s env is what keeps
-// the prompt out of any transcript. Always cleans up the darwin config dir.
 // Minimize a hit before it crosses to the model. The rubric judges the actual
 // value, so rawMatch stays; the model does not need the provenance. filePath
 // encodes the OS username and every project directory name, so it is dropped.
@@ -154,12 +148,21 @@ export interface JudgeDeps {
 // is re-run through the full detection engine (maskText) to mask every secret in
 // the window. rawMatch is then the only raw field that leaves the machine.
 // maskText is fail-secure: a masking fault over-redacts, never leaks.
+// The spread is load-bearing: it drops filePath from a COPY, never off the
+// source hit — the surfaced-secrets writeback still reads filePath off the
+// original in-memory hits, so mutating in place here would break that path.
 export function toJudgePayload(hit: TriageHit): TriageHit {
   const payload: TriageHit = { ...hit, context: maskText(hit.context) };
   delete payload.filePath;
   return payload;
 }
 
+// Build the judge prompt (rubric + raw hits as JSONL) and run it through the
+// ephemeral subprocess, returning the parsed verdict. The RAW hits ride in the
+// prompt on purpose (the rubric needs them); the prompt rides on stdin (not
+// argv) so a large hit set never trips the OS's ARG_MAX and so raw can't leak
+// via a spawn error's argv-echoing `.message`. judgeEnv()'s env is what keeps
+// the prompt out of any transcript. Always cleans up the darwin config dir.
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
   const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
   const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');

@@ -63,10 +63,13 @@ const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
 function seedPreCutoverFile(): string {
   const file = join(dir, DB_FILENAME);
   const raw = new DatabaseSync(file);
-  // Throwaway temp store: skip the per-statement fsync the default durable
-  // journal does for every migration DDL. That fsync is what dominates this
-  // fixture's cost on a slow-flush filesystem; the rows still commit to the
-  // file, which is all the openLocalDatabase reopen below needs.
+  // Fixture durability is irrelevant — the file is thrown away after the test.
+  // Replaying ~12 migrations against the default DELETE journal pays one fsync
+  // AND one rollback-journal file create/delete per statement, which on the
+  // Windows CI runner's NTFS (no fsync coalescing, slow metadata ops) under
+  // parallel test-file load overruns the timeout. MEMORY journal + synchronous
+  // OFF drop both costs; the on-disk file the migrations write is still a valid
+  // store for openLocalDatabase to reopen.
   raw.exec('PRAGMA journal_mode = MEMORY');
   raw.exec('PRAGMA synchronous = OFF');
   raw.exec('PRAGMA foreign_keys = ON');

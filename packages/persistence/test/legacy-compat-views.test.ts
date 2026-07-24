@@ -56,6 +56,15 @@ const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
 function seedPreCutoverFile(): string {
   const file = join(dir, DB_FILENAME);
   const raw = new DatabaseSync(file);
+  // Fixture durability is irrelevant — the file is thrown away after the test.
+  // Replaying ~12 migrations against the default DELETE journal pays one fsync
+  // AND one rollback-journal file create/delete per statement, which on the
+  // Windows CI runner's NTFS (no fsync coalescing, slow metadata ops) under
+  // parallel test-file load overruns the timeout. MEMORY journal + synchronous
+  // OFF drop both costs; the on-disk file the migrations write is still a valid
+  // store for openLocalDatabase to reopen.
+  raw.exec('PRAGMA journal_mode = MEMORY');
+  raw.exec('PRAGMA synchronous = OFF');
   raw.exec('PRAGMA foreign_keys = ON');
   for (const migration of SQLITE_MIGRATIONS) {
     if (migration.tag === MIGRATION_0013_TAG) continue;

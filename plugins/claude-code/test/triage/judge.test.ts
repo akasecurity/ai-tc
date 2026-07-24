@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { judgeEnv, parseVerdict, runJudge } from '../../src/triage/judge.ts';
+import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
 
 // A `claude -p --output-format json` envelope with `result` set to `text`.
 const envelope = (text: string): string => JSON.stringify({ result: text, is_error: false });
@@ -94,15 +94,60 @@ describe('runJudge', () => {
     });
 
     expect(seenArgv).toEqual(['-p', '--no-session-persistence', '--output-format', 'json']);
-    // The full raw hit (rawMatch + context) rides on stdin — that is the point;
+    // rawMatch rides on stdin — the rubric judges the actual value;
     // SKIP_PROMPT_HISTORY + --no-session-persistence keep it out of any
     // transcript, and stdin (unlike argv) keeps it off the process list and out
-    // of ARG_MAX.
+    // of ARG_MAX. filePath is dropped and context is masked before it crosses
+    // (covered below), so rawMatch is the only raw field that leaves.
     expect(seenStdin).toContain('AKIAIOSFODNN7EXAMPLE');
     expect(seenStdin).toContain('RUBRIC BODY');
     expect(seenEnv.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
 
     expect(rec.perCategory[0]?.action).toBe('block');
+  });
+
+  it('drops filePath from the judge payload (it encodes the OS username and project dirs)', () => {
+    let seenStdin = '';
+    runJudge([{ ...hit, filePath: '/Users/alicesecret/projects/topsecret/session.jsonl' }], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(seenStdin).not.toContain('alicesecret');
+    expect(seenStdin).not.toContain('topsecret');
+    expect(seenStdin).not.toContain('filePath');
+  });
+
+  it('masks a secret that appears only in the context window; rawMatch stays legible', () => {
+    // A second, distinct AWS key living ONLY in the surrounding context — not the
+    // finding's own value. It must not cross to the model.
+    const contextOnlySecret = ['AKIA', 'ZYXWVUTSRQPONMLK'].join('');
+    let seenStdin = '';
+    runJudge([{ ...hit, context: `aws_a=${hit.rawMatch} aws_b=${contextOnlySecret}` }], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(seenStdin).toContain(hit.rawMatch);
+    expect(seenStdin).not.toContain(contextOnlySecret);
+    // Positive check: masking stays SELECTIVE, not a blanket redaction. If
+    // maskText fell back to its fail-secure `[REDACTED]` path, the two assertions
+    // above would still hold while the window the judge relies on was gone — so
+    // pin that the non-secret structure of the context survives.
+    expect(seenStdin).toContain('aws_a=');
+  });
+
+  it('does not mutate the source hit (filePath/context survive for the writeback path)', () => {
+    // deriveSurfacedSecretFindings reads filePath/context off the ORIGINAL hits
+    // after runJudge; toJudgePayload must project a copy, never mutate in place.
+    const src: TriageHit = { ...hit, filePath: '/Users/x/p/session.jsonl' };
+    toJudgePayload(src);
+    expect(src.filePath).toBe('/Users/x/p/session.jsonl');
+    expect(src.context).toBe(hit.context);
   });
 
   it('passes the prompt on stdin, never in argv', () => {

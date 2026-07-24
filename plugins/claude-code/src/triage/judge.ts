@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { maskText } from '@akasecurity/plugin-sdk';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 
 import { parseRecommendation } from './parse-verdict.ts';
@@ -140,6 +141,22 @@ export interface JudgeDeps {
   loadRubric?: () => string;
 }
 
+// Minimize a hit before it crosses to the model. The rubric judges the actual
+// value, so rawMatch stays; the model does not need the provenance. filePath
+// encodes the OS username and every project directory name, so it is dropped.
+// context is a raw text window masked only for other overlapping findings, so it
+// is re-run through the full detection engine (maskText) to mask every secret in
+// the window. rawMatch is then the only raw field that leaves the machine.
+// maskText is fail-secure: a masking fault over-redacts, never leaks.
+// The spread is load-bearing: it drops filePath from a COPY, never off the
+// source hit — the surfaced-secrets writeback still reads filePath off the
+// original in-memory hits, so mutating in place here would break that path.
+export function toJudgePayload(hit: TriageHit): TriageHit {
+  const payload: TriageHit = { ...hit, context: maskText(hit.context) };
+  delete payload.filePath;
+  return payload;
+}
+
 // Build the judge prompt (rubric + raw hits as JSONL) and run it through the
 // ephemeral subprocess, returning the parsed verdict. The RAW hits ride in the
 // prompt on purpose (the rubric needs them); the prompt rides on stdin (not
@@ -148,7 +165,7 @@ export interface JudgeDeps {
 // the prompt out of any transcript. Always cleans up the darwin config dir.
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
   const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
-  const hitsJsonl = hits.map((h) => JSON.stringify(h)).join('\n');
+  const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;

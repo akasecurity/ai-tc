@@ -16,20 +16,68 @@ const forkSection = setupMd.slice(forkStart, forkEnd === -1 ? undefined : forkEn
 
 // The prompt-authored 0.3 scan-offer copy lives in commands/setup.md, so a
 // regression is otherwise only visible in the manual walkthrough. These guards
-// pin the verbatim strings the wizard shows at the scan offer.
+// pin the verbatim strings the wizard shows at the scan offer — including the
+// privacy-critical disclosure that the scan sends raw, unmasked values to the
+// model API via the `claude` CLI, which must be stated before consent.
 describe('setup.md 0.3 scan-offer copy', () => {
-  it('carries the scope disclosure verbatim', () => {
+  it('carries the scan-offer question verbatim', () => {
     expect(setupMd).toContain(
-      "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next.",
+      "I'll scan Claude's recent work — transcripts, temp files, agent memory — and send what I find to the model to rate it, so I can tune what I bring you next.",
     );
   });
 
   it('carries the Yes-option subtitle verbatim', () => {
-    expect(setupMd).toContain("tune what I bring you, based on Claude's real work here");
+    expect(setupMd).toContain(
+      'scan my real work here; raw findings go to the model to be rated, then tune what you bring me',
+    );
   });
 
   it('carries the Not-now-option subtitle verbatim', () => {
     expect(setupMd).toContain("start light and I'll learn as we go");
+  });
+
+  // Whitespace-normalized so these assertions are not coupled to prose line wrapping.
+  const flat = setupMd.replace(/\s+/g, ' ');
+
+  it('discloses the model-API egress plainly', () => {
+    expect(flat).toContain(
+      'sends the raw, unmasked values — including any secrets — to the model API through the `claude` CLI',
+    );
+    expect(flat).toContain('A copy of each value leaves the machine');
+    expect(flat).toContain('Do not present the picker until you have said this');
+  });
+
+  // What crosses is the whole TriageHit, not just the matched secret: rawMatch,
+  // a ±120-char window of the surrounding transcript (history/scan.ts), and the
+  // source transcript's filePath. Copy that names only "the values" understates
+  // the payload, so pin all three.
+  it('names the whole payload, not just the secret', () => {
+    expect(flat).toContain('about 120 characters of the surrounding transcript text');
+    expect(flat).toContain('the path of the transcript file it came from');
+  });
+
+  it('does not present revocation as a recall of what was already sent', () => {
+    expect(flat).toContain('it cannot recall anything already sent');
+  });
+
+  // The transcripts the values were read out of are untouched by the scan — the
+  // earlier "not kept on the machine" phrasing read as a cleanup promise.
+  it('does not imply the scan removes the values from disk', () => {
+    expect(flat).toContain('The transcripts those values came from stay on disk untouched');
+    expect(flat).not.toContain('not kept on the machine');
+  });
+
+  // AC: the disclosure must be visible BEFORE consent is given. Presence alone
+  // would still pass if the paragraph were moved below the option list, so
+  // assert the actual ordering against the picker's own copy.
+  it('places the disclosure ahead of the consent picker', () => {
+    const disclosureAt = flat.indexOf('sends the raw, unmasked values');
+    const questionAt = flat.indexOf("Want me to look over what Claude's been up to?");
+    const yesOptionAt = flat.indexOf('scan my real work here');
+
+    expect(disclosureAt).toBeGreaterThan(-1);
+    expect(questionAt).toBeGreaterThan(disclosureAt);
+    expect(yesOptionAt).toBeGreaterThan(disclosureAt);
   });
 });
 

@@ -64,15 +64,21 @@ export function toolCallId(sessionId: string, toolUseId: string): string {
   return sha256Hex(canonicalIdentity(['audit_event_tool_call', sessionId, toolUseId]));
 }
 
-// sha256(audit_event + definition + span): a transcript-derived inspection finding
+// sha256(audit_event + rule + span): a transcript-derived inspection finding
 // (one detected secret hit on a tool_call) is re-scanned on every reconcile pass, so
 // unlike the config-scan path (which mints randomUUID per fresh scan event) this MUST
-// be content-addressed — a re-read of the same hit (same tool_call, same rule
-// version, same span) yields the same id and no-ops via INSERT OR IGNORE. NOT keyed
-// on the matched value: the id never encodes secret content.
+// be content-addressed — a re-read of the same hit (same tool_call, same rule,
+// same span) yields the same id and no-ops via the finding insert's ON CONFLICT.
+// Keyed on the RULE id, not the inspection_definition id: a rule's definition mints
+// a fresh id per version (see `inspectionDefinitionId`), so keying on the definition
+// would mint a new finding id every time a pack update bumped the rule's version —
+// the same hit would look like a brand-new finding rather than the SAME finding
+// whose definition reference merely needs refreshing (the insert's
+// ON CONFLICT ... DO UPDATE handles that refresh). NOT keyed on the matched value:
+// the id never encodes secret content.
 export function inspectionFindingId(
   auditEventId: string,
-  definitionId: string,
+  ruleId: string,
   spanStart: number,
   spanEnd: number,
 ): string {
@@ -80,10 +86,51 @@ export function inspectionFindingId(
     canonicalIdentity([
       'inspection_finding',
       auditEventId,
-      definitionId,
+      ruleId,
       String(spanStart),
       String(spanEnd),
     ]),
+  );
+}
+
+// sha256(session_id + prompt_uuid): the run-grouping key the `tool_call` /
+// `llm_call` attribute bags reference as `run_key` — every leaf spawned by the
+// same user turn shares it. Content-addressed on the transcript's own per-turn
+// uuid (the natural key the reconciler already maps `parentUuid → promptId`
+// from) plus the session, so the same turn always resolves to the same key
+// across reconcile passes.
+export function promptId(sessionId: string, promptUuid: string): string {
+  return sha256Hex(canonicalIdentity(['audit_event_prompt', sessionId, promptUuid]));
+}
+
+// Folded into `captureId`'s identity in place of a real session id. A capture
+// taken outside any harness session (e.g. a CLI worktree scan) still needs a
+// stable tuple length, so the missing component becomes this fixed literal
+// rather than being dropped from the join.
+const NO_SESSION = 'no_session';
+
+// Folded into `captureId` for a capture with no file path (an in-flight
+// prompt/response). Keeps the tuple length stable exactly like NO_SESSION.
+const NO_PATH = 'no_path';
+
+// sha256(session_id + content_hash + file_path): a capture (a prompt/response/
+// code-change/tool-use record) is content-addressed on the hash of its own
+// text, scoped to the session it belongs to so identical content captured in
+// two different sessions never collapses onto one row. The file path is folded
+// in too: two DISTINCT at-rest files with byte-identical content (e.g.
+// `cp .env .env.bak`, or a shared credential file duplicated across packages)
+// hash to the same content but must resolve to DISTINCT audit-event rows —
+// without the path they collapse onto one row (INSERT OR IGNORE) and the second
+// file's finding is silently suppressed by the event-scoped dedup. `sessionId`
+// and `filePath` are `null` for a session-less / path-less capture and fold
+// onto their sentinels instead of shortening the join.
+export function captureId(
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null = null,
+): string {
+  return sha256Hex(
+    canonicalIdentity(['capture', sessionId ?? NO_SESSION, contentHash, filePath ?? NO_PATH]),
   );
 }
 

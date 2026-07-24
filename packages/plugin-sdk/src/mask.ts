@@ -53,11 +53,19 @@ export interface ScanFinding {
 // it holds only because nothing else registers packs into that global in the
 // reconciler process).
 //
+// `ruleVersions` is the installed pack version per ruleId (PolicyBundle.ruleVersions),
+// keyed the same as `byId` below. A rule with no entry — every bundled-pack rule,
+// since the bundled registry carries no pack version — falls back to its rule file's
+// `specVersion`, matching prior behavior exactly.
+//
 // FAIL-SECURE (unlike the fail-OPEN hook path): if the scan throws — or the bundled
 // packs can't be loaded at all — returning the raw text would leak the very secret we
 // set out to mask, so we return a blanket `[REDACTED]` and NO findings. A masking bug
 // degrades to over-redaction, never a leak.
-export function scanText(text: string): { masked: string; findings: ScanFinding[] } {
+export function scanText(
+  text: string,
+  ruleVersions?: Record<string, string>,
+): { masked: string; findings: ScanFinding[] } {
   // Packs unusable (a malformed bundled pack) → fail-secure without re-paying the parse.
   if (!ensureBundledPacks()) return { masked: '[REDACTED]', findings: [] };
   try {
@@ -71,7 +79,7 @@ export function scanText(text: string): { masked: string; findings: ScanFinding[
       return {
         ruleId: m.ruleId,
         ruleName: rule?.name ?? m.ruleId,
-        ruleVersion: String(rule?.specVersion ?? 1),
+        ruleVersion: ruleVersions?.[m.ruleId] ?? String(rule?.specVersion ?? 1),
         category: m.category,
         severity: m.severity,
         span: m.span,

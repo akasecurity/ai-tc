@@ -260,6 +260,20 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  it('maps each rule to its installed pack version', () => {
+    const db = openLocalDatabase(dir);
+    db.installedPacks.recordInventory([
+      pack('secrets', '2.3.1', ['secrets/aws', 'secrets/gh']),
+      pack('core-pii', '1.0.0', ['core-pii/email']),
+    ]);
+
+    const snapshot = db.installedPacks.installedRuleset();
+    expect(snapshot.ruleVersions.get('secrets/aws')).toBe('2.3.1');
+    expect(snapshot.ruleVersions.get('secrets/gh')).toBe('2.3.1');
+    expect(snapshot.ruleVersions.get('core-pii/email')).toBe('1.0.0');
+    db.close();
+  });
+
   it('counts JSON-level corruption (malformed / non-array rules_json) as invalid', () => {
     // The display-tolerant parseRules silently returns [] for these — at scan
     // time that would masquerade as "no rules" and let the ladder authorize an

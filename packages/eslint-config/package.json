@@ -9,7 +9,8 @@
   },
   "scripts": {
     "lint": "echo 'no self-lint for eslint-config'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@eslint/js": "^10.0.1",
@@ -20,6 +21,10 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-simple-import-sort": "^13.0.0",
     "typescript-eslint": "^8.64.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "eslint": "^9.0.0",

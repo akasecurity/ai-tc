@@ -6,8 +6,10 @@ AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names 
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
 plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. Nothing leaves
-the machine — there is no account, no network hop, and no backend to stand up.
+`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
+paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
+sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 
 ## Tech stack
 
@@ -34,11 +36,24 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. The few places that genuinely need the host environment (the plugin's LLM-provider resolution, the CLI spawning the dashboard server) opt out explicitly in their own ESLint config.
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+
+| Site                                      | Mechanism                         | Why                                         |
+| ----------------------------------------- | --------------------------------- | ------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart     |
+| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server               |
+| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | resolving the transcript root               |
+| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
+
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply, and the Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source. Network access happens **only through child processes**, and there are three such paths:
+
+1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
+2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends raw, unmasked findings to the model API** so it can rate false positives and severity. The whole `TriageHit` crosses, not just the secret: `rawMatch`, `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts`), and `filePath` (the source transcript's path). A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup; the grant is revocable under Policies, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 
 ## Package dependency rules
 

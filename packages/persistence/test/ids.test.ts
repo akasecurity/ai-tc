@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  captureId,
   classifiedDataId,
   inspectionDefinitionId,
+  inspectionFindingId,
   inventoryId,
   llmCallId,
   normalizeHost,
+  promptId,
   shareCallSiteId,
   shareDestinationId,
   shareEndpointId,
@@ -54,6 +57,36 @@ describe('meta-id content addressing (golden vectors)', () => {
   });
 });
 
+// The finding id is keyed on the RULE id, not the inspection_definition id, so
+// a re-detected hit keeps the same id across a rule version bump — only the
+// definition reference (refreshed via the insert's ON CONFLICT DO UPDATE)
+// tracks the new version. See the inspectionFindingId doc comment in ids.ts.
+describe('inspectionFindingId (keyed on ruleId, not definitionId)', () => {
+  it('is stable / deterministic for the same (event, rule, span)', () => {
+    const id = inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34);
+    expect(id).toBe('cbd5462dd06a3b6f9507781966976e7e73db2218a550895e905f1a8977f2352d');
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34)).toBe(id);
+  });
+
+  it('a different span yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 0, 10)).toBe(
+      '601c07cac2fde2b3f31aeb24c232edc2b6df491ec5b96bdea1ad1ee03d51de38',
+    );
+  });
+
+  it('a different rule id yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.other-rule', 14, 34)).toBe(
+      '94fafd16668051ecd84567af36457b175f338d1d6a58eb835f38a6474e870172',
+    );
+  });
+
+  it('a different audit event yields a different id', () => {
+    expect(inspectionFindingId('audit_evt_abc123', 'aka.secrets.aws-access-key', 14, 34)).not.toBe(
+      inspectionFindingId('audit_evt_other', 'aka.secrets.aws-access-key', 14, 34),
+    );
+  });
+});
+
 // `llm_call` rows are transcript-derived and re-read on every reconcile pass, so
 // the id MUST be deterministic — a random id would double-count tokens on
 // re-scan. The id is keyed on (sessionId, message.id). `message.id` repeats
@@ -76,6 +109,66 @@ describe('llmCallId (deterministic transcript-row id)', () => {
   it('distinct sessions get distinct ids for the same message id', () => {
     expect(llmCallId('sess_abc123', 'msg_01HZXYZ')).not.toBe(
       llmCallId('sess_other', 'msg_01HZXYZ'),
+    );
+  });
+});
+
+// `promptId` is the run-grouping key the tool_call/llm_call attribute bags
+// reference as `run_key` — content-addressed on (session, transcript promptUuid)
+// so every leaf spawned by the same user turn resolves to the same key.
+describe('promptId (run-grouping key)', () => {
+  it('is stable / deterministic for the same (session, promptUuid)', () => {
+    const id = promptId('sess_abc123', 'e7f1a2b3-uuid-turn-1');
+    expect(id).toBe('ac7c33f6b1ab5c75a093798e1df5a596daeda2517410d43194d30258f2acfeeb');
+    expect(promptId('sess_abc123', 'e7f1a2b3-uuid-turn-1')).toBe(id);
+  });
+
+  it('distinct sessions get distinct ids for the same promptUuid', () => {
+    expect(promptId('sess_other', 'e7f1a2b3-uuid-turn-1')).toBe(
+      '8edeec77eb6f07eab4da4842d3d5d135706ce4cec26389d79f28516c80bdfeaa',
+    );
+  });
+
+  it('distinct promptUuids within a session get distinct ids', () => {
+    expect(promptId('sess_abc123', 'different-uuid')).toBe(
+      '5e5cd041a99ef68efca87e856926c5b8b3367aabc1ffbeec2915bb7bff66e4e6',
+    );
+  });
+});
+
+// `captureId` content-addresses a capture on its own text hash, scoped to the
+// owning session so identical content in two sessions never collapses onto one
+// row. A `null` session (a capture taken outside any harness session) folds
+// onto a fixed sentinel instead of shortening the join.
+describe('captureId (content-addressed, session-scoped, path-scoped)', () => {
+  it('is stable / deterministic for the same (session, contentHash, path)', () => {
+    const id = captureId('sess_abc123', 'contenthash123');
+    expect(id).toBe('812cee34ea16443f934a56575707669789d250a65563622d537c47af36b1fd35');
+    expect(captureId('sess_abc123', 'contenthash123')).toBe(id);
+  });
+
+  it('a null session folds onto the fixed sentinel rather than being dropped', () => {
+    expect(captureId(null, 'contenthash123')).toBe(
+      '68787b92f533cd97454be0f5f56d043badd2481be6fc15ce3b0792a89a853078',
+    );
+  });
+
+  it('a different content hash yields a different id', () => {
+    expect(captureId('sess_abc123', 'contenthash456')).toBe(
+      '7a7a1bc5f2bc39f58615aa418669072a923318b480e0e1fafcf7e02e54a15454',
+    );
+  });
+
+  it('a different file path yields a different id — two identical-content files stay distinct', () => {
+    expect(captureId('sess_abc123', 'contenthash123', 'src/a.ts')).toBe(
+      '90eef03a6239d77df1c36f3b74b3f253ed6480cdd03909d82715adb0783f5674',
+    );
+    expect(captureId('sess_abc123', 'contenthash123', 'src/a.ts')).not.toBe(
+      captureId('sess_abc123', 'contenthash123', 'src/b.ts'),
+    );
+    // A path-less capture folds onto the NO_PATH sentinel (the default).
+    expect(captureId('sess_abc123', 'contenthash123', null)).toBe(
+      captureId('sess_abc123', 'contenthash123'),
     );
   });
 });

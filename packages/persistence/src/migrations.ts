@@ -1,6 +1,7 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
+import type { EventKind, EventMetadata, SourceTool } from '@akasecurity/schema';
+import { SQLITE_MIGRATIONS, toCaptureAttributes } from '@akasecurity/schema';
 
 import {
   columnNames,
@@ -10,7 +11,8 @@ import {
   indexExists,
   schemaObjectExists,
 } from './db/migrations/introspection.ts';
-import { sourceProjectId } from './ids.ts';
+import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
+import { bindParams } from './internal/rows.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 
@@ -64,7 +66,16 @@ function createdIndexName(statement: string): string | undefined {
 // can't repair, so fail loudly instead of replaying or skipping. user_version
 // is still stamped (write-only) so downgrading to an older count-based build
 // stays a no-op.
-export function applyMigrations(db: DatabaseSync): void {
+//
+// The legacy-drop migration (below) is excluded from that generic loop
+// entirely and applied through its own conditional path further down —
+// dropping `events`/`findings` is safe only once the batched history backfill
+// has fully drained both, which the loop's evidence-based adoption has no way
+// to express (a DROP TABLE/CREATE VIEW migration leaves no ADDed column or
+// CREATEd table for evidenceObjects to see).
+const LEGACY_DROP_MIGRATION_TAG = '0014_drop_legacy_events_findings';
+
+export function applyMigrations(db: DatabaseSync, file?: string): void {
   const legacyCount = (db.prepare('PRAGMA user_version').get() as { user_version: number })
     .user_version;
   db.exec(
@@ -81,6 +92,9 @@ export function applyMigrations(db: DatabaseSync): void {
 
   for (const [index, migration] of SQLITE_MIGRATIONS.entries()) {
     if (applied.has(migration.tag)) continue;
+    // Handled after the backfill below, once (and only once) it reports both
+    // legacy tables fully drained — see applyLegacyDropMigration.
+    if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
     const evidence = evidenceObjects(migration.sql);
     const present = evidence.filter((o) => evidenceExists(db, o));
 
@@ -170,9 +184,10 @@ export function applyMigrations(db: DatabaseSync): void {
     // PRAGMA can't be parameterized; the value is our own integer literal.
     db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length)}`);
   }
-  // Both fact tables (`events` and `audit_events`) carry the plugin-local
-  // `synced_at` bookkeeping column — see ensureSyncedAtColumn.
-  ensureSyncedAtColumn(db, 'events');
+  // `audit_events` carries the plugin-local `synced_at` bookkeeping column —
+  // see ensureSyncedAtColumn. The legacy `events` table no longer exists once
+  // the drop below has run (a VIEW never needs a column added to it — and
+  // ALTER TABLE on one would throw), so there is no equivalent call for it.
   ensureSyncedAtColumn(db, 'audit_events');
   ensureScanLedgerTable(db);
   ensureBlockedDetectionsTable(db);
@@ -194,6 +209,97 @@ export function applyMigrations(db: DatabaseSync): void {
   // already exist.
   ensureTokenUsageColumns(db);
   reconcileSourceProjectIds(db);
+  // Copies whatever the retired events/findings pair still holds onto the
+  // generalized audit_events/inspection_definitions/inspection_findings trio —
+  // see runLegacyHistoryBackfill. Batched and resumable, so it never turns one
+  // open into an unbounded pass over a large pre-existing store. Skipped
+  // entirely once the drop below has already run (the ledger carries its
+  // tag): by then `events`/`findings` are compatibility VIEWS, and
+  // copyLegacyEvents' bare `rowid` read has no such column on a view — a
+  // harmless, fail-open no-op every open, but a pointless one.
+  if (!applied.has(LEGACY_DROP_MIGRATION_TAG)) {
+    const drained = runLegacyHistoryBackfill(db);
+    // Dropping before every legacy row is copied would destroy user history,
+    // so the drop is conditional on BOTH tables reporting fully drained this
+    // same call — never "close enough". A store still mid-copy (or one whose
+    // backfill call errored, which runLegacyHistoryBackfill reports as
+    // not-drained) simply leaves this migration pending; the next open
+    // resumes the copy and re-evaluates the drop from there.
+    if (drained) applyLegacyDropMigration(db, file);
+  }
+}
+
+// Runs the legacy-drop migration's own DDL (dropping `events`/`findings` and
+// creating their compatibility views) and ledgers its tag — called ONLY once
+// runLegacyHistoryBackfill has reported both legacy tables fully drained.
+// Backs the live file up first (when a real path is known — a `:memory:` or
+// path-less caller, i.e. tests, has nothing durable to protect), mirroring
+// backupLegacyStore's shape in database.ts. A failed backup defers the drop
+// entirely rather than proceeding without one — history is never destroyed
+// on a best-effort basis.
+export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): void {
+  const migration = SQLITE_MIGRATIONS.find((m) => m.tag === LEGACY_DROP_MIGRATION_TAG);
+  // Should not happen in a released build (schema and persistence version
+  // together), but a missing migration must never crash an open.
+  if (!migration) return;
+  if (file) {
+    try {
+      backupBeforeLegacyDrop(db, file);
+    } catch (error) {
+      akaWarn(`legacy events/findings backup failed; deferring the drop: ${String(error)}`);
+      return;
+    }
+  }
+  // Fail-open, like runLegacyHistoryBackfill: after the backfill has fully
+  // drained both tables the drop is always safe to retry on a later open, so a
+  // failure here must NEVER propagate out of applyMigrations / openLocalDatabase
+  // and crash the host session.
+  try {
+    withTransaction(
+      db,
+      () => {
+        // In-transaction ledger recheck. The CLI, its spawned web-ui, and the
+        // plugin all open the same store; two up-to-date binaries can both pass
+        // the drained check and reach BEGIN IMMEDIATE. busy_timeout serializes
+        // them: the winner drops the tables, creates the views, and commits the
+        // 0014 tag; the loser then holds the write lock over the winner's
+        // POST-DROP schema, where replaying DROP INDEX / DROP TABLE `events`
+        // throws ("no such index" / "use DROP VIEW" — IF EXISTS does not save a
+        // DROP TABLE against a view). Re-reading the committed ledger inside the
+        // IMMEDIATE transaction sees the winner's row and no-ops the whole DDL.
+        const alreadyDropped = db
+          .prepare('SELECT 1 FROM migration_ledger WHERE tag = ?')
+          .get(migration.tag);
+        if (alreadyDropped) return;
+        for (const statement of splitStatements(migration.sql)) {
+          db.exec(statement);
+        }
+        db.prepare('INSERT OR IGNORE INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+          migration.tag,
+          Date.now(),
+        );
+      },
+      'IMMEDIATE',
+    );
+  } catch (error) {
+    akaWarn(`legacy events/findings drop failed; deferring: ${String(error)}`);
+  }
+}
+
+// Snapshots the live store aside immediately before the irreversible
+// legacy-table drop, while it stays open and in place. VACUUM INTO writes a
+// consistent, fully-materialized SINGLE-file copy through its own read
+// transaction — no `-wal`/`-shm` sidecars — so it captures committed WAL frames
+// that a raw copy of the main file would miss, without needing the WAL
+// checkpointed (a TRUNCATE checkpoint can be blocked by a concurrent reader and
+// return busy without throwing, leaving a raw copy silently torn/incomplete
+// under the product's multi-process open model). The bound parameter avoids any
+// path-quoting hazard. A failure still throws and is caught by the caller, which
+// defers the drop.
+export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
+  const backup = `${file}.pre-drop.${String(Date.now())}.bak`;
+  db.prepare('VACUUM INTO ?').run(backup);
+  return backup;
 }
 
 // SQLite generated-column DDL for the six token-usage facets: the four counts are
@@ -242,8 +348,14 @@ export const TOKEN_USAGE_COLUMNS: readonly { name: string; ddl: string }[] = [
 // no-op when the column is present. We probe with PRAGMA table_xinfo, NOT
 // table_info: table_info omits generated columns, so it would never see these and
 // the ADD would fail with "duplicate column name". Idempotent, like
-// ensureSyncedAtColumn.
+// ensureSyncedAtColumn. Also probes the TABLE itself first: columnNames()
+// returns an empty list for a table that doesn't exist, so a column-only guard
+// would misread an absent `audit_events` as "no columns yet" and still run
+// every ALTER TABLE below — this guards the same failure shape as
+// ensureSyncedAtColumn even though `audit_events` (unlike the legacy
+// `events`/`findings` pair) is never itself dropped.
 function ensureTokenUsageColumns(db: DatabaseSync): void {
+  if (!schemaObjectExists(db, 'table', 'audit_events')) return;
   const existing = new Set(columnNames(db, 'audit_events', { includeGenerated: true }));
   for (const column of TOKEN_USAGE_COLUMNS) {
     if (!existing.has(column.name)) {
@@ -361,6 +473,336 @@ export function reconcileSourceProjectIds(db: DatabaseSync): void {
   }
 }
 
+// --- legacy history backfill -------------------------------------------------
+// Copies whatever the retired `events`/`findings` pair still holds onto the
+// generalized `audit_events`/`inspection_definitions`/`inspection_findings`
+// trio recordCapture now writes. The legacy tables are frozen (recordCapture
+// no longer writes them), so this is a one-time drain, not an ongoing sync —
+// but the store it drains can already be large, so the drain itself is
+// batched and rowid-watermarked (`legacy_copy_watermark`, added by migration
+// 0013) rather than a single pass: copying a large store's entire history in
+// one transaction on the hook path — a hard 10s timeout, `busy_timeout` of
+// only 2000ms — would be a zero-progress kill-and-retry loop. Each call here
+// instead moves at most LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows per table,
+// committing every LEGACY_BACKFILL_BATCH_SIZE rows, so a crash or a slow disk
+// mid-copy loses at most one uncommitted batch — the next open resumes from
+// the watermark instead of restarting. A store already fully drained costs one
+// cheap rowid-range probe per table on every open.
+
+// Rows committed per transaction: small enough that one commit is cheap even
+// under the hook's timeout, large enough that a modest local store finishes in
+// a handful of opens. Exported so migrations.test.ts can size a fixture that
+// exercises resumption without guessing at (or duplicating) the real cap.
+export const LEGACY_BACKFILL_BATCH_SIZE = 200;
+
+// Row budget per legacy table, per call: bounds one open's worth of work to a
+// small constant regardless of how much history the store holds.
+export const LEGACY_BACKFILL_MAX_ROWS_PER_CALL = 1000;
+
+function getLegacyCopyWatermark(db: DatabaseSync, source: 'events' | 'findings'): number {
+  const row = db
+    .prepare('SELECT last_rowid AS lastRowid FROM legacy_copy_watermark WHERE source = ?')
+    .get(source) as { lastRowid: number } | undefined;
+  return row?.lastRowid ?? 0;
+}
+
+function setLegacyCopyWatermark(
+  db: DatabaseSync,
+  source: 'events' | 'findings',
+  lastRowid: number,
+): void {
+  db.prepare(
+    `INSERT INTO legacy_copy_watermark (source, last_rowid) VALUES (?, ?)
+     ON CONFLICT(source) DO UPDATE SET last_rowid = excluded.last_rowid`,
+  ).run(source, lastRowid);
+}
+
+// Shared batched-drain loop for the two legacy copies: reads the source's
+// watermark, then repeatedly pages `selectStmt` (rowid > watermark, LIMIT
+// LEGACY_BACKFILL_BATCH_SIZE) and hands each page to `handleRows` inside a single
+// IMMEDIATE transaction that also advances + persists the watermark — so the row
+// writes and the watermark advance commit atomically and a crash mid-backfill
+// resumes at the last committed page. Returns true once the source is fully
+// caught up (an empty page, or a short final page this call); false when it
+// stopped at LEGACY_BACKFILL_MAX_ROWS_PER_CALL with rows still pending.
+// `Row` is inferred from each caller's `handleRows` callback so both copies keep
+// their own precise row shape without casting; the loop itself only ever touches
+// `rowid`.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
+function drainLegacyTable<Row extends { rowid: number }>(
+  db: DatabaseSync,
+  source: 'events' | 'findings',
+  selectStmt: StatementSync,
+  handleRows: (rows: Row[]) => void,
+): boolean {
+  let watermark = getLegacyCopyWatermark(db, source);
+  let processed = 0;
+  while (processed < LEGACY_BACKFILL_MAX_ROWS_PER_CALL) {
+    const rows = selectStmt.all(watermark, LEGACY_BACKFILL_BATCH_SIZE) as Row[];
+    if (rows.length === 0) return true;
+
+    withTransaction(
+      db,
+      () => {
+        handleRows(rows);
+        watermark = rows[rows.length - 1]?.rowid ?? watermark;
+        setLegacyCopyWatermark(db, source, watermark);
+      },
+      'IMMEDIATE',
+    );
+    processed += rows.length;
+    if (rows.length < LEGACY_BACKFILL_BATCH_SIZE) return true;
+  }
+  return false;
+}
+
+// A legacy `events.metadata` blob is either NULL or JSON matching EventMetadata
+// (camelCase keys) — see toEventRow. A row a pre-validation build once wrote
+// could in principle hold malformed JSON; failing to parse it must not cost
+// the row its place in history, so this degrades to "no metadata" rather than
+// throwing (the event's own content/timestamps/ids still copy either way).
+function parseLegacyEventMetadata(raw: string | null): EventMetadata | undefined {
+  if (raw === null) return undefined;
+  try {
+    return JSON.parse(raw) as EventMetadata;
+  } catch {
+    return undefined;
+  }
+}
+
+// The audit_events `attributes` bag for one legacy `events` row, reusing the
+// exact capture-path mapping recordCapture writes new rows with (toCaptureAttributes)
+// so a migrated row and a freshly-captured one carry the same shape.
+function toLegacyAuditAttributesJson(row: {
+  id: string;
+  sourceTool: string;
+  kind: string;
+  occurredAt: number;
+  contentHash: string;
+  content: string;
+  metadata: EventMetadata | undefined;
+}): string {
+  return JSON.stringify(
+    toCaptureAttributes({
+      id: row.id,
+      sourceTool: row.sourceTool as SourceTool,
+      kind: row.kind as EventKind,
+      occurredAt: new Date(row.occurredAt).toISOString(),
+      contentHash: row.contentHash,
+      content: row.content,
+      metadata: row.metadata,
+    }),
+  );
+}
+
+// Copies legacy `events` rows into `audit_events`, oldest-rowid-first, up to
+// LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows this call, committing every
+// LEGACY_BACKFILL_BATCH_SIZE rows. Legacy ids are kept, so INSERT OR IGNORE
+// keyed on `id` makes re-copying an already-migrated row a no-op. `sessionId`
+// becomes both `parent_id` and `root_session_id` (mirroring recordCapture); its
+// root row is stubbed on demand first (see stubRootStmt below) so the self-FK
+// always resolves even for a session written after migration 0013 ran. Returns
+// true once every legacy `events` row up to this call's view of the table has
+// been copied — the signal `copyLegacyFindings` uses before it starts, so a
+// finding's `audit_event_id` is never inserted ahead of the row it references.
+function copyLegacyEvents(db: DatabaseSync): boolean {
+  const selectStmt = db.prepare(
+    `SELECT rowid AS rowid, id, source_tool AS sourceTool, kind, occurred_at AS occurredAt,
+            content_hash AS contentHash, content, metadata
+     FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  );
+  const insertStmt = db.prepare(
+    `INSERT OR IGNORE INTO audit_events
+       (id, parent_id, root_session_id, event_type, started_at, content, content_hash, attributes)
+     VALUES (:id, :parentId, :rootSessionId, :eventType, :startedAt, :content, :contentHash, :attributes)`,
+  );
+  // On-demand session-root stub. Migration 0013 synthesized a root for every
+  // legacy sessionId that existed WHEN IT RAN, but under version skew a
+  // pre-cutover binary can write a NEW-session `events` row AFTER 0013
+  // (ledgered, never re-run) and before the drop completes. INSERT OR IGNORE
+  // does NOT suppress a foreign-key violation, so copying that row without its
+  // root row present would throw, roll back the whole batch INCLUDING its
+  // watermark advance, and — since runLegacyHistoryBackfill swallows the throw
+  // and rows are ordered by rowid — wedge the drain on that same batch forever.
+  // Stub the root first (first-write-wins on the id PK, harmless once 0013 or a
+  // real SessionStart planted it) so the copy always makes forward progress.
+  // The runtime equivalent of this stub is auditEvents.ensureSessionRoot.
+  const stubRootStmt = db.prepare(
+    `INSERT OR IGNORE INTO audit_events (id, event_type, started_at) VALUES (?, 'session', ?)`,
+  );
+
+  return drainLegacyTable(
+    db,
+    'events',
+    selectStmt,
+    (
+      rows: {
+        rowid: number;
+        id: string;
+        sourceTool: string;
+        kind: string;
+        occurredAt: number;
+        contentHash: string;
+        content: string;
+        metadata: string | null;
+      }[],
+    ) => {
+      for (const row of rows) {
+        const metadata = parseLegacyEventMetadata(row.metadata);
+        const sessionId = metadata?.sessionId ?? null;
+        if (sessionId !== null) stubRootStmt.run(sessionId, row.occurredAt);
+        insertStmt.run(
+          bindParams({
+            id: row.id,
+            parentId: sessionId,
+            rootSessionId: sessionId,
+            eventType: row.kind,
+            startedAt: row.occurredAt,
+            content: row.content,
+            contentHash: row.contentHash,
+            attributes: toLegacyAuditAttributesJson({ ...row, metadata }),
+          }),
+        );
+      }
+    },
+  );
+}
+
+// Copies legacy `findings` rows into `inspection_findings`, oldest-rowid-first,
+// up to LEGACY_BACKFILL_MAX_ROWS_PER_CALL rows this call, committing every
+// LEGACY_BACKFILL_BATCH_SIZE rows. The legacy table has no
+// `inspection_definitions` row to point at — it carried `rule_id` plus a
+// per-row `category`/`severity` inline — so this synthesizes ONE definition
+// per DISTINCT (rule_id, category, severity) tuple seen (never one per
+// rule_id: the same rule legitimately holds rows with different severities
+// across pack updates, and collapsing them would silently relabel history).
+// `version` is `unmigrated/<category>/<severity>`, distinct per tuple so the
+// content-addressed definition id (sha256 of rule_id + version, minted the
+// same way inspectionDefinitionId always is) never collides across tuples.
+//
+// The insert upserts on `finding_key`, not just `id`: post-cutover capture can
+// already have written the SAME deterministic finding_key under a fresh
+// (never-reused) id, so a plain insert would collide on the unique index —
+// this reconciles the two rows' first_detected_at down to the EARLIEST of the
+// two instead, tolerating either side being NULL.
+//
+// Returns true once every legacy `findings` row up to this call's view of the
+// table has been copied — mirrors copyLegacyEvents' return, and is what tells
+// applyMigrations the legacy tables are fully drained and safe to drop.
+function copyLegacyFindings(db: DatabaseSync): boolean {
+  const selectStmt = db.prepare(
+    `SELECT rowid AS rowid, id, event_id AS eventId, rule_id AS ruleId, category, severity,
+            span_start AS spanStart, span_end AS spanEnd, masked_match AS maskedMatch,
+            action_taken AS actionTaken, confidence, finding_key AS findingKey,
+            first_detected_at AS firstDetectedAt
+     FROM findings WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+  );
+  const definitionStmt = db.prepare(
+    `INSERT OR IGNORE INTO inspection_definitions
+       (id, rule_id, name, category, severity, definition, version)
+     VALUES (:id, :ruleId, :name, :category, :severity, :definition, :version)`,
+  );
+  const findingStmt = db.prepare(
+    `INSERT INTO inspection_findings
+       (id, audit_event_id, inspection_definition_id, classified_data_id,
+        span_start, span_end, masked_match, action_taken, confidence,
+        finding_key, first_detected_at)
+     VALUES
+       (:id, :auditEventId, :inspectionDefinitionId, NULL,
+        :spanStart, :spanEnd, :maskedMatch, :actionTaken, :confidence,
+        :findingKey, :firstDetectedAt)
+     ON CONFLICT(id) DO NOTHING
+     ON CONFLICT (finding_key) DO UPDATE SET
+       first_detected_at = CASE
+         WHEN first_detected_at IS NULL THEN excluded.first_detected_at
+         WHEN excluded.first_detected_at IS NULL THEN first_detected_at
+         ELSE min(first_detected_at, excluded.first_detected_at)
+       END`,
+  );
+
+  return drainLegacyTable(
+    db,
+    'findings',
+    selectStmt,
+    (
+      rows: {
+        rowid: number;
+        id: string;
+        eventId: string;
+        ruleId: string;
+        category: string;
+        severity: string;
+        spanStart: number;
+        spanEnd: number;
+        maskedMatch: string;
+        actionTaken: string;
+        confidence: number;
+        findingKey: string | null;
+        firstDetectedAt: number | null;
+      }[],
+    ) => {
+      // Per-page (inside the transaction), so a definition minted for one page
+      // is reused across that page's findings but never leaks its id map across
+      // batches — matching the crash-safe commit cadence.
+      const definitionIds = new Map<string, string>();
+      for (const row of rows) {
+        const tupleKey = JSON.stringify([row.ruleId, row.category, row.severity]);
+        let definitionId = definitionIds.get(tupleKey);
+        if (definitionId === undefined) {
+          const version = `unmigrated/${row.category}/${row.severity}`;
+          definitionId = inspectionDefinitionId(row.ruleId, version);
+          definitionStmt.run(
+            bindParams({
+              id: definitionId,
+              ruleId: row.ruleId,
+              name: row.ruleId,
+              category: row.category,
+              severity: row.severity,
+              definition: '',
+              version,
+            }),
+          );
+          definitionIds.set(tupleKey, definitionId);
+        }
+        findingStmt.run(
+          bindParams({
+            id: row.id,
+            auditEventId: row.eventId,
+            inspectionDefinitionId: definitionId,
+            spanStart: row.spanStart,
+            spanEnd: row.spanEnd,
+            maskedMatch: row.maskedMatch,
+            actionTaken: row.actionTaken,
+            confidence: row.confidence,
+            findingKey: row.findingKey,
+            firstDetectedAt: row.firstDetectedAt,
+          }),
+        );
+      }
+    },
+  );
+}
+
+// Fail-open entry point: any failure (a locked store, a malformed row that
+// slips past the defenses above) is logged and swallowed, never blocking the
+// open. Findings only start once events reports fully caught up, so a
+// finding's audit_event_id is never inserted ahead of its parent row.
+//
+// Returns true when BOTH legacy tables are confirmed fully drained (nothing
+// left for a resumed call to find) — the precondition applyMigrations gates
+// the legacy-table drop on. Any failure, or either table not yet caught up,
+// reports false: the drop must never run on a "close enough" copy.
+export function runLegacyHistoryBackfill(db: DatabaseSync): boolean {
+  try {
+    const eventsCaughtUp = copyLegacyEvents(db);
+    if (!eventsCaughtUp) return false;
+    return copyLegacyFindings(db);
+  } catch (error) {
+    akaWarn(`legacy history backfill failed: ${String(error)}`);
+    return false;
+  }
+}
+
 // True when the open store belongs to a foreign, tenant-bearing lineage, which
 // is incompatible with the tenant-free lineage this package migrates. Both track
 // state as a bare PRAGMA user_version starting at tag 0000, so the applier alone
@@ -380,8 +822,15 @@ export function isForeignSqliteLineage(db: DatabaseSync): boolean {
 // stores already carry; installing it here (outside the append-only canonical
 // migrations) keeps every store column-compatible regardless of which release
 // created it. Guarded by table_info so it is applied exactly once per table,
-// idempotently.
-function ensureSyncedAtColumn(db: DatabaseSync, table: 'events' | 'audit_events'): void {
+// idempotently. Also probes the TABLE itself first: columnNames() returns an
+// empty list for a table that doesn't exist, so a column-only guard would
+// read that as "no columns yet" and still run the ALTER TABLE below — which
+// is exactly how this bricked every migrated store when `events` became a
+// compatibility VIEW (a bare ALTER TABLE on a view throws). schemaObjectExists
+// probes sqlite_master's `type` directly, so a same-named view correctly
+// reads as absent here rather than as a column-less table.
+function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
+  if (!schemaObjectExists(db, 'table', table)) return;
   if (!columnNames(db, table).includes('synced_at')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN synced_at integer`);
   }
@@ -419,6 +868,14 @@ function ensureWriteGateTrigger(db: DatabaseSync): void {
 	CONSTRAINT "ck_pack_write_gate_single_row" CHECK("_pack_write_gate"."id" = 1)
 )`);
   db.exec('INSERT OR IGNORE INTO _pack_write_gate (id, open) VALUES (1, 0)');
+  // The trigger's BODY targets installed_packs — its own IF NOT EXISTS guards
+  // the trigger/table/row, not that table, so probe it exists first (the
+  // same table-existence idiom as ensureSyncedAtColumn/ensureTokenUsageColumns
+  // above): installed_packs is never dropped by anything in this codebase,
+  // but a CREATE TRIGGER … ON installed_packs would throw outright if it
+  // ever were, and self-healing a security control must not depend on that
+  // never happening.
+  if (!schemaObjectExists(db, 'table', 'installed_packs')) return;
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_installed_packs_write_gate
 BEFORE UPDATE OF version, name, rules_json ON installed_packs
 WHEN (SELECT open FROM _pack_write_gate WHERE id = 1) IS NOT 1

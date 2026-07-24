@@ -8,7 +8,7 @@
   },
   "scripts": {
     "gen:bundled-packs": "node scripts/gen-bundled-packs.mjs",
-    "lint": "eslint src test",
+    "lint": "eslint src test && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -186,6 +186,62 @@ describe('runJudge', () => {
     expect(rec.notes).toBe('ok');
   });
 
+  // The consent copy in commands/setup.md and both READMEs enumerates what
+  // crosses to the model API field by field. runJudge serializes the minimized
+  // projection (toJudgePayload): filePath is dropped and context is re-masked, so
+  // rawMatch is the only raw field that leaves. A new field on the TriageHit
+  // schema would still ride through unless it is explicitly dropped, silently
+  // widening the payload past what the user was told. Pin the exact key set:
+  // adding one here is a deliberate act that forces the disclosure copy to match.
+  it('sends exactly the disclosed TriageHit fields — no undisclosed payload', () => {
+    let seenStdin = '';
+    runJudge([hit], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+
+    // The hits ride as JSONL inside the prompt's last fenced block.
+    const fenced = /```\n([\s\S]*?)\n```\n?$/.exec(seenStdin);
+    if (fenced?.[1] === undefined) throw new Error('no fenced hit block on stdin');
+    const lines = fenced[1].split('\n').filter((l) => l !== '');
+    expect(lines).toHaveLength(1);
+    const [hitLine] = lines;
+    if (hitLine === undefined) throw new Error('no hit line on stdin');
+
+    const sent = JSON.parse(hitLine) as Record<string, unknown>;
+    expect(Object.keys(sent).sort()).toEqual([
+      'category',
+      'confidence',
+      'context',
+      'maskedMatch',
+      'rawMatch',
+      'ruleId',
+      'severity',
+    ]);
+    // rawMatch is the sole raw field — it rides legibly (the rubric judges the
+    // value). context is re-masked: the raw secret no longer appears in the
+    // window, but the non-secret scaffold survives (selective, not blanked).
+    expect(sent.rawMatch).toBe(hit.rawMatch);
+    expect(sent.context).not.toContain(hit.rawMatch);
+    expect(sent.context).toContain('export KEY=');
+
+    // filePath is dropped by toJudgePayload — it encodes the OS username and
+    // project dirs, and never reaches the model even when present on the hit.
+    let withPath = '';
+    runJudge([{ ...hit, filePath: '/Users/dev/.claude/projects/acme-api/session.jsonl' }], {
+      spawn: (_argv, _env, stdin) => {
+        withPath = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(withPath).not.toContain('/Users/dev/.claude/projects/acme-api/session.jsonl');
+    expect(withPath).not.toContain('filePath');
+  });
+
   it('re-throws a spawn failure as raw-free metadata (execFileSync puts the prompt in .message)', () => {
     // execFileSync throws an error whose .message is `Command failed: claude … <argv>`,
     // and argv carries the raw hits in the prompt. Simulate that exact shape and

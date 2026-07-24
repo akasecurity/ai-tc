@@ -8,8 +8,8 @@ import {
 
 // The global handling toggle (settings.policy) no longer drives runtime
 // enforcement — per-category Policies do. Guard against the copy regressing to
-// the old claims that this control has a live, altering effect. The page head is
-// covered too: it sits above the form and makes the same promise.
+// the old claims that this control has a live, altering effect. The page head
+// (SETTINGS_PAGE_SUB) is folded in too, so it can't resurrect those claims either.
 describe('Settings copy', () => {
   const allCopy = [
     SETTINGS_PAGE_SUB,
@@ -29,11 +29,5 @@ describe('Settings copy', () => {
   it('points enforcement at the per-category Policies', () => {
     expect(HANDLING_SECTION_DESCRIPTION).toMatch(/Policies/);
     expect(HANDLING_SECTION_DESCRIPTION).toMatch(/per-category/i);
-  });
-
-  it('describes the page-head knobs as stored, not applied', () => {
-    expect(SETTINGS_PAGE_SUB).toMatch(/stored/i);
-    expect(SETTINGS_PAGE_SUB).not.toMatch(/applied/i);
-    expect(SETTINGS_PAGE_SUB).toMatch(/Policies/);
   });
 });

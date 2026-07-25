@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -128,6 +128,16 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(await grants()).toHaveLength(0);
     });
 
+    it('rejects a whitespace-only value — the empty guard is strict, the scan rejects the rest', async () => {
+      // The empty-value guard is a strict `=== ''`, deliberately not trimmed (a
+      // raw value is never mutated). A whitespace-only value therefore falls
+      // through to the scan step, which matches nothing and rejects it — still
+      // no grant. Pin that boundary so neither guard can silently soften.
+      const res = await addException({ ruleId: RULE_ID, value: '   ', scope: 'once', reason: 'x' });
+      expect(res.ok).toBe(false);
+      expect(await grants()).toHaveLength(0);
+    });
+
     it('rejects an unresolvable scope without echoing the value', async () => {
       const res = await addException({
         ruleId: RULE_ID,
@@ -230,6 +240,8 @@ describe('addException — the only web code touching a raw secret', () => {
       const all = await grants();
       expect(all).toHaveLength(1);
       expect(all[0]?.scope).toBe('permanent');
+      // A permanent grant has no expiry — it lives until explicitly revoked.
+      expect(all[0]?.expiresAt).toBeNull();
     });
   });
 
@@ -248,6 +260,9 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(grant?.category).toBe('secret');
       expect(grant?.scope).toBe('once');
       expect(grant?.maxUses).toBe(1);
+      // A `once` grant carries the 30-minute backstop expiry so an unused grant
+      // cannot dangle forever, even if nothing ever consumes it.
+      expect(grant?.expiresAt).not.toBeNull();
       expect(grant?.createdVia).toBe('web-add');
       expect(grant?.justification).toBe('rotating today');
       // Nothing recoverable at rest: the preview is masked and no persisted
@@ -273,6 +288,30 @@ describe('addException — the only web code touching a raw secret', () => {
         .update(SECOND, 'utf8')
         .digest('hex');
       expect(grant?.valueFingerprint).toBe(spanFingerprint);
+    });
+
+    it('lands in the active evaluation bundle under the current key — a real detection would match it', async () => {
+      // The enforcement gateway ships exactly `activeBundleEntries(key.version)`
+      // to the hook (plugin-runtime standalone-gateway); at evaluation a detected
+      // value is fingerprinted under the same key and matched against those
+      // entries. A grant present here, keyed to fingerprint(VALUE), is therefore
+      // one a live detection of VALUE will actually downgrade — the "no dangling
+      // grant" property at the web layer, against the very query enforcement
+      // reads (the full processText loop is pinned by the CLI suite).
+      const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: '1h', reason: 'x' });
+      expect(res).toEqual({ ok: true });
+
+      const key = loadOrCreateFingerprintKey(dir);
+      const wanted = createHmac('sha256', key.material).update(VALUE, 'utf8').digest('hex');
+      const db = openLocalDatabase(dir);
+      try {
+        const bundle = await db.exceptions.activeBundleEntries(key.version);
+        expect(bundle.some((e) => e.ruleId === RULE_ID && e.valueFingerprint === wanted)).toBe(
+          true,
+        );
+      } finally {
+        db.close();
+      }
     });
 
     it('rejects a duplicate active grant with a friendly message, keeping one grant', async () => {
@@ -323,6 +362,17 @@ describe('addException — the only web code touching a raw secret', () => {
 
       resetSingleton(); // close the handle so the WAL is checkpointed into the file
       expect(storeBytes()).not.toContain(SECOND);
+    });
+
+    it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async () => {
+      const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
+      expect(res).toEqual({ ok: true });
+      // The add path mints the fingerprint key on first use. A looser mode would
+      // let another local account read the key and reverse the stored HMACs, so
+      // pin 0600 (POSIX only — Windows ACLs do not carry these mode bits).
+      if (process.platform !== 'win32') {
+        expect(statSync(join(dir, 'exception.key')).mode & 0o777).toBe(0o600);
+      }
     });
   });
 

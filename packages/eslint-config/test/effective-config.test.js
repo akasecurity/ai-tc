@@ -1,22 +1,134 @@
-import { existsSync, globSync } from 'node:fs';
+import { existsSync, globSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-// These tests exercise the ASSEMBLED per-package configs on disk — not the
-// exported building blocks (base / noEnterpriseImports / the helpers) that
-// no-network.test.js covers in isolation. Flat config resolves "last wins":
-// the final block matching a file overrides earlier ones for a given rule, and
-// no-restricted-imports never merges across blocks. So a package that layers a
-// second config on top of base (web-ui: react + noEnterpriseImports; persistence
-// / local-ops: base + noEnterpriseImports; cli: base + the dashboard opt-out)
-// could silently drop a network ban with the unit suite still green. Here we
-// resolve each real eslint.config.mjs through ESLint itself and assert the ban
-// still fires on real code — the composition, not the components.
+// This file guards the per-package ESLint configs two ways.
+//
+//  1. STRUCTURAL (the `#50` block): every workspace package — enumerated from
+//     pnpm-workspace.yaml, not a hand-maintained glob — must ship an
+//     eslint.config.mjs that extends `@akasecurity/eslint-config`, unless it is
+//     on an explicit, reasoned opt-out list. A package with NO config at all is
+//     invisible to `pnpm lint` (nothing points ESLint at it) AND to a glob that
+//     only ever matched existing config files, so it would ship UNGUARDED for
+//     network calls with CI green. The floor assertion alone cannot catch a
+//     package that was never in the glob's universe — this block can.
+//
+//  2. BEHAVIORAL (the composition / last-wins block): resolve each real
+//     eslint.config.mjs through ESLint and assert the four network rules still
+//     fire on real code. Flat config resolves "last wins": the final block
+//     matching a file overrides earlier ones for a given rule, and
+//     no-restricted-imports never merges across blocks. So a package that layers
+//     a second config on top of base (web-ui: react + noEnterpriseImports;
+//     persistence / local-ops: base + noEnterpriseImports; cli: base + the
+//     dashboard opt-out) could silently drop a network ban with the unit suite
+//     still green. Here we assert the composition, not the components.
+//
+// The two compose into a closed loop: (1) guarantees every package ships a
+// config, (2) is fed the same derived list and proves each config enforces the
+// ban. A new package that forgets its config fails (1); one whose config fails
+// to wire the ban fails (2).
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+// --- Workspace package enumeration (derived from pnpm-workspace.yaml) --------
+
+// Packages exempt from shipping a network-guarded eslint.config.mjs, keyed by
+// package name. Keep this list TINY — every entry is a hole in the no-network
+// enforcement and must be a deliberate, reviewed decision, so each carries its
+// reason. A package that ships lintable source belongs behind the ban, not here.
+const CONFIG_OPT_OUT = [
+  {
+    name: '@akasecurity/eslint-config',
+    reason:
+      'Defines the shared config; it cannot extend itself, and its own `lint` script is a no-op.',
+  },
+];
+const OPT_OUT_NAMES = new Set(CONFIG_OPT_OUT.map((o) => o.name));
+
+// "Extends `@akasecurity/eslint-config`" = imports it (the root entry or the
+// `/react` sub-entry) via `import ... from` or `require(...)`. This is the fast,
+// readable statement of intent for the acceptance criterion; the BEHAVIORAL
+// suite below is what actually proves the import wires all four network rules,
+// so a config that imports the package but forgets to spread `...base` is caught
+// there, not here.
+const IMPORTS_SHARED_CONFIG =
+  /(?:import[^;]*from[ \t]*|require\([ \t]*)['"]@akasecurity\/eslint-config(?:\/[\w.-]+)?['"]/;
+
+/**
+ * The package globs declared under `packages:` in pnpm-workspace.yaml. Parsed
+ * without a YAML dependency: capture the `packages:` line plus the consecutive
+ * indented `- …` sequence entries that follow it (stopping at the next key that
+ * starts in column 0), then pull each quoted-or-bare scalar.
+ * @returns {string[]}
+ */
+function workspaceGlobs() {
+  // Normalize CRLF → LF up front: the block/scalar regexes anchor on `\n`, and a
+  // Windows checkout (core.autocrlf) would otherwise capture a trailing `\r` into
+  // each glob and break globSync.
+  const raw = readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8').replace(/\r\n/g, '\n');
+  const block = raw.match(/^packages:[ \t]*\n((?:[ \t]+-.*\n?)+)/m)?.[1] ?? '';
+  return [...block.matchAll(/^[ \t]+-[ \t]*['"]?([^'"\n#]+?)['"]?[ \t]*$/gm)].map((m) => m[1]);
+}
+
+/**
+ * Every workspace package on disk, resolved from pnpm-workspace.yaml exactly as
+ * pnpm does: expand each glob, keep the directories that hold a package.json.
+ * @returns {{ name: string, dir: string, configRel: string, hasConfig: boolean, extendsShared: boolean }[]}
+ */
+function discoverWorkspacePackages() {
+  const dirs = [
+    ...new Set(
+      workspaceGlobs()
+        .flatMap((g) => globSync(g, { cwd: REPO_ROOT }))
+        .filter((rel) => existsSync(join(REPO_ROOT, rel, 'package.json'))),
+    ),
+  ].sort();
+  return dirs.map((dir) => {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
+    const configRel = join(dir, 'eslint.config.mjs');
+    const configAbs = join(REPO_ROOT, configRel);
+    const hasConfig = existsSync(configAbs);
+    return {
+      name: pkg.name,
+      dir,
+      configRel,
+      hasConfig,
+      extendsShared: hasConfig && IMPORTS_SHARED_CONFIG.test(readFileSync(configAbs, 'utf8')),
+    };
+  });
+}
+
+const WORKSPACE_PACKAGES = discoverWorkspacePackages();
+
+// The packages that MUST ship a network-guarded config (everything except the
+// opt-outs). Fed to both the structural guard and the behavioral suite.
+const GUARDED_PACKAGES = WORKSPACE_PACKAGES.filter((p) => !OPT_OUT_NAMES.has(p.name));
+
+/**
+ * Split the guarded packages by how they fail the config requirement. Pure over
+ * its input so the failure paths are testable with synthetic packages — a real,
+ * healthy tree produces none by construction.
+ * @param {{ name: string, hasConfig: boolean, extendsShared: boolean }[]} guarded
+ * @returns {{ missing: string[], notExtending: string[] }}
+ */
+function configViolations(guarded) {
+  return {
+    missing: guarded.filter((p) => !p.hasConfig).map((p) => p.name),
+    notExtending: guarded.filter((p) => p.hasConfig && !p.extendsShared).map((p) => p.name),
+  };
+}
+
+// The per-package configs the BEHAVIORAL suite resolves through ESLint. Derived
+// from the workspace enumeration (not a hand-maintained glob with `cli`/`web-ui`
+// spelled out) so a new package's config is behaviorally verified the moment it
+// is added — and the structural guard guarantees every guarded package
+// contributes exactly one entry here.
+const CONFIG_FILES = GUARDED_PACKAGES.filter((p) => p.hasConfig).map((p) => p.configRel);
+
+// --- Behavioral resolution helpers (shared by the composition suite) ---------
 
 const KEYS = /** @type {const} */ ([
   'no-restricted-globals',
@@ -36,19 +148,6 @@ const NETWORK_SNIPPET = [
 
 const linter = new Linter();
 const LANG = { ecmaVersion: 'latest', sourceType: 'module' };
-
-// Every workspace glob from pnpm-workspace.yaml that can hold a package config.
-// Discovering them (rather than hard-coding a list) means a NEW package that
-// forgets to extend `base` fails this suite instead of slipping through
-// unlinted for network calls.
-const CONFIG_FILES = [
-  ...globSync('packages/*/eslint.config.mjs', { cwd: REPO_ROOT }),
-  ...globSync('plugins/*/eslint.config.mjs', { cwd: REPO_ROOT }),
-  ...globSync('tools/*/eslint.config.mjs', { cwd: REPO_ROOT }),
-  ...['cli/eslint.config.mjs', 'web-ui/eslint.config.mjs'].filter((p) =>
-    existsSync(join(REPO_ROOT, p)),
-  ),
-].sort();
 
 // Resolving a real config through ESLint (`new ESLint` + `calculateConfigForFile`)
 // is slow on a cold runner: the first call loads the whole typescript-eslint +
@@ -77,6 +176,115 @@ function firedRuleIds(code, rules) {
   return new Set(linter.verify(code, { languageOptions: LANG, rules }).map((m) => m.ruleId));
 }
 
+// --- Structural guard: every package ships a network-guarded config (#50) -----
+
+describe('every workspace package ships a network-guarded eslint config (#50)', () => {
+  it('discovered the workspace packages (guard against a vacuous pass)', () => {
+    // A broken pnpm-workspace.yaml parse would leave the enumeration empty and
+    // every assertion in this file would pass vacuously. 14 workspace packages
+    // exist today; 13 ship a config (all but @akasecurity/eslint-config).
+    expect(workspaceGlobs().length).toBeGreaterThan(0);
+    expect(WORKSPACE_PACKAGES.length).toBeGreaterThanOrEqual(12);
+    expect(CONFIG_FILES.length).toBeGreaterThanOrEqual(11);
+  });
+
+  it('enumeration includes the non-packages/* roots (cli, web-ui, plugin)', () => {
+    // The gap this test removed was a hand-maintained list that spelled out
+    // `cli`/`web-ui` and globbed only three parent dirs. Pin that the derived
+    // enumeration reaches the roots outside `packages/*`, so a parser regression
+    // that dropped them fails here rather than silently under-covering.
+    const names = new Set(WORKSPACE_PACKAGES.map((p) => p.name));
+    for (const anchor of [
+      '@akasecurity/cli',
+      '@akasecurity/web-ui',
+      '@akasecurity/ai-tc-claude-code',
+    ]) {
+      expect(names, anchor).toContain(anchor);
+    }
+  });
+
+  it('no guarded package is missing its eslint.config.mjs', () => {
+    const { missing } = configViolations(GUARDED_PACKAGES);
+    expect(
+      missing,
+      missing.length
+        ? 'These workspace packages ship no eslint.config.mjs, so `pnpm lint` never points ESLint at ' +
+            'them and they would ship UNGUARDED for network calls with CI green. Add an ' +
+            'eslint.config.mjs extending @akasecurity/eslint-config (see any sibling package), or — ' +
+            'only if the package genuinely ships no self-lintable source — add it to CONFIG_OPT_OUT ' +
+            `with a reason:\n  ${missing.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it('every shipped config extends @akasecurity/eslint-config', () => {
+    const { notExtending } = configViolations(GUARDED_PACKAGES);
+    expect(
+      notExtending,
+      notExtending.length
+        ? 'These packages ship an eslint.config.mjs that never imports @akasecurity/eslint-config, ' +
+            'so the shared no-network ban is not wired in. Extend the shared config (spread ' +
+            `...base / ...noEnterpriseImports / ...react):\n  ${notExtending.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+});
+
+describe('CONFIG_OPT_OUT hygiene', () => {
+  const names = new Set(WORKSPACE_PACKAGES.map((p) => p.name));
+
+  it.each(CONFIG_OPT_OUT)('$name is a real workspace package (no stale opt-out)', ({ name }) => {
+    expect(names).toContain(name);
+  });
+
+  it('stays minimal — only @akasecurity/eslint-config is exempt today', () => {
+    // Hard-coded so ANY addition to the opt-out is a reviewed change here rather
+    // than a silent hole in the no-network enforcement (mirrors the ban-set
+    // drift guards in no-network.test.js).
+    expect(CONFIG_OPT_OUT.map((o) => o.name)).toEqual(['@akasecurity/eslint-config']);
+  });
+});
+
+describe('configViolations (the guard mechanism, tested on synthetic packages)', () => {
+  // The real tree is healthy, so the failure paths above never execute against
+  // it. Exercise them directly to prove the guard fails LOUDLY and NAMES the
+  // offending package — the second acceptance criterion of #50.
+  it('names a package that ships no config', () => {
+    const v = configViolations([
+      { name: '@akasecurity/newpkg', hasConfig: false, extendsShared: false },
+    ]);
+    expect(v.missing).toEqual(['@akasecurity/newpkg']);
+    expect(v.notExtending).toEqual([]);
+  });
+
+  it('names a package whose config does not extend the shared config', () => {
+    const v = configViolations([
+      { name: '@akasecurity/newpkg', hasConfig: true, extendsShared: false },
+    ]);
+    expect(v.notExtending).toEqual(['@akasecurity/newpkg']);
+    expect(v.missing).toEqual([]);
+  });
+
+  it('clears a package that ships a config extending the shared config', () => {
+    const v = configViolations([{ name: '@akasecurity/ok', hasConfig: true, extendsShared: true }]);
+    expect(v.missing).toEqual([]);
+    expect(v.notExtending).toEqual([]);
+  });
+
+  it('reports every offender in a mixed set (fails loudly, not on the first)', () => {
+    const v = configViolations([
+      { name: '@akasecurity/a', hasConfig: false, extendsShared: false },
+      { name: '@akasecurity/b', hasConfig: true, extendsShared: true },
+      { name: '@akasecurity/c', hasConfig: true, extendsShared: false },
+      { name: '@akasecurity/d', hasConfig: false, extendsShared: false },
+    ]);
+    expect(v.missing).toEqual(['@akasecurity/a', '@akasecurity/d']);
+    expect(v.notExtending).toEqual(['@akasecurity/c']);
+  });
+});
+
+// --- Behavioral guard: each config actually enforces the ban -----------------
+
 describe('effective per-package config (composition / last-wins)', () => {
   /** @type {Map<string, Set<string>>} configRel -> rule ids the snippet trips */
   const firedByConfig = new Map();
@@ -91,11 +299,11 @@ describe('effective per-package config (composition / last-wins)', () => {
     }
   }, RESOLVE_TIMEOUT_MS);
 
-  it('discovered the workspace package configs (guard against a vacuous pass)', () => {
-    // A broken glob would leave it.each empty and every enforcement test would
-    // silently not run. Pin the floor: 11 packages ship an eslint.config.mjs
-    // today (all of packages/* except eslint-config, plus cli, web-ui, plugin).
-    expect(CONFIG_FILES.length).toBeGreaterThanOrEqual(11);
+  it('resolved a config for every guarded package (no behavioral gap)', () => {
+    // The structural guard guarantees every guarded package ships a config;
+    // pin that the behavioral suite actually resolved one for each, so a package
+    // can never be present-but-unverified.
+    expect(CONFIG_FILES.length).toBe(GUARDED_PACKAGES.length);
   });
 
   it.each(CONFIG_FILES)('bans every network form in %s', (configRel) => {

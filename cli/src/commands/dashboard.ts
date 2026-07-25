@@ -87,10 +87,14 @@ export async function runDashboard(argv: string[]): Promise<void> {
   });
   const port = values.port ?? '4319';
   const shouldOpen = values.open !== false;
-  // The host opened here (`localhost`) and the bind host below (`127.0.0.1`) MUST
-  // stay spellings that web-ui/middleware.ts admits — its gate allows only
-  // `localhost` / `127.0.0.1` / `[::1]`. A non-loopback spelling here would 403
-  // every page on launch; web-ui/test/middleware.test.ts pins that coupling.
+  // The host in this opened URL becomes the browser's `Host` header, so it must
+  // stay a spelling web-ui/middleware.ts admits (`localhost` / `127.0.0.1` /
+  // `[::1]`) — anything else 403s every page on launch. The bind host below
+  // (`127.0.0.1`) is a SEPARATE constraint the gate cannot enforce: it reads the
+  // Host header, never the bind address, so binding all interfaces (`0.0.0.0`)
+  // would expose the surface while every page still 200s. The bind is pinned at
+  // the `--hostname` / `HOSTNAME` sites below. (middleware.test.ts makes this
+  // coupling discoverable, not enforced — it asserts literals, not the CLI's host.)
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {

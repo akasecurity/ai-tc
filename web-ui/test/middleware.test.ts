@@ -41,11 +41,13 @@ function statusFor(
 describe('middleware — allowed loopback literals (any port)', () => {
   // The three accepted spellings, each with the default port, a non-default
   // port, and no port at all — "any port is fine; the name must be loopback".
-  // These are also the exact hosts the CLI uses: cli/src/commands/dashboard.ts
-  // opens `http://localhost:${port}` (line 90) and binds `127.0.0.1` (lines
-  // 39/127/171). Literal-only matching makes those load-bearing — if the gate
-  // stops admitting them the dashboard 403s every page on launch — so this block
-  // doubles as the pin keeping the gate and the CLI's host choices in agreement.
+  // These are also the hosts the CLI uses: cli/src/commands/dashboard.ts's `url`
+  // opens `http://localhost:${port}`, and its `--hostname` / `HOSTNAME` bind
+  // `127.0.0.1`. Literal-only matching makes the OPENED host load-bearing (a
+  // non-loopback spelling there 403s every page on launch). This block only makes
+  // that coupling DISCOVERABLE, though — it asserts string literals typed here,
+  // not what the CLI actually sends, so it will not catch the CLI drifting to
+  // another spelling. (The bind host is a separate constraint the gate can't see.)
   it.each([
     'localhost:4319',
     'localhost:9999',
@@ -80,19 +82,22 @@ describe('middleware — non-loopback hosts are rejected (rebinding vectors)', (
   );
 });
 
-describe('middleware — alternate IPv4 encodings the pre-fix gate ALLOWED (regression guards)', () => {
+describe('middleware — alternate encodings the pre-fix gate ALLOWED (regression guards)', () => {
   // The previous gate matched `new URL(...).hostname`, and the WHATWG parser
-  // normalises each of these to the literal `127.0.0.1` — so on shipped code
-  // they returned 200 and were a live DNS-rebinding bypass, not a hypothetical.
-  // The fix matches the client's literal token instead, so they must now 403.
-  // Every row here fails on the pre-fix middleware, which is what makes it a
-  // real regression guard rather than a forward-only pin.
+  // folds each of these into a loopback literal that WAS in the old allow-set —
+  // `127.0.0.1` for the IPv4 forms, `[::1]` for the uncompressed IPv6 ones — so
+  // on shipped code they returned 200 and were a live DNS-rebinding bypass, not a
+  // hypothetical. The fix matches the client's literal token instead, so they
+  // must now 403. Every row here fails on the pre-fix middleware, which is what
+  // makes it a real regression guard rather than a forward-only pin.
   it.each([
-    '127.1', // shorthand IPv4
-    '2130706433', // decimal IPv4
-    '0x7f000001', // hex IPv4
-    '127.000.000.001', // zero-padded dotted IPv4
+    '127.1', // shorthand IPv4 -> 127.0.0.1
+    '2130706433', // decimal IPv4 -> 127.0.0.1
+    '0x7f000001', // hex IPv4 -> 127.0.0.1
+    '127.000.000.001', // zero-padded dotted IPv4 -> 127.0.0.1
     '127.1:4319', // ...with a port, too
+    '[0:0:0:0:0:0:0:1]', // uncompressed IPv6 -> [::1]
+    '[::0.0.0.1]', // IPv6 with an embedded IPv4 -> [::1]
   ])('403 for %s', (host) => {
     expect(statusFor(host)).toBe(403);
   });
@@ -112,19 +117,18 @@ describe('middleware — encodings already denied, pinned against a future norma
 });
 
 describe('middleware — genuine-but-unadmitted loopback spellings stay out (intentional, fail-closed)', () => {
-  // These do resolve to loopback, but they are deliberately NOT in the allow-set.
-  // The dashboard only ever opens http://localhost:PORT or http://127.0.0.1:PORT,
-  // so a browser never sends them, and holding the set to three exact spellings
-  // is what keeps the literal match tight. Rejecting them is a conscious,
-  // fail-closed choice — pinned so it stays deliberate. Admitting any of them
-  // (e.g. *.localhost per RFC 6761) would be a separate, opt-in widening.
+  // These resolve to loopback but were DENIED by the pre-fix gate too — their
+  // `new URL().hostname` was never in the old allow-set — so, unlike the block
+  // above, they never changed. They are deliberately excluded: the dashboard only
+  // opens http://localhost:PORT / http://127.0.0.1:PORT, so a browser never sends
+  // them, and holding the set to three exact spellings keeps the literal match
+  // tight. Admitting any (e.g. *.localhost per RFC 6761) would be a separate,
+  // opt-in widening.
   it.each([
     'localhost.', // trailing-dot FQDN
     'app.localhost', // RFC 6761 *.localhost subdomain
     '127.0.0.2', // the rest of 127/8
     '127.0.0.2:4319',
-    '[0:0:0:0:0:0:0:1]', // uncompressed IPv6 loopback
-    '[::0.0.0.1]', // IPv6 with an embedded IPv4 loopback
   ])('403 for %s', (host) => {
     expect(statusFor(host)).toBe(403);
   });
@@ -153,13 +157,30 @@ describe('middleware — missing, empty, or malformed Host fails closed', () => 
     expect(statusFor(host)).toBe(403);
   });
 
-  it('403 fast for an oversized / many-colon Host (constant-time, no hang)', () => {
-    // The gate is a single anchored regex with no backtracking, so hostile-sized
-    // input is simply rejected rather than causing a silent stall. Node caps real
-    // request headers well below this, so it is defence-in-depth.
+  it('403 for an oversized / many-colon Host, in linear time', () => {
+    // A 10 KB Host is in-band, not beyond what the server accepts: node:http's
+    // default maxHeaderSize is 16 KB and `next start` does not lower it, so a
+    // rebound page really can send this and reach the gate. The gate is a single
+    // anchored regex with no backtracking, so it rejects in time linear in the
+    // input length — never a silent stall.
     expect(statusFor('a'.repeat(10_000))).toBe(403);
     expect(statusFor(`localhost${':1'.repeat(5_000)}`)).toBe(403);
   });
+});
+
+describe('middleware — the port is not validated (the loopback host is the whole decision)', () => {
+  // `\d{1,5}` bounds the port's length, not its value, so out-of-range and
+  // zero-padded ports are admitted on a loopback host. Deliberate: the host is
+  // always a loopback literal when the pattern matches, so the port cannot widen
+  // the gate (and no browser can open a port above 65535). Pinned as a decision,
+  // not a side effect — note `localhost:99999999` above still 403s, but on digit
+  // count (8 > 5), not range.
+  it.each(['localhost:65536', 'localhost:99999', 'localhost:080', 'localhost:00'])(
+    '200 for %s',
+    (host) => {
+      expect(statusFor(host)).toBe(200);
+    },
+  );
 });
 
 describe('middleware — x-forwarded-host is held to the same loopback bar', () => {
@@ -172,23 +193,15 @@ describe('middleware — x-forwarded-host is held to the same loopback bar', () 
     '127.1',
     '[::ffff:127.0.0.1]',
     '',
-    'localhost, evil.com', // comma-joined (duplicate-header collapse) — the leading token must not be trusted
+    // A repeated `x-forwarded-host` is collapsed to one comma-joined value; the
+    // leading token must not be trusted. (This is x-forwarded-host-specific —
+    // node:http keeps the FIRST `Host` and discards the rest, so `Host` never
+    // arrives comma-joined; the duplicate-`Host` first-wins semantics live in the
+    // server, not this pure gate, so they aren't reproducible here.)
+    'localhost, evil.com',
     'localhost,evil.com',
   ])('403 when Host is loopback but x-forwarded-host is %s', (xForwardedHost) => {
     expect(statusFor('localhost:4319', { xForwardedHost })).toBe(403);
-  });
-
-  it('403 when duplicate x-forwarded-host headers join to a non-loopback value', () => {
-    // The runtime collapses repeated headers into one comma-joined value, so a
-    // smuggled second `x-forwarded-host` arrives as "localhost, evil.com". That
-    // fails to parse as a bare authority and is rejected — pinned so a future
-    // parser change cannot start trusting the leading token.
-    const headers = new Headers();
-    headers.set('host', 'localhost:4319');
-    headers.append('x-forwarded-host', 'localhost');
-    headers.append('x-forwarded-host', 'evil.com');
-    const request = new NextRequest('http://localhost:4319/', { headers });
-    expect(middleware(request).status).toBe(403);
   });
 
   it('403 when x-forwarded-host is loopback but Host is not', () => {
@@ -198,9 +211,12 @@ describe('middleware — x-forwarded-host is held to the same loopback bar', () 
 });
 
 describe('middleware — the gate covers every route and method', () => {
-  // There is no `config.matcher`, so the gate runs on every request: page GETs,
-  // RSC data fetches, and Server Action POSTs alike. A rebinding attack targets
-  // the mutating POST path, so the rejection must not depend on route or method.
+  // There is no `config.matcher`, so the gate runs on every request that reaches
+  // middleware — page GETs, RSC data fetches, and Server Action POSTs alike.
+  // (Next answers trailing-slash / double-slash / case normalisation with a 308
+  // before middleware runs; the browser re-requests the normalised path, which IS
+  // gated, so nothing with a body escapes.) A rebinding attack targets the
+  // mutating POST path, so the rejection must not depend on route or method.
   const routes = ['/', '/security', '/scan', '/exceptions/new', '/_next/data/x.json'];
 
   it.each(routes)('403s a non-loopback GET to %s', (path) => {
@@ -244,18 +260,13 @@ describe('middleware — the Server Action allowedOrigins list stays within the 
   });
 });
 
-describe('middleware — the rejection is a real 403, the pass a real hand-off', () => {
+describe('middleware — the rejection is a real 403 with an explanatory body', () => {
+  // The allowed-literals block above already pins the pass-through mechanism
+  // (status 200 + `x-middleware-next`) for every admitted host; this covers the
+  // reject side, which nothing else asserts.
   it('rejects with a 403 and an explanatory body', async () => {
     const response = runMiddleware('evil.com');
     expect(response.status).toBe(403);
     await expect(response.text()).resolves.toContain('localhost');
-  });
-
-  it('passes a loopback request through to the app', () => {
-    // `NextResponse.next()` hands the request to the app; its sentinel header
-    // distinguishes a genuine pass-through from an incidental 200 body.
-    const response = runMiddleware('127.0.0.1:4319');
-    expect(response.status).toBe(200);
-    expect(response.headers.get('x-middleware-next')).toBe('1');
   });
 });

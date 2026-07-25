@@ -18,15 +18,22 @@ import { type NextRequest, NextResponse } from 'next/server';
 // (`localhost:4319@evil.com`, `localhost:4319/evil`). Testing the literal the
 // client sent — not a parsed or normalised host — is what keeps the allow-set to
 // exactly these spellings; and a literal test has no URL-parser behaviour that
-// could differ between Node and the Edge runtime this middleware ships on.
+// could differ between Node and the Edge runtime this middleware ships on. The
+// port is not part of the security decision — the host is always a loopback
+// literal when this matches — so `\d{1,5}` bounds only the port's length, and
+// out-of-range or zero-padded ports on loopback are admitted (harmless; no
+// browser can open a port above 65535).
 const BARE_LOOPBACK = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 
 function isLoopbackHost(hostHeader: string | null): boolean {
   return hostHeader !== null && BARE_LOOPBACK.test(hostHeader);
 }
 
-// No `config.matcher` export on purpose: the gate covers every path, including
-// RSC data requests and Server Action posts.
+// No `config.matcher` export on purpose: the gate runs on every request that
+// reaches middleware, including RSC data requests and Server Action posts.
+// (Next answers trailing-slash / double-slash / case normalisation with a 308
+// before middleware runs; that redirect carries no body and its target path is
+// itself gated, so nothing reachable with a body escapes this check.)
 export function middleware(request: NextRequest): NextResponse {
   // `x-forwarded-host`, when present, participates in Next's Server Action
   // origin comparison, so hold it to the same bar (no supported deployment

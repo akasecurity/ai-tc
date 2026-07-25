@@ -107,6 +107,22 @@ describe('loadConfig', () => {
 
     expect(statSync(base).mode & 0o777).toBe(0o700);
   });
+
+  it('self-heals a loose settings.json to 0600 on load (plugin read path)', () => {
+    if (process.platform === 'win32') return;
+    // A plugin-only user who never runs `aka init`: the settings read on every
+    // hook (via readWorkspaceSettings) re-tightens a settings.json a prior
+    // release left group/other-readable.
+    const dir = join(base, 'settings');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'settings.json');
+    writeFileSync(file, JSON.stringify({ specVersion: 1, runMode: 'standalone', policy: 'warn' }));
+    chmodSync(file, 0o644);
+
+    loadConfig(base);
+
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
 });
 
 describe('applyOnboarding', () => {

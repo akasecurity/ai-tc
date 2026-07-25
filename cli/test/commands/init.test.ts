@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -78,6 +87,26 @@ describe('runInit contract', () => {
     expect(mode(dataDir(dir))).toBe(0o700);
     expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
     expect(mode(dbPath(dir))).toBe(0o600);
+  });
+
+  it('re-tightens a pre-existing loose settings.json on re-run (tighten is not gated on creating it)', async () => {
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    if (process.platform === 'win32') return;
+    // Simulate a user who hit the pre-fix leftover-.tmp bug: settings.json exists
+    // at 0666, so `settingsCreated` is false and the write block is skipped. The
+    // re-run must still repair the mode — settings.json self-heals like the dirs,
+    // the key, and the db.
+    const settings = settingsDir(dir);
+    mkdirSync(settings, { recursive: true });
+    const file = join(settings, 'settings.json');
+    writeFileSync(file, '{"specVersion":1,"runMode":"standalone","policy":"warn"}');
+    chmodSync(file, 0o666);
+
+    await runInit(['--home', dir]);
+
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // ...and it did not clobber the user's saved answers.
+    expect(readFileSync(file, 'utf8')).toContain('"policy":"warn"');
   });
 
   it('a second init preserves an existing settings.json (never clobbers onboarding answers)', async () => {

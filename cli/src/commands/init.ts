@@ -9,7 +9,7 @@ import {
   installedPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
-import { openLocalDatabase, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import { openLocalDatabase, tightenFile, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
 import {
   bundledDetections,
   dataDir,
@@ -56,6 +56,12 @@ export async function runInit(argv: string[]): Promise<void> {
       `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
     );
   }
+  // Re-tighten whether or not we just wrote it: a re-run of `aka init` over a
+  // settings.json a prior release left loose (the leftover-`.tmp` bug) must
+  // self-heal it to 0600 — the same repair the dirs, key, and db already get on
+  // their own access paths. Gating this on `settingsCreated` left settings.json
+  // as the one artifact under ~/.aka that never self-healed.
+  tightenFile(settingsFile);
 
   const db = openLocalDatabase(dataDir(home));
   let policyCount: number;

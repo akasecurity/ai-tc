@@ -67,6 +67,28 @@ describe('readWorkspaceSettings', () => {
     expect(settings.runMode).toBe('standalone');
     expect(settings.onboardedAt).toBeUndefined();
   });
+
+  it('self-heals a pre-existing loose settings.json to 0600 on read (plugin read path)', () => {
+    if (process.platform === 'win32') return;
+    // A settings.json a prior release left group/other-readable is re-tightened
+    // whenever it is read — the read-path equivalent of the key self-healing on
+    // load and the db on open, so a plugin-only user who never runs `aka init`
+    // still gets it repaired on the next hook.
+    writeSettings({ specVersion: 1, runMode: 'standalone', policy: 'warn' });
+    const file = join(base, 'settings', 'settings.json');
+    chmodSync(file, 0o644);
+
+    const settings = readWorkspaceSettings(base);
+
+    expect(settings.policy).toBe('warn'); // still reads correctly
+    expect(statSync(file).mode & 0o777).toBe(0o600); // and healed the mode
+  });
+
+  it('does not attempt to tighten an absent settings.json (unonboarded read is a no-op)', () => {
+    // existsSync-gated, so no chmod (and no warn) fires when the file is absent.
+    expect(() => readWorkspaceSettings(base)).not.toThrow();
+    expect(readWorkspaceSettings(base).onboardedAt).toBeUndefined();
+  });
 });
 
 describe('applyOnboarding', () => {

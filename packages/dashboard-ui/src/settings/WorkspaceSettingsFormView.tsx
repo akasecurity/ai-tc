@@ -33,7 +33,14 @@ export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
   },
 ];
 
-const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[] = [
+// This is the same grant the /aka:setup wizard collects, and it is what gates
+// the wizard's history sweep. That sweep sends what it finds to the model API to
+// be rated, so the 'full' copy must disclose the egress here too — this is the
+// surface the wizard points at for scope and revocation.
+const HISTORICAL_SECTION_DESCRIPTION =
+  'Consent to inspect surfaces that existed before AKA was installed.';
+
+export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[] = [
   {
     value: 'session-only',
     label: 'Session only',
@@ -42,7 +49,11 @@ const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[] = [
   {
     value: 'full',
     label: 'Full',
-    description: 'Pre-install surfaces (existing configs, history) may be scanned too.',
+    description:
+      'Pre-install surfaces (existing configs, history) may be scanned too. This also lets ' +
+      '/aka:setup send what that scan finds — raw values including any secrets, the ' +
+      'surrounding transcript text, and the source file path — to the model API to be rated. ' +
+      'Switching back to Session only stops future scans; it cannot recall data already sent.',
   },
 ];
 
@@ -121,9 +132,7 @@ export function WorkspaceSettingsFormView({
 
       <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>Historical access</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">
-          Consent to inspect surfaces that existed before AKA was installed.
-        </p>
+        <p className="mb-3 text-xs text-text-3">{HISTORICAL_SECTION_DESCRIPTION}</p>
         <ChoiceGroup
           name="historicalAccess"
           choices={HISTORICAL_CHOICES}

@@ -141,6 +141,55 @@ describe('runJudge', () => {
     expect(rec.notes).toBe('ok');
   });
 
+  // The consent copy in commands/setup.md and both READMEs enumerates what
+  // crosses to the model API field by field. runJudge serializes the whole
+  // TriageHit, so a new field on that schema silently widens the payload past
+  // what the user was told. Pin the exact key set: adding one here is a
+  // deliberate act that forces the disclosure copy to be updated with it.
+  it('sends exactly the disclosed TriageHit fields — no undisclosed payload', () => {
+    let seenStdin = '';
+    runJudge([hit], {
+      spawn: (_argv, _env, stdin) => {
+        seenStdin = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+
+    // The hits ride as JSONL inside the prompt's last fenced block.
+    const fenced = /```\n([\s\S]*?)\n```\n?$/.exec(seenStdin);
+    if (fenced?.[1] === undefined) throw new Error('no fenced hit block on stdin');
+    const lines = fenced[1].split('\n').filter((l) => l !== '');
+    expect(lines).toHaveLength(1);
+    const [hitLine] = lines;
+    if (hitLine === undefined) throw new Error('no hit line on stdin');
+
+    const sent = JSON.parse(hitLine) as Record<string, unknown>;
+    expect(Object.keys(sent).sort()).toEqual([
+      'category',
+      'confidence',
+      'context',
+      'maskedMatch',
+      'rawMatch',
+      'ruleId',
+      'severity',
+    ]);
+    // The three the disclosure calls out by name: the secret itself, the
+    // surrounding transcript window, and (when present) the source path.
+    expect(sent.rawMatch).toBe(hit.rawMatch);
+    expect(sent.context).toBe(hit.context);
+
+    let withPath = '';
+    runJudge([{ ...hit, filePath: '/Users/dev/.claude/projects/acme-api/session.jsonl' }], {
+      spawn: (_argv, _env, stdin) => {
+        withPath = stdin;
+        return envelope(VERDICT_FENCE);
+      },
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(withPath).toContain('/Users/dev/.claude/projects/acme-api/session.jsonl');
+  });
+
   it('re-throws a spawn failure as raw-free metadata (execFileSync puts the prompt in .message)', () => {
     // execFileSync throws an error whose .message is `Command failed: claude … <argv>`,
     // and argv carries the raw hits in the prompt. Simulate that exact shape and

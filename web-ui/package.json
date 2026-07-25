@@ -7,8 +7,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint app middleware.ts",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint app middleware.ts vitest.config.ts test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@akasecurity/dashboard-ui": "workspace:*",
@@ -34,6 +35,7 @@
     "eslint": "^9.0.0",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.8.0",
-    "typescript-eslint": "^8.64.0"
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.10"
   }
 }

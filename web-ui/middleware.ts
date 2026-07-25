@@ -11,16 +11,45 @@ import { type NextRequest, NextResponse } from 'next/server';
 // Any port is fine (`aka dashboard --port N`); the name must be loopback.
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
 
+// Split the hostname off a `host[:port]` header WITHOUT normalising it. An IPv6
+// literal is bracketed (`[::1]`) and carries its own colons, so its port is
+// whatever follows the closing `]`; every other form splits at the first colon.
+function hostnameLiteral(hostHeader: string): string {
+  if (hostHeader.startsWith('[')) {
+    const end = hostHeader.indexOf(']');
+    return end === -1 ? hostHeader : hostHeader.slice(0, end + 1);
+  }
+  const colon = hostHeader.indexOf(':');
+  return colon === -1 ? hostHeader : hostHeader.slice(0, colon);
+}
+
 function isLoopbackHost(hostHeader: string | null): boolean {
   if (hostHeader === null || hostHeader === '') return false;
+  let parsed: URL;
   try {
-    // URL handles the port suffix and IPv6 brackets; `hostname` lowercases
-    // names and keeps the brackets on IPv6 literals ("[::1]").
-    return LOOPBACK_HOSTNAMES.has(new URL(`http://${hostHeader}`).hostname);
+    parsed = new URL(`http://${hostHeader}`);
   } catch {
     // Unparseable Host header — fail closed.
     return false;
   }
+  // The header must be a bare `host[:port]`: reject anything that smuggles
+  // userinfo, a path, a query, or a fragment past the authority (e.g.
+  // `localhost:4319/evil`, `localhost:4319@evil.com`).
+  if (
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.pathname !== '/' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    return false;
+  }
+  // Match the LITERAL spelling the client sent, not URL's normalised
+  // `hostname`. The WHATWG parser rewrites every alternate IPv4 encoding —
+  // `127.1`, `2130706433`, `0x7f000001`, `127.000.000.001` — all to
+  // `127.0.0.1`, which would silently widen this allow-set to spellings it
+  // never admitted. Host names are case-insensitive, so fold case first.
+  return LOOPBACK_HOSTNAMES.has(hostnameLiteral(hostHeader).toLowerCase());
 }
 
 // No `config.matcher` export on purpose: the gate covers every path, including

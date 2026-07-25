@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
+import { backupBeforeLegacyDrop } from '../src/migrations.ts';
 import { walSidecars } from '../src/paths.ts';
 
 let dir: string;
@@ -105,6 +106,28 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     }
   });
 
+  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', () => {
+    // Every hook after the first init reopens an already-migrated store. The
+    // sidecars are removed on close and recreated by the reopen's writes; SQLite
+    // gives a new sidecar the main db's mode, so a store loosened out of band
+    // must be re-tightened on open — not only at first creation.
+    openLocalDatabase(dir).close();
+    const file = join(dir, 'aka.db');
+    if (process.platform !== 'win32') chmodSync(file, 0o644); // simulate a loosened store
+
+    const db = openLocalDatabase(dir);
+    try {
+      if (process.platform === 'win32') return;
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      for (const sidecar of walSidecars(file)) {
+        expect(existsSync(sidecar)).toBe(true);
+        expect(statSync(sidecar).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it('backs up and recreates an incompatible legacy tenant-bearing aka.db instead of silently failing writes', async () => {
     // Simulate an old (tenant-bearing) store this lineage can't migrate
     // forward: a `tenants` table + a tenant_id column, with a bumped user_version
@@ -128,6 +151,32 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // The old store is preserved (recoverable), not destroyed.
     const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
+    // The backup is a full copy of the prompt corpus, so it must carry the same
+    // 0600 as the live store — the pre-tightened legacy file was 0644.
+    const [backupName] = backups;
+    if (process.platform !== 'win32' && backupName !== undefined) {
+      expect(statSync(join(dir, backupName)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {
+    // The legacy events/findings drop snapshots the whole store via VACUUM INTO,
+    // which creates a brand-new file at the process umask (typically 0644). That
+    // backup is a full copy of the prompt corpus, so it must be tightened to the
+    // store's own 0600.
+    const file = join(dir, 'aka.db');
+    const raw = new DatabaseSync(file);
+    raw.exec('PRAGMA journal_mode = WAL');
+    raw.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    raw.exec("INSERT INTO t (v) VALUES ('prompt corpus')");
+    if (process.platform !== 'win32') chmodSync(file, 0o600); // the live store is already tightened
+
+    const backup = backupBeforeLegacyDrop(raw, file);
+    raw.close();
+
+    expect(existsSync(backup)).toBe(true);
+    if (process.platform === 'win32') return;
+    expect(statSync(backup).mode & 0o777).toBe(0o600);
   });
 });
 

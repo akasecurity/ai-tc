@@ -65,8 +65,10 @@ const PUBLIC_VALUE_EXPORTS = [
   'shareDestinationId',
   'shareEndpointId',
   'sourceProjectId',
+  'tightenFile',
   'tightenPerms',
   'toolCallId',
+  'writeOwnerOnlyFileSync',
 ];
 
 describe('package barrel', () => {

@@ -84,14 +84,14 @@ describe('applyOnboarding', () => {
     }
   });
 
-  it('writes settings.json 0600 even over a leftover loose .tmp (chmods after rename)', () => {
+  it('writes settings.json 0600 even over a leftover loose .tmp', () => {
     if (process.platform === 'win32') return;
     const dir = join(base, 'settings');
     mkdirSync(dir, { recursive: true });
     // A crash between the tmp write and the rename can leave a settings.json.tmp
-    // behind. If it pre-exists with loose perms, writeFileSync (flag 'w') does not
-    // reset an existing file's mode, so the rename would carry the loose mode onto
-    // settings.json. The post-rename chmod is what tightens it back to 0600.
+    // behind. writeFileSync's `mode` option is honored only on creation, so the
+    // owner-only writer clears a stale tmp first (and re-tightens after the
+    // rename) rather than carrying its loose mode onto settings.json.
     const tmp = join(dir, 'settings.json.tmp');
     writeFileSync(tmp, 'stale');
     chmodSync(tmp, 0o666);

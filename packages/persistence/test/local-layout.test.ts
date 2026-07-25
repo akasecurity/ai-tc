@@ -108,4 +108,20 @@ describe('migrateLegacyLayout', () => {
     if (process.platform === 'win32') return;
     expect(statSync(settingsDir(base)).mode & 0o777).toBe(0o700);
   });
+
+  it('tightens a moved legacy config.json to 0600 (it can carry a token)', () => {
+    // A pre-layout config.json held the backend token; a rename preserves its
+    // (possibly loose) mode, so the moved file must be tightened to 0600 too —
+    // not left group/other-readable inside settings/.
+    const flat = join(base, 'config.json');
+    writeFileSync(flat, '{"backendUrl":"https://x","token":"t"}');
+    if (process.platform !== 'win32') chmodSync(flat, 0o644);
+
+    migrateLegacyLayout(base);
+
+    const moved = join(settingsDir(base), 'config.json');
+    expect(existsSync(moved)).toBe(true);
+    if (process.platform === 'win32') return;
+    expect(statSync(moved).mode & 0o777).toBe(0o600);
+  });
 });

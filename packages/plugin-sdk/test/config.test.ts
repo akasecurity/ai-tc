@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -85,6 +93,19 @@ describe('loadConfig', () => {
     loadConfig(base);
     expect(existsSync(join(base, 'settings', 'config.json'))).toBe(true);
     expect(existsSync(join(base, 'config.json'))).toBe(false);
+  });
+
+  it('tightens a pre-existing loose base ~/.aka to 0700 on load (the plugin path)', () => {
+    if (process.platform === 'win32') return;
+    // A base a user or an older release left group/other-readable: only `aka init`
+    // tightened it before, so the plugin hook path (loadConfig) has to, since
+    // openLocalDatabase only ensures the data/ leaf. See the "Data at rest" note
+    // in SECURITY.md.
+    chmodSync(base, 0o777);
+
+    loadConfig(base);
+
+    expect(statSync(base).mode & 0o777).toBe(0o700);
   });
 });
 

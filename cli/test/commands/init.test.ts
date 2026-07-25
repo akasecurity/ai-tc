@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -78,5 +78,21 @@ describe('runInit contract', () => {
     expect(mode(dataDir(dir))).toBe(0o700);
     expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
     expect(mode(dbPath(dir))).toBe(0o600);
+  });
+
+  it('a second init preserves an existing settings.json (never clobbers onboarding answers)', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+
+    await runInit(['--home', dir]);
+    const file = join(settingsDir(dir), 'settings.json');
+    const first = readFileSync(file, 'utf8');
+    stdout.mockClear();
+
+    await runInit(['--home', dir]);
+
+    // A re-run re-applies no migration and must not overwrite the user's answers.
+    expect(readFileSync(file, 'utf8')).toBe(first);
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('(kept existing)');
   });
 });

@@ -1,9 +1,10 @@
-import { chmodSync, mkdirSync, renameSync } from 'node:fs';
+import { renameSync } from 'node:fs';
 import { chmod, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { DATA_DIR_MODE, ensureDataDirSync as ensureDirOwnerOnly } from './paths.ts';
+import { akaWarn } from './internal/warn.ts';
+import { DATA_DIR_MODE, ensureDataDirSync as ensureDirOwnerOnly, tightenFile } from './paths.ts';
 
 // The ~/.aka on-disk LAYOUT (which paths live where), shared by every local
 // consumer — the plugin SDK, the CLI, and the OSS web-ui. It lives here (the
@@ -39,8 +40,13 @@ export async function ensureDataDir(dir: string = defaultDataDir()): Promise<voi
   await mkdir(dir, { recursive: true, mode: DATA_DIR_MODE });
   try {
     await chmod(dir, DATA_DIR_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
+  } catch (err) {
+    // Fail-open, mirroring chmodBestEffort in paths.ts: swallow an absent target
+    // and platforms without POSIX modes (Windows); surface anything else, since
+    // a genuine failure means the dir's only at-rest control did not apply.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if (process.platform === 'win32') return;
+    akaWarn(`could not set owner-only permissions on ${dir}: ${String(err)}`);
   }
 }
 
@@ -66,15 +72,14 @@ export function migrateLegacyLayout(base: string = defaultDataDir()): void {
   ];
   for (const { name, dest } of moves) {
     try {
-      mkdirSync(dest, { recursive: true, mode: DATA_DIR_MODE });
-      // mkdirSync only applies mode on creation (and is umask-masked); tighten
-      // a pre-existing dir to owner-only too, since it holds sensitive files.
-      try {
-        chmodSync(dest, DATA_DIR_MODE);
-      } catch {
-        // best-effort: platform without POSIX modes, or not owned by us
-      }
-      renameSync(join(base, name), join(dest, name));
+      // Ensure + tighten the destination dir (it holds sensitive files), then
+      // move the flat file in and hold it to 0600 too: rename preserves the
+      // source's (possibly loose) mode, and a legacy config.json can carry a
+      // token.
+      ensureDirOwnerOnly(dest);
+      const moved = join(dest, name);
+      renameSync(join(base, name), moved);
+      tightenFile(moved);
     } catch {
       // can't create dest, not present, already moved, or unwritable — skip
     }

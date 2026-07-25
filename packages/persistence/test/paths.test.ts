@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -16,17 +17,20 @@ import {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   ensureDataDirSync,
+  tightenFile,
   tightenPerms,
   walSidecars,
+  writeOwnerOnlyFileSync,
 } from '../src/paths.ts';
 
 // The POSIX file/dir modes are the ONLY at-rest control on the store — see the
 // "Data at rest" note in SECURITY.md. These tests pin the success modes (the
 // directory mode was previously unasserted anywhere, and the -wal/-shm sidecar
 // modes were never asserted). The chmod-failure branches are deliberately not
-// tested: they are best-effort `catch {}` that need a real permission-denied FS
-// and carry no observable contract. All mode assertions skip on Windows, where
-// POSIX modes are a no-op.
+// tested here: they are best-effort `catch {}` that need a real permission-denied
+// FS and, where the failure is real, surface an akaWarn rather than a return
+// value — fault-injection of that path is owned by a separate reliability item.
+// All mode assertions skip on Windows, where POSIX modes are a no-op.
 
 let base: string;
 
@@ -116,6 +120,63 @@ describe('tightenPerms', () => {
     expect(() => {
       tightenPerms(file);
     }).not.toThrow();
+    if (process.platform === 'win32') return;
+    expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+});
+
+describe('tightenFile', () => {
+  it('sets 0600 on a single file (a backup copy, the exception key)', () => {
+    const file = join(base, 'aka.db.legacy.bak');
+    writeFileSync(file, 'corpus copy');
+    chmodSync(file, 0o644); // as VACUUM INTO / a mode-preserving rename would leave it
+
+    tightenFile(file);
+
+    if (process.platform === 'win32') return;
+    expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+
+  it('does not throw when the file is absent (fail-open)', () => {
+    expect(() => {
+      tightenFile(join(base, 'nope'));
+    }).not.toThrow();
+  });
+});
+
+describe('writeOwnerOnlyFileSync', () => {
+  it('writes the content and lands the file at 0600', () => {
+    const file = join(base, 'settings.json');
+    writeOwnerOnlyFileSync(file, 'hello\n');
+    expect(readFileSync(file, 'utf8')).toBe('hello\n');
+    if (process.platform === 'win32') return;
+    expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+
+  it('tightens to 0600 even over a leftover loose `.tmp` from an earlier crash', () => {
+    const file = join(base, 'settings.json');
+    // A crash between the tmp write and the rename can leave a loose settings.json.tmp
+    // behind. writeFileSync's `mode` option is honored only on creation, so without
+    // clearing the stale tmp first the rename would publish its loose mode.
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, 'stale');
+    chmodSync(tmp, 0o666);
+
+    writeOwnerOnlyFileSync(file, 'fresh\n');
+
+    expect(readFileSync(file, 'utf8')).toBe('fresh\n');
+    if (process.platform === 'win32') return;
+    expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+
+  it('replaces an existing loose target and ends 0600', () => {
+    const file = join(base, 'settings.json');
+    writeFileSync(file, 'old');
+    chmodSync(file, 0o644);
+
+    writeOwnerOnlyFileSync(file, 'new\n');
+
+    expect(readFileSync(file, 'utf8')).toBe('new\n');
     if (process.platform === 'win32') return;
     expect(mode(file)).toBe(DATA_FILE_MODE);
   });

@@ -33,13 +33,16 @@ in scope and appreciated.
 
 ## Data at rest
 
-The local store under `~/.aka` is protected by **filesystem permissions, not
-encryption**. On macOS and Linux the store directories (`~/.aka`, `~/.aka/data`,
-`~/.aka/settings`) are created owner-only (`0700`) and the files — `aka.db` and its
-`-wal`/`-shm` sidecars, `exception.key`, and `settings.json` — are written `0600`,
-so only your user account can read them. These modes are the only at-rest control,
-so treat a copy of the store (a backup, a synced folder, a stolen disk image) as
-sensitive.
+The local store under `~/.aka` holds a record of your agent activity — prompts,
+responses, and tool calls. Only the spans a detection rule flags as sensitive are
+masked; **everything else is stored verbatim and unencrypted**, so `aka.db`
+accumulates a full local prompt corpus. It is protected by **filesystem
+permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
+`~/.aka/data`, `~/.aka/settings`) are created owner-only (`0700`) and the files —
+`aka.db` and its `-wal`/`-shm` sidecars, `exception.key`, and `settings.json` — are
+written `0600`, so only your user account can read them. These modes are the only
+at-rest control, so treat a copy of the store (a backup, a synced folder, a stolen
+disk image) as sensitive.
 
 Those POSIX modes are a **no-op on Windows**: Node cannot apply them, so `ai-tc`
 sets no at-rest protection there. On Windows the store simply inherits whatever ACL

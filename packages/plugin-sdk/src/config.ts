@@ -6,7 +6,7 @@ import {
 } from '@akasecurity/persistence';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 
-import { dataDir, dbPath, settingsDir } from './data-dir.ts';
+import { dataDir, dbPath, ensureDataDirSync, settingsDir } from './data-dir.ts';
 import type { ResolvedProvider } from './provider.ts';
 import { resolveProvider } from './provider.ts';
 
@@ -40,6 +40,15 @@ export interface PluginConfig {
  * or corrupt settings.json yields unonboarded defaults rather than throwing.
  */
 export function loadConfig(base: string = defaultDataDir()): PluginConfig {
+  // Tighten the base ~/.aka to owner-only (creating it if absent). openLocalDatabase
+  // only ensures the data/ leaf, so a base a user or an older release left
+  // group/other-readable would otherwise never be tightened on the plugin path.
+  // Best-effort and fail-open — a hook must never break on a home it can't create.
+  try {
+    ensureDataDirSync(base);
+  } catch {
+    // fail-open: the readers below treat a missing home as unonboarded defaults
+  }
   // First touch migrates any pre-layout flat files into settings/ (best-effort).
   migrateLegacyLayout(base);
   const settings = readWorkspaceSettings(base);

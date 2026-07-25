@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { WorkspaceSettings } from '@akasecurity/schema';
@@ -9,7 +9,7 @@ import {
 
 import { parseJsonObject } from './internal/json.ts';
 import { defaultDataDir, settingsDir } from './local-layout.ts';
-import { DATA_FILE_MODE, ensureDataDirSync } from './paths.ts';
+import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 
 // Read/write of ~/.aka/settings/settings.json, shared by every local consumer
 // — plugin hooks, the CLI, and the web-ui; the SDK re-exports these. The
@@ -39,10 +39,10 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
  * Persist onboarding answers to settings.json (the /aka:setup writer, and the
  * web-ui settings page). Merges over the existing file so each edit is
  * additive, re-validates through the versioned schema, and stamps onboardedAt
- * on first completion so `onboarded` flips true. Atomic write (tmp + rename),
- * owner-only; chmod after the rename too, so a settings.json (or a leftover
- * `.tmp` from an earlier crash) that pre-existed with looser permissions is
- * tightened to 0600 rather than carried through the rename.
+ * on first completion so `onboarded` flips true. Owner-only atomic write (tmp +
+ * rename), so a settings.json (or a leftover `.tmp` from an earlier crash) that
+ * pre-existed with looser permissions ends 0600 rather than carrying its mode
+ * through the rename — see writeOwnerOnlyFileSync.
  */
 export function applyOnboarding(
   answers: Partial<WorkspaceSettings>,
@@ -58,14 +58,7 @@ export function applyOnboarding(
   });
   ensureDataDirSync(dir);
   const file = join(dir, 'settings.json');
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: DATA_FILE_MODE });
-  renameSync(tmp, file);
-  try {
-    chmodSync(file, DATA_FILE_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
-  }
+  writeOwnerOnlyFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
   return merged;
 }
 

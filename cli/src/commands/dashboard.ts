@@ -15,6 +15,13 @@ import { openUrl } from '../lib/open-url.ts';
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 
+// Single source of truth for the loopback bind address. The pre-flight port probe
+// and both server spawns (the dev `next start` and the standalone HOSTNAME) must
+// bind the SAME address, or the probe checks a different interface than the server
+// uses and the friendly "port in use" message is skipped. Export it so the test
+// suite can pin that coupling.
+export const BIND_HOST = '127.0.0.1';
+
 // The package root that ships the bundled web-ui. Under a plain-node launch it is
 // one level above dist/ (this module's dir). A SEA binary has no source dir, so it
 // is the directory holding the executable, where release packaging places web-ui/.
@@ -36,7 +43,7 @@ function isPortFree(port: number): Promise<boolean> {
         resolve(true);
       });
     });
-    probe.listen(port, '127.0.0.1');
+    probe.listen(port, BIND_HOST);
   });
 }
 
@@ -124,7 +131,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
     // carries mutating server actions, so it must never bind all interfaces.
     const child = spawn(
       process.execPath,
-      [nextBin, 'start', '--port', port, '--hostname', '127.0.0.1'],
+      [nextBin, 'start', '--port', port, '--hostname', BIND_HOST],
       {
         cwd: webUiDir,
         stdio: ['inherit', 'pipe', 'inherit'],
@@ -168,7 +175,7 @@ function launchStandalone(serverJs: string, port: string, shouldOpen: boolean, u
     // Inherit the parent env so the child server sees PATH etc.; PORT/HOSTNAME tell
     // Next's standalone server where to bind (its only port input).
     // eslint-disable-next-line n/no-process-env
-    env: { ...process.env, PORT: port, HOSTNAME: '127.0.0.1' },
+    env: { ...process.env, PORT: port, HOSTNAME: BIND_HOST },
   });
   onReadyOpen(child, shouldOpen, url, `Starting the AKA dashboard at ${url}\n`);
 }

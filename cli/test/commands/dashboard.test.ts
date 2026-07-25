@@ -1,11 +1,16 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { refreshUpdateMirror, runDashboardServer } from '../../src/commands/dashboard.ts';
+import {
+  BIND_HOST,
+  refreshUpdateMirror,
+  runDashboardServer,
+} from '../../src/commands/dashboard.ts';
 
 let dir: string;
 
@@ -76,4 +81,24 @@ it('__dashboard-server without --server-js fails with a message, does not throw'
   expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('--server-js');
   expect(process.exitCode).toBe(1);
   process.exitCode = prevExit; // don't leak a failing exit code into the runner
+});
+
+// The pre-flight port probe (isPortFree's probe.listen) and both server spawns
+// (the dev `next start --hostname` and the standalone HOSTNAME env) must bind the
+// SAME loopback address. If they drift — e.g. the bind moves to `::1` but the probe
+// still checks `127.0.0.1` — isPortFree reports a busy port free, the friendly
+// "port in use" message is skipped, and Next dies on the raw EADDRINUSE the probe
+// exists to prevent. Pin that they share one source of truth (BIND_HOST) by proving
+// the literal appears exactly once in the source: the const declaration. Every bind
+// site must reference the constant, so a second hard-coded literal fails this test.
+it('probe and both binds share one loopback source of truth (no drift)', () => {
+  expect(BIND_HOST).toBe('127.0.0.1');
+
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../src/commands/dashboard.ts'),
+    'utf8',
+  );
+  const literals = src.match(/127\.0\.0\.1/g) ?? [];
+  expect(literals).toHaveLength(1); // only the BIND_HOST declaration hard-codes it
+  expect(src).toMatch(/const BIND_HOST = '127\.0\.0\.1'/);
 });

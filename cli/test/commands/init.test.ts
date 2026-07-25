@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
-import { dbPath, settingsDir } from '@akasecurity/plugin-sdk';
+import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runInit } from '../../src/commands/init.ts';
@@ -60,5 +60,23 @@ describe('runInit contract', () => {
     // init never interrogates the user about detection posture or historical access.
     expect(out).not.toMatch(/posture/i);
     expect(out).not.toMatch(/historical access/i);
+  });
+
+  it('leaves ~/.aka owner-only: 0700 dirs (base, settings/, data/) and 0600 files (settings.json, aka.db)', async () => {
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    // Start from a loose home so this proves init TIGHTENS it, not merely that a
+    // fresh mkdir happens to land at 0700. These modes are the store's only
+    // at-rest control (see the "Data at rest" note in SECURITY.md).
+    if (process.platform !== 'win32') chmodSync(dir, 0o777);
+
+    await runInit(['--home', dir]);
+
+    if (process.platform === 'win32') return;
+    const mode = (p: string): number => statSync(p).mode & 0o777;
+    expect(mode(dir)).toBe(0o700);
+    expect(mode(settingsDir(dir))).toBe(0o700);
+    expect(mode(dataDir(dir))).toBe(0o700);
+    expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
+    expect(mode(dbPath(dir))).toBe(0o600);
   });
 });

@@ -4,6 +4,10 @@ import { chmodSync, mkdirSync } from 'node:fs';
 // directory is owner-only and the DB files are written 0600. These mirror the
 // modes the plugin SDK applies to ~/.aka; persistence owns its own copy so it
 // never depends on the SDK's layout module.
+//
+// These POSIX modes are the ONLY at-rest control on the store (there is no
+// encryption). They are a no-op on platforms without POSIX modes (Windows),
+// where they provide no protection — see the "Data at rest" note in SECURITY.md.
 export const DATA_DIR_MODE = 0o700;
 export const DATA_FILE_MODE = 0o600;
 

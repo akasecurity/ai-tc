@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
+import { walSidecars } from '../src/paths.ts';
 
 let dir: string;
 
@@ -86,6 +87,22 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     if (process.platform === 'win32') return;
     const mode = statSync(join(dir, 'aka.db')).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', () => {
+    // The sidecars hold prompt/file content just like the main db, so they must
+    // carry the same 0600 mode. They exist only while a WAL-mode handle is open
+    // (a clean close checkpoints and removes them), so assert before closing.
+    const db = openLocalDatabase(dir);
+    try {
+      if (process.platform === 'win32') return;
+      for (const sidecar of walSidecars(join(dir, 'aka.db'))) {
+        expect(existsSync(sidecar)).toBe(true);
+        expect(statSync(sidecar).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it('backs up and recreates an incompatible legacy tenant-bearing aka.db instead of silently failing writes', async () => {

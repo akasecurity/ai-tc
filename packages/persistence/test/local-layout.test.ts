@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +47,31 @@ describe('ensureLayoutDirSync', () => {
     if (process.platform === 'win32') return;
     expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
+
+  it('tightens an existing loose base directory to 0700', () => {
+    // An ~/.aka created by an older release (or the user) with looser
+    // permissions must be tightened, not left as it was found.
+    const home = join(base, 'loose-home');
+    mkdirSync(home);
+    chmodSync(home, 0o755);
+    ensureLayoutDirSync(home);
+    if (process.platform === 'win32') return;
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+  });
+
+  it('leaves the whole ~/.aka layout owner-only (0700 base, settings/, data/) — the `aka init` shape', () => {
+    // Mirrors what `aka init` composes: ensure the base, then settings/, then
+    // data/ (the last via openLocalDatabase). All three are the store's only
+    // at-rest control and must all end 0700.
+    const home = join(base, 'home');
+    ensureLayoutDirSync(home);
+    ensureLayoutDirSync(settingsDir(home));
+    ensureLayoutDirSync(dataDir(home));
+    if (process.platform === 'win32') return;
+    expect(statSync(home).mode & 0o777).toBe(0o700);
+    expect(statSync(settingsDir(home)).mode & 0o777).toBe(0o700);
+    expect(statSync(dataDir(home)).mode & 0o777).toBe(0o700);
+  });
 });
 
 describe('migrateLegacyLayout', () => {
@@ -59,5 +93,19 @@ describe('migrateLegacyLayout', () => {
     expect(() => {
       migrateLegacyLayout(base);
     }).not.toThrow();
+  });
+
+  it('tightens a pre-existing loose destination dir to 0700 while migrating', () => {
+    // A settings/ that already existed with looser permissions must be tightened
+    // as the flat config.json is routed into it — it holds sensitive files.
+    writeFileSync(join(base, 'config.json'), '{"backendUrl":"https://x","token":"t"}');
+    mkdirSync(settingsDir(base));
+    chmodSync(settingsDir(base), 0o777);
+
+    migrateLegacyLayout(base);
+
+    expect(existsSync(join(settingsDir(base), 'config.json'))).toBe(true);
+    if (process.platform === 'win32') return;
+    expect(statSync(settingsDir(base)).mode & 0o777).toBe(0o700);
   });
 });

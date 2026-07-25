@@ -1,4 +1,4 @@
-import { existsSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -50,12 +50,18 @@ export async function runInit(argv: string[]): Promise<void> {
   if (settingsCreated) {
     // Owner-only (0600) + atomic tmp+rename, matching how every other writer
     // treats files under ~/.aka — a crash mid-write must never leave a
-    // truncated or group-readable settings.json.
+    // truncated or group-readable settings.json. chmod after the rename too, so
+    // a pre-existing loose `.tmp` isn't carried through to settings.json.
     const tmp = `${settingsFile}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`, {
       mode: DATA_FILE_MODE,
     });
     renameSync(tmp, settingsFile);
+    try {
+      chmodSync(settingsFile, DATA_FILE_MODE);
+    } catch {
+      // best-effort: platform without POSIX modes, or not owned by us
+    }
   }
 
   const db = openLocalDatabase(dataDir(home));

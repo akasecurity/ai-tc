@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -82,6 +82,24 @@ describe('applyOnboarding', () => {
       const file = join(base, 'settings', 'settings.json');
       expect(statSync(file).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('writes settings.json 0600 even over a leftover loose .tmp (chmods after rename)', () => {
+    if (process.platform === 'win32') return;
+    const dir = join(base, 'settings');
+    mkdirSync(dir, { recursive: true });
+    // A crash between the tmp write and the rename can leave a settings.json.tmp
+    // behind. If it pre-exists with loose perms, writeFileSync (flag 'w') does not
+    // reset an existing file's mode, so the rename would carry the loose mode onto
+    // settings.json. The post-rename chmod is what tightens it back to 0600.
+    const tmp = join(dir, 'settings.json.tmp');
+    writeFileSync(tmp, 'stale');
+    chmodSync(tmp, 0o666);
+
+    applyOnboarding({ policy: 'warn' }, base);
+
+    const file = join(dir, 'settings.json');
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it('round-trips the Data Shares kill-switch through the settings file', () => {

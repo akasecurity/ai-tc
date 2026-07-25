@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { WorkspaceSettings } from '@akasecurity/schema';
@@ -40,7 +40,9 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
  * web-ui settings page). Merges over the existing file so each edit is
  * additive, re-validates through the versioned schema, and stamps onboardedAt
  * on first completion so `onboarded` flips true. Atomic write (tmp + rename),
- * owner-only.
+ * owner-only; chmod after the rename too, so a settings.json (or a leftover
+ * `.tmp` from an earlier crash) that pre-existed with looser permissions is
+ * tightened to 0600 rather than carried through the rename.
  */
 export function applyOnboarding(
   answers: Partial<WorkspaceSettings>,
@@ -59,6 +61,11 @@ export function applyOnboarding(
   const tmp = `${file}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: DATA_FILE_MODE });
   renameSync(tmp, file);
+  try {
+    chmodSync(file, DATA_FILE_MODE);
+  } catch {
+    // best-effort: platform without POSIX modes, or not owned by us
+  }
   return merged;
 }
 

@@ -13,8 +13,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 //     on an explicit, reasoned opt-out list. A package with NO config at all is
 //     invisible to `pnpm lint` (nothing points ESLint at it) AND to a glob that
 //     only ever matched existing config files, so it would ship UNGUARDED for
-//     network calls with CI green. The floor assertion alone cannot catch a
-//     package that was never in the glob's universe — this block can.
+//     network calls with CI green. Enumerating from the manifest and pinning the
+//     result as an EXACT set catches a package that was never in a config glob's
+//     universe — which a floor over "configs that already exist" cannot.
 //
 //  2. BEHAVIORAL (the composition / last-wins block): resolve each real
 //     eslint.config.mjs through ESLint and assert the four network rules still
@@ -58,24 +59,51 @@ const IMPORTS_SHARED_CONFIG =
   /(?:import[^;]*from[ \t]*|require\([ \t]*)['"]@akasecurity\/eslint-config(?:\/[\w.-]+)?['"]/;
 
 /**
- * The package globs declared under `packages:` in pnpm-workspace.yaml. Parsed
- * without a YAML dependency: capture the `packages:` line plus the consecutive
- * indented `- …` sequence entries that follow it (stopping at the next key that
- * starts in column 0), then pull each quoted-or-bare scalar.
+ * Parse the package globs declared under `packages:` in a pnpm-workspace.yaml
+ * document, without a YAML dependency. Pure over its input string so the parse —
+ * the most fragile part of this file — is unit-tested on synthetic YAML below
+ * (CRLF, interspersed comments, quoting) rather than only against the one real
+ * on-disk manifest. Walks line by line: enter the block at a bare `packages:`
+ * line, collect each `- <scalar>` sequence entry (quoted or bare), tolerate
+ * blank and comment lines inside the block, and stop at the next column-0 key.
+ * Flow style (`packages: [ … ]`) is intentionally NOT parsed — it yields an
+ * empty list, which the vacuous-pass guard turns into a loud failure rather than
+ * a silent under-enumeration.
+ * @param {string} rawYaml
  * @returns {string[]}
  */
-function workspaceGlobs() {
-  // Normalize CRLF → LF up front: the block/scalar regexes anchor on `\n`, and a
-  // Windows checkout (core.autocrlf) would otherwise capture a trailing `\r` into
-  // each glob and break globSync.
-  const raw = readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8').replace(/\r\n/g, '\n');
-  const block = raw.match(/^packages:[ \t]*\n((?:[ \t]+-.*\n?)+)/m)?.[1] ?? '';
-  return [...block.matchAll(/^[ \t]+-[ \t]*['"]?([^'"\n#]+?)['"]?[ \t]*$/gm)].map((m) => m[1]);
+export function parseWorkspaceGlobs(rawYaml) {
+  const globs = [];
+  let inBlock = false;
+  // Normalize CRLF → LF first so a Windows checkout (core.autocrlf) does not
+  // trail a `\r` into each glob (which would break globSync).
+  for (const rawLine of rawYaml.replace(/\r\n/g, '\n').split('\n')) {
+    // Strip comments up front (workspace globs never contain `#`), so an inline
+    // or whole-line comment neither terminates the block nor pollutes an entry.
+    const line = rawLine.replace(/#.*$/, '');
+    if (!inBlock) {
+      if (/^packages:[ \t]*$/.test(line)) inBlock = true;
+      continue;
+    }
+    if (/^\S/.test(line)) break; // a new column-0 key ends the packages block
+    const m = line.match(/^[ \t]+-[ \t]*['"]?([^'"\n]+?)['"]?[ \t]*$/);
+    if (m) globs.push(m[1].trim());
+  }
+  return globs;
 }
 
 /**
- * Every workspace package on disk, resolved from pnpm-workspace.yaml exactly as
- * pnpm does: expand each glob, keep the directories that hold a package.json.
+ * The package globs from the repo's real pnpm-workspace.yaml.
+ * @returns {string[]}
+ */
+function workspaceGlobs() {
+  return parseWorkspaceGlobs(readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8'));
+}
+
+/**
+ * Every workspace package on disk, resolved from pnpm-workspace.yaml: expand each
+ * glob and keep the directories that hold a package.json. (The current manifest
+ * declares no `!` exclusion globs; pnpm's negation semantics are not modeled.)
  * @returns {{ name: string, dir: string, configRel: string, hasConfig: boolean, extendsShared: boolean }[]}
  */
 function discoverWorkspacePackages() {
@@ -102,6 +130,31 @@ function discoverWorkspacePackages() {
 }
 
 const WORKSPACE_PACKAGES = discoverWorkspacePackages();
+
+// The exact set of workspace packages expected on disk, pinned by name (sorted).
+// This is the anti-vacuous drift guard for the enumeration: a hand-rolled
+// pnpm-workspace.yaml parse that silently dropped ONE package would still clear a
+// `>=` floor, and the `CONFIG_FILES.length === GUARDED_PACKAGES.length` equality
+// cannot catch it either (a package absent from discovery is absent from both
+// sides). An exact set fails loudly on any add / drop / rename — the same rigor
+// CONFIG_OPT_OUT uses. Adding or removing a workspace package is a deliberate
+// edit here (and, for a new package, of its eslint.config.mjs).
+const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
+  '@akasecurity/ai-tc-claude-code',
+  '@akasecurity/cli',
+  '@akasecurity/dashboard-ui',
+  '@akasecurity/detections',
+  '@akasecurity/eslint-config',
+  '@akasecurity/extract',
+  '@akasecurity/local-ops',
+  '@akasecurity/persistence',
+  '@akasecurity/plugin-runtime',
+  '@akasecurity/plugin-sdk',
+  '@akasecurity/scanner',
+  '@akasecurity/schema',
+  '@akasecurity/ui-kit',
+  '@akasecurity/web-ui',
+];
 
 // The packages that MUST ship a network-guarded config (everything except the
 // opt-outs). Fed to both the structural guard and the behavioral suite.
@@ -176,31 +229,38 @@ function firedRuleIds(code, rules) {
   return new Set(linter.verify(code, { languageOptions: LANG, rules }).map((m) => m.ruleId));
 }
 
+// The source directories a package may ship code under, most-specific first.
+const SOURCE_DIRS = /** @type {const} */ (['src', 'app']);
+
+/**
+ * A probe file path under the directory a package actually ships code in, so the
+ * behavioral resolution exercises the config where its `files`-scoped blocks
+ * apply. web-ui ships `app/` (no `src/`), so a hardcoded `src/` probe would
+ * resolve a path web-ui never lints — the very last-wins/path-scoping mistake
+ * this suite exists to catch. The file need not exist (config is computed, not
+ * parsed); fall back to `src/` for the source-less case.
+ * @param {string} pkgDir absolute package directory
+ */
+function probeRelPath(pkgDir) {
+  const dir = SOURCE_DIRS.find((d) => existsSync(join(pkgDir, d))) ?? 'src';
+  return `${dir}/__network_ban_probe__.ts`;
+}
+
 // --- Structural guard: every package ships a network-guarded config (#50) -----
 
 describe('every workspace package ships a network-guarded eslint config (#50)', () => {
-  it('discovered the workspace packages (guard against a vacuous pass)', () => {
-    // A broken pnpm-workspace.yaml parse would leave the enumeration empty and
-    // every assertion in this file would pass vacuously. 14 workspace packages
-    // exist today; 13 ship a config (all but @akasecurity/eslint-config).
-    expect(workspaceGlobs().length).toBeGreaterThan(0);
-    expect(WORKSPACE_PACKAGES.length).toBeGreaterThanOrEqual(12);
-    expect(CONFIG_FILES.length).toBeGreaterThanOrEqual(11);
-  });
-
-  it('enumeration includes the non-packages/* roots (cli, web-ui, plugin)', () => {
-    // The gap this test removed was a hand-maintained list that spelled out
-    // `cli`/`web-ui` and globbed only three parent dirs. Pin that the derived
-    // enumeration reaches the roots outside `packages/*`, so a parser regression
-    // that dropped them fails here rather than silently under-covering.
-    const names = new Set(WORKSPACE_PACKAGES.map((p) => p.name));
-    for (const anchor of [
-      '@akasecurity/cli',
-      '@akasecurity/web-ui',
-      '@akasecurity/ai-tc-claude-code',
-    ]) {
-      expect(names, anchor).toContain(anchor);
-    }
+  it('enumerates exactly the expected workspace packages (drift guard)', () => {
+    // Pinned as an EXACT set, not a `>=` floor: a hand-rolled pnpm-workspace.yaml
+    // parse that silently dropped one package would clear a floor AND the
+    // behavioral CONFIG_FILES===GUARDED equality (both derive from the same parse
+    // and drop it together), so that package would ship UNGUARDED with CI green —
+    // the exact failure this file exists to prevent, through its least-tested
+    // code. The explicit `workspaceGlobs()` check keeps the failure legible when
+    // the parser is the culprit (empty ⇒ manifest reformatted / flow-style).
+    expect(workspaceGlobs().length, 'pnpm-workspace.yaml parsed to zero globs').toBeGreaterThan(0);
+    expect([...WORKSPACE_PACKAGES.map((p) => p.name)].sort()).toEqual(
+      [...EXPECTED_WORKSPACE_PACKAGE_NAMES].sort(),
+    );
   });
 
   it('no guarded package is missing its eslint.config.mjs', () => {
@@ -283,19 +343,82 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
   });
 });
 
+describe('parseWorkspaceGlobs (the manifest parser, tested on synthetic YAML)', () => {
+  // The real tree is parsed from one well-formed LF file on a Unix runner, so the
+  // parser's edge-case handling (CRLF, interspersed comments, quoting, block
+  // termination) is otherwise never exercised — including on Windows, where the
+  // CRLF branch matters and this package is absent from the CI filter. Pin it
+  // here so a parser regression fails loudly instead of silently under-counting.
+  const BLOCK = `packages:\n  - 'packages/*'\n  - 'cli'\n  - 'web-ui'\n\nonlyBuiltDependencies:\n  - esbuild\n`;
+
+  it('parses the block-sequence form (bare + quoted entries)', () => {
+    expect(parseWorkspaceGlobs(BLOCK)).toEqual(['packages/*', 'cli', 'web-ui']);
+  });
+
+  it('stops at the next column-0 key (does not bleed into onlyBuiltDependencies)', () => {
+    expect(parseWorkspaceGlobs(BLOCK)).not.toContain('esbuild');
+  });
+
+  it('normalizes CRLF so no glob trails a \\r (Windows core.autocrlf)', () => {
+    const crlf = BLOCK.replace(/\n/g, '\r\n');
+    expect(parseWorkspaceGlobs(crlf)).toEqual(['packages/*', 'cli', 'web-ui']);
+  });
+
+  it('tolerates whole-line and inline comments inside the block', () => {
+    const withComments =
+      'packages:\n' +
+      '  # first the libraries\n' +
+      "  - 'packages/*'\n" +
+      "  - 'cli'  # the CLI root\n" +
+      "  - 'web-ui'\n";
+    expect(parseWorkspaceGlobs(withComments)).toEqual(['packages/*', 'cli', 'web-ui']);
+  });
+
+  it('tolerates blank lines interspersed between entries', () => {
+    const withBlanks = "packages:\n  - 'packages/*'\n\n  - 'cli'\n";
+    expect(parseWorkspaceGlobs(withBlanks)).toEqual(['packages/*', 'cli']);
+  });
+
+  it('accepts double-quoted, single-quoted, and bare scalars alike', () => {
+    const mixed = 'packages:\n  - "packages/*"\n  - \'cli\'\n  - web-ui\n';
+    expect(parseWorkspaceGlobs(mixed)).toEqual(['packages/*', 'cli', 'web-ui']);
+  });
+
+  it('is unaffected by the order of top-level keys', () => {
+    const reordered = "onlyBuiltDependencies:\n  - esbuild\npackages:\n  - 'packages/*'\n";
+    expect(parseWorkspaceGlobs(reordered)).toEqual(['packages/*']);
+  });
+
+  it('returns [] for flow style rather than silently mis-parsing (vacuous-pass guard then trips)', () => {
+    expect(parseWorkspaceGlobs("packages: ['packages/*', 'cli']\n")).toEqual([]);
+  });
+
+  it('returns [] when there is no packages block at all', () => {
+    expect(parseWorkspaceGlobs('onlyBuiltDependencies:\n  - esbuild\n')).toEqual([]);
+  });
+});
+
 // --- Behavioral guard: each config actually enforces the ban -----------------
 
+// A representative sample of the Node core network builtins the ban must cover.
+// NETWORK_SNIPPET proves `no-restricted-imports` fires via the `axios` npm client
+// only — a config that redeclared the rule and kept `axios` while dropping the
+// `node:*` modules would still pass that check. Probing these directly asserts
+// the denylist stays COMPLETE through per-package composition, not just that the
+// rule fires on something. `node:net` is excluded: cli opts it out in dashboard.ts.
+const NETWORK_CORE_MODULES = ['node:http', 'node:https', 'node:dgram', 'node:tls'];
+
 describe('effective per-package config (composition / last-wins)', () => {
-  /** @type {Map<string, Set<string>>} configRel -> rule ids the snippet trips */
-  const firedByConfig = new Map();
+  /** @type {Map<string, Record<string, import('eslint').Linter.RuleEntry>>} configRel -> resolved network rules */
+  const rulesByConfig = new Map();
 
   beforeAll(async () => {
     for (const configRel of CONFIG_FILES) {
       const pkgDir = join(REPO_ROOT, dirname(configRel));
-      // A source path base applies to; it need not exist (config is computed,
-      // not parsed). Avoids each package's real layout while still hitting base.
-      const rules = await resolveNetworkRules(pkgDir, 'src/__network_ban_probe__.ts');
-      firedByConfig.set(configRel, firedRuleIds(NETWORK_SNIPPET, rules));
+      // Probe at a path the package actually ships code under (web-ui uses app/),
+      // so a config that scopes the ban to its real source dir is exercised. The
+      // path need not exist — config is computed, not parsed.
+      rulesByConfig.set(configRel, await resolveNetworkRules(pkgDir, probeRelPath(pkgDir)));
     }
   }, RESOLVE_TIMEOUT_MS);
 
@@ -307,11 +430,23 @@ describe('effective per-package config (composition / last-wins)', () => {
   });
 
   it.each(CONFIG_FILES)('bans every network form in %s', (configRel) => {
-    const fired = firedByConfig.get(configRel);
+    const fired = firedRuleIds(NETWORK_SNIPPET, rulesByConfig.get(configRel));
     for (const key of KEYS) {
       expect(fired, `${configRel} :: ${key}`).toContain(key);
     }
   });
+
+  it.each(CONFIG_FILES)(
+    'bans the node:* core network modules in %s (denylist stays complete)',
+    (configRel) => {
+      const rules = rulesByConfig.get(configRel);
+      for (const mod of NETWORK_CORE_MODULES) {
+        expect(firedRuleIds(`import m from '${mod}';`, rules), `${configRel} :: ${mod}`).toContain(
+          'no-restricted-imports',
+        );
+      }
+    },
+  );
 });
 
 describe('cli dashboard.ts file-scoped opt-out (real config)', () => {

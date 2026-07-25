@@ -29,11 +29,13 @@ function isLoopbackHost(hostHeader: string | null): boolean {
   return hostHeader !== null && BARE_LOOPBACK.test(hostHeader);
 }
 
-// No `config.matcher` export on purpose: the gate runs on every request that
-// reaches middleware, including RSC data requests and Server Action posts.
-// (Next answers trailing-slash / double-slash / case normalisation with a 308
-// before middleware runs; that redirect carries no body and its target path is
-// itself gated, so nothing reachable with a body escapes this check.)
+// No `config.matcher` export on purpose: the gate runs on every request Next
+// routes to middleware, including RSC data requests and Server Action posts.
+// Trailing-slash and double-slash paths get a 308 before middleware; the
+// redirect preserves method and body (RFC 7538) and its target path IS gated,
+// so the retry is rejected. TRACE and CONNECT throw inside the middleware bundle
+// before the gate runs and get Next's 500 — fail-closed, and not reachable from
+// a browser, but not gated either.
 export function middleware(request: NextRequest): NextResponse {
   // `x-forwarded-host`, when present, participates in Next's Server Action
   // origin comparison, so hold it to the same bar (no supported deployment

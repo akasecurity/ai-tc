@@ -35,7 +35,15 @@ function statusFor(
   host: string | undefined,
   init: { xForwardedHost?: string; path?: string; method?: string } = {},
 ): number {
-  return runMiddleware(host, init).status;
+  const response = runMiddleware(host, init);
+  // Every admitted request must be a real hand-off, not an incidental 200: assert
+  // NextResponse.next()'s `x-middleware-next` sentinel on every 200 here, so the
+  // mechanism is pinned at every allowed-host call site — the loopback Server
+  // Action POST and the allowedOrigins rows included — not just the literals block.
+  if (response.status === 200) {
+    expect(response.headers.get('x-middleware-next')).toBe('1');
+  }
+  return response.status;
 }
 
 describe('middleware — allowed loopback literals (any port)', () => {
@@ -118,12 +126,12 @@ describe('middleware — encodings already denied, pinned against a future norma
 
 describe('middleware — genuine-but-unadmitted loopback spellings stay out (intentional, fail-closed)', () => {
   // These resolve to loopback but were DENIED by the pre-fix gate too — their
-  // `new URL().hostname` was never in the old allow-set — so, unlike the block
-  // above, they never changed. They are deliberately excluded: the dashboard only
-  // opens http://localhost:PORT / http://127.0.0.1:PORT, so a browser never sends
-  // them, and holding the set to three exact spellings keeps the literal match
-  // tight. Admitting any (e.g. *.localhost per RFC 6761) would be a separate,
-  // opt-in widening.
+  // `new URL().hostname` was never in the old allow-set — so, unlike the
+  // regression-guard block above, they never changed. They are deliberately
+  // excluded: the dashboard only opens http://localhost:PORT, so a browser never
+  // sends them, and holding the set to three exact spellings keeps the literal
+  // match tight. Admitting any (e.g. *.localhost per RFC 6761) would be a
+  // separate, opt-in widening.
   it.each([
     'localhost.', // trailing-dot FQDN
     'app.localhost', // RFC 6761 *.localhost subdomain
@@ -152,17 +160,19 @@ describe('middleware — missing, empty, or malformed Host fails closed', () => 
     'localhost:4319#frag', // fragment smuggled past the authority
     'localhost:4319@evil.com', // userinfo smuggle — the real host is evil.com
     'user:pass@localhost', // userinfo smuggle — reject rather than trust
-    'localhost:99999999', // out-of-range port
+    'localhost:99999999', // too many digits for \d{1,5} — not a range check (localhost:70000 is 200)
   ])('403 for malformed host %s', (host) => {
     expect(statusFor(host)).toBe(403);
   });
 
   it('403 for an oversized / many-colon Host, in linear time', () => {
-    // A 10 KB Host is in-band, not beyond what the server accepts: node:http's
-    // default maxHeaderSize is 16 KB and `next start` does not lower it, so a
-    // rebound page really can send this and reach the gate. The gate is a single
-    // anchored regex with no backtracking, so it rejects in time linear in the
-    // input length — never a silent stall.
+    // Hostile-sized Host input is in-band for a RAW client: node:http's default
+    // maxHeaderSize is 16 KB and `next start` does not lower it, so a 10 KB Host
+    // reaches the gate. It is NOT reachable from a rebound page — a page's Host is
+    // its own DNS name (at most 253 octets) and `localhost:1:1:...` is not a valid
+    // authority — so this is hardening against non-browser clients. The gate is a
+    // single anchored regex with no backtracking: linear in input length, never a
+    // stall.
     expect(statusFor('a'.repeat(10_000))).toBe(403);
     expect(statusFor(`localhost${':1'.repeat(5_000)}`)).toBe(403);
   });
@@ -172,9 +182,12 @@ describe('middleware — the port is not validated (the loopback host is the who
   // `\d{1,5}` bounds the port's length, not its value, so out-of-range and
   // zero-padded ports are admitted on a loopback host. Deliberate: the host is
   // always a loopback literal when the pattern matches, so the port cannot widen
-  // the gate (and no browser can open a port above 65535). Pinned as a decision,
-  // not a side effect — note `localhost:99999999` above still 403s, but on digit
-  // count (8 > 5), not range.
+  // the gate (and no browser can open a port above 65535). Two of these CHANGED:
+  // `:65536` and `:99999` were 403 pre-fix and on commit 1 (`new URL()` throws
+  // above 65535) and are 200 from the regex onward — the one place this PR is more
+  // permissive, harmless because the host is still a loopback literal. `:080` and
+  // `:00` were 200 throughout. (`localhost:99999999` above still 403s, but on
+  // digit count (8 > 5), not range.)
   it.each(['localhost:65536', 'localhost:99999', 'localhost:080', 'localhost:00'])(
     '200 for %s',
     (host) => {
@@ -210,13 +223,14 @@ describe('middleware — x-forwarded-host is held to the same loopback bar', () 
   });
 });
 
-describe('middleware — the gate covers every route and method', () => {
-  // There is no `config.matcher`, so the gate runs on every request that reaches
-  // middleware — page GETs, RSC data fetches, and Server Action POSTs alike.
-  // (Next answers trailing-slash / double-slash / case normalisation with a 308
-  // before middleware runs; the browser re-requests the normalised path, which IS
-  // gated, so nothing with a body escapes.) A rebinding attack targets the
-  // mutating POST path, so the rejection must not depend on route or method.
+describe('middleware — the gate covers every route and method that reaches it', () => {
+  // There is no `config.matcher`, so the gate runs on every request Next routes
+  // to middleware — page GETs, RSC data fetches, and Server Action POSTs alike.
+  // (Trailing-slash and double-slash paths get a 308 before middleware; the retry
+  // to the normalised path IS gated. TRACE and CONNECT throw in the middleware
+  // bundle before the gate runs and get Next's 500 — fail-closed, not browser-
+  // reachable, but not gated.) A rebinding attack targets the mutating POST path,
+  // so the rejection must not depend on route or method.
   const routes = ['/', '/security', '/scan', '/exceptions/new', '/_next/data/x.json'];
 
   it.each(routes)('403s a non-loopback GET to %s', (path) => {
@@ -261,9 +275,9 @@ describe('middleware — the Server Action allowedOrigins list stays within the 
 });
 
 describe('middleware — the rejection is a real 403 with an explanatory body', () => {
-  // The allowed-literals block above already pins the pass-through mechanism
-  // (status 200 + `x-middleware-next`) for every admitted host; this covers the
-  // reject side, which nothing else asserts.
+  // `statusFor` asserts the `x-middleware-next` sentinel on every 200, so the
+  // pass-through mechanism is pinned at every admitted-host call site; this test
+  // covers the reject side, which nothing else asserts.
   it('rejects with a 403 and an explanatory body', async () => {
     const response = runMiddleware('evil.com');
     expect(response.status).toBe(403);

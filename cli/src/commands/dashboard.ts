@@ -92,9 +92,11 @@ export async function runDashboard(argv: string[]): Promise<void> {
   // `[::1]`) — anything else 403s every page on launch. The bind host below
   // (`127.0.0.1`) is a SEPARATE constraint the gate cannot enforce: it reads the
   // Host header, never the bind address, so binding all interfaces (`0.0.0.0`)
-  // would expose the surface while every page still 200s. The bind is pinned at
-  // the `--hostname` / `HOSTNAME` sites below. (middleware.test.ts makes this
-  // coupling discoverable, not enforced — it asserts literals, not the CLI's host.)
+  // would expose the surface while every page still 200s. The bind is hard-coded
+  // at the `--hostname` / `HOSTNAME` sites below, and `isPortFree`'s probe above
+  // hard-codes the same address — they must stay in step, or the pre-flight
+  // probes a different stack than the server binds. (middleware.test.ts makes the
+  // Host coupling discoverable, not enforced — it asserts literals, not the CLI's host.)
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {

@@ -86,8 +86,12 @@ jobs:
 
   # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
-  # processes — gets exercised on windows-latest. Scoped to the shipped-surface
-  # packages to keep the job fast; the full suite runs on the Linux job above.
+  # processes — gets exercised on windows-latest. web-ui is included too: it is
+  # bundled into the CLI (shipped surface) and its middleware is the dashboard's
+  # sole DNS-rebinding gate, so it must be green on every platform the CLI ships
+  # to. web-ui's `test` drops the `next build` edge (web-ui/turbo.json), so this
+  # stays a fast unit run. Scoped to the shipped-surface packages to keep the job
+  # fast; the full suite runs on the Linux job above.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
@@ -121,3 +125,4 @@ jobs:
           --filter=@akasecurity/plugin-runtime
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
+          --filter=@akasecurity/web-ui

@@ -87,6 +87,10 @@ export async function runDashboard(argv: string[]): Promise<void> {
   });
   const port = values.port ?? '4319';
   const shouldOpen = values.open !== false;
+  // The host opened here (`localhost`) and the bind host below (`127.0.0.1`) MUST
+  // stay spellings that web-ui/middleware.ts admits — its gate allows only
+  // `localhost` / `127.0.0.1` / `[::1]`. A non-loopback spelling here would 403
+  // every page on launch; web-ui/test/middleware.test.ts pins that coupling.
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {

@@ -14,6 +14,10 @@ describe('withTempStore', () => {
       expect(store.settingsDir).toBe(join(store.home, 'settings'));
       expect(store.dataDir).toBe(join(store.home, 'data'));
       expect(store.dbFile).toBe(join(store.home, 'data', 'aka.db'));
+      // settings/ exists from the start — nothing else creates it until a
+      // settings writer runs, and a test that writes settings.json by hand
+      // should not have to know that.
+      expect(existsSync(store.settingsDir)).toBe(true);
     });
   });
 
@@ -114,6 +118,38 @@ describe('withTempStore', () => {
       expect(basename(store.home).startsWith('aka-custom-prefix-')).toBe(true);
     }, 'aka-custom-prefix-');
   });
+
+  // A `try/finally` would destroy the store the moment an async body returned
+  // its pending promise, and everything after the first await would run against
+  // closed handles and a deleted tree — passing, and asserting nothing.
+  it('waits for an async body before tearing down', async () => {
+    let home = '';
+    await withTempStore(async (store) => {
+      home = store.home;
+      const db = store.open();
+      await Promise.resolve();
+      db.ruleProbeCache.setVerdict('after-await', 'safe', 3);
+      expect(db.ruleProbeCache.getVerdict('after-await')).toEqual({
+        verdict: 'safe',
+        worstProbeMs: 3,
+      });
+      expect(existsSync(store.dbFile)).toBe(true);
+    });
+    expect(existsSync(home)).toBe(false);
+  });
+
+  it('removes the tree when an async body rejects, and rethrows', async () => {
+    let home = '';
+    await expect(
+      withTempStore(async (store) => {
+        home = store.home;
+        store.open();
+        await Promise.resolve();
+        throw new Error('async boom');
+      }),
+    ).rejects.toThrow('async boom');
+    expect(existsSync(home)).toBe(false);
+  });
 });
 
 describe('createTempStore', () => {
@@ -127,11 +163,12 @@ describe('createTempStore', () => {
     }).not.toThrow();
   });
 
-  it('creates the data dir owner-only where modes apply', () => {
-    if (process.platform === 'win32') return;
+  it('creates the data dir owner-only where modes apply', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for directories on Windows');
     withTempStore((store) => {
       store.open();
       expect(statSync(store.dataDir).mode & 0o777).toBe(0o700);
+      expect(statSync(store.settingsDir).mode & 0o777).toBe(0o700);
     });
   });
 });

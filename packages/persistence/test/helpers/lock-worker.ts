@@ -41,6 +41,14 @@ function announce(state: number): void {
   Atomics.notify(signal, STATE);
 }
 
+// The starting thread is parked in Atomics.wait and cannot receive this
+// worker's 'error' event, so anything that escapes below has to reach it
+// through the state slot or not at all — otherwise the caller waits out its
+// whole ready timeout and reports a lock that was never taken.
+process.on('uncaughtException', () => {
+  announce(STATE_FAILED);
+});
+
 function takeLock(): DatabaseSync | undefined {
   let db: DatabaseSync | undefined;
   try {

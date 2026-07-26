@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { failOpenTransaction, withTransaction } from '../../src/internal/transactions.ts';
+import { assertNoOpenTransaction as assertNoOpenTransactionOn } from '../helpers/transactions.ts';
 
 let db: DatabaseSync;
 
@@ -19,10 +20,10 @@ function rowCount(): number {
   return (db.prepare('SELECT count(*) AS n FROM t').get() as { n: number }).n;
 }
 
-// Proves no transaction is left open: BEGIN throws inside an open transaction.
+// Bound to this suite's handle; the check itself lives in test/helpers so the
+// fault tests can assert the same thing about a store they just broke.
 function assertNoOpenTransaction(): void {
-  db.exec('BEGIN');
-  db.exec('ROLLBACK');
+  assertNoOpenTransactionOn(db);
 }
 
 describe('withTransaction', () => {

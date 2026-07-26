@@ -10,6 +10,7 @@ import {
   corruptStore,
   fillStore,
   lockStore,
+  primaryCode,
   readOnlyStore,
   SQLITE_BUSY,
   SQLITE_CORRUPT,
@@ -21,10 +22,13 @@ import {
 } from './fault-injection.ts';
 import type { TempStore } from './temp-store.ts';
 import { withTempStore } from './temp-store.ts';
+import { assertNoOpenTransaction } from './transactions.ts';
 
-// Each injector is asserted by the extended result code it produces, not by a
-// message or a timing: the codes are what the store's error handling does not
-// currently distinguish, and they are the reason these helpers exist.
+// Each injector is asserted by the result code it produces, not by a message or
+// a timing: the codes are what the store's error handling does not currently
+// distinguish, and they are the reason these helpers exist. `primaryCode`
+// asserts the class of failure; `sqliteErrcode` is for the cases where the
+// extended refinement is itself the point.
 
 /** Create and migrate the store, then let go of it — the file is left on disk. */
 function seedStore(store: TempStore): void {
@@ -43,7 +47,7 @@ function attemptWrite(file: string, busyTimeoutMs = 250): number | undefined {
     db.exec('INSERT INTO fault_probe (id) VALUES (1)');
     return undefined;
   } catch (err) {
-    return sqliteErrcode(err);
+    return primaryCode(err);
   } finally {
     try {
       db?.close();
@@ -63,8 +67,11 @@ function integrityOf(file: string): string | undefined {
   }
 }
 
-describe('sqliteErrcode', () => {
-  it('reads the extended result code off a node:sqlite error', () => {
+const MODES_IGNORED =
+  'this host ignores the mode change — a root process, or a filesystem without POSIX modes';
+
+describe('sqliteErrcode / primaryCode', () => {
+  it('reads the result code off a node:sqlite error', () => {
     withTempStore((store) => {
       seedStore(store);
       let err: unknown;
@@ -74,13 +81,25 @@ describe('sqliteErrcode', () => {
         err = caught;
       }
       expect(sqliteErrcode(err)).toBeTypeOf('number');
+      expect(primaryCode(err)).toBeTypeOf('number');
     });
   });
 
-  it('is undefined for anything that is not a node:sqlite error', () => {
+  it('primaryCode strips the refinement an extended code carries', () => {
+    // SQLITE_READONLY_DIRECTORY is SQLITE_READONLY with 6 in its high bits.
+    // Asserting the class must not depend on which refinement SQLite picked.
+    const err = Object.assign(new Error('readonly directory'), {
+      errcode: SQLITE_READONLY_DIRECTORY,
+    });
+    expect(sqliteErrcode(err)).toBe(SQLITE_READONLY_DIRECTORY);
+    expect(primaryCode(err)).toBe(SQLITE_READONLY);
+  });
+
+  it('both are undefined for anything that is not a node:sqlite error', () => {
     expect(sqliteErrcode(new Error('plain'))).toBeUndefined();
+    expect(primaryCode(new Error('plain'))).toBeUndefined();
     expect(sqliteErrcode('not an error')).toBeUndefined();
-    expect(sqliteErrcode(undefined)).toBeUndefined();
+    expect(primaryCode(undefined)).toBeUndefined();
   });
 });
 
@@ -96,7 +115,7 @@ describe('corruptStore', () => {
       } catch (caught) {
         err = caught;
       }
-      expect(sqliteErrcode(err)).toBe(SQLITE_CORRUPT);
+      expect(primaryCode(err)).toBe(SQLITE_CORRUPT);
     });
   });
 
@@ -111,7 +130,7 @@ describe('corruptStore', () => {
       } catch (caught) {
         err = caught;
       }
-      expect(sqliteErrcode(err)).toBe(SQLITE_NOTADB);
+      expect(primaryCode(err)).toBe(SQLITE_NOTADB);
     });
   });
 
@@ -123,6 +142,7 @@ describe('corruptStore', () => {
       // The quiet failure: nothing throws, so a fail-open caller carries on.
       const db = new DatabaseSync(store.dbFile);
       expect(() => db.prepare('SELECT count(*) AS n FROM rule_probe_cache').get()).not.toThrow();
+      assertNoOpenTransaction(db);
       db.close();
 
       expect(integrityOf(store.dbFile)).not.toBe('ok');
@@ -174,10 +194,7 @@ describe('readOnlyStore', () => {
   it('reports exactly whether the mode change denies writes', () => {
     withTempStore((store) => {
       seedStore(store);
-      const readOnly = readOnlyStore(store.dbFile);
-      store.onCleanup(() => {
-        readOnly.restore();
-      });
+      const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
 
       // The contract, asserted on every platform: `effective` is true when and
       // only when a write is actually refused. Windows ignores modes on
@@ -187,29 +204,42 @@ describe('readOnlyStore', () => {
     });
   });
 
-  it('a write to a read-only store raises SQLITE_READONLY', () => {
-    if (process.platform === 'win32') return;
+  it('denies the write without widening the file to the world', (ctx) => {
+    // No platform guard: Node maps the write bit to the read-only attribute on
+    // Windows too — only directory modes are the no-op there — and Windows is
+    // the platform where the store has no other at-rest protection.
     withTempStore((store) => {
       seedStore(store);
-      const readOnly = readOnlyStore(store.dbFile);
-      store.onCleanup(() => {
-        readOnly.restore();
-      });
-      if (!readOnly.effective) return;
+      const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
-      expect(attemptWrite(store.dbFile)).toBe(SQLITE_READONLY);
+      const code = attemptWrite(store.dbFile);
+      const mode = statSync(store.dbFile).mode & 0o777;
+      // No write bit anywhere, whatever the platform calls it.
+      expect(mode & 0o222).toBe(0);
+      if (process.platform === 'win32') {
+        // The mode does bite here, but Windows reports a read-only file as
+        // 0444 whatever was asked for, and which code SQLite raises for it is
+        // not pinned — only that the write is refused.
+        expect(code).toBeDefined();
+        return;
+      }
+      expect(code).toBe(SQLITE_READONLY);
+      // 0400, not 0444: denying the write must not hand the prompt corpus to
+      // every other account on the machine on the way.
+      expect(mode & 0o077).toBe(0);
     });
   });
 
-  it('includeDir fails at open instead: WAL cannot create its sidecars', () => {
-    if (process.platform === 'win32') return;
+  it('includeDir fails at open instead: WAL cannot create its sidecars', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for directories on Windows');
     withTempStore((store) => {
       seedStore(store);
-      const readOnly = readOnlyStore(store.dbFile, { includeDir: true });
-      store.onCleanup(() => {
-        readOnly.restore();
+      const readOnly = readOnlyStore(store.dbFile, {
+        includeDir: true,
+        onCleanup: store.onCleanup,
       });
-      if (!readOnly.effective) return;
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
       let err: unknown;
       try {
@@ -217,19 +247,21 @@ describe('readOnlyStore', () => {
       } catch (caught) {
         err = caught;
       }
+      // The one place the refinement is the point: it names the directory, not
+      // the file, as what SQLite could not write.
       expect(sqliteErrcode(err)).toBe(SQLITE_READONLY_DIRECTORY);
     });
   });
 
-  it('openLocalDatabase widens the data dir again, so only the file mode bites', () => {
-    if (process.platform === 'win32') return;
+  it('openLocalDatabase widens the data dir again, so only the file mode bites', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for directories on Windows');
     withTempStore((store) => {
       seedStore(store);
-      const readOnly = readOnlyStore(store.dbFile, { includeDir: true });
-      store.onCleanup(() => {
-        readOnly.restore();
+      const readOnly = readOnlyStore(store.dbFile, {
+        includeDir: true,
+        onCleanup: store.onCleanup,
       });
-      if (!readOnly.effective) return;
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
       // ensureDataDirSync chmods the dir back to 0700 before SQLite opens the
       // file, so the directory fault never reaches the engine on this path.
@@ -239,7 +271,7 @@ describe('readOnlyStore', () => {
       } catch (caught) {
         err = caught;
       }
-      expect(sqliteErrcode(err)).toBe(SQLITE_READONLY);
+      expect(primaryCode(err)).toBe(SQLITE_READONLY);
       expect(statSync(store.dataDir).mode & 0o777).toBe(0o700);
     });
   });
@@ -260,19 +292,30 @@ describe('lockStore', () => {
   it('a hold that outlasts busy_timeout makes the other writer fail with SQLITE_BUSY', () => {
     withTempStore((store) => {
       seedStore(store);
-      const lock = lockStore(store.dbFile);
+      lockStore(store.dbFile, { onCleanup: store.onCleanup });
+
+      const victim = new DatabaseSync(store.dbFile);
+      victim.exec('PRAGMA busy_timeout = 250');
+      let err: unknown;
       try {
-        expect(attemptWrite(store.dbFile, 250)).toBe(SQLITE_BUSY);
-      } finally {
-        lock.release();
+        victim.exec('CREATE TABLE IF NOT EXISTS fault_probe (id INTEGER PRIMARY KEY)');
+      } catch (caught) {
+        err = caught;
       }
+      expect(primaryCode(err)).toBe(SQLITE_BUSY);
+      // Losing the write must not leave the victim inside a transaction.
+      assertNoOpenTransaction(victim);
+      victim.close();
     });
   });
 
   it('a hold that ends inside busy_timeout lets the other writer through', () => {
     withTempStore((store) => {
       seedStore(store);
-      lockStore(store.dbFile, { holdMs: 150 });
+      // The lock is kept and released rather than left to expire on its own:
+      // release() waits for the holder to close its handle, and on Windows the
+      // tree cannot be removed while that handle is open.
+      lockStore(store.dbFile, { holdMs: 150, onCleanup: store.onCleanup });
       // The victim waits out the hold rather than failing: this is the timeout
       // doing its job, and the reason the SQLITE_BUSY case above is a limit
       // rather than the normal outcome.
@@ -294,17 +337,60 @@ describe('lockStore', () => {
   it('gives up loudly when the lock cannot be taken', () => {
     withTempStore((store) => {
       seedStore(store);
-      const held = lockStore(store.dbFile);
+      lockStore(store.dbFile, { onCleanup: store.onCleanup });
+      // busyTimeoutMs is what makes the second holder give up quickly;
+      // readyTimeoutMs stays generous so a slow worker start can never be
+      // mistaken for a lock it could not take.
+      expect(() => lockStore(store.dbFile, { readyTimeoutMs: 10_000, busyTimeoutMs: 100 })).toThrow(
+        /could not take the write lock/,
+      );
+    });
+  });
+});
+
+// What the injectors do to the package, rather than to node:sqlite. Both of
+// these cost a full busy_timeout (2000 ms) by construction — that is the
+// measurement, not an accident of the test.
+describe('lockStore against the product write path', () => {
+  it('openLocalDatabase cannot open under a held lock: open the writers first', () => {
+    withTempStore((store) => {
+      seedStore(store);
+      lockStore(store.dbFile, { onCleanup: store.onCleanup });
+
+      // Opening is itself a write — the WAL pragma, then the migration and
+      // ensure* passes — so a handle taken after the lock does not merely
+      // block, it fails. withWriters opens up front for exactly this reason.
+      let err: unknown;
       try {
-        // busyTimeoutMs is what makes the second holder give up quickly;
-        // readyTimeoutMs stays generous so a slow worker start can never be
-        // mistaken for a lock it could not take.
-        expect(() =>
-          lockStore(store.dbFile, { readyTimeoutMs: 10_000, busyTimeoutMs: 100 }),
-        ).toThrow(/could not take the write lock/);
-      } finally {
-        held.release();
+        openLocalDatabase(store.dataDir);
+      } catch (caught) {
+        err = caught;
       }
+      expect(primaryCode(err)).toBe(SQLITE_BUSY);
+    });
+  });
+
+  it('a LocalDatabase write under the lock is dropped in silence, not raised', () => {
+    withTempStore((store) => {
+      const db = store.open();
+      const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });
+
+      // The behaviour the fail-open contract produces today, pinned so a change
+      // to it is a decision: failOpenTransaction swallows the SQLITE_BUSY, so
+      // the caller is told nothing and the event is simply gone.
+      expect(() => {
+        db.ruleProbeCache.setVerdict('lost-to-contention', 'safe', 1);
+      }).not.toThrow();
+      expect(db.ruleProbeCache.getVerdict('lost-to-contention')).toBeUndefined();
+
+      // And the handle survives it: the swallowed failure left no transaction
+      // open, so the next write once the lock is gone still lands.
+      lock.release();
+      db.ruleProbeCache.setVerdict('after-contention', 'safe', 2);
+      expect(db.ruleProbeCache.getVerdict('after-contention')).toEqual({
+        verdict: 'safe',
+        worstProbeMs: 2,
+      });
     });
   });
 });
@@ -331,12 +417,13 @@ describe('fillStore', () => {
         err = caught;
       }
 
-      expect(sqliteErrcode(err)).toBe(SQLITE_FULL);
+      expect(primaryCode(err)).toBe(SQLITE_FULL);
       expect(written).toBeGreaterThan(0);
       // Out of room is not the same as damaged: every committed row is still
-      // there and nothing was left half-written.
+      // there, nothing was left half-written, and no transaction stayed open.
       expect((db.prepare('SELECT count(*) AS n FROM bulk').get() as { n: number }).n).toBe(written);
       expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
+      assertNoOpenTransaction(db);
 
       filled.restore();
       expect(() => {

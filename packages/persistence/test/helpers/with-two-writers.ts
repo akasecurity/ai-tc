@@ -19,6 +19,8 @@ import { withTempStore } from './temp-store.ts';
 /**
  * Run `fn` with two independent handles on one temp store. `store` is there
  * too, for a test that needs the paths or a third handle.
+ *
+ * An async `fn` is awaited before teardown, as in `withTempStore`.
  */
 export function withTwoWriters<T>(
   fn: (a: LocalDatabase, b: LocalDatabase, store: TempStore) => T,
@@ -44,6 +46,10 @@ export function withTwoWriters<T>(
  * by the time `fn` runs. A test that needs two connections racing to create a
  * store from scratch — concurrent migrations, a first-mint fingerprint — wants
  * `withTempStore` and its `open()` instead.
+ *
+ * Opening up front also matters when the body reaches for `lockStore`: opening
+ * a handle while the write lock is held fails, because `openLocalDatabase`
+ * writes on the way in. Take the handles first, then lock.
  */
 export function withWriters<T>(
   count: number,

@@ -33,8 +33,18 @@ import { Worker } from 'node:worker_threads';
 
 import { walSidecars } from '../../src/paths.ts';
 
-/** Extended result codes node:sqlite attaches to an error as `errcode`. */
+/**
+ * Primary result codes — the low byte of the code node:sqlite reports.
+ *
+ * `errcode` carries the **extended** code, which is the primary code plus a
+ * refinement in its high bits: SQLITE_READONLY (8) also arrives as
+ * SQLITE_READONLY_DIRECTORY (1544) or SQLITE_READONLY_DBMOVED (1032), and
+ * SQLITE_BUSY (5) as SQLITE_BUSY_SNAPSHOT (517). So compare with
+ * `primaryCode()` to assert the class of failure, and with `sqliteErrcode()`
+ * only when the refinement itself is the point.
+ */
 export const SQLITE_BUSY = 5;
+export const SQLITE_LOCKED = 6;
 export const SQLITE_READONLY = 8;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_FULL = 13;
@@ -45,6 +55,15 @@ export const SQLITE_READONLY_DIRECTORY = 1544;
 /** The `errcode` node:sqlite carries on an error, or undefined for anything else. */
 export function sqliteErrcode(err: unknown): number | undefined {
   return err instanceof Error ? (err as { errcode?: number }).errcode : undefined;
+}
+
+/**
+ * The primary result code behind whatever refinement SQLite attached — the
+ * comparison to use against the `SQLITE_*` constants above.
+ */
+export function primaryCode(err: unknown): number | undefined {
+  const code = sqliteErrcode(err);
+  return code === undefined ? undefined : code & 0xff;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,10 +203,30 @@ export interface ReadOnlyStore {
   restore(): void;
 }
 
+export interface ReadOnlyStoreOptions {
+  /** Tighten the containing directory too — see below. */
+  includeDir?: boolean;
+  /**
+   * Register `restore()` for teardown, most conveniently the temp store's own
+   * `onCleanup`. Without it the caller owns the restore, and a body that
+   * throws leaves a tree that cannot be deleted.
+   */
+  onCleanup?: (fn: () => void) => void;
+}
+
+/** Read-only for the owner, and nobody else: the 0600 store stays owner-only. */
+const READ_ONLY_FILE_MODE = 0o400;
+/** The directory equivalent — owner may traverse and list, not create. */
+const READ_ONLY_DIR_MODE = 0o500;
+
 /**
- * Make a store unwritable by mode. The db and any WAL sidecars go to 0444.
+ * Make a store unwritable by mode. The db and any WAL sidecars go to 0400.
  *
- * With `includeDir`, the containing directory goes to 0555 as well, which is
+ * Read-only for the owner alone, not 0444: `aka.db` holds prompt and file
+ * content and the package writes it 0600 everywhere else, so a test has no
+ * reason to widen it to the world on the way to denying a write.
+ *
+ * With `includeDir`, the containing directory goes to 0500 as well, which is
  * the harsher case: in WAL mode SQLite needs to create the -wal/-shm sidecars,
  * so it fails at open with SQLITE_READONLY_DIRECTORY rather than at the first
  * write. Without it, reads keep working and only writes raise SQLITE_READONLY.
@@ -197,10 +236,10 @@ export interface ReadOnlyStore {
  * can always widen their own directory again — so only the file mode is left
  * to bite by the time SQLite sees it.
  *
- * `restore()` must run before the tree is deleted — register it with the temp
- * store's `onCleanup`, which `withTempStore` already drains.
+ * `restore()` must run before the tree is deleted: pass `onCleanup`, or call it
+ * yourself from a `finally`.
  */
-export function readOnlyStore(file: string, opts: { includeDir?: boolean } = {}): ReadOnlyStore {
+export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): ReadOnlyStore {
   const targets = [file, ...walSidecars(file)].filter((path) => existsSync(path));
   const dir = dirname(file);
   const original = new Map<string, number>();
@@ -210,8 +249,8 @@ export function readOnlyStore(file: string, opts: { includeDir?: boolean } = {})
     chmodSync(path, mode);
   };
 
-  for (const path of targets) tighten(path, 0o444);
-  if (opts.includeDir) tighten(dir, 0o555);
+  for (const path of targets) tighten(path, READ_ONLY_FILE_MODE);
+  if (opts.includeDir) tighten(dir, READ_ONLY_DIR_MODE);
 
   // A mode that still permits writing protects nothing; report that rather
   // than let a caller assert against a store it can freely write.
@@ -226,7 +265,7 @@ export function readOnlyStore(file: string, opts: { includeDir?: boolean } = {})
   const effective = [...original.keys()].every(denied);
 
   let restored = false;
-  return {
+  const readOnly: ReadOnlyStore = {
     effective,
     restore(): void {
       if (restored) return;
@@ -234,7 +273,12 @@ export function readOnlyStore(file: string, opts: { includeDir?: boolean } = {})
       // The directory first: everything else lives inside it.
       if (opts.includeDir) {
         const mode = original.get(dir);
-        if (mode !== undefined) chmodSync(dir, mode);
+        try {
+          if (mode !== undefined) chmodSync(dir, mode);
+        } catch {
+          // A directory left tightened would strand the whole temp tree, but
+          // there is nothing further to try here.
+        }
       }
       for (const path of targets) {
         const mode = original.get(path);
@@ -246,6 +290,10 @@ export function readOnlyStore(file: string, opts: { includeDir?: boolean } = {})
       }
     },
   };
+  opts.onCleanup?.(() => {
+    readOnly.restore();
+  });
+  return readOnly;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +327,24 @@ export interface LockStoreOptions {
    * with SQLITE_BUSY; a shorter one makes it wait and then succeed. Both are
    * worth pinning — one proves the timeout has a limit, the other proves it
    * does its job.
+   *
+   * On this path the holder lets go on its own, and the caller is not told
+   * when: the victim's write goes through the moment the ROLLBACK lands, one
+   * statement before the holder closes its handle. Deleting the tree in that
+   * window fails on Windows, where an open file cannot be unlinked. Call
+   * `release()` — which waits for the close — or pass `onCleanup`.
    */
   holdMs?: number;
   /** How long to wait for the lock to be taken before giving up. */
   readyTimeoutMs?: number;
   /** `busy_timeout` for the holder's own handle while it takes the lock. */
   busyTimeoutMs?: number;
+  /**
+   * Register `release()` for teardown, most conveniently the temp store's own
+   * `onCleanup`. Without it, a body that throws while the lock is held leaks
+   * the holder thread and its open handle on the store.
+   */
+  onCleanup?: (fn: () => void) => void;
 }
 
 /**
@@ -296,6 +356,16 @@ export interface LockStoreOptions {
  * worker thread holds it instead, and the handshake is a blocking
  * `Atomics.wait` rather than a poll or a sleep, so "the lock is up" is settled
  * before this function returns and the victim can never start early.
+ *
+ * Two things to know before pointing this at the product's own paths:
+ *
+ * - **Open the victim's handle first.** `openLocalDatabase` writes on the way
+ *   in (`PRAGMA journal_mode = WAL`, then the migration and `ensure*` passes),
+ *   so opening under a held lock does not merely block — it fails with
+ *   SQLITE_BUSY once `busy_timeout` runs out.
+ * - **Each contended write costs the full `busy_timeout`**, 2000 ms for a
+ *   `LocalDatabase`. A suite that contends often enough will outrun vitest's
+ *   per-test timeout long before it runs out of assertions.
  */
 export function lockStore(file: string, opts: LockStoreOptions = {}): StoreLock {
   const readyTimeoutMs = opts.readyTimeoutMs ?? 10_000;
@@ -326,12 +396,15 @@ export function lockStore(file: string, opts: LockStoreOptions = {}): StoreLock 
     throw new Error(
       state === STATE_FAILED
         ? `lockStore(): the holder could not take the write lock on ${file}`
-        : `lockStore(): the write lock on ${file} was not taken within ${String(readyTimeoutMs)}ms`,
+        : // This thread was parked in Atomics.wait the whole time, so the
+          // worker's 'error' event could not be delivered — a holder that
+          // never loaded and one that never got the lock look identical here.
+          `lockStore(): no word from the holder for ${file} within ${String(readyTimeoutMs)}ms — it never took the write lock, or the worker failed to start.`,
     );
   }
 
   let released = false;
-  return {
+  const lock: StoreLock = {
     release(): void {
       if (released) return;
       released = true;
@@ -343,6 +416,10 @@ export function lockStore(file: string, opts: LockStoreOptions = {}): StoreLock 
       void worker.terminate();
     },
   };
+  opts.onCleanup?.(() => {
+    lock.release();
+  });
+  return lock;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +439,13 @@ export interface FilledStore {
  * The cap belongs to the connection, not the file: another handle on the same
  * store is unaffected, so this fills the store for the handle passed in and
  * that handle only. A genuinely full filesystem stays out of reach in CI.
+ *
+ * That connection scope is also the limit of this injector. It takes a raw
+ * `DatabaseSync`, and `LocalDatabase` exposes none, so no disk-full fault can
+ * be aimed at `recordCapture` or any other repository write today — this
+ * injector currently reaches node:sqlite, not the package built on it. Closing
+ * that gap needs either a raw-handle seam on `LocalDatabase` or repositories
+ * driven over a raw handle, as `activity.test.ts` already does.
  */
 export function fillStore(db: DatabaseSync, opts: { headroomPages?: number } = {}): FilledStore {
   const readPragma = (name: string): number => {

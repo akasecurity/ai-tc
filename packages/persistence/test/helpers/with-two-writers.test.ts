@@ -91,4 +91,24 @@ describe('withWriters', () => {
     }).toThrow('boom');
     expect(existsSync(home)).toBe(false);
   });
+
+  it('holds the writers open until an async body finishes', async () => {
+    let home = '';
+    await withWriters(3, async (writers, store) => {
+      home = store.home;
+      await Promise.resolve();
+      // Every handle is still live after the await, not closed out from under
+      // the body by an eager teardown.
+      writers.forEach((db, i) => {
+        db.ruleProbeCache.setVerdict(`async-${String(i)}`, 'safe', i);
+      });
+      writers.forEach((_db, i) => {
+        expect(writers[0]?.ruleProbeCache.getVerdict(`async-${String(i)}`)).toEqual({
+          verdict: 'safe',
+          worstProbeMs: i,
+        });
+      });
+    });
+    expect(existsSync(home)).toBe(false);
+  });
 });

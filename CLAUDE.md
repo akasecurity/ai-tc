@@ -260,20 +260,30 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
 
-`packages/persistence/test/helpers/` holds the shared store harness; **import it rather
-than re-rolling the `mkdtempSync` + `openLocalDatabase` + cleanup dance**:
+`packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
+package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
+cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
+`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
-  suite shares setup across hooks, `withTempStore` when one test body owns the store.
+  suite shares setup across hooks, `withTempStore` when one test body owns the store. An
+  async body is awaited before teardown.
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore`, `lockStore`, `fillStore`, plus
-  the `SQLITE_*` extended result codes and `sqliteErrcode()`. Each injector produces a
-  real error code from the real engine and reports when it could not take effect
-  (`chmod` is a no-op on Windows, and root bypasses modes), so a fault test cannot pass
-  against a healthy store.
+  the `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector
+  produces a real error code from the real engine and reports when it could not take
+  effect (`chmod` is a no-op for directories on Windows, and root bypasses modes), so a
+  fault test cannot pass against a healthy store. Pass the store's `onCleanup` to any
+  injector that has to be undone before the tree can be removed.
+- `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
+  fault; assert this after injecting one.
 
-Assert the extended result code, not an error message or an elapsed time — Windows CI runs
-several times slower, and a timing assertion there is a flake. Do not add vitest `retry`.
+Assert the result code, not an error message or an elapsed time — Windows CI runs several
+times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
+`errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
+`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`. Where a platform or a privilege
+makes an assertion meaningless, `ctx.skip(reason)` — never an early `return`, which
+reports as a pass.

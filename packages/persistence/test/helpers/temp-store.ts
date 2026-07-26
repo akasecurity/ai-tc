@@ -13,7 +13,7 @@
  * independent connection on the one file — which is what makes two live
  * writers, and the contention between them, reachable from a test.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,7 @@ import { afterEach, beforeEach } from 'vitest';
 import type { LocalDatabase } from '../../src/database.ts';
 import { openLocalDatabase } from '../../src/database.ts';
 import { dataDir, dbPath, settingsDir } from '../../src/local-layout.ts';
+import { DATA_DIR_MODE } from '../../src/paths.ts';
 
 export interface TempStore {
   /** The mkdtemp root, standing in for `~/.aka`. */
@@ -36,19 +37,21 @@ export interface TempStore {
    * A fresh `LocalDatabase` on this store, closed for you at teardown. Call it
    * more than once for independent handles on the same file.
    */
-  open(): LocalDatabase;
+  readonly open: () => LocalDatabase;
   /**
    * Run `fn` before the temp tree is removed, most recent first. Fault
-   * injectors register their mode restores here — a 0444/0555 tree cannot be
-   * deleted, so the restore has to run before the rm.
+   * injectors take this as their `onCleanup` option — a read-only tree cannot
+   * be deleted and a held lock cannot be, either on Windows, so both have to
+   * be undone before the rm. Declared as a property, not a method, so it can
+   * be handed to an injector without binding.
    */
-  onCleanup(fn: () => void): void;
+  readonly onCleanup: (fn: () => void) => void;
 }
 
 /** A `TempStore` whose lifetime the caller owns. */
 export interface OwnedTempStore extends TempStore {
   /** Run the cleanups, close every handle, remove the tree. Idempotent. */
-  destroy(): void;
+  readonly destroy: () => void;
 }
 
 /**
@@ -57,6 +60,10 @@ export interface OwnedTempStore extends TempStore {
  */
 export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
   const home = mkdtempSync(join(tmpdir(), prefix));
+  // `data/` is created by openLocalDatabase, but nothing creates `settings/`
+  // until a settings writer runs — so a test that writes settings.json by hand
+  // would meet an absent directory. Both subdirs exist from the start instead.
+  mkdirSync(settingsDir(home), { recursive: true, mode: DATA_DIR_MODE });
   const handles: LocalDatabase[] = [];
   const cleanups: (() => void)[] = [];
   let destroyed = false;
@@ -99,18 +106,49 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
   };
 }
 
+/** True for anything with a callable `then` — a promise, or a promise-alike. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
 /**
  * Run `fn` against a temp store, then tear it down — including when `fn`
  * throws. The scoped shape: use it where the store's lifetime is one test body
  * or one block, and `useTempStore` where a suite shares setup across hooks.
+ *
+ * An async `fn` is awaited before teardown. A plain `try/finally` would destroy
+ * the store the moment the body returned its pending promise, and the rest of
+ * the body would then run against closed handles and a deleted tree — green,
+ * and asserting nothing.
  */
 export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): T {
   const store = createTempStore(prefix);
+  let result: T;
   try {
-    return fn(store);
-  } finally {
+    result = fn(store);
+  } catch (err) {
     store.destroy();
+    throw err;
   }
+  if (!isThenable(result)) {
+    store.destroy();
+    return result;
+  }
+  const settled = result.then(
+    (value) => {
+      store.destroy();
+      return value;
+    },
+    (err: unknown) => {
+      store.destroy();
+      throw err;
+    },
+  );
+  return settled as T;
 }
 
 /**
@@ -118,6 +156,11 @@ export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): 
  * describe) scope and read the returned store inside tests and hooks. The
  * store's `beforeEach` is registered where this is called, so it runs before
  * any hook the suite declares afterwards, and its teardown runs after theirs.
+ *
+ * That ordering is `sequence.hooks: 'stack'`, which vitest.config.ts pins
+ * rather than inherit: under `'list'` or `'parallel'` the store would be
+ * destroyed before a suite's own `afterEach`, and a suite that reads the store
+ * in teardown would break with no compile-time signal.
  */
 export function useTempStore(prefix?: string): TempStore {
   let current: OwnedTempStore | undefined;

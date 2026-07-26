@@ -77,9 +77,15 @@ async function grants(): Promise<DetectionException[]> {
 
 // The raw bytes of the store on disk (main DB + WAL/SHM sidecars), so an
 // at-rest leak is caught even if it only ever reached the write-ahead log.
+//
+// The main DB read is deliberately NOT guarded: if `dir` ever stops resolving to
+// the real store (a layout change, a renamed file, a broken homedir() mock) the
+// leak scan must fail loudly rather than return '' — an empty string contains no
+// secret, so a swallowed error would turn every caller into a silent no-op. Only
+// the two sidecars are optional; SQLite may not have created them yet.
 function storeBytes(): string {
-  const parts: Buffer[] = [];
-  for (const name of ['aka.db', 'aka.db-wal', 'aka.db-shm']) {
+  const parts: Buffer[] = [readFileSync(join(dir, 'aka.db'))];
+  for (const name of ['aka.db-wal', 'aka.db-shm']) {
     try {
       parts.push(readFileSync(join(dir, name)));
     } catch {
@@ -361,6 +367,14 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(res).toEqual({ ok: true });
 
       resetSingleton(); // close the handle so the WAL is checkpointed into the file
+
+      // Positive control FIRST: the grant's fingerprint is stored as TEXT, so its
+      // hex must appear in the bytes just read. This proves the scan below is
+      // reading the actual store that received the write — without it, a reader
+      // that came back empty would satisfy `not.toContain` while proving nothing.
+      const fingerprint = (await grants())[0]?.valueFingerprint;
+      expect(fingerprint).toBeDefined();
+      expect(storeBytes()).toContain(fingerprint);
       expect(storeBytes()).not.toContain(SECOND);
     });
 

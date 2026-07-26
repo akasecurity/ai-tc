@@ -89,8 +89,11 @@ it('__dashboard-server without --server-js fails with a message, does not throw'
 // still checks `127.0.0.1` — isPortFree reports a busy port free, the friendly
 // "port in use" message is skipped, and Next dies on the raw EADDRINUSE the probe
 // exists to prevent. Pin that they share one source of truth (BIND_HOST) by proving
-// the literal appears exactly once in the source: the const declaration. Every bind
-// site must reference the constant, so a second hard-coded literal fails this test.
+// the address appears as a STRING exactly once in the source: the const declaration.
+// Every bind site must reference the constant, so a second hard-coded literal fails.
+// Matching quoted occurrences only (any quote style) keeps prose free to name the
+// address — this module explains loopback binding at length, and counting raw text
+// would turn an added comment into a red test that points nowhere useful.
 it('probe and both binds share one loopback source of truth (no drift)', () => {
   expect(BIND_HOST).toBe('127.0.0.1');
 
@@ -98,7 +101,7 @@ it('probe and both binds share one loopback source of truth (no drift)', () => {
     join(dirname(fileURLToPath(import.meta.url)), '../../src/commands/dashboard.ts'),
     'utf8',
   );
-  const literals = src.match(/127\.0\.0\.1/g) ?? [];
+  const literals = src.match(/['"`]127\.0\.0\.1['"`]/g) ?? [];
   expect(literals).toHaveLength(1); // only the BIND_HOST declaration hard-codes it
   expect(src).toMatch(/const BIND_HOST = '127\.0\.0\.1'/);
 });

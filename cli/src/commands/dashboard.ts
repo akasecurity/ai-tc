@@ -94,6 +94,12 @@ export async function runDashboard(argv: string[]): Promise<void> {
   });
   const port = values.port ?? '4319';
   const shouldOpen = values.open !== false;
+  // The browser URL is a dial name, not a bind address, so it deliberately does
+  // NOT derive from BIND_HOST: `localhost` resolves across the whole loopback
+  // family, reaching the server whichever literal BIND_HOST holds, and a future
+  // IPv6 BIND_HOST would need bracket-wrapping here (`http://::1:4319` is a
+  // malformed URL). What this name must satisfy is the web-ui's accepted Host
+  // set (middleware.ts) — the plugin builds the same URL.
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {

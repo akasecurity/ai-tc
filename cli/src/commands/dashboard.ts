@@ -15,6 +15,13 @@ import { openUrl } from '../lib/open-url.ts';
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 
+// Single source of truth for the loopback bind address. The pre-flight port probe
+// and both server spawns (the dev `next start` and the standalone HOSTNAME) must
+// bind the SAME address, or the probe checks a different interface than the server
+// uses and the friendly "port in use" message is skipped. Export it so the test
+// suite can pin that coupling.
+export const BIND_HOST = '127.0.0.1';
+
 // The package root that ships the bundled web-ui. Under a plain-node launch it is
 // one level above dist/ (this module's dir). A SEA binary has no source dir, so it
 // is the directory holding the executable, where release packaging places web-ui/.
@@ -36,7 +43,7 @@ function isPortFree(port: number): Promise<boolean> {
         resolve(true);
       });
     });
-    probe.listen(port, '127.0.0.1');
+    probe.listen(port, BIND_HOST);
   });
 }
 
@@ -87,16 +94,18 @@ export async function runDashboard(argv: string[]): Promise<void> {
   });
   const port = values.port ?? '4319';
   const shouldOpen = values.open !== false;
-  // The host in this opened URL becomes the browser's `Host` header, so it must
-  // stay a spelling web-ui/middleware.ts admits (`localhost` / `127.0.0.1` /
-  // `[::1]`) — anything else 403s every page on launch. The bind host below
-  // (`127.0.0.1`) is a SEPARATE constraint the gate cannot enforce: it reads the
-  // Host header, never the bind address, so binding all interfaces (`0.0.0.0`)
-  // would expose the surface while every page still 200s. The bind is hard-coded
-  // at the `--hostname` / `HOSTNAME` sites below, and `isPortFree`'s probe above
-  // hard-codes the same address — they must stay in step, or the pre-flight
-  // probes a different stack than the server binds. (middleware.test.ts makes the
-  // Host coupling discoverable, not enforced — it asserts literals, not the CLI's host.)
+  // The browser URL is a dial name, not a bind address, so it deliberately does
+  // NOT derive from BIND_HOST: `localhost` resolves across the whole loopback
+  // family, reaching the server whichever literal BIND_HOST holds, and a future
+  // IPv6 BIND_HOST would need bracket-wrapping here (`http://::1:4319` is a
+  // malformed URL). What this name must satisfy is the web-ui's accepted Host
+  // set (middleware.ts) — the plugin builds the same URL — because this host
+  // becomes the browser's `Host` header, and a spelling the gate does not admit
+  // 403s every page on launch. The bind address is a SEPARATE constraint the
+  // gate cannot enforce: it reads the Host header, never the bind address, so
+  // binding all interfaces (`0.0.0.0`) would expose the surface while every page
+  // still 200s. (middleware.test.ts makes the Host coupling discoverable, not
+  // enforced — it asserts the accepted literals, not the CLI's host.)
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {
@@ -134,7 +143,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
     // carries mutating server actions, so it must never bind all interfaces.
     const child = spawn(
       process.execPath,
-      [nextBin, 'start', '--port', port, '--hostname', '127.0.0.1'],
+      [nextBin, 'start', '--port', port, '--hostname', BIND_HOST],
       {
         cwd: webUiDir,
         stdio: ['inherit', 'pipe', 'inherit'],
@@ -178,7 +187,7 @@ function launchStandalone(serverJs: string, port: string, shouldOpen: boolean, u
     // Inherit the parent env so the child server sees PATH etc.; PORT/HOSTNAME tell
     // Next's standalone server where to bind (its only port input).
     // eslint-disable-next-line n/no-process-env
-    env: { ...process.env, PORT: port, HOSTNAME: '127.0.0.1' },
+    env: { ...process.env, PORT: port, HOSTNAME: BIND_HOST },
   });
   onReadyOpen(child, shouldOpen, url, `Starting the AKA dashboard at ${url}\n`);
 }

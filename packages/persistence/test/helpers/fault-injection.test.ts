@@ -74,11 +74,16 @@ describe('sqliteErrcode / primaryCode', () => {
   it('reads the result code off a node:sqlite error', () => {
     withTempStore((store) => {
       seedStore(store);
+      const db = new DatabaseSync(store.dbFile);
       let err: unknown;
       try {
-        new DatabaseSync(store.dbFile).exec('SELECT * FROM no_such_table');
+        db.exec('SELECT * FROM no_such_table');
       } catch (caught) {
         err = caught;
+      } finally {
+        // Windows will not delete a file another handle still holds, so a
+        // handle a test opens is a handle a test closes.
+        db.close();
       }
       expect(sqliteErrcode(err)).toBeTypeOf('number');
       expect(primaryCode(err)).toBeTypeOf('number');
@@ -241,11 +246,14 @@ describe('readOnlyStore', () => {
       });
       if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
+      const db = new DatabaseSync(store.dbFile);
       let err: unknown;
       try {
-        new DatabaseSync(store.dbFile).exec('PRAGMA journal_mode = WAL');
+        db.exec('PRAGMA journal_mode = WAL');
       } catch (caught) {
         err = caught;
+      } finally {
+        db.close();
       }
       // The one place the refinement is the point: it names the directory, not
       // the file, as what SQLite could not write.
@@ -444,8 +452,14 @@ describe('fillStore', () => {
       const other = new DatabaseSync(store.dbFile);
       const insert = other.prepare('INSERT INTO bulk (v) VALUES (?)');
       const payload = 'x'.repeat(200);
+      // One transaction, not one per row: in autocommit each row is its own WAL
+      // commit, and 500 of those runs for tens of seconds on the Windows runner.
+      // The point is that this handle grows past the other's cap, not how many
+      // commits it takes to get there.
       expect(() => {
+        other.exec('BEGIN');
         for (let i = 0; i < 500; i += 1) insert.run(payload);
+        other.exec('COMMIT');
       }).not.toThrow();
 
       other.close();

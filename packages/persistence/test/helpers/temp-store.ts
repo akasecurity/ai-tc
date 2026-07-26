@@ -101,9 +101,31 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
           // handle itself — an already-closed handle is the expected case here.
         }
       }
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     },
   };
+}
+
+// Windows refuses to delete a file some handle still has open, where POSIX is
+// happy to. A fault test reaches that state legitimately: `openLocalDatabase`
+// never closes its `DatabaseSync` when it throws partway through — on a corrupt
+// or locked store it fails after construction and the handle is unreachable —
+// so nothing can close it before the rm.
+//
+// Retry through the case where a handle is merely on its way out, then, on
+// Windows only, give the tree to the OS temp sweeper rather than fail a test
+// whose assertions already passed. POSIX keeps throwing: there the same codes
+// mean a cleanup did not run — a forgotten mode restore, say — and that is a
+// defect in the test, not the platform.
+const STILL_HELD = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
+
+function removeTree(home: string): void {
+  try {
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (process.platform !== 'win32' || code === undefined || !STILL_HELD.has(code)) throw err;
+  }
 }
 
 /** True for anything with a callable `then` — a promise, or a promise-alike. */

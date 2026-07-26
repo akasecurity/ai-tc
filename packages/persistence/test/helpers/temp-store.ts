@@ -1,0 +1,161 @@
+/**
+ * A disposable `~/.aka` for one test: the mkdtemp + openLocalDatabase + cleanup
+ * sequence that store tests across the workspace repeat, in one place.
+ *
+ * The temp tree mirrors the real home — `settings/` and `data/` under a base,
+ * with the paths resolved through local-layout.ts rather than re-joined here —
+ * so a test that touches settings.json or the fingerprint key sees the same
+ * shape the product does, and a layout change moves the helper with it.
+ *
+ * Handles opened through `open()` are closed at teardown, so a test never has
+ * to pair an open with a close. `openLocalDatabase` has no memoization: every
+ * call re-runs migrations and reseeds default policies, so each `open()` is an
+ * independent connection on the one file — which is what makes two live
+ * writers, and the contention between them, reachable from a test.
+ */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach } from 'vitest';
+
+import type { LocalDatabase } from '../../src/database.ts';
+import { openLocalDatabase } from '../../src/database.ts';
+import { dataDir, dbPath, settingsDir } from '../../src/local-layout.ts';
+
+export interface TempStore {
+  /** The mkdtemp root, standing in for `~/.aka`. */
+  readonly home: string;
+  /** `<home>/settings` — where settings.json lives. */
+  readonly settingsDir: string;
+  /** `<home>/data` — where aka.db and its -wal/-shm sidecars live. */
+  readonly dataDir: string;
+  /** `<home>/data/aka.db`. */
+  readonly dbFile: string;
+  /**
+   * A fresh `LocalDatabase` on this store, closed for you at teardown. Call it
+   * more than once for independent handles on the same file.
+   */
+  open(): LocalDatabase;
+  /**
+   * Run `fn` before the temp tree is removed, most recent first. Fault
+   * injectors register their mode restores here — a 0444/0555 tree cannot be
+   * deleted, so the restore has to run before the rm.
+   */
+  onCleanup(fn: () => void): void;
+}
+
+/** A `TempStore` whose lifetime the caller owns. */
+export interface OwnedTempStore extends TempStore {
+  /** Run the cleanups, close every handle, remove the tree. Idempotent. */
+  destroy(): void;
+}
+
+/**
+ * A temp store the caller destroys by hand. Prefer `withTempStore` (scoped) or
+ * `useTempStore` (hook-driven); reach for this only when neither shape fits.
+ */
+export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  const handles: LocalDatabase[] = [];
+  const cleanups: (() => void)[] = [];
+  let destroyed = false;
+
+  return {
+    home,
+    settingsDir: settingsDir(home),
+    dataDir: dataDir(home),
+    dbFile: dbPath(home),
+    open(): LocalDatabase {
+      const db = openLocalDatabase(dataDir(home));
+      handles.push(db);
+      return db;
+    },
+    onCleanup(fn: () => void): void {
+      cleanups.push(fn);
+    },
+    destroy(): void {
+      if (destroyed) return;
+      destroyed = true;
+      // Restores run before the handles close: a cleanup may need to widen a
+      // mode the test tightened, and it must run whether or not the test threw.
+      for (const fn of cleanups.reverse()) {
+        try {
+          fn();
+        } catch {
+          // A cleanup that cannot run must not strand the temp tree.
+        }
+      }
+      for (const db of handles) {
+        try {
+          db.close();
+        } catch {
+          // node:sqlite throws on a second close, and a test is free to close a
+          // handle itself — an already-closed handle is the expected case here.
+        }
+      }
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * Run `fn` against a temp store, then tear it down — including when `fn`
+ * throws. The scoped shape: use it where the store's lifetime is one test body
+ * or one block, and `useTempStore` where a suite shares setup across hooks.
+ */
+export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): T {
+  const store = createTempStore(prefix);
+  try {
+    return fn(store);
+  } finally {
+    store.destroy();
+  }
+}
+
+/**
+ * A per-test temp store wired to the suite's own hooks: call it at module (or
+ * describe) scope and read the returned store inside tests and hooks. The
+ * store's `beforeEach` is registered where this is called, so it runs before
+ * any hook the suite declares afterwards, and its teardown runs after theirs.
+ */
+export function useTempStore(prefix?: string): TempStore {
+  let current: OwnedTempStore | undefined;
+
+  beforeEach(() => {
+    current = createTempStore(prefix);
+  });
+
+  afterEach(() => {
+    current?.destroy();
+    current = undefined;
+  });
+
+  const active = (): OwnedTempStore => {
+    if (!current) {
+      throw new Error(
+        'useTempStore(): no store for the current test — call useTempStore() at module or describe scope, not inside a test.',
+      );
+    }
+    return current;
+  };
+
+  return {
+    get home(): string {
+      return active().home;
+    },
+    get settingsDir(): string {
+      return active().settingsDir;
+    },
+    get dataDir(): string {
+      return active().dataDir;
+    },
+    get dbFile(): string {
+      return active().dbFile;
+    },
+    open: () => active().open(),
+    onCleanup: (fn: () => void) => {
+      active().onCleanup(fn);
+    },
+  };
+}

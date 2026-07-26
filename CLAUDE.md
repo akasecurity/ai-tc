@@ -256,3 +256,24 @@ pnpm test                                    # all workspaces
 pnpm test --filter @akasecurity/detections   # just the detection engine + fixtures
 pnpm test --filter @akasecurity/persistence  # just the local-store adapter + repositories
 ```
+
+Never mock `node:sqlite` or the filesystem — every store test runs against a real
+database in a real temp dir, which is what catches real SQLite semantics.
+
+`packages/persistence/test/helpers/` holds the shared store harness; **import it rather
+than re-rolling the `mkdtempSync` + `openLocalDatabase` + cleanup dance**:
+
+- `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
+  `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
+  suite shares setup across hooks, `withTempStore` when one test body owns the store.
+- `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
+  one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
+  only WAL and `busy_timeout` between them).
+- `fault-injection.ts` — `corruptStore`, `readOnlyStore`, `lockStore`, `fillStore`, plus
+  the `SQLITE_*` extended result codes and `sqliteErrcode()`. Each injector produces a
+  real error code from the real engine and reports when it could not take effect
+  (`chmod` is a no-op on Windows, and root bypasses modes), so a fault test cannot pass
+  against a healthy store.
+
+Assert the extended result code, not an error message or an elapsed time — Windows CI runs
+several times slower, and a timing assertion there is a flake. Do not add vitest `retry`.

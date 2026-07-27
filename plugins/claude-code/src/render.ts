@@ -22,6 +22,7 @@ import type {
   SetupHandoffOffer,
 } from '@akasecurity/schema';
 import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
+import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
 
 import { selectRegisteredCommands } from './command-registry.ts';
 import {
@@ -36,7 +37,6 @@ import {
   table,
   wrapText,
 } from './present.ts';
-import { downgradeWarning, isDowngrade } from './triage/gate-display.ts';
 
 // The fail-open note shown when the local store can't be READ (missing / corrupt
 // / locked db) mid-wizard: the calibration and first-run frames print this instead

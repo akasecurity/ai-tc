@@ -23,25 +23,25 @@ import type {
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
-
-import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
-import { readRegisteredCommands } from '../command-registry.ts';
-import { fenced, show } from '../present.ts';
-import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
-import { frameJsonBlock } from '../setup-frame-json.ts';
-import { dedupeForJudge } from './dedupe.ts';
-import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
-import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
-import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from './merge.ts';
-import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
-import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
+import { dedupeForJudge } from '@akasecurity/setup-wizard';
+import { deriveFalsePositivePatterns } from '@akasecurity/setup-wizard';
+import { renderPosturePlan, renderShowcase, renderSuppressionGate } from '@akasecurity/setup-wizard';
+import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from '@akasecurity/setup-wizard';
+import { deletePlanFile, readPlanFile, writePlanFile } from '@akasecurity/setup-wizard';
+import { deriveSurfacedSecretFindings } from '@akasecurity/setup-wizard';
 import {
   type CategoryPolicyWriter,
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
   recommendedPosture,
-} from './writeback.ts';
+} from '@akasecurity/setup-wizard';
+
+import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
+import { readRegisteredCommands } from '../command-registry.ts';
+import { fenced, show } from '../present.ts';
+import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
+import { frameJsonBlock } from '../setup-frame-json.ts';
 
 export interface AdapterDb {
   policies: CategoryPolicyWriter;

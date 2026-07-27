@@ -168,7 +168,15 @@ skills/               agent skills (e.g. write-detection-rule)
 2. Extend `../../tsconfig.base.json`
 3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
 4. Export from `src/index.ts`
-5. Add `"lint"` and `"typecheck"` scripts
+5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` and
+   name every source dir the package ships (`src`, `app`, `test`). Turbo silently
+   skips a package with no `lint` script, so a config nothing points ESLint at
+   enforces nothing. A `scripts/` dir needs its own `eslint.scripts.config.mjs`
+   plus a second pass (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`).
+6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
+   `packages/eslint-config/test/effective-config.test.js` — that suite enumerates
+   the workspace and fails when the set drifts, which is what stops a new package
+   from shipping unguarded for network calls.
 
 ## Commit messages
 

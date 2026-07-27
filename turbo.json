@@ -22,6 +22,28 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
+    // The eslint-config suite asserts a workspace-wide invariant: every package
+    // ships an eslint.config.mjs wiring the no-network ban. Its default inputs
+    // cover only packages/eslint-config/**, and the package has no workspace
+    // dependencies — so ADDING A PACKAGE ANYWHERE ELSE leaves the task hash
+    // untouched and turbo replays a cached pass, which is exactly the moment the
+    // guard exists to fire. Declare the cross-package files it actually reads so
+    // the hash busts when the workspace shape changes. A stale hit here is a
+    // false-green CI for the no-network guarantee.
+    "@akasecurity/eslint-config#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/pnpm-workspace.yaml",
+        "$TURBO_ROOT$/*/package.json",
+        "$TURBO_ROOT$/*/eslint.config.mjs",
+        "$TURBO_ROOT$/*/eslint.scripts.config.mjs",
+        "$TURBO_ROOT$/*/*/package.json",
+        "$TURBO_ROOT$/*/*/eslint.config.mjs",
+        "$TURBO_ROOT$/*/*/eslint.scripts.config.mjs"
+      ]
+    },
     "clean": {
       "cache": false
     }

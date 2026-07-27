@@ -1,6 +1,6 @@
 name: Release plugin (Codex)
 
-# Publishes the Claude Code plugin package to the public npm registry AND to the
+# Publishes the Codex CLI plugin package to the public npm registry AND to the
 # repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
 # Release. The plugin's hook scripts are a build artifact
 # (plugins/codex/scripts/, git-ignored) — they are generated here and shipped
@@ -21,6 +21,18 @@ on:
         description: 'Publish to npm (otherwise build + pack only — a dry run)'
         type: boolean
         default: false
+
+# One release per tag at a time. A single tag push can start more than one run.
+# A duplicate is already self-limiting here: npm and GitHub Packages both reject a
+# re-publish of the same (name, version), so the losing run fails at its publish step
+# and never reaches the Release. That safety is a consequence of publish running
+# before the Release step — this group holds whatever the step order, and stops two
+# runs overlapping. It does not make a duplicate disappear: the queued run still
+# executes afterward and still fails at publish. cancel-in-progress is false so a run
+# is never interrupted midway through publishing to either registry.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # Tag pushes get no run of the main CI workflow (it triggers only on main
@@ -98,7 +110,8 @@ jobs:
         run: |
           cd plugins/codex
           for f in session-start user-prompt-submit pre-tool-use post-tool-use stop reconcile \
-                   query dashboard onboard apply-suppressions intro firstrun backfill filescan; do
+                   query dashboard onboard apply-suppressions intro firstrun backfill filescan \
+                   remediate start-light; do
             test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
           done
           # The hooks run on the user's machine with no node_modules; junk input

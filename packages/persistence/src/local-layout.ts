@@ -1,10 +1,14 @@
 import { renameSync } from 'node:fs';
-import { chmod, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { akaWarn } from './internal/warn.ts';
-import { DATA_DIR_MODE, ensureDataDirSync as ensureDirOwnerOnly, tightenFile } from './paths.ts';
+import {
+  DATA_DIR_MODE,
+  ensureDataDirSync as ensureDirOwnerOnly,
+  tightenDir,
+  tightenFile,
+} from './paths.ts';
 
 // The ~/.aka on-disk LAYOUT (which paths live where), shared by every local
 // consumer — the plugin SDK, the CLI, and the OSS web-ui. It lives here (the
@@ -38,16 +42,10 @@ export function dbPath(base: string = defaultDataDir()): string {
 // e.g. Windows) and must never break the fail-open hook path.
 export async function ensureDataDir(dir: string = defaultDataDir()): Promise<void> {
   await mkdir(dir, { recursive: true, mode: DATA_DIR_MODE });
-  try {
-    await chmod(dir, DATA_DIR_MODE);
-  } catch (err) {
-    // Fail-open, mirroring chmodBestEffort in paths.ts: swallow an absent target
-    // and platforms without POSIX modes (Windows); surface anything else, since
-    // a genuine failure means the dir's only at-rest control did not apply.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-    if (process.platform === 'win32') return;
-    akaWarn(`could not set owner-only permissions on ${dir}: ${String(err)}`);
-  }
+  // Delegate the tighten to the one shared helper so the "benign vs surfaced"
+  // policy (and its once-per-path warn) lives in exactly one place — the sync
+  // and async dir paths can't drift on what a failed chmod means.
+  tightenDir(dir);
 }
 
 // Synchronous twin of ensureDataDir, defaulted to the layout base. Delegates to

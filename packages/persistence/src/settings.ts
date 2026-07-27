@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { WorkspaceSettings } from '@akasecurity/schema';
@@ -9,7 +9,7 @@ import {
 
 import { parseJsonObject } from './internal/json.ts';
 import { defaultDataDir, settingsDir } from './local-layout.ts';
-import { ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
+import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 
 // Read/write of ~/.aka/settings/settings.json, shared by every local consumer
 // — plugin hooks, the CLI, and the web-ui; the SDK re-exports these. The
@@ -20,18 +20,13 @@ import { ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.
 /**
  * Read settings.json under the base, default-filled when absent. Fully
  * fail-open: a missing or corrupt file yields unonboarded defaults rather than
- * throwing — this sits on the plugin's fail-open hook path.
- *
- * Self-heals the at-rest mode on read: a settings.json left group/other-readable
- * by an older release (or the pre-fix leftover-`.tmp` bug) is re-tightened to
- * 0600 whenever any consumer — plugin hook, CLI, or web-ui — reads it, mirroring
- * how the fingerprint key self-heals on load and the db on open. Best-effort and
- * only when the file exists, so an unonboarded read stays a pure no-op.
+ * throwing — this sits on the plugin's fail-open hook path. A pure reader with no
+ * side effects: the at-rest mode is self-healed by the write/init/loadConfig
+ * paths (see `aka init`'s ungated tighten and `loadConfig`), not on every read,
+ * so a web-ui page render never chmods.
  */
 export function readWorkspaceSettings(base: string = defaultDataDir()): WorkspaceSettings {
-  const file = join(settingsDir(base), 'settings.json');
-  if (existsSync(file)) tightenFile(file);
-  const record = readJson(file);
+  const record = readJson(join(settingsDir(base), 'settings.json'));
   if (!record) return defaultWorkspaceSettings();
   try {
     // The schema default-fills every missing key, so an older settings.json

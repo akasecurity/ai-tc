@@ -68,26 +68,19 @@ describe('readWorkspaceSettings', () => {
     expect(settings.onboardedAt).toBeUndefined();
   });
 
-  it('self-heals a pre-existing loose settings.json to 0600 on read (plugin read path)', () => {
+  it('is a pure reader — reading does not alter settings.json mode', () => {
     if (process.platform === 'win32') return;
-    // A settings.json a prior release left group/other-readable is re-tightened
-    // whenever it is read — the read-path equivalent of the key self-healing on
-    // load and the db on open, so a plugin-only user who never runs `aka init`
-    // still gets it repaired on the next hook.
+    // The self-heal deliberately lives in the write/init/loadConfig paths, not
+    // here: a documented fail-open reader (also called from a web-ui page render)
+    // must not chmod on every read. This pins that contract so nobody re-adds it.
     writeSettings({ specVersion: 1, runMode: 'standalone', policy: 'warn' });
     const file = join(base, 'settings', 'settings.json');
     chmodSync(file, 0o644);
 
     const settings = readWorkspaceSettings(base);
 
-    expect(settings.policy).toBe('warn'); // still reads correctly
-    expect(statSync(file).mode & 0o777).toBe(0o600); // and healed the mode
-  });
-
-  it('does not attempt to tighten an absent settings.json (unonboarded read is a no-op)', () => {
-    // existsSync-gated, so no chmod (and no warn) fires when the file is absent.
-    expect(() => readWorkspaceSettings(base)).not.toThrow();
-    expect(readWorkspaceSettings(base).onboardedAt).toBeUndefined();
+    expect(settings.policy).toBe('warn'); // reads correctly
+    expect(statSync(file).mode & 0o777).toBe(0o644); // and leaves the mode untouched
   });
 });
 

@@ -1,11 +1,13 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -153,12 +155,12 @@ describe('writeOwnerOnlyFileSync', () => {
     expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
-  it('tightens to 0600 even over a leftover loose `.tmp` from an earlier crash', () => {
+  it('clears a stale same-pid tmp from an earlier crash and still lands 0600', () => {
     const file = join(base, 'settings.json');
-    // A crash between the tmp write and the rename can leave a loose settings.json.tmp
-    // behind. writeFileSync's `mode` option is honored only on creation, so without
-    // clearing the stale tmp first the rename would publish its loose mode.
-    const tmp = `${file}.tmp`;
+    // A crash between the (per-pid) tmp write and the rename can leave the tmp
+    // behind. The exclusive `wx` create would EEXIST on it, so the writer removes
+    // it first; the fresh create then lands 0600.
+    const tmp = `${file}.${String(process.pid)}.tmp`;
     writeFileSync(tmp, 'stale');
     chmodSync(tmp, 0o666);
 
@@ -179,5 +181,25 @@ describe('writeOwnerOnlyFileSync', () => {
     expect(readFileSync(file, 'utf8')).toBe('new\n');
     if (process.platform === 'win32') return;
     expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+
+  it('never writes through or installs a symlink planted at the tmp path', () => {
+    if (process.platform === 'win32') return;
+    // Fault injection: an attacker with write access to the (loose) dir plants a
+    // symlink at our tmp path pointing at a victim file. The write must not follow
+    // it (no arbitrary overwrite) and must not install it as `file`.
+    const file = join(base, 'settings.json');
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    chmodSync(victim, 0o600);
+    symlinkSync(victim, `${file}.${String(process.pid)}.tmp`);
+
+    writeOwnerOnlyFileSync(file, 'new\n');
+
+    expect(readFileSync(victim, 'utf8')).toBe('SECRET'); // victim untouched
+    expect(lstatSync(file).isSymbolicLink()).toBe(false); // file is a real inode
+    expect(readFileSync(file, 'utf8')).toBe('new\n');
+    expect(mode(file)).toBe(DATA_FILE_MODE);
+    expect(mode(victim)).toBe(0o600); // and never chmod'd through the link
   });
 });

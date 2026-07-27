@@ -9,6 +9,9 @@ import { createTempStore, useTempStore, withTempStore } from './temp-store.ts';
 // The helper's own gate: every store test that adopts it inherits these
 // guarantees, so a regression here is a regression in all of them.
 
+const MODES_IGNORED =
+  'this host ignores the mode change — a root process, or a filesystem without POSIX modes';
+
 describe('withTempStore', () => {
   it('lays the temp tree out like the real home', () => {
     withTempStore((store) => {
@@ -56,7 +59,12 @@ describe('withTempStore', () => {
     });
   });
 
-  it('keeps a failing teardown from speaking over the body failure', () => {
+  // The teardown failure this forces is a mode `removeTree` cannot delete
+  // through, so the whole case rests on the mode biting. On Windows a
+  // directory's mode is ignored, `removeTree` succeeds, and there is no
+  // teardown failure left to assert.
+  it('keeps a failing teardown from speaking over the body failure', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for directories on Windows');
     let home = '';
     let caught: Error | undefined;
     try {
@@ -71,8 +79,15 @@ describe('withTempStore', () => {
     } catch (err) {
       caught = err as Error;
     }
-    chmodSync(home, 0o700);
-    rmSync(home, { recursive: true, force: true });
+    // removeTree only ever swallows on Windows, which is already skipped above,
+    // so past this point a surviving tree means the rm threw and destroy() with
+    // it. A root process writes through the mode, leaving nothing to assert.
+    const teardownFailed = existsSync(home);
+    if (teardownFailed) {
+      chmodSync(home, 0o700);
+      rmSync(home, { recursive: true, force: true });
+    }
+    if (!teardownFailed) ctx.skip(MODES_IGNORED);
 
     expect(caught?.message).toBe('THE-REAL-FAILURE');
     // The teardown failure is not dropped either — it travels as the cause.

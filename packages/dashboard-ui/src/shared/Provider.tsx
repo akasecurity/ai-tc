@@ -14,6 +14,7 @@ export const PROVIDERS = {
   codex: { label: 'Codex CLI', short: 'Cx', color: '#10A37F' },
   copilot: { label: 'GitHub Copilot', short: 'Co', color: '#0581D4' },
   chatgpt: { label: 'ChatGPT', short: 'GP', color: '#0d8f6f' },
+  claudeai: { label: 'Claude.ai', short: 'Ca', color: '#D97757' },
   api: { label: 'Anthropic API', short: 'AP', color: '#6058E9' },
 } satisfies Record<string, ProviderMeta>;
 

@@ -31,6 +31,7 @@ export const HARNESS_KIND: Record<Harness, string> = {
   windsurf: 'IDE',
   claudedesktop: 'Desktop app',
   chatgpt: 'Web app',
+  claudeai: 'Web app',
   api: 'API',
 };
 
@@ -43,6 +44,7 @@ export const HARNESS_IDS: Harness[] = [
   'windsurf',
   'claudedesktop',
   'chatgpt',
+  'claudeai',
   'api',
 ];
 

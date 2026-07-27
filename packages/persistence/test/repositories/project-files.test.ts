@@ -1,33 +1,23 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { ProjectFileInput, ProjectFilesScan } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { openLocalDatabase } from '../../src/database.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // The real project-file scan write path (recordProjectFiles) read back through
 // the SAME views the Inventory page uses (listProjects access counts +
 // getProjectTree folders/files) — the write is only correct if the page renders.
 
-let dir: string;
+const store = useTempStore('aka-projfiles-db-');
 let db: LocalDatabase;
 let projectId: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-projfiles-db-'));
-  db = openLocalDatabase(dir);
+  db = store.open();
   projectId = db.sourceProject.upsert(
     { url: 'https://github.com/org/payments-api.git', name: 'payments-api', attributes: {} },
     Date.now(),
   );
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 function file(path: string, overrides?: Partial<ProjectFileInput>): ProjectFileInput {

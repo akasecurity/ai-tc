@@ -278,3 +278,44 @@ pnpm test                                    # all workspaces
 pnpm test --filter @akasecurity/detections   # just the detection engine + fixtures
 pnpm test --filter @akasecurity/persistence  # just the local-store adapter + repositories
 ```
+
+Never mock `node:sqlite` or the filesystem — every store test runs against a real
+database in a real temp dir, which is what catches real SQLite semantics.
+
+`packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
+package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
+cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
+`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
+
+- `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
+  `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
+  suite shares setup across hooks, `withTempStore` when one test body owns the store. An
+  async body is awaited before teardown.
+- `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
+  one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
+  only WAL and `busy_timeout` between them).
+- `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
+  `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
+  real error code from the real engine and refuses to run rather than take effect
+  vacuously — an absent store, a live handle. Where the platform or the privilege decides
+  instead of the helper, `readOnlyStore` reports it as `effective: false` and **the caller
+  must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
+  any injector that has to be undone before the tree can be removed, and the store itself
+  to any that needs no live connection.
+  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
+  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
+  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+- `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
+  fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
+  with a transaction of its own, so it cannot disturb the handle it is inspecting.
+
+Assert the result code, not an error message or an elapsed time — Windows CI runs several
+times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
+`errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
+`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`.
+
+Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
+An early `return` reports as a pass, which is the failure mode the store harness exists
+to remove. Some older suites in this package still use
+`if (process.platform === 'win32') return;` — leave them be unless you are already
+changing that test for another reason, and do not convert a neighbour in passing.

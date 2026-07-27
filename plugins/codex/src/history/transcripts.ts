@@ -45,9 +45,12 @@ export interface ScannedMessage {
 // plugins/claude-code/src/history/transcripts.ts's transcriptsDir(), which
 // likewise reads no env override for ~/.claude (n/no-process-env stays on for
 // this package; CODEX_HOME support can be added later behind its own
-// file-scoped opt-out if it turns out to be needed).
-export function transcriptsDir(): string {
-  return join(homedir(), '.codex', 'sessions');
+// file-scoped opt-out if it turns out to be needed). `home` overrides the OS
+// home root; it is supplied only by tests/harnesses that need a throwaway
+// ~/.codex in isolation — no production call site passes it, so every real run
+// falls back to the OS home.
+export function transcriptsDir(home?: string): string {
+  return join(home ?? homedir(), '.codex', 'sessions');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

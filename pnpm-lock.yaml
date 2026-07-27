@@ -548,6 +548,9 @@ importers:
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@akasecurity/setup-wizard':
+        specifier: workspace:*
+        version: link:../../packages/setup-wizard
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3

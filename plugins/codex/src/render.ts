@@ -13,7 +13,14 @@ import type {
   SessionTokenReport,
 } from '@akasecurity/plugin-sdk';
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
-import type { DetectionException, DetectionListItem } from '@akasecurity/schema';
+import type {
+  ActionTaken,
+  BuiltinPolicyId,
+  DetectionException,
+  DetectionListItem,
+} from '@akasecurity/schema';
+import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
+import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
 
 import {
   bar,
@@ -27,6 +34,16 @@ import {
   table,
   wrapText,
 } from './present.ts';
+import { selectRegisteredSkills } from './skills-registry.ts';
+
+// The fail-open note shown when the local store can't be READ (missing / corrupt
+// / locked db) mid-wizard: the calibration and first-run frames print this instead
+// of throwing, so a store fault never breaks the Codex session. This is the
+// store-UNAVAILABLE (read-failure) path only. The found-nothing / empty-store case
+// (a store that reads fine but holds nothing) is a distinct path with its own
+// honest copy — frameEmptyState in calibration.ts — not this note.
+export const STORE_UNAVAILABLE_NOTE =
+  "I couldn't check my records just now — we can check again soon. Your Codex session keeps going, and I'll fill in as you work.";
 
 const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -67,6 +84,226 @@ function shortTime(iso: string): string {
 
 function empty(message: string): string {
   return message;
+}
+
+// ActionTaken (the DB enum: warn|redact|block|allow|log) -> the user-facing
+// palette label the wizard uses (monitor|warn|redact|block|allow). Only 'log'
+// differs (-> 'monitor'); everything else is identity. Kept local to the
+// render surface so the DB vocabulary never leaks into the first-run screen.
+const ACTION_LABEL: Record<string, string> = {
+  log: 'monitor',
+  warn: 'warn',
+  redact: 'redact',
+  block: 'block',
+  allow: 'allow',
+};
+
+// Canonical category order for the posture card, from the schema enum. Rows
+// come out of the store in DB order; rendering in this fixed order keeps the
+// card stable regardless of how the caller read them. An unknown category (a
+// custom rule's) sorts after the known ones, in its incoming order.
+const CATEGORY_ORDER: readonly string[] = DetectionCategory.options;
+function categoryRank(category: string): number {
+  const i = CATEGORY_ORDER.indexOf(category);
+  return i === -1 ? CATEGORY_ORDER.length : i;
+}
+
+// Compact, aligned per-category posture block for the first-run screen: one
+// row per category, its stored action translated to the palette label. Rows
+// are rendered in the canonical category order above so the card is stable.
+// Pure (no I/O) so it unit-tests without a DB; the caller (firstrun.ts)
+// supplies rows read from the policies store.
+export function renderPosture(rows: { category: string; action: string }[]): string {
+  const width = Math.max(0, ...rows.map((r) => r.category.length));
+  return [...rows]
+    .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
+    .map((r) => `  ${r.category.padEnd(width)}  ${ACTION_LABEL[r.action] ?? r.action}`)
+    .join('\n');
+}
+
+// The condensed recommended-posture view for the calibrated-result frame: one
+// compact row per pack showing the level AKA recommends, in canonical category
+// order. This is the recommend-and-confirm glance — distinct from the start-light
+// branch's full 8×4 level table, which lays every level out per pack. Pure (no
+// I/O); the caller hands in the recommended posture (severityFloorPosture()),
+// whose palette levels (monitor/warn/redact/block) render verbatim.
+export function renderRecommendedPosture(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const rows = (Object.keys(posture) as DetectionCategory[]).map((category) => ({
+    category,
+    level: posture[category] ?? '',
+  }));
+  const width = Math.max(0, ...rows.map((r) => r.category.length));
+  return rows
+    .sort((a, b) => categoryRank(a.category) - categoryRank(b.category))
+    .map((r) => `  ${r.category.padEnd(width)}  ${r.level}`)
+    .join('\n');
+}
+
+// The full 8×4 posture matrix for the start-light branch: every pack laid out
+// against all four levels (monitor/warn/redact/block), the chosen level marked,
+// in canonical category order. This lays the whole choice space out per pack —
+// distinct from renderRecommendedPosture's condensed one-level-per-pack glance.
+// The level columns come from BUILTIN_ORDER (the schema's palette order), so the
+// DB action vocabulary (log/allow) never appears. Pure (no I/O); the caller
+// hands in the posture map (severityFloorPosture() for the recommended defaults).
+const GRID_MARK = '●';
+export function renderPostureGrid(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const packs = (Object.keys(posture) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rows = packs.map((category) => [
+    category,
+    ...BUILTIN_ORDER.map((level) => (posture[category] === level ? GRID_MARK : '')),
+  ]);
+  return indent(table(['Category', ...BUILTIN_ORDER], rows));
+}
+
+// The re-tune hint that closes the start-light card and the applied frame,
+// pointing at the two surfaces that re-open calibration: the aka-setup wizard
+// and the web-ui settings grid (the deep-tuning surface). Exported so the wizard
+// prose (the setup skill's SKILL.md) and the applied-frame copy single-source it
+// instead of repeating the string and letting the two drift.
+export const RE_TUNE_HINT = 'Re-tune anytime with the aka-setup skill or the dashboard';
+
+// Why each pack sits at its default: calm, plain-language reasons in the product
+// voice — "notifications" not alarms. The warn packs surface sensitive data for
+// the user's call; the monitor packs (code_context, config) watch quietly to keep
+// the noise down. Presentation copy only — not a persisted contract.
+const PACK_RATIONALE: Record<DetectionCategory, string> = {
+  secret: 'keys and credentials are the costliest thing to lose, so I bring those straight to you.',
+  pii: 'personal data carries real obligations, so I surface it before it moves.',
+  financial: 'card and account numbers are sensitive by default, so these come to you.',
+  phi: 'health information is regulated wherever it lands, so I flag it for your call.',
+  code_context:
+    'proprietary code context is common and mostly benign, so I watch quietly and keep the record.',
+  code_flaw: 'an insecure pattern is worth a look before it ships, so I raise it.',
+  custom: 'your own policy matches start surfaced so nothing you care about slips by unseen.',
+  config: 'config values are noisy, so I keep an eye on them without notifying you.',
+};
+
+// The start-light card — the aka-setup Not-now branch, shown when the user
+// declines the retroactive scan so they still leave setup calibrated.
+// Composes the full 8×4 grid (renderPostureGrid) seeded with the conservative
+// defaults, a per-pack rationale line explaining why each pack sits at its
+// default, and the re-tune hint. Pure (no I/O); the caller hands in the posture
+// map (severityFloorPosture() for the severity-floor defaults), whose packs render in
+// canonical category order.
+export function renderStartLight(
+  posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+): string {
+  const packs = (Object.keys(posture) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rationale = packs.map(
+    (pack) => `  ${pack} — ${posture[pack] ?? ''}: ${PACK_RATIONALE[pack]}`,
+  );
+  return [
+    '● Starting light — your detection categories',
+    '',
+    indent(
+      "For now, each detection category starts at a careful default. Run the aka-setup skill whenever you like and I'll tune these from Codex's recent work.",
+    ),
+    '',
+    renderPostureGrid(posture),
+    '',
+    ...rationale,
+    '',
+    indent(RE_TUNE_HINT),
+  ].join('\n');
+}
+
+// The adjust-confirm card of the aka-setup Yes-path adjust loop: a
+// three-column 'category │ recommended │ yours' table laying each pack's
+// recommended level beside the level the user chose, so a changed pack reads as
+// a different 'yours' value and the untouched packs repeat their recommended
+// level. Closes with the adjust copy and the shared re-tune pointer at the
+// deep-tuning surface. Pure (no I/O); the caller hands in the recommended posture
+// (severityFloorPosture()), the chosen map (that base with the user's overrides
+// overlaid), and `current` — the store's existing action per category
+// (undefined = no row yet) — whose packs render in canonical category order.
+// A chosen level that ranks BELOW the category's existing action is an
+// enforcement downgrade and appends the shared WARNING footer, so the adjust fork
+// can no longer quietly lower a pack hardened out of band.
+export function renderAdjustConfirm(
+  recommended: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+  chosen: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
+  current: Partial<Record<DetectionCategory, ActionTaken>> = {},
+): string {
+  const packs = (Object.keys(recommended) as DetectionCategory[]).sort(
+    (a, b) => categoryRank(a) - categoryRank(b),
+  );
+  const rows = packs.map((category) => [
+    category,
+    recommended[category] ?? '',
+    chosen[category] ?? recommended[category] ?? '',
+  ]);
+  const downgrades = packs.filter((category) => {
+    const planned = chosen[category] ?? recommended[category];
+    return planned !== undefined && isDowngrade(planned, current[category]);
+  });
+  return [
+    '● Adjust — set the detection categories you want, keep the rest',
+    '',
+    indent(table(['category', 'recommended', 'yours'], rows)),
+    '',
+    indent("I'll keep the rest as recommended."),
+    '',
+    indent(RE_TUNE_HINT),
+  ]
+    .join('\n')
+    .concat(downgradeWarning(downgrades));
+}
+
+// The applying-confirmation "Ready" line's curated skill set — the read
+// surfaces to run once calibration is applied (health, findings, recommend), a
+// surface-specific subset (not the whole registry) deliberately distinct from the
+// Try line's, written as the skill names the plugin's SKILL.md files declare
+// (the form the user invokes them by). Validated against the installed skill
+// registry before it renders, so the call-to-action never names a skill the user
+// cannot invoke.
+export const READY_SKILLS = ['aka-health', 'aka-findings', 'aka-recommend'] as const;
+
+// The installed-summary "Try" line's curated skill set — the dashboard and the
+// working-tree scan, a surface-specific subset (not the whole registry), written
+// as the skill names the plugin's SKILL.md files declare (the form the user
+// invokes them by). Validated against the installed skill registry before it
+// renders, so the call-to-action never names a skill the user cannot invoke.
+export const TRY_SKILLS = ['aka-dashboard', 'aka-scan'] as const;
+
+// The "set" segment — the count of detection categories the writer wrote,
+// threaded from the real write (never a literal). Single-sourced here so
+// onboard.ts's posture-write confirmation and the composed applying-confirmation
+// line read identically.
+export function renderCategoriesTuned(categoriesTuned: number): string {
+  return `✓ Set all ${String(categoriesTuned)} detection categories`;
+}
+
+// The aka-setup wizard's applying confirmation, shown once the
+// calibration takes effect: '✓ Set all K detection categories · set aside N
+// routine results · Ready: …'. Both counts are threaded from the real apply
+// result (the posture writer's category count and the apply-suppressions
+// result's written count), never a literal. When nothing routine was set aside
+// (N === 0) the middle segment is honest empty-state copy rather than a
+// fabricated 'set aside 0 routine results'. `registry` is the installed skill
+// registry (readRegisteredSkills()), resolved at the caller's I/O boundary and
+// threaded in so this stays a pure formatter: the Ready line's curated set is
+// validated against it, and an unregistered curated skill throws rather than
+// rendering. Pure (no I/O) so it unit-tests without a DB.
+export function renderApplied(
+  categoriesTuned: number,
+  dismissed: number,
+  registry: readonly string[],
+): string {
+  const routine =
+    dismissed > 0
+      ? `set aside ${String(dismissed)} routine result${dismissed === 1 ? '' : 's'}`
+      : 'nothing routine to set aside';
+  const ready = `Ready: ${selectRegisteredSkills(READY_SKILLS, registry).join(' · ')}`;
+  return `${renderCategoriesTuned(categoriesTuned)} · ${routine} · ${ready}`;
 }
 
 const RULE_WIDTH = 64;
@@ -166,7 +403,7 @@ export function renderFirstRun(s: FirstRunSummary): string {
       `${severityGlyph(f.severity)} ${f.severity}`,
       f.category,
       f.ruleId,
-      f.actionTaken,
+      toApiAction(f.actionTaken),
       f.maskedMatch,
     ]);
     lines.push(
@@ -205,7 +442,7 @@ export function renderFindings(
     `${severityGlyph(f.severity)} ${f.severity}`,
     f.category,
     f.ruleId,
-    f.actionTaken,
+    toApiAction(f.actionTaken),
     f.maskedMatch,
   ]);
   const heading =
@@ -569,7 +806,7 @@ export function renderAudit(findings: FindingView[]): string {
   }
   const rows = findings.map((f) => [
     shortTime(f.occurredAt),
-    f.actionTaken,
+    toApiAction(f.actionTaken),
     f.ruleId,
     f.category,
     // Join only the parts that are present so a finding missing sourceTool/kind

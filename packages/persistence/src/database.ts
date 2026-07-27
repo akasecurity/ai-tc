@@ -26,7 +26,7 @@ import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, ensureDataDirSync, tightenFile, tightenPerms, walSidecars } from './paths.ts';
+import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenFile, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -189,15 +189,15 @@ function openWithPragmas(file: string): DatabaseSync {
 
 // Move an incompatible legacy store aside (recoverable) so a fresh one can be
 // created. The handle was closed first, checkpointing the WAL into the main file,
-// so the -wal/-shm sidecars are stale and removed — a fresh handle would otherwise
-// pair the new db with the old WAL. Returns the backup path.
+// so the -wal/-shm/-journal sidecars are stale and removed — a fresh handle would
+// otherwise pair the new db with the old WAL. Returns the backup path.
 function backupLegacyStore(file: string): string {
   const backup = `${file}.legacy.${String(Date.now())}.bak`;
   renameSync(file, backup);
   // The backup is a full copy of the prompt corpus, so hold it to the same 0600
   // as the live store — rename preserves the source's (possibly loose) mode.
   tightenFile(backup);
-  for (const sidecar of walSidecars(file)) {
+  for (const sidecar of dbSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
   }
   return backup;

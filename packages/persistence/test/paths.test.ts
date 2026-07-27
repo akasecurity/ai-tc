@@ -1,9 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -18,21 +20,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
+  dbSidecars,
   ensureDataDirSync,
   tightenFile,
   tightenPerms,
-  walSidecars,
   writeOwnerOnlyFileSync,
 } from '../src/paths.ts';
 
 // The POSIX file/dir modes are the ONLY at-rest control on the store — see the
 // "Data at rest" note in SECURITY.md. These tests pin the success modes (the
-// directory mode was previously unasserted anywhere, and the -wal/-shm sidecar
-// modes were never asserted). The chmod-failure branches are deliberately not
-// tested here: they are best-effort `catch {}` that need a real permission-denied
-// FS and, where the failure is real, surface an akaWarn rather than a return
-// value — fault-injection of that path is owned by a separate reliability item.
-// All mode assertions skip on Windows, where POSIX modes are a no-op.
+// directory mode was previously unasserted anywhere, and the sidecar modes were
+// never asserted); the chmod-failure branch is a silent best-effort catch,
+// exercised in database/settings fault cases rather than here. All mode
+// assertions skip on Windows, where POSIX modes are a no-op.
 
 let base: string;
 
@@ -89,18 +89,20 @@ describe('ensureDataDirSync', () => {
   });
 });
 
-describe('walSidecars', () => {
-  it('names the -wal and -shm sidecars next to a database file', () => {
+describe('dbSidecars', () => {
+  it('names the -wal, -shm and -journal sidecars next to a database file', () => {
     const file = join(base, 'aka.db');
-    expect(walSidecars(file)).toEqual([`${file}-wal`, `${file}-shm`]);
+    // -journal covers the rollback modes SQLite falls back to when WAL is
+    // unavailable (DrvFs, some network mounts) — it holds store content too.
+    expect(dbSidecars(file)).toEqual([`${file}-wal`, `${file}-shm`, `${file}-journal`]);
   });
 });
 
 describe('tightenPerms', () => {
-  it('sets 0600 on the db file and both WAL sidecars', () => {
+  it('sets 0600 on the db file and all of its sidecars', () => {
     const file = join(base, 'aka.db');
-    // Create the trio with deliberately loose modes so the chmod is observable.
-    for (const p of [file, ...walSidecars(file)]) {
+    // Create the set with deliberately loose modes so the chmod is observable.
+    for (const p of [file, ...dbSidecars(file)]) {
       writeFileSync(p, '');
       chmodSync(p, 0o644);
     }
@@ -108,7 +110,7 @@ describe('tightenPerms', () => {
     tightenPerms(file);
 
     if (process.platform === 'win32') return;
-    for (const p of [file, ...walSidecars(file)]) {
+    for (const p of [file, ...dbSidecars(file)]) {
       expect(mode(p)).toBe(DATA_FILE_MODE);
     }
   });
@@ -143,6 +145,23 @@ describe('tightenFile', () => {
     expect(() => {
       tightenFile(join(base, 'nope'));
     }).not.toThrow();
+  });
+
+  it('never chmods THROUGH a symlink (self-heal must not tighten an arbitrary target)', () => {
+    if (process.platform === 'win32') return;
+    // Fault injection: settings.json (or the exception key) is a planted symlink
+    // to a victim the attacker can read. tightenFile must skip it, not follow the
+    // link and chmod the victim.
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    chmodSync(victim, 0o644);
+    const link = join(base, 'settings.json');
+    symlinkSync(victim, link);
+
+    tightenFile(link);
+
+    expect(mode(victim)).toBe(0o644); // victim NOT tightened through the link
+    expect(lstatSync(link).isSymbolicLink()).toBe(true); // link left as-is
   });
 });
 
@@ -201,5 +220,43 @@ describe('writeOwnerOnlyFileSync', () => {
     expect(readFileSync(file, 'utf8')).toBe('new\n');
     expect(mode(file)).toBe(DATA_FILE_MODE);
     expect(mode(victim)).toBe(0o600); // and never chmod'd through the link
+  });
+
+  it('leaves no orphan tmp behind when the rename fails', () => {
+    // A per-process tmp that isn't cleaned on failure would accumulate forever
+    // (hook processes are SIGKILLed at a timeout) — and writeKeyFile routes here,
+    // so the orphans would be raw key material. Force a rename failure by making
+    // the destination a directory.
+    const file = join(base, 'settings.json');
+    mkdirSync(file);
+
+    expect(() => {
+      writeOwnerOnlyFileSync(file, 'data\n');
+    }).toThrow();
+
+    expect(readdirSync(base).filter((f) => f.includes('.tmp'))).toEqual([]);
+  });
+
+  it('refuses to follow a planted tmp symlink the unlink could not clear (O_EXCL, not the rm)', () => {
+    // Isolates `wx`: chflags makes the dir immutable so the leading rmSync can't
+    // remove the planted symlink, so ONLY the exclusive create can prevent the
+    // write from following it. Without `flag: 'wx'` the write overwrites the
+    // victim. macOS-only (needs chflags to fail the unlink); no macOS CI, so this
+    // runs locally.
+    if (process.platform !== 'darwin') return;
+    const file = join(base, 'settings.json');
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    chmodSync(victim, 0o600);
+    symlinkSync(victim, `${file}.${String(process.pid)}.tmp`);
+    execFileSync('chflags', ['uchg', base]);
+    try {
+      expect(() => {
+        writeOwnerOnlyFileSync(file, 'PWNED\n');
+      }).toThrow(/EEXIST/);
+      expect(readFileSync(victim, 'utf8')).toBe('SECRET'); // wx refused to follow
+    } finally {
+      execFileSync('chflags', ['nouchg', base]);
+    }
   });
 });

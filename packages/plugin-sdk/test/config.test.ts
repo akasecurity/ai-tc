@@ -1,10 +1,13 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -108,11 +111,10 @@ describe('loadConfig', () => {
     expect(statSync(base).mode & 0o777).toBe(0o700);
   });
 
-  it('self-heals a loose settings.json to 0600 on load (plugin read path)', () => {
+  it('self-heals a loose settings.json to 0600 on load (plugin entry path)', () => {
     if (process.platform === 'win32') return;
-    // A plugin-only user who never runs `aka init`: the settings read on every
-    // hook (via readWorkspaceSettings) re-tightens a settings.json a prior
-    // release left group/other-readable.
+    // A plugin-only user who never runs `aka init`: loadConfig re-tightens a
+    // settings.json a prior release left group/other-readable, on the next hook.
     const dir = join(base, 'settings');
     mkdirSync(dir, { recursive: true });
     const file = join(dir, 'settings.json');
@@ -122,6 +124,24 @@ describe('loadConfig', () => {
     loadConfig(base);
 
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it('does not chmod THROUGH a settings.json symlink on load (never tightens an arbitrary target)', () => {
+    if (process.platform === 'win32') return;
+    // The loose-~/.aka state this repairs is attacker-writable; a planted
+    // settings.json symlink must not let the self-heal chmod its target.
+    const dir = join(base, 'settings');
+    mkdirSync(dir, { recursive: true });
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    chmodSync(victim, 0o644);
+    symlinkSync(victim, join(dir, 'settings.json'));
+
+    loadConfig(base);
+
+    expect(statSync(victim).mode & 0o777).toBe(0o644); // victim NOT tightened through the link
+    expect(lstatSync(join(dir, 'settings.json')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(victim, 'utf8')).toBe('SECRET');
   });
 });
 

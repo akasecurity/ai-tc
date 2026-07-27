@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -15,7 +16,7 @@ import type * as LocalOps from '@akasecurity/local-ops';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runInit } from '../../src/commands/init.ts';
+import { looseStorePaths, runInit } from '../../src/commands/init.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
@@ -123,5 +124,44 @@ describe('runInit contract', () => {
     expect(readFileSync(file, 'utf8')).toBe(first);
     const out = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(out).toContain('(kept existing)');
+  });
+});
+
+describe('looseStorePaths', () => {
+  it('reports the store paths that are not owner-only, and none when all are tight', () => {
+    if (process.platform === 'win32') return;
+    const settings = settingsDir(dir);
+    mkdirSync(settings, { recursive: true });
+    mkdirSync(dataDir(dir), { recursive: true });
+    const file = join(settings, 'settings.json');
+    writeFileSync(file, '{}');
+
+    // All owner-only → nothing reported.
+    for (const p of [dir, settings, dataDir(dir), file]) chmodSync(p, p === file ? 0o600 : 0o700);
+    expect(looseStorePaths(dir)).toEqual([]);
+
+    // Loosen settings.json → it (and only it) is reported.
+    chmodSync(file, 0o644);
+    expect(looseStorePaths(dir)).toEqual([file]);
+  });
+
+  it('makes `aka init` print a warning when a mode could not be applied', async () => {
+    // macOS-only fault injection: chflags freezes the settings dir so init's
+    // tighten of settings.json fails, and init must surface that (data/ stays
+    // writable, so the store still initializes). No macOS CI, so this runs local.
+    if (process.platform !== 'darwin') return;
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const settings = settingsDir(dir);
+    mkdirSync(settings, { recursive: true });
+    writeFileSync(join(settings, 'settings.json'), '{}');
+    chmodSync(join(settings, 'settings.json'), 0o644);
+    execFileSync('chflags', ['uchg', settings]);
+    try {
+      await runInit(['--home', dir]);
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain('could not enforce owner-only permissions');
+    } finally {
+      execFileSync('chflags', ['nouchg', settings]); // so afterEach can clean up
+    }
   });
 });

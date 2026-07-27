@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
-import { walSidecars } from '../src/paths.ts';
 
 let dir: string;
 
@@ -95,9 +94,11 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // carry the same 0600 mode. They exist only while a WAL-mode handle is open
     // (a clean close checkpoints and removes them), so assert before closing.
     const db = openLocalDatabase(dir);
+    const dbFile = join(dir, 'aka.db');
     try {
       if (process.platform === 'win32') return;
-      for (const sidecar of walSidecars(join(dir, 'aka.db'))) {
+      // WAL mode creates exactly the -wal/-shm pair (no rollback -journal).
+      for (const sidecar of [`${dbFile}-wal`, `${dbFile}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
         expect(statSync(sidecar).mode & 0o777).toBe(0o600);
       }
@@ -119,7 +120,7 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     try {
       if (process.platform === 'win32') return;
       expect(statSync(file).mode & 0o777).toBe(0o600);
-      for (const sidecar of walSidecars(file)) {
+      for (const sidecar of [`${file}-wal`, `${file}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
         expect(statSync(sidecar).mode & 0o777).toBe(0o600);
       }

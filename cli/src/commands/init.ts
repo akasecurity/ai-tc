@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -25,6 +25,30 @@ import { runPlugins } from './plugins.ts';
 // The init plugin-offer copy, built from the canonical product identity single-sourced
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
+
+// The store paths whose owner-only mode could not be applied. `aka init` tightens
+// all of them; any that stay group/other-readable means the filesystem rejected
+// chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
+// control. The runtime tighten is silent to keep the fail-open hook path quiet;
+// this is the one place a failure is surfaced, because it is user-initiated and
+// actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
+export function looseStorePaths(home: string): string[] {
+  if (process.platform === 'win32') return [];
+  const targets = [
+    home,
+    settingsDir(home),
+    dataDir(home),
+    join(settingsDir(home), 'settings.json'),
+    dbPath(home),
+  ];
+  return targets.filter((p) => {
+    try {
+      return (statSync(p).mode & 0o077) !== 0; // any group/other bit → not owner-only
+    } catch {
+      return false; // absent → not a loose target
+    }
+  });
+}
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
@@ -80,6 +104,7 @@ export async function runInit(argv: string[]): Promise<void> {
     db.close();
   }
 
+  const loose = looseStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
       `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
@@ -87,6 +112,9 @@ export async function runInit(argv: string[]): Promise<void> {
       `  seeded ${String(policyCount)} default policies, ${String(packCount)} detection pack(s)\n` +
       (updatesAvailable > 0
         ? `  ⬆ ${String(updatesAvailable)} detection pack update(s) available — review with \`aka detections\`, apply with \`aka detections update --all\`\n`
+        : '') +
+      (loose.length > 0
+        ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
         : ''),
   );
 

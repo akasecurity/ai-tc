@@ -289,6 +289,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/extract',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
+  '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/scanner',

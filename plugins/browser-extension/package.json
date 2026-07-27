@@ -1,0 +1,35 @@
+{
+  "name": "@akasecurity/plugin-browser-extension",
+  "version": "0.8.0",
+  "description": "AI Traffic Control \u2014 inspect and govern AI prompts in ChatGPT and Claude.ai web chat",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akasecurity/ai-tc.git",
+    "directory": "plugins/browser-extension"
+  },
+  "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/browser-extension",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "lint": "eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "@types/chrome": "^0.1.15",
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.28.1",
+    "eslint": "^9.0.0",
+    "jsdom": "^27.1.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -18,6 +18,8 @@ import type {
   BuiltinPolicyId,
   DetectionException,
   DetectionListItem,
+  FirstRunCalibration,
+  SetupHandoffOffer,
 } from '@akasecurity/schema';
 import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
 import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
@@ -347,15 +349,28 @@ export function healthScore(summary: HealthSummary): number {
   return Math.round(100 * (0.6 * summary.coverage + 0.4 * handledRatio));
 }
 
-// The "First run" completion screen. Commands,
-// handling, findings and recommendations are real; `health` is the derived score
-// above. The host's input box and window chrome are not the plugin's to draw.
+// The "First run" completion screen. Posture, findings and
+// recommendations are real; `health` is the derived score above. The host's
+// input box and window chrome are not the plugin's to draw.
 export interface FirstRunSummary {
-  commands: string[];
-  handling: string;
+  // Whether the card followed a completed calibration scan or fell back to the
+  // severity floor with no scan run — the same signal that gates the dashboard
+  // handoff (`worthALook`) below. Drives the heading and the post-stats
+  // divider so the card never claims a scan that did not happen.
+  calibration: FirstRunCalibration;
+  // Per-category posture block (renderPosture's output) — the wizard's
+  // per-category policy read, one row per category. Optional/omittable: the
+  // read lives inside firstrun's fail-open try/catch, so a store that can't
+  // be read yet just hides the section rather than breaking the card.
+  posture?: string;
   health: number;
   findings: number;
   recommendations: number;
+  // The surfaced/important count carried over from the calibration
+  // preview — drives the 'N worth a look' dashboard handoff. Rendered only when
+  // it is a positive count; when nothing surfaced (0/undefined) the card omits
+  // the handoff line and its stats degrade to an honest empty-state.
+  worthALook?: number;
   // Highest-severity findings from the first scan, ranked + capped by topFindings.
   // Omitted (or empty) on a clean scan — the section is hidden then.
   topFindings?: FindingView[];
@@ -373,27 +388,82 @@ export function topFindings(findings: FindingView[], limit = 10): FindingView[] 
     .slice(0, limit);
 }
 
-export function renderFirstRun(s: FirstRunSummary): string {
-  const heading = '✓ AKA Security installed';
-
-  const details = defList([
-    ['Commands', s.commands.join(' · ')],
-    ['Handling', s.handling],
-  ]);
-
-  const stats = `Health ${String(s.health)}/100   Findings ${String(s.findings)}   Recommendations ${String(s.recommendations)}`;
-
-  const lines = [
-    heading,
-    '',
-    indent(details),
-    '',
-    indent('─'.repeat(RULE_WIDTH)),
-    '',
-    indent('First scan complete'),
-    '',
-    indent(stats),
+// The handoff-offer payload: the 'M worth a look' count the installed
+// summary hands to its handoff question, plus the offer options.
+// `worthALook` is the surfaced/important count the caller carries over from the
+// calibration preview (the sum across every category); `liveKeys` is the
+// narrower surfaced live-key secret count. Both are real store-derived values —
+// this builder never invents them. The prompt layer (the setup skill) asks the
+// question; this is the structured payload a harness reads to assert the offer.
+//
+// The chain-entry option is composed in ahead of the dashboard handoff exactly
+// when live-key secrets surfaced (`liveKeys > 0`), so remediation is reachable
+// without displacing Open dashboard / Not now. When no live keys surfaced — even
+// with other important findings present (`worthALook > 0`, `liveKeys` 0) — the
+// plain dashboard handoff stands alone — offered exactly when
+// live-key secrets surfaced, and never otherwise.
+export function buildHandoffOffer(worthALook: number, liveKeys: number): SetupHandoffOffer {
+  const dashboardHandoff: SetupHandoffOffer['options'] = [
+    { id: 'open-dashboard', label: 'Open dashboard' },
+    { id: 'not-now', label: 'Not now' },
   ];
+  if (liveKeys > 0) {
+    return {
+      worthALook,
+      liveKeys,
+      options: [{ id: 'enter-remediation', label: 'Review leaked keys' }, ...dashboardHandoff],
+    };
+  }
+  return { worthALook, options: dashboardHandoff };
+}
+
+// `registry` is the installed skill registry (readRegisteredSkills()),
+// resolved at the caller's I/O boundary and threaded in so this stays a pure
+// formatter: the Try line's curated set is validated against it here, and an
+// unregistered curated skill throws rather than rendering.
+export function renderFirstRun(s: FirstRunSummary, registry: readonly string[]): string {
+  // Path-honest heading: the scan-path copy claims a scan only when one ran.
+  // The floor path is reached for three different causes — a deliberate
+  // "Not now" decline, a scan that ran clean, or a genuine no-history/failed
+  // scan — and this function can't tell them apart, so the floor copy stays
+  // cause-neutral rather than naming a failure that may not have happened.
+  const heading =
+    s.calibration === 'scan'
+      ? "✓ You're all set — tuned to this machine."
+      : "✓ You're all set — I've started you on safe defaults. Rerun the aka-setup skill anytime to calibrate from Codex's activity.";
+
+  // Nothing-surfaced degradation: with no findings in the store the numeric
+  // Health/detections/recommendations triple would read as a scan tally over an
+  // empty result. The stats line becomes an honest empty-state instead — an
+  // explicit zero-state, never a fabricated count. (The dashboard handoff is
+  // withheld on the same nothing-surfaced footing below.)
+  const statRow = `Health ${String(s.health)}/100 · ${String(s.findings)} detections · ${String(s.recommendations)} recommendations`;
+  // A warm one-line summary rides above the stat row, but only on the scan
+  // path: the floor path never scanned anything, so it renders the stat row
+  // alone rather than claiming a review that did not happen.
+  const warmSummary =
+    s.calibration === 'scan'
+      ? `Your store holds ${String(s.findings)} detections — ${String(s.worthALook ?? 0)} worth your attention.`
+      : undefined;
+  const stats =
+    s.findings === 0
+      ? "Nothing needs your attention — you're starting clean."
+      : [warmSummary, statRow].filter((line): line is string => line !== undefined).join('\n');
+
+  const trySkills = selectRegisteredSkills(TRY_SKILLS, registry);
+  const lines = [heading, '', indent(stats), '', indent(`Try: ${trySkills.join(' · ')}`)];
+
+  // Per-category posture — hidden when unreadable (fail-open upstream leaves
+  // it undefined/empty) so the card degrades gracefully instead of showing an
+  // empty section.
+  if (s.posture !== undefined && s.posture.length > 0) {
+    lines.push('', indent('Posture'), '', indent(s.posture));
+  }
+
+  // The divider mirrors the heading's scan-vs-floor honesty: no scan ran on
+  // the floor path, so it never claims one completed.
+  const divider = s.calibration === 'scan' ? 'First scan complete' : 'Safe defaults in place';
+  lines.push('', indent('─'.repeat(RULE_WIDTH)), '', indent(divider));
 
   // Top findings — a compact, severity-ranked glance at what the first scan
   // caught. Hidden on a clean scan so the card stays a tidy success state.
@@ -419,7 +489,18 @@ export function renderFirstRun(s: FirstRunSummary): string {
     );
   }
 
-  lines.push('', indent('Opening your health dashboard… use the aka-health skill anytime'));
+  // Dashboard handoff — the 'N worth a look' offer over the real surfaced count,
+  // pairing the question the prompt layer asks (Open dashboard / Not now).
+  // Shown only when something surfaced; when nothing surfaced a 0/absent
+  // count omits the line entirely rather than fabricating a '0 worth a look'.
+  if (s.worthALook !== undefined && s.worthALook > 0) {
+    lines.push(
+      '',
+      indent(`${String(s.worthALook)} worth a look — want to see them in the browser?`),
+      indent('Open dashboard · Not now'),
+    );
+  }
+
   return lines.join('\n');
 }
 

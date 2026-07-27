@@ -1,18 +1,42 @@
+import { randomUUID } from 'node:crypto';
+
+import type { FindingView } from '@akasecurity/plugin-sdk';
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
+import { SetupHandoffOffer } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildHandoffOffer,
   RE_TUNE_HINT,
   renderAdjustConfirm,
   renderApplied,
   renderCategoriesTuned,
+  renderFirstRun,
   renderPosture,
   renderPostureGrid,
   renderRecommendedPosture,
   renderStartLight,
+  topFindings,
 } from '../src/render.ts';
 import { readRegisteredSkills } from '../src/skills-registry.ts';
+
+function finding(overrides: Partial<FindingView> = {}): FindingView {
+  return {
+    id: randomUUID(),
+    eventId: randomUUID(),
+    ruleId: 'secrets/aws-access-key',
+    category: 'secret',
+    severity: 'critical',
+    maskedMatch: 'AKIA…MPLE',
+    actionTaken: 'block',
+    confidence: 0.9,
+    occurredAt: '2026-06-19T11:14:53.000Z',
+    sourceTool: 'codex',
+    kind: 'prompt',
+    ...overrides,
+  };
+}
 
 describe('renderPosture', () => {
   it('lists each category with its action, aligned', () => {
@@ -290,7 +314,9 @@ describe('renderAdjustConfirm — adjust-confirm table', () => {
         secret: 'block',
         config: 'redact',
       });
-      expect(out).toContain('Heads up — this would lower 2 detection levels (secret, config) below');
+      expect(out).toContain(
+        'Heads up — this would lower 2 detection levels (secret, config) below',
+      );
     });
 
     it('stays silent when every pick is the same or stronger than the stored action', () => {
@@ -394,5 +420,255 @@ describe('renderApplied — applying confirmation', () => {
     expect(renderCategoriesTuned(packCount)).toBe('✓ Set all 8 detection categories');
     // Same phrase renderApplied composes — single-sourced, so the two can't drift.
     expect(renderApplied(packCount, 5, REGISTRY)).toContain(renderCategoriesTuned(packCount));
+  });
+});
+
+describe('renderFirstRun — installed card', () => {
+  // The skill names the shipped plugin registers — the Try line must never
+  // outrun this set, since a named skill with no matching SKILL.md would not
+  // resolve when the user invokes it. Read from disk (never a hardcoded copy)
+  // so a renamed or removed skill is caught here.
+  const REGISTRY = readRegisteredSkills();
+  const REGISTERED = new Set(REGISTRY);
+
+  const populated = (over: Partial<Parameters<typeof renderFirstRun>[0]> = {}): string =>
+    renderFirstRun(
+      {
+        calibration: 'scan',
+        posture: renderPosture([
+          { category: 'secret', action: 'redact' },
+          { category: 'code_context', action: 'log' },
+        ]),
+        health: 72,
+        findings: 142,
+        recommendations: 6,
+        worthALook: 2,
+        topFindings: [
+          finding({
+            ruleId: 'secrets/aws-access-key',
+            category: 'secret',
+            severity: 'critical',
+          }),
+        ],
+        ...over,
+      },
+      REGISTRY,
+    );
+
+  it('scan path: heading reads "You\'re all set — tuned to this machine."', () => {
+    const out = populated({ calibration: 'scan' });
+    expect(out).toContain("✓ You're all set — tuned to this machine.");
+    // The floor-path heading never leaks onto the scan path.
+    expect(out).not.toContain('safe defaults');
+  });
+
+  it('scan path: divider reads "First scan complete"', () => {
+    const out = populated({ calibration: 'scan' });
+    expect(out).toContain('First scan complete');
+    expect(out).not.toContain('Safe defaults in place');
+  });
+
+  it('floor path: heading reads the cause-neutral no-scan fallback copy', () => {
+    const out = populated({ calibration: 'floor' });
+    expect(out).toContain(
+      "✓ You're all set — I've started you on safe defaults. Rerun the aka-setup skill anytime to calibrate from Codex's activity.",
+    );
+    // The scan-path heading never leaks onto the floor path.
+    expect(out).not.toContain('tuned to this machine');
+  });
+
+  it('floor path: divider reads "Safe defaults in place" (no scan ran)', () => {
+    const out = populated({ calibration: 'floor' });
+    expect(out).toContain('Safe defaults in place');
+    expect(out).not.toContain('First scan complete');
+  });
+
+  it('stats line templates the real health · detections · recommendations, never a fixed literal', () => {
+    const out = populated();
+    expect(out).toContain('Health 72/100');
+    expect(out).toContain('142 detections');
+    expect(out).toContain('6 recommendations');
+    // A different set of real values flows straight through — proof it is
+    // templated over the store, not a baked-in literal.
+    const other = populated({ health: 91, findings: 3, recommendations: 1 });
+    expect(other).toContain('Health 91/100');
+    expect(other).toContain('3 detections');
+    expect(other).toContain('1 recommendations');
+    // The fixed sample numbers never appear.
+    expect(out).not.toContain('82/100');
+    expect(out).not.toContain('40 findings');
+  });
+
+  it('scan path: a warm summary line rides above the stat row, over the real counts', () => {
+    const out = populated({ findings: 142, worthALook: 2, calibration: 'scan' });
+    expect(out).toContain('Your store holds 142 detections — 2 worth your attention.');
+    // A different set of real values flows straight through.
+    const other = populated({ findings: 9, worthALook: 4, calibration: 'scan' });
+    expect(other).toContain('Your store holds 9 detections — 4 worth your attention.');
+  });
+
+  it('floor path: no warm summary line — the floor path never scanned anything', () => {
+    const out = populated({ calibration: 'floor' });
+    expect(out).not.toContain('Your store holds');
+    // The stat row still renders over the real store counts.
+    expect(out).toContain('Health 72/100');
+    expect(out).toContain('142 detections');
+    expect(out).toContain('6 recommendations');
+  });
+
+  it('shows the posture line the user chose', () => {
+    const out = populated();
+    expect(out).toContain('Posture');
+    expect(out).toContain('secret');
+    expect(out).toContain('redact');
+    // 'log' (ActionTaken) surfaces to the user as 'monitor'.
+    expect(out).toContain('monitor');
+  });
+
+  it("renders the '2 worth a look' handoff with the real surfaced count and the Open dashboard / Not now framing", () => {
+    const out = populated({ worthALook: 2 });
+    expect(out).toContain('2 worth a look — want to see them in the browser?');
+    expect(out).toContain('Open dashboard');
+    expect(out).toContain('Not now');
+    // The count is the surfaced value, echoed — a different count flows through.
+    expect(populated({ worthALook: 5 })).toContain('5 worth a look');
+  });
+
+  it('the Try line names only skills the plugin actually registers, by their declared names', () => {
+    const out = populated();
+    const tryLine = out.split('\n').find((l) => l.includes('Try:'));
+    expect(tryLine).toBeDefined();
+    const named = tryLine?.match(/aka-[a-z]+/g) ?? [];
+    // The line actually names skills (guards against an empty match passing).
+    expect(named.length).toBeGreaterThan(0);
+    for (const skill of named) {
+      expect(REGISTERED.has(skill)).toBe(true);
+    }
+    // The not-yet-shipped rename targets do not exist yet — the Try line must not print them.
+    expect(out).not.toContain('aka-secretscan');
+    expect(out).not.toContain('aka-codescan');
+  });
+
+  it('builds the Try line through the registry mechanism — an unregistered curated skill throws', () => {
+    // The Try line's curated set is validated against the registry, not
+    // free-printed: a registry missing one of its curated skills fails loud
+    // rather than rendering a call-to-action the user cannot invoke.
+    const withoutDashboard = REGISTRY.filter((s) => s !== 'aka-dashboard');
+    expect(() =>
+      renderFirstRun(
+        { calibration: 'floor', health: 72, findings: 0, recommendations: 0 },
+        withoutDashboard,
+      ),
+    ).toThrow(/aka-dashboard/);
+  });
+
+  it('clean scan hides the Top findings section', () => {
+    const out = populated({ topFindings: [], worthALook: 0 });
+    expect(out).not.toContain('Top findings');
+  });
+
+  it('nothing surfaced — stats degrade to an honest empty-state, no fabricated count, card stays tidy', () => {
+    // No scan surfaced anything: no worthALook, an empty store (0 findings /
+    // recommendations), a clean scan (no top findings). The card degrades
+    // honestly — the numeric stats triple becomes explicit empty-state copy
+    // rather than a bare '0 detections · 0 recommendations' scan tally, and the
+    // dashboard handoff is withheld (never a fabricated '0 worth a look').
+    const out = renderFirstRun(
+      {
+        calibration: 'scan',
+        posture: renderPosture([{ category: 'secret', action: 'redact' }]),
+        health: 40,
+        findings: 0,
+        recommendations: 0,
+        topFindings: [],
+        // worthALook intentionally omitted — nothing surfaced.
+      },
+      REGISTRY,
+    );
+
+    // No fabricated dashboard handoff, no bare numeric scan tally, and no
+    // fabricated warm-summary claim of a review over zero detections.
+    expect(out).not.toContain('worth a look');
+    expect(out).not.toContain('0 detections');
+    expect(out).not.toContain('0 recommendations');
+    expect(out).not.toContain('Your store holds');
+    // Instead, an explicit honest empty-state line.
+    expect(out).toContain("you're starting clean");
+    // The card still reads as a tidy success state: scan-path heading + posture.
+    expect(out).toContain("You're all set — tuned to this machine.");
+    expect(out).toContain('Posture');
+    expect(out).toContain('secret');
+    expect(out).toContain('redact');
+  });
+
+  it('lists the top findings table when the scan caught something', () => {
+    const out = populated({
+      topFindings: [
+        finding({ ruleId: 'secrets/aws-access-key', category: 'secret', severity: 'critical' }),
+        finding({ ruleId: 'pii/email', category: 'pii', severity: 'low' }),
+      ],
+    });
+    expect(out).toContain('Top findings (2)');
+    expect(out).toContain('secrets/aws-access-key');
+    expect(out).toContain('pii/email');
+    // The masked match shows; the raw secret never does (finding() masks it).
+    expect(out).toContain('AKIA…MPLE');
+  });
+});
+
+describe('buildHandoffOffer — the structured handoff payload', () => {
+  it('live-key branch — chain entry composed with the dashboard handoff', () => {
+    // 5 surfaced important findings, 3 of them live-key secrets.
+    const offer = buildHandoffOffer(5, 3);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
+    // Both counts are whatever the caller derived from the store — echoed, not invented.
+    expect(offer.worthALook).toBe(5);
+    expect(offer.liveKeys).toBe(3);
+    // A surfaced live-key count composes the chain-entry option AHEAD of — never
+    // in place of — the dashboard handoff.
+    expect(offer.options).toEqual([
+      { id: 'enter-remediation', label: 'Review leaked keys' },
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('important-but-no-secrets — surfaced findings without live keys offer no remediation', () => {
+    // 3 surfaced important findings, none of them live-key secrets: the gate is
+    // the live-key count, NOT the all-category surfaced count, so no chain entry.
+    const offer = buildHandoffOffer(3, 0);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
+    expect(offer.worthALook).toBe(3);
+    // No live keys → no remediation offered, just the dashboard handoff.
+    expect(offer.options).toEqual([
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+
+  it('honest zero — a clean store carries a real 0, plain dashboard handoff only', () => {
+    const offer = buildHandoffOffer(0, 0);
+    expect(SetupHandoffOffer.safeParse(offer).success).toBe(true);
+    expect(offer.worthALook).toBe(0);
+    // Nothing surfaced → no remediation offered, just the dashboard handoff.
+    expect(offer.options).toEqual([
+      { id: 'open-dashboard', label: 'Open dashboard' },
+      { id: 'not-now', label: 'Not now' },
+    ]);
+  });
+});
+
+describe('topFindings', () => {
+  it('ranks by severity then recency, capped to the limit', () => {
+    const ranked = topFindings(
+      [
+        finding({ ruleId: 'low-old', severity: 'low', occurredAt: '2026-06-19T08:00:00.000Z' }),
+        finding({ ruleId: 'crit', severity: 'critical', occurredAt: '2026-06-19T09:00:00.000Z' }),
+        finding({ ruleId: 'high-old', severity: 'high', occurredAt: '2026-06-19T08:00:00.000Z' }),
+        finding({ ruleId: 'high-new', severity: 'high', occurredAt: '2026-06-19T10:00:00.000Z' }),
+      ],
+      3,
+    );
+    expect(ranked.map((f) => f.ruleId)).toEqual(['crit', 'high-new', 'high-old']);
   });
 });

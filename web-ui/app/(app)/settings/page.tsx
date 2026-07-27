@@ -13,10 +13,7 @@ export default function SettingsPage() {
 
   return (
     <div className="px-8 pb-10 pt-7">
-      <PageHead
-        title="Settings"
-        sub="Workspace configuration — the same knobs as the /aka:setup wizard, applied on the next hook"
-      />
+      <PageHead title="Settings" sub="Workspace configuration for this machine." />
       <SettingsClient settings={settings} />
     </div>
   );

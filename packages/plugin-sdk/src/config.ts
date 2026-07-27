@@ -1,12 +1,16 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
   applyOnboarding,
   defaultDataDir,
   migrateLegacyLayout,
   readWorkspaceSettings,
+  tightenFile,
 } from '@akasecurity/persistence';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 
-import { dataDir, dbPath, settingsDir } from './data-dir.ts';
+import { dataDir, dbPath, ensureDataDirSync, settingsDir } from './data-dir.ts';
 import type { ResolvedProvider } from './provider.ts';
 import { resolveProvider } from './provider.ts';
 
@@ -40,6 +44,22 @@ export interface PluginConfig {
  * or corrupt settings.json yields unonboarded defaults rather than throwing.
  */
 export function loadConfig(base: string = defaultDataDir()): PluginConfig {
+  // Self-heal the store's at-rest modes on the plugin's entry path, so a
+  // group/other-readable base or settings.json left by an older release (or the
+  // pre-fix leftover-.tmp bug) is repaired on the next hook — the read-path
+  // equivalent of the key self-healing on load and the db on open. Kept here, not
+  // in readWorkspaceSettings, so that reader stays pure and a web-ui page render
+  // never chmods. Best-effort and fail-open — a hook must never break on a home
+  // it can't create.
+  try {
+    // openLocalDatabase only ensures the data/ leaf, so the base itself is
+    // tightened here (creating it if absent).
+    ensureDataDirSync(base);
+    const settingsFile = join(settingsDir(base), 'settings.json');
+    if (existsSync(settingsFile)) tightenFile(settingsFile);
+  } catch {
+    // fail-open: the readers below treat a missing home as unonboarded defaults
+  }
   // First touch migrates any pre-layout flat files into settings/ (best-effort).
   migrateLegacyLayout(base);
   const settings = readWorkspaceSettings(base);

@@ -10,10 +10,10 @@
 // full data-dir access has both file and key by construction. The key material
 // must never be logged, surfaced, or shipped anywhere.
 import { createHmac, randomBytes } from 'node:crypto';
-import { chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { DATA_FILE_MODE, ensureDataDirSync } from './paths.ts';
+import { ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
 
 export interface FingerprintKey {
   version: number;
@@ -50,20 +50,13 @@ function parseKeyFile(raw: string): FingerprintKey {
   return { version, material: bytes };
 }
 
-// Atomic write (tmp + rename) with owner-only mode; chmod after the rename too,
-// so a key file that pre-existed with looser permissions is tightened.
+// Owner-only atomic write (tmp + rename), so a key file that pre-existed with
+// looser permissions ends 0600 rather than carrying its mode through the rename.
 function writeKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
   ensureDataDirSync(dataDir);
   const file = keyFilePath(dataDir);
-  const tmp = `${file}.tmp`;
   const body = JSON.stringify({ version: key.version, material: key.material.toString('base64') });
-  writeFileSync(tmp, `${body}\n`, { mode: DATA_FILE_MODE });
-  renameSync(tmp, file);
-  try {
-    chmodSync(file, DATA_FILE_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
-  }
+  writeOwnerOnlyFileSync(file, `${body}\n`);
   return key;
 }
 
@@ -93,11 +86,9 @@ export function readFingerprintKey(dataDir: string): FingerprintKey | null {
 export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
   const existing = readFingerprintKey(dataDir);
   if (existing) {
-    try {
-      chmodSync(keyFilePath(dataDir), DATA_FILE_MODE);
-    } catch {
-      // best-effort: platform without POSIX modes, or not owned by us
-    }
+    // Re-tighten to 0600 on load, covering a key written before the mode was
+    // enforced at write time. Best-effort — never mints a replacement.
+    tightenFile(keyFilePath(dataDir));
     return existing;
   }
   return writeKeyFile(dataDir, { version: 1, material: randomBytes(KEY_MATERIAL_BYTES) });

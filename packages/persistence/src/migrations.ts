@@ -15,6 +15,7 @@ import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
 import { bindParams } from './internal/rows.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
+import { tightenFile } from './paths.ts';
 
 // --- migration-DDL introspection --------------------------------------------
 // drizzle's generated SQLite DDL is rigidly formatted — backtick-quoted
@@ -299,6 +300,10 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
 export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
   const backup = `${file}.pre-drop.${String(Date.now())}.bak`;
   db.prepare('VACUUM INTO ?').run(backup);
+  // VACUUM INTO writes a brand-new file at the process umask (typically 0644),
+  // but it is a full copy of the prompt corpus, so tighten it to the store's
+  // own 0600.
+  tightenFile(backup);
   return backup;
 }
 

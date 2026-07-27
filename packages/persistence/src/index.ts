@@ -38,7 +38,9 @@ export {
   DATA_FILE_MODE,
   DB_FILENAME,
   ensureDataDirSync,
+  tightenFile,
   tightenPerms,
+  writeOwnerOnlyFileSync,
 } from './paths.ts';
 export type {
   ActivityReadPort,

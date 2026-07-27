@@ -37,8 +37,9 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
   };
 });
 
+import { deriveProvider } from '@akasecurity/setup-wizard';
+
 import { redactSurfacedSecrets } from '../../src/remediation/surfaced-redact.ts';
-import { deriveProvider } from '../../src/triage/surfaced-secrets.ts';
 
 // The PRODUCTION redaction adapter: unlike `redactLeakedKeys`,
 // which trusts whatever `RedactionScope` a caller builds, `redactSurfacedSecrets`

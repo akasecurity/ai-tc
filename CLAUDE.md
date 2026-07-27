@@ -345,6 +345,13 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
+@akasecurity/setup-wizard   → @akasecurity/persistence, plugin-sdk, schema, zod
+                     (the harness-agnostic core of the /aka:setup calibration →
+                     triage → remediation flow: pure logic plus dependency-injected
+                     orchestration. It must NEVER name a host command, hardcode a
+                     transcript location, or spawn a judge — each plugin supplies
+                     those at its own I/O boundary, which is what lets multiple
+                     harness plugins share this without forking it.)
 ```
 
 **Cross-cutting rules:**

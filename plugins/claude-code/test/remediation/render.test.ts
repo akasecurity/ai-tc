@@ -1,12 +1,9 @@
 import { MaskedSecretFinding, type RotationChecklistEntry } from '@akasecurity/schema';
+import { renderRedactionOutcome, renderResolvedSummary } from '@akasecurity/setup-wizard';
+import { renderChecklistMarkdown } from '@akasecurity/setup-wizard';
 import { describe, expect, it } from 'vitest';
 
-import {
-  renderRedactionOutcome,
-  renderRemediationDecision,
-  renderResolvedSummary,
-} from '../../src/remediation/render.ts';
-import { renderChecklistMarkdown } from '../../src/remediation/rotation-checklist.ts';
+import { renderRemediationDecision } from '../../src/remediation/render.ts';
 
 // The RAW_* constants are what the underlying leak actually contains; each
 // fixture's `maskedToken` is the masked preview of the SAME raw value (raw prefix

@@ -1,0 +1,27 @@
+{
+  "name": "@akasecurity/setup-wizard",
+  "version": "0.8.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint src test *.config.*",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@types/node": "^24.13.3",
+    "eslint": "^9.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
+  }
+}

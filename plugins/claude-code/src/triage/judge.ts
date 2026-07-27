@@ -29,8 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 import { maskText } from '@akasecurity/plugin-sdk';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
-
-import { parseRecommendation } from './parse-verdict.ts';
+import { parseRecommendation } from '@akasecurity/setup-wizard';
 
 const TRIAGE_DIR = dirname(fileURLToPath(import.meta.url));
 // src/triage/judge.ts -> plugins/claude-code/eval/prompt.md

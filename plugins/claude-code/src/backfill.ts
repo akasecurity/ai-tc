@@ -25,6 +25,7 @@ import {
   type PluginConfig,
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, TriageHit } from '@akasecurity/schema';
+import { TRIAGE_STATUSES } from '@akasecurity/setup-wizard';
 
 import { scanHistory, type ScanSummary } from './history/scan.ts';
 import { scrubTranscriptTail } from './history/tail-scrub.ts';
@@ -43,8 +44,11 @@ import { platformRedactionScope } from './remediation/redact.ts';
 //   skipped:no-consent  — consent wasn't 'full'; an empty-but-intentional scan.
 // A truncated stream has no sentinel, so it is never mistaken for a real
 // zero-finding scan (which ends in status:"complete","count":0).
-// The set MUST stay in lockstep with the writeback.ts TRIAGE_STATUSES set.
-export const TRIAGE_STATUSES = ['complete', 'complete:no-history', 'skipped:no-consent'] as const;
+//
+// The vocabulary itself is owned by @akasecurity/setup-wizard, which holds the
+// CONSUMER (parseTriageStream). This producer re-exports it rather than
+// declaring its own copy, so the two cannot drift.
+export { TRIAGE_STATUSES };
 export type TriageStatus = (typeof TRIAGE_STATUSES)[number];
 
 export function triageSentinel(count: number, status: TriageStatus): string {

@@ -12,12 +12,12 @@ import {
   CalibrationFrame,
   DetectionCategory as DetectionCategorySchema,
 } from '@akasecurity/schema';
+import { readPlanFile, writePlanFile } from '@akasecurity/setup-wizard';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { parseSurface } from '../../src/setup-show.ts';
 import { runApply } from '../../src/triage/adapter.ts';
-import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';

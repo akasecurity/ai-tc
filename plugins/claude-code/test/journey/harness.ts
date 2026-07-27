@@ -262,6 +262,14 @@ export class SetupJourney {
     return this.run('onboard.js', ['--model-judge-consent']);
   }
 
+  // Consent side effect — record or clear the reversible-vault grant. `grant`
+  // stamps the acknowledgment inside onboard.js itself; `revoke` removes the
+  // stored grant (future vaulting stops, already-vaulted entries remain until
+  // purged).
+  onboardVaultConsent(action: 'grant' | 'revoke'): StepResult {
+    return this.run('onboard.js', ['--vault-consent', action]);
+  }
+
   // Out-of-band posture write, e.g. a pack the user hardened before running the
   // wizard — used to prove the confirm write never downgrades it.
   onboardPosture(posture: Record<string, string>): StepResult {

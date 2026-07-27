@@ -30,11 +30,14 @@ import type { EventKind } from '@akasecurity/schema';
 
 // One scannable unit pulled from a transcript. `occurredAt` is the record's own
 // ISO timestamp so a recorded finding lands on the timeline when it really
-// leaked, not at scan time.
+// leaked, not at scan time. `filePath` is the rollout file this text came from
+// ('' when parsed from an in-memory string), carried through so a surfaced
+// finding can later be located and struck in place.
 export interface ScannedMessage {
   kind: EventKind; // 'prompt' (a user turn) | 'response' (an assistant reply)
   text: string;
   occurredAt: string;
+  filePath: string;
 }
 
 // Where Codex CLI writes its rollout files. Codex itself honors a CODEX_HOME
@@ -73,10 +76,17 @@ function extractContentText(content: unknown): string {
 }
 
 // Parse one rollout file's contents (newline-delimited JSON) for prompt/response
-// text. `sinceMs` drops records older than the retention window. Malformed
-// lines are skipped, never thrown — a truncated/partial rollout must not abort
-// the scan.
-export function parseTranscript(jsonl: string, sinceMs = 0): ScannedMessage[] {
+// text. `sinceMs` drops records older than the retention window; `beforeMs`
+// (when set) is an UPPER bound that drops records at/after it — the setup-start
+// cutoff, so the wizard's own (masked) output, written during onboarding, is
+// never fed back into the scan. Malformed lines are skipped, never thrown — a
+// truncated/partial rollout must not abort the scan.
+export function parseTranscript(
+  jsonl: string,
+  sinceMs = 0,
+  beforeMs = Infinity,
+  filePath = '',
+): ScannedMessage[] {
   const out: ScannedMessage[] = [];
   for (const line of jsonl.split('\n')) {
     const trimmed = line.trim();
@@ -94,6 +104,10 @@ export function parseTranscript(jsonl: string, sinceMs = 0): ScannedMessage[] {
     const occurredMs = Date.parse(occurredAt);
     if (Number.isNaN(occurredMs)) continue;
     if (sinceMs > 0 && occurredMs < sinceMs) continue;
+    // Setup-start upper bound: drop anything at/after the cutoff so a re-run
+    // backfill never re-scans post-install messages — the wizard's own masked
+    // output among them. Default Infinity keeps normal scans unbounded.
+    if (occurredMs >= beforeMs) continue;
 
     const payload = rec.payload;
     if (!isRecord(payload) || payload.type !== 'message') continue;
@@ -101,7 +115,7 @@ export function parseTranscript(jsonl: string, sinceMs = 0): ScannedMessage[] {
     if (role !== 'user' && role !== 'assistant') continue;
     const text = extractContentText(payload.content);
     if (text.trim() === '') continue;
-    out.push({ kind: role === 'user' ? 'prompt' : 'response', text, occurredAt });
+    out.push({ kind: role === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
   }
   return out;
 }
@@ -481,6 +495,10 @@ export interface HistoryWalkOptions {
   dir?: string; // override the transcripts root (tests)
   windowDays?: number; // retention window; default 30
   now?: number; // clock injection (tests); default Date.now()
+  // Self-contamination guard (secret-scan path only). OFF by default, so a
+  // normal user's full pre-install history is still scanned; it engages only
+  // for AKA's OWN setup session.
+  beforeMs?: number; // setup-start upper bound: drop messages at/after this ms
 }
 
 // Recursively collect rollout file paths under the year/month/day-sharded
@@ -509,12 +527,12 @@ function* walkJsonlFiles(dir: string, depth = 0): Generator<string> {
   }
 }
 
-function* iterateFileContents(dir: string): Generator<string> {
-  for (const file of walkJsonlFiles(dir)) {
+function* iterateFileContents(dir: string): Generator<{ content: string; filePath: string }> {
+  for (const filePath of walkJsonlFiles(dir)) {
     try {
       // Skip anything the walk can't stat (broken symlink) before the read.
-      statSync(file);
-      yield readFileSync(file, 'utf8');
+      statSync(filePath);
+      yield { content: readFileSync(filePath, 'utf8'), filePath };
     } catch {
       // Unreadable file — skip, same fail-open contract as the rest of the walk.
     }
@@ -528,15 +546,16 @@ function windowStartMs(opts: Pick<HistoryWalkOptions, 'windowDays' | 'now'>): nu
 
 export function* iterateHistory(opts: HistoryWalkOptions = {}): Generator<ScannedMessage> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir()))
-    yield* parseTranscript(content, sinceMs);
+  const beforeMs = opts.beforeMs ?? Infinity;
+  for (const { content, filePath } of iterateFileContents(opts.dir ?? transcriptsDir()))
+    yield* parseTranscript(content, sinceMs, beforeMs, filePath);
 }
 
 export function* iterateUsage(
   opts: Pick<HistoryWalkOptions, 'dir' | 'windowDays' | 'now'> = {},
 ): Generator<UsageRecord> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir()))
+  for (const { content } of iterateFileContents(opts.dir ?? transcriptsDir()))
     yield* parseTranscriptUsage(content, sinceMs);
 }
 
@@ -544,7 +563,7 @@ export function* iterateUsageAndToolCalls(
   opts: Pick<HistoryWalkOptions, 'dir' | 'windowDays' | 'now'> = {},
 ): Generator<{ usage: UsageRecord[]; toolCalls: ToolCallRecord[] }> {
   const sinceMs = windowStartMs(opts);
-  for (const content of iterateFileContents(opts.dir ?? transcriptsDir())) {
+  for (const { content } of iterateFileContents(opts.dir ?? transcriptsDir())) {
     yield {
       usage: parseTranscriptUsage(content, sinceMs),
       toolCalls: parseTranscriptToolCalls(content, sinceMs),

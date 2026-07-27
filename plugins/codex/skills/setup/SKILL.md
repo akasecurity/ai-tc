@@ -66,8 +66,8 @@ Invariants:
 
 Run the intro script and relay its AKA_SHOW region per the execution contract:
 paste the content between the markers verbatim, never the marker lines. It
-prints a single space-aligned monospace card — identity and provenance, then
-what AKA does — inside a Markdown code fence that is part of that pasted
+prints a single space-aligned monospace card — name, repository, version, and
+what AKA adds — inside a Markdown code fence that is part of that pasted
 content. Keep the fence as printed and do **not** add another code fence, strip
 the fence, or reformat it (unfenced, Markdown collapses the indentation and
 mangles the `●` lines).

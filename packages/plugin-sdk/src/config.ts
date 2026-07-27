@@ -13,6 +13,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import { dataDir, dbPath, ensureDataDirSync, settingsDir } from './data-dir.ts';
 import type { ResolvedProvider } from './provider.ts';
 import { resolveProvider } from './provider.ts';
+import type { ResolvedCodexProvider } from './provider-codex.ts';
 
 // The settings file readers and writer live in @akasecurity/persistence
 // (shared with the CLI and the web-ui); re-exported so the SDK's public
@@ -29,21 +30,33 @@ export interface PluginConfig {
   settingsDir: string;
   // True once /aka:setup has recorded onboardedAt — drives the first-run nudge.
   onboarded: boolean;
-  // The provider backend this session talks to (anthropic | bedrock | vertex |
-  // gateway), resolved from the contemporaneous env via ./provider.ts. Resolved
-  // here so SessionStart can snapshot it onto the
-  // session-root as an immutable per-session fact (it can't reach the reconciler,
-  // which runs detached without the session's env).
-  provider: ResolvedProvider;
+  // The provider backend this session talks to, resolved from the
+  // contemporaneous env via ./provider.ts (Claude Code: anthropic | bedrock |
+  // vertex | gateway) or ./provider-codex.ts (Codex CLI: openai | gateway) —
+  // whichever resolver `loadConfig`'s caller passed. Resolved here so
+  // SessionStart can snapshot it onto the session-root as an immutable
+  // per-session fact (it can't reach the reconciler, which runs detached
+  // without the session's env).
+  provider: ResolvedProvider | ResolvedCodexProvider;
 }
 
 /**
- * Load the plugin config from ~/.aka. Env vars can't reach hooks (Claude Code
+ * Load the plugin config from ~/.aka. Env vars can't reach hooks (the host
  * spawns them as bare processes), so a file is the only channel; read fresh on
  * every call because hook processes are short-lived. Fully fail-open: a missing
  * or corrupt settings.json yields unonboarded defaults rather than throwing.
+ *
+ * `resolveProviderFn` defaults to Claude Code's `resolveProvider` for
+ * backward compatibility with every existing call site — the Codex plugin's
+ * SessionStart hook is the one place that needs to pass `resolveCodexProvider`
+ * explicitly (see plugins/codex/src/hooks/session-start.ts). Every other hook
+ * loads config for its data dir / settings only and never reads `.provider`,
+ * so the default is harmless there even though it's Claude-shaped.
  */
-export function loadConfig(base: string = defaultDataDir()): PluginConfig {
+export function loadConfig(
+  base: string = defaultDataDir(),
+  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider = resolveProvider,
+): PluginConfig {
   // Self-heal the store's at-rest modes on the plugin's entry path, so a
   // group/other-readable base or settings.json left by an older release (or the
   // pre-fix leftover-.tmp bug) is repaired on the next hook — the read-path
@@ -69,19 +82,23 @@ export function loadConfig(base: string = defaultDataDir()): PluginConfig {
     dbPath: dbPath(base),
     settingsDir: settingsDir(base),
     onboarded: settings.onboardedAt != null,
-    provider: resolveProviderSafe(),
+    provider: resolveProviderSafe(resolveProviderFn),
   };
 }
 
 /**
- * Resolve the provider from env, fail-safe. `resolveProvider` is already lenient
- * (it parses {} on a bad env), but we wrap it once more so a config load — on the
- * fail-open hook path — can never throw on an unexpected error; default to
- * Anthropic-direct, matching the module's fail-open style.
+ * Run the given resolver fail-safe. Both `resolveProvider` and
+ * `resolveCodexProvider` are already lenient (they parse {} on a bad env),
+ * but we wrap once more so a config load — on the fail-open hook path — can
+ * never throw on an unexpected error; default to Anthropic-direct, matching
+ * the module's original fail-open default (harmless for a Codex caller too,
+ * since this branch is only reached on a genuinely unexpected resolver bug).
  */
-function resolveProviderSafe(): ResolvedProvider {
+function resolveProviderSafe(
+  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider,
+): ResolvedProvider | ResolvedCodexProvider {
   try {
-    return resolveProvider();
+    return resolveProviderFn();
   } catch {
     return { provider: 'anthropic' };
   }

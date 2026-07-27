@@ -15,6 +15,7 @@ coverage
 
 .DS_Store
 plugins/claude-code/scripts/
+plugins/codex/scripts/
 
 # written by tools/audit-gate on every run, always at the repo root
 /audit-report.md

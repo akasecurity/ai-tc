@@ -22,4 +22,13 @@ export default [
       'n/no-process-env': 'off',
     },
   },
+  {
+    // provider-codex.ts is the Codex CLI counterpart: resolves the LLM
+    // provider from the host process env at SessionStart (OPENAI_BASE_URL).
+    // Same file-scoped opt-out as provider.ts above.
+    files: ['src/provider-codex.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
 ];

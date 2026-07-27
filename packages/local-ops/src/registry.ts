@@ -10,16 +10,21 @@ export interface AgentPlugin {
   name: string;
   sourceTool: SourceTool;
   description: string;
-  // Install/update coordinates — present for agents distributed through the Claude
-  // Code plugin marketplace. `npmPackage` is the registry package the marketplace
-  // resolves (used for `npm view <pkg> version` to learn the latest version);
-  // `pluginName`@`marketplace` is the ref `claude plugin install|update` expects; and
-  // `marketplaceSource` is the GitHub repo to `claude plugin marketplace add` if the
-  // marketplace isn't registered yet. Absent for agents installed by other means.
+  // Install/update coordinates — present for agents distributed through a host
+  // CLI's own plugin marketplace. `npmPackage` is the registry package the
+  // marketplace resolves (used for `npm view <pkg> version` to learn the latest
+  // version); `pluginName`@`marketplace` is the ref `<cliBin> plugin install|
+  // update` expects; and `marketplaceSource` is the GitHub repo to `<cliBin>
+  // plugin marketplace add` if the marketplace isn't registered yet. Absent for
+  // agents installed by other means.
   npmPackage?: string;
   pluginName?: string;
   marketplace?: string;
   marketplaceSource?: string;
+  // Which host CLI binary's plugin manager `apply.ts` should shell out to for
+  // this agent's install/update coordinates. Only meaningful when the
+  // coordinates above are present.
+  cliBin?: 'claude' | 'codex';
 }
 
 export const AGENT_PLUGINS: readonly AgentPlugin[] = [
@@ -33,6 +38,26 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     pluginName: 'ai-tc',
     marketplace: 'akasecurity',
     marketplaceSource: 'akasecurity/marketplace',
+    cliBin: 'claude',
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    sourceTool: 'codex',
+    description:
+      'Hooks Codex CLI sessions to detect + redact sensitive data in prompts, responses, and Bash tool calls.',
+    npmPackage: '@akasecurity/ai-tc-codex',
+    // Distinct from Claude Code's `pluginName: 'ai-tc'` — ids from the two
+    // registry entries flow into ONE ref-keyed `installed` lookup map
+    // (see updates.ts/installedPluginVersions and apply.ts/resolveRef); an
+    // identical ref for both would make either plugin's install ledger
+    // entry satisfy the other's "is it installed" check.
+    pluginName: 'aka-codex',
+    // Codex CLI installs from this repo's own marketplace file; the canonical
+    // akasecurity/marketplace repo currently carries Claude Code only.
+    marketplace: 'ai-tc',
+    marketplaceSource: 'akasecurity/ai-tc',
+    cliBin: 'codex',
   },
 ];
 

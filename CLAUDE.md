@@ -5,8 +5,8 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+plugin, the Codex CLI plugin, and the `aka` CLI capture agent activity into a local SQLite
+store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
 sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
@@ -20,7 +20,7 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code plugin, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
@@ -118,10 +118,13 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
-                     directly at SessionStart), ignore (gitignore semantics for
+                     directly at SessionStart — `provider.ts` for Claude Code,
+                     `provider-codex.ts` for Codex CLI, each its own file-scoped
+                     `n/no-process-env` opt-out), ignore (gitignore semantics for
                      the SessionStart project-file walk)
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 @akasecurity/setup-wizard   → @akasecurity/persistence, plugin-sdk, schema, zod
@@ -133,9 +136,16 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
                      harness plugins share this without forking it.)
 ```
 
+Both plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ only in
+their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook contract)
+plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
+resolution, tool-name → scannable-field tables). See `plugins/codex/skills/setup/SKILL.md`'s
+"Known limitation" note for the one real behavioral gap between the two: Codex does not yet
+fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls, only `Bash`.
+
 **Cross-cutting rules:**
 
-- No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (the plugin's provider resolution, the CLI spawning the dashboard).
+- No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (each plugin's provider resolution, the CLI spawning the dashboard).
 - No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
@@ -193,6 +203,7 @@ replays frozen SQL from already-shipped binaries, which app-level guards cannot 
 cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui as a spawned Next server)
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
+plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
@@ -240,9 +251,9 @@ sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they u
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`** bundles `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they
-  pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to any of
-  those changes the plugin's `scripts/*.js`.
+- **`plugins/claude-code`** and **`plugins/codex`** each bundle `@akasecurity/plugin-runtime` +
+  `plugin-sdk` and everything they pull in — `@akasecurity/schema`, `persistence`,
+  `detections`. A change to any of those changes BOTH plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
@@ -253,12 +264,14 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    any version.
 2. **Bump every affected artifact** accordingly:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
-     and/or the web-ui it ships; the plugin bundles none of these).
+     and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
-   - The CLI and plugin normally move together on one shared version line.
-3. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
-   `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
+     change → **all three** of `cli`, `plugins/claude-code`, **and** `plugins/codex` (all bundle them).
+   - The CLI and both plugins normally move together on one shared version line.
+3. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
+   `plugins/claude-code/package.json`, and `plugins/codex/.codex-plugin/plugin.json` in sync
+   with `plugins/codex/package.json` (identical version within each pair) whenever that plugin
+   is bumped.
 
 Versions are bumped by hand in a `chore(release):` commit (no changesets). The current pre-release
 line is `0.0.2-alpha.N` — a pre-release bump increments `N`.

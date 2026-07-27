@@ -63,20 +63,27 @@ export interface TempStore {
 
 /** A `TempStore` whose lifetime the caller owns. */
 export interface OwnedTempStore extends TempStore {
-  /** Run the cleanups, close every handle, remove the tree. Idempotent. */
+  /**
+   * Run the cleanups, close every handle, remove the tree. Idempotent.
+   *
+   * Throws an `AggregateError` if a cleanup or the removal failed — after the
+   * tree is gone, so a failure reports rather than strands. On the
+   * body-already-failed path `withTempStore` demotes it to that error's
+   * `cause`, since the body's failure is the one worth reading.
+   */
   readonly destroy: () => void;
 }
 
-/**
- * A temp store the caller destroys by hand. Prefer `withTempStore` (scoped) or
- * `useTempStore` (hook-driven); reach for this only when neither shape fits.
- */
 /** A handle the store handed out, and the two things it needs to track it. */
 interface TrackedHandle {
   close: () => void;
   isOpen: () => boolean;
 }
 
+/**
+ * A temp store the caller destroys by hand. Prefer `withTempStore` (scoped) or
+ * `useTempStore` (hook-driven); reach for this only when neither shape fits.
+ */
 export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
   const home = mkdtempSync(join(tmpdir(), prefix));
   // Both subdirs up front, through the same helper the product uses: a bare
@@ -144,11 +151,16 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
       destroyed = true;
       // Restores run before the handles close: a cleanup may need to widen a
       // mode the test tightened, and it must run whether or not the test threw.
+      // A failure here is collected rather than swallowed — discarding it is
+      // how an injector's own loud failure (a lock that would not let go, a
+      // mode that would not go back) went silent, since `onCleanup` is the
+      // wiring those injectors recommend.
+      const problems: unknown[] = [];
       for (const fn of cleanups.reverse()) {
         try {
           fn();
-        } catch {
-          // A cleanup that cannot run must not strand the temp tree.
+        } catch (err) {
+          problems.push(err);
         }
       }
       for (const handle of handles) {
@@ -159,7 +171,16 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
           // handle itself — an already-closed handle is the expected case here.
         }
       }
-      removeTree(home);
+      // The tree goes first either way: a cleanup that cannot run must not
+      // strand it. Only once it is gone is there anything to report.
+      try {
+        removeTree(home);
+      } catch (err) {
+        problems.push(err);
+      }
+      if (problems.length > 0) {
+        throw new AggregateError(problems, 'temp store teardown failed');
+      }
     },
   };
 }

@@ -53,12 +53,14 @@ function takeLock(): DatabaseSync | undefined {
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(file);
-    // busy_timeout first: SQLite's default is 0, so anything set after it runs
-    // uncontended-or-fail. journal_mode needs an exclusive lock, and on a store
-    // not already in WAL it would give up instantly against another writer —
-    // reported as a BEGIN IMMEDIATE that was never attempted.
     db.exec(`PRAGMA busy_timeout = ${String(busyTimeoutMs)}`);
-    db.exec('PRAGMA journal_mode = WAL');
+    // No journal_mode here. The write lock does not need WAL — BEGIN IMMEDIATE
+    // takes one in any journal mode — and the mode change is the one statement
+    // busy_timeout cannot govern: SQLite refuses it outright against another
+    // writer rather than retrying, so it can only add a failure this helper
+    // would then misreport as a lock it could not take. Setting it would also
+    // convert the store under test, which a fault injector has no business
+    // doing.
     // BEGIN IMMEDIATE takes the write lock up front rather than on first write,
     // so the lock is held the instant this returns — no statement needed.
     db.exec('BEGIN IMMEDIATE');

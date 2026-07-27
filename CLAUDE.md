@@ -276,10 +276,11 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
   `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
   real error code from the real engine and refuses to run rather than take effect
-  vacuously — an absent store, a live handle, a `chmod` the platform ignored — so a fault
-  test cannot pass against a healthy store. Pass the store's `onCleanup` to any injector
-  that has to be undone before the tree can be removed, and the store itself to any that
-  needs no live connection.
+  vacuously — an absent store, a live handle. Where the platform or the privilege decides
+  instead of the helper, `readOnlyStore` reports it as `effective: false` and **the caller
+  must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
+  any injector that has to be undone before the tree can be removed, and the store itself
+  to any that needs no live connection.
   `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
   is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
   `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
@@ -292,8 +293,8 @@ times slower, and a timing assertion there is a flake. Compare with `primaryCode
 `errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
 `SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`.
 
-Inside `test/helpers/` and its own suites, where a platform or a privilege makes an
-assertion meaningless, use `ctx.skip(reason)` — never an early `return`, which reports as
-a pass. **This is scoped deliberately**: the rest of the workspace uses
-`if (process.platform === 'win32') return;`, and the QA backlog asks for that form by
-name, so match the file you are in rather than converting a neighbour in passing.
+Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
+An early `return` reports as a pass, which is the failure mode the store harness exists
+to remove. Some older suites in this package still use
+`if (process.platform === 'win32') return;` — leave them be unless you are already
+changing that test for another reason, and do not convert a neighbour in passing.

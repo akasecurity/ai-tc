@@ -173,17 +173,26 @@ describe('withTempStore', () => {
     expect(existsSync(home)).toBe(false);
   });
 
-  it('keeps a cleanup that throws from stranding the tree', () => {
+  it('removes the tree when a cleanup throws, and still reports the failure', () => {
     let home = '';
-    expect(() => {
+    let caught: unknown;
+    try {
       withTempStore((store) => {
         home = store.home;
         store.onCleanup(() => {
           throw new Error('cleanup failed');
         });
       });
-    }).not.toThrow();
+    } catch (err) {
+      caught = err;
+    }
+    // The tree still goes — a cleanup that cannot run must not strand it.
     expect(existsSync(home)).toBe(false);
+    // But it is no longer discarded. Swallowing here is how an injector's own
+    // loud failure went silent: `lockStore` and `readOnlyStore` both recommend
+    // `onCleanup` as the wiring, so a throw from either landed in a bare catch.
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors[0]).toMatchObject({ message: 'cleanup failed' });
   });
 
   it('honours a caller-supplied temp-dir prefix', () => {

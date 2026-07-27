@@ -57,16 +57,6 @@ function attemptWrite(file: string, busyTimeoutMs = 250): number | undefined {
   }
 }
 
-function integrityOf(file: string): string | undefined {
-  const db = new DatabaseSync(file);
-  try {
-    return (db.prepare('PRAGMA integrity_check').get() as { integrity_check?: string })
-      .integrity_check;
-  } finally {
-    db.close();
-  }
-}
-
 const MODES_IGNORED =
   'this host ignores the mode change — a root process, or a filesystem without POSIX modes';
 
@@ -148,9 +138,20 @@ describe('corruptStore', () => {
       const db = store.openRaw();
       expect(() => db.prepare('SELECT count(*) AS n FROM rule_probe_cache').get()).not.toThrow();
       assertNoOpenTransaction(db);
-      db.close();
 
-      expect(integrityOf(store.dbFile)).not.toBe('ok');
+      // What separates 'page' from the other two modes, as a result code rather
+      // than a message: a full scan reaches the damaged page and raises
+      // SQLITE_CORRUPT, where truncate and header never open at all. Asserting
+      // `integrity_check !== 'ok'` here would only re-run corruptStore's own
+      // postcondition, which it already refuses to return without.
+      let err: unknown;
+      try {
+        db.prepare('PRAGMA integrity_check').all();
+      } catch (caught) {
+        err = caught;
+      }
+      expect(primaryCode(err)).toBe(SQLITE_CORRUPT);
+      db.close();
     });
   });
 
@@ -163,7 +164,6 @@ describe('corruptStore', () => {
       expect(() => {
         corruptStore(store.dbFile, 'page', { store });
       }).toThrow(/still reads as a healthy store/);
-      expect(integrityOf(store.dbFile)).toBe('ok');
     });
   });
 
@@ -372,6 +372,29 @@ describe('lockStore', () => {
       // doing its job, and the reason the SQLITE_BUSY case above is a limit
       // rather than the normal outcome.
       expect(attemptWrite(store.dbFile, 5000)).toBeUndefined();
+    });
+  });
+
+  it('locks a store that is not in WAL, and leaves its journal mode alone', () => {
+    withTempStore((store) => {
+      const seed = store.openRaw();
+      seed.exec('PRAGMA journal_mode = delete');
+      seed.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+      seed.close();
+
+      const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });
+      // BEGIN IMMEDIATE takes a write lock in any journal mode, so the holder
+      // has no reason to touch the mode — and every reason not to: the mode
+      // change is the one statement busy_timeout cannot govern, and converting
+      // the store is a side effect a fault injector must not have.
+      expect(attemptWrite(store.dbFile, 250)).toBe(SQLITE_BUSY);
+      lock.release();
+
+      const after = store.openRaw();
+      expect(
+        (after.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode,
+      ).toBe('delete');
+      after.close();
     });
   });
 

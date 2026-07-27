@@ -129,9 +129,15 @@ describe('withTransaction', () => {
     expect(caught).toBeInstanceOf(Error);
     // OR ROLLBACK unwound the caller's whole transaction itself, savepoint
     // included: the outer row is gone and no transaction is left open.
-    expect(db.isTransaction).toBe(false);
     expect(rowCount()).toBe(1);
     assertNoOpenTransaction(db);
+    // Asked of the engine, not of the flag: `failOpenTransaction` and
+    // `withTransaction` both branch on `isTransaction`, so a suite that only
+    // reads it would agree with the code under test even if the flag were wrong.
+    expect(() => {
+      db.exec('BEGIN');
+      db.exec('ROLLBACK');
+    }).not.toThrow();
   });
 
   it('nests re-entrantly: each envelope unwinds to its own savepoint', () => {
@@ -230,8 +236,12 @@ describe('failOpenTransaction', () => {
     ).toThrow();
     // Swallowing here would leave the caller issuing durable autocommit
     // statements it believes are still inside its own transaction.
-    expect(db.isTransaction).toBe(false);
     expect(rowCount()).toBe(1);
     assertNoOpenTransaction(db);
+    // The engine's own answer, for the same reason as above.
+    expect(() => {
+      db.exec('BEGIN');
+      db.exec('ROLLBACK');
+    }).not.toThrow();
   });
 });

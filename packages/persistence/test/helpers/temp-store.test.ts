@@ -1,7 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { createTempStore, useTempStore, withTempStore } from './temp-store.ts';
 
@@ -187,5 +187,35 @@ describe('useTempStore', () => {
     expect(store.home).not.toBe(firstHome);
     expect(existsSync(firstHome)).toBe(false);
     expect(store.open().ruleProbeCache.getVerdict('carried-over')).toBeUndefined();
+  });
+});
+
+// The guard behind vitest.config.ts's `sequence.hooks: 'stack'`. Without it the
+// pin can be deleted, inverted, or lost to a vitest upgrade and nothing notices
+// until someone writes the first teardown that reads the store — where it
+// arrives as a use-after-destroy rather than as "the hook order changed".
+describe('useTempStore teardown ordering', () => {
+  const store = useTempStore('aka-hook-order-');
+  let dbFile = '';
+  let aliveInTeardown: boolean | undefined;
+
+  // Registered after useTempStore's own afterEach. Only 'stack' runs "after"
+  // hooks in reverse, which is what puts this one first, while the store is
+  // still standing; 'list' and 'parallel' destroy it before this runs.
+  afterEach(() => {
+    // The path is captured in the test body, not read from the store here:
+    // after a destroy, `store.dbFile` throws rather than returning a stale
+    // path, and this has to fail as a plain assertion, not a hook exception.
+    aliveInTeardown = existsSync(dbFile);
+  });
+
+  it('opens a store the suite teardown can still see', () => {
+    dbFile = store.dbFile;
+    store.open();
+    expect(existsSync(dbFile)).toBe(true);
+  });
+
+  it('found the store alive in the previous test teardown', () => {
+    expect(aliveInTeardown).toBe(true);
   });
 });

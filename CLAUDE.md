@@ -5,8 +5,8 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+plugin, the Codex CLI plugin, and the `aka` CLI capture agent activity into a local SQLite
+store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
 sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
@@ -20,7 +20,7 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code plugin, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
@@ -69,16 +69,17 @@ the fault rows prove silence, and only the enforcement rows can prove what the n
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Five places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                      | Mechanism                         | Why                                                    |
-| ----------------------------------------- | --------------------------------- | ------------------------------------------------------ |
-| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart                |
-| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server                          |
-| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips |
-| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth            |
+| Site                                        | Mechanism                         | Why                                                    |
+| ------------------------------------------- | --------------------------------- | ------------------------------------------------------ |
+| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                |
+| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart          |
+| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                          |
+| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips |
+| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth            |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a sixth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -331,10 +332,13 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
-                     directly at SessionStart), ignore (gitignore semantics for
+                     directly at SessionStart — `provider.ts` for Claude Code,
+                     `provider-codex.ts` for Codex CLI, each its own file-scoped
+                     `n/no-process-env` opt-out), ignore (gitignore semantics for
                      the SessionStart project-file walk), node:worker_threads
                      (the isolated scan — see Architecture principles §5)
                      `src/scan-worker.ts` is the worker's own entry, exported as the
@@ -353,6 +357,13 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
                      those at its own I/O boundary, which is what lets multiple
                      harness plugins share this without forking it.)
 ```
+
+Both plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ only in
+their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook contract)
+plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
+resolution, tool-name → scannable-field tables). See `plugins/codex/skills/setup/SKILL.md`'s
+"Known limitation" note for the one real behavioral gap between the two: Codex does not yet
+fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls, only `Bash`.
 
 **Cross-cutting rules:**
 
@@ -448,6 +459,7 @@ replays frozen SQL from already-shipped binaries, which app-level guards cannot 
 cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui as a spawned Next server)
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
+plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
@@ -600,9 +612,9 @@ sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they u
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`** bundles `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they
-  pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to any of
-  those changes the plugin's `scripts/*.js`.
+- **`plugins/claude-code`** and **`plugins/codex`** each bundle `@akasecurity/plugin-runtime` +
+  `plugin-sdk` and everything they pull in — `@akasecurity/schema`, `persistence`,
+  `detections`. A change to any of those changes BOTH plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
@@ -611,14 +623,16 @@ When a change touches the web-ui or any bundled package and the user wants to pu
 
 1. **Bump every affected artifact**:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
-     and/or the web-ui it ships; the plugin bundles none of these).
+     and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
-   - `setup-wizard` change → `plugins/claude-code` only (the plugin bundles it;
-     the CLI does not).
-   - The CLI and plugin normally move together on one shared version line.
-2. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
-   `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
+     change → **all three** of `cli`, `plugins/claude-code`, **and** `plugins/codex` (all bundle them).
+   - `setup-wizard` change → `plugins/claude-code` **and** `plugins/codex` (both bundle
+     it; the CLI does not).
+   - The CLI and both plugins normally move together on one shared version line.
+2. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
+   `plugins/claude-code/package.json`, and `plugins/codex/.codex-plugin/plugin.json` in sync
+   with `plugins/codex/package.json` (identical version within each pair) whenever that plugin
+   is bumped.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)

@@ -15,6 +15,8 @@ interface Choice<T extends string> {
 // enforcement — per-category Policies do (see the Policies page). It is kept as
 // a stored default, so this copy describes a leaning, not a guaranteed effect,
 // and points to where enforcement is actually decided.
+export const HANDLING_SECTION_LABEL = 'Sensitive-data handling';
+
 export const HANDLING_SECTION_DESCRIPTION =
   'Your default leaning for sensitive detections. What actually happens per detection is ' +
   'governed by the per-category Policies, not this global default.';
@@ -37,6 +39,8 @@ export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
 // the wizard's history sweep. That sweep sends what it finds to the model API to
 // be rated, so the 'full' copy must disclose the egress here too — this is the
 // surface the wizard points at for scope and revocation.
+export const HISTORICAL_SECTION_LABEL = 'Historical access';
+
 export const HISTORICAL_SECTION_DESCRIPTION =
   'Consent to inspect surfaces that existed before AKA was installed.';
 
@@ -125,13 +129,13 @@ export function WorkspaceSettingsFormView({
   return (
     <div className="flex max-w-2xl flex-col gap-6">
       <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>Sensitive-data handling</SectionLabel>
+        <SectionLabel>{HANDLING_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</p>
         <ChoiceGroup name="policy" choices={POLICY_CHOICES} value={policy} onChange={setPolicy} />
       </section>
 
       <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>Historical access</SectionLabel>
+        <SectionLabel>{HISTORICAL_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{HISTORICAL_SECTION_DESCRIPTION}</p>
         <ChoiceGroup
           name="historicalAccess"

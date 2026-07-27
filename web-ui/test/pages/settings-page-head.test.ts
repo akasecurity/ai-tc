@@ -24,14 +24,19 @@ const PAGE = join(
   'page.tsx',
 );
 
+// The first four are false of every control on the page, so the form's copy
+// guard bans them too (packages/dashboard-ui/test/settings/WorkspaceSettingsFormView.test.ts,
+// ALWAYS_FALSE — keep the two in step). The verb class below is banned only
+// here: a section describes one control and may legitimately say when that
+// control takes effect, but the subtitle speaks for all of them at once.
 const LIVE_EFFECT_CLAIMS = [
   /next hook/i,
   /nothing is altered/i,
+  /immediately/i,
+  /right away/i,
   /takes effect/i,
   /\bapplied\b/i,
   /\benforced\b/i,
-  /immediately/i,
-  /right away/i,
 ];
 
 describe('Settings page head', () => {

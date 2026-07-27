@@ -38,7 +38,9 @@
     // are excluded by hand — without that, node_modules alone adds ~23k files to
     // the hash and every install perturbs it. This trades cache hits for
     // correctness: the suite runs in ~1s, and a guard that does not run is worth
-    // nothing.
+    // nothing. The exclusion list has to track the tree's .gitignore files; a
+    // generated path that slips through costs a cache miss (a build-output file
+    // enters the hash), never a false pass.
     "@akasecurity/eslint-config#test": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"],
@@ -57,6 +59,10 @@
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",
         "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/dist-sea/**",
+        "!$TURBO_ROOT$/**/sea-dist/**",
+        "!$TURBO_ROOT$/web-ui/out/**",
+        "!$TURBO_ROOT$/web-ui/next-env.d.ts",
         "!$TURBO_ROOT$/cli/web-ui/**",
         "!$TURBO_ROOT$/plugins/claude-code/scripts/**"
       ]

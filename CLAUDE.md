@@ -175,12 +175,21 @@ skills/               agent skills (e.g. write-detection-rule)
    **every directory the package ships code in**, whatever they are named (a bare `.`
    counts; naming individual files does not). Turbo silently skips a package with no
    `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
-   dir needs its own `eslint.scripts.config.mjs` plus a second pass
-   (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`).
+   dir of **hand-written (git-tracked)** scripts needs its own
+   `eslint.scripts.config.mjs` plus a second pass
+   (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
+   `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
+
+   Note the current limit: the guard checks **directories only**, so top-level files
+   at a package root (`tsup.config.ts`, `vitest.config.ts`, …) are outside it and are
+   not linted today. Point the `lint` script at them if you can; several need a
+   `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
-   `packages/eslint-config/test/effective-config.test.js` — that suite enumerates
-   the workspace and fails when the set drifts, which is what stops a new package
-   from shipping unguarded for network calls.
+   `packages/eslint-config/test/effective-config.test.js`. That pinned list only
+   forces a human to notice the new package — what actually stops it shipping
+   unguarded are the assertions next to it (a missing config, a config that never
+   extends the shared one, a `lint` script that misses a directory).
 
 ## Commit messages
 

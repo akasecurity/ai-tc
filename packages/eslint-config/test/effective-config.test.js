@@ -442,10 +442,33 @@ const RESOLVE_TIMEOUT_MS = 120_000;
  * @param {string} relFile path within the package to resolve config for
  * @param {string} configName the config file to resolve against
  */
-async function resolveNetworkRules(pkgDir, relFile, configName = 'eslint.config.mjs') {
+async function resolveConfig(pkgDir, relFile, configName = 'eslint.config.mjs') {
   const eslint = new ESLint({ cwd: pkgDir, overrideConfigFile: join(pkgDir, configName) });
   const config = await eslint.calculateConfigForFile(join(pkgDir, relFile));
-  return Object.fromEntries(KEYS.map((k) => [k, config.rules?.[k]]));
+  if (!config) {
+    // calculateConfigForFile yields undefined when no block matches the path —
+    // the "imports the shared config but never spreads it" case. Reported as
+    // that, rather than crashing the suite on a property of undefined.
+    throw new Error(
+      'ESLint resolved no config block for this path. The config most likely imports ' +
+        '@akasecurity/eslint-config without spreading it (…base / …react / …networkGuard).',
+    );
+  }
+  return config;
+}
+
+/** Just the four network rules out of a resolved config. */
+const networkRulesOf = (config) => Object.fromEntries(KEYS.map((k) => [k, config?.rules?.[k]]));
+
+/** A rule's resolved severity, normalized out of the `[severity, …options]` form. */
+const severityOf = (config, ruleId) => {
+  const entry = config?.rules?.[ruleId];
+  return Array.isArray(entry) ? entry[0] : entry;
+};
+
+/** Resolve a config and return only its four network rules. */
+async function resolveNetworkRules(pkgDir, relFile, configName = 'eslint.config.mjs') {
+  return networkRulesOf(await resolveConfig(pkgDir, relFile, configName));
 }
 
 /** Which network rule ids fire when `code` is linted with `rules`. */
@@ -825,31 +848,59 @@ describe('parseWorkspaceGlobs (the manifest parser, tested on synthetic YAML)', 
 // --- Behavioral guard: each config actually enforces the ban -----------------
 
 describe('effective per-package config (composition / last-wins)', () => {
-  /** @type {Map<string, Record<string, import('eslint').Linter.RuleEntry>>} */
-  const rulesById = new Map();
+  /** @type {Map<string, import('eslint').Linter.Config>} */
+  const configById = new Map();
+  /** @type {Map<string, Error>} */
+  const failureById = new Map();
 
+  // Each resolution is caught PER TARGET. An uncaught throw here would abort
+  // beforeAll, and vitest then SKIPS every test in this describe — reporting
+  // zero failures, naming no package, and silently dropping the behavioral
+  // verification of the whole workspace. Capturing lets the assertion below
+  // report which target failed and why.
   beforeAll(async () => {
     for (const t of PROBE_TARGETS) {
-      rulesById.set(t.id, await resolveNetworkRules(t.pkgDir, t.relFile, t.configName));
+      try {
+        configById.set(t.id, await resolveConfig(t.pkgDir, t.relFile, t.configName));
+      } catch (cause) {
+        failureById.set(t.id, /** @type {Error} */ (cause));
+      }
     }
   }, RESOLVE_TIMEOUT_MS);
 
-  it('resolved rules for every probe target (no behavioral gap)', () => {
-    // Asserts the thing that can genuinely be short: a resolution that threw or
-    // was skipped leaves the map smaller than the target list.
-    expect(rulesById.size).toBe(PROBE_TARGETS.length);
+  it('probes at least one target per guarded package', () => {
     expect(PROBE_TARGETS.length).toBeGreaterThanOrEqual(GUARDED_PACKAGES.length);
   });
 
+  it.each(PROBE_TARGETS.map((t) => t.id))('resolves an effective config for %s', (id) => {
+    expect(failureById.get(id)?.message, `${id} did not resolve`).toBeUndefined();
+  });
+
   it.each(PROBE_TARGETS.map((t) => t.id))('bans every network form in %s', (id) => {
-    const fired = firedRuleIds(NETWORK_SNIPPET, rulesById.get(id));
+    const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(configById.get(id)));
     for (const key of KEYS) {
       expect(fired, `${id} :: ${key}`).toContain(key);
     }
   });
 
+  // The workspace ban has two halves: the network rules above and
+  // `n/no-process-env`, which CLAUDE.md pins to an exact table of opt-out sites.
+  // Without this, a package could switch the rule off in its own config and add
+  // an unreviewed fifth site while every other assertion here stayed green.
+  // Asserted as a resolved severity rather than by adding it to KEYS, because
+  // the standalone Linter has no `n` plugin registered and cannot run the rule.
+  // Main configs only: networkGuard (the scripts pass) deliberately omits it.
+  it.each(PROBE_TARGETS.filter((t) => t.configName === 'eslint.config.mjs').map((t) => t.id))(
+    'keeps n/no-process-env at error in %s',
+    (id) => {
+      expect([2, 'error'], `${id} :: n/no-process-env`).toContain(
+        severityOf(configById.get(id), 'n/no-process-env'),
+      );
+    },
+  );
+
   it.each(PROBE_TARGETS.map((t) => t.id))('bans every listed module in %s', (id) => {
-    const rules = rulesById.get(id);
+    const rules = networkRulesOf(configById.get(id));
     for (const mod of NETWORK_MODULE_PROBES) {
       expect(firedRuleIds(importOf(mod), rules), `${id} :: ${mod}`).toContain(
         'no-restricted-imports',

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,8 @@ import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../src/database.ts';
+import { captureId } from '../src/ids.ts';
+import { backupBeforeLegacyDrop } from '../src/migrations.ts';
 
 let dir: string;
 
@@ -87,6 +89,46 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     expect(mode).toBe(0o600);
   });
 
+  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', () => {
+    // The sidecars hold prompt/file content just like the main db, so they must
+    // carry the same 0600 mode. They exist only while a WAL-mode handle is open
+    // (a clean close checkpoints and removes them), so assert before closing.
+    const db = openLocalDatabase(dir);
+    const dbFile = join(dir, 'aka.db');
+    try {
+      if (process.platform === 'win32') return;
+      // WAL mode creates exactly the -wal/-shm pair (no rollback -journal).
+      for (const sidecar of [`${dbFile}-wal`, `${dbFile}-shm`]) {
+        expect(existsSync(sidecar)).toBe(true);
+        expect(statSync(sidecar).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', () => {
+    // Every hook after the first init reopens an already-migrated store. The
+    // sidecars are removed on close and recreated by the reopen's writes; SQLite
+    // gives a new sidecar the main db's mode, so a store loosened out of band
+    // must be re-tightened on open — not only at first creation.
+    openLocalDatabase(dir).close();
+    const file = join(dir, 'aka.db');
+    if (process.platform !== 'win32') chmodSync(file, 0o644); // simulate a loosened store
+
+    const db = openLocalDatabase(dir);
+    try {
+      if (process.platform === 'win32') return;
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      for (const sidecar of [`${file}-wal`, `${file}-shm`]) {
+        expect(existsSync(sidecar)).toBe(true);
+        expect(statSync(sidecar).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it('backs up and recreates an incompatible legacy tenant-bearing aka.db instead of silently failing writes', async () => {
     // Simulate an old (tenant-bearing) store this lineage can't migrate
     // forward: a `tenants` table + a tenant_id column, with a bumped user_version
@@ -110,6 +152,32 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // The old store is preserved (recoverable), not destroyed.
     const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
+    // The backup is a full copy of the prompt corpus, so it must carry the same
+    // 0600 as the live store — the pre-tightened legacy file was 0644.
+    const [backupName] = backups;
+    if (process.platform !== 'win32' && backupName !== undefined) {
+      expect(statSync(join(dir, backupName)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {
+    // The legacy events/findings drop snapshots the whole store via VACUUM INTO,
+    // which creates a brand-new file at the process umask (typically 0644). That
+    // backup is a full copy of the prompt corpus, so it must be tightened to the
+    // store's own 0600.
+    const file = join(dir, 'aka.db');
+    const raw = new DatabaseSync(file);
+    raw.exec('PRAGMA journal_mode = WAL');
+    raw.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    raw.exec("INSERT INTO t (v) VALUES ('prompt corpus')");
+    if (process.platform !== 'win32') chmodSync(file, 0o600); // the live store is already tightened
+
+    const backup = backupBeforeLegacyDrop(raw, file);
+    raw.close();
+
+    expect(existsSync(backup)).toBe(true);
+    if (process.platform === 'win32') return;
+    expect(statSync(backup).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -131,9 +199,17 @@ describe('recordCapture', () => {
     const db = openLocalDatabase(dir);
     const sessionId = randomUUID();
     // Same value flagged on the prompt, then again when written to a file — one
-    // logical action across two surfaces, sharing a session id.
-    const prompt = event({ kind: 'prompt', metadata: { sessionId } });
-    const write = event({ kind: 'code_change', metadata: { sessionId } });
+    // logical action across two surfaces, sharing a session id. Distinct
+    // contentHash per surface (real prompt text vs. a real file diff never
+    // hash the same) so each capture gets its own content-addressed audit
+    // event — the dedup under test is the session-scoped one, not a
+    // coincidental collapse onto a single event.
+    const prompt = event({ kind: 'prompt', metadata: { sessionId }, contentHash: 'hash-prompt' });
+    const write = event({
+      kind: 'code_change',
+      metadata: { sessionId },
+      contentHash: 'hash-write',
+    });
     db.recordCapture(prompt, [
       finding(prompt.id, { ruleId: 'core-pii/email', maskedMatch: 'j*@example.com' }),
       finding(prompt.id, { ruleId: 'core-pii/ssn', maskedMatch: '1******9' }),
@@ -143,11 +219,13 @@ describe('recordCapture', () => {
       finding(write.id, { ruleId: 'core-pii/ssn', maskedMatch: '1******9' }),
     ]);
 
-    // Two distinct (rule, value) findings — not four — and both link to the
-    // first surface that recorded them (the prompt).
+    // Two distinct (rule, value) findings — not four — and both still link to
+    // the first surface that recorded them (the prompt's own content-addressed
+    // audit event, not the write's) since the write's repeats were dropped.
     const findings = await db.findings.recentFindings();
     expect(findings).toHaveLength(2);
-    expect(findings.every((f) => f.eventId === prompt.id)).toBe(true);
+    const promptAuditEventId = captureId(sessionId, 'hash-prompt');
+    expect(findings.every((f) => f.eventId === promptAuditEventId)).toBe(true);
     expect(new Set(findings.map((f) => f.ruleId))).toEqual(
       new Set(['core-pii/email', 'core-pii/ssn']),
     );
@@ -193,7 +271,19 @@ describe('read surfaces', () => {
     const e1 = event();
     const e2 = event();
     db.recordCapture(e1, [finding(e1.id, { actionTaken: 'block', severity: 'critical' })]);
-    db.recordCapture(e2, [finding(e2.id, { actionTaken: 'warn', severity: 'low' })]);
+    // A distinct ruleId (not just a distinct severity): severity/category now
+    // live on the shared inspection_definitions row for a ruleId (mirroring
+    // the detection engine, where a rule's severity is fixed — see
+    // packages/detections/src/engine.ts), so two DIFFERENT severities can only
+    // come from two DIFFERENT rules, never from the same rule firing twice.
+    db.recordCapture(e2, [
+      finding(e2.id, {
+        ruleId: 'core-pii/email',
+        category: 'pii',
+        actionTaken: 'warn',
+        severity: 'low',
+      }),
+    ]);
 
     const health = await db.findings.healthSummary();
     expect(health.findings).toBe(2);
@@ -287,9 +377,9 @@ describe('store hygiene', () => {
     db.recordCapture(ev, [finding(ev.id)]);
     db.close();
 
-    // The findings table holds only the masked value handed in — never a raw one.
+    // inspection_findings holds only the masked value handed in — never a raw one.
     const raw = new DatabaseSync(join(dir, 'aka.db'));
-    const masked = raw.prepare('SELECT masked_match FROM findings').all() as {
+    const masked = raw.prepare('SELECT masked_match FROM inspection_findings').all() as {
       masked_match: string;
     }[];
     raw.close();

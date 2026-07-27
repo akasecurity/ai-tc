@@ -24,15 +24,20 @@ export interface SaveSettingsResult {
 export async function saveSettings(input: {
   policy: string;
   historicalAccess: string;
-  // Present (truthy) grants the distinct model-judge egress consent; absent /
-  // undefined revokes it. Re-stamped server-side at the current payload version.
-  modelJudgeConsent?: { acknowledgedAt: string; payloadVersion: number } | undefined;
+  // The distinct model-judge egress consent, as a bare answer: true grants,
+  // false/absent revokes. Deliberately not the stored record — the
+  // acknowledgement time and payload version are stamped below from server
+  // state, so a client cannot backdate a grant or claim a version it never saw.
+  modelJudgeConsent?: boolean;
 }): Promise<SaveSettingsResult> {
   const policy = SimpleDetectionPolicy.safeParse(input.policy);
   const historicalAccess = HistoricalAccess.safeParse(input.historicalAccess);
   if (!policy.success || !historicalAccess.success) {
     return { ok: false, error: 'Invalid settings value.' };
   }
+  // policy/historicalAccess are parsed above because their values are persisted
+  // verbatim; modelJudgeConsent needs no equivalent parse because only its
+  // truthiness survives — the record written below is built entirely here.
   try {
     applyOnboarding({
       policy: policy.data,

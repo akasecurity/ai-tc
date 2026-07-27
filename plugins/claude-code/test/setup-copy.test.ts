@@ -16,20 +16,68 @@ const forkSection = setupMd.slice(forkStart, forkEnd === -1 ? undefined : forkEn
 
 // The prompt-authored 0.3 scan-offer copy lives in commands/setup.md, so a
 // regression is otherwise only visible in the manual walkthrough. These guards
-// pin the verbatim strings the wizard shows at the scan offer.
+// pin the verbatim strings the wizard shows at the scan offer — including the
+// privacy-critical disclosure that the scan sends raw, unmasked values to the
+// model API via the `claude` CLI, which must be stated before consent.
 describe('setup.md 0.3 scan-offer copy', () => {
-  it('carries the scope disclosure verbatim', () => {
+  it('carries the scan-offer question verbatim', () => {
     expect(setupMd).toContain(
-      "I'll review Claude's recent work — transcripts, temp files, agent memory — to tune what I bring to you next.",
+      "I'll scan Claude's recent work — transcripts, temp files, agent memory — and send what I find to the model to rate it, so I can tune what I bring you next.",
     );
   });
 
   it('carries the Yes-option subtitle verbatim', () => {
-    expect(setupMd).toContain("tune what I bring you, based on Claude's real work here");
+    expect(setupMd).toContain(
+      'scan my real work here; raw findings go to the model to be rated, then tune what you bring me',
+    );
   });
 
   it('carries the Not-now-option subtitle verbatim', () => {
     expect(setupMd).toContain("start light and I'll learn as we go");
+  });
+
+  // Whitespace-normalized so these assertions are not coupled to prose line wrapping.
+  const flat = setupMd.replace(/\s+/g, ' ');
+
+  it('discloses the model-API egress plainly', () => {
+    expect(flat).toContain(
+      'sends the raw, unmasked values — including any secrets — to the model API through the `claude` CLI',
+    );
+    expect(flat).toContain('A copy of each value leaves the machine');
+    expect(flat).toContain('Do not present the picker until you have said this');
+  });
+
+  // What crosses is the minimized payload, not just the matched secret: rawMatch
+  // and a ±120-char window of the surrounding transcript (history/scan.ts).
+  // toJudgePayload drops filePath before egress, so copy that still names the
+  // file path overstates the payload — pin that it is gone, not present.
+  it('names the whole payload, not just the secret', () => {
+    expect(flat).toContain('about 120 characters of the surrounding transcript text');
+    expect(flat).not.toContain('the path of the transcript file it came from');
+  });
+
+  it('does not present revocation as a recall of what was already sent', () => {
+    expect(flat).toContain('it cannot recall anything already sent');
+  });
+
+  // The transcripts the values were read out of are untouched by the scan — the
+  // earlier "not kept on the machine" phrasing read as a cleanup promise.
+  it('does not imply the scan removes the values from disk', () => {
+    expect(flat).toContain('The transcripts those values came from stay on disk untouched');
+    expect(flat).not.toContain('not kept on the machine');
+  });
+
+  // AC: the disclosure must be visible BEFORE consent is given. Presence alone
+  // would still pass if the paragraph were moved below the option list, so
+  // assert the actual ordering against the picker's own copy.
+  it('places the disclosure ahead of the consent picker', () => {
+    const disclosureAt = flat.indexOf('sends the raw, unmasked values');
+    const questionAt = flat.indexOf("Want me to look over what Claude's been up to?");
+    const yesOptionAt = flat.indexOf('scan my real work here');
+
+    expect(disclosureAt).toBeGreaterThan(-1);
+    expect(questionAt).toBeGreaterThan(disclosureAt);
+    expect(yesOptionAt).toBeGreaterThan(disclosureAt);
   });
 });
 
@@ -51,15 +99,42 @@ describe('setup.md step-3 model-judge consent gate', () => {
     expect(step3).toContain('**`filePath` is not sent**');
   });
 
+  // maskText masks the secrets AKA's rules DETECT in the context window; other
+  // text in that window still crosses. A blanket "the context is masked" would
+  // promise more than the engine delivers, so the copy must scope the claim.
+  it('scopes the masking claim to detected secrets, not the whole window', () => {
+    expect(step3).toContain('secrets detected in that context window are **masked**');
+    expect(step3).toContain('ordinary text in that window travels as-is');
+  });
+
+  // This grant sends data off the machine. Step 1's historical picker (the more
+  // conservative consent) marks neither option recommended; steering on this one
+  // would be both inconsistent and a nudge on the more sensitive of the two.
+  it('presents the consent options flat, with neither marked recommended', () => {
+    expect(step3).not.toContain('_(recommended)_');
+  });
+
+  // Declining skips this run; it does not clear a grant recorded earlier. Saying
+  // otherwise (or saying nothing) leaves the user believing "no" revoked it.
+  // Whitespace-normalized so the assertion is not coupled to prose line wrapping.
+  it('states that declining does not withdraw an earlier grant', () => {
+    const flatStep3 = step3.replace(/\s+/g, ' ');
+    expect(flatStep3).toContain('does **not** withdraw a grant made earlier');
+    expect(flatStep3).toContain('revoked under **Settings → Model-judge consent**');
+  });
+
   it('names it a distinct egress, separate from the historical-read consent', () => {
     expect(step3).toContain('separate egress');
     expect(step3).toContain('its own explicit grant');
   });
 
+  // "Not now" implies a deferral that never comes and reads as if it withdrew
+  // the grant; the decline is a standing "keep it local" for this run.
   it('carries the consent picker question and both option labels verbatim', () => {
     expect(step3).toContain('Send findings to the model to sort real leaks from noise?');
     expect(step3).toContain('Yes, send them');
-    expect(step3).toContain('Not now');
+    expect(step3).toContain('No, keep it local');
+    expect(step3).not.toContain('Not now');
   });
 
   it('records consent via onboard.js --model-judge-consent on the Yes path, before the pipe', () => {
@@ -71,8 +146,8 @@ describe('setup.md step-3 model-judge consent gate', () => {
     expect(consentIdx).toBeLessThan(pipeIdx);
   });
 
-  it('falls back to the severity floor and skips judging on the Not-now decline', () => {
-    expect(step3).toContain('If the user chose "Not now"');
+  it('falls back to the severity floor and skips judging on the decline', () => {
+    expect(step3).toContain('If the user chose "No, keep it local"');
     expect(step3).toContain('onboard.js" --floor');
     expect(step3).toContain('do **not** run the pipe');
   });

@@ -11,6 +11,13 @@ export const EventKind = z
   .meta({ id: 'EventKind' });
 export type EventKind = z.infer<typeof EventKind>;
 
+// Ready-to-interpolate SQL value list of the capture event kinds, derived from
+// EventKind so the predicate can never drift from the enum. Every read that
+// joins inspection_findings to audit_events (which also holds structural rows)
+// must constrain to these kinds; interpolate into `... event_type IN (${…})`.
+// A code-defined constant, never user input — direct interpolation is injection-safe.
+export const CAPTURE_EVENT_TYPES_SQL = EventKind.options.map((k) => `'${k}'`).join(',');
+
 export const SourceTool = z
   .enum(['claude-code', 'claude-desktop', 'cursor', 'chatgpt', 'github-copilot', 'cli', 'unknown'])
   .meta({ id: 'SourceTool' });

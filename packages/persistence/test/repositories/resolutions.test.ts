@@ -38,9 +38,10 @@ function resolutions(now: () => number = () => Date.now()): SqliteResolutionsRep
 }
 
 // Record one at-rest (code_change) finding for `path`, then stamp its
-// finding_key directly via a raw UPDATE. insertFindings deliberately never
-// populates finding_key (see findings.ts) — the correlation-key computation is
-// separate, downstream work — so tests seed it directly.
+// finding_key directly via a raw UPDATE. This test's DetectedFinding carries
+// no findingKey, so recordCapture inserts the inspection_findings row with a
+// NULL key — the correlation-key computation is separate, downstream work —
+// so tests seed it directly.
 function recordAtRestFinding(path: string, findingKey: string): void {
   const eventId = randomUUID();
   const metadata: EventMetadata = { filePath: path };
@@ -67,7 +68,7 @@ function recordAtRestFinding(path: string, findingKey: string): void {
   db.recordCapture(event, [finding]);
 
   const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  raw.prepare('UPDATE findings SET finding_key = :findingKey WHERE id = :id').run({
+  raw.prepare('UPDATE inspection_findings SET finding_key = :findingKey WHERE id = :id').run({
     findingKey,
     id: finding.id,
   });

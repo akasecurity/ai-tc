@@ -24,7 +24,7 @@ import type {
   TriageRecommendation,
 } from '@akasecurity/schema';
 
-import { frameCalibration, frameEmptyState } from '../calibration.ts';
+import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
 import { fenced, show } from '../present.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
@@ -158,6 +158,14 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
   // mirroring the no-consent skip copy above.
   if (!deps.modelJudgeConsent()) {
     deps.stdout(show("I didn't send anything to the model — model-judge consent wasn't granted."));
+    // The wizard reaches this pipe on the Yes path expecting a frame to parse,
+    // and consent can still be missing here (a failed write, or a grant made
+    // stale by a payload-version bump). Emit a zero-count frame so that degrades
+    // into the start-light posture instead of leaving the wizard mid-flow with
+    // nothing to read. The counts are zero because nothing was JUDGED, not
+    // because nothing was found — the line above is what the user reads; the
+    // frame is machine-only and never displayed.
+    deps.stdout(frameJsonBlock(zeroCountFrame(severityFloorPosture())));
     return 0;
   }
 

@@ -14,11 +14,12 @@
  * applies it VERBATIM — no re-scan, no re-judge — so the human gate is binding.
  * Without --plan the confirm path fails loud rather than re-judging.
  *
- * RUBRIC: runJudge's default rubric path (eval/prompt.md) is NOT in the shipped
+ * RUBRIC: runJudge's default rubric path (the @akasecurity/setup-wizard
+ * assets/triage-rubric.md source) is NOT in the shipped
  * plugin `files`, so it would throw at runtime. We inject loadRubric from a
- * SHIPPED source: scripts/triage-rubric.md, copied from eval/prompt.md at build
+ * SHIPPED source: scripts/triage-rubric.md, copied from the package asset at build
  * (tsup onSuccess) and shipped via the package's `files: ["scripts"]`. Falls back
- * to the source-tree eval/prompt.md when run un-built from src/ (dev only).
+ * to the workspace package asset when run un-built from src/ (dev only).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -53,7 +54,10 @@ function loadRubric(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const shipped = join(here, 'triage-rubric.md');
   if (existsSync(shipped)) return readFileSync(shipped, 'utf8');
-  return readFileSync(join(here, '..', 'eval', 'prompt.md'), 'utf8');
+  return readFileSync(
+    join(here, '..', '..', '..', 'packages', 'setup-wizard', 'assets', 'triage-rubric.md'),
+    'utf8',
+  );
 }
 
 async function main(): Promise<void> {

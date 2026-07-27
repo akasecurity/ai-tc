@@ -74,6 +74,9 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass; network ONLY via package-manager
                      shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
+@akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
+                     Consumed by @akasecurity/detections' tabular suite as a
+                     dev-only dependency, so it crosses no runtime package wall)
 @akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types, plus the pure
                      shared constants and formatters — no I/O)
                      (bundler-agnostic presentational views; props-driven, no data fetching)
@@ -157,7 +160,7 @@ cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
-                      dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
+                      extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
 ```
@@ -168,7 +171,25 @@ skills/               agent skills (e.g. write-detection-rule)
 2. Extend `../../tsconfig.base.json`
 3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
 4. Export from `src/index.ts`
-5. Add `"lint"` and `"typecheck"` scripts
+5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` over
+   **every directory the package ships code in**, whatever they are named (a bare `.`
+   counts; naming individual files does not). Turbo silently skips a package with no
+   `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
+   dir of **hand-written (git-tracked)** scripts needs its own
+   `eslint.scripts.config.mjs` plus a second pass
+   (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
+   `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
+
+   Note the current limit: the guard checks **directories only**, so top-level files
+   at a package root (`tsup.config.ts`, `vitest.config.ts`, …) are outside it and are
+   not linted today. Point the `lint` script at them if you can; several need a
+   `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
+
+6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
+   `packages/eslint-config/test/effective-config.test.js`. That pinned list only
+   forces a human to notice the new package — what actually stops it shipping
+   unguarded are the assertions next to it (a missing config, a config that never
+   extends the shared one, a `lint` script that misses a directory).
 
 ## Commit messages
 
@@ -257,3 +278,44 @@ pnpm test                                    # all workspaces
 pnpm test --filter @akasecurity/detections   # just the detection engine + fixtures
 pnpm test --filter @akasecurity/persistence  # just the local-store adapter + repositories
 ```
+
+Never mock `node:sqlite` or the filesystem — every store test runs against a real
+database in a real temp dir, which is what catches real SQLite semantics.
+
+`packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
+package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
+cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
+`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
+
+- `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
+  `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
+  suite shares setup across hooks, `withTempStore` when one test body owns the store. An
+  async body is awaited before teardown.
+- `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
+  one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
+  only WAL and `busy_timeout` between them).
+- `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
+  `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
+  real error code from the real engine and refuses to run rather than take effect
+  vacuously — an absent store, a live handle. Where the platform or the privilege decides
+  instead of the helper, `readOnlyStore` reports it as `effective: false` and **the caller
+  must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
+  any injector that has to be undone before the tree can be removed, and the store itself
+  to any that needs no live connection.
+  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
+  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
+  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+- `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
+  fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
+  with a transaction of its own, so it cannot disturb the handle it is inspecting.
+
+Assert the result code, not an error message or an elapsed time — Windows CI runs several
+times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
+`errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
+`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`.
+
+Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
+An early `return` reports as a pass, which is the failure mode the store harness exists
+to remove. Some older suites in this package still use
+`if (process.platform === 'win32') return;` — leave them be unless you are already
+changing that test for another reason, and do not convert a neighbour in passing.

@@ -24,6 +24,7 @@ export const SourceTool = z
     'claude-desktop',
     'cursor',
     'chatgpt',
+    'claude-ai',
     'github-copilot',
     'codex',
     'cli',

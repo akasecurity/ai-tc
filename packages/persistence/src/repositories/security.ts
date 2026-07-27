@@ -56,6 +56,7 @@ const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported:
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
   { provider: 'codex', coverage: 80, supported: true },
+  { provider: 'claudeai', coverage: 0, supported: false },
   { provider: 'chatgpt', coverage: 0, supported: false },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },

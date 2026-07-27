@@ -12,7 +12,17 @@ import { z } from 'zod';
  * `Harness` export; extend this one (single canonical registry).
  */
 export const Harness = z
-  .enum(['claudecode', 'cursor', 'copilot', 'codex', 'windsurf', 'claudedesktop', 'chatgpt', 'api'])
+  .enum([
+    'claudecode',
+    'cursor',
+    'copilot',
+    'codex',
+    'windsurf',
+    'claudedesktop',
+    'chatgpt',
+    'claudeai',
+    'api',
+  ])
   .meta({ id: 'Harness' });
 export type Harness = z.infer<typeof Harness>;
 
@@ -23,6 +33,7 @@ export const TOOL_TO_HARNESS: Record<string, string> = {
   cursor: 'cursor',
   chatgpt: 'chatgpt',
   codex: 'codex',
+  'claude-ai': 'claudeai',
 };
 
 // Map a harness inventory *tool* id — the value the plugin hashes its harness

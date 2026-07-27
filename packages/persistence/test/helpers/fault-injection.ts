@@ -31,7 +31,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 
-import { walSidecars } from '../../src/paths.ts';
+import { dbSidecars } from '../../src/paths.ts';
 import type { TempStore } from './temp-store.ts';
 
 /**
@@ -145,7 +145,7 @@ export interface CorruptStoreOptions {
 
 /**
  * Damage a real store at a fixed offset — same input, same bytes changed, every
- * run. The store must have no open handle: the WAL sidecars are removed first,
+ * run. The store must have no open handle: the DB sidecars are removed first,
  * and pulling them out from under a live connection makes the resulting damage
  * depend on that connection's cached pages, which costs the determinism above.
  * Pass `store` and that precondition is enforced.
@@ -164,10 +164,10 @@ export function corruptStore(
   const live = opts.store?.openHandleCount() ?? 0;
   if (live > 0) {
     throw new Error(
-      `corruptStore(): ${String(live)} handle(s) still open on ${file} — close them first, or the WAL removed below is pulled out from under a live connection.`,
+      `corruptStore(): ${String(live)} handle(s) still open on ${file} — close them first, or the sidecars removed below are pulled out from under a live connection.`,
     );
   }
-  for (const sidecar of walSidecars(file)) {
+  for (const sidecar of dbSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
   }
 
@@ -240,7 +240,7 @@ const READ_ONLY_FILE_MODE = 0o400;
 const READ_ONLY_DIR_MODE = 0o500;
 
 /**
- * Make a store unwritable by mode. The db and any WAL sidecars go to 0400.
+ * Make a store unwritable by mode. The db and any sidecars go to 0400.
  *
  * Read-only for the owner alone, not 0444: `aka.db` holds prompt and file
  * content and the package writes it 0600 everywhere else, so a test has no
@@ -267,7 +267,7 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
   if (!existsSync(file)) {
     throw new Error(`readOnlyStore(): no store at ${file}`);
   }
-  const targets = [file, ...walSidecars(file)].filter((path) => existsSync(path));
+  const targets = [file, ...dbSidecars(file)].filter((path) => existsSync(path));
   const dir = dirname(file);
   const original = new Map<string, number>();
 

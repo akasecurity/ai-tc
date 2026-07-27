@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
-import { walSidecars } from '../../src/paths.ts';
+import { dbSidecars } from '../../src/paths.ts';
 import {
   corruptStore,
   fillStore,
@@ -167,14 +167,14 @@ describe('corruptStore', () => {
     });
   });
 
-  it('clears the WAL sidecars so they cannot replay over the damage', () => {
+  it('clears the DB sidecars so they cannot replay over the damage', () => {
     withTempStore((store) => {
       seedStore(store);
-      for (const sidecar of walSidecars(store.dbFile)) {
+      for (const sidecar of dbSidecars(store.dbFile)) {
         writeFileSync(sidecar, 'stale');
       }
       corruptStore(store.dbFile, 'truncate', { store });
-      for (const sidecar of walSidecars(store.dbFile)) {
+      for (const sidecar of dbSidecars(store.dbFile)) {
         expect(existsSync(sidecar)).toBe(false);
       }
     });

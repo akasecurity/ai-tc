@@ -27,10 +27,11 @@ import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
+import { runApply } from '@akasecurity/setup-wizard';
 
-import { runApply } from './triage/adapter.ts';
 import { isModelJudgeConsentValid } from './triage/consent.ts';
 import { runJudge, spawnClaude } from './triage/judge.ts';
+import { adapterPresenter } from './triage/presenter.ts';
 
 function fail(message: string): never {
   process.stderr.write(`AKA apply-suppressions failed: ${message}\n`);
@@ -84,6 +85,7 @@ async function main(): Promise<void> {
     now: () => Date.now(),
     createdBy: resolveCreatedBy,
     stdout: (s) => process.stdout.write(s),
+    present: adapterPresenter,
     stderr: (s) => process.stderr.write(s),
   });
   process.exit(code);

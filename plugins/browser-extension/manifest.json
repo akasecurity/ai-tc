@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "AI Traffic Control",
+  "version": "0.1.0",
+  "description": "Local secret detection and redaction for ChatGPT and Claude.ai web chat.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqnwx5Snbi3oZ7mDBC78NaTHO6dTKYRtCqr29YnOImR47UM21tP1us3KF6FjQMtR6tAsffflRok1PThQpjBNwYdRM+stvPIUr5GqBRQL1Ge///kZaVz7eCptCjKg00ygk2HwelaCNt6nWy6czIcM3/HssrNflw42IKsBORW7qQ+KhhKqlABjkRUDvBcuhwOU34HHMJxeP2XdyI5T5msqVJN1nVA+X9T/18dP7cCSzkp9RwLN1hvQMS6n3A1R0HUCmfra1lb1KqQhy3EBdm2VwxTDGVPfGYbTdNSyRT70wzcZy1IdQkfT6YOy1M//+yT7Vu9p/aajs+dNNn/zUn0qJyQIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": ["nativeMessaging"]
+}

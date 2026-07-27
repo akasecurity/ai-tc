@@ -21,7 +21,7 @@ export default defineConfig({
   noExternal: [/^@akasecurity\//, 'zod'],
   // @akasecurity/web-ui is a separate runtime (`aka dashboard` spawns its Next server);
   // it's resolved at runtime, never bundled into the CLI.
-  external: ['@akasecurity/web-ui'],
+  external: ['@akasecurity/web-ui', '@akasecurity/plugin-browser-extension'],
   onSuccess: async () => {
     normalizeSqliteSpecifier('dist');
   },

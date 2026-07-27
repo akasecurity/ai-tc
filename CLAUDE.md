@@ -74,6 +74,9 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass; network ONLY via package-manager
                      shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
+@akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
+                     Consumed by @akasecurity/detections' tabular suite as a
+                     dev-only dependency, so it crosses no runtime package wall)
 @akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types, plus the pure
                      shared constants and formatters — no I/O)
                      (bundler-agnostic presentational views; props-driven, no data fetching)
@@ -157,7 +160,7 @@ cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
-                      dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
+                      extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
 ```
@@ -168,11 +171,12 @@ skills/               agent skills (e.g. write-detection-rule)
 2. Extend `../../tsconfig.base.json`
 3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
 4. Export from `src/index.ts`
-5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` and
-   name every source dir the package ships (`src`, `app`, `test`). Turbo silently
-   skips a package with no `lint` script, so a config nothing points ESLint at
-   enforces nothing. A `scripts/` dir needs its own `eslint.scripts.config.mjs`
-   plus a second pass (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`).
+5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` over
+   **every directory the package ships code in**, whatever they are named (a bare `.`
+   counts; naming individual files does not). Turbo silently skips a package with no
+   `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
+   dir needs its own `eslint.scripts.config.mjs` plus a second pass
+   (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`).
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js` — that suite enumerates
    the workspace and fails when the set drifts, which is what stops a new package

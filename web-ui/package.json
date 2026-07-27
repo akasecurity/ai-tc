@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint app middleware.ts test next.config.ts postcss.config.mjs vitest.config.ts",
+    "lint": "eslint app middleware.ts test *.config.*",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

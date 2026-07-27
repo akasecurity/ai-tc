@@ -99,7 +99,13 @@ export async function runDashboard(argv: string[]): Promise<void> {
   // family, reaching the server whichever literal BIND_HOST holds, and a future
   // IPv6 BIND_HOST would need bracket-wrapping here (`http://::1:4319` is a
   // malformed URL). What this name must satisfy is the web-ui's accepted Host
-  // set (middleware.ts) — the plugin builds the same URL.
+  // set (middleware.ts) — the plugin builds the same URL — because this host
+  // becomes the browser's `Host` header, and a spelling the gate does not admit
+  // 403s every page on launch. The bind address is a SEPARATE constraint the
+  // gate cannot enforce: it reads the Host header, never the bind address, so
+  // binding all interfaces (`0.0.0.0`) would expose the surface while every page
+  // still 200s. (middleware.test.ts makes the Host coupling discoverable, not
+  // enforced — it asserts the accepted literals, not the CLI's host.)
   const url = `http://localhost:${port}/security`;
 
   if (!(await isPortFree(Number(port)))) {

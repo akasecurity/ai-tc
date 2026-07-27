@@ -32,6 +32,7 @@ export {
   defaultDataDir,
   ensureDataDir,
   ensureLayoutDirSync,
+  keysDir,
   migrateLegacyLayout,
   settingsDir,
 } from './local-layout.ts';
@@ -90,6 +91,8 @@ export type { RuleProbeCacheEntry } from './repositories/rule-probe-cache.ts';
 export { SqliteRuleProbeCacheRepository } from './repositories/rule-probe-cache.ts';
 export type { ScanLedgerEntry, ScanLedgerState } from './repositories/scan-ledger.ts';
 export { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
+export type { VaultDerefInsert, VaultRow, VaultRowInsert } from './repositories/secret-vault.ts';
+export { SqliteSecretVaultRepository } from './repositories/secret-vault.ts';
 export { SqliteSecurityRepository } from './repositories/security.ts';
 export {
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
@@ -98,4 +101,28 @@ export {
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
 export { applyOnboarding, readWorkspaceSettings } from './settings.ts';
+export {
+  base32Decode,
+  base32Encode,
+  bindingInput,
+  deriveSubkeys,
+  formatPointer,
+  signPointer,
+  verifyPointerTag,
+} from './vault/crypto.ts';
+export type { KeyProvider, VaultKeyMaterial } from './vault/key-provider.ts';
+export {
+  createKeyProvider,
+  FileKeyProvider,
+  KeychainKeyProvider,
+  VaultKeyEpochMissingError,
+} from './vault/key-provider.ts';
+export type {
+  DetokenizeOptions,
+  DetokenizeResult,
+  SecretVaultDeps,
+  TokenizeMeta,
+  TokenizeResult,
+} from './vault/vault.ts';
+export { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from './vault/vault.ts';
 export { capWarnEraEnforcementOnce } from './warn-era-cap.ts';

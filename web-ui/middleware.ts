@@ -8,23 +8,34 @@ import { type NextRequest, NextResponse } from 'next/server';
 // header — and Next's built-in Server Action CSRF check compares Origin to
 // Host, which AGREE under rebinding — so the gate that actually closes the
 // hole is this one: reject any request not addressed to a loopback literal.
-// Any port is fine (`aka dashboard --port N`); the name must be loopback.
-const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]']);
+//
+// The whole gate is one anchored pattern: a bare `host[:port]` whose host is
+// exactly `localhost`, `127.0.0.1`, or `[::1]` (case-insensitive), any port
+// (`aka dashboard --port N`). The anchors reject everything else in a single
+// step — alternate IPv4/IPv6 encodings that resolve to loopback (`127.1`,
+// `2130706433`, `0x7f000001`, `127.000.000.001`, `[::ffff:127.0.0.1]`) and any
+// userinfo, path, query, or fragment smuggled past the authority
+// (`localhost:4319@evil.com`, `localhost:4319/evil`). Testing the literal the
+// client sent — not a parsed or normalised host — is what keeps the allow-set to
+// exactly these spellings; and a literal test has no URL-parser behaviour that
+// could differ between Node and the Edge runtime this middleware ships on. The
+// port is not part of the security decision — the host is always a loopback
+// literal when this matches — so `\d{1,5}` bounds only the port's length, and
+// out-of-range or zero-padded ports on loopback are admitted (harmless; no
+// browser can open a port above 65535).
+const BARE_LOOPBACK = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 
 function isLoopbackHost(hostHeader: string | null): boolean {
-  if (hostHeader === null || hostHeader === '') return false;
-  try {
-    // URL handles the port suffix and IPv6 brackets; `hostname` lowercases
-    // names and keeps the brackets on IPv6 literals ("[::1]").
-    return LOOPBACK_HOSTNAMES.has(new URL(`http://${hostHeader}`).hostname);
-  } catch {
-    // Unparseable Host header — fail closed.
-    return false;
-  }
+  return hostHeader !== null && BARE_LOOPBACK.test(hostHeader);
 }
 
-// No `config.matcher` export on purpose: the gate covers every path, including
-// RSC data requests and Server Action posts.
+// No `config.matcher` export on purpose: the gate runs on every request Next
+// routes to middleware, including RSC data requests and Server Action posts.
+// Trailing-slash and double-slash paths get a 308 before middleware; the
+// redirect preserves method and body (RFC 7538) and its target path IS gated,
+// so the retry is rejected. TRACE and CONNECT throw inside the middleware bundle
+// before the gate runs and get Next's 500 — fail-closed, and not reachable from
+// a browser, but not gated either.
 export function middleware(request: NextRequest): NextResponse {
   // `x-forwarded-host`, when present, participates in Next's Server Action
   // origin comparison, so hold it to the same bar (no supported deployment

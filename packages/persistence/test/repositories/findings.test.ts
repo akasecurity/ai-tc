@@ -689,15 +689,22 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
       // The filter must keep the group, totals must count only the open
       // instance, and the narrowed preview is legitimately EMPTY — the view
       // layer renders an explicit notice for this case.
-      for (let i = 0; i < 205; i++) {
-        record({
-          occurredAt: new Date(Date.parse('2026-02-01T00:00:00.000Z') + i * 1000).toISOString(),
-          sourceTool: 'claude-code',
-          ruleId: 'open-rule',
-          repo: 'acme/api',
-          filePath: `bulk/f${String(i)}.ts`,
-        });
-      }
+      // One transaction, not 205: recordCapture commits per call, and a commit
+      // apiece costs seconds of fsync on the Windows CI filesystem — the cost
+      // seedBulk() below is written the way it is to avoid. Each nested
+      // recordCapture runs in a SAVEPOINT, so its fail-open envelope behaves
+      // exactly as it does uncontained.
+      await db.transaction(() => {
+        for (let i = 0; i < 205; i++) {
+          record({
+            occurredAt: new Date(Date.parse('2026-02-01T00:00:00.000Z') + i * 1000).toISOString(),
+            sourceTool: 'claude-code',
+            ruleId: 'open-rule',
+            repo: 'acme/api',
+            filePath: `bulk/f${String(i)}.ts`,
+          });
+        }
+      });
 
       const res = await db.findings.listGroupedFindings({ status: ['open'] });
       const group = res.items.find((g) => g.id === 'open-rule');

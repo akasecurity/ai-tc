@@ -1,49 +1,32 @@
-import { DatabaseSync } from 'node:sqlite';
-
 import { describe, expect, it } from 'vitest';
 
-import type { TempStore } from './temp-store.ts';
 import { withTempStore } from './temp-store.ts';
 import { assertNoOpenTransaction } from './transactions.ts';
 
-// Two lines that read like a no-op, and every "the failure was contained" claim
-// in the fault suite rests on them. Gut the helper and those claims keep
-// reporting success, so the helper needs a gate of its own: it has to fail on an
-// open transaction, and it has to leave a clean handle exactly as it found it.
-
-/**
- * A raw handle on a store that exists. `data/` is created by
- * `openLocalDatabase`, so a raw handle taken before any `open()` has no
- * directory to create its file in.
- */
-function rawHandle(store: TempStore): DatabaseSync {
-  store.open().close();
-  return new DatabaseSync(store.dbFile);
-}
+// One line, and every "the failure was contained" claim in the fault suite
+// rests on it. Gut it and those claims keep reporting success, so it needs a
+// gate of its own: it has to fail on an open transaction, it has to leave the
+// handle exactly as it found it, and it must not answer for a handle it cannot
+// ask.
 
 describe('assertNoOpenTransaction', () => {
   it('throws when the handle is inside a transaction', () => {
     withTempStore((store) => {
-      const db = rawHandle(store);
-      db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+      const db = store.openRaw();
       db.exec('BEGIN');
-      try {
-        // The helper's own BEGIN is what fails, so its ROLLBACK never runs and
-        // the caller's transaction is still open afterwards — this test owns
-        // closing it, not the helper.
-        expect(() => {
-          assertNoOpenTransaction(db);
-        }).toThrow();
-      } finally {
-        db.exec('ROLLBACK');
-        db.close();
-      }
+      expect(() => {
+        assertNoOpenTransaction(db);
+      }).toThrow(/transaction is still open/);
+      // The check does not touch the transaction it reports on, so the caller's
+      // is still open here and still the caller's to end.
+      expect(db.isTransaction).toBe(true);
+      db.exec('ROLLBACK');
     });
   });
 
   it('passes on a handle that is not, and hands it back the way it found it', () => {
     withTempStore((store) => {
-      const db = rawHandle(store);
+      const db = store.openRaw();
       db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
       db.prepare('INSERT INTO t (v) VALUES (?)').run('before');
 
@@ -51,28 +34,27 @@ describe('assertNoOpenTransaction', () => {
         assertNoOpenTransaction(db);
       }).not.toThrow();
 
-      // It works by opening and rolling back a transaction of its own, so the
-      // handle must come back usable, outside a transaction, with nothing the
-      // rollback swept up on the way.
+      // Reading `isTransaction` cannot disturb the handle the way a BEGIN and
+      // ROLLBACK of its own would: the row survives, the handle stays usable,
+      // and asking twice is the same as asking once.
       expect(() => {
         assertNoOpenTransaction(db);
       }).not.toThrow();
+      expect(db.isTransaction).toBe(false);
       db.prepare('INSERT INTO t (v) VALUES (?)').run('after');
       expect(db.prepare('SELECT count(*) AS n FROM t').get()).toEqual({ n: 2 });
-
-      db.close();
     });
   });
 
   it('throws on a handle the caller already closed', () => {
     withTempStore((store) => {
-      const db = rawHandle(store);
+      const db = store.openRaw();
       db.close();
       // Not a transaction fault, but the helper must not report "no transaction
       // open" for a handle it could not ask.
       expect(() => {
         assertNoOpenTransaction(db);
-      }).toThrow();
+      }).toThrow(/not open/);
     });
   });
 });

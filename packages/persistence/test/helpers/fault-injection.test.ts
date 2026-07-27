@@ -74,7 +74,7 @@ describe('sqliteErrcode / primaryCode', () => {
   it('reads the result code off a node:sqlite error', () => {
     withTempStore((store) => {
       seedStore(store);
-      const db = new DatabaseSync(store.dbFile);
+      const db = store.openRaw();
       let err: unknown;
       try {
         db.exec('SELECT * FROM no_such_table');
@@ -112,7 +112,7 @@ describe('corruptStore', () => {
   it('truncate: the header survives, the pages do not — SQLITE_CORRUPT', () => {
     withTempStore((store) => {
       seedStore(store);
-      corruptStore(store.dbFile, 'truncate');
+      corruptStore(store.dbFile, 'truncate', { store });
 
       let err: unknown;
       try {
@@ -127,7 +127,7 @@ describe('corruptStore', () => {
   it('header: SQLite refuses the file outright — SQLITE_NOTADB', () => {
     withTempStore((store) => {
       seedStore(store);
-      corruptStore(store.dbFile, 'header');
+      corruptStore(store.dbFile, 'header', { store });
 
       let err: unknown;
       try {
@@ -142,10 +142,10 @@ describe('corruptStore', () => {
   it('page: the store still opens and reads — only integrity_check notices', () => {
     withTempStore((store) => {
       seedStore(store);
-      corruptStore(store.dbFile, 'page');
+      corruptStore(store.dbFile, 'page', { store });
 
       // The quiet failure: nothing throws, so a fail-open caller carries on.
-      const db = new DatabaseSync(store.dbFile);
+      const db = store.openRaw();
       expect(() => db.prepare('SELECT count(*) AS n FROM rule_probe_cache').get()).not.toThrow();
       assertNoOpenTransaction(db);
       db.close();
@@ -157,11 +157,11 @@ describe('corruptStore', () => {
   it('changes the same bytes every run', () => {
     withTempStore((store) => {
       seedStore(store);
-      corruptStore(store.dbFile, 'page');
+      corruptStore(store.dbFile, 'page', { store });
       // A second flip at the same offset undoes the first, so the store reads
       // healthy again and the injector refuses to claim it damaged it.
       expect(() => {
-        corruptStore(store.dbFile, 'page');
+        corruptStore(store.dbFile, 'page', { store });
       }).toThrow(/still reads as a healthy store/);
       expect(integrityOf(store.dbFile)).toBe('ok');
     });
@@ -173,7 +173,7 @@ describe('corruptStore', () => {
       for (const sidecar of walSidecars(store.dbFile)) {
         writeFileSync(sidecar, 'stale');
       }
-      corruptStore(store.dbFile, 'truncate');
+      corruptStore(store.dbFile, 'truncate', { store });
       for (const sidecar of walSidecars(store.dbFile)) {
         expect(existsSync(sidecar)).toBe(false);
       }
@@ -193,9 +193,40 @@ describe('corruptStore', () => {
       }).toThrow(/write to the store first/);
     });
   });
+
+  it('refuses to run while a handle is still open on the store', () => {
+    withTempStore((store) => {
+      seedStore(store);
+      const live = store.open();
+      // Removing the WAL from under a live connection makes the damage depend
+      // on that connection's cached pages — the one thing this injector
+      // promises not to do. Enforced, not just documented.
+      expect(() => {
+        corruptStore(store.dbFile, 'truncate', { store });
+      }).toThrow(/still open/);
+
+      live.close();
+      expect(() => {
+        corruptStore(store.dbFile, 'truncate', { store });
+      }).not.toThrow();
+    });
+  });
 });
 
 describe('readOnlyStore', () => {
+  it('refuses a store that is not there rather than reporting it effective', () => {
+    withTempStore((store) => {
+      seedStore(store);
+      // An absent file tightens nothing, and `every` over nothing is true — so
+      // without the guard this hands back `effective: true` for a store the
+      // caller can freely write, which is the exact vacuous pass the helper
+      // exists to prevent.
+      expect(() => {
+        readOnlyStore(join(store.dataDir, 'nope.db'), { onCleanup: store.onCleanup });
+      }).toThrow(/no store at/);
+    });
+  });
+
   it('reports exactly whether the mode change denies writes', () => {
     withTempStore((store) => {
       seedStore(store);
@@ -209,7 +240,7 @@ describe('readOnlyStore', () => {
     });
   });
 
-  it('denies the write without widening the file to the world', (ctx) => {
+  it('denies the write, on every platform', (ctx) => {
     // No platform guard: Node maps the write bit to the read-only attribute on
     // Windows too — only directory modes are the no-op there — and Windows is
     // the platform where the store has no other at-rest protection.
@@ -218,21 +249,29 @@ describe('readOnlyStore', () => {
       const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
       if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
-      const code = attemptWrite(store.dbFile);
-      const mode = statSync(store.dbFile).mode & 0o777;
+      expect(attemptWrite(store.dbFile)).toBeDefined();
       // No write bit anywhere, whatever the platform calls it.
-      expect(mode & 0o222).toBe(0);
-      if (process.platform === 'win32') {
-        // The mode does bite here, but Windows reports a read-only file as
-        // 0444 whatever was asked for, and which code SQLite raises for it is
-        // not pinned — only that the write is refused.
-        expect(code).toBeDefined();
-        return;
-      }
-      expect(code).toBe(SQLITE_READONLY);
+      expect(statSync(store.dbFile).mode & 0o222).toBe(0);
+    });
+  });
+
+  // Split from the case above rather than branched inside it: the mode
+  // assertion is meaningless on Windows, which reports a read-only file as 0444
+  // whatever was asked for, and which result code it raises for one is not
+  // pinned. Branching would report the whole thing as a pass there.
+  it('raises SQLITE_READONLY without widening the file to the world', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('Windows reports a read-only file as 0444 whatever mode was asked for');
+    }
+    withTempStore((store) => {
+      seedStore(store);
+      const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
+
+      expect(attemptWrite(store.dbFile)).toBe(SQLITE_READONLY);
       // 0400, not 0444: denying the write must not hand the prompt corpus to
       // every other account on the machine on the way.
-      expect(mode & 0o077).toBe(0);
+      expect(statSync(store.dbFile).mode & 0o077).toBe(0);
     });
   });
 
@@ -246,7 +285,7 @@ describe('readOnlyStore', () => {
       });
       if (!readOnly.effective) ctx.skip(MODES_IGNORED);
 
-      const db = new DatabaseSync(store.dbFile);
+      const db = store.openRaw();
       let err: unknown;
       try {
         db.exec('PRAGMA journal_mode = WAL');
@@ -302,7 +341,7 @@ describe('lockStore', () => {
       seedStore(store);
       lockStore(store.dbFile, { onCleanup: store.onCleanup });
 
-      const victim = new DatabaseSync(store.dbFile);
+      const victim = store.openRaw();
       victim.exec('PRAGMA busy_timeout = 250');
       let err: unknown;
       try {
@@ -407,7 +446,7 @@ describe('fillStore', () => {
   it('raises SQLITE_FULL from the engine, leaving the store intact', () => {
     withTempStore((store) => {
       seedStore(store);
-      const db = new DatabaseSync(store.dbFile);
+      const db = store.openRaw();
       db.exec('PRAGMA journal_mode = WAL');
       db.exec('CREATE TABLE bulk (id INTEGER PRIMARY KEY, v TEXT)');
       const filled = fillStore(db);
@@ -444,12 +483,12 @@ describe('fillStore', () => {
   it('caps the handle it was given, not the file', () => {
     withTempStore((store) => {
       seedStore(store);
-      const capped = new DatabaseSync(store.dbFile);
+      const capped = store.openRaw();
       capped.exec('PRAGMA journal_mode = WAL');
       capped.exec('CREATE TABLE bulk (id INTEGER PRIMARY KEY, v TEXT)');
       fillStore(capped);
 
-      const other = new DatabaseSync(store.dbFile);
+      const other = store.openRaw();
       const insert = other.prepare('INSERT INTO bulk (v) VALUES (?)');
       const payload = 'x'.repeat(200);
       // One transaction, not one per row: in autocommit each row is its own WAL

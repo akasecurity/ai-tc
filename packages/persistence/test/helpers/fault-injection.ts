@@ -32,6 +32,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 
 import { walSidecars } from '../../src/paths.ts';
+import type { TempStore } from './temp-store.ts';
 
 /**
  * Primary result codes — the low byte of the code node:sqlite reports.
@@ -44,7 +45,6 @@ import { walSidecars } from '../../src/paths.ts';
  * only when the refinement itself is the point.
  */
 export const SQLITE_BUSY = 5;
-export const SQLITE_LOCKED = 6;
 export const SQLITE_READONLY = 8;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_FULL = 13;
@@ -135,17 +135,37 @@ function isDamaged(file: string): boolean {
   }
 }
 
+export interface CorruptStoreOptions {
+  /**
+   * The store the file belongs to. Given one, the no-open-handle precondition
+   * below is checked rather than described — pass it wherever you have it.
+   */
+  store?: Pick<TempStore, 'openHandleCount'>;
+}
+
 /**
  * Damage a real store at a fixed offset — same input, same bytes changed, every
  * run. The store must have no open handle: the WAL sidecars are removed first,
- * because a WAL still holding the live pages would replay over the damage.
+ * and pulling them out from under a live connection makes the resulting damage
+ * depend on that connection's cached pages, which costs the determinism above.
+ * Pass `store` and that precondition is enforced.
  *
  * Throws if the damage did not take, so a corrupted-store test can never pass
  * against a healthy store.
  */
-export function corruptStore(file: string, mode: CorruptionMode = 'truncate'): void {
+export function corruptStore(
+  file: string,
+  mode: CorruptionMode = 'truncate',
+  opts: CorruptStoreOptions = {},
+): void {
   if (!existsSync(file)) {
     throw new Error(`corruptStore(): no store at ${file}`);
+  }
+  const live = opts.store?.openHandleCount() ?? 0;
+  if (live > 0) {
+    throw new Error(
+      `corruptStore(): ${String(live)} handle(s) still open on ${file} — close them first, or the WAL removed below is pulled out from under a live connection.`,
+    );
   }
   for (const sidecar of walSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
@@ -240,6 +260,13 @@ const READ_ONLY_DIR_MODE = 0o500;
  * yourself from a `finally`.
  */
 export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): ReadOnlyStore {
+  // Without this, an absent file tightens nothing, `original` stays empty, and
+  // `[].every(...)` reports `effective: true` — the vacuous pass this helper
+  // exists to prevent, handed to a caller that then asserts read-only
+  // behaviour against a store it can freely write.
+  if (!existsSync(file)) {
+    throw new Error(`readOnlyStore(): no store at ${file}`);
+  }
   const targets = [file, ...walSidecars(file)].filter((path) => existsSync(path));
   const dir = dirname(file);
   const original = new Map<string, number>();
@@ -312,8 +339,11 @@ export interface StoreLock {
    * and a no-op once `holdMs` has already elapsed.
    *
    * It returns only after the holder has closed its handle, so a temp store
-   * torn down straight afterwards has no connection left on the file —
-   * Windows refuses to delete one that is still open.
+   * torn down straight afterwards has no connection left on the file — Windows
+   * refuses to delete one that is still open. If the holder does not report
+   * back within `readyTimeoutMs` this throws rather than return, because the
+   * handle may still be open and a silent return would hand back exactly the
+   * guarantee it failed to keep.
    */
   release(): void;
 }
@@ -412,8 +442,13 @@ export function lockStore(file: string, opts: LockStoreOptions = {}): StoreLock 
       Atomics.notify(signal, RELEASE);
       // Returns immediately once the holder has moved off STATE_HELD, including
       // when it already released itself after holdMs.
-      Atomics.wait(signal, STATE, STATE_HELD, readyTimeoutMs);
+      const settled = Atomics.wait(signal, STATE, STATE_HELD, readyTimeoutMs);
       void worker.terminate();
+      if (settled === 'timed-out') {
+        throw new Error(
+          `lockStore(): the holder on ${file} did not report letting go within ${String(readyTimeoutMs)}ms — its handle may still be open on the store.`,
+        );
+      }
     },
   };
   opts.onCleanup?.(() => {

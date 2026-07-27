@@ -13,16 +13,17 @@
  * independent connection on the one file — which is what makes two live
  * writers, and the contention between them, reachable from a test.
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, beforeEach } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
 import { openLocalDatabase } from '../../src/database.ts';
 import { dataDir, dbPath, settingsDir } from '../../src/local-layout.ts';
-import { DATA_DIR_MODE } from '../../src/paths.ts';
+import { ensureDataDirSync } from '../../src/paths.ts';
 
 export interface TempStore {
   /** The mkdtemp root, standing in for `~/.aka`. */
@@ -39,11 +40,23 @@ export interface TempStore {
    */
   readonly open: () => LocalDatabase;
   /**
+   * A raw `DatabaseSync` on the same file, closed for you at teardown. A test
+   * that opens one by hand has to close it on every path, including the one
+   * where an assertion just failed — which is where it is most often forgotten,
+   * and where Windows then refuses to delete the tree.
+   */
+  readonly openRaw: () => DatabaseSync;
+  /**
+   * How many handles handed out by `open`/`openRaw` are still open. Injectors
+   * whose precondition is "no live connection" check this rather than trust the
+   * caller to have read the doc.
+   */
+  readonly openHandleCount: () => number;
+  /**
    * Run `fn` before the temp tree is removed, most recent first. Fault
    * injectors take this as their `onCleanup` option — a read-only tree cannot
    * be deleted and a held lock cannot be, either on Windows, so both have to
-   * be undone before the rm. Declared as a property, not a method, so it can
-   * be handed to an injector without binding.
+   * be undone before the rm.
    */
   readonly onCleanup: (fn: () => void) => void;
 }
@@ -58,30 +71,69 @@ export interface OwnedTempStore extends TempStore {
  * A temp store the caller destroys by hand. Prefer `withTempStore` (scoped) or
  * `useTempStore` (hook-driven); reach for this only when neither shape fits.
  */
+/** A handle the store handed out, and the two things it needs to track it. */
+interface TrackedHandle {
+  close: () => void;
+  isOpen: () => boolean;
+}
+
 export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
   const home = mkdtempSync(join(tmpdir(), prefix));
-  // `data/` is created by openLocalDatabase, but nothing creates `settings/`
-  // until a settings writer runs — so a test that writes settings.json by hand
-  // would meet an absent directory. Both subdirs exist from the start instead.
-  mkdirSync(settingsDir(home), { recursive: true, mode: DATA_DIR_MODE });
-  const handles: LocalDatabase[] = [];
+  // Both subdirs up front, through the same helper the product uses: a bare
+  // `mkdirSync` mode is umask-masked and is not applied to a directory that
+  // already exists, so `ensureDataDirSync`'s follow-up chmod is what makes 0700
+  // a guarantee rather than a request. `data/` would otherwise appear only on
+  // the first `open()`, and a test seeding the store by hand — a
+  // policy-cache.json, a read-only directory — would meet an absent path.
+  ensureDataDirSync(settingsDir(home));
+  ensureDataDirSync(dataDir(home));
+
+  const handles: TrackedHandle[] = [];
   const cleanups: (() => void)[] = [];
   let destroyed = false;
 
+  // Arrow properties, not method shorthand: these get handed to injectors
+  // unbound (`{ onCleanup: store.onCleanup }`), so binding must not matter.
   return {
     home,
     settingsDir: settingsDir(home),
     dataDir: dataDir(home),
     dbFile: dbPath(home),
-    open(): LocalDatabase {
+    open: (): LocalDatabase => {
       const db = openLocalDatabase(dataDir(home));
-      handles.push(db);
+      // LocalDatabase has no `isOpen`, so the close is wrapped to record it —
+      // otherwise a handle a test closed itself still counts as live.
+      let closed = false;
+      const tracked: LocalDatabase = {
+        ...db,
+        close: () => {
+          closed = true;
+          db.close();
+        },
+      };
+      handles.push({
+        close: () => {
+          tracked.close();
+        },
+        isOpen: () => !closed,
+      });
+      return tracked;
+    },
+    openRaw: (): DatabaseSync => {
+      const db = new DatabaseSync(dbPath(home));
+      handles.push({
+        close: () => {
+          db.close();
+        },
+        isOpen: () => db.isOpen,
+      });
       return db;
     },
-    onCleanup(fn: () => void): void {
+    openHandleCount: (): number => handles.filter((handle) => handle.isOpen()).length,
+    onCleanup: (fn: () => void): void => {
       cleanups.push(fn);
     },
-    destroy(): void {
+    destroy: (): void => {
       if (destroyed) return;
       destroyed = true;
       // Restores run before the handles close: a cleanup may need to widen a
@@ -93,9 +145,9 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
           // A cleanup that cannot run must not strand the temp tree.
         }
       }
-      for (const db of handles) {
+      for (const handle of handles) {
         try {
-          db.close();
+          handle.close();
         } catch {
           // node:sqlite throws on a second close, and a test is free to close a
           // handle itself — an already-closed handle is the expected case here.
@@ -153,7 +205,7 @@ export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): 
   try {
     result = fn(store);
   } catch (err) {
-    store.destroy();
+    destroyAfterFailure(store, err);
     throw err;
   }
   if (!isThenable(result)) {
@@ -166,11 +218,29 @@ export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): 
       return value;
     },
     (err: unknown) => {
-      store.destroy();
+      destroyAfterFailure(store, err);
       throw err;
     },
   );
   return settled as T;
+}
+
+/**
+ * Tear down after the body has already failed, without letting the teardown
+ * speak over it.
+ *
+ * `destroy()` ends in `removeTree`, which rethrows on POSIX by design — a mode
+ * a test tightened and never restored surfaces there. Left unguarded, a test
+ * that both forgot a restore and failed an assertion reports `EACCES … rmdir`
+ * and nothing about the assertion, in the one case where the diagnostic matters
+ * most. The teardown failure still travels, as `cause`.
+ */
+function destroyAfterFailure(store: OwnedTempStore, err: unknown): void {
+  try {
+    store.destroy();
+  } catch (teardownErr) {
+    if (err instanceof Error && err.cause === undefined) err.cause = teardownErr;
+  }
 }
 
 /**
@@ -219,6 +289,8 @@ export function useTempStore(prefix?: string): TempStore {
       return active().dbFile;
     },
     open: () => active().open(),
+    openRaw: () => active().openRaw(),
+    openHandleCount: () => active().openHandleCount(),
     onCleanup: (fn: () => void) => {
       active().onCleanup(fn);
     },

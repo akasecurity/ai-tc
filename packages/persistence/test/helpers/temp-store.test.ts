@@ -1,5 +1,6 @@
-import { existsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -14,11 +15,68 @@ describe('withTempStore', () => {
       expect(store.settingsDir).toBe(join(store.home, 'settings'));
       expect(store.dataDir).toBe(join(store.home, 'data'));
       expect(store.dbFile).toBe(join(store.home, 'data', 'aka.db'));
-      // settings/ exists from the start — nothing else creates it until a
-      // settings writer runs, and a test that writes settings.json by hand
-      // should not have to know that.
-      expect(existsSync(store.settingsDir)).toBe(true);
+      // Both exist from the start. `data/` would otherwise appear only on the
+      // first open(), and settings/ not until a settings writer ran — a test
+      // seeding either by hand should not have to know that.
+      expect({
+        settings: existsSync(store.settingsDir),
+        data: existsSync(store.dataDir),
+      }).toEqual({ settings: true, data: true });
     });
+  });
+
+  it('hands out raw handles that close themselves at teardown', () => {
+    let home = '';
+    let raw: DatabaseSync | undefined;
+    withTempStore((store) => {
+      home = store.home;
+      raw = store.openRaw();
+      raw.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+      expect(raw.isOpen).toBe(true);
+      // Deliberately not closed: a test that fails mid-body never reaches its
+      // own close, which is where Windows then refuses to delete the tree.
+    });
+    expect(raw?.isOpen).toBe(false);
+    expect(existsSync(home)).toBe(false);
+  });
+
+  it('counts the handles that are still open, however they were opened', () => {
+    withTempStore((store) => {
+      expect(store.openHandleCount()).toBe(0);
+
+      const db = store.open();
+      const raw = store.openRaw();
+      expect(store.openHandleCount()).toBe(2);
+
+      // A close the test performs itself counts, not just teardown's.
+      db.close();
+      expect(store.openHandleCount()).toBe(1);
+      raw.close();
+      expect(store.openHandleCount()).toBe(0);
+    });
+  });
+
+  it('keeps a failing teardown from speaking over the body failure', () => {
+    let home = '';
+    let caught: Error | undefined;
+    try {
+      withTempStore((store) => {
+        home = store.home;
+        // A mode the test never restores: removeTree rethrows on POSIX, which
+        // must not replace the assertion that actually broke.
+        mkdirSync(join(store.home, 'locked'));
+        chmodSync(store.home, 0o500);
+        throw new Error('THE-REAL-FAILURE');
+      });
+    } catch (err) {
+      caught = err as Error;
+    }
+    chmodSync(home, 0o700);
+    rmSync(home, { recursive: true, force: true });
+
+    expect(caught?.message).toBe('THE-REAL-FAILURE');
+    // The teardown failure is not dropped either — it travels as the cause.
+    expect(caught?.cause).toBeDefined();
   });
 
   it('opens a usable store under data/', () => {

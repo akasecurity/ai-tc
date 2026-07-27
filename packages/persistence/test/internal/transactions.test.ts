@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { failOpenTransaction, withTransaction } from '../../src/internal/transactions.ts';
-import { assertNoOpenTransaction as assertNoOpenTransactionOn } from '../helpers/transactions.ts';
+import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
 let db: DatabaseSync;
 
@@ -20,12 +20,6 @@ function rowCount(): number {
   return (db.prepare('SELECT count(*) AS n FROM t').get() as { n: number }).n;
 }
 
-// Bound to this suite's handle; the check itself lives in test/helpers so the
-// fault tests can assert the same thing about a store they just broke.
-function assertNoOpenTransaction(): void {
-  assertNoOpenTransactionOn(db);
-}
-
 describe('withTransaction', () => {
   it('commits: rows written inside fn persist', () => {
     withTransaction(db, () => {
@@ -33,7 +27,7 @@ describe('withTransaction', () => {
       db.prepare('INSERT INTO t (v) VALUES (?)').run('b');
     });
     expect(rowCount()).toBe(2);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('rolls back and rethrows the original error when fn throws', () => {
@@ -49,7 +43,7 @@ describe('withTransaction', () => {
     }
     expect(caught).toBe(boom);
     expect(rowCount()).toBe(0);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('rethrows the original error even when ROLLBACK itself fails', () => {
@@ -66,7 +60,7 @@ describe('withTransaction', () => {
       caught = error;
     }
     expect(caught).toBe(boom);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('runs IMMEDIATE mode end-to-end', () => {
@@ -78,7 +72,7 @@ describe('withTransaction', () => {
       'IMMEDIATE',
     );
     expect(rowCount()).toBe(1);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('joins a caller-owned transaction rather than committing on its own', () => {
@@ -94,7 +88,7 @@ describe('withTransaction', () => {
     // which it could not do had the envelope committed independently.
     db.exec('ROLLBACK');
     expect(rowCount()).toBe(0);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('unwinds only its own work when fn throws while nested, leaving the caller to continue', () => {
@@ -117,7 +111,7 @@ describe('withTransaction', () => {
     expect(rowCount()).toBe(1);
     db.exec('COMMIT');
     expect(rowCount()).toBe(1);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('rethrows while nested even when the statement forced a full rollback', () => {
@@ -137,7 +131,7 @@ describe('withTransaction', () => {
     // included: the outer row is gone and no transaction is left open.
     expect(db.isTransaction).toBe(false);
     expect(rowCount()).toBe(1);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('nests re-entrantly: each envelope unwinds to its own savepoint', () => {
@@ -158,7 +152,7 @@ describe('withTransaction', () => {
     expect((db.prepare('SELECT group_concat(v) AS v FROM t').get() as { v: string }).v).toBe('a,c');
     db.exec('ROLLBACK');
     expect(rowCount()).toBe(0);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 });
 
@@ -178,7 +172,7 @@ describe('failOpenTransaction', () => {
     });
     expect(ok).toBe(false);
     expect(rowCount()).toBe(0);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('supports IMMEDIATE mode', () => {
@@ -204,7 +198,7 @@ describe('failOpenTransaction', () => {
     expect(rowCount()).toBe(2);
     db.exec('ROLLBACK');
     expect(rowCount()).toBe(0);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('returns false while nested and keeps its partial write out of the caller’s transaction', () => {
@@ -222,7 +216,7 @@ describe('failOpenTransaction', () => {
     expect(rowCount()).toBe(1);
     db.exec('COMMIT');
     expect(rowCount()).toBe(1);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 
   it('rethrows while nested when the failure destroyed the caller’s transaction', () => {
@@ -238,6 +232,6 @@ describe('failOpenTransaction', () => {
     // statements it believes are still inside its own transaction.
     expect(db.isTransaction).toBe(false);
     expect(rowCount()).toBe(1);
-    assertNoOpenTransaction();
+    assertNoOpenTransaction(db);
   });
 });

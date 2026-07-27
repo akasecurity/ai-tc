@@ -273,14 +273,19 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).
-- `fault-injection.ts` — `corruptStore`, `readOnlyStore`, `lockStore`, `fillStore`, plus
-  the `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector
-  produces a real error code from the real engine and reports when it could not take
-  effect (`chmod` is a no-op for directories on Windows, and root bypasses modes), so a
-  fault test cannot pass against a healthy store. Pass the store's `onCleanup` to any
-  injector that has to be undone before the tree can be removed.
+- `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
+  `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
+  real error code from the real engine and refuses to run rather than take effect
+  vacuously — an absent store, a live handle, a `chmod` the platform ignored — so a fault
+  test cannot pass against a healthy store. Pass the store's `onCleanup` to any injector
+  that has to be undone before the tree can be removed, and the store itself to any that
+  needs no live connection.
+  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
+  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
+  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
-  fault; assert this after injecting one.
+  fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
+  with a transaction of its own, so it cannot disturb the handle it is inspecting.
 
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:

@@ -35,7 +35,7 @@ const FILES = [
   'src/start-light.ts',
   'src/firstrun.ts',
   'src/firstrun-core.ts',
-  'src/triage/adapter.ts',
+  '../../packages/setup-wizard/src/triage/adapter.ts',
   'src/apply-suppressions.ts',
   'src/remediation/entry.ts',
 ] as const;
@@ -218,14 +218,14 @@ const ALLOWLIST: AllowlistEntry[] = [
       'wrapped in show(...)/frameJsonBlock(...) or an allowlisted STATUS path before it reaches here.',
   },
   {
-    file: 'src/triage/adapter.ts',
+    file: '../../packages/setup-wizard/src/triage/adapter.ts',
     substring: 'Plan saved to:',
     reason:
       'The raw-free plan-file path printed for the wizard to hand to the confirm step — a ' +
       'model-facing STATUS path, not copy the user needs relayed.',
   },
   {
-    file: 'src/triage/adapter.ts',
+    file: '../../packages/setup-wizard/src/triage/adapter.ts',
     substring: 'Re-run with:',
     reason:
       'The confirm re-run command line (apply-suppressions.js --confirmed --plan <path>) — ' +

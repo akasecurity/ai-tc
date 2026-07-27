@@ -1,7 +1,7 @@
 // The harness-agnostic core of the /aka:setup calibration → triage →
 // remediation wizard. Everything here is pure logic or dependency-injected:
 // no host command names, no transcript locations, no judge subprocess. Each
-// plugin (Claude Code, Codex CLI) supplies those at its own I/O boundary and
+// harness plugin supplies those at its own I/O boundary and
 // renders the host-specific surfaces itself.
 export * from './onboard-posture.ts';
 export * from './posture-reasoning.ts';
@@ -10,6 +10,7 @@ export * from './remediation/deliverable.ts';
 export * from './remediation/posture.ts';
 export * from './remediation/redaction-summary.ts';
 export * from './remediation/rotation-checklist.ts';
+export * from './triage/adapter.ts';
 export { dedupeForJudge } from './triage/dedupe.ts';
 export { deriveFalsePositivePatterns } from './triage/false-positive-patterns.ts';
 export * from './triage/fixture-exception.ts';

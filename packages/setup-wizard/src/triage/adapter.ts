@@ -13,35 +13,37 @@
  *     exactly the plan they approved, never a freshly re-derived one.
  *
  * All IO (stream read, judge spawn, DB, clock, stdout/stderr) is injected so this
- * is unit-testable with fakes; the script wires the real implementations.
+ * is unit-testable with fakes; each plugin's thin script wires the real
+ * implementations. The host-facing presentation (SHOW/fence wrapping, the
+ * calibration frames, the applied/recommended-posture copy, the
+ * store-unavailable note) is injected the same way, via AdapterPresenter —
+ * those surfaces carry host-branded copy and host command names, which this
+ * shared core must not own.
  */
 import { assertRawFree, type ExceptionWriter, severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   CalibrationPreview,
   DetectionCategory,
+  FalsePositivePatternGroup,
+  MaskedSecretFinding,
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
-import { dedupeForJudge } from '@akasecurity/setup-wizard';
-import { deriveFalsePositivePatterns } from '@akasecurity/setup-wizard';
-import { renderPosturePlan, renderShowcase, renderSuppressionGate } from '@akasecurity/setup-wizard';
-import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from '@akasecurity/setup-wizard';
-import { deletePlanFile, readPlanFile, writePlanFile } from '@akasecurity/setup-wizard';
-import { deriveSurfacedSecretFindings } from '@akasecurity/setup-wizard';
+
+import { dedupeForJudge } from './dedupe.ts';
+import { deriveFalsePositivePatterns } from './false-positive-patterns.ts';
+import { renderPosturePlan, renderShowcase, renderSuppressionGate } from './gate-display.ts';
+import { chunkForJudge, chunkIds, groundVerdict, mergeRecommendations } from './merge.ts';
+import { deletePlanFile, readPlanFile, writePlanFile } from './plan-file.ts';
+import { deriveSurfacedSecretFindings } from './surfaced-secrets.ts';
 import {
   type CategoryPolicyWriter,
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
   recommendedPosture,
-} from '@akasecurity/setup-wizard';
-
-import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
-import { readRegisteredCommands } from '../command-registry.ts';
-import { fenced, show } from '../present.ts';
-import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
-import { frameJsonBlock } from '../setup-frame-json.ts';
+} from './writeback.ts';
 
 export interface AdapterDb {
   policies: CategoryPolicyWriter;
@@ -67,6 +69,43 @@ const DEFAULT_PLAN_IO: PlanFileIO = {
   delete: deletePlanFile,
 };
 
+// A framed presentation block: the human copy plus the machine frame the
+// wizard emits alongside it. Structurally matches each plugin's own
+// calibration-frame result type without this package importing it.
+export interface FramedBlock {
+  copy: string;
+  frame: unknown;
+}
+
+// The host-facing presentation surface. Every member either carries
+// host-branded copy (the empty states, the calibrated-result card, the
+// store-unavailable note), names host commands (the applied card's Ready
+// line resolves against the installed command registry), or defines the
+// host's relay framing (show/fenced/frameJsonBlock) — so each plugin wires
+// its own and this core stays host-free.
+export interface AdapterPresenter {
+  show(body: string): string;
+  fenced(body: string): string;
+  frameJsonBlock(payload: unknown): string;
+  frameEmptyState(
+    cause: 'scan-clean' | 'no-history',
+    posture: CalibrationPreview['posture'],
+  ): FramedBlock;
+  frameCalibration(
+    preview: CalibrationPreview,
+    maskedFindings: readonly MaskedSecretFinding[],
+    falsePositivePatterns: readonly FalsePositivePatternGroup[],
+  ): FramedBlock;
+  renderRecommendedPosture(posture: CalibrationPreview['posture']): string;
+  // The zero-count calibration frame emitted when the judge is skipped for
+  // missing model-judge consent — counts are zero because nothing was JUDGED.
+  zeroCountFrame(posture: CalibrationPreview['posture']): unknown;
+  // The host closes over its own command registry here — the shared core
+  // never reads the registry itself.
+  renderApplied(categoriesTuned: number, dismissed: number): string;
+  storeUnavailableNote: string;
+}
+
 export interface AdapterDeps {
   argv: string[];
   // Called ONLY on the preview path. Reads the --triage stream (stdin or a path).
@@ -82,6 +121,7 @@ export interface AdapterDeps {
   createdBy: () => string;
   stdout: (s: string) => void;
   stderr: (s: string) => void;
+  present: AdapterPresenter;
   planIO?: PlanFileIO;
   // Byte budget per judging batch. Defaults to chunkForJudge's own; injectable
   // so a test can drive the multi-batch path without a quarter-megabyte of
@@ -123,6 +163,7 @@ export async function runApply(deps: AdapterDeps): Promise<number> {
 // PREVIEW: judge, build the plan, render the gate, persist the raw-free plan, and
 // print the plan-file path for the wizard to hand to the confirm step.
 function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
+  const { present } = deps;
   const streamPath = getFlag(deps.argv, 'stream');
   const streamText = deps.readStream(streamPath === '' ? undefined : streamPath);
 
@@ -131,24 +172,24 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     if (status === 'complete') {
       // A scan ran and surfaced nothing: render the honest scan-ran-clean empty
       // state over the recommended posture, plus its zero-count CalibrationFrame.
-      const empty = frameEmptyState('scan-clean', severityFloorPosture());
-      deps.stdout(show(fenced(empty.copy)));
-      deps.stdout(frameJsonBlock(empty.frame));
+      const empty = present.frameEmptyState('scan-clean', severityFloorPosture());
+      deps.stdout(present.show(present.fenced(empty.copy)));
+      deps.stdout(present.frameJsonBlock(empty.frame));
       return 0;
     }
     if (status === 'complete:no-history') {
       // A scan ran over an empty history set: render the honest no-history empty
       // state over the start-light posture, plus its zero-count CalibrationFrame.
-      const empty = frameEmptyState('no-history', severityFloorPosture());
-      deps.stdout(show(fenced(empty.copy)));
-      deps.stdout(frameJsonBlock(empty.frame));
+      const empty = present.frameEmptyState('no-history', severityFloorPosture());
+      deps.stdout(present.show(present.fenced(empty.copy)));
+      deps.stdout(present.frameJsonBlock(empty.frame));
       return 0;
     }
     // The only status that reaches here is `skipped:no-consent` — the backfill
     // refused to read history because access was never granted. Nothing was
     // examined, so this must not borrow the looked-and-found-nothing copy above:
     // that would report a clean bill of health for a scan that never ran.
-    deps.stdout(show("I didn't review anything — historical access wasn't granted."));
+    deps.stdout(present.show("I didn't review anything — historical access wasn't granted."));
     return 0;
   }
 
@@ -157,7 +198,9 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
   // the judge never runs — emit a clean skip (never throw, never call runJudge),
   // mirroring the no-consent skip copy above.
   if (!deps.modelJudgeConsent()) {
-    deps.stdout(show("I didn't send anything to the model — model-judge consent wasn't granted."));
+    deps.stdout(
+      present.show("I didn't send anything to the model — model-judge consent wasn't granted."),
+    );
     // The wizard reaches this pipe on the Yes path expecting a frame to parse,
     // and consent can still be missing here (a failed write, or a grant made
     // stale by a payload-version bump). Emit a zero-count frame so that degrades
@@ -165,7 +208,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // nothing to read. The counts are zero because nothing was JUDGED, not
     // because nothing was found — the line above is what the user reads; the
     // frame is machine-only and never displayed.
-    deps.stdout(frameJsonBlock(zeroCountFrame(severityFloorPosture())));
+    deps.stdout(present.frameJsonBlock(present.zeroCountFrame(severityFloorPosture())));
     return 0;
   }
 
@@ -192,7 +235,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
       // on screen. It also makes the fallback observable — otherwise the only
       // difference between one batch and ten is how long the wizard hangs.
       deps.stdout(
-        show(
+        present.show(
           `Reviewing ${String(reps.length)} distinct values in ${String(chunks.length)} batches — this is the large-history path, so give it a moment.`,
         ),
       );
@@ -245,7 +288,7 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // consolidated SHOW region below, not a sequence of separate emits.
     const gate: string[] = [];
     if (storeUnavailable) {
-      gate.push(STORE_UNAVAILABLE_NOTE);
+      gate.push(present.storeUnavailableNote);
     }
     // With no readable store the downgrade comparison has no baseline, so pass an
     // empty current — every category renders as new rather than a partial/false view.
@@ -299,24 +342,24 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // exception covers every occurrence, and counting occurrences here would
     // inflate the offer's count over the number of exceptions it can grant.
     const falsePositivePatterns = deriveFalsePositivePatterns(reps, rec, plan);
-    const calibration = frameCalibration(preview, maskedFindings, falsePositivePatterns);
+    const calibration = present.frameCalibration(preview, maskedFindings, falsePositivePatterns);
 
     // The calibrated-result card: the real-count headline over the
     // preview's genuine/suppressed split, then the condensed one-row-per-pack
     // recommended posture. Both are raw-free (counts, category enums, and palette
     // levels only) and template over this run's numbers, never a fixed value.
     gate.push(calibration.copy);
-    gate.push(renderRecommendedPosture(preview.posture));
+    gate.push(present.renderRecommendedPosture(preview.posture));
 
     // The whole human gate — the posture plan, showcase, suppression gate, notes,
     // and the calibrated-result card — is ONE relay region: the model pastes it
     // verbatim, so it must read as a single coherent screen, not several stray
     // fragments the model has to stitch back together.
-    deps.stdout(show(fenced(gate.join('\n\n'))));
+    deps.stdout(present.show(present.fenced(gate.join('\n\n'))));
 
     // The machine-readable calibration frame carrying the same counts/posture the
     // card above renders, for downstream consumers (the installed-summary handoff).
-    deps.stdout(frameJsonBlock(calibration.frame));
+    deps.stdout(present.frameJsonBlock(calibration.frame));
 
     // Persist the EXACT resolved raw-free plan the user is about to approve. The
     // backstop (assertRawFree over the serialized doc) runs inside write(). With an
@@ -406,8 +449,8 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       closeOnce();
       deps.stderr(
         `AKA apply-suppressions failed: the detection store changed since this plan was previewed ` +
-          `(${drifted.join(', ')}). Refusing to apply a stale plan — re-run /aka:setup to review ` +
-          `against the current store.\n`,
+          `(${drifted.join(', ')}). Refusing to apply a stale plan — re-run the setup wizard to ` +
+          `review against the current store.\n`,
       );
       return 1;
     }
@@ -464,7 +507,7 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       // counts threaded from the real writeback result, never a literal; the
       // Ready line's curated set validated against the installed command registry.
       deps.stdout(
-        show(renderApplied(res.categoriesWritten, res.written, readRegisteredCommands())),
+        deps.present.show(deps.present.renderApplied(res.categoriesWritten, res.written)),
       );
     } catch {
       // Reporting failed but the write did not — still a success.

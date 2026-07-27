@@ -16,6 +16,9 @@ coverage
 .DS_Store
 plugins/claude-code/scripts/
 
+# written by .github/scripts/audit-dependencies.mjs on every run
+audit-report.md
+
 # Per-developer Claude Code settings (plugin enablement etc.) stay local.
 .claude/settings.local.json
 

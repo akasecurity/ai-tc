@@ -1,0 +1,9 @@
+{
+  "waivers": [
+    {
+      "advisory": "GHSA-mh99-v99m-4gvg",
+      "reason": "brace-expansion 1.x has no patched release (the fix ships only in 5.0.8); the 1.x copy is reached solely through minimatch@3 inside the ESLint dev toolchain — lint-time only, patterns come from repository config, and it is not part of any shipped bundle.",
+      "expires": "2026-08-26"
+    }
+  ]
+}

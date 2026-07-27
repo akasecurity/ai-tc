@@ -1,0 +1,109 @@
+name: Dependency audit
+
+# Gates every change on `pnpm audit`: a high or critical advisory without an
+# unexpired waiver in .github/audit-waivers.json fails the check. The daily
+# schedule catches advisories published between merges — a scheduled failure
+# opens (or updates) an issue labeled `security-advisory` instead of failing
+# invisibly. The waiver process is documented in CONTRIBUTING.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The group includes the event name so a scheduled run never cancels (or is
+# cancelled by) a push run sharing the main ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # The audit reads the lockfile only — no `pnpm install` needed.
+      - name: Audit dependencies (high/critical gate, waiver-aware)
+        run: node .github/scripts/audit-dependencies.mjs
+
+      - name: Publish the report to the run summary
+        if: always()
+        run: |
+          if [ -f audit-report.md ]; then
+            cat audit-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Scheduled runs must not fail silently: surface a failing daily audit as a
+  # tracked issue. PR runs skip this — the red check on the PR is the signal.
+  report:
+    name: File advisory issue (scheduled runs)
+    needs: audit
+    if: always() && needs.audit.result == 'failure' && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Re-run the audit to regenerate the report — cheaper than artifact
+      # plumbing, and the audit reads only the lockfile.
+      - name: Regenerate the audit report
+        run: node .github/scripts/audit-dependencies.mjs || true
+
+      - name: Open or update the advisory issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            cat audit-report.md
+            printf '\n_Scheduled audit run: %s_\n' "$run_url"
+          } > issue-body.md
+
+          gh label create security-advisory \
+            --repo "$GITHUB_REPOSITORY" \
+            --description 'Automated dependency-audit finding' \
+            --color B60205 --force
+
+          existing="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --label security-advisory \
+            --state open --limit 1 \
+            --json number --jq '.[0].number // empty')"
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title 'Dependency audit: unresolved high-severity advisories' \
+              --label security-advisory \
+              --body-file issue-body.md
+          fi

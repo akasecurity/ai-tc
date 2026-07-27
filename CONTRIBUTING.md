@@ -32,6 +32,45 @@ Comments explain **what** a piece of code does and any non-obvious local mechani
 doc rather than narrating a decision inline. This repository is public, so keep
 comments factual and reader-facing — no internal narration.
 
+## Dependency advisories and waivers
+
+Two security workflows run alongside the main build:
+
+- **Dependency audit** (`.github/workflows/audit.yml`) — `pnpm audit` on every PR and
+  daily against `main`. Any **high or critical** advisory fails the check; moderate and
+  below are listed in the run summary but do not block. A failing daily run opens (or
+  updates) an issue labeled `security-advisory`, so an advisory published between merges
+  is surfaced without waiting for the next PR.
+- **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the TypeScript
+  workspace and the workflow files on every PR to `main` and weekly; findings appear
+  under the repository's **Security** tab.
+
+When the audit fails, fix first: upgrade the dependency, or raise its floor via
+`pnpm.overrides` in the root `package.json` (the existing entries there are exactly such
+floors). Note that overrides — and the audit itself — cover the **workspace lockfile**;
+end-user installs of the published packages resolve the published dependency ranges,
+which overrides do not reach. Only when an advisory has **no fixed release** reachable from our dependency
+tree, add a waiver to `.github/audit-waivers.json`:
+
+```json
+{
+  "waivers": [
+    {
+      "advisory": "GHSA-xxxx-xxxx-xxxx",
+      "reason": "Why this is unfixable today and why the exposure is acceptable.",
+      "expires": "2026-08-31"
+    }
+  ]
+}
+```
+
+- `advisory` is the GHSA id (preferred) or a CVE id.
+- `expires` is **required** — keep it short (about 30 days). A waiver past its date stops
+  suppressing automatically, so the advisory fails CI again and forces a fresh look for a
+  fix. Waivers that no longer match anything are flagged as stale in the audit report;
+  remove them.
+- Waivers are reviewed like any other code change.
+
 ## Contributing detection rules
 
 Detection rules live in [`rules/`](rules/). Every rule ships with **positive and

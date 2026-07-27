@@ -529,6 +529,9 @@ importers:
       '@akasecurity/eslint-config':
         specifier: workspace:*
         version: link:../packages/eslint-config
+      '@akasecurity/plugin-sdk':
+        specifier: workspace:*
+        version: link:../packages/plugin-sdk
       '@tailwindcss/postcss':
         specifier: ^4.3.2
         version: 4.3.2

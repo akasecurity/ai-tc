@@ -8,8 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint app middleware.ts test *.config.*",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@akasecurity/dashboard-ui": "workspace:*",
@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
     "@tailwindcss/postcss": "^4.3.2",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",

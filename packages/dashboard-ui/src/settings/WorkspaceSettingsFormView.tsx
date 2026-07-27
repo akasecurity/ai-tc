@@ -37,7 +37,7 @@ export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
 // the wizard's history sweep. That sweep sends what it finds to the model API to
 // be rated, so the 'full' copy must disclose the egress here too — this is the
 // surface the wizard points at for scope and revocation.
-const HISTORICAL_SECTION_DESCRIPTION =
+export const HISTORICAL_SECTION_DESCRIPTION =
   'Consent to inspect surfaces that existed before AKA was installed.';
 
 export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[] = [

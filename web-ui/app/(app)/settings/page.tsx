@@ -1,4 +1,4 @@
-import { PageHead, SETTINGS_PAGE_SUB } from '@akasecurity/dashboard-ui';
+import { PageHead } from '@akasecurity/dashboard-ui';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
 
 import { SettingsClient } from './SettingsClient';
@@ -13,7 +13,7 @@ export default function SettingsPage() {
 
   return (
     <div className="px-8 pb-10 pt-7">
-      <PageHead title="Settings" sub={SETTINGS_PAGE_SUB} />
+      <PageHead title="Settings" sub="Workspace configuration for this machine." />
       <SettingsClient settings={settings} />
     </div>
   );

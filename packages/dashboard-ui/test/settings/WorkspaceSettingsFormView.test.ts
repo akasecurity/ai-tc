@@ -76,7 +76,9 @@ describe('WorkspaceSettingsFormView historical-access copy', () => {
 
   it('names the rest of the payload, not just the secret', () => {
     expect(full?.description).toMatch(/transcript text/i);
-    expect(full?.description).toMatch(/file path/i);
+    // The file path is dropped before egress (toJudgePayload) — copy must not
+    // claim it crosses.
+    expect(full?.description).not.toMatch(/file path/i);
   });
 
   it('does not present revocation as a recall', () => {

@@ -17,10 +17,10 @@ falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment needs the raw (unmasked) findings to rate
 them accurately, so it **sends them to the model API** through separate `claude`
-CLI subprocesses (a large history is judged in several batches). Three things
-cross for each finding: its **raw value**, about **120 characters of the
-surrounding transcript text** on either side of it, and the **path of the
-transcript file** it came from. Those subprocesses ask the `claude` CLI to write
+CLI subprocesses (a large history is judged in several batches). Two things
+cross for each finding: its **raw value**, and about **120 characters of the
+surrounding transcript text** on either side of it (any other secrets detected in
+that window are masked). Those subprocesses ask the `claude` CLI to write
 no transcript, so the raw values do not enter this conversation or your scannable
 history — but a copy of them **does leave the machine**, sent to the model
 provider like any other Claude prompt. You act only on the raw-free plan the
@@ -137,9 +137,9 @@ the user is consenting to, so it must be visible before they choose.** State it 
 your own words, without softening it: if they say yes, AKA scans the last 30 days
 of Claude history, and to rate what it finds it **sends the raw, unmasked values —
 including any secrets — to the model API through the `claude` CLI**. Name what
-travels with each one: **its raw value, about 120 characters of the surrounding
-transcript text on either side, and the path of the transcript file it came
-from**. That is real network egress to the model provider (the same one your
+travels with each one: **its raw value, and about 120 characters of the
+surrounding transcript text on either side** (any other secrets detected in that
+window are masked). That is real network egress to the model provider (the same one your
 Claude session already uses), not a purely local review. **A copy of each value
 leaves the machine.** The transcripts those values came from stay on disk
 untouched — nothing here removes them; that is the separate redaction step in
@@ -260,8 +260,8 @@ The backfill sweeps prior Claude Code transcripts (last 30 days, all projects)
 and streams one masked-plus-raw triage hit per line; masked findings are
 recorded to the local store as a side effect. The adapter runs the
 false-positive/severity **judgment in separate `claude` subprocesses that send the
-raw hits — each one's value, its surrounding transcript text, and its source path
-— to the model API** (a large history is split into several batches; each asks
+raw hits — each one's value and its surrounding transcript text (other secrets in
+that window masked) — to the model API** (a large history is split into several batches; each asks
 the CLI to write no local transcript), then prints back a **raw-free plan** you
 can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),

@@ -290,6 +290,10 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
 `errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
-`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`. Where a platform or a privilege
-makes an assertion meaningless, `ctx.skip(reason)` — never an early `return`, which
-reports as a pass.
+`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`.
+
+Inside `test/helpers/` and its own suites, where a platform or a privilege makes an
+assertion meaningless, use `ctx.skip(reason)` — never an early `return`, which reports as
+a pass. **This is scoped deliberately**: the rest of the workspace uses
+`if (process.platform === 'win32') return;`, and the QA backlog asks for that form by
+name, so match the file you are in rather than converting a neighbour in passing.

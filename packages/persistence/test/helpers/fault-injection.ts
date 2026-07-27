@@ -272,7 +272,11 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
   const original = new Map<string, number>();
 
   const tighten = (path: string, mode: number): void => {
-    original.set(path, statSync(path).mode);
+    // Permission bits only: `st_mode` carries the file-type bits too, and
+    // POSIX leaves chmod's behaviour for those unspecified. Linux and macOS
+    // mask them, so handing the whole thing back happens to work — but 0o7777
+    // is what the API actually takes.
+    original.set(path, statSync(path).mode & 0o7777);
     chmodSync(path, mode);
   };
 

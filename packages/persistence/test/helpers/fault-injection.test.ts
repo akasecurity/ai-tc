@@ -326,11 +326,16 @@ describe('readOnlyStore', () => {
   it('restore() gives the modes back, and says so only once', () => {
     withTempStore((store) => {
       seedStore(store);
+      const before = statSync(store.dbFile).mode & 0o7777;
       const readOnly = readOnlyStore(store.dbFile, { includeDir: true });
       readOnly.restore();
       readOnly.restore();
 
       expect(attemptWrite(store.dbFile)).toBeUndefined();
+      // The exact bits, not just "writable again": the mode is captured with
+      // `& 0o7777`, and restoring anything wider than the permission bits would
+      // still let this write through.
+      expect(statSync(store.dbFile).mode & 0o7777).toBe(before);
     });
   });
 });

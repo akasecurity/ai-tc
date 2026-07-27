@@ -103,6 +103,12 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
       const db = openLocalDatabase(dataDir(home));
       // LocalDatabase has no `isOpen`, so the close is wrapped to record it —
       // otherwise a handle a test closed itself still counts as live.
+      //
+      // The spread below is load-bearing and only safe because
+      // `openLocalDatabase` returns a plain object literal of closures: no
+      // accessors, nothing `this`-bound, nothing lazily got. Turn that into a
+      // class instance or add a getter and every handle handed out here goes
+      // quietly wrong instead of failing.
       let closed = false;
       const tracked: LocalDatabase = {
         ...db,

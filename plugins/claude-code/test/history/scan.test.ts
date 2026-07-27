@@ -28,6 +28,8 @@ function config(dataDir: string, historicalAccess: 'full' | 'session-only'): Plu
       policy: 'redact',
       historicalAccess,
       dataSharesInPlace: true,
+      vaultKeyCustody: 'file',
+      vaultInlineReveal: 'masked',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

@@ -32,17 +32,19 @@ import type {
   SourceProjectInput,
 } from './meta.ts';
 import type { Rule } from './rule.ts';
+import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
-// modelJudgeConsent. Nothing reads it, and nothing re-stamps it — the `.default()`
-// below only fills when the key is absent, and applyOnboarding's merge preserves
-// whatever an existing settings.json already carries. So an already-onboarded
-// machine keeps the version that first wrote its file, however often this is
-// bumped. Every field added so far has been optional/defaulted (backward
-// compatible), which is why no migration has been needed. Re-stamp this on write
-// before relying on it to gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 4;
+// modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
+// vaultKeyCustody, vaultInlineReveal). Nothing reads it, and nothing re-stamps
+// it — the `.default()` below only fills when the key is absent, and
+// applyOnboarding's merge preserves whatever an existing settings.json already
+// carries. So an already-onboarded machine keeps the version that first wrote
+// its file, however often this is bumped. Every field added so far has been
+// optional/defaulted (backward compatible), which is why no migration has been
+// needed. Re-stamp this on write before relying on it to gate one.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 5;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -114,6 +116,16 @@ export const WorkspaceSettings = z.object({
   // In-place egress extraction on the scan paths; disable to stop all Data
   // Shares writes.
   dataSharesInPlace: z.boolean().default(true),
+  // Consent to keep a RECOVERABLE encrypted copy of detected values in the local
+  // vault, instead of destroying them. Absent by default: this is a custody
+  // change from one-way redaction, so it is never an assumed grant on upgrade.
+  // Revoking stops future vaulting; it does not erase what is already stored —
+  // purging the vault is the eraser.
+  vaultConsent: VaultConsent.optional(),
+  // Where the vault master key lives.
+  vaultKeyCustody: VaultKeyCustody.default('file'),
+  // How a pointer renders in assistant prose on screen (see VaultInlineReveal).
+  vaultInlineReveal: VaultInlineReveal.default('masked'),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
   // Records that the user consented to sending findings to the model API for

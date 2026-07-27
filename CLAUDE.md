@@ -69,17 +69,18 @@ the fault rows prove silence, and only the enforcement rows can prove what the n
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Five places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Six places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                        | Mechanism                         | Why                                                    |
-| ------------------------------------------- | --------------------------------- | ------------------------------------------------------ |
-| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                |
-| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart          |
-| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                          |
-| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips |
-| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth            |
+| Site                                        | Mechanism                         | Why                                                       |
+| ------------------------------------------- | --------------------------------- | --------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                   |
+| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart             |
+| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                             |
+| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips    |
+| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth               |
+| `plugins/codex/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a sixth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a seventh site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -156,12 +157,13 @@ the tree really holds rather than what a lint script says.
 
 `DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
 
-Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
+Network access happens **only through child processes**. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked with `maskText`, which scans the **bundled** packs rather than the installed set — coverage is still complete because `buildTriageHit` has already redacted every other finding from the full-ruleset scan, and this hit's own value is masked here where it appears in the window; `rawMatch` is therefore the only raw value that crosses), `id` (a sequential counter the rubric requires the model to echo), and the non-sensitive scoring labels `ruleId`, `category`, `severity`, `maskedMatch` and `confidence`. `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. `historicalAccess` gates the READ only — a `full` grant authorizes no egress by itself, and no consent surface may imply that it does. Both grants are revocable under Settings, where **Historical access** and **Model-judge consent** are separate controls; revoking stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly; it must never be described as staying "inside an isolated subprocess." Four surfaces carry that copy and move together: `plugins/claude-code/commands/setup.md`, the `[^egress]` footnote in each of the two READMEs, and the Settings copy in `packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx`.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
+5. The Codex `aka-setup` wizard's judge subprocess (`plugins/codex/src/triage/judge.ts`), which spawns `codex exec` and sends the same minimized `toJudgePayload` projection to the model API as the Claude Code judge — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — chunked into several `codex exec` calls for a large history, under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit (revoking stops future scans but cannot recall what was already sent). The `--ephemeral` flag stops the judge session from being written under `~/.codex/sessions` (which AKA's own backfill scans — a persisted judge session would re-ingest the raw findings it carries), but that is session-persistence isolation, **not** network isolation. The same consent-copy honesty rules apply (`plugins/codex/skills/setup/SKILL.md`).
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -607,7 +609,7 @@ Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refac
 
 ## Releasing (CLI / plugin versioning)
 
-Both shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All three shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
@@ -642,8 +644,9 @@ summary or PR description. The steps above are what a **release** does: which ar
 derivable from the bundling rules, and how far they move is settled at release time by whoever
 cuts it.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). The CLI and the plugin
-currently share the `0.9.x` line.
+Versions are bumped by hand in a `chore(release):` commit (no changesets). Every release is a
+bare `X.Y.Z` on the one shared version line — never a pre-release suffix. The CLI and both
+plugins currently share the `0.9.x` line.
 
 ### Binary (SEA) channel — `bin-v*`
 

@@ -51,8 +51,8 @@ export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[]
     label: 'Full',
     description:
       'Pre-install surfaces (existing configs, history) may be scanned too. This also lets ' +
-      '/aka:setup send what that scan finds — raw values including any secrets, the ' +
-      'surrounding transcript text, and the source file path — to the model API to be rated. ' +
+      '/aka:setup send what that scan finds — raw values including any secrets and the ' +
+      'surrounding transcript text — to the model API to be rated. ' +
       'Switching back to Session only stops future scans; it cannot recall data already sent.',
   },
 ];

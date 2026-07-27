@@ -13,7 +13,7 @@ You will receive the hits below as a JSONL block, one `TriageHit` object per
 line:
 
 ```
-{"ruleId":"...","category":"...","severity":"...","maskedMatch":"...","rawMatch":"...","context":"...","confidence":0.9}
+{"id":"...","ruleId":"...","category":"...","severity":"...","maskedMatch":"...","rawMatch":"...","context":"...","confidence":0.9}
 ```
 
 ## Step 1 — Silently filter false positives

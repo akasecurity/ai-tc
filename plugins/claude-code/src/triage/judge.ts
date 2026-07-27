@@ -143,17 +143,25 @@ export interface JudgeDeps {
 
 // Minimize a hit before it crosses to the model. The rubric judges the actual
 // value, so rawMatch stays; the model does not need the provenance. filePath
-// encodes the OS username and every project directory name, so it is dropped.
+// encodes the OS username and every project directory name; valueFingerprint is
+// an HMAC of rawMatch (a stable cross-session correlator of the secret the model
+// gains nothing from, since it holds the raw value) and keyVersion rides with
+// it — all three are dropped. id stays: the rubric requires the model to echo it
+// verbatim in fpIds, and it is a sequential counter carrying nothing sensitive.
 // context is a raw text window masked only for other overlapping findings, so it
 // is re-run through the full detection engine (maskText) to mask every secret in
 // the window. rawMatch is then the only raw field that leaves the machine.
 // maskText is fail-secure: a masking fault over-redacts, never leaks.
-// The spread is load-bearing: it drops filePath from a COPY, never off the
+// The spread is load-bearing: it drops the fields from a COPY, never off the
 // source hit — the surfaced-secrets writeback still reads filePath off the
 // original in-memory hits, so mutating in place here would break that path.
-export function toJudgePayload(hit: TriageHit): TriageHit {
+export function toJudgePayload(
+  hit: TriageHit,
+): Omit<TriageHit, 'filePath' | 'valueFingerprint' | 'keyVersion'> {
   const payload: TriageHit = { ...hit, context: maskText(hit.context) };
   delete payload.filePath;
+  delete payload.valueFingerprint;
+  delete payload.keyVersion;
   return payload;
 }
 

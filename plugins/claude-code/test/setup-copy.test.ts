@@ -47,13 +47,13 @@ describe('setup.md 0.3 scan-offer copy', () => {
     expect(flat).toContain('Do not present the picker until you have said this');
   });
 
-  // What crosses is the whole TriageHit, not just the matched secret: rawMatch,
-  // a ±120-char window of the surrounding transcript (history/scan.ts), and the
-  // source transcript's filePath. Copy that names only "the values" understates
-  // the payload, so pin all three.
+  // What crosses is the minimized payload, not just the matched secret: rawMatch
+  // and a ±120-char window of the surrounding transcript (history/scan.ts).
+  // toJudgePayload drops filePath before egress, so copy that still names the
+  // file path overstates the payload — pin that it is gone, not present.
   it('names the whole payload, not just the secret', () => {
     expect(flat).toContain('about 120 characters of the surrounding transcript text');
-    expect(flat).toContain('the path of the transcript file it came from');
+    expect(flat).not.toContain('the path of the transcript file it came from');
   });
 
   it('does not present revocation as a recall of what was already sent', () => {

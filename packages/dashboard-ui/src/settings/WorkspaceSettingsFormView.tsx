@@ -89,6 +89,44 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   },
 ];
 
+// This is a custody change from one-way redaction: with the grant, a detected
+// value survives as recoverable ciphertext instead of being destroyed. The form
+// only ever emits the choice string — the grant object itself (acknowledgedAt,
+// version) is stamped by the server action, never built client-side.
+export const VAULT_SECTION_LABEL = 'Reversible secret vault';
+
+export const VAULT_SECTION_DESCRIPTION =
+  'Whether redaction keeps a recoverable copy of what it removes. Off destroys detected ' +
+  'values as it redacts them; Vault & redact keeps an encrypted copy on this machine.';
+
+export type VaultConsentChoice = 'off' | 'on';
+
+export const VAULT_CHOICES: Choice<VaultConsentChoice>[] = [
+  {
+    value: 'off',
+    label: 'Off (default)',
+    description: 'Detected values keep being redacted irreversibly; nothing recoverable is stored.',
+  },
+  {
+    value: 'on',
+    label: 'Vault & redact',
+    description:
+      'A detected value is replaced by a pointer, and an encrypted, recoverable copy is ' +
+      'kept in the local vault under ~/.aka — this machine holds recoverable copies of ' +
+      'detected secrets, encrypted at rest. The pointers written into files and ' +
+      'transcripts show where each secret is used, and which places share the same ' +
+      'secret, to anyone who can read those files. Switching back to Off stops new ' +
+      'vaulting but does not erase what is already stored — purging the vault from the ' +
+      'CLI is what erases it.',
+  },
+];
+
+// The stored grant maps to the form choice: a recorded consent renders as 'on',
+// an absent one as 'off'.
+export function vaultChoiceOf(vaultConsent: WorkspaceSettings['vaultConsent']): VaultConsentChoice {
+  return vaultConsent ? 'on' : 'off';
+}
+
 function ChoiceGroup<T extends string>({
   name,
   choices,
@@ -133,12 +171,13 @@ function ChoiceGroup<T extends string>({
 
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
-  // modelJudgeConsent is a plain boolean signal, not the stored record: the
-  // acknowledgement timestamp and payload version are stamped server-side, so a
-  // client-supplied one would only be discarded. true grants, false revokes.
+  // Both consents are plain answers, not the stored records: acknowledgement
+  // timestamps and versions are stamped server-side, so a client-supplied one
+  // would only be discarded. modelJudgeConsent: true grants, false revokes.
   onSave: (
     changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'> & {
       modelJudgeConsent: boolean;
+      vaultConsent: VaultConsentChoice;
     },
   ) => void;
   busy?: boolean;
@@ -148,7 +187,7 @@ export interface WorkspaceSettingsFormViewProps {
 
 /**
  * The workspace settings editor — the web twin of the `/aka:setup` wizard's
- * policy + historical-access questions.
+ * policy, historical-access, and vault-consent questions.
  */
 export function WorkspaceSettingsFormView({
   settings,
@@ -168,10 +207,12 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const dirty =
     policy !== settings.policy ||
     historicalAccess !== settings.historicalAccess ||
-    modelJudge !== initialModelJudge;
+    modelJudge !== initialModelJudge ||
+    vaultConsent !== vaultChoiceOf(settings.vaultConsent);
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -203,6 +244,17 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <SectionLabel>{VAULT_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{VAULT_SECTION_DESCRIPTION}</p>
+        <ChoiceGroup
+          name="vaultConsent"
+          choices={VAULT_CHOICES}
+          value={vaultConsent}
+          onChange={setVaultConsent}
+        />
+      </section>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
@@ -213,9 +265,10 @@ export function WorkspaceSettingsFormView({
             onSave({
               policy,
               historicalAccess,
-              // Just the answer — the server stamps the acknowledgement time and
-              // the payload version the grant is recorded against.
+              // Just the answers — the server stamps the acknowledgement times
+              // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
+              vaultConsent,
             });
           }}
         >

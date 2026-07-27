@@ -63,13 +63,61 @@ describe('parseTranscript — prompt/response text', () => {
         kind: 'prompt',
         text: 'here is my api key sk-abc123',
         occurredAt: '2026-07-14T10:00:01.000Z',
+        filePath: '',
       },
       {
         kind: 'response',
         text: 'I will not echo that key back.',
         occurredAt: '2026-07-14T10:00:02.000Z',
+        filePath: '',
       },
     ]);
+  });
+
+  it('stamps the source rollout path onto every message so a surfaced finding can be located', () => {
+    const path = '/Users/me/.codex/sessions/2026/07/14/rollout-session.jsonl';
+    const jsonl = [
+      SESSION_META,
+      line({
+        timestamp: '2026-07-14T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'a prompt' }],
+        },
+      }),
+    ].join('\n');
+    const msgs = parseTranscript(jsonl, 0, Infinity, path);
+    expect(msgs.length).toBeGreaterThan(0);
+    for (const msg of msgs) expect(msg.filePath).toBe(path);
+  });
+
+  it('drops messages at/after the setup-start cutoff (beforeMs), keeps older ones', () => {
+    const jsonl = [
+      line({
+        timestamp: '2026-07-14T10:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'pre-install leak' }],
+        },
+      }),
+      line({
+        timestamp: '2026-07-16T10:00:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'post-install wizard output' }],
+        },
+      }),
+    ].join('\n');
+
+    const cutoff = Date.parse('2026-07-15T00:00:00.000Z'); // setup-start
+    const bounded = parseTranscript(jsonl, 0, cutoff).map((m) => m.text);
+    expect(bounded).toEqual(['pre-install leak']);
   });
 
   it('joins multiple text content blocks and skips input_image blocks', () => {
@@ -87,7 +135,12 @@ describe('parseTranscript — prompt/response text', () => {
       },
     });
     expect(parseTranscript(jsonl)).toEqual([
-      { kind: 'prompt', text: 'first line\nsecond line', occurredAt: '2026-07-14T10:00:01.000Z' },
+      {
+        kind: 'prompt',
+        text: 'first line\nsecond line',
+        occurredAt: '2026-07-14T10:00:01.000Z',
+        filePath: '',
+      },
     ]);
   });
 
@@ -256,10 +309,7 @@ describe('parseTranscriptUsage — token_count events', () => {
     const pass1 = parseTranscriptUsage([SESSION_META, first].join('\n'));
     const pass2 = parseTranscriptUsage(second, 0, 'sess-1'); // tail chunk: no session_meta
 
-    expect(wholeFile.map((r) => r.eventKey)).toEqual([
-      pass1[0]?.eventKey,
-      pass2[0]?.eventKey,
-    ]);
+    expect(wholeFile.map((r) => r.eventKey)).toEqual([pass1[0]?.eventKey, pass2[0]?.eventKey]);
     // The two turns never share a key — the collision the per-parse ordinal
     // scheme used to cause.
     expect(pass1[0]?.eventKey).not.toBe(pass2[0]?.eventKey);
@@ -267,7 +317,9 @@ describe('parseTranscriptUsage — token_count events', () => {
 
   it('disambiguates two token_count records sharing one timestamp, stably across filters', () => {
     const ts = '2026-07-14T10:00:04.000Z';
-    const both = parseTranscriptUsage([SESSION_META, tokenCountLine(ts), tokenCountLine(ts)].join('\n'));
+    const both = parseTranscriptUsage(
+      [SESSION_META, tokenCountLine(ts), tokenCountLine(ts)].join('\n'),
+    );
     expect(both.map((r) => r.eventKey)).toEqual([`sess-1:${ts}:1`, `sess-1:${ts}:2`]);
   });
 });

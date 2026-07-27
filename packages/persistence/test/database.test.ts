@@ -160,6 +160,52 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     }
   });
 
+  it('preserves committed WAL frames in the legacy backup when the close checkpoint is blocked', () => {
+    // Regression: the legacy backup used to rename the main file aside and delete
+    // the -wal/-shm sidecars. If the close-time (PASSIVE) checkpoint was blocked
+    // by a concurrent opener — the store's documented multi-process model —
+    // committed frames sat only in the -wal, so the "recoverable" backup silently
+    // lost the store's newest writes. The snapshot now goes through VACUUM INTO,
+    // which folds committed WAL frames in without needing a checkpoint.
+    //
+    // POSIX-only: the reproduction keeps a second connection open across the
+    // backup, and clearing an open store file is a sharing violation on Windows
+    // (a separate platform limitation), not the data-loss this guards.
+    if (process.platform === 'win32') return;
+
+    const file = join(dir, 'aka.db');
+
+    // A tenant-bearing (foreign-lineage) store in WAL mode. autocheckpoint = 0
+    // plus a never-closed writer keep every write — the schema included — stranded
+    // in the -wal, never folded into the main file.
+    const writer = new DatabaseSync(file);
+    writer.exec('PRAGMA journal_mode = WAL');
+    writer.exec('PRAGMA wal_autocheckpoint = 0');
+    writer.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
+    writer.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
+    writer.exec('PRAGMA user_version = 10');
+    writer.exec("INSERT INTO tenants (id) VALUES ('wal-only-tenant')");
+
+    try {
+      // Opening detects the foreign lineage and backs the store up while the
+      // writer still holds the un-checkpointed WAL.
+      openLocalDatabase(dir).close();
+    } finally {
+      writer.close();
+    }
+
+    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    expect(backups).toHaveLength(1);
+    const [backupName] = backups;
+    const backup = new DatabaseSync(join(dir, backupName ?? ''));
+    // The WAL-only row survived into the backup — a bare rename + sidecar delete
+    // would have dropped it (the row, and even the `tenants` table itself, lived
+    // only in the -wal that the delete destroyed).
+    const rows = backup.prepare('SELECT id FROM tenants').all();
+    backup.close();
+    expect(rows).toEqual([{ id: 'wal-only-tenant' }]);
+  });
+
   it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {
     // The legacy events/findings drop snapshots the whole store via VACUUM INTO,
     // which creates a brand-new file at the process umask (typically 0644). That

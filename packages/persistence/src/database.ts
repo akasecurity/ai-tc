@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -188,15 +188,46 @@ function openWithPragmas(file: string): DatabaseSync {
 }
 
 // Move an incompatible legacy store aside (recoverable) so a fresh one can be
-// created. The handle was closed first, checkpointing the WAL into the main file,
-// so the -wal/-shm/-journal sidecars are stale and removed — a fresh handle would
-// otherwise pair the new db with the old WAL. Returns the backup path.
-function backupLegacyStore(file: string): string {
+// created. Snapshots the store through the still-open handle with VACUUM INTO —
+// a consistent, fully-materialized single-file copy that folds in committed WAL
+// frames without depending on a checkpoint. A bare rename of the main file plus
+// deleting the -wal/-shm/-journal sidecars would instead lose any committed-but-
+// un-checkpointed WAL frames: the close-time checkpoint is only PASSIVE, so a
+// concurrent reader (the multi-process open model) can block it and strand
+// recent writes in the -wal the delete then destroys — a "recoverable" backup
+// that silently drops the store's newest data. The handle is then closed and the
+// original file + sidecars removed so the reopen starts a fresh store. Returns
+// the backup path.
+function backupLegacyStore(db: DatabaseSync, file: string): string {
   const backup = `${file}.legacy.${String(Date.now())}.bak`;
-  renameSync(file, backup);
-  // The backup is a full copy of the prompt corpus, so hold it to the same 0600
-  // as the live store — rename preserves the source's (possibly loose) mode.
-  tightenFile(backup);
+  try {
+    // The bound parameter avoids any path-quoting hazard. VACUUM INTO reads the
+    // open handle's snapshot (committed WAL frames included) and writes a brand-new
+    // single file with no -wal/-shm/-journal sidecars.
+    db.prepare('VACUUM INTO ?').run(backup);
+    // VACUUM INTO writes at the process umask (typically 0644); the backup is a
+    // full copy of the prompt corpus, so hold it to the live store's own 0600.
+    tightenFile(backup);
+  } catch (error) {
+    // A partial file left by a failed VACUUM would read as a usable backup at
+    // recovery time, so drop it — a failure must leave nothing to mistake for
+    // one. A cleanup failure never replaces the error that caused it.
+    try {
+      rmSync(backup, { force: true });
+    } catch {
+      // nothing to undo: the original store is still in place either way
+    }
+    throw error;
+  } finally {
+    // Closed on every path, including the throw above: the handle is unreachable
+    // to the caller by then, so nothing else could close it.
+    db.close();
+  }
+  // Snapshot captured — drop the original store (main file + its now-stale
+  // sidecars) so the fresh handle doesn't pair a new db with the old WAL. Only
+  // reached once the backup succeeded: a failed snapshot leaves the store it was
+  // meant to preserve untouched rather than destroying it on a best-effort basis.
+  rmSync(file);
   for (const sidecar of dbSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
   }
@@ -214,8 +245,10 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   // (silent persistence loss). Back the old file up (recoverable) and start fresh
   // so writes work; the reset is a one-time, loud-on-stderr event.
   if (isForeignSqliteLineage(db)) {
-    db.close();
-    const backup = backupLegacyStore(file);
+    // Snapshot through the open handle (VACUUM INTO) before it is closed and the
+    // original store cleared — a bare rename after close can lose un-checkpointed
+    // WAL frames. See backupLegacyStore.
+    const backup = backupLegacyStore(db, file);
     db = openWithPragmas(file);
     akaWarn(
       `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +

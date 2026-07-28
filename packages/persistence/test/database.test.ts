@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
+import { corruptStore } from './helpers/fault-injection.ts';
 
 let dir: string;
 
@@ -160,18 +161,22 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     }
   });
 
-  it('preserves committed WAL frames in the legacy backup when the close checkpoint is blocked', () => {
+  it('preserves committed WAL frames in the legacy backup when no close checkpoint runs', (ctx) => {
     // Regression: the legacy backup used to rename the main file aside and delete
-    // the -wal/-shm sidecars. If the close-time (PASSIVE) checkpoint was blocked
-    // by a concurrent opener — the store's documented multi-process model —
-    // committed frames sat only in the -wal, so the "recoverable" backup silently
-    // lost the store's newest writes. The snapshot now goes through VACUUM INTO,
-    // which folds committed WAL frames in without needing a checkpoint.
-    //
-    // POSIX-only: the reproduction keeps a second connection open across the
-    // backup, and clearing an open store file is a sharing violation on Windows
-    // (a separate platform limitation), not the data-loss this guards.
-    if (process.platform === 'win32') return;
+    // the -wal/-shm sidecars. SQLite checkpoints only when the LAST connection
+    // closes, so with a concurrent opener holding the store — the documented
+    // multi-process model — no close-time checkpoint runs at all and committed
+    // frames sit only in the -wal, which the delete then destroyed. The
+    // "recoverable" backup silently lost the store's newest writes. The snapshot
+    // now goes through VACUUM INTO, which folds committed WAL frames in without
+    // needing a checkpoint.
+    if (process.platform === 'win32') {
+      // The reproduction keeps a second connection open across the backup, and
+      // clearing an open store file is a sharing violation on Windows — a
+      // separate platform limitation, not the data loss this guards.
+      ctx.skip('a second open connection blocks clearing the store file on Windows');
+      return;
+    }
 
     const file = join(dir, 'aka.db');
 
@@ -185,6 +190,7 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     writer.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
     writer.exec('PRAGMA user_version = 10');
     writer.exec("INSERT INTO tenants (id) VALUES ('wal-only-tenant')");
+    writer.exec("INSERT INTO events (id, tenant_id) VALUES ('e1', 'wal-only-tenant')");
 
     try {
       // Opening detects the foreign lineage and backs the store up while the
@@ -196,14 +202,54 @@ describe('openLocalDatabase — open / migrate / seed', () => {
 
     const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
+    // The snapshot is published by renaming a `.partial` into place, so a
+    // completed backup leaves no partial file beside it.
+    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
     const [backupName] = backups;
     const backup = new DatabaseSync(join(dir, backupName ?? ''));
-    // The WAL-only row survived into the backup — a bare rename + sidecar delete
-    // would have dropped it (the row, and even the `tenants` table itself, lived
-    // only in the -wal that the delete destroyed).
-    const rows = backup.prepare('SELECT id FROM tenants').all();
+    // The WAL-only rows survived into the backup — a bare rename + sidecar
+    // delete would have dropped them (the rows, and even the tables themselves,
+    // lived only in the -wal that the delete destroyed). Both tables are
+    // checked: the whole snapshot has to survive, not one table of it.
+    const tenants = backup.prepare('SELECT id FROM tenants').all();
+    const events = backup.prepare('SELECT id, tenant_id FROM events').all();
     backup.close();
-    expect(rows).toEqual([{ id: 'wal-only-tenant' }]);
+    expect(tenants).toEqual([{ id: 'wal-only-tenant' }]);
+    expect(events).toEqual([{ id: 'e1', tenant_id: 'wal-only-tenant' }]);
+  });
+
+  it('still resets a legacy store the snapshot cannot copy, keeping the original intact', async () => {
+    // A corrupt page fails VACUUM INTO but leaves page 1 readable, so the
+    // foreign-lineage probe still fires: the store must be reset or every write
+    // dies on NOT NULL tenant_id, swallowed fail-open. A snapshot is impossible
+    // here, so the whole store is moved aside instead — the reset still happens,
+    // and the damaged original is preserved rather than destroyed.
+    const file = join(dir, 'aka.db');
+    const legacy = new DatabaseSync(file);
+    legacy.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
+    legacy.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
+    legacy.exec('PRAGMA user_version = 10');
+    for (let i = 0; i < 200; i += 1) {
+      legacy.prepare('INSERT INTO tenants (id) VALUES (?)').run(`tenant-${String(i)}`);
+    }
+    legacy.close();
+    const beforeSize = statSync(file).size;
+    corruptStore(file, 'page');
+
+    // The reset completes: the fresh store takes a write the legacy schema
+    // would have rejected.
+    const db = openLocalDatabase(dir);
+    const ev = event();
+    db.recordCapture(ev, [finding(ev.id)]);
+    expect(await db.findings.recentFindings()).toHaveLength(1);
+    db.close();
+
+    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    expect(backups).toHaveLength(1);
+    // Nothing partial is left to mistake for a backup, and the moved-aside
+    // original is byte-for-byte the damaged store, not a truncated copy of it.
+    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+    expect(statSync(join(dir, backups[0] ?? '')).size).toBe(beforeSize);
   });
 
   it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {

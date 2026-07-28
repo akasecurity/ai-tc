@@ -22,11 +22,12 @@ import {
 } from '@akasecurity/schema';
 
 import { captureId } from './ids.ts';
+import { backupPath, moveStoreAside, snapshotStore } from './internal/snapshot.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenFile, tightenPerms } from './paths.ts';
+import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -188,48 +189,58 @@ function openWithPragmas(file: string): DatabaseSync {
 }
 
 // Move an incompatible legacy store aside (recoverable) so a fresh one can be
-// created. Snapshots the store through the still-open handle with VACUUM INTO —
-// a consistent, fully-materialized single-file copy that folds in committed WAL
-// frames without depending on a checkpoint. A bare rename of the main file plus
-// deleting the -wal/-shm/-journal sidecars would instead lose any committed-but-
-// un-checkpointed WAL frames: the close-time checkpoint is only PASSIVE, so a
-// concurrent reader (the multi-process open model) can block it and strand
-// recent writes in the -wal the delete then destroys — a "recoverable" backup
-// that silently drops the store's newest data. The handle is then closed and the
-// original file + sidecars removed so the reopen starts a fresh store. Returns
-// the backup path.
+// created. Snapshots the store through the still-open handle with VACUUM INTO
+// (see snapshotStore) — a consistent, fully-materialized single-file copy that
+// folds in committed WAL frames without depending on a checkpoint. A bare rename
+// of the main file plus deleting the -wal/-shm/-journal sidecars would instead
+// lose any committed-but-un-checkpointed frames: SQLite checkpoints only when
+// the LAST connection closes, so under the product's multi-process open model
+// the close-time checkpoint does not run at all and those frames sit in the -wal
+// the delete then destroys — a "recoverable" backup that silently drops the
+// store's newest data.
+//
+// A store the snapshot cannot copy — a corrupt page, no room for a second copy —
+// falls back to moving the whole set aside intact (moveStoreAside), which needs
+// neither. That keeps the reset working, and the reset is the point: a store that
+// can never be reset is one whose writes never work again. Only if the fallback
+// also fails does the error propagate, leaving the original where it is rather
+// than destroying it on a best-effort basis.
+//
+// The handle is closed on every path. Returns the backup path.
 function backupLegacyStore(db: DatabaseSync, file: string): string {
-  const backup = `${file}.legacy.${String(Date.now())}.bak`;
+  const backup = backupPath(file, 'legacy');
+  let snapshotted = false;
+  let snapshotError: unknown;
   try {
-    // The bound parameter avoids any path-quoting hazard. VACUUM INTO reads the
-    // open handle's snapshot (committed WAL frames included) and writes a brand-new
-    // single file with no -wal/-shm/-journal sidecars.
-    db.prepare('VACUUM INTO ?').run(backup);
-    // VACUUM INTO writes at the process umask (typically 0644); the backup is a
-    // full copy of the prompt corpus, so hold it to the live store's own 0600.
-    tightenFile(backup);
+    snapshotStore(db, backup);
+    snapshotted = true;
   } catch (error) {
-    // A partial file left by a failed VACUUM would read as a usable backup at
-    // recovery time, so drop it — a failure must leave nothing to mistake for
-    // one. A cleanup failure never replaces the error that caused it.
-    try {
-      rmSync(backup, { force: true });
-    } catch {
-      // nothing to undo: the original store is still in place either way
-    }
-    throw error;
+    snapshotError = error;
   } finally {
-    // Closed on every path, including the throw above: the handle is unreachable
-    // to the caller by then, so nothing else could close it.
+    // Closed before either path touches the store files, and on the throw path
+    // too: the handle is unreachable to the caller by then, so nothing else
+    // could close it. On Windows a live handle blocks both the remove and the
+    // fallback's rename.
     db.close();
   }
+
+  if (!snapshotted) {
+    akaWarn(
+      `Could not snapshot the incompatible ${DB_FILENAME} (${String(snapshotError)}); ` +
+        'moving the store aside with its sidecars instead.',
+    );
+    moveStoreAside(file, backup);
+    return backup;
+  }
+
   // Snapshot captured — drop the original store (main file + its now-stale
   // sidecars) so the fresh handle doesn't pair a new db with the old WAL. Only
-  // reached once the backup succeeded: a failed snapshot leaves the store it was
-  // meant to preserve untouched rather than destroying it on a best-effort basis.
-  rmSync(file);
+  // reached once the backup succeeded. `force` absorbs a concurrent opener on
+  // this same path having cleared the file first: that process took its own
+  // backup, so there is nothing left here to preserve.
+  rmSync(file, { force: true });
   for (const sidecar of dbSidecars(file)) {
-    if (existsSync(sidecar)) rmSync(sidecar);
+    if (existsSync(sidecar)) rmSync(sidecar, { force: true });
   }
   return backup;
 }

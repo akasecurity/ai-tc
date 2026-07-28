@@ -96,12 +96,13 @@ jobs:
   #     gates, rotateKey's confirmation gate), each driving a REAL node:sqlite
   #     store and a REAL key file per test, several opening the store more than
   #     once. This is the OS-sensitive half and the reason it belongs on Windows.
-  # That second suite is the slow one: it was ~44s wall for 20 tests when this
-  # note was written and is now 73 tests, so budget proportionally. The per-test
-  # timeout in web-ui/vitest.config.ts is 20s and the worst single test was ~3.0s
-  # — keep an eye on that margin as the suite grows, the persistence suite needed
-  # batching twice to stay under it. Two cases assert POSIX mode bits and skip
-  # here rather than pass vacuously. web-ui's `test` also drops the `build`/`^build` edges
+  # That second suite is the slow one: ~122s wall for 73 tests here, against ~12s
+  # for the same suite on the Linux leg (it was ~44s for 20 tests when this note
+  # started). Two of the 73 skip here — they assert POSIX mode bits, which
+  # Windows ACLs do not carry, and skipping beats passing with no assertions. The
+  # per-test timeout in web-ui/vitest.config.ts is 20s; keep an eye on that margin
+  # as the suite grows, the persistence suite needed batching twice to stay under
+  # it. web-ui's `test` also drops the `build`/`^build` edges
   # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.

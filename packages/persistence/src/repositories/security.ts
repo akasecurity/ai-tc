@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
+  CAPTURE_EVENT_TYPES_SQL,
   type EnforcementActionKind,
   type EnforcementActionsResponse,
   type FindingsTimeseriesPoint,
@@ -96,9 +97,9 @@ interface FindingTimeRow {
  * range; the clock is injectable so it is deterministic under test.
  *
  * Two contract gaps are intrinsic to the local store, not omissions:
- *  - top-sources `user` kind: OSS events carry no userId (the store is
+ *  - top-sources `user` kind: OSS captures carry no userId (the store is
  *    tenant-free, single-tenant), so only `repo` sources — from
- *    events.metadata.repo — are derivable; a `user` filter returns [].
+ *    audit_events.attributes.repo — are derivable; a `user` filter returns [].
  *  - recommended-actions: a recommendation engine with no OSS storage — not part
  *    of this port (the web-ui renders an empty card).
  *
@@ -153,25 +154,27 @@ export class SqliteSecurityRepository implements SecurityViews {
       open_at_rest: number;
     }>(
       this.db.prepare(
-        `SELECT f.severity AS severity,
+        `SELECT d.severity AS severity,
                 COUNT(*) AS count,
                 SUM(CASE
-                      WHEN e.kind != 'code_change' THEN 1
+                      WHEN e.event_type != 'code_change' THEN 1
                       WHEN f.finding_key IS NULL THEN 0
                       WHEN latest.status = 'resolved' THEN 1
                       ELSE 0
                     END) AS caught,
                 SUM(CASE
-                      WHEN e.kind = 'code_change'
+                      WHEN e.event_type = 'code_change'
                        AND f.finding_key IS NOT NULL
                        AND (latest.status IS NULL OR latest.status != 'resolved') THEN 1
                       ELSE 0
                     END) AS open_at_rest
-         FROM findings f
-         JOIN events e ON e.id = f.event_id
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
-         GROUP BY f.severity`,
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+         GROUP BY d.severity`,
       ),
     );
 
@@ -259,7 +262,7 @@ export class SqliteSecurityRepository implements SecurityViews {
   // Mean time-to-remediate per bucket, split by severity — a sibling of
   // findingsTimeseries that reuses the same window/bucket/UTC math, but buckets
   // on a different timestamp: findingsTimeseries buckets by first-detection
-  // (events.occurred_at), this buckets by resolution time (the latest
+  // (audit_events.started_at), this buckets by resolution time (the latest
   // finding_resolution row's resolved_at) — it's a "resolved in this bucket"
   // trend, not a "detected in this bucket" one. Only findings whose LATEST
   // resolution row (latest-resolution-wins, same correlated subquery as
@@ -293,30 +296,20 @@ export class SqliteSecurityRepository implements SecurityViews {
         // first_detected_at is the PRESERVED first-detection time (set once on a
         // finding's INSERT, never overwritten on the re-detection upsert), so MTTR
         // measures from first sighting — not the latest re-scan's event, whose
-        // occurred_at the upsert overwrites onto findings.event_id. COALESCE onto
-        // the parent event's occurred_at defends against any legacy/edge row the
-        // backfill left null.
-        `SELECT COALESCE(f.first_detected_at, e.occurred_at) AS first_detected_at, f.severity AS severity,
-                (
-                  SELECT fr.status FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_status,
-                (
-                  SELECT fr.method FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_method,
-                (
-                  SELECT fr.resolved_at FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_resolved_at
-         FROM findings f JOIN events e ON e.id = f.event_id
+        // started_at the upsert overwrites onto inspection_findings.audit_event_id.
+        // COALESCE onto the parent event's started_at defends against any
+        // legacy/edge row the backfill left null.
+        `SELECT COALESCE(f.first_detected_at, e.started_at) AS first_detected_at, d.severity AS severity,
+                latest.status AS latest_status,
+                latest.method AS latest_method,
+                latest.resolved_at AS latest_resolved_at
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+           ON latest.finding_key = f.finding_key
          WHERE f.finding_key IS NOT NULL
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
            AND EXISTS (
              SELECT 1 FROM finding_resolution fr
               WHERE fr.finding_key = f.finding_key
@@ -378,16 +371,18 @@ export class SqliteSecurityRepository implements SecurityViews {
 
     const now = this.now();
     const from = now - RANGE_DAYS[range] * DAY_MS;
-    // Rank repos by findings in the window. metadata.repo is extracted in SQL via
-    // json_extract (mirrors the events repo's JSON handling); rows without a repo
-    // are excluded. Ranked + sliced in SQL — tie-break on repo for a stable order.
+    // Rank repos by findings in the window. attributes.repo is extracted in SQL
+    // via json_extract; rows without a repo are excluded. Ranked + sliced in
+    // SQL — tie-break on repo for a stable order.
     const rows = allRows<{ repo: string; c: number }>(
       this.db.prepare(
-        `SELECT json_extract(e.metadata, '$.repo') AS repo, count(*) AS c
-         FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.occurred_at >= :from AND e.occurred_at < :to
-           AND json_extract(e.metadata, '$.repo') IS NOT NULL
-           AND json_extract(e.metadata, '$.repo') != ''
+        `SELECT json_extract(e.attributes, '$.repo') AS repo, count(*) AS c
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         WHERE e.started_at >= :from AND e.started_at < :to
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+           AND json_extract(e.attributes, '$.repo') IS NOT NULL
+           AND json_extract(e.attributes, '$.repo') != ''
          GROUP BY repo
          ORDER BY c DESC, repo
          LIMIT :limit`,
@@ -414,9 +409,9 @@ export class SqliteSecurityRepository implements SecurityViews {
   // secret came back) is excluded — it is not currently resolved. Legacy
   // at-rest findings with finding_key IS NULL are excluded outright (the
   // resolution lifecycle can never attach to them). Path comes from the
-  // finding's parent event (kind 'code_change', metadata.filePath) — mirrors
-  // resolutions.ts's openAtRestStmt accessor. Ordered by resolved_at DESC,
-  // capped at `limit`.
+  // finding's parent event (event_type 'code_change', attributes.file_path) —
+  // mirrors resolutions.ts's openAtRestStmt accessor. Ordered by resolved_at
+  // DESC, capped at `limit`.
   recentlyResolved(limit = 20): Promise<RecentlyResolvedResponse> {
     const rows = allRows<{
       finding_key: string;
@@ -428,37 +423,21 @@ export class SqliteSecurityRepository implements SecurityViews {
     }>(
       this.db.prepare(
         `SELECT f.finding_key AS finding_key,
-                f.rule_id AS rule_id,
-                f.severity AS severity,
-                json_extract(e.metadata, '$.filePath') AS path,
-                COALESCE(f.first_detected_at, e.occurred_at) AS first_detected_at,
-                (
-                  SELECT fr.resolved_at FROM finding_resolution fr
-                   WHERE fr.finding_key = f.finding_key
-                   ORDER BY fr.created_at DESC, fr.rowid DESC
-                   LIMIT 1
-                ) AS latest_resolved_at
-         FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.kind = 'code_change'
+                d.rule_id AS rule_id,
+                d.severity AS severity,
+                json_extract(e.attributes, '$.file_path') AS path,
+                COALESCE(f.first_detected_at, e.started_at) AS first_detected_at,
+                latest.resolved_at AS latest_resolved_at
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+           ON latest.finding_key = f.finding_key
+         WHERE e.event_type = 'code_change'
            AND f.finding_key IS NOT NULL
-           AND (
-             SELECT fr.status FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) = 'resolved'
-           AND (
-             SELECT fr.method FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) = 'fixed-at-source'
-           AND (
-             SELECT fr.resolved_at FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-              ORDER BY fr.created_at DESC, fr.rowid DESC
-              LIMIT 1
-           ) IS NOT NULL
+           AND latest.status = 'resolved'
+           AND latest.method = 'fixed-at-source'
+           AND latest.resolved_at IS NOT NULL
          ORDER BY latest_resolved_at DESC
          LIMIT :limit`,
       ),
@@ -480,7 +459,7 @@ export class SqliteSecurityRepository implements SecurityViews {
   }
 
   // Findings whose parent event occurred in [fromMs, toMs), with the parent's
-  // epoch-millis timestamp. occurred_at is an INTEGER column, so the bounds stay
+  // epoch-millis timestamp. started_at is an INTEGER column, so the bounds stay
   // numeric and the JS aggregations bucket/split on ms directly.
   private findingsInRange(fromMs: number, toMs: number): FindingTimeRow[] {
     const rows = allRows<{
@@ -489,10 +468,13 @@ export class SqliteSecurityRepository implements SecurityViews {
       action_taken: string;
     }>(
       this.db.prepare(
-        `SELECT e.occurred_at AS occurred_at, f.severity AS severity, f.action_taken AS action_taken
-         FROM findings f JOIN events e ON e.id = f.event_id
-         WHERE e.occurred_at >= :from AND e.occurred_at < :to
-         ORDER BY e.occurred_at`,
+        `SELECT e.started_at AS occurred_at, d.severity AS severity, f.action_taken AS action_taken
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         WHERE e.started_at >= :from AND e.started_at < :to
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+         ORDER BY e.started_at`,
       ),
       { from: fromMs, to: toMs },
     );

@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -40,6 +48,17 @@ describe('loadOrCreateFingerprintKey', () => {
     const second = loadOrCreateFingerprintKey(dir);
     expect(second.version).toBe(first.version);
     expect(second.material.equals(first.material)).toBe(true);
+  });
+
+  it('re-tightens a pre-existing loose key file to 0600 on load (not re-minted)', () => {
+    if (process.platform === 'win32') return;
+    const key = loadOrCreateFingerprintKey(dir);
+    // Simulate a key written before the mode was enforced at write time.
+    chmodSync(keyFile(), 0o644);
+    const reloaded = loadOrCreateFingerprintKey(dir);
+    // Same key — loading tightens the mode, it never mints a replacement.
+    expect(reloaded.material.equals(key.material)).toBe(true);
+    expect(statSync(keyFile()).mode & 0o777).toBe(0o600);
   });
 
   it('throws on a corrupt key file rather than minting a replacement', () => {

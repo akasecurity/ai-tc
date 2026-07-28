@@ -1,4 +1,4 @@
-import { existsSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -9,7 +9,7 @@ import {
   installedPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
-import { DATA_FILE_MODE, openLocalDatabase } from '@akasecurity/persistence';
+import { openLocalDatabase, tightenFile, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
 import {
   bundledDetections,
   dataDir,
@@ -25,6 +25,30 @@ import { runPlugins } from './plugins.ts';
 // The init plugin-offer copy, built from the canonical product identity single-sourced
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
+
+// The store paths whose owner-only mode could not be applied. `aka init` tightens
+// all of them; any that stay group/other-readable means the filesystem rejected
+// chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
+// control. The runtime tighten is silent to keep the fail-open hook path quiet;
+// this is the one place a failure is surfaced, because it is user-initiated and
+// actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
+export function looseStorePaths(home: string): string[] {
+  if (process.platform === 'win32') return [];
+  const targets = [
+    home,
+    settingsDir(home),
+    dataDir(home),
+    join(settingsDir(home), 'settings.json'),
+    dbPath(home),
+  ];
+  return targets.filter((p) => {
+    try {
+      return (statSync(p).mode & 0o077) !== 0; // any group/other bit → not owner-only
+    } catch {
+      return false; // absent → not a loose target
+    }
+  });
+}
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
@@ -48,15 +72,20 @@ export async function runInit(argv: string[]): Promise<void> {
   // first init.
   const settingsCreated = !existsSync(settingsFile);
   if (settingsCreated) {
-    // Owner-only (0600) + atomic tmp+rename, matching how every other writer
-    // treats files under ~/.aka — a crash mid-write must never leave a
-    // truncated or group-readable settings.json.
-    const tmp = `${settingsFile}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`, {
-      mode: DATA_FILE_MODE,
-    });
-    renameSync(tmp, settingsFile);
+    // Owner-only atomic write (tmp + rename), matching every other writer under
+    // ~/.aka — a crash mid-write must never leave a truncated or group-readable
+    // settings.json, and a pre-existing loose `.tmp` isn't carried through.
+    writeOwnerOnlyFileSync(
+      settingsFile,
+      `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
+    );
   }
+  // Re-tighten whether or not we just wrote it: a re-run of `aka init` over a
+  // settings.json a prior release left loose (the leftover-`.tmp` bug) must
+  // self-heal it to 0600 — the same repair the dirs, key, and db already get on
+  // their own access paths. Gating this on `settingsCreated` left settings.json
+  // as the one artifact under ~/.aka that never self-healed.
+  tightenFile(settingsFile);
 
   const db = openLocalDatabase(dataDir(home));
   let policyCount: number;
@@ -75,6 +104,7 @@ export async function runInit(argv: string[]): Promise<void> {
     db.close();
   }
 
+  const loose = looseStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
       `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
@@ -82,6 +112,9 @@ export async function runInit(argv: string[]): Promise<void> {
       `  seeded ${String(policyCount)} default policies, ${String(packCount)} detection pack(s)\n` +
       (updatesAvailable > 0
         ? `  ⬆ ${String(updatesAvailable)} detection pack update(s) available — review with \`aka detections\`, apply with \`aka detections update --all\`\n`
+        : '') +
+      (loose.length > 0
+        ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
         : ''),
   );
 

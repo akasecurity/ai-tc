@@ -210,6 +210,18 @@ export async function reconcileSessionToolCalls(
   const promptIdByUuid = new Map<string, string>();
   for (const r of usageRecords) if (r.kind === 'user') promptIdByUuid.set(r.uuid, r.promptId);
 
+  // Per-rule installed-pack versions, so a transcript finding cites the pack
+  // version that actually fired instead of the rule file's format version.
+  // Read once for the whole pass. Best-effort: an unreadable bundle leaves the
+  // map undefined and scanText falls back to its previous behavior, which is a
+  // less precise version string — never a missed detection.
+  let ruleVersions: Record<string, string> | undefined;
+  try {
+    ruleVersions = (await gateway.getPolicyBundle()).ruleVersions;
+  } catch {
+    ruleVersions = undefined;
+  }
+
   const inputs: ToolCallInput[] = toolCalls.map((tc) => {
     const runKey =
       (tc.parentUuid !== undefined ? promptIdByUuid.get(tc.parentUuid) : undefined) ??
@@ -223,7 +235,7 @@ export async function reconcileSessionToolCalls(
     // straddle the cap and leak an unmasked prefix.
     let inspections: ToolCallInspection[] = [];
     if (tc.target !== undefined) {
-      const { masked, findings } = scanText(tc.target);
+      const { masked, findings } = scanText(tc.target, ruleVersions);
       if (masked !== '') attributes.target = truncateTarget(masked);
       // actionTaken = 'log': these are observed post-hoc from the transcript, not
       // enforced at the time (the tool already ran) — an audit record, not a block.

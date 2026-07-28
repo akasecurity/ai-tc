@@ -5,11 +5,51 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { COMMAND_SPECS } from '../../src/command-manifest.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
-import { dispatchExternal, isExternalCommandName } from '../../src/lib/external-dispatch.ts';
+import {
+  dispatchExternal,
+  externalDispatchSupported,
+  isExternalCommandName,
+  shouldDispatchExternal,
+} from '../../src/lib/external-dispatch.ts';
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('shouldDispatchExternal', () => {
+  // The core safety property: a built-in never dispatches externally, so an
+  // `aka-<builtin>` executable on PATH can never shadow a shipped command.
+  it.each(COMMAND_SPECS.map((spec) => spec.name))('never dispatches built-in %s', (name) => {
+    expect(shouldDispatchExternal(name, true)).toBe(false);
+  });
+
+  it.each(['__update-refresh', '__dashboard-server'])(
+    'never dispatches hidden command %s',
+    (name) => {
+      expect(shouldDispatchExternal(name, true)).toBe(false);
+      expect(shouldDispatchExternal(name, false)).toBe(false);
+    },
+  );
+
+  it('dispatches a non-built-in with a dispatchable name', () => {
+    expect(shouldDispatchExternal('claude', false)).toBe(true);
+  });
+
+  it('does not dispatch a non-built-in with an ineligible name', () => {
+    expect(shouldDispatchExternal('--help', false)).toBe(false);
+  });
+});
+
+describe('externalDispatchSupported', () => {
+  it.each(['darwin', 'linux'] as NodeJS.Platform[])('is enabled on %s', (platform) => {
+    expect(externalDispatchSupported(platform)).toBe(true);
+  });
+
+  it('is disabled on win32', () => {
+    expect(externalDispatchSupported('win32')).toBe(false);
+  });
 });
 
 describe('isExternalCommandName', () => {

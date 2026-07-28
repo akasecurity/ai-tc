@@ -23,6 +23,20 @@ export function isExternalCommandName(name: string): boolean {
   return /^[a-z][a-z0-9-]*$/.test(name);
 }
 
+// Built-ins always win: a name backed by a built-in handler never dispatches
+// externally, even when a matching `aka-<command>` executable is on PATH.
+export function shouldDispatchExternal(command: string, isBuiltin: boolean): boolean {
+  return !isBuiltin && isExternalCommandName(command);
+}
+
+// External dispatch is available on POSIX only. On Windows a bare command name
+// resolves against the child's cwd before PATH, and `.cmd` shims need
+// `shell: true` to spawn at all; dispatch must preserve the caller's cwd, so it
+// stays off there and the normal unknown-command error prints instead.
+export function externalDispatchSupported(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32';
+}
+
 // Run `aka-<command>` with the child inheriting stdio and the caller's cwd and
 // environment. `found: false` means no such executable exists and the caller
 // should fall through to its unknown-command error.
@@ -32,13 +46,7 @@ export function dispatchExternal(
   spawn: ExternalSpawn = spawnSync,
   platform: NodeJS.Platform = process.platform,
 ): ExternalDispatchResult {
-  // External dispatch is POSIX-only. On Windows, `.cmd` shims refuse to spawn
-  // without `shell: true` (the CVE-2024-27980 fix), and a bare command name
-  // resolves against the child's cwd BEFORE PATH — the hazard class
-  // @akasecurity/local-ops' exec wrappers anchor against — while external
-  // dispatch must preserve the caller's cwd. Report not-found so the normal
-  // unknown-command error prints.
-  if (platform === 'win32') return { found: false, status: 1 };
+  if (!externalDispatchSupported(platform)) return { found: false, status: 1 };
 
   const result = spawn(`aka-${command}`, argv, { stdio: 'inherit' });
 

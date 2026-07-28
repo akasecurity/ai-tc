@@ -285,7 +285,7 @@ database in a real temp dir, which is what catches real SQLite semantics.
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
 cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
-`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
+`local-ops`, `plugin-runtime`, `plugins/claude-code` and `web-ui` still roll their own.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
@@ -319,3 +319,57 @@ An early `return` reports as a pass, which is the failure mode the store harness
 to remove. Some older suites in this package still use
 `if (process.platform === 'win32') return;` — leave them be unless you are already
 changing that test for another reason, and do not convert a neighbour in passing.
+
+### Testing a web-ui Server Action
+
+A Server Action runs against the real store like any other test here, but four setup
+steps are required before the first one will run at all, and **missing any of them
+produces a failure that looks nothing like its cause**. `web-ui/test/actions/exceptions.test.ts`
+is the worked example.
+
+1. **Redirect the home dir** by mocking `node:os` and overriding `homedir()`. The action
+   resolves `~/.aka` from it, and `n/no-process-env` rules out an env override, so this is
+   the only seam. Set it through a `vi.hoisted()` box so `beforeEach` can point it at a
+   fresh `mkdtempSync` dir per test.
+2. **Alias `server-only` to an empty module** in `web-ui/vitest.config.ts` — `app/lib/db.ts`
+   imports it, and the real package throws at import time outside a React Server bundler.
+   Already wired; a new suite needs no change.
+3. **Mock `next/cache`** — a mutating action calls `revalidatePath()`, which needs a Next
+   render context that does not exist under vitest.
+4. **Close and drop the memoised DB handle** on `globalThis` (`app/lib/db.ts` keeps it at
+   `__akaDb` across requests and HMR reloads) in both `beforeEach` and `afterEach`, or the
+   next test reads the **previous** test's temp store. Reset it again mid-test after any
+   direct write through a second handle, so the action reopens and sees it.
+
+Seed whatever snapshot the action reads before calling it — anything scanning a value needs
+`installed_packs` populated via `recordInventory(bundledDetections())`, because the action
+scans against the **DB snapshot**, not the engine's process-global registry.
+`@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
+is not a runtime package-wall crossing.
+
+An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
+hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
+`aka.db.pre-drop.<ts>.bak` — a byte-for-byte copy of the pre-migration store — in that
+directory on **every** run, and it is around 47% of the bytes there, so a name-list reader
+misses more of the store than a `-wal` pair ever covered. On top of that SQLite writes an
+`aka.db-journal` instead of the WAL pair wherever WAL silently no-ops (see `dbSidecars` in
+`packages/persistence/src/paths.ts`), and the foreign-lineage reset leaves its own `.bak`.
+`web-ui/test/helpers/store-bytes.ts` is that reader; import it rather than re-rolling one.
+Bind one call and assert against it — the positive control and the absence check must
+describe the same bytes, not two independent reads. Two rules keep it honest, because an
+empty read contains no secret and so passes every `not.toContain` vacuously: keep the
+**positive control** — assert a value that **is** expected on disk before asserting the raw
+is absent — and **never swallow a failed read**. Only a sibling's `ENOENT` is tolerable (an
+atomic write's `.tmp` vanishing mid-scan); a permission denial or a Windows sharing
+violation on `aka.db` must throw.
+
+Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
+stays green if a branch echoes a _truncated_ value, which is still a live credential's
+prefix. `expectNoEchoOf` (`web-ui/test/actions/exceptions.test.ts`) is the **required form
+for every error assertion in that file**, including the ones a newly covered action brings
+with it — a plain `not.toContain(rawValue)` on an error is a defect, not a style choice.
+This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
+stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
+fragment is stored on purpose; and an assertion that some non-secret string is absent — an
+internal error-class name, say — is a different property that `expectNoEchoOf` does not
+express.

@@ -24,7 +24,7 @@ import type {
   TriageRecommendation,
 } from '@akasecurity/schema';
 
-import { frameCalibration, frameEmptyState } from '../calibration.ts';
+import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
 import { readRegisteredCommands } from '../command-registry.ts';
 import { fenced, show } from '../present.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
@@ -73,6 +73,10 @@ export interface AdapterDeps {
   readStream: (streamPath: string | undefined) => string;
   // Called ONLY on the preview path. The ephemeral judge subprocess.
   runJudge: (hits: readonly TriageHit[]) => TriageRecommendation;
+  // Whether the user granted the distinct consent to send findings to the model
+  // API. Separate from historical-access (which gates READING transcripts): when
+  // this is false the preview skips the judge cleanly instead of running it.
+  modelJudgeConsent: () => boolean;
   openDb: () => AdapterDb;
   now: () => number;
   createdBy: () => string;
@@ -145,6 +149,23 @@ function runPreview(deps: AdapterDeps, planIO: PlanFileIO): number {
     // examined, so this must not borrow the looked-and-found-nothing copy above:
     // that would report a clean bill of health for a scan that never ran.
     deps.stdout(show("I didn't review anything — historical access wasn't granted."));
+    return 0;
+  }
+
+  // Sending findings to the model is a distinct opt-in, separate from the
+  // historical-access grant that let the backfill READ these hits. Without it
+  // the judge never runs — emit a clean skip (never throw, never call runJudge),
+  // mirroring the no-consent skip copy above.
+  if (!deps.modelJudgeConsent()) {
+    deps.stdout(show("I didn't send anything to the model — model-judge consent wasn't granted."));
+    // The wizard reaches this pipe on the Yes path expecting a frame to parse,
+    // and consent can still be missing here (a failed write, or a grant made
+    // stale by a payload-version bump). Emit a zero-count frame so that degrades
+    // into the start-light posture instead of leaving the wizard mid-flow with
+    // nothing to read. The counts are zero because nothing was JUDGED, not
+    // because nothing was found — the line above is what the user reads; the
+    // frame is machine-only and never displayed.
+    deps.stdout(frameJsonBlock(zeroCountFrame(severityFloorPosture())));
     return 0;
   }
 

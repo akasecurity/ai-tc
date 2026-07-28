@@ -1,5 +1,6 @@
 'use client';
 import type { WorkspaceSettings } from '@akasecurity/schema';
+import { isModelJudgeConsentValid } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -61,6 +62,33 @@ export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[]
   },
 ];
 
+// The distinct consent for the /aka:setup model-judge egress — separate from
+// historical access, which only governs READING local transcripts. This grants
+// or revokes sending findings to the model API for triage.
+type ModelJudgeChoice = 'granted' | 'revoked';
+
+export const MODEL_JUDGE_SECTION_LABEL = 'Model-judge consent';
+
+export const MODEL_JUDGE_SECTION_DESCRIPTION =
+  'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
+  'send findings to the model API to sort real leaks from noise. The file path is never sent, ' +
+  'and any secrets in the surrounding context are masked before it goes.';
+
+export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not granted',
+    description:
+      'The setup scan will not send findings to the model API (default — never assumed).',
+  },
+  {
+    value: 'granted',
+    label: 'Granted',
+    description:
+      'The setup scan may send each finding, plus surrounding context with any secrets in it masked, to the model API to sort real leaks from noise.',
+  },
+];
+
 function ChoiceGroup<T extends string>({
   name,
   choices,
@@ -105,7 +133,14 @@ function ChoiceGroup<T extends string>({
 
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
-  onSave: (changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'>) => void;
+  // modelJudgeConsent is a plain boolean signal, not the stored record: the
+  // acknowledgement timestamp and payload version are stamped server-side, so a
+  // client-supplied one would only be discarded. true grants, false revokes.
+  onSave: (
+    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'> & {
+      modelJudgeConsent: boolean;
+    },
+  ) => void;
   busy?: boolean;
   error?: string | null;
   saved?: boolean;
@@ -124,7 +159,19 @@ export function WorkspaceSettingsFormView({
 }: WorkspaceSettingsFormViewProps) {
   const [policy, setPolicy] = useState(settings.policy);
   const [historicalAccess, setHistoricalAccess] = useState(settings.historicalAccess);
-  const dirty = policy !== settings.policy || historicalAccess !== settings.historicalAccess;
+  // Validity, not presence: this is the same predicate the judge gate uses, so a
+  // consent recorded against an older payload version renders as "Not granted"
+  // (which is how the judge treats it) instead of showing a green "Granted" for
+  // a grant that no longer authorizes anything. Deriving `dirty` from the same
+  // value also keeps re-granting a stale consent a single save.
+  const initialModelJudge: ModelJudgeChoice = isModelJudgeConsentValid(settings.modelJudgeConsent)
+    ? 'granted'
+    : 'revoked';
+  const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  const dirty =
+    policy !== settings.policy ||
+    historicalAccess !== settings.historicalAccess ||
+    modelJudge !== initialModelJudge;
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -145,6 +192,17 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <SectionLabel>{MODEL_JUDGE_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{MODEL_JUDGE_SECTION_DESCRIPTION}</p>
+        <ChoiceGroup
+          name="modelJudgeConsent"
+          choices={MODEL_JUDGE_CHOICES}
+          value={modelJudge}
+          onChange={setModelJudge}
+        />
+      </section>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
@@ -152,7 +210,13 @@ export function WorkspaceSettingsFormView({
           size="sm"
           disabled={!dirty || busy}
           onClick={() => {
-            onSave({ policy, historicalAccess });
+            onSave({
+              policy,
+              historicalAccess,
+              // Just the answer — the server stamps the acknowledgement time and
+              // the payload version the grant is recorded against.
+              modelJudgeConsent: modelJudge === 'granted',
+            });
           }}
         >
           {busy ? 'Saving…' : 'Save changes'}

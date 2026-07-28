@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -244,15 +245,53 @@ describe('a minted version never reuses one the store already references', () =>
     });
   });
 
-  it('degrades to the un-floored behaviour when the store cannot be read', () => {
-    // An unreadable store must never stop a hook from minting the key it needs
-    // — the floor is a hardening pass, not a precondition. Fail-open here is
-    // deliberate, so pin it rather than let a future change make it fail-closed.
+  it('refuses to mint when a damaged store cannot report its versions', () => {
+    // Returning 0 here would be the one unsafe direction: too LOW a floor is
+    // the collision this whole mechanism exists to prevent, so a store that
+    // cannot answer must stop the mint rather than let it guess v1.
+    //
+    // The damage has to be reached through a QUERY, not the open: SQLite does
+    // not read the file until a statement runs, so `new DatabaseSync` and the
+    // busy_timeout PRAGMA both succeed on these bytes and it is `prepare` that
+    // reports SQLITE_NOTADB. An earlier version of this test asserted a
+    // fail-open degrade and passed for that reason — it was exercising the
+    // per-table branch, which used to swallow exactly this.
+    //
+    // A CONTENDED store (SQLITE_BUSY, from a holder in `locking_mode =
+    // EXCLUSIVE`) takes this same branch — any errcode that is not the generic
+    // SQLITE_ERROR of a missing table. It is not pinned here because provoking
+    // it needs a second connection holding an exclusive lock, whose failure
+    // mode is a flaky test rather than a caught regression.
     ensureDataDirSync(dir);
     writeFileSync(join(dir, 'aka.db'), 'this is not a SQLite database at all\n');
-    const key = loadOrCreateFingerprintKey(dir);
-    expect(key.version).toBe(1);
-    expect(key.material).toHaveLength(32);
+    expect(() => loadOrCreateFingerprintKey(dir)).toThrow(/key versions/);
+    // Nothing half-written: no key file was left behind by the refusal.
+    expect(existsSync(keyFile())).toBe(false);
+  });
+
+  it('refuses to rotate over a damaged store for the same reason', () => {
+    ensureDataDirSync(dir);
+    const before = loadOrCreateFingerprintKey(dir);
+    writeFileSync(join(dir, 'aka.db'), 'this is not a SQLite database at all\n');
+    expect(() => rotateFingerprintKey(dir)).toThrow(/key versions/);
+    // The existing key is untouched — a refused rotation is inert.
+    expect(readFingerprintKey(dir)?.material.equals(before.material)).toBe(true);
+  });
+
+  it('treats a genuinely absent table as no floor, not as a failure', () => {
+    // This opens its own handle and runs no migrations, so it can meet a store
+    // written before a table existed. That is a real 0, distinguishable from a
+    // damaged store only by the SQLite result code.
+    ensureDataDirSync(dir);
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      raw.exec('CREATE TABLE exceptions (key_version INTEGER)');
+      raw.exec('INSERT INTO exceptions VALUES (4)');
+      // blocked_detections deliberately absent.
+    } finally {
+      raw.close();
+    }
+    expect(loadOrCreateFingerprintKey(dir).version).toBe(5);
   });
 
   it('reads the floor without creating a store', () => {

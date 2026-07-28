@@ -415,6 +415,32 @@ describe('a failed open leaves no handle behind', () => {
     }
     // afterEach removes the tree — on Windows that is the assertion.
   });
+
+  it('closes the handle when a REPOSITORY CONSTRUCTOR throws, not just the open', () => {
+    // Several repositories `db.prepare(...)` in their constructor, which runs
+    // after migrations have reported success. A store whose schema does not
+    // match what this build expects — one written by a newer binary leaves
+    // `user_version` ahead, so the applier skips and the prepares meet columns
+    // that are not there — throws from there rather than from the open.
+    //
+    // Dropping tables from a migrated store reproduces that exactly: the
+    // migration ledger still says applied, so the reopen goes straight to the
+    // constructors. This region sat outside the guard until the whole sequence
+    // was brought under one try.
+    openLocalDatabase(dir).close();
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      raw.exec('DROP TABLE installed_packs');
+    } finally {
+      raw.close();
+    }
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(() => openLocalDatabase(dir)).toThrow(/no such table/);
+    }
+    // Measured on macOS while this was unguarded: five attempts leaked twelve
+    // descriptors. afterEach is what catches it on Windows.
+  });
 });
 
 describe('store hygiene', () => {

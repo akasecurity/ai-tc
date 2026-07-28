@@ -14,7 +14,7 @@ import {
   readFingerprintKey,
   rotateFingerprintKey,
 } from '@akasecurity/persistence';
-import type { BlockedDetection, ResolvedScope } from '@akasecurity/schema';
+import type { BlockedDetection, ResolvedScope, Rule } from '@akasecurity/schema';
 import { scopeFromAnswer } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -32,10 +32,10 @@ export interface ActionResult {
   error?: string;
 }
 
-// Recovery guidance for a key file that exists but cannot be PARSED. Shared by
-// the two paths that fingerprint (add and approve) so the instruction cannot
-// drift between them; `rotateKey` keeps its own wording because the way forward
-// there is different — the rotation itself is what is refused.
+// Recovery guidance for a key file that exists but cannot be PARSED. Every path
+// that resolves the key routes through keyAccessError below, so this
+// instruction — the only one safe to answer with "delete it" — cannot drift
+// between them.
 const CORRUPT_KEY_ERROR =
   'The exception key file is corrupt. Delete ~/.aka/data/exception.key to mint a new key (this invalidates existing grants).';
 
@@ -52,12 +52,19 @@ const KEY_IO_ERROR =
 // shows a framework error page instead of a way forward.
 const STORE_ERROR = 'Could not read the local store (~/.aka/data/aka.db).';
 
-// Corruption and an I/O failure need different guidance, and only the parse
-// failure is safe to answer with "delete the file". A filesystem error carries a
-// `code`; the strict parse in readFingerprintKey throws a plain Error without
-// one.
+// Minting a key reads the store to find a version no stored row already claims,
+// and refuses rather than guess when it cannot — so a key resolution can fail
+// for a reason that is nothing to do with the key file.
+const KEY_FLOOR_ERROR = `${STORE_ERROR} The fingerprint key cannot be minted until it is readable, because a key that reused a stored version would produce grants that never match.`;
+
+// Three failures, three ways forward, and only the parse failure may be
+// answered with "delete the file":
+//   - the floor read gave up      → a store problem, tagged 'floor-unreadable'
+//   - a filesystem error          → carries an errno `code`
+//   - the strict key-file parse   → a plain Error with no `code`
 function keyAccessError(err: unknown): string {
-  const code: unknown = (err as NodeJS.ErrnoException | null)?.code;
+  const code: unknown = (err as { code?: unknown } | null)?.code;
+  if (code === 'floor-unreadable') return KEY_FLOOR_ERROR;
   return typeof code === 'string' ? KEY_IO_ERROR : CORRUPT_KEY_ERROR;
 }
 
@@ -207,7 +214,10 @@ export async function addException(input: {
   // rules the runtime evaluates, read from the DB, passed explicitly (never the
   // engine's process-global registry, which must stay untouched in this
   // long-lived server).
-  let rules;
+  // Typed with the schema's own Rule rather than left to an evolving `let`:
+  // this is a contract boundary, and the annotation is what makes a change to
+  // installedRuleset()'s shape fail here rather than downstream.
+  let rules: Rule[];
   try {
     ({ rules } = db().installedPacks.installedRuleset());
   } catch {
@@ -234,19 +244,24 @@ export async function addException(input: {
     };
   }
 
-  let grant: { valueFingerprint: string; keyVersion: number; maskedValue: string };
+  // Only the key RESOLUTION is guarded: keyAccessError classifies key-file and
+  // store failures, and a plain Error from anything else — a masking bug in
+  // maskMatch, say — has no `code` and would come back as "your key is corrupt,
+  // delete it". Deriving the fingerprint and preview outside the try keeps that
+  // guidance attached to the failure it actually describes.
+  let key: FingerprintKey;
   try {
-    const key = loadOrCreateFingerprintKey(dataDir());
-    grant = {
-      valueFingerprint: fingerprintValue(key, span),
-      keyVersion: key.version,
-      maskedValue: maskMatch(span),
-    };
+    key = loadOrCreateFingerprintKey(dataDir());
   } catch (err) {
     // Unusable key file — fail secure with recovery guidance matched to the
     // reason (a corrupt file may be deleted; a permissions failure must not).
     return { ok: false, error: keyAccessError(err) };
   }
+  const grant = {
+    valueFingerprint: fingerprintValue(key, span),
+    keyVersion: key.version,
+    maskedValue: maskMatch(span),
+  };
 
   return createGrant({
     ruleId: rule.id,
@@ -283,12 +298,14 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
   }
   try {
     rotateFingerprintKey(dataDir());
-  } catch {
-    return {
-      ok: false,
-      error:
-        'The exception key file is corrupt and cannot be rotated. Delete ~/.aka/data/exception.key to mint a new key.',
-    };
+  } catch (err) {
+    // Rotation keeps its own PREFIX — what is being refused is the rotation,
+    // not a grant — but not its own classification. Rotation writes as well as
+    // reads, so this catch sees permission and I/O failures too, and answering
+    // one of those with "delete the key" destroys every grant on the machine to
+    // fix a chmod. That is the harm KEY_IO_ERROR exists to stop, and the CLI's
+    // runRotateKey already routes through the same split.
+    return { ok: false, error: `Could not rotate the fingerprint key. ${keyAccessError(err)}` };
   }
   revalidatePath('/exceptions');
   return { ok: true };

@@ -224,15 +224,22 @@ function backupLegacyStore(file: string): string {
   return backup;
 }
 
-export function openLocalDatabase(dir: string): LocalDatabase {
-  ensureDataDirSync(dir);
-  const file = join(dir, DB_FILENAME);
+/**
+ * Open the store and bring it to a usable state: pragmas, the legacy-lineage
+ * reset, migrations, permissions, every repository, and the default policies.
+ *
+ * ONE try covers all of it, because the handle is ours from the moment the
+ * constructor returns and every step after that can throw — migrations on an
+ * unmigratable schema, `tightenPerms` on a hostile filesystem, a repository
+ * constructor's eager `db.prepare` on a schema this build does not expect (a
+ * store written by a newer binary leaves `user_version` ahead, so the applier
+ * skips and the prepares meet columns that are not there), `seedDefaults` on a
+ * read-only disk. Guarding only some of those leaves the rest leaking the
+ * handle, which is the Windows file lock this exists to prevent — so the guard
+ * is one window over the whole sequence rather than one per known thrower.
+ */
+function openAndInitialize(file: string) {
   let db = openWithPragmas(file);
-
-  // Bringing the store to a usable state can fail on a file that opened but is
-  // not a healthy store — an unmigratable schema, a read-only or full disk. The
-  // handle is already ours by then, so close it before the error leaves; see
-  // openWithPragmas for what a leak costs.
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
     // tenant-free lineage — same user_version space, so the applier would skip it,
@@ -251,41 +258,69 @@ export function openLocalDatabase(dir: string): LocalDatabase {
 
     applyMigrations(db, file);
     tightenPerms(file);
-  } catch (err) {
-    closeQuietly(db);
-    throw err;
-  }
 
-  const events = new SqliteEventsRepository(db);
-  const findings = new SqliteFindingsRepository(db);
-  const policies = new SqlitePoliciesRepository(db);
-  const installedPacks = new SqliteInstalledPacksRepository(db);
-  const scanLedger = new SqliteScanLedgerRepository(db);
-  const exceptions = new SqliteExceptionsRepository(db);
-  const resolutions = new SqliteResolutionsRepository(db);
-  const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
-  const security = new SqliteSecurityRepository(db);
-  const detections = new SqliteDetectionsRepository(db);
-  const shares = new SqliteSharesRepository(db);
-  const policyCatalog = new SqlitePolicyCatalogRepository(installedPacks);
-  const inventory = new SqliteInventoryRepository(db);
-  const inventoryAssets = new SqliteInventoryAssetsRepository(db);
-  const projectFiles = new SqliteProjectFilesRepository(db);
-  const activity = new SqliteActivityRepository(db);
-  const sourceProject = new SqliteSourceProjectRepository(db);
-  const auditEvents = new SqliteAuditEventsRepository(db);
-  const classifiedData = new SqliteClassifiedDataRepository(db);
-  const inspectionDefinitions = new SqliteInspectionDefinitionsRepository(db);
-  const inspectionFindings = new SqliteInspectionFindingsRepository(db);
-  const configInventory = new SqliteConfigInventoryRepository(db);
-  // The first WRITE of the open — a read-only store reaches this having passed
-  // everything above, so it is the last place the handle can escape unclosed.
-  try {
+    const policies = new SqlitePoliciesRepository(db);
+    const installedPacks = new SqliteInstalledPacksRepository(db);
+    const repositories = {
+      events: new SqliteEventsRepository(db),
+      findings: new SqliteFindingsRepository(db),
+      policies,
+      installedPacks,
+      scanLedger: new SqliteScanLedgerRepository(db),
+      exceptions: new SqliteExceptionsRepository(db),
+      resolutions: new SqliteResolutionsRepository(db),
+      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      security: new SqliteSecurityRepository(db),
+      detections: new SqliteDetectionsRepository(db),
+      shares: new SqliteSharesRepository(db),
+      policyCatalog: new SqlitePolicyCatalogRepository(installedPacks),
+      inventory: new SqliteInventoryRepository(db),
+      inventoryAssets: new SqliteInventoryAssetsRepository(db),
+      projectFiles: new SqliteProjectFilesRepository(db),
+      activity: new SqliteActivityRepository(db),
+      sourceProject: new SqliteSourceProjectRepository(db),
+      auditEvents: new SqliteAuditEventsRepository(db),
+      classifiedData: new SqliteClassifiedDataRepository(db),
+      inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
+      inspectionFindings: new SqliteInspectionFindingsRepository(db),
+      configInventory: new SqliteConfigInventoryRepository(db),
+    };
     policies.seedDefaults();
+    return { db, ...repositories };
   } catch (err) {
     closeQuietly(db);
     throw err;
   }
+}
+
+export function openLocalDatabase(dir: string): LocalDatabase {
+  ensureDataDirSync(dir);
+  const file = join(dir, DB_FILENAME);
+  const {
+    db,
+    events,
+    findings,
+    policies,
+    installedPacks,
+    scanLedger,
+    exceptions,
+    resolutions,
+    ruleProbeCache,
+    security,
+    detections,
+    shares,
+    policyCatalog,
+    inventory,
+    inventoryAssets,
+    projectFiles,
+    activity,
+    sourceProject,
+    auditEvents,
+    classifiedData,
+    inspectionDefinitions,
+    inspectionFindings,
+    configInventory,
+  } = openAndInitialize(file);
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session

@@ -14,6 +14,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import type { FingerprintKeyState } from '@akasecurity/schema';
+import { isMatchableUnder } from '@akasecurity/schema';
+
 import { getRow } from './internal/rows.ts';
 import { DB_FILENAME, ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
 
@@ -57,9 +60,34 @@ function parseKeyFile(raw: string): FingerprintKey {
 // has on the key — see storedKeyVersionFloor.
 const KEY_VERSION_TABLES = ['exceptions', 'blocked_detections'];
 
+// SQLITE_ERROR — the generic code a missing table reports. node:sqlite gives
+// every SQLite failure the same `code` ('ERR_SQLITE_ERROR'), so only `errcode`
+// separates "this store has no such table" from "this store is damaged or
+// locked": SQLITE_NOTADB and SQLITE_BUSY both arrive here too, and treating
+// those as an absent table is what would silently under-report the floor.
+const SQLITE_ERROR = 1;
+
+// Long enough to ride out the moment a writer holds an exclusive lock, short
+// enough that the mint path — which the plugin runs while a hook is waiting —
+// fails fast instead of stalling. The whole read is best-effort hardening; the
+// default 2s, taken twice, is a quarter-minute of a user's session.
+const FLOOR_BUSY_TIMEOUT_MS = 250;
+
+/** Raised when the store exists but cannot answer which key versions it holds. */
+class FloorUnreadableError extends Error {
+  readonly code = 'floor-unreadable';
+  constructor(cause: unknown) {
+    super(
+      `cannot read the stored fingerprint key versions: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = 'FloorUnreadableError';
+  }
+}
+
 /**
- * The highest key version any stored row already references (0 when the store
- * has none, or cannot be read).
+ * The highest key version any stored row already references — 0 when the store
+ * holds none, or does not exist yet.
  *
  * A minted version must never collide with one already in the store. Deleting
  * `exception.key` — which the corrupt-key recovery guidance tells users to do —
@@ -70,35 +98,44 @@ const KEY_VERSION_TABLES = ['exceptions', 'blocked_detections'];
  * check exists to prevent. Reading the floor from the store closes that, because
  * the rows outlive the key file.
  *
+ * THROWS rather than guessing when the store cannot answer. Returning 0 on a
+ * locked or damaged store would be the one direction that is unsafe: too LOW a
+ * floor is exactly the collision above, so a swallowed failure quietly reopens
+ * the hole this exists to close. Callers already fail secure on a throw — the
+ * plugin degrades to writing no ledger row, which costs an approvable row and
+ * never an enforcement decision.
+ *
  * Opened only when the store already exists, so resolving a key never creates
- * one, and read with a SELECT only. Any failure degrades to 0 — the behaviour
- * before this floor existed — because an unreadable store must never stop a hook
- * from minting the key it needs.
+ * one, read-only, and with a short busy timeout so a contended store fails fast.
  */
 function storedKeyVersionFloor(dataDir: string): number {
   const file = join(dataDir, DB_FILENAME);
   if (!existsSync(file)) return 0;
   let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(file);
-    db.exec('PRAGMA busy_timeout = 2000');
+    db = new DatabaseSync(file, { readOnly: true });
+    db.exec(`PRAGMA busy_timeout = ${String(FLOOR_BUSY_TIMEOUT_MS)}`);
     let floor = 0;
     for (const table of KEY_VERSION_TABLES) {
       try {
-        // Queried per table: `blocked_detections` is created lazily on the first
-        // block, so it is legitimately absent on a store that has never blocked.
         // MAX() over an empty table is NULL, which arrives as a null column.
         const row = getRow<{ v: number | null }>(
           db.prepare(`SELECT MAX(key_version) AS v FROM ${table}`),
         );
         floor = Math.max(floor, row?.v ?? 0);
-      } catch {
-        // Table absent on this store — nothing here to raise the floor.
+      } catch (err) {
+        // A genuinely absent table contributes nothing and is not a failure:
+        // this opens its own handle and runs no migrations, so it can meet a
+        // store written before the table was added. Anything else — damaged,
+        // locked, unreadable — means the floor is unknown, not zero.
+        if ((err as { errcode?: number }).errcode !== SQLITE_ERROR) {
+          throw new FloorUnreadableError(err);
+        }
       }
     }
     return floor;
-  } catch {
-    return 0;
+  } catch (err) {
+    throw err instanceof FloorUnreadableError ? err : new FloorUnreadableError(err);
   } finally {
     db?.close();
   }
@@ -139,7 +176,9 @@ export function readFingerprintKey(dataDir: string): FingerprintKey | null {
  *
  * A mint takes version 1 on a fresh store, and otherwise the first version the
  * store has not already seen — so material minted after the key file was deleted
- * is never mistaken for the material the stored rows were written under.
+ * is never mistaken for the material the stored rows were written under. A store
+ * that cannot report its versions throws instead of minting: a colliding key is
+ * worse than no key, because it produces grants that silently never match.
  */
 export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
   const existing = readFingerprintKey(dataDir);
@@ -184,13 +223,20 @@ export function fingerprintValue(key: FingerprintKey, raw: string): string {
  * Whether a stored fingerprint — a grant, or a blocked-ledger row — was written
  * under the key in use now, and so can still be matched.
  *
- * Enforcement fingerprints under the CURRENT key and scopes its bundle query to
- * that version, so a grant minted from a row that fails this check is inert the
- * moment it is created. Both approve surfaces (`aka exception approve` and the
- * dashboard) gate on it; keeping the rule here is what stops them drifting apart
- * on which rows are still usable. An absent key fails the check on its own
- * terms: the material is gone, so no stored fingerprint can be reproduced.
+ * The rule itself is `isMatchableUnder` in @akasecurity/schema, the one package
+ * the approve surfaces AND the dashboard can all import; this is the adapter for
+ * callers that hold a loaded key rather than a UI-facing state. A second copy of
+ * the rule is how the server and the UI come to disagree about which rows are
+ * usable, so there is deliberately only one.
+ *
+ * An absent key fails on its own terms: the material is gone, so no stored
+ * fingerprint can be reproduced.
  */
 export function isCurrentKeyVersion(key: FingerprintKey | null, keyVersion: number): boolean {
-  return key !== null && key.version === keyVersion;
+  return isMatchableUnder(keyVersion, keyStateOf(key));
+}
+
+/** A loaded key (or its absence) as the shared, UI-facing state. */
+export function keyStateOf(key: FingerprintKey | null): FingerprintKeyState {
+  return key === null ? { status: 'absent' } : { status: 'present', version: key.version };
 }

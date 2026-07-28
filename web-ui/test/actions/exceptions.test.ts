@@ -822,6 +822,33 @@ describe('rotateKey — one string compare from invalidating every grant', () =>
       expect(keyBytes()).toBe(before);
     });
 
+    it('does not answer an UNREADABLE key with "delete it" — rotation writes too', async (ctx) => {
+      // rotateKey both reads and writes the key, so this catch sees permission
+      // and I/O failures, not only a corrupt parse. Answering one of those with
+      // the corrupt-key guidance destroys every grant on the machine to fix a
+      // chmod — the same harm the add and approve paths were split to avoid,
+      // and the one place that classification was still missing.
+      if (process.platform === 'win32') {
+        ctx.skip('POSIX mode bits do not gate reads under Windows ACLs');
+      }
+      if (process.getuid?.() === 0) {
+        ctx.skip('root bypasses the mode bits this case depends on');
+      }
+      loadOrCreateFingerprintKey(dir);
+      const before = keyBytes();
+      chmodSync(keyFile(), 0o000);
+      try {
+        const res = await rotateKey(ROTATE_CONFIRMATION);
+        expect(res.ok).toBe(false);
+        expect(res.error).toMatch(/permission/i);
+        expect(res.error).not.toMatch(/delete .*exception\.key to mint/i);
+        expect(res.error).toMatch(/do not delete/i);
+      } finally {
+        chmodSync(keyFile(), 0o600);
+      }
+      expect(keyBytes()).toBe(before);
+    });
+
     it('checks the confirmation before it ever touches the key file', async () => {
       writeFileSync(keyFile(), 'corrupt\n');
       const res = await rotateKey('nope');

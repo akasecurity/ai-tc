@@ -1,12 +1,12 @@
 'use client';
-import type { BlockedDetection } from '@akasecurity/schema';
+import type { BlockedDetection, FingerprintKeyState } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { BLOCKED_WINDOW_PHRASE, type BlockedWindow } from '../lib/timeRanges.ts';
 import { SlashCircleIcon } from '../shared/icons.tsx';
 import { BlockedWindowSelect } from './BlockedWindowSelect.tsx';
-import { isBlockedRowApprovable } from './meta.ts';
+import { blockedRowBlockReason } from './meta.ts';
 
 export interface BlockedLedgerViewProps {
   items: BlockedDetection[];
@@ -14,11 +14,12 @@ export interface BlockedLedgerViewProps {
   blockedWindow: BlockedWindow;
   onBlockedWindowChange: (window: BlockedWindow) => void;
   /**
-   * The fingerprint key version in use now, or null when there is no key file.
-   * A row recorded under any other version can no longer be matched, so its
-   * Approve is disabled rather than left to fail server-side.
+   * What the fingerprint key file amounts to right now. A row recorded under
+   * anything other than the current version can no longer be matched, so its
+   * Approve is disabled rather than left to fail server-side — and the three
+   * states are kept apart because each is a different problem to the reader.
    */
-  keyVersion: number | null;
+  keyState: FingerprintKeyState;
 }
 
 /**
@@ -37,7 +38,7 @@ export function BlockedLedgerView({
   onApprove,
   blockedWindow,
   onBlockedWindowChange,
-  keyVersion,
+  keyState,
 }: BlockedLedgerViewProps) {
   return (
     <div className="mb-3.5 overflow-hidden rounded-xl border border-sev-high-fill bg-sev-high-fill">
@@ -62,7 +63,7 @@ export function BlockedLedgerView({
       ) : (
         <div className="flex flex-col gap-1.5 px-3 pb-3">
           {items.map((b) => {
-            const stale = !isBlockedRowApprovable(b, keyVersion);
+            const blocked = blockedRowBlockReason(b, keyState);
             return (
               <div
                 key={b.reference}
@@ -77,21 +78,18 @@ export function BlockedLedgerView({
                   <div className={cn('mt-1 text-label text-text-3')}>
                     {relativeTime(b.blockedAt)}
                     {b.repo ? ` · ${b.repo}` : ''}
-                    {stale
-                      ? ` · recorded under fingerprint key v${String(b.keyVersion)} — no longer approvable`
-                      : ''}
+                    {blocked === null ? '' : ' · not approvable'}
                   </div>
+                  {blocked === null ? null : (
+                    <div className="mt-1 text-label text-text-3">{blocked}</div>
+                  )}
                 </div>
                 <Button
                   onClick={() => {
                     onApprove(b.reference);
                   }}
-                  disabled={stale}
-                  title={
-                    stale
-                      ? 'The fingerprint key changed after this was blocked, so a grant from it could never match. Trigger the detection again.'
-                      : undefined
-                  }
+                  disabled={blocked !== null}
+                  title={blocked ?? undefined}
                   variant="ghost"
                   tone="primary"
                   size="sm"

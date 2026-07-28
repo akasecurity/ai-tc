@@ -392,6 +392,31 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       expect(readFingerprintKey(dir)).toBeNull();
     });
 
+    it('marks unapprovable rows in the picker instead of offering them', async () => {
+      // The picker is the CLI's twin of the web strip, which disables these
+      // rows. Listing one unmarked spends the user's choice on something the
+      // very next step refuses.
+      await seedBlocked('aa0001');
+      await seedBlocked('bb0002');
+      rotateFingerprintKey(dir);
+
+      const io = scriptedIo();
+      const err = await runException(
+        ['approve', '--home', home, '--once', '--reason', 'listing'],
+        io,
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      // Non-interactive with more than one row lists them and asks for a
+      // reference, which is the branch that prints the annotated lines.
+      expect(err?.message).toMatch(/pass the reference/);
+      const listed = io.output();
+      expect(listed).toContain('aa0001');
+      expect(listed).toContain('bb0002');
+      expect(listed.match(/not approvable: recorded under key v1/g)).toHaveLength(2);
+    });
+
     it('does not mint a key when a by-value selector finds nothing', async () => {
       // The by-value path fingerprints the selector to compare it, which used to
       // load-or-create. On a store with no key that minted one as a side effect

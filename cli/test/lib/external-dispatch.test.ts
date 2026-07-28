@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,7 +74,7 @@ describe('dispatchExternal', () => {
   it('spawns aka-<command> with the verbatim argv, inheriting stdio', () => {
     const spawn = spawnReturning({ status: 0 });
 
-    const result = dispatchExternal('claude', ['--resume', 'x'], spawn, 'darwin');
+    const result = dispatchExternal('claude', ['--resume', 'x'], { spawn, platform: 'darwin' });
 
     expect(spawn).toHaveBeenCalledWith('aka-claude', ['--resume', 'x'], { stdio: 'inherit' });
     expect(result).toEqual({ found: true, status: 0 });
@@ -82,20 +82,54 @@ describe('dispatchExternal', () => {
 
   it('propagates a nonzero exit status', () => {
     const spawn = spawnReturning({ status: 3 });
-    expect(dispatchExternal('claude', [], spawn, 'linux')).toEqual({ found: true, status: 3 });
+    expect(dispatchExternal('claude', [], { spawn, platform: 'linux' })).toEqual({
+      found: true,
+      status: 3,
+    });
   });
 
-  it('maps a null status (signal-terminated child) to status 1', () => {
+  it('reports a signal-terminated child as 128 + the signal number', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const spawn = spawnReturning({ status: null, signal: 'SIGINT' });
+
+    expect(dispatchExternal('claude', [], { spawn, platform: 'linux' })).toEqual({
+      found: true,
+      status: 130,
+    });
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('terminated by SIGINT');
+  });
+
+  it('falls back to status 1 when the child died with no reported signal', () => {
     const spawn = spawnReturning({ status: null });
-    expect(dispatchExternal('claude', [], spawn, 'linux')).toEqual({ found: true, status: 1 });
+    expect(dispatchExternal('claude', [], { spawn, platform: 'linux' })).toEqual({
+      found: true,
+      status: 1,
+    });
   });
 
-  it('reports not-found on ENOENT so the caller falls through to unknown-command', () => {
+  it('reports not-found on ENOENT when nothing by that name is on PATH', () => {
     const error: NodeJS.ErrnoException = new Error('spawnSync aka-claude ENOENT');
     error.code = 'ENOENT';
     const spawn = spawnReturning({ status: null, error });
 
-    expect(dispatchExternal('claude', [], spawn, 'darwin')).toEqual({ found: false, status: 1 });
+    expect(
+      dispatchExternal('claude', [], { spawn, platform: 'darwin', exists: () => false }),
+    ).toEqual({ found: false, status: 1 });
+  });
+
+  it('reports found-but-failed on ENOENT when the executable does exist on PATH', () => {
+    // A shebang naming a missing absolute interpreter fails with ENOENT even
+    // though aka-claude itself is present; that is a broken command, not a
+    // missing one.
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const error: NodeJS.ErrnoException = new Error('spawnSync aka-claude ENOENT');
+    error.code = 'ENOENT';
+    const spawn = spawnReturning({ status: null, error });
+
+    expect(
+      dispatchExternal('claude', [], { spawn, platform: 'darwin', exists: () => true }),
+    ).toEqual({ found: true, status: 1 });
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('aka: aka-claude:');
   });
 
   it('treats a non-ENOENT spawn error as found-but-failed and writes it to stderr', () => {
@@ -104,7 +138,10 @@ describe('dispatchExternal', () => {
     error.code = 'EACCES';
     const spawn = spawnReturning({ status: null, error });
 
-    expect(dispatchExternal('claude', [], spawn, 'linux')).toEqual({ found: true, status: 1 });
+    expect(dispatchExternal('claude', [], { spawn, platform: 'linux' })).toEqual({
+      found: true,
+      status: 1,
+    });
     const message = stderr.mock.calls.map((c) => String(c[0])).join('');
     expect(message).toContain('aka: aka-claude: spawnSync aka-claude EACCES');
   });
@@ -112,7 +149,10 @@ describe('dispatchExternal', () => {
   it('reports not-found on win32 without spawning', () => {
     const spawn = spawnReturning({ status: 0 });
 
-    expect(dispatchExternal('claude', [], spawn, 'win32')).toEqual({ found: false, status: 1 });
+    expect(dispatchExternal('claude', [], { spawn, platform: 'win32' })).toEqual({
+      found: false,
+      status: 1,
+    });
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -128,10 +168,11 @@ describe('dispatchExternal', () => {
       // process.env read or mutation.
       const spawn: ExternalSpawn = (cmd, args, opts) =>
         spawnSync(cmd, args, { ...opts, env: { PATH: binDir } });
+      const exists = (cmd: string) => existsSync(join(binDir, cmd));
 
       try {
-        expect(dispatchExternal(name, [], spawn)).toEqual({ found: true, status: 7 });
-        expect(dispatchExternal(`${name}-missing`, [], spawn)).toEqual({
+        expect(dispatchExternal(name, [], { spawn, exists })).toEqual({ found: true, status: 7 });
+        expect(dispatchExternal(`${name}-missing`, [], { spawn, exists })).toEqual({
           found: false,
           status: 1,
         });

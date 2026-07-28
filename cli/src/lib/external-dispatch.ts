@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { constants } from 'node:os';
+
+import { binExists } from '@akasecurity/local-ops';
 
 // Git-style external subcommand dispatch: an `aka <command>` invocation that
 // matches no built-in runs an executable named `aka-<command>` from the
@@ -9,11 +12,19 @@ export type ExternalSpawn = (
   command: string,
   args: string[],
   options: { stdio: 'inherit' },
-) => { status: number | null; error?: NodeJS.ErrnoException };
+) => { status: number | null; signal?: NodeJS.Signals | null; error?: NodeJS.ErrnoException };
 
 export interface ExternalDispatchResult {
   found: boolean;
   status: number;
+}
+
+export interface ExternalDispatchDeps {
+  spawn?: ExternalSpawn;
+  platform?: NodeJS.Platform;
+  // Whether a command resolves on PATH. Used only to tell a missing executable
+  // apart from one that exists but cannot start.
+  exists?: (command: string) => boolean;
 }
 
 // A name eligible for external dispatch: a lowercase letter followed by
@@ -37,28 +48,44 @@ export function externalDispatchSupported(platform: NodeJS.Platform = process.pl
   return platform !== 'win32';
 }
 
+// A signal-terminated child has no exit status. Report it the way a shell does,
+// as 128 + the signal number, so callers can tell an interrupt (130) or a crash
+// (139) apart from an ordinary failure.
+export function signalExitCode(signal: NodeJS.Signals | null | undefined): number {
+  const number = signal ? constants.signals[signal] : undefined;
+  return number === undefined ? 1 : 128 + number;
+}
+
 // Run `aka-<command>` with the child inheriting stdio and the caller's cwd and
 // environment. `found: false` means no such executable exists and the caller
 // should fall through to its unknown-command error.
 export function dispatchExternal(
   command: string,
   argv: string[],
-  spawn: ExternalSpawn = spawnSync,
-  platform: NodeJS.Platform = process.platform,
+  deps: ExternalDispatchDeps = {},
 ): ExternalDispatchResult {
+  const spawn: ExternalSpawn = deps.spawn ?? spawnSync;
+  const platform: NodeJS.Platform = deps.platform ?? process.platform;
+  const exists: (command: string) => boolean = deps.exists ?? binExists;
   if (!externalDispatchSupported(platform)) return { found: false, status: 1 };
 
-  const result = spawn(`aka-${command}`, argv, { stdio: 'inherit' });
+  const target = `aka-${command}`;
+  const result = spawn(target, argv, { stdio: 'inherit' });
 
   if (result.error) {
-    // ENOENT: no `aka-<command>` on PATH — not an external command.
-    if (result.error.code === 'ENOENT') return { found: false, status: 1 };
-    // Anything else: the executable exists but failed to start. Surface the
-    // failure instead of falling through to the unknown-command error.
-    process.stderr.write(`aka: aka-${command}: ${result.error.message}\n`);
+    // ENOENT means either no such executable on PATH or one whose interpreter is
+    // missing — a shebang naming an absent absolute path reports the same code.
+    // Probe PATH to tell them apart, so a broken executable is reported as a
+    // failure rather than as a command the user never installed.
+    if (result.error.code === 'ENOENT' && !exists(target)) return { found: false, status: 1 };
+    process.stderr.write(`aka: ${target}: ${result.error.message}\n`);
     return { found: true, status: 1 };
   }
 
-  // A null status means the child was terminated by a signal.
-  return { found: true, status: result.status ?? 1 };
+  if (result.status === null) {
+    if (result.signal) process.stderr.write(`aka: ${target}: terminated by ${result.signal}\n`);
+    return { found: true, status: signalExitCode(result.signal) };
+  }
+
+  return { found: true, status: result.status };
 }

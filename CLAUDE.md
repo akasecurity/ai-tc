@@ -350,6 +350,16 @@ is not a runtime package-wall crossing.
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
 hardcoded `-wal`/`-shm` pair: SQLite writes an `aka.db-journal` instead wherever WAL
 silently no-ops (see `dbSidecars` in `packages/persistence/src/paths.ts`), and migrations
-and the foreign-lineage reset leave `aka.db.*.bak` copies alongside. Keep the positive
-control — assert a value that **is** expected on disk before asserting the raw is absent —
-or an empty read passes vacuously.
+and the foreign-lineage reset leave `aka.db.*.bak` copies alongside. `web-ui/test/helpers/store-bytes.ts`
+is that reader; import it rather than re-rolling one. Two rules keep it honest, because an
+empty read contains no secret and so passes every `not.toContain` vacuously: keep the
+**positive control** — assert a value that **is** expected on disk before asserting the raw
+is absent — and **never swallow a failed read**. Only a sibling's `ENOENT` is tolerable (an
+atomic write's `.tmp` vanishing mid-scan); a permission denial or a Windows sharing
+violation on `aka.db` must throw.
+
+Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
+stays green if a branch echoes a _truncated_ value, which is still a live credential's
+prefix — see `expectNoEchoOf` in `web-ui/test/actions/exceptions.test.ts`. This applies to
+errors only: at-rest and grant-shape assertions stay whole-value, because `maskMatch`
+deliberately keeps a fragment visible and that fragment is stored on purpose.

@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import type { DetectionException } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ActionResult, addException } from '../../app/(app)/exceptions/actions.ts';
+import { storeBytes } from '../helpers/store-bytes.ts';
 
 // `addException` is the ONLY web-ui code that handles a raw secret value. It
 // must verify the ruleId exists in the installed snapshot, verify the value
@@ -94,40 +95,27 @@ async function grants(): Promise<DetectionException[]> {
   }
 }
 
-// The raw bytes of everything the store wrote: the main DB plus every other file
-// in the data dir, so an at-rest leak is caught wherever it landed.
-//
-// Reading the DIRECTORY rather than a hardcoded name list is what makes this
-// cover more than the `-wal`/`-shm` pair. SQLite writes an `aka.db-journal`
-// instead wherever WAL silently no-ops — DrvFs `/mnt/c` and some network mounts,
-// per `packages/persistence/src/paths.ts` — so on those setups a WAL-only scan
-// reads files the data did not go to and reports clean. A migration
-// (`aka.db.pre-drop.<ts>.bak`) and the foreign-lineage reset
-// (`aka.db.legacy.<ts>.bak`) leave real copies in the same directory, and a
-// future sidecar is covered here without an edit.
-//
-// The `aka.db` presence check is deliberately NOT lenient: if `dir` ever stops
-// resolving to the real store (a layout change, a renamed file, a broken
-// homedir() mock) the leak scan must fail loudly rather than return '' — an
-// empty string contains no secret, so a swallowed error would turn every caller
-// into a silent no-op.
-function storeBytes(): string {
-  const names = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name);
-  if (!names.includes('aka.db')) {
-    throw new Error(`no aka.db under ${dir} — the at-rest scan is not reading the real store`);
+// The shortest run of a raw value whose appearance in an error is still a leak.
+// `not.toContain(value)` alone only catches an error that echoes the value
+// WHOLE — it stays green if a branch ever interpolates a truncated one, and
+// "help the user spot their typo" is exactly the well-meaning change that would
+// do it. Eight characters of a 40-character token is a real disclosure, and for
+// the shorter values other bundled rules match it is most of the secret.
+// This applies to ERRORS only, where no part of the value has any business
+// appearing. The at-rest and grant-shape assertions stay whole-value
+// (`not.toContain`) because `maskMatch` deliberately keeps a fragment visible —
+// that fragment IS the masked preview, and it is stored on purpose.
+const ECHO_RUN = 8;
+
+// Assert an error carries no run of `value` at all, not merely not all of it.
+function expectNoEchoOf(error: string | undefined, value: string): void {
+  expect(error).toBeDefined();
+  const haystack = error ?? '';
+  for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
+    expect(haystack).not.toContain(value.slice(i, i + ECHO_RUN));
   }
-  const parts: Buffer[] = [];
-  for (const name of names) {
-    try {
-      parts.push(readFileSync(join(dir, name)));
-    } catch {
-      // vanished between the listing and the read (an atomic write's per-process
-      // `.tmp`) — nothing to fold in
-    }
-  }
-  return Buffer.concat(parts).toString('latin1');
+  // Values shorter than the run length still must not appear at all.
+  if (value.length < ECHO_RUN) expect(haystack).not.toContain(value);
 }
 
 beforeEach(() => {
@@ -201,7 +189,7 @@ describe('addException — the only web code touching a raw secret', () => {
         reason: 'x',
       });
       expect(res.ok).toBe(false);
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -214,7 +202,7 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('nope/not-a-rule');
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -246,7 +234,8 @@ describe('addException — the only web code touching a raw secret', () => {
       // and SECOND — module constants the call never passes in — cannot fail
       // however the error is worded; interpolating `input.value` into this
       // branch left the whole suite green. The subject here is the value
-      // supplied on THIS call.
+      // supplied on THIS call, and it is checked run by run: echoing a
+      // TRUNCATED value would still hand back a live credential's prefix.
       const res = await addException({
         ruleId: RULE_ID,
         value: FOREIGN,
@@ -257,7 +246,7 @@ describe('addException — the only web code touching a raw secret', () => {
       // Pins the branch: a match (or any other rejection) is worded differently,
       // so this also fails loudly if FOREIGN ever starts matching RULE_ID.
       expect(res.error).toContain(`does not match rule ${RULE_ID}`);
-      expect(res.error).not.toContain(FOREIGN);
+      expectNoEchoOf(res.error, FOREIGN);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -270,8 +259,8 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(res.ok).toBe(false);
       // The count is safe to surface; the values themselves must not be.
-      expect(res.error).not.toContain(VALUE);
-      expect(res.error).not.toContain(SECOND);
+      expectNoEchoOf(res.error, VALUE);
+      expectNoEchoOf(res.error, SECOND);
       expect(await grants()).toHaveLength(0);
     });
   });
@@ -297,7 +286,7 @@ describe('addException — the only web code touching a raw secret', () => {
         confirmation: `${VALUE}-typo`,
       });
       expect(res.ok).toBe(false);
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -399,7 +388,7 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(second.ok).toBe(false);
       expect(second.error).toMatch(/already exists/i);
-      expect(second.error).not.toContain(VALUE);
+      expectNoEchoOf(second.error, VALUE);
       expect(await grants()).toHaveLength(1);
     });
   });
@@ -419,53 +408,15 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(grant?.valueFingerprint).not.toBe(plain);
     });
 
-    // The two below self-test the leak scanner itself. Without them a reader
-    // narrowed back to a hardcoded name list — or one that quietly swallowed a
-    // missing store — would leave the leak assertions below green while checking
-    // nothing, which is the failure mode they exist to prevent.
-    it('reads every file in the data dir, not a hardcoded sidecar list', () => {
-      // `aka.db-journal` is what SQLite writes instead of the `-wal`/`-shm` pair
-      // in the rollback modes it falls back to where WAL silently no-ops, and a
-      // `.bak` copy is left by a migration drop or the foreign-lineage reset.
-      // On such a setup a WAL-only scan reports clean while the raw sits in a
-      // file it never opened.
-      const planted: Record<string, string> = {
-        'aka.db-journal': 'rollback-journal-marker',
-        'aka.db.pre-drop.1.bak': 'pre-drop-backup-marker',
-        'aka.db.legacy.1.bak': 'foreign-lineage-backup-marker',
-      };
-      for (const [name, marker] of Object.entries(planted)) {
-        writeFileSync(join(dir, name), marker);
-      }
-      const bytes = storeBytes();
-      for (const marker of Object.values(planted)) expect(bytes).toContain(marker);
-    });
-
-    it('throws rather than reporting clean when the store is not where it expects', () => {
-      // An empty read contains no secret, so a scanner that swallowed a missing
-      // store would turn every `not.toContain` below into a silent pass.
-      //
-      // Repoint `dir` rather than moving `aka.db` aside: that is the real
-      // failure shape (a layout change or a broken homedir() mock resolving
-      // somewhere else), and it needs no rename — which Windows refuses while
-      // any handle on the file is still open, and this suite is in the Windows
-      // CI leg.
-      const elsewhere = mkdtempSync(join(tmpdir(), 'aka-web-ex-empty-'));
-      const real = dir;
-      try {
-        dir = elsewhere;
-        expect(() => storeBytes()).toThrow(/aka\.db/);
-      } finally {
-        dir = real;
-        rmSync(elsewhere, { recursive: true, force: true });
-      }
-    });
-
+    // `storeBytes` reads every file in the data dir, and is itself pinned by
+    // test/helpers/store-bytes.test.ts — a reader narrowed back to a hardcoded
+    // name list, or one that swallowed a failed read, would leave the leak
+    // assertions below green while checking nothing.
     it('leaves no trace of the raw value in the database file on disk', async () => {
       // Guard: SECOND is not any rule's example, so it is absent from the seeded
       // snapshot — its post-add absence proves addException discarded the raw,
       // not that it was never written.
-      expect(storeBytes()).not.toContain(SECOND);
+      expect(storeBytes(dir)).not.toContain(SECOND);
 
       const res = await addException({
         ruleId: RULE_ID,
@@ -483,8 +434,8 @@ describe('addException — the only web code touching a raw secret', () => {
       // that came back empty would satisfy `not.toContain` while proving nothing.
       const fingerprint = (await grants())[0]?.valueFingerprint;
       expect(fingerprint).toBeDefined();
-      expect(storeBytes()).toContain(fingerprint);
-      expect(storeBytes()).not.toContain(SECOND);
+      expect(storeBytes(dir)).toContain(fingerprint);
+      expect(storeBytes(dir)).not.toContain(SECOND);
     });
 
     it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async () => {
@@ -506,7 +457,7 @@ describe('addException — the only web code touching a raw secret', () => {
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('exception.key'); // recovery guidance, not a stack trace
-      expect(res.error).not.toContain(VALUE); // fails secure without echoing the secret
+      expectNoEchoOf(res.error, VALUE); // fails secure without echoing the secret
       expect(await grants()).toHaveLength(0);
     });
   });
@@ -522,7 +473,7 @@ describe('addException — the only web code touching a raw secret', () => {
         expect(r.ok).toBe(false);
         expect(r.error).toBeDefined();
         const error = r.error ?? '';
-        for (const value of supplied) expect(error).not.toContain(value);
+        for (const value of supplied) expectNoEchoOf(error, value);
         errors.push(error);
       };
 
@@ -580,7 +531,7 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(errors).toHaveLength(5);
       // Cross-check: no error carries any raw value, whichever call produced it.
       for (const err of errors) {
-        for (const value of [VALUE, SECOND, FOREIGN]) expect(err).not.toContain(value);
+        for (const value of [VALUE, SECOND, FOREIGN]) expectNoEchoOf(err, value);
       }
     });
   });

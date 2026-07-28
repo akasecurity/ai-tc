@@ -88,16 +88,22 @@ jobs:
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
   # processes — gets exercised on windows-latest. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
-  # script — BOTH suites, not just the middleware gate:
+  # script — EVERY suite, not just the middleware gate:
   #   - test/middleware.test.ts — the sole DNS-rebinding gate; pure string work
   #     (68 tests in ~40ms here).
   #   - test/actions/exceptions.test.ts — raw-secret handling in addException,
   #     driving a REAL node:sqlite store and minting a REAL key file per test.
   #     This is the OS-sensitive half and the reason it belongs on Windows.
-  # That second suite is slow here: ~44s wall for 20 tests, worst single test
-  # ~3.0s against the 20s per-test timeout in web-ui/vitest.config.ts. Keep an
-  # eye on that margin — the persistence suite needed batching twice to stay
-  # under it. web-ui's `test` also drops the `build`/`^build` edges
+  #   - test/helpers/store-bytes.test.ts — the at-rest leak reader that suite
+  #     asserts through (6 tests). Opens no store, so it stays cheap here; one
+  #     case needs POSIX modes and skips on Windows, which is why the same
+  #     property is also pinned through an injected reader.
+  #   - test/pages/settings-page-head.test.ts — copy guard; pure (8 tests).
+  # The exceptions suite is the slow one: ~44s wall for 20 tests, worst single
+  # test ~3.0s against the 20s per-test timeout in web-ui/vitest.config.ts. Keep
+  # an eye on that margin — the persistence suite needed batching twice to stay
+  # under it, and anything added there pays a full store-seeding hook.
+  # web-ui's `test` also drops the `build`/`^build` edges
   # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.

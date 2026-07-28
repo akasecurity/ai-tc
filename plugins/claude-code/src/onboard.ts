@@ -29,7 +29,11 @@ import {
   severityFloorPosture,
 } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+import {
+  HistoricalAccess,
+  MODEL_JUDGE_PAYLOAD_VERSION,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
 import { show } from './present.ts';
@@ -79,6 +83,16 @@ if (rawHistorical !== undefined) {
   else answers.historicalAccess = parsed.data;
 }
 
+// The distinct consent for sending findings to the model API (separate from
+// --historical, which only governs reading transcripts). A boolean flag: its
+// presence records consent against the current payload-shape version.
+if (process.argv.includes('--model-judge-consent')) {
+  answers.modelJudgeConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+  };
+}
+
 const rawPosture = flags.get('posture');
 const useFloor = process.argv.includes('--floor');
 const recalibrate = process.argv.includes('--recalibrate');
@@ -92,31 +106,48 @@ if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) 
   fail('nothing to save — pass --policy, --historical, --posture and/or --floor');
 }
 
+// Recording the model-judge consent is not an onboarding-posture answer: it
+// grants an egress, and on the wizard's Yes path this write's confirmation is
+// the only signal the grant registered. So it gets its own line rather than the
+// historical-scan one, and a consent-only write does not run the posture pass
+// below — acknowledging an egress must never be able to change enforcement.
+const wroteConsent = answers.modelJudgeConsent !== undefined;
+const wrotePosture = answers.policy !== undefined || answers.historicalAccess !== undefined;
+
 if (Object.keys(answers).length > 0) {
   try {
     const settings = applyOnboarding(answers);
-    process.stdout.write(show("Got it — I'll look over Claude's recent work to tune things."));
+    if (wrotePosture) {
+      process.stdout.write(show("Got it — I'll look over Claude's recent work to tune things."));
+    }
+    if (wroteConsent) {
+      process.stdout.write(
+        show("Noted — I'll send findings to the model to rate them. You can revoke that anytime."),
+      );
+    }
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.
-    try {
-      const dataDir = loadConfig().dataDir;
-      const db = openLocalDatabase(dataDir);
+    if (wrotePosture) {
       try {
-        const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
-        if (capped > 0) {
-          process.stdout.write(
-            show(
-              `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
-                `"warn" to match the new defaults — you can raise any of them again in this setup.`,
-            ),
-          );
+        const dataDir = loadConfig().dataDir;
+        const db = openLocalDatabase(dataDir);
+        try {
+          const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
+          if (capped > 0) {
+            process.stdout.write(
+              show(
+                `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
+                  `"warn" to match the new defaults — you can raise any of them again in this setup.`,
+              ),
+            );
+          }
+        } finally {
+          db.close();
         }
-      } finally {
-        db.close();
+      } catch {
+        // Best-effort: see comment above.
       }
-    } catch {
-      // Best-effort: see comment above.
     }
   } catch (err) {
     fail(err instanceof Error ? err.message : 'could not save your settings');

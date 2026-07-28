@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DetectionCategory } from '../../src/zod/finding.ts';
-import { DEFAULT_ACTIONS, FULL_ENFORCEMENT_POSTURE } from '../../src/zod/policy.ts';
+import { DEFAULT_ACTIONS, FULL_ENFORCEMENT_POSTURE, PolicyBundle } from '../../src/zod/policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
   it('never hard-enforces (block) or silently rewrites payloads (redact) before onboarding', () => {
@@ -49,5 +49,33 @@ describe('FULL_ENFORCEMENT_POSTURE — the "Actively redact" onboarding preset',
     expect(new Set(Object.keys(FULL_ENFORCEMENT_POSTURE))).toEqual(
       new Set(DetectionCategory.options),
     );
+  });
+});
+
+describe('PolicyBundle.ruleVersions', () => {
+  const baseBundle = {
+    version: '1',
+    policies: [],
+    customKeywords: [],
+    fetchedAt: '2025-12-31T00:00:00.000Z',
+  };
+
+  it('parses without ruleVersions (older backends / on-disk caches omit it)', () => {
+    const result = PolicyBundle.safeParse(baseBundle);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ruleVersions).toBeUndefined();
+    }
+  });
+
+  it('parses with ruleVersions present, keyed by ruleId', () => {
+    const result = PolicyBundle.safeParse({
+      ...baseBundle,
+      ruleVersions: { 'secrets/aws-access-key': '2.3.1' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ruleVersions).toEqual({ 'secrets/aws-access-key': '2.3.1' });
+    }
   });
 });

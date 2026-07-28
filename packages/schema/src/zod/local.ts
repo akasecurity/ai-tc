@@ -1,6 +1,8 @@
 // Local-mode contracts: the plugin-owned ~/.aka settings + machine-local
 // identity, plus pure row mappers from the wire shapes (IngestEvent /
-// DetectedFinding) to the SQLite `events`/`findings` tables.
+// DetectedFinding) to the SQLite `events`/`findings` tables, and from the same
+// wire shapes onto the generalized audit/inspection tables the live capture
+// path (recordCapture) writes today.
 //
 // No I/O and NO @akasecurity/detections dependency: masking of a raw match happens in
 // the SDK *before* a DetectedFinding is built, so these mappers only reshape.
@@ -22,6 +24,7 @@ import type { IngestEvent } from './event.ts';
 import type { ActionTaken, DetectedFinding } from './finding.ts';
 import type {
   AuditEventInput,
+  CaptureAttributes,
   ClassifiedDataInput,
   InspectionDefinitionInput,
   InspectionFindingInput,
@@ -30,10 +33,21 @@ import type {
 } from './meta.ts';
 import type { Rule } from './rule.ts';
 
-// Bumped whenever WorkspaceSettings gains or loses a field, so the loader can
-// migrate an older settings.json. v2 added historicalAccess; v3 added
-// dataSharesInPlace.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 3;
+// A changelog marker for the WorkspaceSettings shape, not a migration trigger:
+// v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
+// modelJudgeConsent. Nothing reads it, and nothing re-stamps it — the `.default()`
+// below only fills when the key is absent, and applyOnboarding's merge preserves
+// whatever an existing settings.json already carries. So an already-onboarded
+// machine keeps the version that first wrote its file, however often this is
+// bumped. Every field added so far has been optional/defaulted (backward
+// compatible), which is why no migration has been needed. Re-stamp this on write
+// before relying on it to gate one.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 4;
+
+// The payload-shape version the /aka:setup model-judge sends to the model API.
+// Recorded alongside a user's modelJudgeConsent so a consent granted against an
+// older payload shape stops counting once this is bumped.
+export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
 // How the plugin runs. Single-valued: the plugin operates entirely against the
 // local store. Kept as an enum so the settings file stays explicit and the
@@ -66,6 +80,26 @@ export type HistoricalAccess = z.infer<typeof HistoricalAccess>;
 // in Zod's global registry, and a @fastify/swagger setup
 // emits every registered schema as an OpenAPI component, leaking this plugin
 // config into a public API client. No API route references it.
+// A recorded model-judge consent: when it was given, and the payload shape it
+// was given against. Named here (rather than inlined on WorkspaceSettings) so
+// the plugin, CLI and dashboard all reference one shape.
+export const ModelJudgeConsent = z.object({
+  acknowledgedAt: z.iso.datetime(),
+  payloadVersion: z.number().int().positive(),
+});
+export type ModelJudgeConsent = z.infer<typeof ModelJudgeConsent>;
+
+// The single definition of "the user has consented to the CURRENT payload" —
+// shared by the plugin's judge gate, the CLI and the dashboard so they cannot
+// disagree about what counts as granted. Presence alone is not enough: a consent
+// recorded against an older payload shape is stale, and stale reads as revoked
+// (the user is asked again rather than silently held to a grant for a payload
+// they never saw). Pure logic over the schema — no I/O — so every surface,
+// including the bundler-agnostic dashboard views, can import it.
+export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined): boolean {
+  return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
+}
+
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
   // Settings files written by earlier releases may carry the retired 'attached'
@@ -82,6 +116,11 @@ export const WorkspaceSettings = z.object({
   dataSharesInPlace: z.boolean().default(true),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
+  // Records that the user consented to sending findings to the model API for
+  // the /aka:setup judge, along with the payload-shape version they agreed to.
+  // Absent until granted; a stale payloadVersion means the consent no longer
+  // covers the current payload and must be re-granted.
+  modelJudgeConsent: ModelJudgeConsent.optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -240,6 +279,85 @@ export function toInspectionFindingRow(input: InspectionFindingInput): Inspectio
     maskedMatch: input.maskedMatch,
     actionTaken: input.actionTaken,
     confidence: input.confidence,
+    findingKey: input.findingKey ?? null,
+    firstDetectedAt: input.firstDetectedAt ? isoToEpochMillis(input.firstDetectedAt) : null,
+  };
+}
+
+// --- capture-path (recordCapture) mappers -----------------------------------
+// The live hook capture path writes IngestEvent + DetectedFinding[] straight
+// into the generalized audit_events/inspection_definitions/inspection_findings
+// trio (see LocalDatabase.recordCapture in @akasecurity/persistence). These two
+// mappers are the legacy-shape -> generalized-shape reshapers for that path,
+// mirroring toEventRow/toFindingRow's role for the retired events/findings pair.
+
+// IngestEvent -> the audit_events row's `attributes` bag for a capture leaf
+// (prompt/response/code_change/tool_use). Every legacy EventMetadata key maps
+// onto its snake_case CaptureAttributes name, EXCEPT `sessionId` — that becomes
+// the row's `root_session_id`/`parent_id` FK, never an attribute (the same
+// reason ToolCallInput/LlmCallInput carry `sessionId` as a top-level field
+// rather than in their bags). `source_tool` has no metadata source of its own:
+// it comes from the event's own `sourceTool` column, mirrored onto the bag
+// because a capture-typed audit row has no equivalent column of its own.
+export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
+  const metadata = event.metadata;
+  return {
+    source_tool: event.sourceTool,
+    ...(metadata?.repo !== undefined ? { repo: metadata.repo } : {}),
+    ...(metadata?.filePath !== undefined ? { file_path: metadata.filePath } : {}),
+    ...(metadata?.toolName !== undefined ? { tool_name: metadata.toolName } : {}),
+    ...(metadata?.gitignored !== undefined ? { gitignored: metadata.gitignored } : {}),
+    ...(metadata?.wholeFile !== undefined ? { whole_file: metadata.wholeFile } : {}),
+    ...(metadata?.correlationId !== undefined ? { correlation_id: metadata.correlationId } : {}),
+    ...(metadata?.traceId !== undefined ? { trace_id: metadata.traceId } : {}),
+    ...(metadata?.exceptionIds !== undefined ? { exception_ids: metadata.exceptionIds } : {}),
+    // `model`/`turnIndex` have no dedicated CaptureAttributes field (no writer
+    // has ever populated either), but every legacy metadata key still rides
+    // the bag rather than being silently dropped — CaptureAttributes'
+    // `.catchall(z.unknown())` carries the long tail.
+    ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
+    ...(metadata?.turnIndex !== undefined ? { turn_index: metadata.turnIndex } : {}),
+  };
+}
+
+// The placeholder rule-definition version every capture-path finding mints
+// under. DetectedFindingWithKey (the legacy findings/capture shape) carries no
+// rule name or version — those exist only on the transcript reconciler's
+// ToolCallInspection (see mask.ts's ScanFinding) — so this fixed literal is the
+// closest available stand-in for a rule format that has, itself, so far only
+// ever shipped as `specVersion: 1` (see Rule in rule.ts). Every finding for the
+// same rule collapses onto ONE definition row: inspectionDefinitions.upsert is
+// an idempotent upsert keyed on (ruleId, version).
+// The rule-definition version a capture-path finding mints under. The capture
+// shape (DetectedFindingWithKey) carries no real rule name/version, so the
+// version is synthesized from the classification the finding arrived with.
+// Folding category+severity into the version — hence into the content-addressed
+// definition id (sha256 of ruleId + version) — means a pack update that
+// reclassifies a rule mints a NEW definition row instead of being swallowed by
+// the first-write-wins INSERT OR IGNORE, while re-detecting the SAME
+// classification stays idempotent (same version -> same id). Mirrors the
+// migration backfill's `unmigrated/<category>/<severity>` keying, so the live
+// path and the copied history agree on definition identity.
+export function captureDefinitionVersion(finding: DetectedFindingWithKey): string {
+  return `capture/${finding.category}/${finding.severity}`;
+}
+
+// DetectedFindingWithKey -> the InspectionDefinitionInput its finding resolves
+// against, at the capture path's coarser (ruleId-only) granularity. No display
+// name is available at this boundary either, so the rule id doubles as its own
+// name and `definition` carries only the bare identity — the same
+// identity-only fallback style as the transcript reconciler's writeToolCall
+// (`definition: JSON.stringify({ ruleId })`).
+export function toCaptureDefinitionInput(
+  finding: DetectedFindingWithKey,
+): InspectionDefinitionInput {
+  return {
+    ruleId: finding.ruleId,
+    version: captureDefinitionVersion(finding),
+    name: finding.ruleId,
+    category: finding.category,
+    severity: finding.severity,
+    definition: JSON.stringify({ ruleId: finding.ruleId }),
   };
 }
 

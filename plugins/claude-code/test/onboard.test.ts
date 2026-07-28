@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parsePosture } from '../src/onboard-posture.ts';
 import { parseSurface } from '../src/setup-show.ts';
+import { isModelJudgeConsentValid, MODEL_JUDGE_PAYLOAD_VERSION } from '../src/triage/consent.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test -> plugins/claude-code
@@ -140,6 +141,43 @@ describe('onboard writes a valid store/settings state with the recommended postu
     // code_context keeps the default the store seeds on open ('log'); fill-gaps
     // never downgrades the already-calibrated 'secret' row.
     expect(db.policies.getCategoryAction('code_context')).toBe('log');
+  });
+});
+
+describe('onboard --model-judge-consent records the distinct model-judge egress consent', () => {
+  // Runs the BUILT script against a home dir it does NOT delete before reading,
+  // so the persisted settings.json can be re-read through the versioned schema.
+  function onboardRunKeepingHome(args: string[]): string {
+    const home = mkdtempSync(join(tmpdir(), 'aka-onboard-consent-test-'));
+    try {
+      execFileSync(process.execPath, [SCRIPT, ...args], {
+        env: { HOME: home, USERPROFILE: home },
+        encoding: 'utf8',
+      });
+      // The script resolves ~/.aka from HOME, so the settings.json lands under
+      // <home>/.aka — read it back through the versioned schema from there.
+      const read = readWorkspaceSettings(join(home, '.aka'));
+      return JSON.stringify(read);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it('persists modelJudgeConsent at the current payload version, and it reads back as valid', () => {
+    const settings = JSON.parse(onboardRunKeepingHome(['--model-judge-consent'])) as {
+      modelJudgeConsent?: { acknowledgedAt: string; payloadVersion: number };
+    };
+    expect(settings.modelJudgeConsent?.payloadVersion).toBe(MODEL_JUDGE_PAYLOAD_VERSION);
+    expect(settings.modelJudgeConsent?.acknowledgedAt).toEqual(expect.any(String));
+    expect(isModelJudgeConsentValid(settings.modelJudgeConsent)).toBe(true);
+  });
+
+  it('leaves modelJudgeConsent absent when the flag is not passed', () => {
+    const settings = JSON.parse(onboardRunKeepingHome(['--historical', 'session-only'])) as {
+      modelJudgeConsent?: unknown;
+    };
+    expect(settings.modelJudgeConsent).toBeUndefined();
+    expect(isModelJudgeConsentValid(undefined)).toBe(false);
   });
 });
 

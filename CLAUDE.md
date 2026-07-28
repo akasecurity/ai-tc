@@ -6,8 +6,10 @@ AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names 
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
 plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. Nothing leaves
-the machine — there is no account, no network hop, and no backend to stand up.
+`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
+paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
+sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 
 ## Tech stack
 
@@ -34,11 +36,24 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. The few places that genuinely need the host environment (the plugin's LLM-provider resolution, the CLI spawning the dashboard server) opt out explicitly in their own ESLint config.
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+
+| Site                                      | Mechanism                         | Why                                         |
+| ----------------------------------------- | --------------------------------- | ------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart     |
+| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server               |
+| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | resolving the transcript root               |
+| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
+
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop. A direct `fetch()` must never appear in OSS source. The only network access is `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply, and the Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source. Network access happens **only through child processes**, and there are three such paths:
+
+1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
+2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked so any _other_ detectable secret in the window does not cross raw) and `id` (a sequential counter the rubric requires the model to echo). `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. The grant is revocable under Settings, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 
 ## Package dependency rules
 
@@ -59,6 +74,9 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      the project-inventory pass; network ONLY via package-manager
                      shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
+@akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
+                     Consumed by @akasecurity/detections' tabular suite as a
+                     dev-only dependency, so it crosses no runtime package wall)
 @akasecurity/dashboard-ui  → @akasecurity/ui-kit, @akasecurity/schema (types, plus the pure
                      shared constants and formatters — no I/O)
                      (bundler-agnostic presentational views; props-driven, no data fetching)
@@ -86,6 +104,7 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 - No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (the plugin's provider resolution, the CLI spawning the dashboard).
 - No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
+- The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 
 ## Comment & string hygiene
 
@@ -141,7 +160,7 @@ cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
-                      dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
+                      extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
 ```
@@ -152,7 +171,25 @@ skills/               agent skills (e.g. write-detection-rule)
 2. Extend `../../tsconfig.base.json`
 3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
 4. Export from `src/index.ts`
-5. Add `"lint"` and `"typecheck"` scripts
+5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` over
+   **every directory the package ships code in**, whatever they are named (a bare `.`
+   counts; naming individual files does not). Turbo silently skips a package with no
+   `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
+   dir of **hand-written (git-tracked)** scripts needs its own
+   `eslint.scripts.config.mjs` plus a second pass
+   (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
+   `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
+
+   Note the current limit: the guard checks **directories only**, so top-level files
+   at a package root (`tsup.config.ts`, `vitest.config.ts`, …) are outside it and are
+   not linted today. Point the `lint` script at them if you can; several need a
+   `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
+
+6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
+   `packages/eslint-config/test/effective-config.test.js`. That pinned list only
+   forces a human to notice the new package — what actually stops it shipping
+   unguarded are the assertions next to it (a missing config, a config that never
+   extends the shared one, a `lint` script that misses a directory).
 
 ## Commit messages
 
@@ -241,3 +278,44 @@ pnpm test                                    # all workspaces
 pnpm test --filter @akasecurity/detections   # just the detection engine + fixtures
 pnpm test --filter @akasecurity/persistence  # just the local-store adapter + repositories
 ```
+
+Never mock `node:sqlite` or the filesystem — every store test runs against a real
+database in a real temp dir, which is what catches real SQLite semantics.
+
+`packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
+package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
+cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
+`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
+
+- `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
+  `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
+  suite shares setup across hooks, `withTempStore` when one test body owns the store. An
+  async body is awaited before teardown.
+- `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
+  one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
+  only WAL and `busy_timeout` between them).
+- `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
+  `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
+  real error code from the real engine and refuses to run rather than take effect
+  vacuously — an absent store, a live handle. Where the platform or the privilege decides
+  instead of the helper, `readOnlyStore` reports it as `effective: false` and **the caller
+  must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
+  any injector that has to be undone before the tree can be removed, and the store itself
+  to any that needs no live connection.
+  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
+  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
+  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+- `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
+  fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
+  with a transaction of its own, so it cannot disturb the handle it is inspecting.
+
+Assert the result code, not an error message or an elapsed time — Windows CI runs several
+times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
+`errcode` carries the **extended** code, so `SQLITE_READONLY` also arrives as
+`SQLITE_READONLY_DIRECTORY`. Do not add vitest `retry`.
+
+Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
+An early `return` reports as a pass, which is the failure mode the store harness exists
+to remove. Some older suites in this package still use
+`if (process.platform === 'win32') return;` — leave them be unless you are already
+changing that test for another reason, and do not convert a neighbour in passing.

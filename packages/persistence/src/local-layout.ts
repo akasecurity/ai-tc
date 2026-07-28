@@ -1,9 +1,14 @@
-import { chmodSync, mkdirSync, renameSync } from 'node:fs';
-import { chmod, mkdir } from 'node:fs/promises';
+import { renameSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { DATA_DIR_MODE, ensureDataDirSync as ensureDirOwnerOnly } from './paths.ts';
+import {
+  DATA_DIR_MODE,
+  ensureDataDirSync as ensureDirOwnerOnly,
+  tightenDir,
+  tightenFile,
+} from './paths.ts';
 
 // The ~/.aka on-disk LAYOUT (which paths live where), shared by every local
 // consumer — the plugin SDK, the CLI, and the OSS web-ui. It lives here (the
@@ -37,11 +42,10 @@ export function dbPath(base: string = defaultDataDir()): string {
 // e.g. Windows) and must never break the fail-open hook path.
 export async function ensureDataDir(dir: string = defaultDataDir()): Promise<void> {
   await mkdir(dir, { recursive: true, mode: DATA_DIR_MODE });
-  try {
-    await chmod(dir, DATA_DIR_MODE);
-  } catch {
-    // best-effort: platform without POSIX modes, or not owned by us
-  }
+  // Delegate the tighten to the one shared helper so the "benign vs surfaced"
+  // policy (and its once-per-path warn) lives in exactly one place — the sync
+  // and async dir paths can't drift on what a failed chmod means.
+  tightenDir(dir);
 }
 
 // Synchronous twin of ensureDataDir, defaulted to the layout base. Delegates to
@@ -66,15 +70,14 @@ export function migrateLegacyLayout(base: string = defaultDataDir()): void {
   ];
   for (const { name, dest } of moves) {
     try {
-      mkdirSync(dest, { recursive: true, mode: DATA_DIR_MODE });
-      // mkdirSync only applies mode on creation (and is umask-masked); tighten
-      // a pre-existing dir to owner-only too, since it holds sensitive files.
-      try {
-        chmodSync(dest, DATA_DIR_MODE);
-      } catch {
-        // best-effort: platform without POSIX modes, or not owned by us
-      }
-      renameSync(join(base, name), join(dest, name));
+      // Ensure + tighten the destination dir (it holds sensitive files), then
+      // move the flat file in and hold it to 0600 too: rename preserves the
+      // source's (possibly loose) mode, and a legacy config.json can carry a
+      // token.
+      ensureDirOwnerOnly(dest);
+      const moved = join(dest, name);
+      renameSync(join(base, name), moved);
+      tightenFile(moved);
     } catch {
       // can't create dest, not present, already moved, or unwritable — skip
     }

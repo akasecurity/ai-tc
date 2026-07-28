@@ -6,6 +6,9 @@ import {
   HISTORICAL_CHOICES,
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
+  MODEL_JUDGE_CHOICES,
+  MODEL_JUDGE_SECTION_DESCRIPTION,
+  MODEL_JUDGE_SECTION_LABEL,
   POLICY_CHOICES,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
@@ -88,5 +91,36 @@ describe('WorkspaceSettingsFormView historical-access copy', () => {
   it('leaves the session-only default free of any egress', () => {
     const sessionOnly = HISTORICAL_CHOICES.find((c) => c.value === 'session-only');
     expect(sessionOnly?.description).not.toMatch(/model API/i);
+  });
+});
+
+// The model-judge consent control is a DISTINCT grant from historical access.
+// Its copy must make that separation clear and disclose what leaves the machine.
+describe('WorkspaceSettingsFormView model-judge consent control', () => {
+  it('offers exactly a grant and a revoke choice', () => {
+    expect(MODEL_JUDGE_CHOICES.map((c) => c.value).sort()).toEqual(['granted', 'revoked']);
+  });
+
+  it('labels the section as its own consent, separate from historical access', () => {
+    expect(MODEL_JUDGE_SECTION_LABEL).toMatch(/model-judge/i);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/separate consent from historical access/i);
+  });
+
+  it('discloses that findings go to the model API while the file path is not sent', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/model API/);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/file path is never sent/i);
+  });
+
+  // maskText masks the secrets it DETECTS in the context window; non-secret text
+  // in that window still crosses. Copy that says the window is masked outright
+  // promises more than the engine delivers, so pin the qualified wording.
+  it('scopes the masking claim to secrets in the context, not the whole window', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/secrets in the surrounding context/i);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/masked/i);
+  });
+
+  it('defaults to revoked wording never assuming the grant', () => {
+    const revoked = MODEL_JUDGE_CHOICES.find((c) => c.value === 'revoked');
+    expect(revoked?.description).toMatch(/never assumed/i);
   });
 });

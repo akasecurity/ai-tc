@@ -21,7 +21,15 @@
  * empty states).
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -118,6 +126,18 @@ export class SetupJourney {
   cleanup(): void {
     rmSync(this.home, { recursive: true, force: true });
     rmSync(this.binDir, { recursive: true, force: true });
+  }
+
+  // Whether the stub `claude` judge was actually executed. The stub touches a
+  // sentinel on every invocation, so a consent-gate test can assert the egress
+  // never happened at the process boundary — not merely that a mocked function
+  // went uncalled.
+  judgeWasInvoked(): boolean {
+    return existsSync(this.judgeSentinelPath);
+  }
+
+  private get judgeSentinelPath(): string {
+    return join(this.binDir, 'judge-invoked');
   }
 
   // Seed a prior Claude Code transcript under the temp home carrying two leaked
@@ -232,6 +252,14 @@ export class SetupJourney {
   // the Yes-scan leg (consent to look at prior activity).
   onboardHistorical(access: 'full' | 'session-only'): StepResult {
     return this.run('onboard.js', ['--historical', access]);
+  }
+
+  // Consent side effect — record the DISTINCT model-judge egress consent the
+  // wizard collects (step 3) before piping findings into the judge. Separate
+  // from onboardHistorical: without it the apply-suppressions preview skips the
+  // judge cleanly instead of sending anything to the model.
+  onboardModelJudge(): StepResult {
+    return this.run('onboard.js', ['--model-judge-consent']);
   }
 
   // Out-of-band posture write, e.g. a pack the user hardened before running the
@@ -393,6 +421,9 @@ export class SetupJourney {
   private writeFakeJudge(): void {
     const src = `#!/usr/bin/env node
 'use strict';
+// Record that the judge actually ran, so a test can prove the consent gate
+// stopped the egress at the process boundary (see judgeWasInvoked).
+require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, '1');
 const prompt = require('node:fs').readFileSync(0, 'utf8');
 const fences = [...String(prompt).matchAll(/\`\`\`[a-z]*\\n([\\s\\S]*?)\`\`\`/g)];
 const block = fences.length ? fences[fences.length - 1][1] : '';

@@ -116,6 +116,7 @@ describe('runApply — preview persists a plan and writes nothing', () => {
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -144,6 +145,7 @@ describe('runApply — preview consolidates the human gate into one SHOW region'
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -185,6 +187,7 @@ describe('runApply — preview renders the honest empty state on a clean scan', 
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -220,6 +223,7 @@ describe('runApply — preview renders the no-history empty state on an empty-hi
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -250,6 +254,7 @@ describe('runApply — preview renders the skipped-scan copy when triage was ski
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -270,6 +275,60 @@ describe('runApply — preview renders the skipped-scan copy when triage was ski
   });
 });
 
+describe('runApply — preview gates the judge behind model-judge consent', () => {
+  it('never runs the judge and emits the clean skip when consent is not granted', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const runJudge = vi.fn(() => verdict());
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      modelJudgeConsent: () => false,
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    // The judge egress never happened.
+    expect(runJudge).not.toHaveBeenCalled();
+    const blob = out.join('');
+    // The clean skip copy — distinct from the historical no-consent skip.
+    expect(blob).toContain(
+      "I didn't send anything to the model — model-judge consent wasn't granted.",
+    );
+    // No plan was persisted and the store was never written.
+    expect(blob).not.toContain('Plan saved to:');
+    expect(db.posture).toEqual({});
+    expect(db.created).toEqual([]);
+  });
+
+  it('proceeds to judge and persist a plan when consent is granted', async () => {
+    const db = fakeDb();
+    const out: string[] = [];
+    const runJudge = vi.fn(() => verdict());
+    const code = await runApply({
+      argv: [],
+      readStream: () => streamText(),
+      runJudge,
+      openDb: db.open,
+      now: () => 0,
+      createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
+      stdout: (s) => out.push(s),
+      stderr: vi.fn(),
+    });
+    expect(code).toBe(0);
+    expect(runJudge).toHaveBeenCalledTimes(1);
+    const blob = out.join('');
+    expect(blob).toContain('Plan saved to:');
+    expect(blob).not.toContain('model-judge consent');
+    written.push(planPathFromStdout(out));
+  });
+});
+
 describe('runApply — preview is a raw-free egress boundary by construction', () => {
   const previewThrowing = async (runJudge: () => never): Promise<unknown> => {
     const db = fakeDb();
@@ -281,6 +340,7 @@ describe('runApply — preview is a raw-free egress boundary by construction', (
         openDb: db.open,
         now: () => 0,
         createdBy: () => 'tester',
+        modelJudgeConsent: () => true,
         stdout: vi.fn(),
         stderr: vi.fn(),
       });
@@ -321,6 +381,7 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
       openDb: previewDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => previewOut.push(s),
       stderr: vi.fn(),
     });
@@ -344,6 +405,7 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -406,6 +468,7 @@ describe('runApply — confirm persists the full recommended 8-pack posture', ()
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -486,6 +549,7 @@ function previewPlan(stream: string, v: TriageRecommendation): Promise<string> {
     openDb: fakeDb().open,
     now: () => 0,
     createdBy: () => 'tester',
+    modelJudgeConsent: () => true,
     stdout: (s) => out.push(s),
     stderr: vi.fn(),
   }).then((code) => {
@@ -507,6 +571,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: vi.fn(),
       planIO: {
@@ -534,6 +599,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: () => {
         throw new Error('stdout closed (EPIPE)');
       },
@@ -578,6 +644,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: (s) => err.push(s),
     });
@@ -602,6 +669,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -629,6 +697,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: (s) => err.push(s),
     });
@@ -657,6 +726,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -694,6 +764,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -726,6 +797,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       openDb: confirmDb.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: (s) => err.push(s),
     });
@@ -770,6 +842,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
       }),
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: vi.fn(),
     });
@@ -791,6 +864,7 @@ describe('runApply — confirm fails loud on a bad --plan', () => {
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: (s) => err.push(s),
     });
@@ -812,6 +886,7 @@ describe('runApply — confirm fails loud on a bad --plan', () => {
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: vi.fn(),
       stderr: (s) => err.push(s),
     });
@@ -849,6 +924,7 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -899,6 +975,7 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -937,6 +1014,7 @@ describe('runApply — preview derives surfaced secret findings into the frame',
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1046,6 +1124,7 @@ describe('runApply — preview derives surfaced secret findings into the frame',
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1081,6 +1160,7 @@ describe('runApply — preview derives the masked false-positive pattern signal 
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1126,6 +1206,7 @@ describe('runApply — preview derives the masked false-positive pattern signal 
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1157,6 +1238,7 @@ describe('runApply — preview degrades fail-open when the local store is unread
         },
         now: () => 0,
         createdBy: () => 'tester',
+        modelJudgeConsent: () => true,
         stdout: (s) => out.push(s),
         stderr: vi.fn(),
       });
@@ -1230,6 +1312,7 @@ describe('runApply — dedups repeated hits before the judge and before the writ
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1300,6 +1383,7 @@ describe('runApply — location-scoped findings survive the value-scoped dedup',
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1370,6 +1454,7 @@ describe('runApply — the batch-and-merge path the large-history fallback takes
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
       maxJudgeBytes: 3_000,
@@ -1445,6 +1530,7 @@ describe('runApply — an fpId the judge was never shown, on the single-batch pa
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });
@@ -1511,6 +1597,7 @@ describe('runApply — --max-judge-bytes makes the batch path exercisable', () =
       openDb: db.open,
       now: () => 0,
       createdBy: () => 'tester',
+      modelJudgeConsent: () => true,
       stdout: (s) => out.push(s),
       stderr: vi.fn(),
     });

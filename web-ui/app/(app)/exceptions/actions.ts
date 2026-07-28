@@ -10,6 +10,7 @@ import {
   DuplicateActiveExceptionError,
   fingerprintValue,
   loadOrCreateFingerprintKey,
+  readFingerprintKey,
   rotateFingerprintKey,
 } from '@akasecurity/persistence';
 import type { ResolvedScope } from '@akasecurity/schema';
@@ -29,6 +30,11 @@ export interface ActionResult {
   ok: boolean;
   error?: string;
 }
+
+// Recovery guidance for a key file that exists but cannot be parsed. Shared by
+// every path that reads the key so the instruction can never drift between them.
+const CORRUPT_KEY_ERROR =
+  'The exception key file is corrupt. Delete ~/.aka/data/exception.key to mint a new key (this invalidates existing grants).';
 
 // The grant creator's identity — the OS account running the local server,
 // mirroring the CLI's resolveCreatedBy.
@@ -70,7 +76,9 @@ function createGrant(input: CreateExceptionInput): Promise<ActionResult> {
  * Grant an exception from a blocked-ledger entry (`aka exception approve`).
  * The value never travels — the ledger row already carries its keyed
  * fingerprint + masked preview. Permanent scope requires the masked value
- * retyped; re-checked here, not just in the dialog.
+ * retyped; re-checked here, not just in the dialog. A row fingerprinted under
+ * a key version that is no longer current is refused: the grant could never
+ * match.
  */
 export async function approveBlocked(input: {
   reference: string;
@@ -95,6 +103,29 @@ export async function approveBlocked(input: {
       error: 'That blocked detection has expired from the ledger — trigger it again.',
     };
   }
+
+  // The ledger row carries the fingerprint computed when the hook blocked the
+  // value, under whichever key version was live then. Enforcement fingerprints
+  // under the CURRENT key and the bundle query is scoped to it, so a grant
+  // minted from a rotated-away (or deleted) key could never match. Reject
+  // rather than write a grant that is inert the moment it is created — the
+  // ledger outlives a rotation, so this is one click away.
+  let keyVersion: number | null;
+  try {
+    keyVersion = readFingerprintKey(dataDir())?.version ?? null;
+  } catch {
+    return { ok: false, error: CORRUPT_KEY_ERROR };
+  }
+  if (keyVersion !== entry.keyVersion) {
+    return {
+      ok: false,
+      error:
+        keyVersion === null
+          ? 'The exception key file is missing, so the fingerprint recorded for this detection can no longer be matched. Trigger the detection again.'
+          : `That detection was blocked under fingerprint key v${String(entry.keyVersion)}; the key is now v${String(keyVersion)}, so a grant from it could never match. Trigger the detection again.`,
+    };
+  }
+
   if (scope.scope === 'permanent' && input.confirmation !== entry.maskedValue) {
     return {
       ok: false,
@@ -174,11 +205,7 @@ export async function addException(input: {
     };
   } catch {
     // Corrupt key file — fail secure with the CLI's recovery guidance.
-    return {
-      ok: false,
-      error:
-        'The exception key file is corrupt. Delete ~/.aka/data/exception.key to mint a new key (this invalidates existing grants).',
-    };
+    return { ok: false, error: CORRUPT_KEY_ERROR };
   }
 
   return createGrant({

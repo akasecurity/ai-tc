@@ -110,7 +110,12 @@ export async function main(
   const noUpdateCheck = rawRest.includes('--no-update-check');
   const rest = rawRest.filter((a) => a !== '--no-update-check');
 
-  const handler = COMMANDS[command];
+  // `Object.hasOwn`, not a truthy lookup: `COMMANDS` is an object literal, so a
+  // plain index walks the prototype and `COMMANDS['constructor']` yields
+  // `Object`. That is the one inherited name `isExternalCommandName` accepts, so
+  // a truthy check would both call `Object(rest)` for `aka constructor` and stop
+  // an `aka-constructor` on PATH from ever dispatching.
+  const handler = Object.hasOwn(COMMANDS, command) ? COMMANDS[command] : undefined;
 
   // Git-style external dispatch: run `aka-<command>` from PATH with the verbatim
   // tail (an external command owns its whole argv, including --no-update-check).

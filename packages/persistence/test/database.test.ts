@@ -224,14 +224,17 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // dies on NOT NULL tenant_id, swallowed fail-open. A snapshot is impossible
     // here, so the whole store is moved aside instead — the reset still happens,
     // and the damaged original is preserved rather than destroyed.
+    //
+    // The fixture stays at two tables and one row deliberately: the schema alone
+    // already spans the several pages corruptStore('page') needs, and this store
+    // is in rollback-journal mode, where a loop of per-row commits is a loop of
+    // fsyncs — slow enough on Windows CI to reach the per-test timeout by itself.
     const file = join(dir, 'aka.db');
     const legacy = new DatabaseSync(file);
     legacy.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
     legacy.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
     legacy.exec('PRAGMA user_version = 10');
-    for (let i = 0; i < 200; i += 1) {
-      legacy.prepare('INSERT INTO tenants (id) VALUES (?)').run(`tenant-${String(i)}`);
-    }
+    legacy.exec("INSERT INTO tenants (id) VALUES ('doomed-tenant')");
     legacy.close();
     const beforeSize = statSync(file).size;
     corruptStore(file, 'page');

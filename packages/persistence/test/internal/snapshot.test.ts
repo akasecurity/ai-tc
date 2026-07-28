@@ -28,14 +28,21 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** A real store with `rows` rows, left open. */
+/**
+ * A real store with `rows` rows, left open. The rows go in as ONE transaction:
+ * a per-row commit is a per-row fsync, which is slow enough on Windows CI to
+ * reach the per-test timeout on its own.
+ */
 function openStore(file: string, rows = 1): DatabaseSync {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('CREATE TABLE corpus (id INTEGER PRIMARY KEY, v TEXT)');
+  const insert = db.prepare('INSERT INTO corpus (v) VALUES (?)');
+  db.exec('BEGIN');
   for (let i = 0; i < rows; i += 1) {
-    db.prepare('INSERT INTO corpus (v) VALUES (?)').run(`prompt-${String(i)}`);
+    insert.run(`prompt-${String(i)}`);
   }
+  db.exec('COMMIT');
   return db;
 }
 

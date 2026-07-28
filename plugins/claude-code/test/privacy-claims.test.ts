@@ -64,13 +64,14 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(footnote).toMatch(/opt.?in/i);
   });
 
-  // The whole TriageHit crosses — rawMatch, a ±120-char context window, and the
-  // source transcript's path (see src/history/scan.ts). Copy that names only the
-  // secret understates what the user is consenting to.
+  // The minimized payload crosses — rawMatch plus a ±120-char context window
+  // (toJudgePayload drops filePath/valueFingerprint/keyVersion before egress).
+  // Copy that names only the secret understates what the user is consenting to;
+  // copy that still names the file path overstates it (the path no longer crosses).
   it('names the whole payload, not just the secret', () => {
     expect(footnote).toMatch(/secret/i);
     expect(footnote).toMatch(/120 characters of the surrounding transcript text/);
-    expect(footnote).toMatch(/path of the transcript file/);
+    expect(footnote).not.toMatch(/path of the transcript file/);
   });
 
   it('does not present withdrawal as a recall of what was already sent', () => {

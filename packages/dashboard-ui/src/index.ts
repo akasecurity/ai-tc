@@ -244,6 +244,7 @@ export {
 export {
   type ExceptionState,
   exceptionState,
+  isBlockedRowApprovable,
   SCOPE_ANSWER_LABEL,
   SCOPE_ANSWERS,
   SCOPE_LABEL,

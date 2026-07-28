@@ -10,10 +10,12 @@
 // full data-dir access has both file and key by construction. The key material
 // must never be logged, surfaced, or shipped anywhere.
 import { createHmac, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
+import { getRow } from './internal/rows.ts';
+import { DB_FILENAME, ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
 
 export interface FingerprintKey {
   version: number;
@@ -50,6 +52,58 @@ function parseKeyFile(raw: string): FingerprintKey {
   return { version, material: bytes };
 }
 
+// The tables that record WHICH key material produced a stored fingerprint. The
+// column is the version integer, so the version is the only handle either table
+// has on the key — see storedKeyVersionFloor.
+const KEY_VERSION_TABLES = ['exceptions', 'blocked_detections'];
+
+/**
+ * The highest key version any stored row already references (0 when the store
+ * has none, or cannot be read).
+ *
+ * A minted version must never collide with one already in the store. Deleting
+ * `exception.key` — which the corrupt-key recovery guidance tells users to do —
+ * loses the version, so an unguarded mint restarts at 1 while rows written under
+ * the DELETED material still say 1. Those rows then look current: a grant
+ * approved from one is fingerprinted under material that no longer exists and is
+ * inert the moment it is created, which is exactly what the approve-side version
+ * check exists to prevent. Reading the floor from the store closes that, because
+ * the rows outlive the key file.
+ *
+ * Opened only when the store already exists, so resolving a key never creates
+ * one, and read with a SELECT only. Any failure degrades to 0 — the behaviour
+ * before this floor existed — because an unreadable store must never stop a hook
+ * from minting the key it needs.
+ */
+function storedKeyVersionFloor(dataDir: string): number {
+  const file = join(dataDir, DB_FILENAME);
+  if (!existsSync(file)) return 0;
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file);
+    db.exec('PRAGMA busy_timeout = 2000');
+    let floor = 0;
+    for (const table of KEY_VERSION_TABLES) {
+      try {
+        // Queried per table: `blocked_detections` is created lazily on the first
+        // block, so it is legitimately absent on a store that has never blocked.
+        // MAX() over an empty table is NULL, which arrives as a null column.
+        const row = getRow<{ v: number | null }>(
+          db.prepare(`SELECT MAX(key_version) AS v FROM ${table}`),
+        );
+        floor = Math.max(floor, row?.v ?? 0);
+      } catch {
+        // Table absent on this store — nothing here to raise the floor.
+      }
+    }
+    return floor;
+  } catch {
+    return 0;
+  } finally {
+    db?.close();
+  }
+}
+
 // Owner-only atomic write (tmp + rename), so a key file that pre-existed with
 // looser permissions ends 0600 rather than carrying its mode through the rename.
 function writeKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
@@ -77,11 +131,15 @@ export function readFingerprintKey(dataDir: string): FingerprintKey | null {
 }
 
 /**
- * Load the fingerprint key, minting version 1 on first use. ONLY absence
- * creates a key: a corrupt/unparseable file throws so callers fail secure —
- * silently re-minting would orphan every grant written under the real key.
- * Loading an existing file re-tightens its mode to 0600 (best-effort), covering
- * files created before the mode was enforced at write time.
+ * Load the fingerprint key, minting one on first use. ONLY absence creates a
+ * key: a corrupt/unparseable file throws so callers fail secure — silently
+ * re-minting would orphan every grant written under the real key. Loading an
+ * existing file re-tightens its mode to 0600 (best-effort), covering files
+ * created before the mode was enforced at write time.
+ *
+ * A mint takes version 1 on a fresh store, and otherwise the first version the
+ * store has not already seen — so material minted after the key file was deleted
+ * is never mistaken for the material the stored rows were written under.
  */
 export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
   const existing = readFingerprintKey(dataDir);
@@ -91,21 +149,28 @@ export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
     tightenFile(keyFilePath(dataDir));
     return existing;
   }
-  return writeKeyFile(dataDir, { version: 1, material: randomBytes(KEY_MATERIAL_BYTES) });
+  return writeKeyFile(dataDir, {
+    version: storedKeyVersionFloor(dataDir) + 1,
+    material: randomBytes(KEY_MATERIAL_BYTES),
+  });
 }
 
 /**
- * Rotate the key: fresh 32 bytes, version bumped past the old one (1 when no
- * key exists yet). Rotation is INVALIDATION — fingerprints cannot be re-keyed
- * without the raw values, which are never stored, so grants written under the
- * old version simply stop matching (they remain, inert, for audit). A corrupt
- * existing file still throws: the old version is unknowable, and silently
- * reusing a version could collide new grants with orphaned ones.
+ * Rotate the key: fresh 32 bytes, version bumped past both the old key file and
+ * anything the store already references. Rotation is INVALIDATION — fingerprints
+ * cannot be re-keyed without the raw values, which are never stored, so grants
+ * written under the old version simply stop matching (they remain, inert, for
+ * audit). A corrupt existing file still throws: the old version is unknowable,
+ * and silently reusing a version could collide new grants with orphaned ones.
+ *
+ * The store floor matters when the key file is ABSENT — rotating after a delete
+ * would otherwise restart at 1 and collide with rows written under the deleted
+ * material.
  */
 export function rotateFingerprintKey(dataDir: string): FingerprintKey {
   const existing = readFingerprintKey(dataDir);
   return writeKeyFile(dataDir, {
-    version: (existing?.version ?? 0) + 1,
+    version: Math.max(existing?.version ?? 0, storedKeyVersionFloor(dataDir)) + 1,
     material: randomBytes(KEY_MATERIAL_BYTES),
   });
 }
@@ -113,4 +178,19 @@ export function rotateFingerprintKey(dataDir: string): FingerprintKey {
 /** The keyed fingerprint of one detected value: HMAC-SHA256 hex under the key. */
 export function fingerprintValue(key: FingerprintKey, raw: string): string {
   return createHmac('sha256', key.material).update(raw, 'utf8').digest('hex');
+}
+
+/**
+ * Whether a stored fingerprint — a grant, or a blocked-ledger row — was written
+ * under the key in use now, and so can still be matched.
+ *
+ * Enforcement fingerprints under the CURRENT key and scopes its bundle query to
+ * that version, so a grant minted from a row that fails this check is inert the
+ * moment it is created. Both approve surfaces (`aka exception approve` and the
+ * dashboard) gate on it; keeping the rule here is what stops them drifting apart
+ * on which rows are still usable. An absent key fails the check on its own
+ * terms: the material is gone, so no stored fingerprint can be reproduced.
+ */
+export function isCurrentKeyVersion(key: FingerprintKey | null, keyVersion: number): boolean {
+  return key !== null && key.version === keyVersion;
 }

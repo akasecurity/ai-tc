@@ -1,7 +1,7 @@
 // Presentational lookups + pure derivations for the Exceptions views. Lives in
 // @akasecurity/dashboard-ui so every host renders
 // identical state/scope/provenance labelling.
-import type { DetectionException } from '@akasecurity/schema';
+import type { BlockedDetection, DetectionException } from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 export type Tone = NonNullable<BadgeProps['variant']>;
@@ -16,6 +16,28 @@ export function exceptionState(ex: DetectionException, now = Date.now()): Except
   if (ex.maxUses !== null && ex.useCount >= ex.maxUses) return 'consumed';
   if (ex.expiresAt !== null && Date.parse(ex.expiresAt) <= now) return 'expired';
   return 'active';
+}
+
+/**
+ * Whether a blocked-ledger row can still be turned into a grant.
+ *
+ * The row's fingerprint was computed under whichever key was live when the hook
+ * blocked. Enforcement fingerprints under the CURRENT key and scopes its bundle
+ * query to that version, so a grant built from a row keyed to any other version
+ * could never match. The ledger is retained for a day, which is longer than a
+ * key rotation takes, so the strip keeps listing such rows — they are still an
+ * accurate record of what was blocked, just no longer grant material.
+ *
+ * `currentKeyVersion` is null when there is no key file at all; the material is
+ * gone, so no stored fingerprint can be reproduced and nothing is approvable.
+ * This mirrors the server-side refusal, which is the actual control — this only
+ * keeps the UI from offering a click that cannot succeed.
+ */
+export function isBlockedRowApprovable(
+  row: Pick<BlockedDetection, 'keyVersion'>,
+  currentKeyVersion: number | null,
+): boolean {
+  return currentKeyVersion !== null && row.keyVersion === currentKeyVersion;
 }
 
 export const STATE_TONE: Record<ExceptionState, Tone> = {

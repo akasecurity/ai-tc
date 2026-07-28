@@ -1,5 +1,13 @@
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -487,15 +495,18 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(storeBytes()).not.toContain(SECOND);
     });
 
-    it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async () => {
-      const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
-      expect(res).toEqual({ ok: true });
+    it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async (ctx) => {
       // The add path mints the fingerprint key on first use. A looser mode would
       // let another local account read the key and reverse the stored HMACs, so
-      // pin 0600 (POSIX only — Windows ACLs do not carry these mode bits).
-      if (process.platform !== 'win32') {
-        expect(statSync(join(dir, 'exception.key')).mode & 0o777).toBe(0o600);
+      // pin 0600. Skipped rather than silently passed on Windows, where ACLs
+      // carry the permission and these mode bits mean nothing — a test that
+      // asserts nothing must not report as covered.
+      if (process.platform === 'win32') {
+        ctx.skip('Windows ACLs do not carry POSIX mode bits');
       }
+      const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
+      expect(res).toEqual({ ok: true });
+      expect(statSync(join(dir, 'exception.key')).mode & 0o777).toBe(0o600);
     });
   });
 
@@ -838,13 +849,40 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
       expect(maskMatch(SECOND)).toBe(maskMatch(VALUE));
     });
 
-    const NON_STRINGS: [string, unknown][] = [
-      ['null', null],
-      ['an object', {}],
-      ['a stringifiable object', { toString: () => 'x' }],
+    // Each payload COERCES to the masked value the gate asks for, so each one
+    // survives a switch from `!==` to `String(x) !==` — the mutation these exist
+    // to catch. A payload that coerces to anything else is rejected either way
+    // and would prove nothing, so the coercion is asserted before the call.
+    const COERCING: [string, (masked: string) => unknown][] = [
+      ['a single-element array', (masked) => [masked]],
+      ['a stringifiable object', (masked) => ({ toString: () => masked })],
+      ['a boxed String', (masked) => new String(masked)],
     ];
 
-    it.each(NON_STRINGS)('rejects %s arriving over the wire', async (_label, confirmation) => {
+    it.each(COERCING)('rejects %s that coerces to the masked value', async (_label, build) => {
+      const confirmation = build(MASKED);
+      expect(String(confirmation)).toBe(MASKED); // the case is only meaningful if it coerces
+      const res = await approveBlockedRaw({
+        reference: REFERENCE,
+        scope: 'permanent',
+        reason: 'x',
+        confirmation,
+      });
+      expect(res.ok).toBe(false);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    // The empty-ish payloads a client can post in place of the field. `undefined`
+    // is the missing-field case above; these cannot coerce to a masked value, so
+    // they pin the boundary rather than the coercion.
+    const EMPTYISH: [string, unknown][] = [
+      ['null', null],
+      ['an empty object', {}],
+      ['false', false],
+      ['zero', 0],
+    ];
+
+    it.each(EMPTYISH)('rejects %s arriving over the wire', async (_label, confirmation) => {
       const res = await approveBlockedRaw({
         reference: REFERENCE,
         scope: 'permanent',
@@ -962,6 +1000,121 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
       expect(res.ok).toBe(false);
       expect(res.error).toContain('exception.key');
       expect(await grants()).toHaveLength(0);
+    });
+
+    it('refuses a row whose key was DELETED and re-minted, not just rotated away', async () => {
+      // The version alone is not an identity: minting restarts the counter, so
+      // a key deleted at v1 and re-minted would come back as v1 and make this
+      // row look current again — a grant from it would be inert the moment it
+      // was created, which is the whole failure this guard exists to stop. The
+      // corrupt-key guidance tells users to delete the key file, so this is the
+      // path the product actively points at. The mint now takes the first
+      // version the store has not already claimed, which keeps them distinct.
+      const original = readFingerprintKey(dir);
+      expect(original?.version).toBe(1);
+
+      unlinkSync(keyFile());
+      const reminted = loadOrCreateFingerprintKey(dir);
+      expect(reminted.material.equals(original?.material ?? Buffer.alloc(0))).toBe(false);
+      expect(reminted.version).not.toBe(original?.version);
+      resetSingleton();
+
+      const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/could never match/i);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    it('refuses a row after the key was deleted and then ROTATED', async () => {
+      // Rotation used to fall back to (missing ?? 0) + 1 — also v1 — so "delete
+      // the key, then rotate" was a second route to the same collision.
+      unlinkSync(keyFile());
+      expect(await rotateKey(ROTATE_CONFIRMATION)).toEqual({ ok: true });
+      resetSingleton();
+
+      const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/could never match/i);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    it('distinguishes an unreadable key from a corrupt one — never says "delete it"', async (ctx) => {
+      // Answering a permissions failure with the corrupt-key guidance would
+      // destroy every grant on the machine to fix a chmod, and the replacement
+      // key is exactly what makes a stale ledger row look current again.
+      if (process.platform === 'win32') {
+        ctx.skip('POSIX mode bits do not gate reads under Windows ACLs');
+      }
+      if (process.getuid?.() === 0) {
+        ctx.skip('root bypasses the mode bits this case depends on');
+      }
+      chmodSync(keyFile(), 0o000);
+      resetSingleton();
+      try {
+        const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
+        expect(res.ok).toBe(false);
+        expect(res.error).toMatch(/permission/i);
+        // Not the corrupt-key guidance, and it says so explicitly.
+        expect(res.error).not.toMatch(/delete .*exception\.key to mint/i);
+        expect(res.error).toMatch(/do not delete/i);
+        expect(await grants()).toHaveLength(0);
+      } finally {
+        chmodSync(keyFile(), 0o600); // so the tree can be removed
+      }
+    });
+  });
+
+  describe('a store that cannot be read fails closed with a message, not a crash', () => {
+    it('returns an error instead of rejecting when the ledger read throws', async () => {
+      // A Server Action that throws reaches the client as a framework error
+      // page, not the recovery guidance every other branch here returns. The
+      // store is replaced with bytes SQLite will refuse, which is the shape a
+      // truncated or byte-flipped store arrives in.
+      resetSingleton(); // close the handle before overwriting the file
+      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
+      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
+        rmSync(join(dir, sidecar), { force: true });
+      }
+
+      const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/local store/i);
+    });
+
+    it('returns an error instead of rejecting when the ruleset read throws', async () => {
+      resetSingleton();
+      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
+      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
+        rmSync(join(dir, sidecar), { force: true });
+      }
+
+      const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/local store/i);
+      expect(res.error).not.toContain(VALUE);
+    });
+  });
+
+  describe('the guard is checked before the write, not with it', () => {
+    it('a rotation landing between the check and the write still writes a grant', async () => {
+      // An honest limitation pinned as a test rather than left implied. The
+      // version is read, then the grant is written; a rotation from another
+      // process (the CLI, another tab) in between lands a grant under the old
+      // version. The window is one store write wide on a single-operator local
+      // tool, and closing it needs the key read and the insert in one
+      // transaction — a seam the repository does not offer. If that seam
+      // arrives, this test is what should change.
+      const before = readFingerprintKey(dir)?.version ?? 0;
+      const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
+      expect(res).toEqual({ ok: true });
+
+      expect(await rotateKey(ROTATE_CONFIRMATION)).toEqual({ ok: true });
+      resetSingleton();
+
+      const grant = (await grants())[0];
+      expect(grant?.keyVersion).toBe(before);
+      // The grant is real but inert — exactly what a mid-flight rotation costs.
+      expect(await bundleIds(readFingerprintKey(dir)?.version ?? 0)).not.toContain(grant?.id);
     });
   });
 

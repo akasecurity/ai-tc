@@ -106,6 +106,7 @@ export function ExceptionsClient({
         }}
         blockedWindow={blockedWindow}
         onBlockedWindowChange={setBlockedWindow}
+        keyVersion={keyVersion}
       />
 
       <ExceptionsTableView

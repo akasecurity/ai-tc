@@ -11,7 +11,9 @@ import {
   dataDir,
   fingerprintValue,
   loadOrCreateFingerprintKey,
+  readFingerprintKey,
   registerBundledPacks,
+  rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -323,6 +325,92 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
     } finally {
       db.close();
     }
+  });
+
+  // The ledger is retained for a day, so it outlives a key rotation and keeps
+  // offering rows whose fingerprint was computed under the old material.
+  // Enforcement fingerprints under the CURRENT key and scopes its bundle query
+  // to that version, so a grant built from such a row is inert the moment it is
+  // created — and reporting success for it is worse than the grant simply going
+  // quiet, because the operator just deliberately created this one.
+  describe('a row keyed to a version that is no longer current', () => {
+    async function grants(): Promise<unknown[]> {
+      const db = openLocalDatabase(dir);
+      try {
+        return await db.exceptions.list({ includeTerminal: true });
+      } finally {
+        db.close();
+      }
+    }
+
+    it('refuses a row blocked before a rotation', async () => {
+      await seedBlocked('c0ffee');
+      const rotated = rotateFingerprintKey(dir);
+      expect(rotated.version).toBe(2);
+
+      await expect(
+        runException(
+          ['approve', 'c0ffee', '--home', home, '--once', '--reason', 'stale'],
+          scriptedIo(),
+        ),
+      ).rejects.toThrow(/could never match/);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    it('refuses a row whose key was deleted and re-minted, not just rotated', async () => {
+      // Version alone is not an identity — minting used to restart the counter,
+      // so a key deleted at v1 and re-minted came back as v1 and made this row
+      // look current. The mint now takes the first version the store has not
+      // already claimed.
+      await seedBlocked('deadbe');
+      rmSync(join(dir, 'exception.key'));
+      const reminted = loadOrCreateFingerprintKey(dir);
+      expect(reminted.version).toBe(2);
+
+      await expect(
+        runException(
+          ['approve', 'deadbe', '--home', home, '--once', '--reason', 'reminted'],
+          scriptedIo(),
+        ),
+      ).rejects.toThrow(/could never match/);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    it('refuses when the key file is missing, and mints nothing to answer the read', async () => {
+      await seedBlocked('ba5eba');
+      rmSync(join(dir, 'exception.key'));
+
+      await expect(
+        runException(
+          ['approve', 'ba5eba', '--home', home, '--once', '--reason', 'no key'],
+          scriptedIo(),
+        ),
+      ).rejects.toThrow(/key file is missing/);
+      expect(await grants()).toHaveLength(0);
+      // A refusal that minted a key would rotate the machine's whole grant set
+      // to answer a lookup.
+      expect(readFingerprintKey(dir)).toBeNull();
+    });
+
+    it('does not mint a key when a by-value selector finds nothing', async () => {
+      // The by-value path fingerprints the selector to compare it, which used to
+      // load-or-create. On a store with no key that minted one as a side effect
+      // of a failed search.
+      await seedBlocked('fa11ed');
+      rmSync(join(dir, 'exception.key'));
+      const unmatched = 'AKIAZZZZNOTBLOCKEDZZ';
+
+      const err = await runException(
+        ['approve', unmatched, '--home', home, '--once', '--reason', 'nope'],
+        scriptedIo(),
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(/needs the fingerprint key/);
+      expect(err?.message).not.toContain(unmatched);
+      expect(readFingerprintKey(dir)).toBeNull();
+    });
   });
 });
 

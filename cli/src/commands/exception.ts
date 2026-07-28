@@ -5,10 +5,13 @@ import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
 import type { BlockedDetection, LocalDatabase } from '@akasecurity/persistence';
 import type { CreateExceptionInput } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
+import type { FingerprintKey } from '@akasecurity/plugin-sdk';
 import {
   dataDir,
   fingerprintValue,
+  isCurrentKeyVersion,
   loadOrCreateFingerprintKey,
+  readFingerprintKey,
   registerBundledPacks,
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
@@ -272,6 +275,34 @@ function blockedLine(entry: BlockedDetection): string {
   return `${entry.reference}  ${entry.maskedValue}  ${entry.ruleId}  ${formatRelative(entry.blockedAt)}`;
 }
 
+// A key file that cannot be read is either corrupt or inaccessible, and only the
+// first may be answered with "delete it". Deleting a healthy key over a
+// permissions error destroys every grant on the machine, because the replacement
+// carries fresh material that no stored fingerprint was written under. A
+// filesystem error carries a `code`; the strict parse throws a plain Error
+// without one.
+function keyAccessHint(err: unknown, dir: string): string {
+  const code: unknown = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string'
+    ? `Check the permissions on ${dir}/exception.key — do not delete it, that invalidates every existing grant.`
+    : `Delete ${dir}/exception.key to start fresh — grants written under it already cannot match.`;
+}
+
+// The key as the approve flow needs it: read-only, never minting. Minting here
+// would change which key is current as a side effect of a LOOKUP, orphaning
+// every existing grant to answer a search — and on a store whose key was
+// deleted it would hand fresh material a version stored rows already claim.
+function readKeyForApprove(dir: string): FingerprintKey | null {
+  try {
+    return readFingerprintKey(dir);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`cannot read the fingerprint key: ${message}\n${keyAccessHint(err, dir)}`, {
+      cause: err,
+    });
+  }
+}
+
 async function pickBlocked(
   entries: BlockedDetection[],
   selector: string | undefined,
@@ -295,10 +326,15 @@ async function pickBlocked(
         `the selector matches ${String(matches.length)} recent blocks — run 'aka exception approve' bare to pick from the list`,
       );
     }
-    const key = loadOrCreateFingerprintKey(dir);
+    const key = readKeyForApprove(dir);
+    if (key === null) {
+      throw new Error(
+        `no blocked detection matches that reference, and matching by value needs the fingerprint key — none exists on this machine`,
+      );
+    }
     const fingerprint = fingerprintValue(key, selector);
     const byValue = entries.filter(
-      (e) => e.keyVersion === key.version && e.valueFingerprint === fingerprint,
+      (e) => isCurrentKeyVersion(key, e.keyVersion) && e.valueFingerprint === fingerprint,
     );
     const newest = byValue[0];
     if (newest) {
@@ -361,6 +397,23 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     // newlines); a whitespace-only selector falls back to the bare picker.
     const selector = positionals[0]?.trim();
     const entry = await pickBlocked(entries, selector === '' ? undefined : selector, io, dir);
+
+    // The ledger row carries the fingerprint computed when the hook blocked,
+    // under whichever key was live then; the ledger is retained far longer than
+    // a rotation takes, so a row can outlive its key. Enforcement fingerprints
+    // under the CURRENT key and scopes its bundle query to that version, so a
+    // grant built from such a row is inert the moment it is created. Refuse
+    // BEFORE prompting for scope and reason — an unusable row stays unusable
+    // whatever the user answers.
+    const key = readKeyForApprove(dir);
+    if (!isCurrentKeyVersion(key, entry.keyVersion)) {
+      throw new Error(
+        key === null
+          ? `cannot approve ${entry.reference}: the fingerprint key file is missing, so the fingerprint recorded for it can no longer be matched — trigger the detection again`
+          : `cannot approve ${entry.reference}: it was blocked under fingerprint key v${String(entry.keyVersion)} and the key is now v${String(key.version)}, so a grant from it could never match — trigger the detection again`,
+      );
+    }
+
     const { scope, reason } = await resolveScopeAndReason(values, io);
     if (scope.scope === 'permanent') {
       await confirmPermanent(io, entry.maskedValue, values.yes === true);
@@ -722,13 +775,11 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
     try {
       version = rotateFingerprintKey(dir).version;
     } catch (err) {
-      // A corrupt key file must not print a stack trace — surface the reason
-      // with a way forward. (Grants under a corrupt key already cannot match.)
+      // An unusable key file must not print a stack trace — surface the reason
+      // with a way forward matched to it. (Grants under a corrupt key already
+      // cannot match; a key that is merely unreadable must NOT be deleted.)
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `cannot rotate: ${message}\nDelete ${dir}/exception.key to start fresh — grants written under it already cannot match.`,
-        { cause: err },
-      );
+      throw new Error(`cannot rotate: ${message}\n${keyAccessHint(err, dir)}`, { cause: err });
     }
     io.out(
       `Fingerprint key rotated — new key version v${String(version)}.\nExisting grants no longer match; re-approve deliberately where still needed.\n`,

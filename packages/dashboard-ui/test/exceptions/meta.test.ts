@@ -1,7 +1,7 @@
 import type { DetectionException } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { exceptionState } from '../../src/exceptions/meta.ts';
+import { exceptionState, isBlockedRowApprovable } from '../../src/exceptions/meta.ts';
 
 const NOW = Date.parse('2026-07-03T12:00:00.000Z');
 
@@ -62,5 +62,31 @@ describe('exceptionState', () => {
     expect(
       exceptionState(exception({ expiresAt: '2026-07-03T11:59:59.000Z', scope: 'temporary' }), NOW),
     ).toBe('expired');
+  });
+});
+
+describe('isBlockedRowApprovable', () => {
+  it('is approvable only under the key version in use now', () => {
+    expect(isBlockedRowApprovable({ keyVersion: 3 }, 3)).toBe(true);
+  });
+
+  it('is not approvable after a rotation moved the key on', () => {
+    // The ledger is retained longer than a rotation takes, so the strip keeps
+    // listing rows fingerprinted under the old key. A grant built from one
+    // could never match, so the row is shown but not offered.
+    expect(isBlockedRowApprovable({ keyVersion: 1 }, 2)).toBe(false);
+  });
+
+  it('is not approvable under an OLDER current version either', () => {
+    // Not a `<` comparison: any version other than the current one means the
+    // material differs, whichever way the number moved.
+    expect(isBlockedRowApprovable({ keyVersion: 4 }, 2)).toBe(false);
+  });
+
+  it('is not approvable when there is no key file at all', () => {
+    // The material is gone, so no stored fingerprint can be reproduced —
+    // absence is refused on its own terms rather than treated as version 0.
+    expect(isBlockedRowApprovable({ keyVersion: 1 }, null)).toBe(false);
+    expect(isBlockedRowApprovable({ keyVersion: 0 }, null)).toBe(false);
   });
 });

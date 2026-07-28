@@ -3,17 +3,18 @@
 import { userInfo } from 'node:os';
 
 import { maskMatch, scan } from '@akasecurity/detections';
-import type { CreateExceptionInput } from '@akasecurity/persistence';
+import type { CreateExceptionInput, FingerprintKey } from '@akasecurity/persistence';
 import {
   BLOCKED_DETECTIONS_RETENTION_MS,
   dataDir,
   DuplicateActiveExceptionError,
   fingerprintValue,
+  isCurrentKeyVersion,
   loadOrCreateFingerprintKey,
   readFingerprintKey,
   rotateFingerprintKey,
 } from '@akasecurity/persistence';
-import type { ResolvedScope } from '@akasecurity/schema';
+import type { BlockedDetection, ResolvedScope } from '@akasecurity/schema';
 import { scopeFromAnswer } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -31,10 +32,34 @@ export interface ActionResult {
   error?: string;
 }
 
-// Recovery guidance for a key file that exists but cannot be parsed. Shared by
-// every path that reads the key so the instruction can never drift between them.
+// Recovery guidance for a key file that exists but cannot be PARSED. Shared by
+// the two paths that fingerprint (add and approve) so the instruction cannot
+// drift between them; `rotateKey` keeps its own wording because the way forward
+// there is different — the rotation itself is what is refused.
 const CORRUPT_KEY_ERROR =
   'The exception key file is corrupt. Delete ~/.aka/data/exception.key to mint a new key (this invalidates existing grants).';
+
+// A key file that is present and well-formed but cannot be read or written —
+// wrong owner, lost permissions, a failing disk. Deliberately NOT the corrupt
+// message: telling someone to delete a perfectly good key over a permissions
+// error destroys every grant on the machine, because the replacement carries
+// fresh material that no stored fingerprint was written under.
+const KEY_IO_ERROR =
+  'Could not access the exception key file — check the permissions on ~/.aka/data. Do not delete exception.key to work around this; that invalidates every existing grant.';
+
+// The local store is the only data source; a read that fails has to surface as a
+// message rather than an exception, or a Server Action rejects and the dialog
+// shows a framework error page instead of a way forward.
+const STORE_ERROR = 'Could not read the local store (~/.aka/data/aka.db).';
+
+// Corruption and an I/O failure need different guidance, and only the parse
+// failure is safe to answer with "delete the file". A filesystem error carries a
+// `code`; the strict parse in readFingerprintKey throws a plain Error without
+// one.
+function keyAccessError(err: unknown): string {
+  const code: unknown = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' ? KEY_IO_ERROR : CORRUPT_KEY_ERROR;
+}
 
 // The grant creator's identity — the OS account running the local server,
 // mirroring the CLI's resolveCreatedBy.
@@ -94,9 +119,14 @@ export async function approveBlocked(input: {
   // Looked up against the full retention window, not just the UI's currently
   // selected lookback — approving a row the user can see must not depend on
   // which filter chip happens to be active.
-  const entry = (await db().exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS)).find(
-    (b) => b.reference === input.reference,
-  );
+  let entry: BlockedDetection | undefined;
+  try {
+    entry = (await db().exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS)).find(
+      (b) => b.reference === input.reference,
+    );
+  } catch {
+    return { ok: false, error: STORE_ERROR };
+  }
   if (!entry) {
     return {
       ok: false,
@@ -110,19 +140,23 @@ export async function approveBlocked(input: {
   // minted from a rotated-away (or deleted) key could never match. Reject
   // rather than write a grant that is inert the moment it is created — the
   // ledger outlives a rotation, so this is one click away.
-  let keyVersion: number | null;
+  //
+  // Checked BEFORE the confirmation gate on purpose: an unusable row is
+  // unusable whatever the user types, and asking someone to retype a masked
+  // value only to then refuse the grant is worse than refusing it up front.
+  let key: FingerprintKey | null;
   try {
-    keyVersion = readFingerprintKey(dataDir())?.version ?? null;
-  } catch {
-    return { ok: false, error: CORRUPT_KEY_ERROR };
+    key = readFingerprintKey(dataDir());
+  } catch (err) {
+    return { ok: false, error: keyAccessError(err) };
   }
-  if (keyVersion !== entry.keyVersion) {
+  if (!isCurrentKeyVersion(key, entry.keyVersion)) {
     return {
       ok: false,
       error:
-        keyVersion === null
+        key === null
           ? 'The exception key file is missing, so the fingerprint recorded for this detection can no longer be matched. Trigger the detection again.'
-          : `That detection was blocked under fingerprint key v${String(entry.keyVersion)}; the key is now v${String(keyVersion)}, so a grant from it could never match. Trigger the detection again.`,
+          : `That detection was blocked under fingerprint key v${String(entry.keyVersion)}; the key is now v${String(key.version)}, so a grant from it could never match. Trigger the detection again.`,
     };
   }
 
@@ -173,7 +207,12 @@ export async function addException(input: {
   // rules the runtime evaluates, read from the DB, passed explicitly (never the
   // engine's process-global registry, which must stay untouched in this
   // long-lived server).
-  const { rules } = db().installedPacks.installedRuleset();
+  let rules;
+  try {
+    ({ rules } = db().installedPacks.installedRuleset());
+  } catch {
+    return { ok: false, error: STORE_ERROR };
+  }
   const rule = rules.find((r) => r.id === input.ruleId);
   if (!rule) return { ok: false, error: `Unknown or disabled rule '${input.ruleId}'.` };
 
@@ -203,9 +242,10 @@ export async function addException(input: {
       keyVersion: key.version,
       maskedValue: maskMatch(span),
     };
-  } catch {
-    // Corrupt key file — fail secure with the CLI's recovery guidance.
-    return { ok: false, error: CORRUPT_KEY_ERROR };
+  } catch (err) {
+    // Unusable key file — fail secure with recovery guidance matched to the
+    // reason (a corrupt file may be deleted; a permissions failure must not).
+    return { ok: false, error: keyAccessError(err) };
   }
 
   return createGrant({

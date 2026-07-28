@@ -23,6 +23,16 @@ on:
 permissions:
   contents: read
 
+# One release per tag at a time. A single tag push can start more than one run, and
+# each notifies the publisher repo. The registry treats published (pack, version)
+# pairs as immutable, so a duplicate dispatch re-publishes nothing — this group
+# serializes the runs rather than letting two publisher jobs overlap.
+# cancel-in-progress is false so a run is never interrupted between the fixture gate
+# and the dispatch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Validate · Publish

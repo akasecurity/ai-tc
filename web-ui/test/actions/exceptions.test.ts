@@ -432,10 +432,15 @@ describe('addException — the only web code touching a raw secret', () => {
       // hex must appear in the bytes just read. This proves the scan below is
       // reading the actual store that received the write — without it, a reader
       // that came back empty would satisfy `not.toContain` while proving nothing.
+      //
+      // One read, both assertions. The control and the absence check have to
+      // describe the SAME bytes: read twice and the control can pass against one
+      // snapshot while the raw is looked for in another.
       const fingerprint = (await grants())[0]?.valueFingerprint;
       expect(fingerprint).toBeDefined();
-      expect(storeBytes(dir)).toContain(fingerprint);
-      expect(storeBytes(dir)).not.toContain(SECOND);
+      const bytes = storeBytes(dir);
+      expect(bytes).toContain(fingerprint);
+      expect(bytes).not.toContain(SECOND);
     });
 
     it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async () => {

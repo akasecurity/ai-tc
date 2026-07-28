@@ -348,10 +348,15 @@ scans against the **DB snapshot**, not the engine's process-global registry.
 is not a runtime package-wall crossing.
 
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
-hardcoded `-wal`/`-shm` pair: SQLite writes an `aka.db-journal` instead wherever WAL
-silently no-ops (see `dbSidecars` in `packages/persistence/src/paths.ts`), and migrations
-and the foreign-lineage reset leave `aka.db.*.bak` copies alongside. `web-ui/test/helpers/store-bytes.ts`
-is that reader; import it rather than re-rolling one. Two rules keep it honest, because an
+hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
+`aka.db.pre-drop.<ts>.bak` — a byte-for-byte copy of the pre-migration store — in that
+directory on **every** run, and it is around 47% of the bytes there, so a name-list reader
+misses more of the store than a `-wal` pair ever covered. On top of that SQLite writes an
+`aka.db-journal` instead of the WAL pair wherever WAL silently no-ops (see `dbSidecars` in
+`packages/persistence/src/paths.ts`), and the foreign-lineage reset leaves its own `.bak`.
+`web-ui/test/helpers/store-bytes.ts` is that reader; import it rather than re-rolling one.
+Bind one call and assert against it — the positive control and the absence check must
+describe the same bytes, not two independent reads. Two rules keep it honest, because an
 empty read contains no secret and so passes every `not.toContain` vacuously: keep the
 **positive control** — assert a value that **is** expected on disk before asserting the raw
 is absent — and **never swallow a failed read**. Only a sibling's `ENOENT` is tolerable (an
@@ -360,6 +365,11 @@ violation on `aka.db` must throw.
 
 Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
-prefix — see `expectNoEchoOf` in `web-ui/test/actions/exceptions.test.ts`. This applies to
-errors only: at-rest and grant-shape assertions stay whole-value, because `maskMatch`
-deliberately keeps a fragment visible and that fragment is stored on purpose.
+prefix. `expectNoEchoOf` (`web-ui/test/actions/exceptions.test.ts`) is the **required form
+for every error assertion in that file**, including the ones a newly covered action brings
+with it — a plain `not.toContain(rawValue)` on an error is a defect, not a style choice.
+This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
+stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
+fragment is stored on purpose; and an assertion that some non-secret string is absent — an
+internal error-class name, say — is a different property that `expectNoEchoOf` does not
+express.

@@ -285,7 +285,7 @@ database in a real temp dir, which is what catches real SQLite semantics.
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
 cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
-`local-ops`, `plugin-runtime` and `plugins/claude-code` still roll their own.
+`local-ops`, `plugin-runtime`, `plugins/claude-code` and `web-ui` still roll their own.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
@@ -319,3 +319,37 @@ An early `return` reports as a pass, which is the failure mode the store harness
 to remove. Some older suites in this package still use
 `if (process.platform === 'win32') return;` — leave them be unless you are already
 changing that test for another reason, and do not convert a neighbour in passing.
+
+### Testing a web-ui Server Action
+
+A Server Action runs against the real store like any other test here, but four setup
+steps are required before the first one will run at all, and **missing any of them
+produces a failure that looks nothing like its cause**. `web-ui/test/actions/exceptions.test.ts`
+is the worked example.
+
+1. **Redirect the home dir** by mocking `node:os` and overriding `homedir()`. The action
+   resolves `~/.aka` from it, and `n/no-process-env` rules out an env override, so this is
+   the only seam. Set it through a `vi.hoisted()` box so `beforeEach` can point it at a
+   fresh `mkdtempSync` dir per test.
+2. **Alias `server-only` to an empty module** in `web-ui/vitest.config.ts` — `app/lib/db.ts`
+   imports it, and the real package throws at import time outside a React Server bundler.
+   Already wired; a new suite needs no change.
+3. **Mock `next/cache`** — a mutating action calls `revalidatePath()`, which needs a Next
+   render context that does not exist under vitest.
+4. **Close and drop the memoised DB handle** on `globalThis` (`app/lib/db.ts` keeps it at
+   `__akaDb` across requests and HMR reloads) in both `beforeEach` and `afterEach`, or the
+   next test reads the **previous** test's temp store. Reset it again mid-test after any
+   direct write through a second handle, so the action reopens and sees it.
+
+Seed whatever snapshot the action reads before calling it — anything scanning a value needs
+`installed_packs` populated via `recordInventory(bundledDetections())`, because the action
+scans against the **DB snapshot**, not the engine's process-global registry.
+`@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
+is not a runtime package-wall crossing.
+
+An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
+hardcoded `-wal`/`-shm` pair: SQLite writes an `aka.db-journal` instead wherever WAL
+silently no-ops (see `dbSidecars` in `packages/persistence/src/paths.ts`), and migrations
+and the foreign-lineage reset leave `aka.db.*.bak` copies alongside. Keep the positive
+control — assert a value that **is** expected on disk before asserting the raw is absent —
+or an empty read passes vacuously.

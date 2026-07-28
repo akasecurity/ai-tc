@@ -9,7 +9,7 @@ The Claude Code plugin for **[AI Traffic Control](https://github.com/akasecurity
 
 Detection runs entirely on your machine. There's no account and no backend — nothing is sent anywhere to be scanned.[^egress]
 
-[^egress]: Live detection and enforcement run locally. The one exception is the **opt-in** `/aka:setup` calibration below: to rate what an initial history scan finds, its judge step sends those findings to the model API through the `claude` CLI — the same provider your Claude session already uses. For each finding that means the raw (unmasked) value including any secret, roughly 120 characters of the surrounding transcript text on either side, and the path of the transcript file it came from. It runs only after you explicitly opt in, and it keeps those values out of your local Claude transcript — but a copy of them does leave the machine. Withdrawing the grant later stops future scans; it cannot recall what was already sent.
+[^egress]: Live detection and enforcement run locally. The one exception is the **opt-in** `/aka:setup` calibration below: to rate what an initial history scan finds, its judge step sends those findings to the model API through the `claude` CLI — the same provider your Claude session already uses. For each finding that means the raw (unmasked) value including any secret, plus roughly 120 characters of the surrounding transcript text on either side (any other secrets detected in that window are masked). It runs only after you explicitly opt in, and it keeps those values out of your local Claude transcript — but a copy of them does leave the machine. Withdrawing the grant later stops future scans; it cannot recall what was already sent.
 
 ## Install
 

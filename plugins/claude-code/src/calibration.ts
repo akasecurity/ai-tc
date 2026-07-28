@@ -112,17 +112,25 @@ const NO_HISTORY_HEADLINE =
 // table. Both carry a valid zero-count CalibrationFrame. This is the
 // found-nothing/empty-store copy only; an unreadable store is the separate
 // STORE_UNAVAILABLE_NOTE path, not framed here.
-export function frameEmptyState(
-  cause: EmptyCause,
-  posture: CalibrationFrame['posture'],
-): CalibrationResult {
-  const frame: CalibrationFrame = {
+// The machine-readable half of every "nothing to report" outcome: a frame whose
+// counts are all zero over the given posture. Separated from the copy so a
+// caller that already has its own honest line (the model-judge consent skip)
+// can still emit a parseable frame without borrowing an empty state's wording.
+export function zeroCountFrame(posture: CalibrationFrame['posture']): CalibrationFrame {
+  return {
     counts: { total: 0, important: 0, routine: 0 },
     routineCategories: [],
     surfacedCategories: [],
     findingKinds: [],
     posture,
   };
+}
+
+export function frameEmptyState(
+  cause: EmptyCause,
+  posture: CalibrationFrame['posture'],
+): CalibrationResult {
+  const frame = zeroCountFrame(posture);
   const copy =
     cause === 'scan-clean'
       ? `${SCAN_CLEAN_HEADLINE}\n${renderRecommendedPosture(posture)}`

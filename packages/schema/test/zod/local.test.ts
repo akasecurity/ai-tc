@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   defaultWorkspaceSettings,
+  isModelJudgeConsentValid,
+  MODEL_JUDGE_PAYLOAD_VERSION,
   toEventRow,
   toFindingRow,
   WORKSPACE_SETTINGS_SPEC_VERSION,
@@ -38,6 +40,27 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
 
   it('defaultWorkspaceSettings() equals the parsed defaults', () => {
     expect(defaultWorkspaceSettings()).toEqual(WorkspaceSettings.parse({}));
+  });
+
+  it('leaves modelJudgeConsent absent by default (opt-in, never assumed)', () => {
+    expect(WorkspaceSettings.parse({}).modelJudgeConsent).toBeUndefined();
+  });
+
+  it('round-trips a valid modelJudgeConsent and rejects a malformed one', () => {
+    const consent = { acknowledgedAt: ISO, payloadVersion: 1 };
+    expect(WorkspaceSettings.parse({ modelJudgeConsent: consent }).modelJudgeConsent).toEqual(
+      consent,
+    );
+    // payloadVersion must be a positive integer; acknowledgedAt an ISO datetime.
+    expect(
+      WorkspaceSettings.safeParse({ modelJudgeConsent: { acknowledgedAt: ISO, payloadVersion: 0 } })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkspaceSettings.safeParse({
+        modelJudgeConsent: { acknowledgedAt: 'not-a-date', payloadVersion: 1 },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a fully onboarded file and rejects unknown enum values', () => {
@@ -146,5 +169,41 @@ describe('row mappers (tenant-free local store)', () => {
 
     const withoutKey = toFindingRow(base);
     expect(withoutKey.findingKey).toBeNull();
+  });
+});
+
+// The judge gate, the CLI and the dashboard all decide "has the user consented?"
+// through this one predicate, so they cannot drift into disagreeing — the failure
+// mode being a settings page that shows "Granted" for a consent the judge is
+// already treating as revoked.
+describe('isModelJudgeConsentValid', () => {
+  const consentAt = (payloadVersion: number) => ({
+    acknowledgedAt: ISO,
+    payloadVersion,
+  });
+
+  it('is false when no consent has been recorded', () => {
+    expect(isModelJudgeConsentValid(undefined)).toBe(false);
+  });
+
+  it('is true when the consent covers the current payload version', () => {
+    expect(isModelJudgeConsentValid(consentAt(MODEL_JUDGE_PAYLOAD_VERSION))).toBe(true);
+  });
+
+  // A grant given for a narrower payload must not silently authorize a wider one:
+  // bumping the version is how a payload change re-asks the user.
+  it('is false for a consent recorded against an older payload version', () => {
+    expect(isModelJudgeConsentValid(consentAt(MODEL_JUDGE_PAYLOAD_VERSION - 1))).toBe(false);
+  });
+
+  it('is false for a consent recorded against an unknown newer version', () => {
+    expect(isModelJudgeConsentValid(consentAt(MODEL_JUDGE_PAYLOAD_VERSION + 1))).toBe(false);
+  });
+
+  it('accepts what the schema actually parses out of a settings.json', () => {
+    const parsed = WorkspaceSettings.parse({
+      modelJudgeConsent: { acknowledgedAt: ISO, payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION },
+    });
+    expect(isModelJudgeConsentValid(parsed.modelJudgeConsent)).toBe(true);
   });
 });

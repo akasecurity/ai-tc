@@ -69,6 +69,7 @@ describe('Yes-scan happy path, end-to-end', () => {
 
     // Consent (side effect) — record the Yes-scan consent.
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     // Backfill triage stream → calibration preview (judge stubbed).
     const triage = journey.backfillTriage().stdout;
@@ -245,6 +246,7 @@ describe('no-downgrade invariant end-to-end', () => {
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
     // The user had hardened an UNREVIEWED floor pack (code_context) out of band
     // before the scan. The evidence only covers `secret`, so the confirm write's
     // severity-floor fill must leave code_context alone — never reset it to the

@@ -81,6 +81,78 @@ describe('setup.md 0.3 scan-offer copy', () => {
   });
 });
 
+// The step-3 model-judge consent gate is prompt-authored orchestration in
+// commands/setup.md: a DISTINCT opt-in, separate from the step-1 historical ask,
+// collected BEFORE the judging pipe. These guards pin the disclosure copy, the
+// picker options, and the consent/decline routing so a regression fails CI rather
+// than only the manual walkthrough.
+describe('setup.md step-3 model-judge consent gate', () => {
+  // The gate's own section — from the step-3 heading up to (not including) the
+  // next '## 4' heading — so the routing guards below stay scoped to step 3.
+  const step3Start = setupMd.indexOf('## 3. Run the evidence triage');
+  const step3End = setupMd.indexOf('\n## 4', step3Start);
+  const step3 = setupMd.slice(step3Start, step3End === -1 ? undefined : step3End);
+
+  it('discloses that rawMatch plus a masked context window is sent, and filePath is not', () => {
+    expect(step3).toContain('`rawMatch`');
+    expect(step3).toContain('**masked**');
+    expect(step3).toContain('**`filePath` is not sent**');
+  });
+
+  // maskText masks the secrets AKA's rules DETECT in the context window; other
+  // text in that window still crosses. A blanket "the context is masked" would
+  // promise more than the engine delivers, so the copy must scope the claim.
+  it('scopes the masking claim to detected secrets, not the whole window', () => {
+    expect(step3).toContain('secrets detected in that context window are **masked**');
+    expect(step3).toContain('ordinary text in that window travels as-is');
+  });
+
+  // This grant sends data off the machine. Step 1's historical picker (the more
+  // conservative consent) marks neither option recommended; steering on this one
+  // would be both inconsistent and a nudge on the more sensitive of the two.
+  it('presents the consent options flat, with neither marked recommended', () => {
+    expect(step3).not.toContain('_(recommended)_');
+  });
+
+  // Declining skips this run; it does not clear a grant recorded earlier. Saying
+  // otherwise (or saying nothing) leaves the user believing "no" revoked it.
+  // Whitespace-normalized so the assertion is not coupled to prose line wrapping.
+  it('states that declining does not withdraw an earlier grant', () => {
+    const flatStep3 = step3.replace(/\s+/g, ' ');
+    expect(flatStep3).toContain('does **not** withdraw a grant made earlier');
+    expect(flatStep3).toContain('revoked under **Settings → Model-judge consent**');
+  });
+
+  it('names it a distinct egress, separate from the historical-read consent', () => {
+    expect(step3).toContain('separate egress');
+    expect(step3).toContain('its own explicit grant');
+  });
+
+  // "Not now" implies a deferral that never comes and reads as if it withdrew
+  // the grant; the decline is a standing "keep it local" for this run.
+  it('carries the consent picker question and both option labels verbatim', () => {
+    expect(step3).toContain('Send findings to the model to sort real leaks from noise?');
+    expect(step3).toContain('Yes, send them');
+    expect(step3).toContain('No, keep it local');
+    expect(step3).not.toContain('Not now');
+  });
+
+  it('records consent via onboard.js --model-judge-consent on the Yes path, before the pipe', () => {
+    const consentIdx = step3.indexOf('onboard.js" --model-judge-consent');
+    const pipeIdx = step3.indexOf('backfill.js" --triage | node');
+    expect(consentIdx).toBeGreaterThanOrEqual(0);
+    expect(pipeIdx).toBeGreaterThanOrEqual(0);
+    // Consent is recorded before the judging pipe runs.
+    expect(consentIdx).toBeLessThan(pipeIdx);
+  });
+
+  it('falls back to the severity floor and skips judging on the decline', () => {
+    expect(step3).toContain('If the user chose "No, keep it local"');
+    expect(step3).toContain('onboard.js" --floor');
+    expect(step3).toContain('do **not** run the pipe');
+  });
+});
+
 // The 0.3b Not-now branch is prompt-authored orchestration in commands/setup.md:
 // on 'Not now' the wizard runs start-light.js, adjusts via AskUserQuestion, writes
 // the chosen posture, and rejoins the spine at the applying frame. These guards pin

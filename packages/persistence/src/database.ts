@@ -176,14 +176,35 @@ function linkHost(input: InventoryInput, hostId: string | undefined): InventoryI
   return hostId ? { ...input, hostId } : input;
 }
 
+// Closing is cleanup: a failure here (already closed, or the close itself
+// failing) must never replace the error that caused it.
+function closeQuietly(db: DatabaseSync): void {
+  try {
+    db.close();
+  } catch {
+    // nothing to salvage — the caller's original error is what matters
+  }
+}
+
 // Open the store with the shared PRAGMAs: WAL lets the plugin (events/findings)
 // and an optional local reader share the file; busy_timeout absorbs brief
 // contention; foreign keys enforce the event→finding reference.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 2000');
-  db.exec('PRAGMA foreign_keys = ON');
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 2000');
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (err) {
+    // The OS handle exists the moment the constructor returns, but SQLite does
+    // not read the file until a statement runs — so a corrupt store opens fine
+    // and answers SQLITE_NOTADB here. Without this the handle leaks: on Windows
+    // that keeps the file locked for the life of the process, and in the
+    // long-lived dashboard server (which memoizes the handle only on success) a
+    // corrupt store would leak one more on every attempt.
+    closeQuietly(db);
+    throw err;
+  }
   return db;
 }
 
@@ -208,23 +229,32 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   const file = join(dir, DB_FILENAME);
   let db = openWithPragmas(file);
 
-  // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
-  // tenant-free lineage — same user_version space, so the applier would skip it,
-  // then every write would die on NOT NULL tenant_id and be swallowed fail-open
-  // (silent persistence loss). Back the old file up (recoverable) and start fresh
-  // so writes work; the reset is a one-time, loud-on-stderr event.
-  if (isForeignSqliteLineage(db)) {
-    db.close();
-    const backup = backupLegacyStore(file);
-    db = openWithPragmas(file);
-    akaWarn(
-      `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
-        `${backup} and created a fresh store.`,
-    );
-  }
+  // Bringing the store to a usable state can fail on a file that opened but is
+  // not a healthy store — an unmigratable schema, a read-only or full disk. The
+  // handle is already ours by then, so close it before the error leaves; see
+  // openWithPragmas for what a leak costs.
+  try {
+    // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
+    // tenant-free lineage — same user_version space, so the applier would skip it,
+    // then every write would die on NOT NULL tenant_id and be swallowed fail-open
+    // (silent persistence loss). Back the old file up (recoverable) and start fresh
+    // so writes work; the reset is a one-time, loud-on-stderr event.
+    if (isForeignSqliteLineage(db)) {
+      db.close();
+      const backup = backupLegacyStore(file);
+      db = openWithPragmas(file);
+      akaWarn(
+        `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
+          `${backup} and created a fresh store.`,
+      );
+    }
 
-  applyMigrations(db, file);
-  tightenPerms(file);
+    applyMigrations(db, file);
+    tightenPerms(file);
+  } catch (err) {
+    closeQuietly(db);
+    throw err;
+  }
 
   const events = new SqliteEventsRepository(db);
   const findings = new SqliteFindingsRepository(db);
@@ -248,7 +278,14 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   const inspectionDefinitions = new SqliteInspectionDefinitionsRepository(db);
   const inspectionFindings = new SqliteInspectionFindingsRepository(db);
   const configInventory = new SqliteConfigInventoryRepository(db);
-  policies.seedDefaults();
+  // The first WRITE of the open — a read-only store reaches this having passed
+  // everything above, so it is the last place the handle can escape unclosed.
+  try {
+    policies.seedDefaults();
+  } catch (err) {
+    closeQuietly(db);
+    throw err;
+  }
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session

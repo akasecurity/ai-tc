@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -367,6 +375,45 @@ describe('transaction', () => {
     expect(all[0]?.revokedAt).toBeNull();
     expect(all[0]?.useCount).toBe(1);
     db.close();
+  });
+});
+
+describe('a failed open leaves no handle behind', () => {
+  // SQLite does not read the file until a statement runs, so a store that is not
+  // a database opens cleanly and fails on the first PRAGMA — with the OS handle
+  // already ours. Leaking it keeps the file locked for the life of the process
+  // on Windows, and the dashboard server memoizes its handle only on success, so
+  // a corrupt store would leak one more on every attempt.
+  //
+  // The proof is platform-split and deliberately so: on Windows the removal in
+  // `afterEach` FAILS with EPERM while a handle is open, which is what makes
+  // this a real regression guard there. On POSIX an open handle does not block
+  // unlink, so the same test only pins that the open fails loudly rather than
+  // half-succeeding — the CI Windows leg is where the leak itself is caught.
+  function corruptTheStore(): string {
+    const file = join(dir, 'aka.db');
+    openLocalDatabase(dir).close(); // a real store first, so this is damage not absence
+    for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
+      rmSync(join(dir, sidecar), { force: true });
+    }
+    writeFileSync(file, 'this is not a SQLite database at all\n');
+    return file;
+  }
+
+  it('throws rather than returning a half-open store', () => {
+    corruptTheStore();
+    expect(() => openLocalDatabase(dir)).toThrow();
+  });
+
+  it('stays throwing across repeated attempts, without accumulating handles', () => {
+    // The shape the dashboard produces: the caller returns an error to the user,
+    // the user retries, and each retry opens again. Any handle kept here is one
+    // per attempt.
+    corruptTheStore();
+    for (let i = 0; i < 5; i += 1) {
+      expect(() => openLocalDatabase(dir)).toThrow();
+    }
+    // afterEach removes the tree — on Windows that is the assertion.
   });
 });
 

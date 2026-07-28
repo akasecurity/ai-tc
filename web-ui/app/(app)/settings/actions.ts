@@ -1,7 +1,11 @@
 'use server';
 
 import { applyOnboarding } from '@akasecurity/persistence';
-import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+import {
+  HistoricalAccess,
+  MODEL_JUDGE_PAYLOAD_VERSION,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
@@ -20,14 +24,30 @@ export interface SaveSettingsResult {
 export async function saveSettings(input: {
   policy: string;
   historicalAccess: string;
+  // The distinct model-judge egress consent, as a bare answer: true grants,
+  // false/absent revokes. Deliberately not the stored record — the
+  // acknowledgement time and payload version are stamped below from server
+  // state, so a client cannot backdate a grant or claim a version it never saw.
+  modelJudgeConsent?: boolean;
 }): Promise<SaveSettingsResult> {
   const policy = SimpleDetectionPolicy.safeParse(input.policy);
   const historicalAccess = HistoricalAccess.safeParse(input.historicalAccess);
   if (!policy.success || !historicalAccess.success) {
     return { ok: false, error: 'Invalid settings value.' };
   }
+  // policy/historicalAccess are parsed above because their values are persisted
+  // verbatim; modelJudgeConsent needs no equivalent parse because only its
+  // truthiness survives — the record written below is built entirely here.
   try {
-    applyOnboarding({ policy: policy.data, historicalAccess: historicalAccess.data });
+    applyOnboarding({
+      policy: policy.data,
+      historicalAccess: historicalAccess.data,
+      // Grant records fresh consent at the current payload version; revoke
+      // clears it (undefined ⇒ dropped by the schema on the merged write).
+      modelJudgeConsent: input.modelJudgeConsent
+        ? { acknowledgedAt: new Date().toISOString(), payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION }
+        : undefined,
+    });
   } catch {
     return { ok: false, error: 'Could not write settings.json.' };
   }

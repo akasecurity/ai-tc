@@ -33,6 +33,7 @@ import {
   approveBlocked,
   rotateKey,
 } from '../../app/(app)/exceptions/actions.ts';
+import { storeBytes } from '../helpers/store-bytes.ts';
 
 // The three exception-granting Server Actions, each covered against a real
 // node:sqlite store and a real fingerprint key file — no mocking of either
@@ -47,8 +48,8 @@ import {
 //                    either creates a dangling grant or leaks the secret, so
 //                    that suite pins BOTH properties on every branch.
 //   approveBlocked — grants from a ledger row, so no raw value is in play; the
-//                    gates are the server-side permanent-scope confirmation
-//                    and the lookup window.
+//                    gates are the server-side permanent-scope confirmation,
+//                    the lookup window, and the key-version check.
 //   rotateKey      — INVALIDATES every existing grant, behind a single string
 //                    compare. The dialog gate is a convenience; this compare is
 //                    the control, so the suite pins both what it accepts and
@@ -81,11 +82,31 @@ const VALUE: string = example;
 // the pattern's alternation). It is NOT any rule's example, so its absence from
 // the store on disk proves the raw was discarded, not merely never present.
 const SECOND = `ASIA${VALUE.slice(4)}`;
-// A THIRD value whose MASKED preview differs from the other two. maskMatch
-// keeps only the first and last character of a generic secret, so SECOND — which
-// changes only the prefix — previews identically to VALUE; a test that needs two
-// distinguishable previews has to change an end.
+// A value whose MASKED preview differs from the other two. maskMatch keeps only
+// the first and last character of a generic secret, so SECOND — which changes
+// only the prefix — previews identically to VALUE; the approveBlocked
+// confirmation tests need two distinguishable previews, so this one changes an
+// end. Same rule as VALUE, unlike FOREIGN below.
 const THIRD = `ASIA${VALUE.slice(4, -1)}${VALUE.endsWith('Z') ? 'Y' : 'Z'}`;
+
+// A third value for the no-scan-match path: still a live-credential shape — a
+// real bundled rule fires on it, so echoing it back would be a real leak — but
+// matching a DIFFERENT rule than RULE_ID, which is the mistake the branch
+// exists for (picking the wrong rule from a dropdown of dozens). Built from
+// `secrets/github-pat`'s own example with another valid prefix from that
+// pattern's `gh[psou]_` alternation, exactly the way SECOND is built: it is
+// therefore not itself any rule's example, and no contiguous secret-shaped
+// literal lives in this file (the repo is developed with the plugin active, and
+// such a literal would be redacted out of the test source).
+const FOREIGN_RULE_ID = 'secrets/github-pat';
+const foreignExample = bundledDetections()
+  .flatMap((p) => p.rules)
+  .find((r) => r.id === FOREIGN_RULE_ID)
+  ?.examples?.find((e) => e.startsWith('ghp_'));
+if (foreignExample === undefined) {
+  throw new Error(`bundled rule ${FOREIGN_RULE_ID} is missing or has no classic-token example`);
+}
+const FOREIGN = `ghu_${foreignExample.slice(4)}`;
 
 let home: string;
 let dir: string;
@@ -109,24 +130,27 @@ async function grants(): Promise<DetectionException[]> {
   }
 }
 
-// The raw bytes of the store on disk (main DB + WAL/SHM sidecars), so an
-// at-rest leak is caught even if it only ever reached the write-ahead log.
-//
-// The main DB read is deliberately NOT guarded: if `dir` ever stops resolving to
-// the real store (a layout change, a renamed file, a broken homedir() mock) the
-// leak scan must fail loudly rather than return '' — an empty string contains no
-// secret, so a swallowed error would turn every caller into a silent no-op. Only
-// the two sidecars are optional; SQLite may not have created them yet.
-function storeBytes(): string {
-  const parts: Buffer[] = [readFileSync(join(dir, 'aka.db'))];
-  for (const name of ['aka.db-wal', 'aka.db-shm']) {
-    try {
-      parts.push(readFileSync(join(dir, name)));
-    } catch {
-      // sidecar absent — nothing to fold in
-    }
+// The shortest run of a raw value whose appearance in an error is still a leak.
+// `not.toContain(value)` alone only catches an error that echoes the value
+// WHOLE — it stays green if a branch ever interpolates a truncated one, and
+// "help the user spot their typo" is exactly the well-meaning change that would
+// do it. Eight characters of a 40-character token is a real disclosure, and for
+// the shorter values other bundled rules match it is most of the secret.
+// This applies to ERRORS only, where no part of the value has any business
+// appearing. The at-rest and grant-shape assertions stay whole-value
+// (`not.toContain`) because `maskMatch` deliberately keeps a fragment visible —
+// that fragment IS the masked preview, and it is stored on purpose.
+const ECHO_RUN = 8;
+
+// Assert an error carries no run of `value` at all, not merely not all of it.
+function expectNoEchoOf(error: string | undefined, value: string): void {
+  expect(error).toBeDefined();
+  const haystack = error ?? '';
+  for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
+    expect(haystack).not.toContain(value.slice(i, i + ECHO_RUN));
   }
-  return Buffer.concat(parts).toString('latin1');
+  // Values shorter than the run length still must not appear at all.
+  if (value.length < ECHO_RUN) expect(haystack).not.toContain(value);
 }
 
 function keyFile(): string {
@@ -211,7 +235,6 @@ const approveBlockedRaw = approveBlocked as unknown as (input: {
   reason: string;
   confirmation?: unknown;
 }) => Promise<ActionResult>;
-
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-ex-'));
   osHome.dir = home;
@@ -234,6 +257,13 @@ afterEach(() => {
 
 describe('addException — the only web code touching a raw secret', () => {
   describe('input validation rejects before any grant is written', () => {
+    // Each of the three below asserts the SPECIFIC error its own guard emits,
+    // not merely that the call was rejected. Both inputs are also rejected
+    // downstream — an empty reason fails `justification: z.string().min(1)` in
+    // the schema, an empty value falls through to the no-scan-match guard — so
+    // an outcome-only assertion stays green with the action's own guard deleted,
+    // and the guard becomes load-bearing silently if that downstream constraint
+    // is ever relaxed for an unrelated reason.
     it('rejects an empty reason — the reason is the audit trail', async () => {
       const res = await addException({
         ruleId: RULE_ID,
@@ -242,12 +272,16 @@ describe('addException — the only web code touching a raw secret', () => {
         reason: '   ',
       });
       expect(res.ok).toBe(false);
+      // Deleting the guard yields the schema's 'Could not create the exception.'
+      expect(res.error).toContain('A reason is required');
       expect(await grants()).toHaveLength(0);
     });
 
     it('rejects an empty value — nothing to except', async () => {
       const res = await addException({ ruleId: RULE_ID, value: '', scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
+      // Deleting the guard yields the no-scan-match error instead.
+      expect(res.error).toContain('No value supplied');
       expect(await grants()).toHaveLength(0);
     });
 
@@ -255,9 +289,12 @@ describe('addException — the only web code touching a raw secret', () => {
       // The empty-value guard is a strict `=== ''`, deliberately not trimmed (a
       // raw value is never mutated). A whitespace-only value therefore falls
       // through to the scan step, which matches nothing and rejects it — still
-      // no grant. Pin that boundary so neither guard can silently soften.
+      // no grant. Pin that boundary so neither guard can silently soften: this
+      // must be the SCAN's error, not the empty-value guard's.
       const res = await addException({ ruleId: RULE_ID, value: '   ', scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
+      expect(res.error).toContain(`does not match rule ${RULE_ID}`);
+      expect(res.error).not.toContain('No value supplied');
       expect(await grants()).toHaveLength(0);
     });
 
@@ -269,7 +306,7 @@ describe('addException — the only web code touching a raw secret', () => {
         reason: 'x',
       });
       expect(res.ok).toBe(false);
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -282,7 +319,7 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('nope/not-a-rule');
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -297,17 +334,36 @@ describe('addException — the only web code touching a raw secret', () => {
 
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
+      // Rejected because the snapshot no longer lists the rule — not because
+      // the value failed some later step. Reading the engine's process-global
+      // registry instead would find the rule and mint a grant.
+      expect(res.error).toContain(`Unknown or disabled rule '${RULE_ID}'`);
       expect(await grants()).toHaveLength(0);
     });
 
-    it('rejects a value that does not scan-match the rule — no dangling grant', async () => {
+    it('rejects a secret-shaped value that does not scan-match the rule, without echoing it', async () => {
+      // The realistic mistake: the user picks the wrong rule from a dropdown of
+      // dozens for a value that IS a live credential. The rejection must name
+      // the rule and never the value.
+      //
+      // FOREIGN is what makes this assertion able to fail. Driving the branch
+      // with an obviously-inert literal and then asserting the error omits VALUE
+      // and SECOND — module constants the call never passes in — cannot fail
+      // however the error is worded; interpolating `input.value` into this
+      // branch left the whole suite green. The subject here is the value
+      // supplied on THIS call, and it is checked run by run: echoing a
+      // TRUNCATED value would still hand back a live credential's prefix.
       const res = await addException({
         ruleId: RULE_ID,
-        value: 'not-a-credential',
+        value: FOREIGN,
         scope: 'once',
         reason: 'x',
       });
       expect(res.ok).toBe(false);
+      // Pins the branch: a match (or any other rejection) is worded differently,
+      // so this also fails loudly if FOREIGN ever starts matching RULE_ID.
+      expect(res.error).toContain(`does not match rule ${RULE_ID}`);
+      expectNoEchoOf(res.error, FOREIGN);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -320,8 +376,8 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(res.ok).toBe(false);
       // The count is safe to surface; the values themselves must not be.
-      expect(res.error).not.toContain(VALUE);
-      expect(res.error).not.toContain(SECOND);
+      expectNoEchoOf(res.error, VALUE);
+      expectNoEchoOf(res.error, SECOND);
       expect(await grants()).toHaveLength(0);
     });
   });
@@ -347,7 +403,7 @@ describe('addException — the only web code touching a raw secret', () => {
         confirmation: `${VALUE}-typo`,
       });
       expect(res.ok).toBe(false);
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -449,7 +505,7 @@ describe('addException — the only web code touching a raw secret', () => {
       });
       expect(second.ok).toBe(false);
       expect(second.error).toMatch(/already exists/i);
-      expect(second.error).not.toContain(VALUE);
+      expectNoEchoOf(second.error, VALUE);
       expect(await grants()).toHaveLength(1);
     });
   });
@@ -469,11 +525,15 @@ describe('addException — the only web code touching a raw secret', () => {
       expect(grant?.valueFingerprint).not.toBe(plain);
     });
 
+    // `storeBytes` reads every file in the data dir, and is itself pinned by
+    // test/helpers/store-bytes.test.ts — a reader narrowed back to a hardcoded
+    // name list, or one that swallowed a failed read, would leave the leak
+    // assertions below green while checking nothing.
     it('leaves no trace of the raw value in the database file on disk', async () => {
       // Guard: SECOND is not any rule's example, so it is absent from the seeded
       // snapshot — its post-add absence proves addException discarded the raw,
       // not that it was never written.
-      expect(storeBytes()).not.toContain(SECOND);
+      expect(storeBytes(dir)).not.toContain(SECOND);
 
       const res = await addException({
         ruleId: RULE_ID,
@@ -489,24 +549,26 @@ describe('addException — the only web code touching a raw secret', () => {
       // hex must appear in the bytes just read. This proves the scan below is
       // reading the actual store that received the write — without it, a reader
       // that came back empty would satisfy `not.toContain` while proving nothing.
+      //
+      // One read, both assertions. The control and the absence check have to
+      // describe the SAME bytes: read twice and the control can pass against one
+      // snapshot while the raw is looked for in another.
       const fingerprint = (await grants())[0]?.valueFingerprint;
       expect(fingerprint).toBeDefined();
-      expect(storeBytes()).toContain(fingerprint);
-      expect(storeBytes()).not.toContain(SECOND);
+      const bytes = storeBytes(dir);
+      expect(bytes).toContain(fingerprint);
+      expect(bytes).not.toContain(SECOND);
     });
 
-    it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async (ctx) => {
-      // The add path mints the fingerprint key on first use. A looser mode would
-      // let another local account read the key and reverse the stored HMACs, so
-      // pin 0600. Skipped rather than silently passed on Windows, where ACLs
-      // carry the permission and these mode bits mean nothing — a test that
-      // asserts nothing must not report as covered.
-      if (process.platform === 'win32') {
-        ctx.skip('Windows ACLs do not carry POSIX mode bits');
-      }
+    it('locks the minted exception.key to 0600 — it is what keeps the fingerprints non-reversible', async () => {
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res).toEqual({ ok: true });
-      expect(statSync(join(dir, 'exception.key')).mode & 0o777).toBe(0o600);
+      // The add path mints the fingerprint key on first use. A looser mode would
+      // let another local account read the key and reverse the stored HMACs, so
+      // pin 0600 (POSIX only — Windows ACLs do not carry these mode bits).
+      if (process.platform !== 'win32') {
+        expect(statSync(join(dir, 'exception.key')).mode & 0o777).toBe(0o600);
+      }
     });
   });
 
@@ -517,7 +579,7 @@ describe('addException — the only web code touching a raw secret', () => {
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('exception.key'); // recovery guidance, not a stack trace
-      expect(res.error).not.toContain(VALUE); // fails secure without echoing the secret
+      expectNoEchoOf(res.error, VALUE); // fails secure without echoing the secret
       expect(await grants()).toHaveLength(0);
     });
   });
@@ -525,18 +587,26 @@ describe('addException — the only web code touching a raw secret', () => {
   describe('no rejection path echoes the raw value (the exemplary property)', () => {
     it('omits every raw value from every rejection error', async () => {
       const errors: string[] = [];
-      const record = (r: ActionResult): void => {
+      // `supplied` is what THIS call passed in — the only values that call could
+      // possibly echo. Asserting a branch only against module constants it never
+      // received passes however the error is worded, which is exactly how the
+      // no-scan-match echo went unnoticed here; every case names its own inputs.
+      const record = (r: ActionResult, ...supplied: string[]): void => {
         expect(r.ok).toBe(false);
-        if (r.error !== undefined) errors.push(r.error);
+        expect(r.error).toBeDefined();
+        const error = r.error ?? '';
+        for (const value of supplied) expectNoEchoOf(error, value);
+        errors.push(error);
       };
 
       record(
         await addException({
           ruleId: RULE_ID,
-          value: 'not-a-credential',
+          value: FOREIGN,
           scope: 'once',
           reason: 'x',
         }),
+        FOREIGN,
       );
       record(
         await addException({
@@ -545,6 +615,8 @@ describe('addException — the only web code touching a raw secret', () => {
           scope: 'once',
           reason: 'x',
         }),
+        VALUE,
+        SECOND,
       );
       record(
         await addException({
@@ -554,6 +626,7 @@ describe('addException — the only web code touching a raw secret', () => {
           reason: 'x',
           confirmation: 'wrong',
         }),
+        VALUE,
       );
 
       // Duplicate: create one, then collide.
@@ -564,17 +637,23 @@ describe('addException — the only web code touching a raw secret', () => {
         reason: 'x',
       });
       expect(created).toEqual({ ok: true });
-      record(await addException({ ruleId: RULE_ID, value: VALUE, scope: '1h', reason: 'x' }));
+      record(
+        await addException({ ruleId: RULE_ID, value: VALUE, scope: '1h', reason: 'x' }),
+        VALUE,
+      );
 
       // Corrupt key (isolated to the end so it cannot poison the cases above).
       writeFileSync(join(dir, 'exception.key'), 'corrupt\n');
       resetSingleton();
-      record(await addException({ ruleId: RULE_ID, value: SECOND, scope: 'once', reason: 'x' }));
+      record(
+        await addException({ ruleId: RULE_ID, value: SECOND, scope: 'once', reason: 'x' }),
+        SECOND,
+      );
 
       expect(errors).toHaveLength(5);
+      // Cross-check: no error carries any raw value, whichever call produced it.
       for (const err of errors) {
-        expect(err).not.toContain(VALUE);
-        expect(err).not.toContain(SECOND);
+        for (const value of [VALUE, SECOND, FOREIGN]) expectNoEchoOf(err, value);
       }
     });
   });
@@ -809,7 +888,9 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
         confirmation: VALUE,
       });
       expect(res.ok).toBe(false);
-      expect(res.error).not.toContain(VALUE);
+      // The raw value was supplied by the caller, so a rejection that echoed
+      // any run of it back would be a real disclosure.
+      expectNoEchoOf(res.error, VALUE);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -1091,7 +1172,7 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/local store/i);
-      expect(res.error).not.toContain(VALUE);
+      expectNoEchoOf(res.error, VALUE);
     });
   });
 

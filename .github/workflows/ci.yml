@@ -88,21 +88,27 @@ jobs:
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
   # processes — gets exercised on windows-latest. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
-  # script — BOTH suites, not just the middleware gate:
+  # script — EVERY suite, not just the middleware gate:
   #   - test/middleware.test.ts — the sole DNS-rebinding gate; pure string work
   #     (68 tests in ~40ms here).
   #   - test/actions/exceptions.test.ts — the three exception-granting Server
-  #     Actions (addException's raw-secret handling, approveBlocked's ledger
-  #     gates, rotateKey's confirmation gate), each driving a REAL node:sqlite
-  #     store and a REAL key file per test, several opening the store more than
-  #     once. This is the OS-sensitive half and the reason it belongs on Windows.
-  # That second suite is the slow one: ~122s wall for 73 tests here, against ~12s
-  # for the same suite on the Linux leg (it was ~44s for 20 tests when this note
-  # started). Two of the 73 skip here — they assert POSIX mode bits, which
-  # Windows ACLs do not carry, and skipping beats passing with no assertions. The
-  # per-test timeout in web-ui/vitest.config.ts is 20s; keep an eye on that margin
-  # as the suite grows, the persistence suite needed batching twice to stay under
-  # it. web-ui's `test` also drops the `build`/`^build` edges
+  #     Actions (addException's raw-secret handling, approveBlocked's ledger and
+  #     key-version gates, rotateKey's confirmation gate), each driving a REAL
+  #     node:sqlite store and a REAL key file per test. This is the OS-sensitive
+  #     half and the reason it belongs on Windows.
+  #   - test/helpers/store-bytes.test.ts — the at-rest leak reader that suite
+  #     asserts through (6 tests in ~0.3s here). Opens no store, which is why it
+  #     is cheap; one case needs POSIX modes and skips on Windows, so the same
+  #     property is also pinned through an injected reader that runs everywhere.
+  #   - test/pages/settings-page-head.test.ts — copy guard; pure (8 tests).
+  # The exceptions suite is the slow one: ~122s wall for 73 tests — the other
+  # three together are under a second — against the 20s per-test timeout in
+  # web-ui/vitest.config.ts. A couple of cases assert POSIX mode bits and skip
+  # here rather than pass with no assertions. Keep an eye on that margin: the
+  # persistence suite needed batching twice to stay under it, and every test
+  # added there pays a full store-seeding hook (~2s), which is why a test that
+  # needs no store belongs beside the reader instead.
+  # web-ui's `test` also drops the `build`/`^build` edges
   # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.

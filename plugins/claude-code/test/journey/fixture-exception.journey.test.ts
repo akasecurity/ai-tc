@@ -48,6 +48,7 @@ describe('FP-pattern signal grounds end-to-end over a repeated-value false posit
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage);
@@ -128,6 +129,7 @@ describe('FP-pattern signal fails open when no hit is marked a false positive', 
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
 
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage);

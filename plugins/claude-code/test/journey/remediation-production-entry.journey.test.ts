@@ -89,6 +89,7 @@ describe('frame 0.6 -> remediation decision -> option routing: production entry 
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage).stdout;
     calibrationFrame = CalibrationFrame.parse(readFrameJsonBlock(preview));
@@ -245,6 +246,7 @@ describe("'Redact only' presents the standing-posture step, parameterized over a
         const transcript = run.seedTranscript();
         run.intro();
         run.onboardHistorical('full');
+        run.onboardModelJudge();
         const triage = run.backfillTriage().stdout;
         const runPreview = run.applyPreview(triage).stdout;
         CalibrationFrame.parse(readFrameJsonBlock(runPreview));

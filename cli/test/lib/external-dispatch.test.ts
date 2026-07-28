@@ -8,11 +8,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COMMAND_SPECS } from '../../src/command-manifest.ts';
 import type { ExternalSpawn } from '../../src/lib/external-dispatch.ts';
 import {
+  commandOnPath,
   dispatchExternal,
   externalDispatchSupported,
   isExternalCommandName,
   shouldDispatchExternal,
 } from '../../src/lib/external-dispatch.ts';
+
+const dispatchModuleUrl = new URL('../../src/lib/external-dispatch.ts', import.meta.url).href;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -39,6 +42,34 @@ describe('shouldDispatchExternal', () => {
 
   it('does not dispatch a non-built-in with an ineligible name', () => {
     expect(shouldDispatchExternal('--help', false)).toBe(false);
+  });
+});
+
+describe('commandOnPath', () => {
+  it.runIf(process.platform !== 'win32')('finds a command that exists', () => {
+    expect(commandOnPath('sh')).toBe(true);
+  });
+
+  it.runIf(process.platform !== 'win32')('does not find one that does not', () => {
+    expect(commandOnPath('aka-definitely-not-installed-xyz')).toBe(false);
+  });
+
+  it.runIf(process.platform !== 'win32')('emits nothing on stdout or stderr', () => {
+    // The probe runs on every unrecognized command, so any output it leaks —
+    // including a Node deprecation warning from `shell: true` — would surface
+    // on ordinary typos.
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { commandOnPath } from ${JSON.stringify(dispatchModuleUrl)};
+         commandOnPath('aka-definitely-not-installed-xyz');`,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(probe.stdout).toBe('');
+    expect(probe.stderr).toBe('');
   });
 });
 

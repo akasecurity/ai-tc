@@ -1,11 +1,19 @@
 import { spawnSync } from 'node:child_process';
 import { constants } from 'node:os';
 
-import { binExists } from '@akasecurity/local-ops';
-
 // Git-style external subcommand dispatch: an `aka <command>` invocation that
 // matches no built-in runs an executable named `aka-<command>` from the
 // caller's PATH, passing the remaining argv through verbatim.
+
+// Does a command resolve on PATH? Runs `command -v` through `sh` with the name
+// as a positional argument rather than `shell: true`, which concatenates its
+// arguments into the command string and is deprecated on current Node.
+export function commandOnPath(command: string): boolean {
+  const probe = spawnSync('/bin/sh', ['-c', 'command -v "$1" >/dev/null 2>&1', 'sh', command], {
+    stdio: 'ignore',
+  });
+  return probe.status === 0;
+}
 
 // The subset of spawnSync the dispatcher uses, injectable for tests.
 export type ExternalSpawn = (
@@ -66,7 +74,7 @@ export function dispatchExternal(
 ): ExternalDispatchResult {
   const spawn: ExternalSpawn = deps.spawn ?? spawnSync;
   const platform: NodeJS.Platform = deps.platform ?? process.platform;
-  const exists: (command: string) => boolean = deps.exists ?? binExists;
+  const exists: (command: string) => boolean = deps.exists ?? commandOnPath;
   if (!externalDispatchSupported(platform)) return { found: false, status: 1 };
 
   const target = `aka-${command}`;

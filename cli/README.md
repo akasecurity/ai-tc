@@ -48,6 +48,10 @@ aka dashboard    # open the local web dashboard over your store
 
 Run `aka --help` for the full command list.
 
+### External subcommands
+
+Any other command dispatches, git-style, to an executable named `aka-<command>` on your PATH (POSIX only; built-ins always win). For example, with [aka-claude-tools](https://github.com/akasecurity/claude-tools) installed, `aka claude` launches the hardened Claude Code profile via its `aka-claude` launcher.
+
 ## The Claude Code plugin
 
 The CLI gives you the dashboard, store, and scanning. To actually **intercept** a Claude Code session you also need the AKA plugin, which installs from the Claude Code plugin marketplace (not npm). With the CLI installed:

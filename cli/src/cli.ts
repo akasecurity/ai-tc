@@ -14,6 +14,7 @@ import { runStats } from './commands/stats.ts';
 import { runTui } from './commands/tui.tsx';
 import { runUpdate } from './commands/update.ts';
 import { homeBase } from './lib/args.ts';
+import { dispatchExternal, isExternalCommandName } from './lib/external-dispatch.ts';
 
 // The local-first AKA CLI. Every command reads/writes the local SQLite store
 // directly via @akasecurity/persistence — no HTTP, no backend.
@@ -58,6 +59,8 @@ Usage: aka <command> [options]
 Commands:
 ${commandsHelp()}
 
+Anything else runs an external 'aka-<command>' from your PATH (so 'aka claude' runs aka-claude).
+
 Options:
   --home <dir>        Use an alternate AKA home (default: ~/.aka)
   --no-update-check   Skip the post-command "updates available" notice
@@ -100,6 +103,17 @@ async function main(): Promise<void> {
 
   const handler = COMMANDS[command];
   if (!handler) {
+    // Git-style external dispatch: run `aka-<command>` from PATH with the
+    // verbatim tail (an external command owns its whole argv, including
+    // --no-update-check). Built-ins always win; the early return skips the
+    // post-command update notice.
+    if (isExternalCommandName(command)) {
+      const external = dispatchExternal(command, rawRest);
+      if (external.found) {
+        process.exitCode = external.status;
+        return;
+      }
+    }
     process.stderr.write(`aka: unknown command '${command}'\n\n${USAGE}`);
     process.exitCode = 1;
     return;

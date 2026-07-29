@@ -23,11 +23,11 @@
     "typescript-eslint": "^8.65.0"
   },
   "devDependencies": {
-    "eslint": "^9.0.0",
+    "eslint": "^10.8.0",
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "eslint": "^9.0.0",
+    "eslint": "^10.8.0",
     "typescript": "^5.0.0"
   }
 }

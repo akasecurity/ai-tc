@@ -206,13 +206,22 @@ describe('moveStoreAside', () => {
     expect(rows).toEqual([{ id: 'wal-only' }]);
   });
 
-  it('puts everything back when a sidecar can be neither moved nor removed', () => {
+  it('puts everything back when a sidecar can be neither moved nor removed', (ctx) => {
+    if (process.platform === 'win32') {
+      // The stand-in below needs `renameSync(directory, existingFile)` to fail,
+      // which it does on POSIX (ENOTDIR) but not on Windows — so the injection
+      // never fires there and the test would pass without exercising anything.
+      // Making a real file unrenameable AND unremovable needs a privileged flag
+      // (chflags/chattr), so this stays POSIX-only rather than vacuous.
+      ctx.skip('renaming a directory onto a file does not fail on Windows');
+      return;
+    }
     // The real trigger is a live handle on Windows failing both the rename and
     // the remove. A directory standing in for the sidecar reproduces that pair
-    // of failures on every platform without privileges: renaming a directory
-    // onto an existing file is ENOTDIR, and rmSync without `recursive` refuses a
-    // non-empty directory. Leaving the main file moved would hand the next open
-    // a fresh store sitting beside a stale sidecar.
+    // of failures without privileges: renaming a directory onto an existing file
+    // is ENOTDIR, and rmSync without `recursive` refuses a non-empty directory.
+    // Leaving the main file moved would hand the next open a fresh store sitting
+    // beside a stale sidecar.
     const file = join(dir, 'aka.db');
     const db = openStore(file);
     db.close();
@@ -229,7 +238,10 @@ describe('moveStoreAside', () => {
     // Rolled back: the store is exactly where it was, and nothing was published.
     expect(existsSync(backup)).toBe(false);
     expect(readFileSync(file)).toEqual(before);
-    expect(existsSync(`${file}-wal`)).toBe(true);
+    // Still the untouched stand-in, so the injection really did defeat both the
+    // rename and the remove rather than the throw coming from somewhere else.
+    expect(statSync(`${file}-wal`).isDirectory()).toBe(true);
+    expect(existsSync(join(`${file}-wal`, 'inner'))).toBe(true);
   });
 
   it('preserves a store too damaged to copy, byte for byte', () => {
@@ -246,7 +258,14 @@ describe('moveStoreAside', () => {
     expect(readFileSync(backup)).toEqual(before);
   });
 
-  it('does not leave the store half-moved when a sidecar rename fails but removal works', () => {
+  it('does not leave the store half-moved when a sidecar rename fails but removal works', (ctx) => {
+    if (process.platform === 'win32') {
+      // Same stand-in, same reason as the rollback test above: without a failing
+      // rename the sidecar is simply moved, and the assertions below hold either
+      // way — which would make this green without testing the branch.
+      ctx.skip('renaming a directory onto a file does not fail on Windows');
+      return;
+    }
     // The ordinary degraded case: the sidecar cannot be renamed but can be
     // removed, so the move completes. Pinned alongside the rollback above so a
     // change to one cannot silently swap the two behaviours.
@@ -264,7 +283,8 @@ describe('moveStoreAside', () => {
       // Fixture cleanup: tightenPerms chmods every backup sidecar path to 0600,
       // and on the stand-in directory that strips the execute bit, which blocks
       // the recursive teardown. Real sidecars are files, where 0600 is the point.
-      if (process.platform !== 'win32') chmodSync(`${backup}-wal`, 0o700);
+      // (POSIX-only by the skip above, so no platform guard here.)
+      chmodSync(`${backup}-wal`, 0o700);
     }
 
     expect(existsSync(file)).toBe(false);

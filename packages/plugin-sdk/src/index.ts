@@ -36,8 +36,19 @@ export type { GuardedScanner, GuardedScanPartition } from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
 export type { ResolveInventoryInput } from './inventory-resolver.ts';
 export { resolveInventoryContext } from './inventory-resolver.ts';
-export type { IsolatedScanner, IsolatedScanOptions, IsolatedScanOutcome } from './isolated-scan.ts';
-export { createIsolatedScanner, ISOLATED_SCAN_BUDGET_MS } from './isolated-scan.ts';
+export type {
+  IsolatedFailure,
+  IsolatedProbeOutcome,
+  IsolatedScanner,
+  IsolatedScanOptions,
+  IsolatedScanOutcome,
+} from './isolated-scan.ts';
+export {
+  createIsolatedScanner,
+  ISOLATED_PROBE_BUDGET_MS,
+  ISOLATED_SCAN_BUDGET_MS,
+  ISOLATED_START_BUDGET_MS,
+} from './isolated-scan.ts';
 export type { ScanFinding } from './mask.ts';
 export { maskText, scanText } from './mask.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
@@ -64,7 +75,7 @@ export {
   registerRulePack,
   uniqueRuleIds,
 } from './rule-packs.ts';
-export type { RuleProbeGateway } from './rule-quarantine.ts';
+export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
 export type { CaptureOptions, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';

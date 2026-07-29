@@ -21,7 +21,8 @@ import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
 import type { GuardedScanner } from './guarded-scan.ts';
 import { createGuardedScanner } from './guarded-scan.ts';
-import type { IsolatedScanOptions } from './isolated-scan.ts';
+import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
+import { createIsolatedScanner } from './isolated-scan.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -164,7 +165,21 @@ export function createPluginRuntime(
       return key !== undefined && bundledProbeKeys.has(key);
     });
     const needsGate = incoming.filter((rule) => !ciVerified.includes(rule));
-    const gated = await filterUnsafeRules(needsGate, gateway);
+    // The timing battery decides whether a pattern is safe by driving it into
+    // backtracking, so measuring a rule is itself a way to hang on it — the
+    // measurement runs on a thread that can be killed, never on this one.
+    // Built on first use, so a machine whose verdicts are all cached (the
+    // steady state) starts no thread for the gate at all.
+    let prober: IsolatedScanner | undefined;
+    const gated = await filterUnsafeRules(needsGate, gateway, {
+      prober: {
+        probe: (rule) => {
+          prober ??= createIsolatedScanner({ verified: [], unverified: [] }, opts?.scanIsolation);
+          return prober.probe(rule);
+        },
+      },
+    });
+    await prober?.close();
     // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
     // beat one fixed probe battery, which a pattern written against that battery
     // can do while still backtracking forever on real text. So the scan itself
@@ -588,6 +603,15 @@ export function createPluginRuntime(
     }
   }
 
+  // True once a scan lost its worker and every pulled/custom-pack regex rule was
+  // dropped for the rest of this process. A caller that records "this input was
+  // scanned" against `rulesetFingerprint()` must not do so afterwards: the
+  // fingerprint still names the full ruleset, so a clean row written now would
+  // suppress a re-read that the dropped rules never got to make.
+  function scanIsolationDegraded(): boolean {
+    return scanner?.degraded() ?? false;
+  }
+
   async function close(): Promise<void> {
     try {
       // The worker thread must not outlive the runtime that started it — a
@@ -600,7 +624,7 @@ export function createPluginRuntime(
     await gateway.close();
   }
 
-  return { processText, capture, rulesetFingerprint, close };
+  return { processText, capture, rulesetFingerprint, scanIsolationDegraded, close };
 }
 
 // Persistence policy for capture(): 'always' records an event for every call
@@ -623,5 +647,10 @@ export interface PluginRuntime {
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
+  // True once the pulled/custom-pack regex rules were dropped mid-process
+  // because a scan lost its worker. Anything keyed on `rulesetFingerprint()`
+  // must stop writing once this is true — the fingerprint describes a ruleset
+  // that is no longer the one running.
+  scanIsolationDegraded(): boolean;
   close(): Promise<void>;
 }

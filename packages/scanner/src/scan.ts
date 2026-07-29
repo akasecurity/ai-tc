@@ -433,6 +433,16 @@ async function scanDir(
     return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
   }
 
+  // Same reasoning, for a different loss. `ledger.rulesetHash` was computed
+  // before the walk, from the FULL ruleset; if a scan lost its worker partway
+  // through, everything after that point was scanned without the pulled/custom
+  // rules. Writing those rows would key a partial scan under the full ruleset's
+  // hash, and the next run would skip exactly the files the dropped rules never
+  // saw. Skipping the batch costs a re-read; writing it hides the gap.
+  if (runtime.scanIsolationDegraded()) {
+    return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
+  }
+
   await gateway.recordScanned(ledgerable(updates, egress, committed));
   return { rootDir, scanned, skipped, findings, gitignoredFindings, byRule, bySeverity };
 }

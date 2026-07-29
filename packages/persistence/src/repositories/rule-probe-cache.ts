@@ -22,6 +22,8 @@ export interface RuleProbeCacheEntry {
 export class SqliteRuleProbeCacheRepository {
   private readonly upsertStmt: StatementSync;
   private readonly readStmt: StatementSync;
+  private readonly countQuarantinedStmt: StatementSync;
+  private readonly clearQuarantinedStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.upsertStmt = db.prepare(
@@ -35,10 +37,40 @@ export class SqliteRuleProbeCacheRepository {
     this.readStmt = db.prepare(
       `SELECT verdict, worst_probe_ms AS worstProbeMs FROM rule_probe_cache WHERE rule_key = :ruleKey`,
     );
+    this.countQuarantinedStmt = db.prepare(
+      `SELECT COUNT(*) AS n FROM rule_probe_cache WHERE verdict = 'quarantined'`,
+    );
+    this.clearQuarantinedStmt = db.prepare(
+      `DELETE FROM rule_probe_cache WHERE verdict = 'quarantined'`,
+    );
   }
 
   getVerdict(ruleKey: string): RuleProbeCacheEntry | undefined {
     return getRow<RuleProbeCacheEntry>(this.readStmt, { ruleKey });
+  }
+
+  /** How many rules are currently excluded by a cached quarantine verdict. */
+  countQuarantined(): number {
+    return getRow<{ n: number }>(this.countQuarantinedStmt, {})?.n ?? 0;
+  }
+
+  /**
+   * Forgets every quarantine verdict, so the rules behind them are measured
+   * again on the next load. This is the undo for a verdict the machine reached
+   * on its own: a rule terminated mid-scan is cached forever and dropped from
+   * every later scan, and a timing verdict is a wall-clock judgement that a
+   * loaded or slow machine can reach about a rule that is in fact fine.
+   *
+   * Only 'quarantined' rows go — a 'safe' verdict is a measurement worth
+   * keeping, and dropping it would make every rule pay the battery again.
+   * Returns how many were forgotten.
+   */
+  clearQuarantined(): number {
+    const before = this.countQuarantined();
+    failOpenTransaction(this.db, () => {
+      this.clearQuarantinedStmt.run();
+    });
+    return before - this.countQuarantined();
   }
 
   setVerdict(ruleKey: string, verdict: RuleProbeVerdict, worstProbeMs: number): void {

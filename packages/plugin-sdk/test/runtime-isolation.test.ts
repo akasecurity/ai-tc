@@ -47,7 +47,38 @@ const HOSTILE: Rule = {
 };
 const HOSTILE_TEXT = `zzq${'a'.repeat(34)}!`;
 
-const BUDGET_MS = 3_000;
+// The other shape, and the one the pre-flight cannot survive on its own:
+// measuring a rule means driving its own pattern into backtracking, so a
+// pattern that is catastrophic on the battery's OWN probe (`'a'.repeat(23)+'!'`,
+// which is what the derivation builds for a pattern with no literal prefix)
+// hangs the measurement itself — before any scan runs. See
+// test/isolated-scan.test.ts, which pins that directly.
+const BATTERY_KILLER: Rule = {
+  specVersion: 1,
+  id: 'pulled/battery-killer',
+  name: 'Battery-killing pulled rule',
+  category: 'custom',
+  severity: 'low',
+  matcher: { type: 'regex', pattern: String.raw`(a|a|a|a)+$`, flags: 'g' },
+};
+
+// A pulled KEYWORD rule. Its matcher compiles one fully-escaped literal per
+// keyword, so nothing its author writes can make it backtrack — it needs no
+// worker, and a keyword-only custom pack must start none.
+const PULLED_KEYWORD: Rule = {
+  specVersion: 1,
+  id: 'pulled/keyword',
+  name: 'Pulled keyword rule',
+  category: 'custom',
+  severity: 'low',
+  matcher: { type: 'keyword', keywords: ['TOKENX'], caseSensitive: false },
+};
+
+const BUDGET_MS = 1_500;
+
+// Points the isolated scanner at a module that throws on load, so a case that
+// must not reach a worker fails loudly if it ever does.
+const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
 
 function settings(): WorkspaceSettings {
   return {
@@ -163,11 +194,16 @@ describe('a pulled rule that never returns', () => {
 
       // Fail-open in the sense that matters: the call returns. Left in-process
       // this text runs longer than the harness would ever wait, and a hook the
-      // harness kills lets the whole tool call through unscanned.
-      expect(elapsedMs).toBeLessThan(BUDGET_MS * 3);
+      // harness kills lets the whole tool call through unscanned. Worst case
+      // here is TWO budgets — the scan, then the retry that names the rule —
+      // and the ceiling is loose on top of that.
+      expect(elapsedMs).toBeLessThan(BUDGET_MS * 5);
       // The bundled rule in the same text is untouched by the termination.
       expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
       expect(result.action).toBe('warn');
+      // Anything keyed on the ruleset fingerprint has to stop writing now: the
+      // fingerprint still names the pulled rule that is no longer running.
+      expect(rt.scanIsolationDegraded()).toBe(true);
       // And the event was still persisted, with the finding masked as usual.
       expect(gw.records).toHaveLength(1);
       expect(gw.records[0]?.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
@@ -210,17 +246,70 @@ describe('a pulled rule that never returns', () => {
   });
 });
 
+describe('a pulled rule that hangs the timing battery itself', () => {
+  it('is terminated during the pre-flight, and the capture still decides', async () => {
+    // The gate that decides whether a pulled rule is safe works by running the
+    // rule. Measured on this thread it never returns, the hook is killed by the
+    // harness at 10s, and a killed hook fails open — the whole tool call goes
+    // through unscanned. That is the same bypass the scan bound exists for, one
+    // call earlier, so the measurement runs where it can be killed too.
+    silenceStderr();
+    const verdicts = new Map<string, RuleProbeVerdictEntry>();
+    const rt = createPluginRuntime(fakeGateway(bundle([BATTERY_KILLER]), verdicts), settings(), {
+      scanIsolation: { probeBudgetMs: BUDGET_MS },
+    });
+    try {
+      const started = performance.now();
+      const result = await rt.processText('deploy with SECRET_MARKER now');
+      expect(performance.now() - started).toBeLessThan(BUDGET_MS * 4);
+
+      // A measurement that had to be terminated is the strongest unsafe verdict
+      // there is, and it is cached, so the next process never loads the rule.
+      const key = ruleProbeKey(BATTERY_KILLER);
+      expect(key).toBeDefined();
+      expect(verdicts.get(key ?? '')?.verdict).toBe('quarantined');
+      // …and the built-in packs are untouched by any of it.
+      expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+    } finally {
+      await rt.close();
+    }
+  });
+});
+
 describe('what isolation costs when nothing is wrong', () => {
   it('costs nothing at all when the bundle carries no pulled regex rule', async () => {
     // No worker is startable here — the URL points at a module that throws on
     // load — so finishing at all proves the in-process path was taken. This is
     // the steady state of a machine that installed no extra pack.
     const rt = createPluginRuntime(fakeGateway(bundle()), settings(), {
-      scanIsolation: { workerUrl: new URL('./helpers/crashing-scan-worker.ts', import.meta.url) },
+      scanIsolation: { workerUrl: CRASHING_WORKER },
     });
     try {
       const result = await rt.processText('deploy with SECRET_MARKER now');
       expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+      expect(rt.scanIsolationDegraded()).toBe(false);
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('starts no worker for a keyword-only custom pack', async () => {
+    // A keyword matcher compiles one fully-escaped literal per keyword, so no
+    // pack author can make it catastrophic and it needs no bound. The crashing
+    // worker URL is the proof: this can only pass by never starting a thread,
+    // for the gate or for the scan.
+    const rt = createPluginRuntime(fakeGateway(bundle([PULLED_KEYWORD])), settings(), {
+      scanIsolation: { workerUrl: CRASHING_WORKER },
+    });
+    try {
+      const result = await rt.processText('TOKENX beside SECRET_MARKER');
+      // Both fire, so the pulled rule really is in the effective ruleset rather
+      // than having been dropped along with the worker.
+      expect(result.findings.map((f) => f.ruleId).sort()).toEqual([
+        'isolation/secret-marker',
+        'pulled/keyword',
+      ]);
+      expect(rt.scanIsolationDegraded()).toBe(false);
     } finally {
       await rt.close();
     }

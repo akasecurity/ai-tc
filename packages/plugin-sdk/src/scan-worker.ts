@@ -1,26 +1,28 @@
 /**
- * The worker-thread side of the isolated scan. Runs `scan()` on a thread of its
- * own so the parent can kill a rule that never returns: `worker.terminate()`
- * reaches V8's execution terminator, which interrupts a spinning regex mid-exec
- * where nothing on the calling thread can.
+ * The worker-thread side of the isolated scan. Runs the detection engine on a
+ * thread of its own so the parent can kill work that never returns:
+ * `worker.terminate()` reaches V8's execution terminator, which interrupts a
+ * spinning regex mid-exec where nothing on the calling thread can.
  *
- * The ruleset arrives once via `workerData` and is reused for every job, so a
- * scan costs one message each way rather than a fresh clone of the rules.
+ * Two kinds of job cross the wire, and both are unbounded calls that a hostile
+ * pattern can hang:
  *
- * A job runs in two stages, and the split is what makes a hang attributable:
+ *   - `probe` runs the adversarial timing battery against ONE rule. The battery
+ *     works by driving the rule's own pattern into backtracking, so measuring a
+ *     rule is itself a way to hang on it — which is exactly why the measurement
+ *     belongs on this side of the thread boundary.
+ *   - `scan` runs the ruleset that arrived over `workerData` against one field.
  *
- *   1. Each `unverified` rule is scanned ALONE, with the rule's index posted
- *      before it starts. Whichever index the parent saw last is the rule that
- *      was running when it pulled the plug — a terminated worker cannot report
- *      anything itself, so the progress has to run ahead of the work.
- *   2. The whole ruleset is scanned in one call, and those findings are the
- *      result. Stage 1's are discarded: a rule with `requiresNearby` is only
- *      corroborated when its neighbours are in the same `scan()`, so returning
- *      rule-by-rule results would silently drop findings.
- *
- * Stage 1 costs one extra pass over the unverified rules — a pulled or custom
- * pack, never the bundled ~100 — and buys exact attribution without a second
- * worker or a second timeout budget.
+ * A `scan` job normally makes ONE `scan()` call over the whole ruleset. With
+ * `attribute` set it first scans each `unverified` rule ALONE, posting the
+ * rule's index before it starts, so whichever index the parent saw last names
+ * the rule that was running when it pulled the plug — a terminated worker
+ * cannot report anything itself, so the progress has to run ahead of the work.
+ * Those per-rule findings are discarded and the combined pass is still what
+ * answers: a rule with `requiresNearby` is only corroborated when its
+ * neighbours are in the same `scan()`, so returning rule-by-rule results would
+ * silently drop findings. The parent only asks for attribution after a scan has
+ * already timed out, so the extra pass never lands on the happy path.
  *
  * Node loads this file directly on both paths: the published plugin runs the
  * bundled `scripts/scan-worker.js`, while the repo and vitest hand Node this
@@ -37,10 +39,10 @@
 import { parentPort, workerData } from 'node:worker_threads';
 
 import type { ScanContext } from '@akasecurity/detections';
-import { scan } from '@akasecurity/detections';
+import { checkRuleTiming, scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
-import type { ScanJob, ScanWorkerData, ScanWorkerMessage } from './isolated-scan-protocol.ts';
+import type { ScanWorkerData, ScanWorkerJob, ScanWorkerMessage } from './isolated-scan-protocol.ts';
 
 // Null only when this module is loaded on the main thread, which nothing in the
 // product does. Throwing reaches the parent as a worker 'error' — the one
@@ -55,23 +57,36 @@ function post(message: ScanWorkerMessage): void {
   port.postMessage(message);
 }
 
-port.on('message', (job: ScanJob) => {
-  const context: ScanContext | undefined =
-    job.filePath === undefined ? undefined : { filePath: job.filePath };
+port.on('message', (job: ScanWorkerJob) => {
   try {
-    for (const [index, rule] of unverified.entries()) {
-      post({ kind: 'progress', index });
-      scan(job.text, [rule], context);
+    if (job.kind === 'probe') {
+      const { safe, worstMs } = checkRuleTiming(job.rule);
+      post({ kind: 'probed', id: job.id, safe, worstMs });
+      return;
     }
-    // -1 = past the attributable stage. A hang from here on is in the combined
-    // pass, which the parent must NOT pin on any single rule.
-    post({ kind: 'progress', index: -1 });
+    const context: ScanContext | undefined =
+      job.filePath === undefined ? undefined : { filePath: job.filePath };
+    if (job.attribute) {
+      for (const [index, rule] of unverified.entries()) {
+        post({ kind: 'progress', index });
+        scan(job.text, [rule], context);
+      }
+      // -1 = past the attributable stage. A hang from here on is in the
+      // combined pass, which the parent must NOT pin on any single rule.
+      post({ kind: 'progress', index: -1 });
+    }
     post({ kind: 'result', id: job.id, findings: scan(job.text, ruleset, context) });
   } catch (error) {
     post({
       kind: 'failed',
       id: job.id,
-      message: error instanceof Error ? error.message : 'scan failed',
+      message: error instanceof Error ? error.message : 'the job failed',
     });
   }
 });
+
+// Last, so the parent starts its deadline only once this thread can actually
+// take a job. Charging module load to the first job's budget would make a cold
+// or contended machine — a Windows runner scanning a freshly written script,
+// say — look like a rule that hung.
+post({ kind: 'ready' });

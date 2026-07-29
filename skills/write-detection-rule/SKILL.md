@@ -58,6 +58,9 @@ Three defenses stop a catastrophic regex from hanging a scan:
   probe battery when it is first loaded, and the verdict is cached locally. A
   rule that exceeds the timing budget is excluded from the active ruleset and
   logged to stderr (`[aka] quarantined rule ...`) — never silently skipped.
+  The measurement itself runs in a worker thread, because the battery decides
+  by making the pattern backtrack: a pattern that never returns would otherwise
+  hang the gate meant to catch it.
 - **Runtime, during the scan.** Both batteries are empirical: they prove a
   pattern did not backtrack on the inputs they construct, not that it cannot.
   So whenever a pulled/custom regex rule survives the pre-flight, the scan
@@ -68,11 +71,22 @@ Three defenses stop a catastrophic regex from hanging a scan:
   — the state of a machine that installed nothing extra — runs in-process at no
   added cost.
 
+These two cover the **plugin capture path** — every hook, plus the worktree
+scanner. The dashboard's `/scan` Server Action still evaluates the installed
+ruleset in-process with neither gate, so a catastrophic pulled rule hangs that
+request; the plugin is where the bound is.
+
 **What this means for a rule you are writing.** A bundled rule never reaches
 either runtime gate: CI is your gate, and a pattern that fails it fails the
 build. Write patterns that cannot backtrack rather than relying on the bound —
 a terminated scan costs the user their pulled rules for the rest of that
 process, which is a detection gap, not a graceful degradation.
+
+**If a rule of yours gets quarantined on a machine**, the verdict is cached and
+the rule stops detecting until it is cleared: `aka detections unquarantine`
+forgets every quarantine verdict so the rules behind them are measured again,
+and `aka detections` shows the count. A rule that really is catastrophic lands
+straight back in quarantine — clearing costs one re-measurement, not safety.
 
 ### Optional gating fields
 

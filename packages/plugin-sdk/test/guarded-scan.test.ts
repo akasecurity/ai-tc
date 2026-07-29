@@ -2,11 +2,15 @@
  * The policy on top of the hard bound: who gets isolated, what a hang costs,
  * and what still runs afterwards.
  *
- * The three properties worth breaking a build over:
+ * The properties worth breaking a build over:
  *   - a machine with no pulled or custom pack pays nothing at all;
+ *   - an ordinary scan pays no attribution pass — that cost belongs to the
+ *     retry of a scan that already timed out, never to the scans that work;
  *   - a hang is charged once per process, never once per scanned field;
  *   - a scan that loses its worker keeps the built-in packs and drops the
- *     unverified rules, rather than quietly running them unbounded.
+ *     unverified rules, rather than quietly running them unbounded;
+ *   - a store that will not take the quarantine verdict costs the caller
+ *     nothing on top of the hang it already absorbed.
  */
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +20,7 @@ import { ruleProbeKey } from '../src/rule-quarantine.ts';
 
 const BATTERY_BLIND_PATTERN = String.raw`(?:zzq)(a+)+$`;
 const BATTERY_BLIND_TEXT = `zzq${'a'.repeat(34)}!`;
-const BUDGET_MS = 3_000;
+const BUDGET_MS = 1_500;
 
 // Points the isolated scanner at a worker that dies at load, so a case can
 // exercise the degraded path without waiting out a deadline.
@@ -43,6 +47,13 @@ function fakeGateway() {
   return { setRuleProbeVerdict };
 }
 
+// A store that refuses the write. The quarantine runs on a recovery path, so a
+// failure here must cost the caller nothing beyond the verdict itself.
+function refusingGateway() {
+  const setRuleProbeVerdict = vi.fn(() => Promise.reject(new Error('SQLITE_READONLY')));
+  return { setRuleProbeVerdict };
+}
+
 function captureStderr(): { lines: () => string } {
   const written: string[] = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
@@ -63,16 +74,31 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [] },
       fakeGateway(),
-      {
-        workerUrl: CRASHING_WORKER,
-      },
+      { workerUrl: CRASHING_WORKER },
     );
     try {
       const findings = await scanner.scan(`key ${AWS_KEY} here`);
       expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+      expect(scanner.degraded()).toBe(false);
     } finally {
       await scanner.close();
     }
+  });
+
+  it('reports no degradation after an ordinary close', async () => {
+    // `degraded()` means "coverage was lost", not "the worker is gone". A
+    // caller that stops writing scan-ledger rows on it must not be tripped by
+    // the ordinary teardown every hook does.
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [regexRule('pulled/benign', 'TOKENX')] },
+      fakeGateway(),
+    );
+    expect((await scanner.scan(`TOKENX and ${AWS_KEY}`)).map((f) => f.ruleId).sort()).toEqual([
+      'pulled/benign',
+      'secrets/aws-key',
+    ]);
+    await scanner.close();
+    expect(scanner.degraded()).toBe(false);
   });
 
   it('keeps requiresNearby corroboration working across the verified/unverified split', async () => {
@@ -106,7 +132,10 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [HOSTILE] },
       gateway,
-      { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+      {
+        budgetMs: BUDGET_MS,
+        minAttributionMs: 50,
+      },
     );
     try {
       // Warm the worker so the deadline below is spent on the rule, not on startup.
@@ -124,10 +153,44 @@ describe('createGuardedScanner', () => {
       // Terminating the scan does not cost the user the first-party detection
       // that was in the same text.
       expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+      expect(scanner.degraded()).toBe(true);
 
       const output = stderr.lines();
       expect(output).toContain('quarantined rule "pulled/battery-blind"');
       expect(output).toContain('isolated scanning is off for the rest of this process');
+      // The verdict is cached forever and this line is the only place the
+      // machine ever mentions it, so it has to say how to undo it.
+      expect(output).toContain('aka detections unquarantine');
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('survives a store that refuses the quarantine verdict', async () => {
+    const gateway = refusingGateway();
+    const stderr = captureStderr();
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [HOSTILE] },
+      gateway,
+      {
+        budgetMs: BUDGET_MS,
+        minAttributionMs: 50,
+      },
+    );
+    try {
+      expect(await scanner.scan('nothing here')).toEqual([]);
+      const findings = await scanner.scan(`${BATTERY_BLIND_TEXT} ${AWS_KEY}`);
+
+      // The write failed, so the caller still gets its scan and the built-in
+      // finding in the same text. A failed cache write must never cost more
+      // than a re-measurement next process.
+      expect(gateway.setRuleProbeVerdict).toHaveBeenCalled();
+      expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+
+      const output = stderr.lines();
+      expect(output).toContain('quarantined rule "pulled/battery-blind"');
+      // …and it must NOT offer to undo a verdict that was never recorded.
+      expect(output).not.toContain('aka detections unquarantine');
     } finally {
       await scanner.close();
     }
@@ -139,7 +202,10 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [HOSTILE] },
       gateway,
-      { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+      {
+        budgetMs: BUDGET_MS,
+        minAttributionMs: 50,
+      },
     );
     try {
       expect(await scanner.scan('nothing here')).toEqual([]);
@@ -172,6 +238,7 @@ describe('createGuardedScanner', () => {
     try {
       const findings = await scanner.scan(`TOKENX next to ${AWS_KEY}`);
       expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+      expect(scanner.degraded()).toBe(true);
       expect(stderr.lines()).toContain('isolated scanning is off for the rest of this process');
       // Nothing was terminated, so nothing is blamed: a worker that will not
       // start is not evidence against any particular rule.

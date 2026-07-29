@@ -2,7 +2,7 @@ import type { MatchResult, ScanContext } from '@akasecurity/detections';
 import { scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
-import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
+import type { IsolatedScanner, IsolatedScanOptions, IsolatedScanOutcome } from './isolated-scan.ts';
 import { createIsolatedScanner } from './isolated-scan.ts';
 import type { RuleProbeGateway } from './rule-quarantine.ts';
 import { quarantineRule } from './rule-quarantine.ts';
@@ -31,12 +31,25 @@ import { quarantineRule } from './rule-quarantine.ts';
  *     corroboration across the halves and silently drop findings. Everything
  *     under one bound is also the stronger property.
  *
+ * An ordinary scan makes one `scan()` call in the worker, so the isolated cost
+ * scales in the ruleset exactly as the in-process cost does. Naming the rule
+ * that hung needs a pass that walks the unverified rules one at a time, and
+ * that pass is a RETRY of a scan that already timed out — never a tax on the
+ * scans that succeed.
+ *
  * Degradation never re-runs unverified rules in-process. Doing so would put back
  * the unbounded call the worker exists to prevent, so a scan that loses its
  * worker falls back to the verified rules only, and says so on stderr.
  */
 export interface GuardedScanner {
   scan(text: string, context?: ScanContext): Promise<MatchResult[]>;
+  /**
+   * True once isolation has been retired, which means every pulled/custom-pack
+   * regex rule has been dropped for the rest of this process. A caller that
+   * records "this input was scanned" must not record it against the full
+   * ruleset after this flips.
+   */
+  degraded(): boolean;
   close(): Promise<void>;
 }
 
@@ -61,24 +74,53 @@ export function createGuardedScanner(
   let unverified = partition.unverified;
   let isolated: IsolatedScanner | undefined =
     unverified.length > 0 ? createIsolatedScanner({ verified, unverified }, opts) : undefined;
+  let retired = false;
 
   function inProcess(text: string, context: ScanContext | undefined): MatchResult[] {
     return scan(text, verified, context);
   }
 
-  // One hang costs one budget per process, not one per field. A PreToolUse hook
-  // can scan up to MCP_MAX_LEAF_COUNT fields; paying the deadline on each would
-  // run the hook past the harness timeout, and a timed-out hook fails open and
-  // lets the whole tool call through unscanned — the exact bypass this guards.
-  // So the first failure retires isolation, and with it every unverified rule,
-  // for the remainder of the process. The next process starts clean: an
-  // attributed culprit is quarantined in the shared cache and never loads
-  // again, and any rule dropped only as collateral is back.
+  // One hang costs one bounded recovery per process, not one per field. A
+  // PreToolUse hook can scan up to MCP_MAX_LEAF_COUNT fields; paying the
+  // deadline on each would run the hook past the harness timeout, and a
+  // timed-out hook fails open and lets the whole tool call through unscanned —
+  // the exact bypass this guards. So the first failure retires isolation, and
+  // with it every unverified rule, for the remainder of the process. The next
+  // process starts clean: an attributed culprit is quarantined in the shared
+  // cache and never loads again, and any rule dropped only as collateral is
+  // back.
   async function retire(): Promise<void> {
     const live = isolated;
     isolated = undefined;
     unverified = [];
     if (live) await live.close();
+  }
+
+  // Retire BECAUSE something failed, which is the case `degraded()` reports. An
+  // ordinary close() retires the worker too but leaves no coverage gap behind
+  // it, so it must not set this.
+  async function degrade(): Promise<void> {
+    retired = true;
+    await retire();
+  }
+
+  // The scanner reports its failures rather than throwing them, so a throw here
+  // is the unforeseen case. Take the same exit as any other lost worker: this
+  // must not become the one path where a scan silently stops happening.
+  async function attempt(
+    active: IsolatedScanner,
+    text: string,
+    context: ScanContext | undefined,
+    attribute: boolean,
+  ): Promise<IsolatedScanOutcome> {
+    try {
+      return await active.scan(text, context, { attribute });
+    } catch (error) {
+      return {
+        status: 'unavailable',
+        reason: error instanceof Error ? error.message : 'the scan worker failed unexpectedly',
+      };
+    }
   }
 
   async function guardedScan(
@@ -88,21 +130,30 @@ export function createGuardedScanner(
     const active = isolated;
     if (!active) return inProcess(text, context);
 
-    let outcome;
-    try {
-      outcome = await active.scan(text, context);
-    } catch (error) {
-      // The scanner reports its failures rather than throwing them, so this is
-      // the unforeseen case. Take the same exit as any other lost worker: this
-      // must not become the one path where a scan silently stops happening.
-      outcome = {
-        status: 'unavailable' as const,
-        reason: error instanceof Error ? error.message : 'the scan worker failed unexpectedly',
-      };
-    }
+    let outcome = await attempt(active, text, context, false);
     if (outcome.status === 'ok') return outcome.findings;
 
+    // A timeout is the one outcome worth a second look. The first pass runs the
+    // ruleset in one call and so cannot say which rule hung; this retry walks
+    // the unverified rules one at a time on a fresh thread, which is what turns
+    // "something hung" into a rule id that can be quarantined for good. It
+    // costs a second budget, and only ever once — isolation is retired below
+    // whatever this returns.
+    if (outcome.status === 'timeout') outcome = await attempt(active, text, context, true);
+
     const dropped = unverified.length;
+    if (outcome.status === 'ok') {
+      // The retry finished, so the first timeout was a stall rather than a rule
+      // that cannot return. Nothing is blamed and nothing is cached, but
+      // isolation still retires: a machine that stalls once stalls again, and
+      // paying two budgets per field is the harness timeout this exists to
+      // avoid. These findings are real — hand them back.
+      warnDegraded(dropped, 'a scan overran its bound once and no rule could be held responsible');
+      const findings = outcome.findings;
+      await degrade();
+      return findings;
+    }
+
     if (outcome.status === 'timeout') {
       const culprit =
         outcome.culpritIndex === undefined ? undefined : unverified[outcome.culpritIndex];
@@ -120,18 +171,20 @@ export function createGuardedScanner(
         culprit
           ? `rule "${culprit.id}" had to be terminated mid-scan`
           : `a scan was terminated at the ${outcome.elapsedMs.toFixed(0)}ms bound and no single ` +
-              `rule could be held responsible`,
+              `rule could be held responsible, so nothing was quarantined and the next process ` +
+              `will try these rules again`,
       );
     } else {
       warnDegraded(dropped, outcome.reason);
     }
 
-    await retire();
+    await degrade();
     return inProcess(text, context);
   }
 
   return {
     scan: guardedScan,
+    degraded: () => retired,
     async close() {
       await retire();
     },

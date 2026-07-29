@@ -27,9 +27,9 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   { name: 'stats', summary: 'Print findings / enforcement / detections from the local store' },
   {
     name: 'detections',
-    argHint: '[update]',
+    argHint: '[update|unquarantine]',
     summary: 'List installed detection packs + available updates (updates are manual)',
-    args: ['update'],
+    args: ['update', 'unquarantine'],
   },
   {
     name: 'plugins',

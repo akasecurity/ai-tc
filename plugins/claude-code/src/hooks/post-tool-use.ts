@@ -18,8 +18,11 @@
  * Fail-open: any error → no output, exit 0.
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
+import { isVaultConsentValid } from '@akasecurity/schema';
 
+import { sessionProtocolMarker } from '../protocol/marker.ts';
+import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
@@ -65,23 +68,47 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
+  // Vaulting (and everything narrated about it) is consent-gated; without the
+  // grant this hook behaves exactly as it did before the vault existed.
+  const vaultGlue = isVaultConsentValid(config.settings.vaultConsent) ? createVaultGlue() : null;
 
   let outcome: ResponseScanOutcome;
   try {
     // persist:'with-findings': benign responses record nothing (matching the
     // pre-structured-scan behavior); 'always' would copy every Read file and
     // Bash stream verbatim into the local store on the three hottest tools.
-    outcome = await scanResponseFields(toolName, response, fields, (text) =>
-      runtime.capture(
-        { kind: 'response', sourceTool: 'claude-code', text, metadata },
-        { persist: 'with-findings' },
-      ),
+    outcome = await scanResponseFields(
+      toolName,
+      response,
+      fields,
+      (text) =>
+        runtime.capture(
+          { kind: 'response', sourceTool: 'claude-code', text, metadata },
+          { persist: 'with-findings' },
+        ),
+      vaultGlue ? (text, findings) => vaultGlue.tokenizeText(text, { findings }) : undefined,
     );
   } finally {
     await runtime.close();
   }
 
-  const payload = responseEmitPayload(toolName, outcome);
+  // The model note + user disclosure ride only on a tokenized outcome; a
+  // narration fault drops the notes, never the rewrite.
+  let notes: { note?: string | null; disclosure?: string | null } | undefined;
+  if (outcome.realized) {
+    try {
+      const surface = `${toolName} output`;
+      const marker = sessionProtocolMarker(config.dataDir, getString(input, 'session_id'));
+      notes = {
+        note: eventNote({ marker, surface, realized: outcome.realized }),
+        disclosure: userDisclosure({ surface, realized: outcome.realized }),
+      };
+    } catch {
+      notes = undefined;
+    }
+  }
+
+  const payload = responseEmitPayload(toolName, outcome, notes);
   if (payload !== undefined) await emit(payload);
 }
 

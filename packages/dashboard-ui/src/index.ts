@@ -32,6 +32,7 @@ export {
 } from './shared/charts.tsx';
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
+export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
 export { type StatDelta, StatTile } from './shared/StatTile.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
 export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';

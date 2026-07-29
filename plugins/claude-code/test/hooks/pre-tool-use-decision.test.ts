@@ -68,6 +68,21 @@ function redactResult(
   };
 }
 
+// The decision is async now (it may tokenize); these tests exercise the
+// pre-vault paths, so unwrap the payload and default the scanned text.
+async function decide(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  scanned: { spec: ScannableField; result: CaptureResult; text?: string }[],
+): Promise<PreToolUseOutput | null> {
+  const decision = await decidePreToolUse(
+    toolName,
+    toolInput,
+    scanned.map((s) => ({ spec: s.spec, result: s.result, text: s.text ?? '' })),
+  );
+  return decision?.output ?? null;
+}
+
 function denyReason(output: PreToolUseOutput | null): string {
   if (output === null || !('hookSpecificOutput' in output)) {
     throw new Error('expected a hookSpecificOutput decision');
@@ -85,9 +100,9 @@ function denyReason(output: PreToolUseOutput | null): string {
 describe('decidePreToolUse — redact on executable text escalates to deny', () => {
   const COMMAND = `psql -c "DELETE FROM share_destination WHERE host = '${IP}';"`;
 
-  it('denies the Bash call instead of rewriting the command', () => {
+  it('denies the Bash call instead of rewriting the command', async () => {
     const result = redactResult(COMMAND, 'core-pii/ip-address', IP, '3f2a91');
-    const output = decidePreToolUse('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result }]);
+    const output = await decide('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result }]);
 
     const reason = denyReason(output);
     expect(reason).toContain('AKA blocked this Bash call — flagged core-pii/ip-address');
@@ -101,7 +116,7 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
   });
 
-  it('folds an escalated redact into a true block on another field: one deny, both rules', () => {
+  it('folds an escalated redact into a true block on another field: one deny, both rules', async () => {
     const blockText = 'curl -H "x: SECRET"';
     const blocked: CaptureResult = {
       action: 'block',
@@ -111,7 +126,7 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
         { reference: 'aa11bb', ruleId: 'secrets-infra/db-connection-string', maskedValue: 'S***T' },
       ],
     };
-    const output = decidePreToolUse('Bash', { command: COMMAND }, [
+    const output = await decide('Bash', { command: COMMAND }, [
       { spec: { path: ['other'], executable: true }, result: blocked },
       { spec: BASH_COMMAND, result: redactResult(COMMAND, 'core-pii/ip-address', IP) },
     ]);
@@ -123,24 +138,24 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
     expect(JSON.stringify(output)).not.toContain('updatedInput');
   });
 
-  it('a plain block (no escalation) carries no escalation note', () => {
+  it('a plain block (no escalation) carries no escalation note', async () => {
     const blocked: CaptureResult = {
       action: 'block',
       text: null,
       findings: [finding('secrets-infra/db-connection-string', IP, COMMAND)],
     };
     const reason = denyReason(
-      decidePreToolUse('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result: blocked }]),
+      await decide('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result: blocked }]),
     );
     expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
   });
 });
 
 describe('decidePreToolUse — stored text keeps true redaction', () => {
-  it('Write content: allow with the redacted field in updatedInput', () => {
+  it('Write content: allow with the redacted field in updatedInput', async () => {
     const content = `support = ${EMAIL}`;
     const result = redactResult(content, 'core-pii/email', EMAIL, '9c04d7');
-    const output = decidePreToolUse('Write', { content, file_path: '/tmp/a.ts' }, [
+    const output = await decide('Write', { content, file_path: '/tmp/a.ts' }, [
       { spec: WRITE_CONTENT, result },
     ]);
 
@@ -160,14 +175,14 @@ describe('decidePreToolUse — stored text keeps true redaction', () => {
     );
   });
 
-  it('warn stays a systemMessage; no findings stays silent', () => {
+  it('warn stays a systemMessage; no findings stays silent', async () => {
     const text = 'uses share_destination table';
     const warned: CaptureResult = {
       action: 'warn',
       text,
       findings: [finding('core-code-context/db-table-name', 'share_destination', text)],
     };
-    const output = decidePreToolUse('Bash', { command: text }, [
+    const output = await decide('Bash', { command: text }, [
       { spec: BASH_COMMAND, result: warned },
     ]);
     expect(output).toEqual({
@@ -177,20 +192,20 @@ describe('decidePreToolUse — stored text keeps true redaction', () => {
 
     const clean: CaptureResult = { action: 'log', text, findings: [] };
     expect(
-      decidePreToolUse('Bash', { command: text }, [{ spec: BASH_COMMAND, result: clean }]),
+      await decide('Bash', { command: text }, [{ spec: BASH_COMMAND, result: clean }]),
     ).toBeNull();
   });
 });
 
 describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () => {
-  it('a redact on the url escalates to deny: the request must not leave with OR without the value', () => {
+  it('a redact on the url escalates to deny: the request must not leave with OR without the value', async () => {
     // A secret spliced into the fetched URL is gone the moment the request is
     // made — post-hooks are too late — and a masked URL silently requests a
     // different resource. Deny is the only decision that is both visible and
     // at least as strong as the policy.
     const url = `https://${IP}/collect?src=aka`;
     const result = redactResult(url, 'core-pii/ip-address', IP, '7b20c4');
-    const output = decidePreToolUse('WebFetch', { url, prompt: 'summarize' }, [
+    const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
       { spec: WEBFETCH_URL, result },
     ]);
 
@@ -202,10 +217,10 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
   });
 
-  it('the analysis prompt is stored text: redacted in place, url rides along unchanged', () => {
+  it('the analysis prompt is stored text: redacted in place, url rides along unchanged', async () => {
     const prompt = `find mentions of ${EMAIL} in this page`;
     const result = redactResult(prompt, 'core-pii/email', EMAIL);
-    const output = decidePreToolUse('WebFetch', { url: 'https://docs.example.com', prompt }, [
+    const output = await decide('WebFetch', { url: 'https://docs.example.com', prompt }, [
       { spec: WEBFETCH_PROMPT, result },
     ]);
 
@@ -233,7 +248,7 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     expect(result.action).toBe('redact');
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
-    const output = decidePreToolUse('WebFetch', { url, prompt: 'summarize' }, [
+    const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
       { spec: WEBFETCH_URL, result },
     ]);
     const reason = denyReason(output);
@@ -358,7 +373,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
 
     // The fix — the incident's second half must be impossible: the decision
     // is a deny, and the spliced command never leaves the hook.
-    const output = decidePreToolUse('Bash', { command: INCIDENT_COMMAND }, [
+    const output = await decide('Bash', { command: INCIDENT_COMMAND }, [
       { spec: BASH_COMMAND, result },
     ]);
     const reason = denyReason(output);
@@ -388,7 +403,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
       // A concrete 6-hex ledger reference — not the bare degraded approve form.
       expect(ref).toMatch(/^[0-9a-f]{6}$/);
 
-      const output = decidePreToolUse('Bash', { command: INCIDENT_COMMAND }, [
+      const output = await decide('Bash', { command: INCIDENT_COMMAND }, [
         { spec: BASH_COMMAND, result },
       ]);
       const reason = denyReason(output);

@@ -18,10 +18,16 @@
  *
  * Fail-open: any error → no output, exit 0.
  */
-import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import type { VaultGlue } from '@akasecurity/plugin-sdk';
+import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
+import { isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
 
+import { sessionProtocolMarker } from '../protocol/marker.ts';
+import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { stringAtPath } from './paths.ts';
-import type { ScannedField } from './pre-tool-use-decision.ts';
+import type { PointerField } from './pointer-substitution.ts';
+import { decideInputPointers, denyPointerMessage } from './pointer-substitution.ts';
+import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
 import { decidePreToolUse } from './pre-tool-use-decision.ts';
 import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-use-fields.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
@@ -47,12 +53,51 @@ async function main(): Promise<void> {
   if (fields.length === 0) return;
 
   const config = loadConfig();
+  const sessionId = getString(input, 'session_id');
+  // Vaulting (and everything narrated about it) is consent-gated; without the
+  // grant this hook behaves exactly as it did before the vault existed.
+  const consented = isVaultConsentValid(config.settings.vaultConsent);
+  const vaultGlue = consented ? createVaultGlue() : null;
+
+  // Model-echoed pointers are decided BEFORE the secret scan: an ungranted
+  // pointer inside text that executes must deny outright, whatever the rest of
+  // the payload holds. The check runs in every consent state — a stale pointer
+  // from an earlier grant must not execute as literal text either. With no
+  // glue (no consent) nothing touches the store: every pointer is simply
+  // unresolved, which is exactly the deny/keep posture we need.
+  const pointerFields: PointerField[] = [];
+  for (const spec of fields) {
+    const text = stringAtPath(toolInput, spec.path);
+    if (text !== undefined && text !== '') {
+      pointerFields.push({ path: spec.path, text, executable: spec.executable });
+    }
+  }
+  const pointerOutcomes = await decideInputPointers(pointerFields, (text) =>
+    vaultGlue
+      ? vaultGlue.substituteModelPointers(text, { resolveGrant: () => Promise.resolve(null) })
+      : Promise.resolve({
+          text,
+          revealed: [],
+          unresolved: [...text.matchAll(pointerTokenScanner())].map((m) => m[0]),
+        }),
+  );
+  if (pointerOutcomes.some((outcome) => outcome.disposition === 'deny')) {
+    await emit({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: denyPointerMessage(toolName),
+      },
+    });
+    return;
+  }
+
   // A store that cannot open means NOTHING is scanned or enforced for this
   // call. Still allow — fail-open — but say so once per session instead of
   // silently passing everything through.
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
-    if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'session_id'))) {
+    if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
       await emit({ systemMessage: storeUnavailableMessage(config.dbPath) });
     }
     return;
@@ -88,17 +133,61 @@ async function main(): Promise<void> {
         // enforcement decisions that are the point of the kind.
         kind === 'tool_use' ? { persist: 'with-findings' } : {},
       );
-      scanned.push({ spec, result });
+      scanned.push({ spec, text, result });
     }
   } finally {
     await runtime.close();
   }
 
   // Collapse the per-field runtime results into the hook payload (pure module),
-  // then flush it. `await` the emit so stdout drains before process.exit — main's
-  // hook-flush fix (commit 7eb59e55) applies here too.
-  const output = decidePreToolUse(toolName, toolInput, scanned);
-  if (output) await emit(output);
+  // then flush it. With consent, redact fields rewrite to vault pointers and
+  // the payload gains the model note + user disclosure; without it, the
+  // one-way rewrite and message are exactly the pre-vault ones. `await` the
+  // emit so stdout drains before process.exit — main's hook-flush fix (commit
+  // 7eb59e55) applies here too.
+  const decision = await decidePreToolUse(
+    toolName,
+    toolInput,
+    scanned,
+    vaultGlue ? (text, findings) => vaultGlue.tokenizeText(text, { findings }) : undefined,
+  );
+  if (decision) {
+    await emit(
+      withProtocolNotes(decision.output, decision.realized, toolName, config, sessionId, vaultGlue),
+    );
+  }
+}
+
+// Attach the model note and extend the user disclosure on a tokenized allow
+// payload. Anything failing here drops only the narration, never the decision.
+function withProtocolNotes(
+  output: PreToolUseOutput,
+  realized: Parameters<typeof eventNote>[0]['realized'] | null,
+  toolName: string,
+  config: ReturnType<typeof loadConfig>,
+  sessionId: string | undefined,
+  vaultGlue: VaultGlue | null,
+): PreToolUseOutput {
+  if (!vaultGlue || realized === null || !('hookSpecificOutput' in output)) return output;
+  if (!('updatedInput' in output.hookSpecificOutput) || !('systemMessage' in output)) {
+    return output;
+  }
+  try {
+    const surface = `${toolName} input`;
+    const marker = sessionProtocolMarker(config.dataDir, sessionId);
+    const note = eventNote({ marker, surface, realized });
+    const disclosure = userDisclosure({ surface, realized });
+    return {
+      ...output,
+      hookSpecificOutput: {
+        ...output.hookSpecificOutput,
+        ...(note === null ? {} : { additionalContext: note }),
+      },
+      systemMessage: disclosure ?? output.systemMessage,
+    };
+  } catch {
+    return output;
+  }
 }
 
 try {

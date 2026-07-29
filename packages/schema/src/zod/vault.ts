@@ -210,6 +210,15 @@ export type VaultInlineReveal = z.infer<typeof VaultInlineReveal>;
 // Bounds a single "dump every pointer" injection to two values.
 export const VAULT_INLINE_REVEAL_MAX_PER_MESSAGE = 2;
 
+// Budget for the standing protocol brief injected at session start, in
+// estimated tokens (ceil(chars / 4)). The brief is re-read by the model every
+// turn, so its cost is paid constantly; the builder truncates rather than
+// exceeds.
+export const VAULT_BRIEF_TOKEN_BUDGET = 160;
+
+// How many pointers one per-event note enumerates before "… and N more".
+export const VAULT_EVENT_NOTE_MAX_POINTERS = 8;
+
 // The behavior the user consented to. A grant recorded against an older version
 // stops counting, so widening what the vault does forces a re-ask.
 export const VAULT_CONSENT_VERSION = 1;

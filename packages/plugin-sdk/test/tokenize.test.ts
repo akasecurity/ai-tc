@@ -136,7 +136,23 @@ describe('vault glue', () => {
 
     it('returns clean text untouched', async () => {
       const result = await glue.tokenizeText('nothing sensitive here', { findings: [] });
-      expect(result).toEqual({ text: 'nothing sensitive here', pointers: [] });
+      expect(result).toEqual({ text: 'nothing sensitive here', pointers: [], degraded: [] });
+    });
+
+    it('reports each degraded group truthfully', async () => {
+      const text = `${SECRET}TRAILER`;
+      const result = await glue.tokenizeText(text, {
+        findings: [
+          finding({ span: { start: 0, end: SECRET.length } }),
+          finding({
+            span: { start: 10, end: SECRET.length + 7 },
+            rawMatch: text.slice(10),
+            category: 'pii',
+            severity: 'low',
+          }),
+        ],
+      });
+      expect(result.degraded).toEqual([{ category: 'secret' }]);
     });
   });
 
@@ -220,6 +236,7 @@ describe('vault glue', () => {
         vault: {
           tokenize: () => Promise.resolve(Symbol('unused')),
           detokenize: () => Promise.resolve(Symbol('unused')),
+          describePointer: () => Promise.resolve(null),
         },
       });
       expect(() => {
@@ -232,6 +249,7 @@ describe('vault glue', () => {
     const failingVault: VaultCore = {
       tokenize: () => Promise.reject(new Error('store locked')),
       detokenize: () => Promise.reject(new Error('store locked')),
+      describePointer: () => Promise.reject(new Error('store locked')),
     };
 
     it('a tokenize fault destroys the value one-way', async () => {

@@ -19,6 +19,7 @@ import { buildIngestEvent, contentHashOf } from './events.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
+import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -266,7 +267,12 @@ export function createPluginRuntime(
     if (worst === 'block') return { action: 'block', text: null, findings };
     if (worst === 'redact') {
       const redactFindings = findings.filter((f) => actionFor(f) === 'redact');
-      return { action: 'redact', text: redact(text, redactFindings), findings };
+      return {
+        action: 'redact',
+        text: redact(text, redactFindings),
+        findings,
+        enforcedFindings: redactFindings,
+      };
     }
     return { action: worst, text, findings };
   }
@@ -425,7 +431,11 @@ export function createPluginRuntime(
   ): Promise<{ decision: CaptureResult; excepted: Set<MatchResult>; exceptionIds: string[] }> {
     try {
       await ensureInitialized();
-      const findings = scan(text, rules, context);
+      // Vault pointers are blanked out of the scanned text first, so no
+      // installed rule can ever match inside one (same-length filler keeps
+      // every other offset valid against the original text).
+      const shielded = shieldPointers(text);
+      const findings = dropShieldedFindings(scan(shielded.text, rules, context), shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted);

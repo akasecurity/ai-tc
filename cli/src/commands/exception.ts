@@ -396,7 +396,11 @@ async function pickBlocked(
   const answer = await io.ask(`Which one? [1-${String(entries.length)}]: `);
   const index = Number.parseInt(answer.trim(), 10);
   const picked = Number.isInteger(index) ? entries[index - 1] : undefined;
-  if (!picked) throw new Error(`invalid choice '${answer.trim()}'`);
+  // Never echo the answer: the prompt sits under a list of the user's own
+  // blocked secrets, and a pasted VALUE instead of a number must not land in
+  // stderr or captured logs.
+  if (!picked)
+    throw new Error(`invalid choice — enter a number between 1 and ${String(entries.length)}`);
   return picked;
 }
 
@@ -900,9 +904,9 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
         return;
       }
     }
-    let version: number;
+    let next: FingerprintKey;
     try {
-      version = rotateFingerprintKey(dir).version;
+      next = rotateFingerprintKey(dir);
     } catch (err) {
       // An unusable key file must not print a stack trace — surface the reason
       // with a way forward matched to it. (Grants under a corrupt key already
@@ -911,8 +915,33 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
       throw new Error(`cannot rotate: ${message}\n${keyAccessHint(err, dir)}`, { cause: err });
     }
     io.out(
-      `Fingerprint key rotated — new key version v${String(version)}.\nExisting grants no longer match; re-approve deliberately where still needed.\n`,
+      `Fingerprint key rotated — new key version v${String(next.version)}.\nExisting grants no longer match; re-approve deliberately where still needed.\n`,
     );
+    // Grants invalidate by design; vault entries must NOT. Re-key their
+    // fingerprints under the new epoch so dedup keeps finding stored values —
+    // otherwise a re-detected value fingerprints under the new key, misses its
+    // row, and mints a second pointer for the same secret. Best-effort: a
+    // partial refresh degrades to skipped rows resolving under their old
+    // epoch, so a fault here must not fail the rotation that already happened.
+    try {
+      const base = homeBase(values.home);
+      const vault = new SecretVault({
+        repo: db.secretVault,
+        keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
+        fingerprintKey: next,
+        isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
+      });
+      const refreshed = await vault.refreshFingerprints(next);
+      if (refreshed > 0) {
+        io.out(
+          `Vault re-keyed — ${String(refreshed)} stored ${refreshed === 1 ? 'value' : 'values'} follow the new key; pointers are unchanged.\n`,
+        );
+      }
+    } catch {
+      io.out(
+        'Warning: the vault could not be re-keyed under the new fingerprint key.\nStored values still resolve, but re-detections may mint new pointers until it succeeds.\n',
+      );
+    }
   } finally {
     db.close();
   }

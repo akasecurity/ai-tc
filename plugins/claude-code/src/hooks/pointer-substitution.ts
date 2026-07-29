@@ -95,3 +95,17 @@ export function denyPointerMessage(toolName: string): string {
     'one (aka exception approve) or remove the pointer.'
   );
 }
+
+/**
+ * The deny reason when a grant DID cover the pointer but the value could not be
+ * resolved — a purge that landed mid-call, an entry whose ciphertext no longer
+ * opens. Granting another exception would not help, so the message must not
+ * send the user after one.
+ */
+export function denyUnresolvedPointerMessage(toolName: string): string {
+  return (
+    `A vault pointer in a ${toolName} command is covered by a reveal exception but its ` +
+    'value could not be resolved, so the command was not run rather than executed with ' +
+    'the pointer as literal text. The entry may have been purged; check the vault.'
+  );
+}

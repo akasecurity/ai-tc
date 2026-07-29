@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dataDir } from '../src/data-dir.ts';
 import type { VaultGlue } from '../src/tokenize.ts';
 import { createVaultGlue } from '../src/tokenize.ts';
+import { removeTree } from './helpers/remove-tree.ts';
 
 const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 
@@ -60,7 +61,7 @@ describe('reveal decision seam', () => {
 
   afterEach(() => {
     for (const glue of opened.splice(0)) glue.close();
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('the default (user-grant) provider denies with no grant on file', async () => {
@@ -123,6 +124,63 @@ describe('reveal decision seam', () => {
     const result = await glue.substituteModelPointers(`k=${token}`, {
       resolveGrant: glue.revealGrantResolver,
     });
+    expect(result.revealed).toEqual([]);
+    expect(result.text).toBe(`k=${token}`);
+  });
+
+  // The vault re-takes the decision from the row's own identity at the moment
+  // raw would leave the store, so a resolver handing over a grant id is not the
+  // last word: a decider that says no still refuses the crossing.
+  it('refuses when the decider says no, whatever the resolver handed over', async () => {
+    const noGrants: ExceptionPolicyProvider = {
+      decideReveal: () => Promise.resolve({ allow: false }),
+    };
+    const glue = createVaultGlue({ base, policyProvider: noGrants });
+    const result = await glue.substituteModelPointers(`k=${token}`, {
+      resolveGrant: () => Promise.resolve('fabricated-grant'),
+    });
+    expect(result.revealed).toEqual([]);
+    expect(result.text).toBe(`k=${token}`);
+  });
+
+  // The seam promises no id stability across calls, so a build whose decider
+  // mints a fresh id per call must still be able to reveal. Pinning this stops
+  // an id comparison from being reintroduced at the crossing, where it would
+  // refuse every such build while reading like a security check.
+  it('reveals for a decider that issues a different id each call', async () => {
+    let issued = 0;
+    const freshIdEachCall: ExceptionPolicyProvider = {
+      decideReveal: () => {
+        issued += 1;
+        return Promise.resolve({ allow: true, grantId: `policy-grant-${String(issued)}` });
+      },
+    };
+    const glue = createVaultGlue({ base, policyProvider: freshIdEachCall });
+    const result = await glue.substituteModelPointers(`k=${token}`, {
+      resolveGrant: glue.revealGrantResolver,
+    });
+    expect(issued).toBeGreaterThan(1);
+    expect(result.revealed).toEqual([token]);
+    expect(result.text).toBe(`k=${SECRET}`);
+  });
+
+  // Resolution and the crossing are two separate moments. Re-deciding at the
+  // second one is what makes a revocation that lands in between bind.
+  it('does not cross on a grant revoked between resolution and de-reference', async () => {
+    let decisions = 0;
+    const revokedAfterResolve: ExceptionPolicyProvider = {
+      decideReveal: () => {
+        decisions += 1;
+        return Promise.resolve(
+          decisions === 1 ? { allow: true, grantId: 'g-live' } : { allow: false },
+        );
+      },
+    };
+    const glue = createVaultGlue({ base, policyProvider: revokedAfterResolve });
+    const result = await glue.substituteModelPointers(`k=${token}`, {
+      resolveGrant: glue.revealGrantResolver,
+    });
+    expect(decisions).toBeGreaterThan(1);
     expect(result.revealed).toEqual([]);
     expect(result.text).toBe(`k=${token}`);
   });

@@ -67,6 +67,15 @@ describe('UserGrantPolicyProvider', () => {
     await expect(provider.decideReveal(identity())).resolves.toEqual({ allow: false });
   });
 
+  // The reveal path does not evaluate conditions yet, and a narrowing clause
+  // that is ignored would WIDEN the grant — a repo-scoped grant would reveal
+  // everywhere. Fail closed: a conditioned grant never authorizes a reveal
+  // until reveal-side condition evaluation exists.
+  it('denies a grant narrowed by conditions', async () => {
+    await db.exceptions.create(grantInput({ conditions: { repo: 'x' } }));
+    await expect(provider.decideReveal(identity())).resolves.toEqual({ allow: false });
+  });
+
   // A grant authorizes exactly the value it was created for.
   it('denies a different value under the same rule', async () => {
     await db.exceptions.create(grantInput());

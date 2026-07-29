@@ -60,10 +60,14 @@ export interface TokenizeTextResult {
   degraded: { category: string }[];
 }
 
+// Human-target only, and deliberately so. This entry applies ONE option set to
+// every pointer in a text, which no per-value grant can authorize — a single
+// grant covers a single value, not whatever else happens to share the string.
+// Model crossings go through substituteModelPointers, which decides pointer by
+// pointer and spends a grant per crossing.
 export interface DetokenizeTextOptions {
-  target: 'human' | 'model';
+  target: 'human';
   reason: VaultDerefReason;
-  grantId?: string | undefined;
 }
 
 export interface DetokenizeTextResult {
@@ -95,6 +99,9 @@ export interface VaultCore {
     fingerprintKeyVersion: number;
   } | null>;
   recordSighting?(pointerId: string, sighting: { location: string; kind: VaultSightingKind }): void;
+  // Claim one use of a reveal grant. Called once per grant per crossing, AFTER
+  // a successful de-reference — a refusal must never spend the budget.
+  consumeGrant?(grantId: string): Promise<boolean>;
 }
 
 // Resolves whether a model-echoed pointer may be de-referenced back to raw for
@@ -109,6 +116,17 @@ export interface SubstitutePointersResult {
   revealed: PointerToken[];
   // Pointers left literal: no grant, or the vault refused/could not resolve.
   unresolved: PointerToken[];
+  // The grant ids that authorized the reveals — the caller threads these into
+  // the detection scan so the same crossing's suppression does not spend a
+  // second use.
+  grantIds: string[];
+}
+
+export interface ProbePointersResult {
+  // Distinct pointers an active grant covers, with the covering grant id.
+  granted: Map<PointerToken, string>;
+  // Distinct pointers no grant covers.
+  ungranted: PointerToken[];
 }
 
 export interface TokenizeSighting {
@@ -127,15 +145,22 @@ export interface VaultGlue {
   ): Promise<string>;
   detokenizeText(text: string, opts: DetokenizeTextOptions): Promise<DetokenizeTextResult>;
   describePointerSafe(token: string): Promise<PointerDescriptor | null>;
+  // Grant resolution only — no de-reference, no audit rows. The executable-field
+  // deny path uses this so a mixed field never audits a 'revealed' crossing for
+  // a call that is then blocked.
+  probeModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<ProbePointersResult>;
   substituteModelPointers(
     text: string,
     opts: { resolveGrant: ModelDerefGrantResolver },
   ): Promise<SubstitutePointersResult>;
   // The live reveal-grant lookup for this store: a grant id when an active
   // reveal-to-model exception covers the pointer's value, null otherwise.
-  // Always null on a degraded glue. Deliberately does NOT consume the grant:
-  // a revealed value re-enters the detection scan immediately, and the
-  // suppression match there claims the use — one crossing, one use.
+  // Always null on a degraded glue. Resolution never spends the grant — the
+  // crossing itself consumes, once per grant, after a successful de-reference,
+  // whatever enforcement mode the covered rule runs under.
   revealGrantResolver: ModelDerefGrantResolver;
   /**
    * Release the store handle this glue opened. Idempotent, and a no-op on a
@@ -316,10 +341,11 @@ class SecretVaultGlue implements VaultGlue {
       const resolved = new Map<string, string | null>();
       for (const [pointer, count] of occurrences) {
         try {
+          // Pinned rather than forwarded from opts, so a caller reaching past
+          // the type still cannot turn this into a model crossing.
           const value = await this.#vault.detokenize(pointer, {
-            target: opts.target,
+            target: 'human',
             reason: opts.reason,
-            grantId: opts.grantId,
             pointerCount: count,
           });
           resolved.set(pointer, typeof value === 'string' ? value : null);
@@ -365,17 +391,40 @@ class SecretVaultGlue implements VaultGlue {
     }
   }
 
+  async probeModelPointers(
+    text: string,
+    opts: { resolveGrant: ModelDerefGrantResolver },
+  ): Promise<ProbePointersResult> {
+    const granted = new Map<PointerToken, string>();
+    const ungranted: PointerToken[] = [];
+    try {
+      for (const pointer of new Set([...text.matchAll(pointerTokenScanner())].map((m) => m[0]))) {
+        try {
+          const grantId = await opts.resolveGrant(pointer);
+          if (grantId === null) ungranted.push(pointer);
+          else granted.set(pointer, grantId);
+        } catch {
+          ungranted.push(pointer);
+        }
+      }
+      return { granted, ungranted };
+    } catch {
+      return { granted: new Map(), ungranted };
+    }
+  }
+
   async substituteModelPointers(
     text: string,
     opts: { resolveGrant: ModelDerefGrantResolver },
   ): Promise<SubstitutePointersResult> {
     try {
       const matches = [...text.matchAll(pointerTokenScanner())];
-      if (matches.length === 0) return { text, revealed: [], unresolved: [] };
+      if (matches.length === 0) return { text, revealed: [], unresolved: [], grantIds: [] };
 
-      // Resolve each distinct pointer once. Every model crossing — revealed or
+      // Two phases: resolve every distinct pointer's grant FIRST, then
+      // de-reference only the granted ones. Every model crossing — revealed or
       // refused — is audited by the vault itself; the glue adds no rows.
-      const resolved = new Map<string, string | null>();
+      const resolved = new Map<string, { value: string; grantId: string } | null>();
       for (const pointer of new Set(matches.map((m) => m[0]))) {
         try {
           const grantId = await opts.resolveGrant(pointer);
@@ -390,9 +439,25 @@ class SecretVaultGlue implements VaultGlue {
             reason: 'model-input',
             grantId,
           });
-          resolved.set(pointer, typeof value === 'string' ? value : null);
+          resolved.set(pointer, typeof value === 'string' ? { value, grantId } : null);
         } catch {
           resolved.set(pointer, null);
+        }
+      }
+
+      // The crossing spends the grant — once per grant, only on success, and
+      // regardless of what enforcement mode the covered rule runs under. Tying
+      // consumption to a later suppression match would make a once-grant
+      // unlimited whenever the rule sits at Monitor/Warn.
+      const spentGrants = new Set<string>();
+      for (const entry of resolved.values()) {
+        if (entry === null || spentGrants.has(entry.grantId)) continue;
+        spentGrants.add(entry.grantId);
+        try {
+          await this.#vault.consumeGrant?.(entry.grantId);
+        } catch {
+          // The reveal already happened; a failed claim only means the next
+          // crossing re-evaluates the grant's remaining budget.
         }
       }
 
@@ -400,18 +465,23 @@ class SecretVaultGlue implements VaultGlue {
       const revealed = new Set<string>();
       const unresolved = new Set<string>();
       for (const match of [...matches].reverse()) {
-        const value = resolved.get(match[0]);
-        if (value === null || value === undefined) {
+        const entry = resolved.get(match[0]);
+        if (entry === null || entry === undefined) {
           unresolved.add(match[0]);
           continue;
         }
         revealed.add(match[0]);
-        out = out.slice(0, match.index) + value + out.slice(match.index + match[0].length);
+        out = out.slice(0, match.index) + entry.value + out.slice(match.index + match[0].length);
       }
-      return { text: out, revealed: [...revealed], unresolved: [...unresolved] };
+      return {
+        text: out,
+        revealed: [...revealed],
+        unresolved: [...unresolved],
+        grantIds: [...spentGrants],
+      };
     } catch {
       // Pointers left literal are inert; nothing raw has been substituted.
-      return { text, revealed: [], unresolved: [] };
+      return { text, revealed: [], unresolved: [], grantIds: [] };
     }
   }
 }
@@ -447,6 +517,12 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
     const dir = dataDir(base);
     const db = openLocalDatabase(dir);
     const settings = readWorkspaceSettings(base);
+    // Resolved before the vault so the grant verifier below can close over it.
+    // An injected provider replaces the user-grant one wholesale, and the vault
+    // must ask the SAME decider the resolver asks — a vault consulting the local
+    // exceptions table directly would veto a crossing an injected provider had
+    // just authorized.
+    const provider = options?.policyProvider ?? new UserGrantPolicyProvider(db.exceptions);
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(settings.vaultKeyCustody, keysDir(base)),
@@ -454,6 +530,22 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
       // Read live so a revocation applies to the very next call, not the next
       // process.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
+      // This is the one construction site that reveals to the model, so it is
+      // the one that supplies the last gate. The decision is re-taken from the
+      // ROW's identity at the moment of crossing, which closes the window
+      // between resolving a grant and spending it: a grant revoked in between
+      // refuses here.
+      //
+      // The re-decision is on the identity alone, never on the grant id
+      // matching the one the resolver returned. ExceptionPolicyProvider
+      // promises no id stability across calls — a provider deciding from
+      // external policy may well mint a fresh id each time — so comparing ids
+      // would silently refuse every crossing for such a provider while looking
+      // like a security check. `allow` for this row is the whole question.
+      verifyGrant: async (_grantId, identity) => {
+        const decision = await provider.decideReveal(identity);
+        return decision.allow;
+      },
     });
     // The vault core plus the sighting recorder: SecretVault owns crypto and
     // audit; where a pointer LANDED is repository bookkeeping, wired in here so
@@ -466,11 +558,11 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
       recordSighting: (pointerId, sighting) => {
         db.secretVault.recordSighting({ pointerId, ...sighting }, Date.now());
       },
+      consumeGrant: (grantId) => db.exceptions.consume(grantId),
     };
     // The resolver is a thin adapter over the decision seam: pointer →
     // raw-free identity → provider decision. Anything failing along the way is
     // a refusal, never a reveal.
-    const provider = options?.policyProvider ?? new UserGrantPolicyProvider(db.exceptions);
     const revealGrantResolver: ModelDerefGrantResolver = async (pointer) => {
       try {
         const identity = await vault.resolvePointerIdentity(pointer);

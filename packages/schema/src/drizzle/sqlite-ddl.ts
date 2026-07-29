@@ -99,4 +99,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0017_rainy_kat_farrell',
     sql: 'CREATE TABLE `secret_vault_sighting` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`pointer_id` text NOT NULL,\n\t`location` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`first_seen` integer NOT NULL,\n\t`last_seen` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `uq_secret_vault_sighting` ON `secret_vault_sighting` (`pointer_id`,`location`);',
   },
+  {
+    tag: '0018_serious_tana_nile',
+    sql: 'ALTER TABLE `secret_vault` ADD `format_version` integer DEFAULT 2 NOT NULL;',
+  },
 ];

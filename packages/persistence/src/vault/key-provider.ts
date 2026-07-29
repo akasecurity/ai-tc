@@ -19,7 +19,15 @@
 //             process against an OS service on this machine, no network hop.
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { DATA_FILE_MODE, ensureDataDirSync } from '../paths.ts';
@@ -151,6 +159,119 @@ function asAsync<T>(work: () => T): Promise<T> {
   }
 }
 
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+// ─── Rotation lock ───────────────────────────────────────────────────────────
+
+const ROTATION_LOCK_STALE_MS = 60_000;
+
+// Names the holder, so release can tell "still mine" from "reclaimed by someone
+// else while I was working" and decline to remove a lock it no longer owns.
+const LOCK_OWNER_FILE = 'owner';
+
+const ROTATION_IN_PROGRESS = 'vault: a key rotation is already in progress';
+
+interface RotationLease {
+  lock: string;
+  owner: string;
+}
+
+// Create the lock directory and stamp it with this holder's token. False means
+// someone else already holds it. A failed stamp gives the directory back rather
+// than leaving behind a lock nobody can prove ownership of — and so release.
+function claimRotationLock(lock: string, owner: string): boolean {
+  try {
+    mkdirSync(lock);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw asError(err);
+  }
+  try {
+    writeFileSync(join(lock, LOCK_OWNER_FILE), `${owner}\n`, { mode: DATA_FILE_MODE });
+    return true;
+  } catch (err) {
+    rmSync(lock, { recursive: true, force: true });
+    throw asError(err);
+  }
+}
+
+/**
+ * Advisory lock guarding rotation: `mkdirSync` is atomic, so whichever process
+ * creates the lock directory owns the rotation, and a concurrent caller fails
+ * loudly instead of both minting a different next epoch. Rotation is a rare,
+ * user-initiated operation — surfacing contention as an error is correct.
+ * A lock left by a crashed process is reclaimed once it is older than the
+ * stale window.
+ */
+function acquireRotationLock(keysDir: string): RotationLease {
+  const lock = join(keysDir, `${VAULT_KEY_FILENAME}.lock`);
+  const owner = randomBytes(16).toString('hex');
+  if (claimRotationLock(lock, owner)) return { lock, owner };
+
+  let held: ReturnType<typeof statSync>;
+  try {
+    held = statSync(lock);
+  } catch {
+    // The lock vanished between the failed create and the stat: the other
+    // rotation just finished. The contention was still real; the caller retries.
+    throw new Error(ROTATION_IN_PROGRESS);
+  }
+  if (Date.now() - held.mtimeMs < ROTATION_LOCK_STALE_MS) throw new Error(ROTATION_IN_PROGRESS);
+
+  // Reclaim by MOVING the stale directory aside, never by deleting it in place.
+  // Delete-then-recreate is check-then-act: two processes that both judge one
+  // lock stale both delete and both create, and both believe they hold it. That
+  // needs no slow rotation to reach — a stale lock stays stale until somebody
+  // takes it, so any two attempts after a crash collide. A rename can only
+  // succeed for one of them.
+  //
+  // Identity is re-checked first, so a lock a third process legitimately took
+  // over since the staleness read is left alone instead of displaced. Identity
+  // is (inode, mtime) and NOT the inode alone: a filesystem is free to hand a
+  // freshly created directory the inode number it just reclaimed from a deleted
+  // one, so an inode match does not prove it is the same directory. A
+  // replacement lock is stamped at creation time and cannot also carry the old
+  // one's backdated mtime, which is what makes the pair conclusive.
+  const aside = `${lock}.stale.${owner}`;
+  try {
+    const now = statSync(lock);
+    if (now.ino !== held.ino || now.mtimeMs !== held.mtimeMs) {
+      throw new Error(ROTATION_IN_PROGRESS);
+    }
+    renameSync(lock, aside);
+  } catch (err) {
+    if (err instanceof Error && err.message === ROTATION_IN_PROGRESS) throw err;
+    throw new Error(ROTATION_IN_PROGRESS, { cause: err });
+  }
+  rmSync(aside, { recursive: true, force: true });
+  if (!claimRotationLock(lock, owner)) throw new Error(ROTATION_IN_PROGRESS);
+  return { lock, owner };
+}
+
+// Release only what this holder still owns. A lock reclaimed as stale while its
+// holder was still alive belongs to the reclaimer, and deleting it on the way
+// out would unlock the reclaimer and let a third caller walk in beside it.
+function releaseRotationLock(lease: RotationLease): void {
+  try {
+    if (readFileSync(join(lease.lock, LOCK_OWNER_FILE), 'utf8').trim() !== lease.owner) return;
+  } catch {
+    return;
+  }
+  rmSync(lease.lock, { recursive: true, force: true });
+}
+
+function withRotationLock<T>(keysDir: string, work: () => T): T {
+  ensureDataDirSync(keysDir);
+  const lease = acquireRotationLock(keysDir);
+  try {
+    return work();
+  } finally {
+    releaseRotationLock(lease);
+  }
+}
+
 // ─── File custody ────────────────────────────────────────────────────────────
 
 /**
@@ -174,7 +295,7 @@ export class FileKeyProvider implements KeyProvider {
   loadOrCreate(): Promise<VaultKeyMaterial> {
     return asAsync(() => {
       const existing = this.#read();
-      if (!existing) return currentOf(this.#write(mintKeyring()));
+      if (!existing) return currentOf(this.#createExclusive());
       // Re-tighten on every load, covering a file created before the mode was
       // enforced at write time.
       tightenFileMode(this.filePath);
@@ -183,12 +304,15 @@ export class FileKeyProvider implements KeyProvider {
   }
 
   rotate(): Promise<VaultKeyMaterial> {
-    return asAsync(() => {
-      const existing = this.#read();
-      // With no keyring yet there is nothing to rotate away from: the first
-      // epoch is minted instead, so rotation on a fresh machine is not a no-op.
-      return currentOf(this.#write(existing ? withNextEpoch(existing) : mintKeyring()));
-    });
+    return asAsync(() =>
+      withRotationLock(this.#keysDir, () => {
+        const existing = this.#read();
+        // With no keyring yet there is nothing to rotate away from: the first
+        // epoch is minted instead, so rotation on a fresh machine is not a no-op.
+        if (!existing) return currentOf(this.#createExclusive());
+        return currentOf(this.#write(withNextEpoch(existing)));
+      }),
+    );
   }
 
   materialFor(version: number): Promise<VaultKeyMaterial> {
@@ -211,7 +335,41 @@ export class FileKeyProvider implements KeyProvider {
     return parseKeyring(raw);
   }
 
-  /** Atomic tmp + rename so a crash mid-write cannot truncate the keyring. */
+  /**
+   * First mint: the keyring is created at its FINAL path with a
+   * creation-exclusive write, so two processes racing a fresh machine cannot
+   * each mint a different epoch 1 — with tmp + rename the loser's replace
+   * would orphan everything the winner had already sealed. On EEXIST the
+   * loser re-reads and adopts the winner's keyring; it minted nothing.
+   * Atomic replace is unnecessary here: nothing can be mid-read of a file
+   * that did not exist, and a torn exclusive write parses as corrupt on the
+   * next read and fails secure rather than being re-minted over.
+   */
+  #createExclusive(): Keyring {
+    ensureDataDirSync(this.#keysDir);
+    const keyring = mintKeyring();
+    try {
+      writeFileSync(this.filePath, `${serializeKeyring(keyring)}\n`, {
+        flag: 'wx',
+        mode: DATA_FILE_MODE,
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw asError(err);
+      const winner = this.#read();
+      if (!winner) {
+        throw new Error('vault: key file vanished during first mint', { cause: err });
+      }
+      return winner;
+    }
+    tightenFileMode(this.filePath);
+    return keyring;
+  }
+
+  /**
+   * Atomic tmp + rename so a crash mid-write cannot truncate the keyring.
+   * Used only for rotation, under the rotation lock — first creation goes
+   * through the creation-exclusive path instead.
+   */
   #write(keyring: Keyring): Keyring {
     ensureDataDirSync(this.#keysDir);
     const file = this.filePath;
@@ -233,24 +391,47 @@ function tightenFileMode(file: string): void {
 
 // ─── Keychain custody ────────────────────────────────────────────────────────
 
+/** Invokes the platform `security` binary with the given argv, returning stdout. */
+export type SecurityExec = (args: string[]) => string;
+
+const runSecurity: SecurityExec = (args) =>
+  execFileSync('/usr/bin/security', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+
+// `security find-generic-password` exit status for "no matching item exists"
+// (errSecItemNotFound). Every other non-zero exit — a locked keychain, a
+// denied ACL — is a failure, not absence.
+const SECURITY_ITEM_NOT_FOUND = 44;
+
 /**
  * Opt-in OS-keychain custody: the same versioned keyring JSON held as one
  * generic-password item, so the key bytes are not sitting in a readable file.
  *
  * macOS only. The bytes move through the local `security` binary as a child
- * process — an OS service on this machine, not a network call. Elsewhere the
+ * process — an OS service on this machine, not a network hop. Elsewhere the
  * constructor throws so the caller can fall back to file custody.
+ *
+ * On writes the keyring JSON rides in the child's argv (`-w <json>`), which is
+ * observable by same-UID processes for the duration of the exec. That is an
+ * accepted exposure under the local threat model: a same-UID process can
+ * already read the keychain item itself.
  */
 export class KeychainKeyProvider implements KeyProvider {
   readonly #keysDir: string;
+  readonly #exec: SecurityExec;
 
-  constructor(keysDir: string) {
-    if (process.platform !== 'darwin') {
+  constructor(keysDir: string, exec: SecurityExec = runSecurity) {
+    // The platform guard applies only to the real binary; an injected exec
+    // carries its own platform expectations.
+    if (exec === runSecurity && process.platform !== 'darwin') {
       throw new Error(
         `keychain custody is not available on this platform (${process.platform}); use file custody`,
       );
     }
     this.#keysDir = keysDir;
+    this.#exec = exec;
   }
 
   /** Where a fallback file provider for the same vault would keep its keyring. */
@@ -259,14 +440,23 @@ export class KeychainKeyProvider implements KeyProvider {
   }
 
   loadOrCreate(): Promise<VaultKeyMaterial> {
-    return asAsync(() => currentOf(this.#read() ?? this.#write(mintKeyring())));
+    return asAsync(() => {
+      const existing = this.#read();
+      if (existing) return currentOf(existing);
+      return currentOf(this.#create(mintKeyring()));
+    });
   }
 
   rotate(): Promise<VaultKeyMaterial> {
-    return asAsync(() => {
-      const existing = this.#read();
-      return currentOf(this.#write(existing ? withNextEpoch(existing) : mintKeyring()));
-    });
+    return asAsync(() =>
+      withRotationLock(this.#keysDir, () => {
+        const existing = this.#read();
+        // With no keyring yet there is nothing to rotate away from: the first
+        // epoch is minted instead, so rotation on a fresh machine is not a no-op.
+        if (!existing) return currentOf(this.#create(mintKeyring()));
+        return currentOf(this.#replace(withNextEpoch(existing)));
+      }),
+    );
   }
 
   materialFor(version: number): Promise<VaultKeyMaterial> {
@@ -281,40 +471,67 @@ export class KeychainKeyProvider implements KeyProvider {
   #read(): Keyring | null {
     let raw: string;
     try {
-      raw = execFileSync(
-        '/usr/bin/security',
-        ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-a', KEYCHAIN_ACCOUNT, '-w'],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      raw = this.#exec([
+        'find-generic-password',
+        '-s',
+        KEYCHAIN_SERVICE,
+        '-a',
+        KEYCHAIN_ACCOUNT,
+        '-w',
+      ]);
+    } catch (err) {
+      // Only "no such item" may read as absence. A locked keychain or a
+      // denied ACL also exits non-zero, and reading those as absence would
+      // route into the mint path and orphan every existing ciphertext.
+      if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return null;
+      throw new Error(
+        `vault: keychain read failed (${err instanceof Error ? err.message : String(err)}); refusing to treat the failure as an absent keyring`,
+        { cause: err },
       );
-    } catch {
-      // `security` exits non-zero both when the item is absent and when access
-      // is denied; neither may mint over a keyring that might still exist, so
-      // absence is reported and the caller's mint path handles a real first run.
-      return null;
     }
     const body = raw.trim();
     if (body.length === 0) return null;
     return parseKeyring(body);
   }
 
-  // `-U` updates the item in place when it already exists, so a rotation
-  // replaces the stored map rather than adding a second item the reader would
-  // have to disambiguate.
-  #write(keyring: Keyring): Keyring {
-    execFileSync(
-      '/usr/bin/security',
-      [
-        'add-generic-password',
-        '-U',
-        '-s',
-        KEYCHAIN_SERVICE,
-        '-a',
-        KEYCHAIN_ACCOUNT,
-        '-w',
-        serializeKeyring(keyring),
-      ],
-      { stdio: ['ignore', 'ignore', 'ignore'] },
-    );
+  /**
+   * First mint: a plain `add-generic-password` (no `-U`) fails when an item
+   * already exists, so a concurrent first mint cannot overwrite the winner's
+   * keyring — the loser re-reads and adopts it instead.
+   */
+  #create(keyring: Keyring): Keyring {
+    const args = [
+      'add-generic-password',
+      '-s',
+      KEYCHAIN_SERVICE,
+      '-a',
+      KEYCHAIN_ACCOUNT,
+      '-w',
+      serializeKeyring(keyring),
+    ];
+    try {
+      this.#exec(args);
+    } catch (err) {
+      const winner = this.#read();
+      if (winner) return winner;
+      throw asError(err);
+    }
+    return keyring;
+  }
+
+  // `-U` updates the item in place, deliberately replacing the stored map with
+  // one that contains it — used only for rotation, under the rotation lock.
+  #replace(keyring: Keyring): Keyring {
+    this.#exec([
+      'add-generic-password',
+      '-U',
+      '-s',
+      KEYCHAIN_SERVICE,
+      '-a',
+      KEYCHAIN_ACCOUNT,
+      '-w',
+      serializeKeyring(keyring),
+    ]);
     return keyring;
   }
 }

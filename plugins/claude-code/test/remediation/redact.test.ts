@@ -310,6 +310,45 @@ describe('redactLeakedKeys', () => {
       expect(after).toBe('leaked [REDACTED:SECRET] here');
     });
 
+    it('a map entry CONTAINING the raw value falls back to the one-way placeholder', () => {
+      const transcriptFile = join(transcriptRoot, 'containing-map.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      // A candidate that embeds the raw value would leave the secret readable
+      // while reporting it redacted — it must never be honoured.
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, `wrapped(${TRANSCRIPT_KEY})`]]),
+      );
+
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(0);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe('leaked [REDACTED:SECRET] here');
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+    });
+
+    it("a '$&' map entry falls back to the placeholder — the match is never re-inserted", () => {
+      const transcriptFile = join(transcriptRoot, 'dollar-map.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      // '$&' is the replace-pattern sequence for "the matched substring": fed
+      // to a replace-family API it would rewrite the secret with itself and
+      // count it redacted. The sweep must refuse it and strike one-way.
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, '$&']]),
+      );
+
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(0);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe('leaked [REDACTED:SECRET] here');
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+    });
+
     it('an empty map behaves byte-identically to no map at all', () => {
       const withMap = join(transcriptRoot, 'with-empty-map.jsonl');
       const without = join(transcriptRoot, 'without-map.jsonl');

@@ -53,6 +53,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       policy: 'redact',
       historicalAccess: 'session-only',
       vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
     });
     expect(res).toEqual({ ok: true });
 
@@ -66,7 +67,12 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   });
 
   it("keeps the original acknowledgedAt when 'on' is saved again", async () => {
-    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
+    });
     const first = readWorkspaceSettings().vaultConsent;
     expect(first).toBeDefined();
 
@@ -79,6 +85,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       policy: 'warn',
       historicalAccess: 'session-only',
       vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
     });
     expect(res).toEqual({ ok: true });
 
@@ -88,13 +95,19 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   });
 
   it("removes the field from the persisted file on 'off'", async () => {
-    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
+    });
     expect(rawSettings()).toContain('vaultConsent');
 
     const res = await saveSettings({
       policy: 'redact',
       historicalAccess: 'session-only',
       vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
     });
     expect(res).toEqual({ ok: true });
 
@@ -107,13 +120,19 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   });
 
   it('rejects an unknown consent value and leaves the file untouched', async () => {
-    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
+    });
     const before = rawSettings();
 
     const res = await saveSettings({
       policy: 'redact',
       historicalAccess: 'session-only',
       vaultConsent: 'granted',
+      vaultInlineReveal: 'masked',
     });
     expect(res.ok).toBe(false);
     expect(rawSettings()).toBe(before);
@@ -128,11 +147,62 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       policy: 'redact',
       historicalAccess: 'session-only',
       vaultConsent: forged as unknown as string,
+      vaultInlineReveal: 'masked',
     });
     expect(res.ok).toBe(false);
     expect(() => rawSettings()).toThrow(); // nothing was ever written
 
     // And the contract itself admits only a string — no object shape exists.
     expectTypeOf<Parameters<typeof saveSettings>[0]['vaultConsent']>().toEqualTypeOf<string>();
+  });
+});
+
+describe('stale-grant re-consent and inline reveal', () => {
+  // A grant recorded against an older consent version authorizes nothing; a
+  // save with 'on' selected must re-stamp it at the current version — the
+  // one-save re-consent the settings notice documents.
+  it("saving 'on' over a STALE grant re-stamps at the current version", async () => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        // Any parseable version that is not the CURRENT one is a stale grant;
+        // versions below 1 fail the schema, so the other-epoch simulation uses
+        // the next version up — the same mismatch path either way.
+        vaultConsent: {
+          acknowledgedAt: '2020-01-01T00:00:00.000Z',
+          version: VAULT_CONSENT_VERSION + 1,
+        },
+      },
+      join(home, '.aka'),
+    );
+    const result = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+      vaultInlineReveal: 'masked',
+    });
+    expect(result.ok).toBe(true);
+    const persisted = readWorkspaceSettings(join(home, '.aka'));
+    expect(persisted.vaultConsent?.version).toBe(VAULT_CONSENT_VERSION);
+    expect(persisted.vaultConsent?.acknowledgedAt).not.toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('persists a valid inline-reveal mode and rejects junk', async () => {
+    const ok = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'full',
+    });
+    expect(ok.ok).toBe(true);
+    expect(readWorkspaceSettings(join(home, '.aka')).vaultInlineReveal).toBe('full');
+
+    const bad = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'loud',
+    });
+    expect(bad.ok).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import {
   MODEL_JUDGE_PAYLOAD_VERSION,
   SimpleDetectionPolicy,
   VAULT_CONSENT_VERSION,
+  VaultInlineReveal,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -32,13 +33,16 @@ export async function saveSettings(input: {
   // state, so a client cannot backdate a grant or claim a version it never saw.
   modelJudgeConsent?: boolean;
   vaultConsent: string;
+  vaultInlineReveal: string;
 }): Promise<SaveSettingsResult> {
   const policy = SimpleDetectionPolicy.safeParse(input.policy);
   const historicalAccess = HistoricalAccess.safeParse(input.historicalAccess);
+  const inlineReveal = VaultInlineReveal.safeParse(input.vaultInlineReveal);
   const vaultChoice = input.vaultConsent;
   if (
     !policy.success ||
     !historicalAccess.success ||
+    !inlineReveal.success ||
     (vaultChoice !== 'on' && vaultChoice !== 'off')
   ) {
     return { ok: false, error: 'Invalid settings value.' };
@@ -70,6 +74,7 @@ export async function saveSettings(input: {
         ? { acknowledgedAt: new Date().toISOString(), payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION }
         : undefined,
       vaultConsent,
+      vaultInlineReveal: inlineReveal.data,
     });
   } catch {
     return { ok: false, error: 'Could not write settings.json.' };

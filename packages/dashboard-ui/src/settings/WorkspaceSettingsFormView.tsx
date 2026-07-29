@@ -117,12 +117,42 @@ export const VAULT_CHOICES: Choice<VaultConsentChoice>[] = [
       'transcripts show where each secret is used, and which places share the same ' +
       'secret, to anyone who can read those files. Switching back to Off stops new ' +
       'vaulting but does not erase what is already stored — purging the vault from the ' +
-      'CLI is what erases it.',
+      "dashboard's Vault page is what erases it.",
   },
 ];
 
 // The stored grant maps to the form choice: a recorded consent renders as 'on',
 // an absent one as 'off'.
+export const INLINE_REVEAL_SECTION_LABEL = 'Inline reveal in the terminal';
+
+export const INLINE_REVEAL_SECTION_DESCRIPTION =
+  "How a vault pointer renders inside Claude's on-screen replies. Display-only — the " +
+  'transcript and what the model sees always keep the pointer.';
+
+export const INLINE_REVEAL_CHOICES: Choice<WorkspaceSettings['vaultInlineReveal']>[] = [
+  {
+    value: 'masked',
+    label: 'Masked badge (default)',
+    description:
+      'Pointers render as a masked badge (category and partial value). No raw value is ' +
+      'resolved and nothing is written to the audit trail.',
+  },
+  {
+    value: 'full',
+    label: 'Full reveal',
+    description:
+      'Pointers resolve to the real value on screen, capped at two per message and never ' +
+      'inside code blocks or quotes. The risk is real: anything the model is induced to ' +
+      'mention renders in plaintext where it can be shoulder-surfed, screen-shared, or ' +
+      'copy-pasted onward. Every reveal is audited.',
+  },
+  {
+    value: 'off',
+    label: 'Off',
+    description: 'Replies are not modified; pointers show as-is.',
+  },
+];
+
 export function vaultChoiceOf(vaultConsent: WorkspaceSettings['vaultConsent']): VaultConsentChoice {
   return vaultConsent ? 'on' : 'off';
 }
@@ -187,7 +217,7 @@ export interface WorkspaceSettingsFormViewProps {
   // timestamps and versions are stamped server-side, so a client-supplied one
   // would only be discarded. modelJudgeConsent: true grants, false revokes.
   onSave: (
-    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'> & {
+    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
       vaultConsent: VaultConsentChoice;
     },
@@ -220,11 +250,17 @@ export function WorkspaceSettingsFormView({
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
+  const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
   const dirty =
     policy !== settings.policy ||
     historicalAccess !== settings.historicalAccess ||
     modelJudge !== initialModelJudge ||
-    vaultConsent !== vaultChoiceOf(settings.vaultConsent);
+    vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
+    inlineReveal !== settings.vaultInlineReveal ||
+    // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
+    // selected and saving is the documented one-save re-consent, so staleness
+    // itself must enable Save.
+    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -272,6 +308,17 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
+      <section>
+        <SectionLabel>{INLINE_REVEAL_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{INLINE_REVEAL_SECTION_DESCRIPTION}</p>
+        <ChoiceGroup
+          name="vaultInlineReveal"
+          choices={INLINE_REVEAL_CHOICES}
+          value={inlineReveal}
+          onChange={setInlineReveal}
+        />
+      </section>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
@@ -286,6 +333,7 @@ export function WorkspaceSettingsFormView({
               // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
               vaultConsent,
+              vaultInlineReveal: inlineReveal,
             });
           }}
         >

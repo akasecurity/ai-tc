@@ -226,7 +226,7 @@ describe('grantRevealFromPointer', () => {
     expect(await grants()).toHaveLength(0);
   });
 
-  it('accepts the once and permanent scope answers with server-stamped columns', async () => {
+  it('accepts the once scope with server-stamped columns', async () => {
     const pointer = await seedPointer();
     const once = await grantRevealFromPointer({ pointer, scope: 'once', justification: 'x' });
     expect(once.ok).toBe(true);
@@ -237,5 +237,42 @@ describe('grantRevealFromPointer', () => {
     expect(all[0]?.scope).toBe('once');
     expect(all[0]?.maxUses).toBe(1);
     expect(all[0]?.expiresAt).not.toBeNull();
+  });
+
+  // A permanent reveal is a never-expiring authorization for raw to reach the
+  // model — it takes the same value-specific typed confirmation every other
+  // permanent grant does, re-checked server-side.
+  it('refuses a permanent reveal without the typed confirmation', async () => {
+    const pointer = await seedPointer();
+    const missing = await grantRevealFromPointer({
+      pointer,
+      scope: 'permanent',
+      justification: 'x',
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain('confirmed by retyping');
+
+    const wrong = await grantRevealFromPointer({
+      pointer,
+      scope: 'permanent',
+      justification: 'x',
+      confirmation: 'not-the-mask',
+    });
+    expect(wrong.ok).toBe(false);
+    expect(await grants()).toHaveLength(0);
+  });
+
+  it('accepts a permanent reveal confirmed with the masked value', async () => {
+    const pointer = await seedPointer();
+    const granted = await grantRevealFromPointer({
+      pointer,
+      scope: 'permanent',
+      justification: 'x',
+      confirmation: MASKED,
+    });
+    expect(granted.ok).toBe(true);
+    const all = await grants();
+    expect(all[0]?.scope).toBe('permanent');
+    expect(all[0]?.capability).toBe('reveal_to_model');
   });
 });

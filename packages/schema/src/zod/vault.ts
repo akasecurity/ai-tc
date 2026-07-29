@@ -23,6 +23,21 @@ export const VAULT_SPEC_VERSION = 1;
 // `[[aka:tok:...]]` form, which no shipped build ever emitted; version 2 carries
 // the category segment. It is covered by the pointer tag and by the AEAD AAD, so
 // a pointer cannot be relabelled into a different category.
+//
+// MOVING THIS NUMBER IS NOT A ONE-LINE CHANGE. Pointer tags are signed AND
+// verified under whatever this constant currently says, on both sides, because
+// a tag is checked before its row is looked up — so verification cannot know
+// which generation a row was sealed under. Bump this alone and every
+// already-stored row starts emitting tokens signed under the new value: the
+// vault would refuse the very tokens it just minted, silently, since a failed
+// verification writes no audit row. That takes out the masked badge and the
+// reveal-grant path along with the read path.
+//
+// A bump must ship a verification story for stored rows first — either carry
+// the generation on the wire so verification can read it without the row, or
+// re-seal and re-emit every row as part of the migration. `secret_vault`
+// records each row's generation (`format_version`) so that migration is
+// possible; nothing uses it for tags.
 export const POINTER_FORMAT_VERSION = 2;
 
 // ─── The wire pointer ────────────────────────────────────────────────────────
@@ -75,7 +90,7 @@ export type ParsedPointer = z.infer<typeof ParsedPointer>;
 export const VaultEntry = z.object({
   pointerId: z.string(),
   // The keyed HMAC of the raw value under `exception.key`, and the epoch it was
-  // derived under. This is what an SP-5 reveal grant matches on, and it rotates
+  // derived under. This is what a reveal-to-model grant matches on, and it rotates
   // independently of the vault encryption key below.
   valueFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   fingerprintKeyVersion: z.number().int().positive(),
@@ -93,7 +108,7 @@ export const VaultEntry = z.object({
   nonce: z.string(),
   authTag: z.string(),
   // How many times this value has been detected on this machine — the reuse
-  // signal SP-6 reads. Distinct from VaultDeref.pointerCount.
+  // signal the vault dashboard reads. Distinct from VaultDeref.pointerCount.
   occurrenceCount: z.number().int().nonnegative(),
   firstSeen: z.string(),
   lastSeen: z.string(),

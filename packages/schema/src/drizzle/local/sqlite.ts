@@ -713,6 +713,13 @@ export const secretVault = sqliteTable(
     fingerprintKeyVersion: integer(COL.fingerprintKeyVersion).notNull(),
     // The vault-key epoch this row's ciphertext is sealed under.
     keyVersion: integer(COL.keyVersion).notNull(),
+    // The pointer-format generation (POINTER_FORMAT_VERSION) this row's
+    // ciphertext AAD is bound under — the AAD only, never the wire tag, which
+    // is checked against the current constant before any row is looked up.
+    // Recorded per row so a future format bump can still open and re-seal
+    // existing entries instead of stranding them. Default 2: every row written
+    // before this column existed was sealed under format version 2.
+    formatVersion: integer(COL.formatVersion).notNull().default(2),
     // Fixed at first mint, never updated on re-detection: the same value seen
     // later under a different rule's category keeps its minted category, so one
     // value always yields exactly one wire token.

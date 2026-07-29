@@ -140,6 +140,7 @@ export const COL = {
   // Different tables, different meanings — deliberately not the same name.
   pointerId: 'pointer_id',
   fingerprintKeyVersion: 'fingerprint_key_version',
+  formatVersion: 'format_version',
   ciphertext: 'ciphertext',
   nonce: 'nonce',
   authTag: 'auth_tag',

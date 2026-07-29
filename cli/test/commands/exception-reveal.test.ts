@@ -148,12 +148,45 @@ describe('aka exception approve <pointer> --reveal', () => {
     expect(await openAndList()).toHaveLength(0);
   });
 
-  it('rejects --reveal with a non-pointer selector and creates nothing', async () => {
-    await seedPointer();
-    await expect(
-      runException(approveArgs('3f2a', '--reveal', '--once', '--reason', 'x'), scriptedIo()),
-    ).rejects.toThrow(/vault pointer/);
-    expect(await openAndList()).toHaveLength(0);
+  // A non-pointer selector with the reveal opt-in routes to the ledger flow:
+  // a value blocked minutes ago can be granted reveal directly from its ref,
+  // no pointer in hand needed.
+  it('mints a reveal grant from a blocked-detections ledger ref', async () => {
+    const key = loadOrCreateFingerprintKey(dataDir(home));
+    const db = openLocalDatabase(dataDir(home));
+    try {
+      await db.exceptions.recordBlocked({
+        reference: '3f2a91',
+        ruleId: 'secrets/aws-access-key',
+        category: 'secret',
+        valueFingerprint: fingerprintValue(key, RAW),
+        keyVersion: key.version,
+        maskedValue: 'A******E',
+        sessionId: 'sess-1',
+        repo: null,
+      });
+    } finally {
+      db.close();
+    }
+    const io = scriptedIo();
+    await runException(
+      approveArgs('3f2a91', '--reveal-to-model', '--once', '--reason', 'ledger reveal'),
+      io,
+    );
+    const grants = await openAndList();
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.capability).toBe('reveal_to_model');
+    expect(io.output()).toContain('RAW form at tool boundaries');
+  });
+
+  it('the shorthand --reveal still works on a pointer selector', async () => {
+    const pointer = await seedPointer();
+    await runException(
+      approveArgs(pointer, '--reveal', '--once', '--reason', 'shorthand'),
+      scriptedIo(),
+    );
+    const grants = await openAndList();
+    expect(grants[0]?.capability).toBe('reveal_to_model');
   });
 
   it('rejects a forged pointer with --reveal and creates nothing', async () => {

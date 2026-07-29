@@ -70,14 +70,15 @@ value's RAW form at tool boundaries while it is active, with every crossing
 audited. Revoke any time with 'aka exception revoke <id>'.
 
 Flags:
-  --reveal            required with a pointer: grant reveal-to-model, not suppression
+  --reveal-to-model   grant reveal-to-model instead of suppression (required with a
+                      pointer selector; --reveal is accepted as shorthand)
   --once | --for <30m|1h|24h> | --permanent   scope (required, pick one)
   --reason "<why>"    required; prompted on a terminal if omitted
   --yes               skip confirmations (non-interactive use)
   --home <dir>        alternate AKA home (default: ~/.aka)
 
 Example: aka exception approve 3f2a --for 1h --reason "temp deploy creds"
-Example: aka exception approve '[[aka:secret:...]]' --reveal --for 1h --reason "agent needs the live key"
+Example: aka exception approve '[[aka:secret:...]]' --reveal-to-model --for 1h --reason "agent needs the live key"
 `,
   add: `Usage: aka exception add --rule <ruleId> [--stdin] [flags]
 
@@ -465,7 +466,13 @@ async function runApproveReveal(
 async function runApprove(argv: string[], io: Prompter): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { ...HOME_OPTION, ...SCOPE_OPTIONS, reveal: { type: 'boolean' } },
+    options: {
+      ...HOME_OPTION,
+      ...SCOPE_OPTIONS,
+      'reveal-to-model': { type: 'boolean' },
+      // Shorthand for --reveal-to-model.
+      reveal: { type: 'boolean' },
+    },
     allowPositionals: true,
   });
   if (values.help) {
@@ -473,22 +480,18 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     return;
   }
   const base = homeBase(values.home);
+  const wantsReveal = values['reveal-to-model'] === true || values.reveal === true;
   // A pointer selector routes to the vault, not the blocked-detections ledger.
   const candidate = positionals[0]?.trim();
   const pointer = candidate === undefined ? undefined : PointerToken.safeParse(candidate);
   if (pointer?.success === true) {
-    if (values.reveal !== true) {
+    if (!wantsReveal) {
       throw new Error(
-        'that selector is a vault pointer — approving one mints a reveal-to-model grant, which must be asked for explicitly: add --reveal',
+        'that selector is a vault pointer — approving one mints a reveal-to-model grant, which must be asked for explicitly: add --reveal-to-model',
       );
     }
     await runApproveReveal(pointer.data, values, io, base);
     return;
-  }
-  if (values.reveal === true) {
-    throw new Error(
-      'a reveal grant is minted from a vault pointer — pass the full [[aka:...]] token (quote it in the shell); the pointer is the proof the value is vaulted',
-    );
   }
   const dir = dataDir(base);
   const db = openLocalDatabase(dir);
@@ -531,12 +534,16 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     }
     // The grant is created FROM THE LEDGER ENTRY — the fingerprint was
     // computed when the hook blocked; the raw value never enters this process.
+    // With the reveal opt-in, the same ledger identity mints the stronger
+    // capability: the value's pointer may then de-reference to raw for the
+    // model, and — being strictly stronger — the grant suppresses too.
     const granted = await createGrant(db, {
       ruleId: entry.ruleId,
       category: entry.category,
       valueFingerprint: entry.valueFingerprint,
       keyVersion: entry.keyVersion,
       maskedValue: entry.maskedValue,
+      ...(wantsReveal ? { capability: 'reveal_to_model' as const } : {}),
       ...scope,
       justification: reason,
       conditions: null,
@@ -544,6 +551,11 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
       createdVia: 'cli-approve',
     });
     printGranted(io, granted);
+    if (wantsReveal) {
+      io.out(
+        'While this grant is active the model can receive this value in RAW form at tool boundaries; every crossing is audited.\n',
+      );
+    }
     io.out('Resubmit the blocked prompt — it will now pass.\n');
   } finally {
     db.close();
@@ -717,7 +729,13 @@ async function runList(argv: string[], io: Prompter): Promise<void> {
       const row = [
         shortId(ex.id),
         ex.ruleId,
-        ex.maskedValue,
+        // A reveal grant is strictly stronger than a plain suppression: while
+        // it is active the model can receive this value's RAW form at tool
+        // boundaries. Tag the row so it reads differently from a suppress-only
+        // grant. The value stays masked — the list never shows raw values.
+        ex.capability === 'reveal_to_model'
+          ? `${ex.maskedValue} · REVEALS-TO-MODEL`
+          : ex.maskedValue,
         ex.scope,
         // An expiry countdown is meaningless once the budget/revocation ended
         // the grant ("consumed · expires in 24m" reads as a contradiction);

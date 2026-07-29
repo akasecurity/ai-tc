@@ -41,6 +41,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'SqliteSharesRepository',
   'SqliteSourceProjectRepository',
   'UNAVAILABLE',
+  'UserGrantPolicyProvider',
   'VaultKeyEpochMissingError',
   'applyOnboarding',
   'base32Decode',

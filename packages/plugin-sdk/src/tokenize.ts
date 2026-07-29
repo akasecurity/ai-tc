@@ -16,6 +16,7 @@
 // sees LESS, never more.
 import type { MatchResult } from '@akasecurity/detections';
 import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
+import type { ExceptionPolicyProvider } from '@akasecurity/persistence';
 import {
   createKeyProvider,
   defaultDataDir,
@@ -24,6 +25,7 @@ import {
   openLocalDatabase,
   readWorkspaceSettings,
   SecretVault,
+  UserGrantPolicyProvider,
 } from '@akasecurity/persistence';
 import type {
   DetectionCategory,
@@ -403,6 +405,10 @@ export interface CreateVaultGlueOptions {
   vault?: VaultCore;
   // Test seam: a reveal-grant resolver to pair with an injected vault.
   revealResolver?: ModelDerefGrantResolver;
+  // The reveal decision seam. Defaults to the user-driven provider (the grant
+  // the user created is the decision); a different provider changes WHO
+  // decides without touching any crossing site.
+  policyProvider?: ExceptionPolicyProvider;
 }
 
 /**
@@ -426,18 +432,16 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
       // process.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
     });
-    // Grant matching is exact on the identity a grant is keyed by; anything
-    // failing along the way is a refusal, never a reveal.
+    // The resolver is a thin adapter over the decision seam: pointer →
+    // raw-free identity → provider decision. Anything failing along the way is
+    // a refusal, never a reveal.
+    const provider = options?.policyProvider ?? new UserGrantPolicyProvider(db.exceptions);
     const revealGrantResolver: ModelDerefGrantResolver = async (pointer) => {
       try {
         const identity = await vault.resolvePointerIdentity(pointer);
         if (identity === null) return null;
-        const grant = await db.exceptions.activeRevealGrant(
-          identity.ruleId,
-          identity.valueFingerprint,
-          identity.fingerprintKeyVersion,
-        );
-        return grant?.id ?? null;
+        const decision = await provider.decideReveal(identity);
+        return decision.allow ? decision.grantId : null;
       } catch {
         return null;
       }

@@ -31,12 +31,13 @@ import {
   type ActionResult,
   addException,
   approveBlocked,
+  revokeException,
   rotateKey,
 } from '../../app/(app)/exceptions/actions.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 
-// The three exception-granting Server Actions, each covered against a real
-// node:sqlite store and a real fingerprint key file — no mocking of either
+// Every mutating Server Action on the exceptions surface, each covered against a
+// real node:sqlite store and a real fingerprint key file — no mocking of either
 // (the repository's house style; mirrors cli/test/commands/exception.test.ts):
 //
 //   addException   — the ONLY web-ui code that handles a raw secret value. It
@@ -54,6 +55,12 @@ import { storeBytes } from '../helpers/store-bytes.ts';
 //                    compare. The dialog gate is a convenience; this compare is
 //                    the control, so the suite pins both what it accepts and
 //                    that everything else leaves the key untouched.
+//   revokeException — the one that takes a bypass AWAY, so its failure mode is
+//                    the opposite of the others: a grant that quietly stays
+//                    active. Whether that happens is decided by a single
+//                    boolean, so the suite pins that a true means the grant
+//                    really left the evaluation bundle, and that every false
+//                    is a refusal the caller can act on rather than a crash.
 //
 // The actions resolve their store and key location from `homedir()` (never
 // process.env), so the whole test is redirected into a temp home by mocking
@@ -1277,6 +1284,172 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
       expect(second.error).toMatch(/already exists/i);
       expect(second.error).not.toMatch(/duplicate-active-exception/);
       expect(await grants()).toHaveLength(1);
+    });
+  });
+});
+
+describe('revokeException — terminal, audit-retained, and easy to no-op silently', () => {
+  // The grant to revoke, created through the real add path so it is one a live
+  // detection would genuinely have matched a moment earlier.
+  async function activeGrant(): Promise<DetectionException> {
+    const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: '1h', reason: 'x' });
+    expect(res).toEqual({ ok: true });
+    const [grant] = await grants();
+    if (grant === undefined) throw new Error('the grant under test was not created');
+    return grant;
+  }
+
+  describe('revocation is terminal, and the row stays as evidence', () => {
+    it('stamps the audit fields and keeps the row', async () => {
+      const grant = await activeGrant();
+      expect(grant.revokedAt).toBeNull();
+
+      expect(await revokeException(grant.id, 'key rotated upstream')).toEqual({ ok: true });
+      resetSingleton();
+
+      const all = await grants();
+      // Retained, not deleted — a revoked grant is the record that the bypass
+      // once existed, and the retention sweep is what eventually removes it.
+      expect(all).toHaveLength(1);
+      expect(all[0]?.id).toBe(grant.id);
+      expect(all[0]?.revokedAt).not.toBeNull();
+      expect(all[0]?.revokeReason).toBe('key rotated upstream');
+      // Both identities come from the same resolveCreatedBy, so pin them
+      // against each other rather than against whatever account runs CI.
+      expect(all[0]?.revokedBy).toBe(grant.createdBy);
+      expect(all[0]?.revokedBy).not.toBe('');
+    });
+
+    it('drops the grant out of the bundle enforcement actually reads', async () => {
+      // "No longer applies" has to mean absent from the evaluation bundle. A
+      // revoke that only flipped a column the dashboard reads would leave the
+      // hook still excepting the value.
+      const grant = await activeGrant();
+      expect(await bundleIds(grant.keyVersion)).toContain(grant.id);
+
+      expect(await revokeException(grant.id, 'no longer needed')).toEqual({ ok: true });
+      resetSingleton();
+
+      expect(await bundleIds(grant.keyVersion)).not.toContain(grant.id);
+      expect(await grants()).toHaveLength(1);
+    });
+
+    it('frees the value to be granted again — the duplicate error’s own advice', async () => {
+      // createGrant answers a collision with "revoke it first", so the path that
+      // message points at has to work: the one-active-grant-per
+      // (rule, fingerprint, keyVersion) index is partial on `revoked_at IS NULL`.
+      const grant = await activeGrant();
+      const blocked = await addException({
+        ruleId: RULE_ID,
+        value: VALUE,
+        scope: '1h',
+        reason: 'again',
+      });
+      expect(blocked.ok).toBe(false);
+      expect(blocked.error).toMatch(/already exists/i);
+
+      expect(await revokeException(grant.id, 'x')).toEqual({ ok: true });
+      resetSingleton();
+
+      expect(
+        await addException({ ruleId: RULE_ID, value: VALUE, scope: '1h', reason: 'again' }),
+      ).toEqual({ ok: true });
+      const all = await grants();
+      expect(all).toHaveLength(2);
+      expect(all.filter((ex) => ex.revokedAt === null)).toHaveLength(1);
+    });
+  });
+
+  describe('a revoke that changes nothing says so, and changes nothing', () => {
+    it('reports an unknown id as a refusal, not a crash', async () => {
+      const grant = await activeGrant();
+
+      const res = await revokeException('7d9f7a4e-0000-4000-8000-000000000000', 'x');
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/no active exception/i);
+
+      resetSingleton();
+      // The real grant is untouched — a miss must not revoke by proximity.
+      expect((await grants())[0]?.revokedAt).toBeNull();
+      expect(await bundleIds(grant.keyVersion)).toContain(grant.id);
+    });
+
+    it('refuses a second revoke and leaves the first revocation’s record intact', async () => {
+      // The UPDATE is scoped to `revoked_at IS NULL`, so a re-revoke matches no
+      // row. That is what makes the audit record immutable: without it, a later
+      // revoke would overwrite the original timestamp, actor and reason — the
+      // three fields the row exists to preserve.
+      const grant = await activeGrant();
+      expect(await revokeException(grant.id, 'the real reason')).toEqual({ ok: true });
+      resetSingleton();
+      const first = (await grants())[0];
+
+      const second = await revokeException(grant.id, 'a different reason');
+      expect(second.ok).toBe(false);
+      expect(second.error).toMatch(/no active exception/i);
+
+      resetSingleton();
+      const after = (await grants())[0];
+      expect(after?.revokedAt).toBe(first?.revokedAt);
+      expect(after?.revokedBy).toBe(first?.revokedBy);
+      expect(after?.revokeReason).toBe('the real reason');
+    });
+  });
+
+  describe('the reason is normalised, never stored blank', () => {
+    // A reason is optional here (unlike a grant's justification, which the
+    // creating actions require), so "none given" has to reach the store as NULL.
+    // An empty string is a different fact: it reads as "a reason was recorded"
+    // to anything asking `revoke_reason IS NOT NULL`, and the column would then
+    // carry two encodings of the same absence.
+    const BLANK: [string, string][] = [
+      ['an empty', ''],
+      ['a spaces-only', '   '],
+      ['a newline-only', '\n'],
+      ['a tab-only', '\t'],
+    ];
+
+    it.each(BLANK)('stores %s reason as NULL', async (_label, reason) => {
+      const grant = await activeGrant();
+      expect(await revokeException(grant.id, reason)).toEqual({ ok: true });
+      resetSingleton();
+
+      const revoked = (await grants())[0];
+      expect(revoked?.revokeReason).toBeNull();
+      // The revoke itself still happened — a blank reason is not a rejection.
+      expect(revoked?.revokedAt).not.toBeNull();
+    });
+
+    it('trims the surrounding whitespace off a real reason', async () => {
+      const grant = await activeGrant();
+      expect(await revokeException(grant.id, '  rotating this credential  ')).toEqual({ ok: true });
+      resetSingleton();
+
+      expect((await grants())[0]?.revokeReason).toBe('rotating this credential');
+    });
+  });
+
+  describe('a store that cannot be read fails closed with a message, not a crash', () => {
+    it('returns an error instead of rejecting when the revoke throws', async () => {
+      // The repository runs its UPDATE synchronously and wraps the result in a
+      // resolved promise, so a failing store throws straight out of the call
+      // rather than rejecting one — a promise `.catch` never sees it. Uncaught,
+      // it reaches the client as a framework error page instead of the guidance
+      // every other action in this file returns.
+      const grant = await activeGrant();
+      resetSingleton(); // close the handle before overwriting the file
+      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
+      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
+        rmSync(join(dir, sidecar), { force: true });
+      }
+
+      const res = await revokeException(grant.id, 'x');
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/local store/i);
+      // And NOT the refusal message: telling someone their grant is already
+      // gone when the store simply could not be read is the wrong next step —
+      // the grant is still active and still excepting the value.
+      expect(res.error).not.toMatch(/no active exception/i);
     });
   });
 });

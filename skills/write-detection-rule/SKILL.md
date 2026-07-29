@@ -47,18 +47,32 @@ around its capture: `key=(\w*)` is valid, because the overall match still needs 
 
 ### ReDoS protection
 
-Two defenses stop a catastrophic regex from hanging a scan:
+Three defenses stop a catastrophic regex from hanging a scan:
 
 - **Authoring time.** Every bundled rule is measured against an adversarial
   probe battery in CI (`packages/detections/test/security/redos.test.ts`) — a
   rule that backtracks catastrophically fails the build before it can land in
   `rules/`.
-- **Runtime.** A regex rule that arrives from a pulled or custom pack (never
-  seen by the CI battery) is measured once against the same probe battery when
-  it is first loaded, and the verdict is cached locally. A rule that exceeds
-  the timing budget is excluded from the active ruleset and logged to stderr
-  (`[aka] quarantined rule ...`) — never silently skipped, and never allowed
-  to hang a scan.
+- **Runtime, before the scan.** A regex rule that arrives from a pulled or
+  custom pack (never seen by the CI battery) is measured once against the same
+  probe battery when it is first loaded, and the verdict is cached locally. A
+  rule that exceeds the timing budget is excluded from the active ruleset and
+  logged to stderr (`[aka] quarantined rule ...`) — never silently skipped.
+- **Runtime, during the scan.** Both batteries are empirical: they prove a
+  pattern did not backtrack on the inputs they construct, not that it cannot.
+  So whenever a pulled/custom regex rule survives the pre-flight, the scan
+  itself runs in a worker thread under a wall-clock bound
+  (`packages/plugin-sdk/src/guarded-scan.ts`). A rule that does not finish is
+  terminated mid-execution, quarantined by the same cache so it never loads
+  again, and the built-in packs keep detecting. A scan with no such rule in it
+  — the state of a machine that installed nothing extra — runs in-process at no
+  added cost.
+
+**What this means for a rule you are writing.** A bundled rule never reaches
+either runtime gate: CI is your gate, and a pattern that fails it fails the
+build. Write patterns that cannot backtrack rather than relying on the bound —
+a terminated scan costs the user their pulled rules for the rest of that
+process, which is a detection gap, not a graceful degradation.
 
 ### Optional gating fields
 

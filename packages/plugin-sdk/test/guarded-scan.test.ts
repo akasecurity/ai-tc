@@ -1,0 +1,183 @@
+/**
+ * The policy on top of the hard bound: who gets isolated, what a hang costs,
+ * and what still runs afterwards.
+ *
+ * The three properties worth breaking a build over:
+ *   - a machine with no pulled or custom pack pays nothing at all;
+ *   - a hang is charged once per process, never once per scanned field;
+ *   - a scan that loses its worker keeps the built-in packs and drops the
+ *     unverified rules, rather than quietly running them unbounded.
+ */
+import type { Rule } from '@akasecurity/schema';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createGuardedScanner } from '../src/guarded-scan.ts';
+import { ruleProbeKey } from '../src/rule-quarantine.ts';
+
+const BATTERY_BLIND_PATTERN = String.raw`(?:zzq)(a+)+$`;
+const BATTERY_BLIND_TEXT = `zzq${'a'.repeat(34)}!`;
+const BUDGET_MS = 3_000;
+
+// Points the isolated scanner at a worker that dies at load, so a case can
+// exercise the degraded path without waiting out a deadline.
+const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
+
+function regexRule(id: string, pattern: string, over: Partial<Rule> = {}): Rule {
+  return {
+    specVersion: 1,
+    id,
+    name: id,
+    category: 'custom',
+    severity: 'low',
+    matcher: { type: 'regex', pattern, flags: 'g' },
+    ...over,
+  };
+}
+
+const AWS_KEY = 'AKIA0123456789ABCDEF';
+const VERIFIED_SECRET = regexRule('secrets/aws-key', 'AKIA[A-Z0-9]{16}', { category: 'secret' });
+const HOSTILE = regexRule('pulled/battery-blind', BATTERY_BLIND_PATTERN);
+
+function fakeGateway() {
+  const setRuleProbeVerdict = vi.fn(() => Promise.resolve());
+  return { setRuleProbeVerdict };
+}
+
+function captureStderr(): { lines: () => string } {
+  const written: string[] = [];
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+    written.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+    return true;
+  });
+  return { lines: () => written.join('') };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('createGuardedScanner', () => {
+  it('never starts a worker when every rule is verified', async () => {
+    // The worker URL points at a module that throws on load, so the only way
+    // this scan can succeed is by never reaching a worker at all.
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [] },
+      fakeGateway(),
+      {
+        workerUrl: CRASHING_WORKER,
+      },
+    );
+    try {
+      const findings = await scanner.scan(`key ${AWS_KEY} here`);
+      expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('keeps requiresNearby corroboration working across the verified/unverified split', async () => {
+    // The gated rule only fires when a `secret` match sits within its window.
+    // Its corroborator is a VERIFIED rule, so this passes only because both
+    // halves reach the worker in ONE scan() call — split them and the finding
+    // silently disappears.
+    const gated = regexRule('pulled/gated', 'TOKENX', {
+      requiresNearby: { categories: ['secret'], windowChars: 160 },
+    });
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [gated] },
+      fakeGateway(),
+    );
+    try {
+      const near = await scanner.scan(`${AWS_KEY} and TOKENX`);
+      expect(near.map((f) => f.ruleId).sort()).toEqual(['pulled/gated', 'secrets/aws-key']);
+
+      // Same rules, no corroborator in the window: the gate still bites, so the
+      // corroboration above is real and not an artifact of the rule always firing.
+      const alone = await scanner.scan('TOKENX on its own');
+      expect(alone).toEqual([]);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('quarantines the rule it had to terminate and keeps the built-in packs running', async () => {
+    const gateway = fakeGateway();
+    const stderr = captureStderr();
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [HOSTILE] },
+      gateway,
+      { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+    );
+    try {
+      // Warm the worker so the deadline below is spent on the rule, not on startup.
+      expect(await scanner.scan('nothing here')).toEqual([]);
+
+      const findings = await scanner.scan(`${BATTERY_BLIND_TEXT} ${AWS_KEY}`);
+
+      // The verdict is persisted under the same key the timing pre-flight reads,
+      // so the next process drops this rule before it ever reaches a scan.
+      expect(gateway.setRuleProbeVerdict).toHaveBeenCalledWith(
+        ruleProbeKey(HOSTILE),
+        'quarantined',
+        expect.any(Number),
+      );
+      // Terminating the scan does not cost the user the first-party detection
+      // that was in the same text.
+      expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+
+      const output = stderr.lines();
+      expect(output).toContain('quarantined rule "pulled/battery-blind"');
+      expect(output).toContain('isolated scanning is off for the rest of this process');
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('charges a hang once per process, not once per scanned field', async () => {
+    const gateway = fakeGateway();
+    captureStderr();
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [HOSTILE] },
+      gateway,
+      { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+    );
+    try {
+      expect(await scanner.scan('nothing here')).toEqual([]);
+      await scanner.scan(BATTERY_BLIND_TEXT);
+
+      // A PreToolUse hook can scan thousands of fields. If each one paid the
+      // deadline again the hook would blow its harness timeout — and a
+      // timed-out hook fails open, letting the whole call through unscanned.
+      const started = performance.now();
+      const findings = await scanner.scan(`${BATTERY_BLIND_TEXT} ${AWS_KEY}`);
+      const elapsedMs = performance.now() - started;
+
+      expect(elapsedMs).toBeLessThan(BUDGET_MS / 2);
+      expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('drops the unverified rules rather than running them in-process when the worker is gone', async () => {
+    const stderr = captureStderr();
+    // A rule that WOULD match, so its absence from the findings is evidence it
+    // was never run rather than evidence it found nothing.
+    const unverified = regexRule('pulled/would-match', 'TOKENX');
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [unverified] },
+      fakeGateway(),
+      { workerUrl: CRASHING_WORKER },
+    );
+    try {
+      const findings = await scanner.scan(`TOKENX next to ${AWS_KEY}`);
+      expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
+      expect(stderr.lines()).toContain('isolated scanning is off for the rest of this process');
+      // Nothing was terminated, so nothing is blamed: a worker that will not
+      // start is not evidence against any particular rule.
+      expect(stderr.lines()).not.toContain('quarantined rule');
+    } finally {
+      await scanner.close();
+    }
+  });
+});

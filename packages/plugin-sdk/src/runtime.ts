@@ -19,6 +19,9 @@ import { buildIngestEvent, contentHashOf } from './events.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
+import type { GuardedScanner } from './guarded-scan.ts';
+import { createGuardedScanner } from './guarded-scan.ts';
+import type { IsolatedScanOptions } from './isolated-scan.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -97,7 +100,7 @@ let bundlesPacked = false;
 export function createPluginRuntime(
   gateway: DataGateway,
   settings: WorkspaceSettings,
-  opts?: { dataDir?: string | undefined },
+  opts?: { dataDir?: string | undefined; scanIsolation?: IsolatedScanOptions | undefined },
 ): PluginRuntime {
   if (!bundlesPacked) {
     registerBundledPacks();
@@ -107,6 +110,10 @@ export function createPluginRuntime(
   const dataDir = opts?.dataDir;
   let policies: Policy[] = [];
   let rules: Rule[] = [];
+  // Runs the scan under a hard wall-clock bound when the ruleset carries any
+  // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
+  // is known (see ensureInitialized).
+  let scanner: GuardedScanner | undefined;
   let bundleExceptions: ExceptionBundleEntry[] = [];
   let initialized = false;
   // Resolution indexes built ONCE from the bundle (see ensureInitialized): the
@@ -157,8 +164,27 @@ export function createPluginRuntime(
       return key !== undefined && bundledProbeKeys.has(key);
     });
     const needsGate = incoming.filter((rule) => !ciVerified.includes(rule));
-    const safeBundleRules = [...ciVerified, ...(await filterUnsafeRules(needsGate, gateway))];
-    rules = bundle.rulesComplete ? safeBundleRules : [...getLoadedRules(), ...safeBundleRules];
+    const gated = await filterUnsafeRules(needsGate, gateway);
+    // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
+    // beat one fixed probe battery, which a pattern written against that battery
+    // can do while still backtracking forever on real text. So the scan itself
+    // runs under a hard, engine-level bound whenever such a rule is in play —
+    // and in-process at no added cost when none is (see guarded-scan.ts).
+    //
+    // Only a REGEX matcher can run without an upper bound. A keyword matcher
+    // compiles one fully-escaped literal per keyword, which cannot backtrack
+    // whatever the pack author wrote, so a pulled keyword rule runs in-process
+    // like a bundled one — a keyword-only custom pack starts no worker at all.
+    const verified: Rule[] = bundle.rulesComplete
+      ? [...ciVerified]
+      : [...getLoadedRules(), ...ciVerified];
+    const unverified: Rule[] = [];
+    for (const rule of gated) {
+      if (rule.matcher.type === 'regex') unverified.push(rule);
+      else verified.push(rule);
+    }
+    rules = [...verified, ...unverified];
+    scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     initialized = true;
   }
@@ -425,7 +451,7 @@ export function createPluginRuntime(
   ): Promise<{ decision: CaptureResult; excepted: Set<MatchResult>; exceptionIds: string[] }> {
     try {
       await ensureInitialized();
-      const findings = scan(text, rules, context);
+      const findings = scanner ? await scanner.scan(text, context) : scan(text, rules, context);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted);
@@ -563,6 +589,14 @@ export function createPluginRuntime(
   }
 
   async function close(): Promise<void> {
+    try {
+      // The worker thread must not outlive the runtime that started it — a
+      // stray thread would hold the process open past the hook's own exit.
+      await scanner?.close();
+    } catch {
+      // A thread that will not shut down cleanly must not cost the caller its
+      // store handle, which is the close that actually matters.
+    }
     await gateway.close();
   }
 

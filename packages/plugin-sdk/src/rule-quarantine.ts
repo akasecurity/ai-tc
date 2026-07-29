@@ -28,12 +28,45 @@ export function ruleProbeKey(rule: Rule): string | undefined {
   return contentHashOf(`${rule.matcher.pattern} ${rule.matcher.flags}`);
 }
 
+function warn(rule: Rule, detail: string): void {
+  process.stderr.write(`[aka] quarantined rule "${rule.id}": ${detail}\n`);
+}
+
 function warnQuarantined(rule: Rule, worstMs: number | undefined): void {
   const timing = worstMs === undefined ? 'not verified in time' : `${worstMs.toFixed(1)}ms`;
-  process.stderr.write(
-    `[aka] quarantined rule "${rule.id}": regex matcher exceeded the ReDoS timing budget ` +
-      `(${timing}); excluded from this scan.\n`,
+  warn(
+    rule,
+    `regex matcher exceeded the ReDoS timing budget (${timing}); excluded from this scan.`,
   );
+}
+
+/**
+ * Records a rule as quarantined outside the probe battery — for a rule the
+ * battery cleared that then blew the hard runtime bound on real text
+ * (`guarded-scan.ts`). The verdict shares the battery's cache, so the next hook
+ * process drops the rule before it ever reaches a scan.
+ *
+ * Best-effort on the write, loud on stderr either way: this runs on a recovery
+ * path, and a store error here must not cost the caller its scan on top of the
+ * hang it just absorbed. A non-regex rule has no probe key and so cannot be
+ * cached; it is still reported, because the caller saw it hang.
+ */
+export async function quarantineRule(
+  gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
+  rule: Rule,
+  worstMs: number,
+  detail: string,
+): Promise<void> {
+  const key = ruleProbeKey(rule);
+  if (key !== undefined) {
+    try {
+      await gateway.setRuleProbeVerdict(key, 'quarantined', worstMs);
+    } catch {
+      // The verdict did not stick, so the next process re-measures this rule
+      // and may hang on it once more. Better than losing this scan too.
+    }
+  }
+  warn(rule, detail);
 }
 
 /**

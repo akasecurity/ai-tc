@@ -50,6 +50,8 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
     policy,
     historicalAccess: 'full',
     dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
   };
 }
 

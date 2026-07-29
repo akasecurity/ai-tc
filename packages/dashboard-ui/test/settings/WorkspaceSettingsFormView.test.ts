@@ -145,9 +145,17 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
   // reads as the masked rows shown elsewhere in the dashboard; what actually
   // crosses is the raw value, a sized window of transcript text, and the labels
   // the finding was scored with.
-  it('names the raw value, the context window, and the labels riding with them', () => {
+  //
+  // `on either side` is load-bearing, not decoration: CONTEXT_RADIUS is applied
+  // to BOTH ends of the match span (history/scan.ts), so the window is ~240
+  // characters, not 120. A bare /120 characters/ assertion passes either way —
+  // it proves the number is present, not that the claim is true — which is the
+  // containment-not-truth failure these guards exist to retire.
+  it('names the raw value, the sized context window, and the labels riding with them', () => {
     expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/raw, unmasked value/i);
-    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/120 characters/);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(
+      /120 characters of surrounding transcript text on either side/,
+    );
     expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/severity/i);
   });
 
@@ -155,11 +163,16 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
     expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/cannot recall/i);
   });
 
-  // The choice a user actually clicks has to say it too — a reader who acts on
-  // the radio label alone must not have to find the section blurb above it.
-  it('names the raw value on the grant choice itself, not only the section blurb', () => {
+  // The choice a user actually clicks carries the CLASS of data and the SIZE of
+  // the window — the two facts that change the decision. The full label
+  // enumeration (rule/category/severity/masked value/confidence) stays in the
+  // section blurb above: those are non-sensitive, and stacking them into the
+  // radio would bury the raw-value warning in a list, making the label less
+  // readable rather than more. So this is a deliberate split, not an omission.
+  it('names the raw value and the sized window on the grant choice itself', () => {
     const granted = MODEL_JUDGE_CHOICES.find((c) => c.value === 'granted');
     expect(granted?.description).toMatch(/raw, unmasked value/i);
+    expect(granted?.description).toMatch(/120 characters of surrounding context on either side/);
     expect(granted?.description).toMatch(/model API/i);
   });
 });

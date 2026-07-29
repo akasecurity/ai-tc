@@ -73,8 +73,9 @@ export const MODEL_JUDGE_SECTION_LABEL = 'Model-judge consent';
 export const MODEL_JUDGE_SECTION_DESCRIPTION =
   'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
   'send findings to the model API to sort real leaks from noise. Per finding that is the raw, ' +
-  'unmasked value including any secret, about 120 characters of surrounding transcript text, ' +
-  'and the rule, category, severity, masked value and confidence it was scored with. The file ' +
+  'unmasked value including any secret, about 120 characters of surrounding transcript text on ' +
+  'either side of it, and the rule, category, severity, masked value and confidence it was ' +
+  'scored with. The file ' +
   'path is never sent, and any secrets in the surrounding context are masked before it goes. ' +
   'Revoking stops future scans; it cannot recall data already sent.';
 
@@ -89,7 +90,7 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
     value: 'granted',
     label: 'Granted',
     description:
-      'The setup scan may send each finding — its raw, unmasked value including any secret, plus surrounding context with any secrets in it masked — to the model API to sort real leaks from noise.',
+      'The setup scan may send each finding — its raw, unmasked value including any secret, plus about 120 characters of surrounding context on either side of it with any secrets in that window masked — to the model API to sort real leaks from noise.',
   },
 ];
 

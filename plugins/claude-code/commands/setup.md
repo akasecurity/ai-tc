@@ -277,7 +277,7 @@ printed numbered list) — to collect the answer.
 
 Say plainly, before the picker: to sort real leaks from routine noise, AKA sends
 each finding's `rawMatch` (the raw detected value) plus about 120 characters of
-the surrounding context window to the model API via `claude`.
+the surrounding transcript text on either side of it to the model API via `claude`.
 The **`filePath` is not sent**, and any secrets detected in that context window are **masked**
 before it goes — including the finding's own value where it appears there — so
 `rawMatch` is the only raw value that leaves. Riding alongside it are the

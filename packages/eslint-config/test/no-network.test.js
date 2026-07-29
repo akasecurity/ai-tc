@@ -1,3 +1,8 @@
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { Linter } from 'eslint';
 import { describe, expect, it } from 'vitest';
 
@@ -351,5 +356,81 @@ describe('noEnterpriseImports merge', () => {
       'no-restricted-imports': ruleValue,
     });
     expect(ent.map((m) => m.ruleId)).toContain('no-restricted-imports');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The documented opt-out allowlist
+// ---------------------------------------------------------------------------
+
+// CLAUDE.md §4 lists the files allowed to import a network module, and tells the
+// next author "adding a third site means updating this table". Nothing enforced
+// that: the table is prose, the opt-outs are `allow:` options in eslint configs,
+// and the two could drift apart silently — the same containment problem the
+// egress copy guards exist to solve, one layer down.
+//
+// This walks the real workspace and asserts the opt-out set EXACTLY. A new
+// `allow:` anywhere fails here until both this list and the table are updated,
+// so the doc cannot outlive the configs. Deliberately exact rather than a
+// superset check: a guard that only forbids removals would let a third site in.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+const DOCUMENTED_OPT_OUTS = {
+  'cli/eslint.config.mjs': ['node:net'],
+  'cli/eslint.scripts.config.mjs': ['node:http'],
+};
+
+describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
+  /** Every tracked ESLint flat config in the workspace. */
+  const configs = (() => {
+    let tracked;
+    try {
+      tracked = execFileSync('git', ['ls-files', '*eslint*.config.mjs'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }).split('\n');
+    } catch (cause) {
+      throw new Error(
+        'Could not list tracked files with `git ls-files`. This guard audits the real workspace ' +
+          'configs, so it must run inside a git checkout.',
+        { cause },
+      );
+    }
+    return tracked.filter(Boolean);
+  })();
+
+  // A guard that found no configs would pass every assertion below vacuously.
+  it('found the workspace ESLint configs to audit', () => {
+    expect(configs.length).toBeGreaterThanOrEqual(Object.keys(DOCUMENTED_OPT_OUTS).length);
+    for (const documented of Object.keys(DOCUMENTED_OPT_OUTS)) {
+      expect(configs).toContain(documented);
+    }
+  });
+
+  it('has exactly the opt-out sites CLAUDE.md §4 documents — no more, no fewer', () => {
+    /** @type {Record<string, string[]>} */
+    const found = {};
+    for (const file of configs) {
+      const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+      const specifiers = new Set();
+      // `allow: ['node:net']` — the option both noNetworkImports and
+      // noNetworkSyntax take. Collected per file, deduped across the two calls.
+      for (const m of text.matchAll(/allow:\s*\[([^\]]*)\]/g)) {
+        for (const s of m[1].matchAll(/['"]([^'"]+)['"]/g)) specifiers.add(s[1]);
+      }
+      if (specifiers.size > 0) found[file] = [...specifiers].sort();
+    }
+    expect(found).toEqual(DOCUMENTED_OPT_OUTS);
+  });
+
+  // §4 says both are "file-scoped, never package-wide". An opt-out declared
+  // without a `files:` key would apply to the whole package, silently widening
+  // the exception past what the table claims.
+  it('keeps every opt-out file-scoped rather than package-wide', () => {
+    for (const file of Object.keys(DOCUMENTED_OPT_OUTS)) {
+      const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+      const optOutBlock = text.slice(text.lastIndexOf('files:', text.indexOf('allow:')));
+      expect(optOutBlock).toMatch(/^files:/);
+    }
   });
 });

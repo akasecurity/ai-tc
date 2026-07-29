@@ -120,6 +120,13 @@
       "when": 1785351462433,
       "tag": "0016_breezy_zodiak",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1785351665625,
+      "tag": "0017_rainy_kat_farrell",
+      "breakpoints": true
     }
   ]
 }

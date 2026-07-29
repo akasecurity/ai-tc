@@ -133,7 +133,10 @@ async function pointerizedRewrite(
   findings: CaptureResult['findings'],
 ): Promise<string | null> {
   try {
-    const tokenized = await createVaultGlue().tokenizeText(prompt, { findings });
+    const tokenized = await createVaultGlue().tokenizeText(prompt, {
+      findings,
+      sighting: { location: 'prompt', kind: 'prompt' },
+    });
     if (tokenized.pointers.length === 0) return null;
     for (const finding of findings) {
       if (finding.rawMatch !== '' && tokenized.text.includes(finding.rawMatch)) return null;

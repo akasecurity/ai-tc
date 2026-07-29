@@ -337,3 +337,64 @@ describe('vault glue', () => {
     });
   });
 });
+
+describe('sighting recording', () => {
+  let base: string;
+  let glue: VaultGlue;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'aka-glue-sight-'));
+    applyOnboarding(
+      {
+        vaultConsent: {
+          acknowledgedAt: new Date().toISOString(),
+          version: VAULT_CONSENT_VERSION,
+        },
+      },
+      base,
+    );
+    glue = createVaultGlue({ base });
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('records where a minted pointer landed, one row per location', async () => {
+    const text = `key=${SECRET}`;
+    const opts = {
+      findings: [finding({ span: { start: 4, end: 4 + SECRET.length } })],
+      sighting: { location: '/repo/.env', kind: 'file' as const },
+    };
+    await glue.tokenizeText(text, opts);
+    // Re-sighting the same location bumps timestamps instead of duplicating.
+    await glue.tokenizeText(text, opts);
+    await glue.tokenizeText(text, {
+      ...opts,
+      sighting: { location: 'Write input', kind: 'tool-input' as const },
+    });
+
+    const db = new DatabaseSync(join(dataDir(base), 'aka.db'));
+    const rows = db
+      .prepare(`SELECT location, kind FROM secret_vault_sighting ORDER BY location`)
+      .all() as { location: string; kind: string }[];
+    db.close();
+    expect(rows).toEqual([
+      { location: '/repo/.env', kind: 'file' },
+      { location: 'Write input', kind: 'tool-input' },
+    ]);
+  });
+
+  it('a clean text records nothing', async () => {
+    await glue.tokenizeText('nothing here', {
+      findings: [],
+      sighting: { location: '/x', kind: 'file' },
+    });
+    const db = new DatabaseSync(join(dataDir(base), 'aka.db'));
+    const count = db.prepare('SELECT count(*) AS n FROM secret_vault_sighting').get() as {
+      n: number;
+    };
+    db.close();
+    expect(count.n).toBe(0);
+  });
+});

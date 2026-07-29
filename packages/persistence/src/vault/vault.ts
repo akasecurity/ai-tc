@@ -245,6 +245,34 @@ export class SecretVault {
     return raw;
   }
 
+  /**
+   * Owner-surface reveal by row id: the dashboard shows a row the owner can
+   * already see and asks for its value. There is no wire token here to verify —
+   * the tag exists to stop FORGED tokens arriving in untrusted text, and a row
+   * id selected server-side from the owner's own store is not that — so this
+   * loads the row directly, opens its ciphertext under the row's epoch, and
+   * audits exactly like a human-target de-reference. Never callable with
+   * target 'model': the wire-token path with its grant gate is the only road
+   * raw travels toward the model.
+   */
+  async revealEntry(
+    pointerId: string,
+    opts: { reason: 'explicit-reveal' | 'view-render' },
+  ): Promise<DetokenizeResult> {
+    const row = this.#repo.byPointerId(pointerId);
+    if (!row) {
+      this.#audit(pointerId, { target: 'human', reason: opts.reason }, 'unavailable');
+      return UNAVAILABLE;
+    }
+    const raw = await this.#openRow(row);
+    if (raw === null) {
+      this.#audit(pointerId, { target: 'human', reason: opts.reason }, 'unavailable');
+      return UNAVAILABLE;
+    }
+    this.#audit(pointerId, { target: 'human', reason: opts.reason }, 'revealed');
+    return raw;
+  }
+
   /** Badge and listing data. No raw value, no fingerprint, and no audit row. */
   async describePointer(token: string): Promise<PointerDescriptor | null> {
     const row = await this.#rowFor(token);

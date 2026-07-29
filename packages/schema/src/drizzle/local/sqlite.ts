@@ -736,6 +736,29 @@ export const secretVault = sqliteTable(
   ],
 );
 
+// SECRET VAULT SIGHTING — where a pointer has been written: one row per
+// (pointer, location), timestamps bumped on re-sighting. Deliberately no FK to
+// secret_vault: the record of where pointers went is itself evidence and must
+// survive a purge, exactly like the deref trail.
+export const secretVaultSighting = sqliteTable(
+  'secret_vault_sighting',
+  {
+    id: text(COL.id).primaryKey(),
+    pointerId: text(COL.pointerId).notNull(),
+    location: text(COL.location).notNull(),
+    kind: text(COL.kind, {
+      enum: ['prompt', 'tool-input', 'tool-output', 'file', 'transcript'],
+    }).notNull(),
+    firstSeen: integer(COL.firstSeen).notNull(),
+    lastSeen: integer(COL.lastSeen).notNull(),
+  },
+  (t) => [
+    // Also serves every by-pointer lookup as its left prefix — no separate
+    // single-column index.
+    uniqueIndex('uq_secret_vault_sighting').on(t.pointerId, t.location),
+  ],
+);
+
 // SECRET VAULT DEREF — the audit trail. Every de-reference writes one, whatever
 // the outcome. Never carries the raw value or the ciphertext.
 export const secretVaultDeref = sqliteTable(

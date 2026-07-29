@@ -166,7 +166,15 @@ async function main(): Promise<void> {
     toolName,
     effectiveInput,
     scanned,
-    vaultGlue ? (text, findings) => vaultGlue.tokenizeText(text, { findings }) : undefined,
+    vaultGlue
+      ? (text, findings) =>
+          vaultGlue.tokenizeText(text, {
+            findings,
+            sighting: filePath
+              ? { location: filePath, kind: 'file' }
+              : { location: `${toolName} input`, kind: 'tool-input' },
+          })
+      : undefined,
   );
   if (decision) {
     await emit(

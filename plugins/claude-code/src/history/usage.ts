@@ -443,7 +443,10 @@ export async function reconcileSessionTail(
       try {
         const glue = createVaultGlue();
         const scrubbed = await scrubTranscriptTail(transcriptPath, {
-          tokenizeText: (text) => glue.tokenizeText(text),
+          tokenizeText: (text) =>
+            glue.tokenizeText(text, {
+              sighting: { location: transcriptPath, kind: 'transcript' },
+            }),
           scope: platformRedactionScope(),
         });
         // A rewrite changes the file's byte layout, so the just-persisted offset

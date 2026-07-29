@@ -18,17 +18,19 @@ falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment needs the raw (unmasked) findings to rate
 them accurately, so it **sends them to the model API** through separate `codex`
-CLI subprocesses (a large history is judged in several batches). Three things
-cross for each finding: its **raw value**, about **120 characters of the
-surrounding transcript text** on either side of it, and the **path of the
-rollout file** it came from. Those subprocesses run the `codex` CLI ephemerally
-so the raw values are never written into `~/.codex/sessions` — they do not enter
-this conversation or your scannable history — but ephemeral mode is a
-local-write guard, **not network isolation**: a copy of them **does leave the
+CLI subprocesses (a large history is judged in several batches). Two things
+cross for each finding: its **raw value**, and about **120 characters of the
+surrounding transcript text** on either side of it — re-masked first, so any
+_other_ detectable secret in that window never leaves raw. The rollout file's
+path, the value's fingerprint, and the fingerprint key version are **dropped
+before egress**. Those subprocesses run the `codex` CLI ephemerally so the raw
+values are never written into `~/.codex/sessions` — they do not enter this
+conversation or your scannable history — but ephemeral mode is a local-write
+guard, **not network isolation**: a copy of the value **does leave the
 machine**, sent to the model provider like any other Codex prompt. You act only
-on the raw-free plan the subprocesses print back. The scan that produces those
-values is offered for explicit consent in step 1, and that consent must state
-the model-API egress plainly before it is given.
+on the raw-free plan the subprocesses print back. Reading history is granted in
+step 1; **sending findings to the model is a distinct consent, collected in
+step 3 before the judgment pipe runs** — the judge refuses to run without it.
 
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
@@ -144,9 +146,10 @@ the user is consenting to, so it must be visible before they choose.** State it 
 your own words, without softening it: if they say yes, AKA scans the last 30 days
 of Codex history, and to rate what it finds it **sends the raw, unmasked values —
 including any secrets — to the model API through the `codex` CLI**. Name what
-travels with each one: **its raw value, about 120 characters of the surrounding
-transcript text on either side, and the path of the rollout file it came
-from**. That is real network egress to the model provider (the same one your
+travels with each one: **its raw value, and about 120 characters of the
+surrounding transcript text on either side** (any other secrets detected in
+that window are masked; the rollout file's path stays local). That is real
+network egress to the model provider (the same one your
 Codex session already uses), not a purely local review. **A copy of each value
 leaves the machine.** The rollouts those values came from stay on disk
 untouched — nothing here removes them; that is the separate redaction step in
@@ -256,6 +259,43 @@ it.
 
 ## 3. Run the evidence triage — off-transcript judgment, nothing written yet
 
+**Model-judge consent — a distinct opt-in, asked here before the pipe.** The
+false-positive/severity judgment runs by sending each finding to the model API
+through `codex`. That is a separate egress from the historical-read consent
+collected in step 1 (which only let AKA _read_ the local rollouts), so it needs
+its own explicit grant. Before running the pipe, restate plainly what leaves the
+machine (the step-1 disclosure's payload: each raw value plus its masked context
+window; the file path stays local), then ask as a normal conversational turn
+with numbered options — and present both options flat: this grant sends the
+user's data off the machine, so do **not** mark either one recommended.
+
+**Send findings to the model to sort real leaks from noise?** — "I'll send each
+detected value, plus a bit of surrounding context with any secrets in it masked,
+to the model to tell real leaks from routine noise. The file path stays local."
+
+1. **Yes, send them** — "let the model triage what I found"
+2. **No, keep it local** — "skip the model triage and start from the safe defaults"
+
+**Branch on the choice:**
+
+- **If the user chose "Yes, send them"** — record the model-judge consent, then
+  run the pipe below:
+
+  ```bash
+  node "${PLUGIN_ROOT}/scripts/onboard.js" --model-judge-consent
+  ```
+
+- **If the user chose "No, keep it local"** — do **not** run the pipe. The judge
+  refuses to run without consent (it would only print a clean skip line and a
+  zero-count frame), so there is no calibrated plan to confirm. Fall back to the
+  conservative severity floor exactly as step 2's start-light path does — write
+  the floor, tell the user the model triage was skipped, and continue to step 6
+  with **no `--surfaced` flag**:
+
+  ```bash
+  node "${PLUGIN_ROOT}/scripts/onboard.js" --floor
+  ```
+
 Pipe the backfill's triage stream straight into the `apply-suppressions`
 adapter in **PREVIEW** mode (no `--confirmed`):
 
@@ -266,9 +306,9 @@ node "${PLUGIN_ROOT}/scripts/backfill.js" --triage | node "${PLUGIN_ROOT}/script
 The backfill sweeps prior Codex CLI session rollouts (last 30 days, all
 sessions) and streams one masked-plus-raw triage hit per line; masked findings
 are recorded to the local store as a side effect. The adapter runs the
-false-positive/severity **judgment in separate `codex` subprocesses that send the
-raw hits — each one's value, its surrounding transcript text, and its source path
-— to the model API** (a large history is split into several batches; each runs
+false-positive/severity **judgment in separate `codex` subprocesses that send
+each hit's raw value and masked context window — never its source path — to the
+model API** (a large history is split into several batches; each runs
 the CLI ephemerally so nothing lands in `~/.codex/sessions`), then prints back a
 **raw-free plan** you can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),

@@ -1,10 +1,10 @@
 import { existsSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { TriageHit } from '@akasecurity/schema';
+import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { judgeEnv, parseVerdict, runJudge } from '../../src/triage/judge.ts';
+import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
 
 const VERDICT_FENCE = [
   '```json',
@@ -111,9 +111,11 @@ describe('runJudge', () => {
     // `-` = read the prompt from stdin, keeping raw off argv.
     expect(argv.at(-1)).toBe('-');
 
-    // The full raw hit (rawMatch + context) rides on stdin — that is the
-    // point; --ephemeral keeps it out of any persisted session, and stdin
-    // (unlike argv) keeps it off the process list and out of ARG_MAX.
+    // rawMatch rides on stdin — the rubric judges the actual value;
+    // --ephemeral keeps it out of any persisted session, and stdin (unlike
+    // argv) keeps it off the process list and out of ARG_MAX. filePath is
+    // dropped and context is masked before it crosses (covered below), so
+    // rawMatch is the only raw field that leaves.
     expect(seen.stdin).toContain('AKIAIOSFODNN7EXAMPLE');
     expect(seen.stdin).toContain('RUBRIC BODY');
     // The subprocess env is the inherited host env (PATH + CODEX_HOME auth),
@@ -153,14 +155,39 @@ describe('runJudge', () => {
     expect(existsSync(dirname(outFileOf(argv)))).toBe(false);
   });
 
-  // The consent copy in the setup skill and both READMEs enumerates what
-  // crosses to the model API field by field. runJudge serializes the whole
-  // TriageHit, so a new field on that schema silently widens the payload past
-  // what the user was told. Pin the exact key set: adding one here is a
-  // deliberate act that forces the disclosure copy to be updated with it.
-  it('sends exactly the disclosed TriageHit fields — no undisclosed payload', () => {
+  // Every field on the TriageHit schema is either DISCLOSED (crosses to the model
+  // inside the prompt) or DROPPED (stripped by toJudgePayload before egress).
+  // The consent copy in the setup skill enumerates the disclosed set field by
+  // field, so a new schema field must be placed in one bucket deliberately —
+  // and, if disclosed, added to that copy.
+  const DISCLOSED = [
+    'category',
+    'confidence',
+    'context',
+    'id',
+    'maskedMatch',
+    'rawMatch',
+    'ruleId',
+    'severity',
+  ] as const;
+  const DROPPED = ['filePath', 'valueFingerprint', 'keyVersion'] as const;
+
+  it('classifies every TriageHit field as disclosed or dropped — no third bucket', () => {
+    expect([...DISCLOSED, ...DROPPED].sort()).toEqual(Object.keys(TriageHit.shape).sort());
+  });
+
+  it('sends exactly the disclosed fields — drops filePath, valueFingerprint, keyVersion', () => {
+    // A fully-populated hit: id + valueFingerprint + keyVersion are set on every
+    // real hit reaching runJudge, and filePath when known.
+    const full: TriageHit = {
+      ...hit,
+      id: '7',
+      filePath: '/Users/dev/.codex/sessions/2026/01/01/rollout-x.jsonl',
+      valueFingerprint: 'HMAC-of-the-secret',
+      keyVersion: 1,
+    };
     const seen: { stdin?: string } = {};
-    runJudge([hit], {
+    runJudge([full], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
     });
@@ -174,26 +201,67 @@ describe('runJudge', () => {
     if (hitLine === undefined) throw new Error('no hit line on stdin');
 
     const sent = JSON.parse(hitLine) as Record<string, unknown>;
-    expect(Object.keys(sent).sort()).toEqual([
-      'category',
-      'confidence',
-      'context',
-      'maskedMatch',
-      'rawMatch',
-      'ruleId',
-      'severity',
-    ]);
-    // The three the disclosure calls out by name: the secret itself, the
-    // surrounding transcript window, and (when present) the source path.
-    expect(sent.rawMatch).toBe(hit.rawMatch);
-    expect(sent.context).toBe(hit.context);
+    expect(Object.keys(sent).sort()).toEqual([...DISCLOSED].sort());
 
-    const seenWithPath: { stdin?: string } = {};
-    runJudge([{ ...hit, filePath: '/Users/dev/.codex/sessions/2026/01/01/rollout-x.jsonl' }], {
-      spawn: fakeSpawn(VERDICT_FENCE, seenWithPath),
+    // id rides verbatim — the rubric requires the model to echo it in fpIds.
+    expect(sent.id).toBe('7');
+    // rawMatch is the sole raw field — it rides legibly (the rubric judges the
+    // value). context is re-masked: the raw secret no longer appears in the
+    // window, but the non-secret scaffold survives (selective, not blanked).
+    expect(sent.rawMatch).toBe(hit.rawMatch);
+    expect(sent.context).not.toContain(hit.rawMatch);
+    expect(sent.context).toContain('export KEY=');
+    // The dropped provenance/correlator fields never reach the model.
+    expect(seen.stdin).not.toContain('/Users/dev/.codex/sessions/2026/01/01/rollout-x.jsonl');
+    expect(seen.stdin).not.toContain('HMAC-of-the-secret');
+    expect(seen.stdin).not.toContain('filePath');
+    expect(seen.stdin).not.toContain('valueFingerprint');
+  });
+
+  it('drops filePath from the judge payload (it encodes the OS username and project dirs)', () => {
+    const seen: { stdin?: string } = {};
+    runJudge([{ ...hit, filePath: '/Users/alicesecret/projects/topsecret/rollout.jsonl' }], {
+      spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
     });
-    expect(seenWithPath.stdin).toContain('/Users/dev/.codex/sessions/2026/01/01/rollout-x.jsonl');
+    expect(seen.stdin).not.toContain('alicesecret');
+    expect(seen.stdin).not.toContain('topsecret');
+    expect(seen.stdin).not.toContain('filePath');
+  });
+
+  it('masks a secret that appears only in the context window; rawMatch stays legible', () => {
+    // A second, distinct AWS key living ONLY in the surrounding context — not the
+    // finding's own value. It must not cross to the model.
+    const contextOnlySecret = ['AKIA', 'ZYXWVUTSRQPONMLK'].join('');
+    const seen: { stdin?: string } = {};
+    runJudge([{ ...hit, context: `aws_a=${hit.rawMatch} aws_b=${contextOnlySecret}` }], {
+      spawn: fakeSpawn(VERDICT_FENCE, seen),
+      loadRubric: () => 'RUBRIC',
+    });
+    expect(seen.stdin).toContain(hit.rawMatch);
+    expect(seen.stdin).not.toContain(contextOnlySecret);
+    // Positive check: masking stays SELECTIVE, not a blanket redaction. If
+    // maskText fell back to its fail-secure `[REDACTED]` path, the two assertions
+    // above would still hold while the window the judge relies on was gone — so
+    // pin that the non-secret structure of the context survives.
+    expect(seen.stdin).toContain('aws_a=');
+  });
+
+  it('does not mutate the source hit (dropped fields survive for the writeback path)', () => {
+    // deriveSurfacedSecretFindings reads filePath/context off the ORIGINAL hits
+    // after runJudge, and dedupe/writeback key on valueFingerprint/keyVersion;
+    // toJudgePayload must project a copy, never mutate the dropped fields in place.
+    const src: TriageHit = {
+      ...hit,
+      filePath: '/Users/x/p/rollout.jsonl',
+      valueFingerprint: 'fp-hmac',
+      keyVersion: 3,
+    };
+    toJudgePayload(src);
+    expect(src.filePath).toBe('/Users/x/p/rollout.jsonl');
+    expect(src.valueFingerprint).toBe('fp-hmac');
+    expect(src.keyVersion).toBe(3);
+    expect(src.context).toBe(hit.context);
   });
 
   it('fails loud (and raw-free) when the subprocess writes no last-message file', () => {

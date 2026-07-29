@@ -6,6 +6,7 @@ import {
   blockedRowBlockReason,
   exceptionState,
   isBlockedRowApprovable,
+  rotationBlockedLedgerNote,
 } from '../../src/exceptions/meta.ts';
 
 const NOW = Date.parse('2026-07-03T12:00:00.000Z');
@@ -145,5 +146,50 @@ describe('blockedRowBlockReason', () => {
     const reason = blockedRowBlockReason({ keyVersion: 1 }, { status: 'absent' });
     expect(reason).toMatch(/missing/i);
     expect(reason).toMatch(/trigger the detection again/i);
+  });
+});
+
+describe('rotationBlockedLedgerNote', () => {
+  // This is disclosure copy on a one-way action, so the assertions are about
+  // what the sentence must still SAY, not how it is worded. The dialog lists
+  // the permanent grants rotation orphans; without this it said nothing about
+  // the blocked ledger, which is retained for a day and so routinely outlives a
+  // rotation. Those rows are handled correctly afterwards — the strip marks
+  // them unapprovable via blockedRowBlockReason above — but that is the user
+  // finding out after the fact, which is what this line exists to prevent.
+  const CASES = [0, 1, 2, 17];
+
+  it.each(CASES)('names the blocked ledger and the way back, at %i approvable', (count) => {
+    const note = rotationBlockedLedgerNote(count);
+    expect(note).toMatch(/blocked/i);
+    expect(note).toMatch(/approvable/i);
+    // The rows are not deleted — saying so would be a different (and wrong)
+    // claim about a ledger the user can still see.
+    expect(note).toMatch(/stay listed/i);
+    expect(note).toMatch(/trigger the detection again/i);
+  });
+
+  it('says the caveat applies even with nothing approvable', () => {
+    // The ledger refills within minutes of a rotation, so a note shown only
+    // when the count is non-zero would read as a caveat that only sometimes
+    // applies. It must state the invalidation without a number.
+    const note = rotationBlockedLedgerNote(0);
+    expect(note).toMatch(/invalidated too/i);
+    expect(note).not.toMatch(/\d/);
+  });
+
+  it('shows the count, and agrees with itself on singular and plural', () => {
+    expect(rotationBlockedLedgerNote(1)).toContain('1 recently blocked detection is still');
+    expect(rotationBlockedLedgerNote(1)).not.toMatch(/detections/);
+    expect(rotationBlockedLedgerNote(4)).toContain('4 recently blocked detections are still');
+  });
+
+  it('never claims a number it was not given', () => {
+    // The count is threaded from a store read; a hard-coded digit in the
+    // sentence would survive every count and be wrong for all but one.
+    for (const count of CASES) {
+      const digits = rotationBlockedLedgerNote(count).match(/\d+/g) ?? [];
+      expect(digits).toEqual(count === 0 ? [] : [String(count)]);
+    }
   });
 });

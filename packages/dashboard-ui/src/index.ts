@@ -246,6 +246,7 @@ export {
   type ExceptionState,
   exceptionState,
   isBlockedRowApprovable,
+  rotationBlockedLedgerNote,
   SCOPE_ANSWER_LABEL,
   SCOPE_ANSWERS,
   SCOPE_LABEL,

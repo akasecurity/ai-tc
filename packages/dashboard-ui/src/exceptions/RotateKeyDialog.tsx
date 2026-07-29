@@ -13,6 +13,8 @@ import {
 } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
+import { rotationBlockedLedgerNote } from './meta.ts';
+
 // The token the user must type to arm the confirm button; re-checked
 // server-side by the rotate action.
 export const ROTATE_CONFIRMATION = 'rotate';
@@ -23,6 +25,14 @@ export interface RotateKeyDialogProps {
   // Active permanent grants that rotation will orphan — listed so the user
   // sees exactly what stops applying.
   activePermanent: DetectionException[];
+  /**
+   * Blocked-ledger rows still matchable under the current key — the ones
+   * rotation makes unapprovable. Counted over the ledger's full retention
+   * window, not the strip's selected lookback: the default chip is 30 minutes
+   * and the ledger keeps a day, so a count taken from what happens to be on
+   * screen would understate the cost of a one-way action.
+   */
+  approvableBlocked: number;
   keyVersion: number | null;
   onConfirm: (confirmation: string) => void;
   busy?: boolean;
@@ -34,17 +44,25 @@ export interface RotateKeyDialogProps {
  * `aka exception rotate-key`. Rotation is INVALIDATION: every existing grant
  * stops matching (rows remain for audit) because fingerprints cannot be
  * re-keyed without the raw values, which are never stored.
+ *
+ * Both things fingerprints are stored in are named before the user commits —
+ * the permanent grants that stop applying, and the blocked-ledger rows that
+ * stop being approvable. The ledger half is the easy one to forget: those rows
+ * go on appearing under "Recently blocked" afterwards, correctly marked
+ * unapprovable, which is a worse place to learn it than here.
  */
 export function RotateKeyDialog({
   open,
   onOpenChange,
   activePermanent,
+  approvableBlocked,
   keyVersion,
   onConfirm,
   busy,
   error,
 }: RotateKeyDialogProps) {
   const [typed, setTyped] = useState('');
+  const ledgerNote = rotationBlockedLedgerNote(approvableBlocked);
 
   return (
     <Dialog
@@ -80,6 +98,20 @@ export function RotateKeyDialog({
                 ))}
               </ul>
             </div>
+          )}
+
+          {approvableBlocked > 0 ? (
+            <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+                Blocked detections that will stop being approvable
+              </div>
+              <p className="text-xs text-text-2">{ledgerNote}</p>
+            </div>
+          ) : (
+            // Still stated with nothing approvable: the ledger fills up again
+            // within minutes of rotating, and a caveat only shown sometimes
+            // reads as one that only sometimes applies.
+            <p className="text-xs text-text-3">{ledgerNote}</p>
           )}
 
           <div>

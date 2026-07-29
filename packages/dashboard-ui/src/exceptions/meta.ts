@@ -65,6 +65,34 @@ export function blockedRowBlockReason(
   }
 }
 
+/**
+ * What a key rotation costs the blocked-detections ledger, as a line the rotate
+ * dialog shows before the user commits.
+ *
+ * The ledger is retained for a day, so it routinely outlives a rotation, and
+ * every row in it carries a fingerprint recorded under the key that was current
+ * when the detection was blocked. After rotating, none of them can be turned
+ * into a grant. The rows are not removed — they stay as a record of what was
+ * blocked — and the server-side refusal is the actual control; this is the
+ * "tell them before, not after" half.
+ *
+ * `stillApprovable` counts the rows matchable under the CURRENT key — the same
+ * predicate the strip disables its Approve button on, so the dialog's number
+ * and the buttons the user can see agree. That is also its limit: like the
+ * strip, it counts a row whose grant is already active, because neither models
+ * grant state.
+ */
+export function rotationBlockedLedgerNote(stillApprovable: number): string {
+  if (stillApprovable <= 0) {
+    return 'Recently blocked detections are invalidated too: the ledger outlives a rotation, so its rows stay listed as a record of what was blocked but stop being approvable. Trigger the detection again to approve it under the new key.';
+  }
+  const subject =
+    stillApprovable === 1
+      ? '1 recently blocked detection is still approvable; after rotating, none are'
+      : `${String(stillApprovable)} recently blocked detections are still approvable; after rotating, none are`;
+  return `${subject}. They stay listed as a record of what was blocked — trigger the detection again to approve under the new key.`;
+}
+
 export const STATE_TONE: Record<ExceptionState, Tone> = {
   active: 'success',
   consumed: 'default',

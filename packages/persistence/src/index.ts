@@ -5,6 +5,8 @@ export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';
 export {
   fingerprintValue,
+  isCurrentKeyVersion,
+  keyStateOf,
   loadOrCreateFingerprintKey,
   readFingerprintKey,
   rotateFingerprintKey,

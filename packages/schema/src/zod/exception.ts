@@ -106,3 +106,32 @@ export interface BlockedDetection {
 
 // Insert shape: the persistence repo stamps blocked_at at write time.
 export type BlockedDetectionInput = Omit<BlockedDetection, 'blockedAt'>;
+
+/**
+ * What the machine's fingerprint key file amounts to right now.
+ *
+ * The three states need to stay apart because each one means a different thing
+ * to the person reading the screen: `absent` and `unreadable` both leave every
+ * stored fingerprint unmatchable, but only one of them is fixed by triggering
+ * the detection again — the other is fixed by repairing the file's permissions,
+ * and deleting the key to "fix" it would destroy every grant on the machine.
+ * Collapsing them to `number | null` is what makes a UI say "the key changed"
+ * about a key that did not change.
+ */
+export type FingerprintKeyState =
+  { status: 'present'; version: number } | { status: 'absent' } | { status: 'unreadable' };
+
+/**
+ * Whether a stored fingerprint — an exception grant, or a blocked-ledger row —
+ * can still be matched at enforcement time.
+ *
+ * Enforcement fingerprints under the CURRENT key and scopes its bundle query to
+ * that version, so anything recorded under another version could never match: a
+ * grant minted from it is inert the moment it is created. Both approve surfaces
+ * and the dashboard's blocked strip gate on this, which is why it lives in the
+ * one package all three may import — a second copy is how the server and the UI
+ * come to disagree about which rows are usable.
+ */
+export function isMatchableUnder(keyVersion: number, key: FingerprintKeyState): boolean {
+  return key.status === 'present' && key.version === keyVersion;
+}

@@ -684,3 +684,77 @@ export const mcpTrustOverride = sqliteTable(
   },
   (t) => [uniqueIndex('uq_mcp_trust_override').on(t.assetId)],
 );
+
+// ─── Secret vault — the reversible store ─────────────────────────────────────
+// Everywhere else a detected value is destroyed or reduced to a one-way keyed
+// fingerprint. Here it survives as AEAD ciphertext, so its owner can get it back
+// while the model only ever holds the pointer. The raw value appears ONLY in the
+// `ciphertext` column — never in masked_match, never in an index, never in a
+// deref audit row.
+
+// SECRET VAULT — one row per detected VALUE, unique on the keyed fingerprint, so
+// the same secret seen twice yields one row and one pointer.
+export const secretVault = sqliteTable(
+  'secret_vault',
+  {
+    // The stable random surrogate the wire pointer carries. NOT the fingerprint:
+    // putting keyed-HMAC material on the wire would leak correlation material
+    // into model context and into committed files.
+    pointerId: text(COL.pointerId).primaryKey(),
+    // HMAC of the raw under `exception.key`, and the epoch it was derived under.
+    // This is what a reveal grant matches on; it rotates independently of
+    // key_version below (different key, different rotation semantics).
+    valueFingerprint: text(COL.valueFingerprint).notNull(),
+    fingerprintKeyVersion: integer(COL.fingerprintKeyVersion).notNull(),
+    // The vault-key epoch this row's ciphertext is sealed under.
+    keyVersion: integer(COL.keyVersion).notNull(),
+    // Fixed at first mint, never updated on re-detection: the same value seen
+    // later under a different rule's category keeps its minted category, so one
+    // value always yields exactly one wire token.
+    category: text(COL.category).notNull(),
+    ruleId: text(COL.ruleId).notNull(),
+    maskedMatch: text(COL.maskedMatch).notNull(),
+    provider: text(COL.provider),
+    ciphertext: text(COL.ciphertext).notNull(),
+    nonce: text(COL.nonce).notNull(),
+    authTag: text(COL.authTag).notNull(),
+    // How often this VALUE has been detected on this machine — the reuse signal.
+    // Distinct from secret_vault_deref.pointer_count.
+    occurrenceCount: integer(COL.occurrenceCount).notNull().default(1),
+    firstSeen: integer(COL.firstSeen).notNull(),
+    lastSeen: integer(COL.lastSeen).notNull(),
+  },
+  (t) => [
+    // One row per value — this is what makes the pointer deterministic and the
+    // reuse count meaningful.
+    uniqueIndex('uq_secret_vault_value').on(t.valueFingerprint),
+  ],
+);
+
+// SECRET VAULT DEREF — the audit trail. Every de-reference writes one, whatever
+// the outcome. Never carries the raw value or the ciphertext.
+export const secretVaultDeref = sqliteTable(
+  'secret_vault_deref',
+  {
+    id: text(COL.id).primaryKey(),
+    // Deliberately NO foreign key to secret_vault: purging the vault must not
+    // erase the record that a de-reference happened.
+    pointerId: text(COL.pointerId).notNull(),
+    at: integer(COL.at).notNull(),
+    target: text(COL.target, { enum: ['human', 'model'] }).notNull(),
+    reason: text(COL.reason, {
+      enum: ['display', 'explicit-reveal', 'view-render', 'model-input', 'remediation'],
+    }).notNull(),
+    outcome: text(COL.outcome, { enum: ['revealed', 'refused', 'unavailable'] }).notNull(),
+    // Present only on a model crossing a reveal grant authorized.
+    grantId: text(COL.grantId),
+    // How many pointers ONE batched render resolved; 1 when unbatched. The
+    // model crossings are never batched, so theirs is always 1.
+    pointerCount: integer(COL.pointerCount).notNull().default(1),
+  },
+  (t) => [
+    index('idx_secret_vault_deref_pointer').on(t.pointerId),
+    // The audit view's default read: model crossings newest-first.
+    index('idx_secret_vault_deref_reason_at').on(t.reason, t.at),
+  ],
+);

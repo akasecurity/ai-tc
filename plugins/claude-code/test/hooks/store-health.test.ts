@@ -28,6 +28,8 @@ function configFor(dataDir: string): PluginConfig {
       policy: 'redact',
       historicalAccess: 'session-only',
       dataSharesInPlace: true,
+      vaultKeyCustody: 'file',
+      vaultInlineReveal: 'masked',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

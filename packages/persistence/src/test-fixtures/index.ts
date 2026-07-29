@@ -15,6 +15,27 @@ import { seedSampleShares } from './sample-shares.ts';
  * gating — tests own their stores and seed exactly once.
  */
 export function seedSampleFixtures(db: DatabaseSync): void {
+  // One transaction, not one per row. In autocommit each insert commits on its
+  // own, and on a file-backed store every commit is a separate flush — the cost
+  // the Windows CI runner charges orders of magnitude more for than a local
+  // disk does, which is enough to put a seeding test near the per-test timeout.
+  // A caller that already holds a transaction keeps it; this opens none of its
+  // own inside one.
+  if (db.isTransaction) {
+    seedAll(db);
+    return;
+  }
+  db.exec('BEGIN');
+  try {
+    seedAll(db);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function seedAll(db: DatabaseSync): void {
   seedSampleShares(db);
   seedSampleInventory(db);
   seedSampleAuditEvents(db);

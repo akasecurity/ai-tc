@@ -1,5 +1,6 @@
 import { BLOCKED_WINDOW_MS, resolveBlockedWindow } from '@akasecurity/dashboard-ui';
-import { dataDir, readFingerprintKey } from '@akasecurity/persistence';
+import { dataDir, keyStateOf, readFingerprintKey } from '@akasecurity/persistence';
+import type { FingerprintKeyState } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { ExceptionsClient } from './ExceptionsClient';
@@ -24,13 +25,17 @@ export default async function ExceptionsPage({
     db().exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow]),
   ]);
 
-  // Key version for the rotate dialog; a corrupt key file must not take the
-  // page down (the rotate action surfaces the recovery guidance).
-  const keyVersion = ((): number | null => {
+  // The key as three distinct states, not `number | null`: an unreadable key
+  // file is not a missing one, and collapsing them is what would have the strip
+  // tell someone with a permissions problem that their key "changed" and to
+  // trigger the detection again — neither of which is true, and the obvious
+  // next step from it (delete the key) destroys every grant on the machine.
+  // A corrupt or unreadable file must still not take the page down.
+  const keyState = ((): FingerprintKeyState => {
     try {
-      return readFingerprintKey(dataDir())?.version ?? null;
+      return keyStateOf(readFingerprintKey(dataDir()));
     } catch {
-      return null;
+      return { status: 'unreadable' };
     }
   })();
 
@@ -47,7 +52,7 @@ export default async function ExceptionsPage({
       blocked={blocked}
       includeTerminal={includeTerminal}
       blockedWindow={blockedWindow}
-      keyVersion={keyVersion}
+      keyState={keyState}
       activePermanent={activePermanent}
     />
   );

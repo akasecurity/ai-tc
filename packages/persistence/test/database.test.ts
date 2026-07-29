@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -367,6 +375,71 @@ describe('transaction', () => {
     expect(all[0]?.revokedAt).toBeNull();
     expect(all[0]?.useCount).toBe(1);
     db.close();
+  });
+});
+
+describe('a failed open leaves no handle behind', () => {
+  // SQLite does not read the file until a statement runs, so a store that is not
+  // a database opens cleanly and fails on the first PRAGMA — with the OS handle
+  // already ours. Leaking it keeps the file locked for the life of the process
+  // on Windows, and the dashboard server memoizes its handle only on success, so
+  // a corrupt store would leak one more on every attempt.
+  //
+  // The proof is platform-split and deliberately so: on Windows the removal in
+  // `afterEach` FAILS with EPERM while a handle is open, which is what makes
+  // this a real regression guard there. On POSIX an open handle does not block
+  // unlink, so the same test only pins that the open fails loudly rather than
+  // half-succeeding — the CI Windows leg is where the leak itself is caught.
+  function corruptTheStore(): string {
+    const file = join(dir, 'aka.db');
+    openLocalDatabase(dir).close(); // a real store first, so this is damage not absence
+    for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
+      rmSync(join(dir, sidecar), { force: true });
+    }
+    writeFileSync(file, 'this is not a SQLite database at all\n');
+    return file;
+  }
+
+  it('throws rather than returning a half-open store', () => {
+    corruptTheStore();
+    expect(() => openLocalDatabase(dir)).toThrow();
+  });
+
+  it('stays throwing across repeated attempts, without accumulating handles', () => {
+    // The shape the dashboard produces: the caller returns an error to the user,
+    // the user retries, and each retry opens again. Any handle kept here is one
+    // per attempt.
+    corruptTheStore();
+    for (let i = 0; i < 5; i += 1) {
+      expect(() => openLocalDatabase(dir)).toThrow();
+    }
+    // afterEach removes the tree — on Windows that is the assertion.
+  });
+
+  it('closes the handle when a REPOSITORY CONSTRUCTOR throws, not just the open', () => {
+    // Several repositories `db.prepare(...)` in their constructor, which runs
+    // after migrations have reported success. A store whose schema does not
+    // match what this build expects — one written by a newer binary leaves
+    // `user_version` ahead, so the applier skips and the prepares meet columns
+    // that are not there — throws from there rather than from the open.
+    //
+    // Dropping tables from a migrated store reproduces that exactly: the
+    // migration ledger still says applied, so the reopen goes straight to the
+    // constructors. This region sat outside the guard until the whole sequence
+    // was brought under one try.
+    openLocalDatabase(dir).close();
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      raw.exec('DROP TABLE installed_packs');
+    } finally {
+      raw.close();
+    }
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(() => openLocalDatabase(dir)).toThrow(/no such table/);
+    }
+    // Measured on macOS while this was unguarded: five attempts leaked twelve
+    // descriptors. afterEach is what catches it on Windows.
   });
 });
 

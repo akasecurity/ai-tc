@@ -79,15 +79,21 @@ describe('Leg 1 — "Yes, scan" records the historical-review consent without br
     // single-question surface grants no extra scope key. historicalAccess is the
     // sole consent-bearing field this leg records; the schema encodes the
     // one-time/revocable semantics in that enum value, not in any additional
-    // marker. Optional consent fields the schema now defines but this leg never
-    // grants (e.g. modelJudgeConsent — the DISTINCT model-judge egress consent)
-    // are legitimately ABSENT here, so this is a subset check, not equality.
+    // marker. Optional consent fields the schema defines but this leg never
+    // grants are legitimately ABSENT here, so this is a subset check, not
+    // equality.
     const schemaKeys = new Set(Object.keys(WorkspaceSettings.shape));
-    for (const key of Object.keys(persistedRaw)) {
-      expect(schemaKeys.has(key)).toBe(true);
-    }
+    expect(Object.keys(persistedRaw).filter((key) => !schemaKeys.has(key))).toEqual([]);
     // And this leg specifically did NOT broaden into the model-judge egress.
     expect(Object.keys(persistedRaw)).not.toContain('modelJudgeConsent');
+  });
+
+  it('grants no vault consent — storing recoverable secrets is a separate decision', () => {
+    // Agreeing to a historical review authorizes READING local transcripts. It
+    // must never imply consent to keep a recoverable encrypted copy of every
+    // detected value, which is a custody change the user opts into on its own.
+    expect(persistedRaw).not.toHaveProperty('vaultConsent');
+    expect(persisted.vaultConsent).toBeUndefined();
   });
 
   it('leaves the full-access grant revocable at the same onboarding surface', () => {

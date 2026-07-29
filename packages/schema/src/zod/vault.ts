@@ -135,12 +135,16 @@ export type DetokenizeTarget = z.infer<typeof DetokenizeTarget>;
 //   view-render     a dashboard surface resolved it to render a record
 //   model-input     a model-echoed pointer was de-referenced back for the model
 //   remediation     a transcript/at-rest rewrite path resolved it
+//   purge           entries were destroyed, making their pointers unresolvable.
+//                   Not a de-reference, but it belongs in the same trail: the
+//                   record that values were destroyed has to outlive them.
 export const VaultDerefReason = z.enum([
   'display',
   'explicit-reveal',
   'view-render',
   'model-input',
   'remediation',
+  'purge',
 ]);
 export type VaultDerefReason = z.infer<typeof VaultDerefReason>;
 

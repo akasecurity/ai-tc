@@ -185,6 +185,31 @@ describe('a minted version never reuses one the store already references', () =>
     });
   }
 
+  // `vaultKeyVersion` defaults well clear of the fingerprint epoch so a helper
+  // that happened to read the wrong column would not accidentally agree.
+  function seedVaultRow(
+    store: TempStore,
+    fingerprintKeyVersion: number,
+    vaultKeyVersion = 1,
+  ): Promise<void> {
+    store.open().secretVault.upsert(
+      {
+        pointerId: `p${fingerprintKeyVersion.toString(16).padStart(31, '0')}`,
+        valueFingerprint: (fingerprintKeyVersion + 0xbee).toString(16).padStart(64, '0'),
+        fingerprintKeyVersion,
+        keyVersion: vaultKeyVersion,
+        category: 'secret',
+        ruleId: 'aws-access-key-id',
+        maskedMatch: 'A*****Q',
+        ciphertext: 'Y2lwaGVy',
+        nonce: 'bm9uY2U=',
+        authTag: 'dGFn',
+      },
+      Date.now(),
+    );
+    return Promise.resolve();
+  }
+
   it('mints past a blocked-ledger row after the key file is deleted', async () => {
     await withTempStore(async (store) => {
       // The shape the bug needs: a ledger row under v1, then the key deleted.
@@ -208,7 +233,43 @@ describe('a minted version never reuses one the store already references', () =>
     });
   });
 
-  it('takes the highest version across both tables', async () => {
+  // A vault row is fingerprinted under `exception.key` exactly like a grant or a
+  // ledger row, so it pins a version the same way — and it is the ONLY one of the
+  // three a consenting user is guaranteed to have: vaulting happens on ordinary
+  // detections, while both other tables stay empty until someone blocks or
+  // approves something. Missing it is therefore the likeliest path back into the
+  // collision, not the rarest: the re-minted material would silently stop
+  // matching every stored value, so one secret would mint a second row and a
+  // second pointer, and grants approved from the old rows would go inert.
+  //
+  // The column is fingerprint_key_version, NOT the key_version beside it — that
+  // one is the vault-key epoch, a different key on a different rotation.
+  it('mints past a vault row — it pins the fingerprint epoch too', async () => {
+    await withTempStore(async (store) => {
+      await seedVaultRow(store, 4);
+      expect(loadOrCreateFingerprintKey(store.dataDir).version).toBe(5);
+    });
+  });
+
+  it("reads the vault's fingerprint epoch, not the vault-key epoch beside it", async () => {
+    await withTempStore(async (store) => {
+      // Vault key far ahead of the fingerprint key: reading the wrong column
+      // would inflate the floor to 10 and skip eight versions on every mint.
+      await seedVaultRow(store, 2, 10);
+      expect(loadOrCreateFingerprintKey(store.dataDir).version).toBe(3);
+    });
+  });
+
+  it('takes the highest version across all three tables', async () => {
+    await withTempStore(async (store) => {
+      await seedLedger(store, 2);
+      await seedGrant(store, 5);
+      await seedVaultRow(store, 9);
+      expect(loadOrCreateFingerprintKey(store.dataDir).version).toBe(10);
+    });
+  });
+
+  it('takes the highest version across both grant tables', async () => {
     await withTempStore(async (store) => {
       await seedLedger(store, 2);
       await seedGrant(store, 5);

@@ -1,0 +1,446 @@
+// The vault core: turn a detected value into a pointer, and a pointer back into
+// the value for whoever is allowed to see it.
+//
+// Two sentinels rather than exceptions, because every caller sits on a hook path
+// that must not break a session:
+//   CONSENT_ABSENT  the user has not granted vaulting — the caller falls back to
+//                   one-way redaction, so the value is destroyed, not leaked.
+//   UNAVAILABLE     the pointer could not be resolved, for any reason. Callers
+//                   render it as such; they never see why, and never see raw.
+//
+// Ordering inside detokenize is deliberate and load-bearing — see the comments
+// there before changing it.
+import { randomBytes, randomUUID } from 'node:crypto';
+
+import type {
+  DetectionCategory,
+  DetokenizeTarget,
+  PointerDescriptor,
+  PointerIdentity,
+  VaultDerefOutcome,
+  VaultDerefReason,
+} from '@akasecurity/schema';
+import { isBatchedDerefReason, POINTER_TOKEN_ANCHORED } from '@akasecurity/schema';
+
+import { type FingerprintKey, fingerprintValue } from '../fingerprint.ts';
+import type { SqliteSecretVaultRepository, VaultRow } from '../repositories/secret-vault.ts';
+import {
+  base32Decode,
+  base32Encode,
+  bindingInput,
+  decodeKeyVersion,
+  deriveSubkeys,
+  formatPointer,
+  NONCE_BYTES,
+  open as openSealed,
+  POINTER_ID_BYTES,
+  seal,
+  signPointer,
+  verifyPointerTag,
+} from './crypto.ts';
+import type { KeyProvider } from './key-provider.ts';
+
+export const CONSENT_ABSENT = Symbol('aka.vault.consentAbsent');
+export const UNAVAILABLE = Symbol('aka.vault.unavailable');
+
+export type TokenizeResult = string | typeof CONSENT_ABSENT;
+export type DetokenizeResult = string | typeof UNAVAILABLE;
+
+// A purge is recorded against this sentinel instead of a real pointer id: the
+// event concerns the whole vault, and the record that entries were destroyed has
+// to survive the destruction.
+export const VAULT_PURGE_POINTER_ID = '*';
+
+export interface TokenizeMeta {
+  ruleId: string;
+  // The category the DETECTING rule proposes. It is only a proposal: a value
+  // already in the vault keeps the category it was minted with, so one value
+  // always yields exactly one wire token.
+  category: DetectionCategory;
+  maskedMatch: string;
+  provider?: string | undefined;
+}
+
+export interface DetokenizeOptions {
+  target: DetokenizeTarget;
+  reason: VaultDerefReason;
+  // Required for a model-target crossing. Absent → refused.
+  grantId?: string | undefined;
+  // How many pointers one batched render resolved. Ignored for reasons that are
+  // never batched.
+  pointerCount?: number | undefined;
+}
+
+interface ParsedPointerToken {
+  category: string;
+  keyVersion: number;
+  pointerId: Buffer;
+  tag: Buffer;
+}
+
+/** Shape-only parse. Proves nothing about authenticity — the tag check does that. */
+function parsePointer(token: string): ParsedPointerToken | null {
+  if (!POINTER_TOKEN_ANCHORED.test(token)) return null;
+  const body = token.slice('[[aka:'.length, -']]'.length);
+  const colon = body.indexOf(':');
+  if (colon < 0) return null;
+  const category = body.slice(0, colon);
+  const [kv, id, tag] = body.slice(colon + 1).split('.');
+  if (kv === undefined || id === undefined || tag === undefined) return null;
+  try {
+    return {
+      category,
+      keyVersion: decodeKeyVersion(kv),
+      pointerId: base32Decode(id),
+      tag: base32Decode(tag),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface SecretVaultDeps {
+  repo: SqliteSecretVaultRepository;
+  keys: KeyProvider;
+  // The exception-key epoch a value's fingerprint is derived under. This is a
+  // different key from the vault's, with different rotation semantics.
+  fingerprintKey: FingerprintKey;
+  // Read live on every call, so revoking consent takes effect immediately
+  // rather than at the next process start.
+  isConsented: () => boolean;
+  now?: () => number;
+}
+
+export class SecretVault {
+  readonly #repo: SqliteSecretVaultRepository;
+  readonly #keys: KeyProvider;
+  readonly #fingerprintKey: FingerprintKey;
+  readonly #isConsented: () => boolean;
+  readonly #now: () => number;
+
+  constructor(deps: SecretVaultDeps) {
+    this.#repo = deps.repo;
+    this.#keys = deps.keys;
+    this.#fingerprintKey = deps.fingerprintKey;
+    this.#isConsented = deps.isConsented;
+    this.#now = deps.now ?? ((): number => Date.now());
+  }
+
+  /**
+   * Store a value and return the pointer that stands for it. The same value
+   * always yields the same pointer on this machine — one row, one pointer id,
+   * one category — which is what makes dedup and reuse counting work.
+   */
+  async tokenize(raw: string, meta: TokenizeMeta): Promise<TokenizeResult> {
+    if (!this.#isConsented()) return CONSENT_ABSENT;
+
+    const valueFingerprint = fingerprintValue(this.#fingerprintKey, raw);
+    const existing = this.#repo.byValueFingerprint(valueFingerprint);
+    const now = this.#now();
+
+    if (existing) {
+      // Re-detection: bump the count, keep every minted property. The token is
+      // re-emitted under the row's current epoch, which is also the epoch its
+      // ciphertext is sealed under.
+      this.#repo.upsert({ ...existing, provider: existing.provider ?? undefined }, now);
+      return await this.#emitToken(existing.keyVersion, existing.pointerId, existing.category);
+    }
+
+    const { material, version } = await this.#keys.loadOrCreate();
+    const subkeys = deriveSubkeys(material);
+    const pointerId = randomBytes(POINTER_ID_BYTES);
+    const aad = bindingInput(version, pointerId, meta.category);
+    const sealed = seal(subkeys.enc, raw, aad, randomBytes(NONCE_BYTES));
+
+    const { row } = this.#repo.upsert(
+      {
+        pointerId: base32Encode(pointerId),
+        valueFingerprint,
+        fingerprintKeyVersion: this.#fingerprintKey.version,
+        keyVersion: version,
+        category: meta.category,
+        ruleId: meta.ruleId,
+        maskedMatch: meta.maskedMatch,
+        provider: meta.provider,
+        ciphertext: sealed.ciphertext.toString('base64'),
+        nonce: sealed.nonce.toString('base64'),
+        authTag: sealed.authTag.toString('base64'),
+      },
+      now,
+    );
+
+    // A concurrent writer may have won the unique index between the lookup and
+    // the insert; the returned row is authoritative either way.
+    return await this.#emitToken(row.keyVersion, row.pointerId, row.category);
+  }
+
+  /**
+   * Resolve a pointer back to its value, for a human or (with a grant) for the
+   * model. Every call that gets as far as an identified row writes an audit row.
+   */
+  async detokenize(token: string, opts: DetokenizeOptions): Promise<DetokenizeResult> {
+    const parsed = parsePointer(token);
+    if (!parsed) return UNAVAILABLE;
+
+    // Verify BEFORE touching the store or any ciphertext. A forged or tampered
+    // token is unattributable — it names no one and nothing — so it writes no
+    // audit row; only a token we can attribute to a real entry does.
+    let signKey: Buffer;
+    try {
+      const epoch = await this.#keys.materialFor(parsed.keyVersion);
+      signKey = deriveSubkeys(epoch.material).sign;
+    } catch {
+      return UNAVAILABLE;
+    }
+    if (
+      !verifyPointerTag(signKey, parsed.keyVersion, parsed.pointerId, parsed.category, parsed.tag)
+    ) {
+      return UNAVAILABLE;
+    }
+
+    const pointerId = base32Encode(parsed.pointerId);
+    const row = this.#repo.byPointerId(pointerId);
+    if (!row) {
+      this.#audit(pointerId, opts, 'unavailable');
+      return UNAVAILABLE;
+    }
+
+    // Defence in depth behind the tag: a token whose category disagrees with its
+    // row is treated exactly like a forgery — silent, no audit row — so a
+    // mismatch can never masquerade as a legitimate refused crossing.
+    if (row.category !== parsed.category) return UNAVAILABLE;
+
+    // The grant gate sits AFTER the row lookup so the check above can stay
+    // silent. Consequence: a purged pointer with no grant audits `unavailable`
+    // rather than `refused`, which is the truthful outcome anyway.
+    if (opts.target === 'model' && !opts.grantId) {
+      this.#audit(pointerId, opts, 'refused');
+      return UNAVAILABLE;
+    }
+
+    let raw: string | null;
+    try {
+      const epoch = await this.#keys.materialFor(row.keyVersion);
+      raw = openSealed(
+        deriveSubkeys(epoch.material).enc,
+        {
+          ciphertext: Buffer.from(row.ciphertext, 'base64'),
+          nonce: Buffer.from(row.nonce, 'base64'),
+          authTag: Buffer.from(row.authTag, 'base64'),
+        },
+        // Sealed under the ROW's epoch, which rotation may have moved past the
+        // epoch this token was minted under.
+        bindingInput(row.keyVersion, parsed.pointerId, row.category),
+      );
+    } catch {
+      raw = null;
+    }
+
+    if (raw === null) {
+      this.#audit(pointerId, opts, 'unavailable');
+      return UNAVAILABLE;
+    }
+
+    this.#audit(pointerId, opts, 'revealed');
+    return raw;
+  }
+
+  /** Badge and listing data. No raw value, no fingerprint, and no audit row. */
+  async describePointer(token: string): Promise<PointerDescriptor | null> {
+    const row = await this.#rowFor(token);
+    if (!row) return null;
+    return {
+      category: row.category as DetectionCategory,
+      ...(row.provider === undefined ? {} : { provider: row.provider }),
+      maskedMatch: row.maskedMatch,
+      occurrences: row.occurrenceCount,
+      firstSeen: new Date(row.firstSeen).toISOString(),
+      lastSeen: new Date(row.lastSeen).toISOString(),
+    };
+  }
+
+  /**
+   * The raw-free row identity a reveal grant matches on. Deliberately not fed to
+   * view surfaces: the keyed fingerprint is a correlation key and must not reach
+   * a presentation layer.
+   */
+  async resolvePointerIdentity(token: string): Promise<PointerIdentity | null> {
+    const row = await this.#rowFor(token);
+    if (!row) return null;
+    return {
+      ruleId: row.ruleId,
+      valueFingerprint: row.valueFingerprint,
+      fingerprintKeyVersion: row.fingerprintKeyVersion,
+    };
+  }
+
+  /**
+   * Mint the next vault key epoch and re-encrypt every entry under it. Pointers
+   * already emitted keep verifying: their tag is checked against the historical
+   * epoch they name, which the key provider retains.
+   *
+   * Safe to interrupt — each row carries the epoch its ciphertext is sealed
+   * under, so a half-finished pass leaves every row openable.
+   */
+  async rotateVaultKey(): Promise<{ version: number; reEncrypted: number }> {
+    const next = await this.#keys.rotate();
+    const nextEnc = deriveSubkeys(next.material).enc;
+    let reEncrypted = 0;
+
+    for (const row of this.#repo.listAll()) {
+      if (row.keyVersion === next.version) continue;
+      const pointerId = base32Decode(row.pointerId);
+      let raw: string | null;
+      try {
+        const epoch = await this.#keys.materialFor(row.keyVersion);
+        raw = openSealed(
+          deriveSubkeys(epoch.material).enc,
+          {
+            ciphertext: Buffer.from(row.ciphertext, 'base64'),
+            nonce: Buffer.from(row.nonce, 'base64'),
+            authTag: Buffer.from(row.authTag, 'base64'),
+          },
+          bindingInput(row.keyVersion, pointerId, row.category),
+        );
+      } catch {
+        raw = null;
+      }
+      // An entry we cannot open is left exactly as it is. Overwriting it with
+      // anything would destroy a value we might still recover.
+      if (raw === null) continue;
+
+      const sealed = seal(
+        nextEnc,
+        raw,
+        bindingInput(next.version, pointerId, row.category),
+        randomBytes(NONCE_BYTES),
+      );
+      this.#repo.replaceCiphertext(row.pointerId, {
+        keyVersion: next.version,
+        ciphertext: sealed.ciphertext.toString('base64'),
+        nonce: sealed.nonce.toString('base64'),
+        authTag: sealed.authTag.toString('base64'),
+      });
+      reEncrypted += 1;
+    }
+
+    return { version: next.version, reEncrypted };
+  }
+
+  /**
+   * Re-key every entry's value fingerprint after the exception key rotates,
+   * PRESERVING each pointer id. Unlike grants — where rotation is invalidation,
+   * because the raw values are gone — the vault still holds the values, so
+   * determinism, dedup, and every outstanding pointer survive the rotation.
+   */
+  async refreshFingerprints(next: FingerprintKey): Promise<number> {
+    let refreshed = 0;
+    for (const row of this.#repo.listAll()) {
+      const raw = await this.#openRow(row);
+      if (raw === null) continue;
+      this.#repo.refreshFingerprint(row.pointerId, {
+        valueFingerprint: fingerprintValue(next, raw),
+        fingerprintKeyVersion: next.version,
+      });
+      refreshed += 1;
+    }
+    return refreshed;
+  }
+
+  /**
+   * Destroy every entry, making all outstanding pointers permanently
+   * unresolvable.
+   *
+   * The count comes from `purgeAll` rather than a separate `countEntries` —
+   * `purgeAll` counts inside the same transaction that deletes, so the audit row
+   * reports what was actually destroyed. Counting beforehand would let a
+   * concurrent write land between the two statements and put a number in the
+   * durable record that never matched reality.
+   */
+  purgeVault(): number {
+    const destroyed = this.#repo.purgeAll();
+    this.#repo.recordDeref({
+      id: randomUUID(),
+      pointerId: VAULT_PURGE_POINTER_ID,
+      at: this.#now(),
+      target: 'human',
+      reason: 'purge',
+      outcome: 'unavailable',
+      pointerCount: Math.max(destroyed, 1),
+    });
+    return destroyed;
+  }
+
+  // Sign under the epoch the token names, which for a re-detected value is the
+  // epoch its row currently sits at rather than whatever is current.
+  async #emitToken(keyVersion: number, pointerIdB32: string, category: string): Promise<string> {
+    const pointerId = base32Decode(pointerIdB32);
+    const epoch = await this.#keys.materialFor(keyVersion);
+    const signKey = deriveSubkeys(epoch.material).sign;
+    return formatPointer(
+      category,
+      keyVersion,
+      pointerId,
+      signPointer(signKey, keyVersion, pointerId, category),
+    );
+  }
+
+  async #openRow(row: VaultRow): Promise<string | null> {
+    try {
+      const epoch = await this.#keys.materialFor(row.keyVersion);
+      return openSealed(
+        deriveSubkeys(epoch.material).enc,
+        {
+          ciphertext: Buffer.from(row.ciphertext, 'base64'),
+          nonce: Buffer.from(row.nonce, 'base64'),
+          authTag: Buffer.from(row.authTag, 'base64'),
+        },
+        bindingInput(row.keyVersion, base32Decode(row.pointerId), row.category),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  // Shared lookup for the read-only surfaces. It verifies the tag exactly as
+  // detokenize does: a descriptor is not raw, but a token nobody can vouch for
+  // should not resolve to anything at all — otherwise a fabricated pointer, or a
+  // lookalike planted in a file, would still yield a category and a masked
+  // preview. Verifying needs the historical epoch's key, which is why these
+  // surfaces are async.
+  async #rowFor(token: string): Promise<VaultRow | null> {
+    const parsed = parsePointer(token);
+    if (!parsed) return null;
+
+    try {
+      const epoch = await this.#keys.materialFor(parsed.keyVersion);
+      const signKey = deriveSubkeys(epoch.material).sign;
+      if (
+        !verifyPointerTag(signKey, parsed.keyVersion, parsed.pointerId, parsed.category, parsed.tag)
+      ) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+
+    const row = this.#repo.byPointerId(base32Encode(parsed.pointerId));
+    if (row?.category !== parsed.category) return null;
+    return row;
+  }
+
+  #audit(pointerId: string, opts: DetokenizeOptions, outcome: VaultDerefOutcome): void {
+    this.#repo.recordDeref({
+      id: randomUUID(),
+      pointerId,
+      at: this.#now(),
+      target: opts.target,
+      reason: opts.reason,
+      outcome,
+      ...(opts.grantId === undefined ? {} : { grantId: opts.grantId }),
+      // Only the batched reasons carry a count above one; a model crossing is
+      // always its own row.
+      pointerCount: isBatchedDerefReason(opts.reason) ? (opts.pointerCount ?? 1) : 1,
+    });
+  }
+}

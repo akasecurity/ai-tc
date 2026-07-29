@@ -33,10 +33,21 @@ import type {
 } from './meta.ts';
 import type { Rule } from './rule.ts';
 
-// Bumped whenever WorkspaceSettings gains or loses a field, so the loader can
-// migrate an older settings.json. v2 added historicalAccess; v3 added
-// dataSharesInPlace.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 3;
+// A changelog marker for the WorkspaceSettings shape, not a migration trigger:
+// v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
+// modelJudgeConsent. Nothing reads it, and nothing re-stamps it — the `.default()`
+// below only fills when the key is absent, and applyOnboarding's merge preserves
+// whatever an existing settings.json already carries. So an already-onboarded
+// machine keeps the version that first wrote its file, however often this is
+// bumped. Every field added so far has been optional/defaulted (backward
+// compatible), which is why no migration has been needed. Re-stamp this on write
+// before relying on it to gate one.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 4;
+
+// The payload-shape version the /aka:setup model-judge sends to the model API.
+// Recorded alongside a user's modelJudgeConsent so a consent granted against an
+// older payload shape stops counting once this is bumped.
+export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
 // How the plugin runs. Single-valued: the plugin operates entirely against the
 // local store. Kept as an enum so the settings file stays explicit and the
@@ -69,6 +80,26 @@ export type HistoricalAccess = z.infer<typeof HistoricalAccess>;
 // in Zod's global registry, and a @fastify/swagger setup
 // emits every registered schema as an OpenAPI component, leaking this plugin
 // config into a public API client. No API route references it.
+// A recorded model-judge consent: when it was given, and the payload shape it
+// was given against. Named here (rather than inlined on WorkspaceSettings) so
+// the plugin, CLI and dashboard all reference one shape.
+export const ModelJudgeConsent = z.object({
+  acknowledgedAt: z.iso.datetime(),
+  payloadVersion: z.number().int().positive(),
+});
+export type ModelJudgeConsent = z.infer<typeof ModelJudgeConsent>;
+
+// The single definition of "the user has consented to the CURRENT payload" —
+// shared by the plugin's judge gate, the CLI and the dashboard so they cannot
+// disagree about what counts as granted. Presence alone is not enough: a consent
+// recorded against an older payload shape is stale, and stale reads as revoked
+// (the user is asked again rather than silently held to a grant for a payload
+// they never saw). Pure logic over the schema — no I/O — so every surface,
+// including the bundler-agnostic dashboard views, can import it.
+export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined): boolean {
+  return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
+}
+
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
   // Settings files written by earlier releases may carry the retired 'attached'
@@ -85,6 +116,11 @@ export const WorkspaceSettings = z.object({
   dataSharesInPlace: z.boolean().default(true),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
+  // Records that the user consented to sending findings to the model API for
+  // the /aka:setup judge, along with the payload-shape version they agreed to.
+  // Absent until granted; a stale payloadVersion means the consent no longer
+  // covers the current payload and must be re-granted.
+  modelJudgeConsent: ModelJudgeConsent.optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 

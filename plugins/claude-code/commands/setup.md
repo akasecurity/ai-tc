@@ -249,8 +249,60 @@ it.
 
 ## 3. Run the evidence triage — off-transcript judgment, nothing written yet
 
-Pipe the backfill's triage stream straight into the `apply-suppressions`
-adapter in **PREVIEW** mode (no `--confirmed`):
+**Model-judge consent — a distinct opt-in, asked here before the pipe.** The
+false-positive/severity judgment runs by sending each finding to the Anthropic
+model API through `claude`. That is a separate egress from the historical-read
+consent collected in step 1 (which only let AKA _read_ the local transcripts), so
+it needs its own explicit grant. Before running the pipe, state plainly what
+leaves the machine, then use **AskUserQuestion** — the built-in picker (never a
+printed numbered list) — to collect the answer.
+
+Say plainly, before the picker: to sort real leaks from routine noise, AKA sends
+each finding's `rawMatch` (the raw detected value) plus the surrounding context
+window to the model API via `claude`. The **`filePath` is not sent**, and any
+secrets detected in that context window are **masked** before it goes — so the
+finding's own value is the only raw value that leaves. Nothing else about the
+finding or the file crosses. Note that masking covers the secrets AKA's rules
+detect; ordinary text in that window travels as-is.
+
+**Send findings to the model to sort real leaks from noise?** — "I'll send each
+detected value, plus a bit of surrounding context with any secrets in it masked,
+to the model to tell real leaks from routine noise. The file path stays local."
+
+- **Yes, send them** — "let the model triage what I found"
+- **No, keep it local** — "skip the model triage and start from the safe defaults"
+
+Present both options flat — this grant sends the user's data off the machine, so
+do **not** mark either one recommended.
+
+**Branch on the choice:**
+
+- **If the user chose "Yes, send them"** — record the model-judge consent, then
+  run the pipe below:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --model-judge-consent
+  ```
+
+- **If the user chose "No, keep it local"** — do **not** run the pipe. The judge
+  refuses to run without consent (it would only print a clean skip line), so there
+  is no calibrated plan to confirm. Fall back to the conservative severity floor,
+  tell the user the model triage was skipped, and continue to step 6:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --floor
+  ```
+
+  Say plainly: the model triage was declined, so AKA is starting from the
+  conservative severity floor instead of a calibrated posture, and it can be
+  re-run any time with `/aka:setup`. Declining here only skips this run — it does
+  **not** withdraw a grant made earlier; a stored grant is revoked under
+  **Settings → Model-judge consent** in the dashboard. **Skip steps 4 and 5** —
+  there is no plan to confirm — and rejoin the spine at step 6 with **no
+  `--surfaced`** (the same floor-fallback rule step 6 already follows).
+
+On the **Yes, send them** path, pipe the backfill's triage stream straight into
+the `apply-suppressions` adapter in **PREVIEW** mode (no `--confirmed`):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/backfill.js" --triage | node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-suppressions.js"

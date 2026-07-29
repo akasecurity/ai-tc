@@ -174,4 +174,6 @@ export interface BaseInspectionFindingRow {
   maskedMatch: string;
   actionTaken: string;
   confidence: number;
+  findingKey: string | null;
+  firstDetectedAt: number | null;
 }

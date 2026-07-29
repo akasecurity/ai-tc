@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { WorkspaceSettings } from '@akasecurity/schema';
@@ -9,7 +9,7 @@ import {
 
 import { parseJsonObject } from './internal/json.ts';
 import { defaultDataDir, settingsDir } from './local-layout.ts';
-import { DATA_FILE_MODE, ensureDataDirSync } from './paths.ts';
+import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 
 // Read/write of ~/.aka/settings/settings.json, shared by every local consumer
 // — plugin hooks, the CLI, and the web-ui; the SDK re-exports these. The
@@ -20,7 +20,10 @@ import { DATA_FILE_MODE, ensureDataDirSync } from './paths.ts';
 /**
  * Read settings.json under the base, default-filled when absent. Fully
  * fail-open: a missing or corrupt file yields unonboarded defaults rather than
- * throwing — this sits on the plugin's fail-open hook path.
+ * throwing — this sits on the plugin's fail-open hook path. A pure reader with no
+ * side effects: the at-rest mode is self-healed by the write/init/loadConfig
+ * paths (see `aka init`'s ungated tighten and `loadConfig`), not on every read,
+ * so a web-ui page render never chmods.
  */
 export function readWorkspaceSettings(base: string = defaultDataDir()): WorkspaceSettings {
   const record = readJson(join(settingsDir(base), 'settings.json'));
@@ -39,8 +42,10 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
  * Persist onboarding answers to settings.json (the /aka:setup writer, and the
  * web-ui settings page). Merges over the existing file so each edit is
  * additive, re-validates through the versioned schema, and stamps onboardedAt
- * on first completion so `onboarded` flips true. Atomic write (tmp + rename),
- * owner-only.
+ * on first completion so `onboarded` flips true. Owner-only atomic write (tmp +
+ * rename), so a settings.json (or a leftover `.tmp` from an earlier crash) that
+ * pre-existed with looser permissions ends 0600 rather than carrying its mode
+ * through the rename — see writeOwnerOnlyFileSync.
  */
 export function applyOnboarding(
   answers: Partial<WorkspaceSettings>,
@@ -56,9 +61,7 @@ export function applyOnboarding(
   });
   ensureDataDirSync(dir);
   const file = join(dir, 'settings.json');
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: DATA_FILE_MODE });
-  renameSync(tmp, file);
+  writeOwnerOnlyFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
   return merged;
 }
 

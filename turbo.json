@@ -22,6 +22,51 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
+    // The eslint-config suite asserts a workspace-wide invariant: every package
+    // ships an eslint.config.mjs wiring the no-network ban, points its `lint`
+    // script at every directory it holds code in, and covers scripts/ with a
+    // second pass. Its default inputs cover only packages/eslint-config/**, and
+    // the package has no workspace dependencies — so ADDING A PACKAGE (or a new
+    // source directory) ANYWHERE ELSE leaves the task hash untouched and turbo
+    // replays a cached pass, which is exactly the moment the guard exists to
+    // fire. A stale hit here is a false-green CI for the no-network guarantee.
+    //
+    // So the inputs mirror everything the suite reads: the manifest, every
+    // package.json and eslint config, and every lintable source file in the
+    // workspace (the suite derives each package's code directories from them).
+    // Explicit input globs are NOT filtered by .gitignore, so generated trees
+    // are excluded by hand — without that, node_modules alone adds ~23k files to
+    // the hash and every install perturbs it. This trades cache hits for
+    // correctness: the suite runs in ~1s, and a guard that does not run is worth
+    // nothing. The exclusion list has to track the tree's .gitignore files; a
+    // generated path that slips through costs a cache miss (a build-output file
+    // enters the hash), never a false pass.
+    "@akasecurity/eslint-config#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/pnpm-workspace.yaml",
+        "$TURBO_ROOT$/*/package.json",
+        "$TURBO_ROOT$/*/eslint.config.mjs",
+        "$TURBO_ROOT$/*/eslint.scripts.config.mjs",
+        "$TURBO_ROOT$/*/*/package.json",
+        "$TURBO_ROOT$/*/*/eslint.config.mjs",
+        "$TURBO_ROOT$/*/*/eslint.scripts.config.mjs",
+        "$TURBO_ROOT$/*/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+        "$TURBO_ROOT$/*/*/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/.next/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/dist-sea/**",
+        "!$TURBO_ROOT$/**/sea-dist/**",
+        "!$TURBO_ROOT$/web-ui/out/**",
+        "!$TURBO_ROOT$/web-ui/next-env.d.ts",
+        "!$TURBO_ROOT$/cli/web-ui/**",
+        "!$TURBO_ROOT$/plugins/claude-code/scripts/**"
+      ]
+    },
     "clean": {
       "cache": false
     }

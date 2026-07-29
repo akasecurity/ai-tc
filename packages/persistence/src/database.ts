@@ -14,13 +14,19 @@ import type {
   ProjectFilesScan,
   ResolvedInventory,
 } from '@akasecurity/schema';
-import { isoToEpochMillis } from '@akasecurity/schema';
+import {
+  captureDefinitionVersion,
+  isoToEpochMillis,
+  toCaptureAttributes,
+  toCaptureDefinitionInput,
+} from '@akasecurity/schema';
 
+import { captureId } from './ids.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, ensureDataDirSync, tightenPerms, walSidecars } from './paths.ts';
+import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenFile, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -106,18 +112,20 @@ export interface LocalDatabase {
   // embedded audit timeline) reconstructed from the audit_events store. Read by the
   // OSS web-ui.
   readonly activity: SqliteActivityRepository;
-  // Meta data-model repositories. The live capture path writes
-  // events/findings; these populate the generalized
-  // inventory/audit/inspection tables.
+  // Meta data-model repositories — the generalized inventory/audit/inspection
+  // tables recordCapture (below) and recordConfigScan write into.
   readonly inventory: SqliteInventoryRepository;
   readonly sourceProject: SqliteSourceProjectRepository;
   readonly auditEvents: SqliteAuditEventsRepository;
   readonly classifiedData: SqliteClassifiedDataRepository;
   readonly inspectionDefinitions: SqliteInspectionDefinitionsRepository;
   readonly inspectionFindings: SqliteInspectionFindingsRepository;
-  // Atomic event + findings write. findings are already-masked DetectedFinding[]
-  // (the SDK masks before calling). Fail-open: a locked/corrupt DB or a bad row
-  // rolls back and is swallowed — dropping telemetry never breaks a session.
+  // Atomic capture write: one audit_events row (event_type = the capture's
+  // kind) plus one inspection_findings row per already-masked
+  // DetectedFinding[] (the SDK masks before calling), resolving each finding's
+  // inspection_definitions row from its ruleId. Fail-open: a locked/corrupt DB
+  // or a bad row rolls back and is swallowed — dropping telemetry never breaks
+  // a session.
   recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
@@ -168,86 +176,240 @@ function linkHost(input: InventoryInput, hostId: string | undefined): InventoryI
   return hostId ? { ...input, hostId } : input;
 }
 
+// Closing is cleanup: a failure here (already closed, or the close itself
+// failing) must never replace the error that caused it.
+function closeQuietly(db: DatabaseSync): void {
+  try {
+    db.close();
+  } catch {
+    // nothing to salvage — the caller's original error is what matters
+  }
+}
+
 // Open the store with the shared PRAGMAs: WAL lets the plugin (events/findings)
 // and an optional local reader share the file; busy_timeout absorbs brief
 // contention; foreign keys enforce the event→finding reference.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 2000');
-  db.exec('PRAGMA foreign_keys = ON');
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 2000');
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (err) {
+    // The OS handle exists the moment the constructor returns, but SQLite does
+    // not read the file until a statement runs — so a corrupt store opens fine
+    // and answers SQLITE_NOTADB here. Without this the handle leaks: on Windows
+    // that keeps the file locked for the life of the process, and in the
+    // long-lived dashboard server (which memoizes the handle only on success) a
+    // corrupt store would leak one more on every attempt.
+    closeQuietly(db);
+    throw err;
+  }
   return db;
 }
 
 // Move an incompatible legacy store aside (recoverable) so a fresh one can be
 // created. The handle was closed first, checkpointing the WAL into the main file,
-// so the -wal/-shm sidecars are stale and removed — a fresh handle would otherwise
-// pair the new db with the old WAL. Returns the backup path.
+// so the -wal/-shm/-journal sidecars are stale and removed — a fresh handle would
+// otherwise pair the new db with the old WAL. Returns the backup path.
 function backupLegacyStore(file: string): string {
   const backup = `${file}.legacy.${String(Date.now())}.bak`;
   renameSync(file, backup);
-  for (const sidecar of walSidecars(file)) {
+  // The backup is a full copy of the prompt corpus, so hold it to the same 0600
+  // as the live store — rename preserves the source's (possibly loose) mode.
+  tightenFile(backup);
+  for (const sidecar of dbSidecars(file)) {
     if (existsSync(sidecar)) rmSync(sidecar);
   }
   return backup;
 }
 
+/**
+ * Open the store and bring it to a usable state: pragmas, the legacy-lineage
+ * reset, migrations, permissions, every repository, and the default policies.
+ *
+ * ONE try covers all of it, because the handle is ours from the moment the
+ * constructor returns and every step after that can throw — migrations on an
+ * unmigratable schema, `tightenPerms` on a hostile filesystem, a repository
+ * constructor's eager `db.prepare` on a schema this build does not expect (a
+ * store written by a newer binary leaves `user_version` ahead, so the applier
+ * skips and the prepares meet columns that are not there), `seedDefaults` on a
+ * read-only disk. Guarding only some of those leaves the rest leaking the
+ * handle, which is the Windows file lock this exists to prevent — so the guard
+ * is one window over the whole sequence rather than one per known thrower.
+ */
+function openAndInitialize(file: string) {
+  let db = openWithPragmas(file);
+  try {
+    // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
+    // tenant-free lineage — same user_version space, so the applier would skip it,
+    // then every write would die on NOT NULL tenant_id and be swallowed fail-open
+    // (silent persistence loss). Back the old file up (recoverable) and start fresh
+    // so writes work; the reset is a one-time, loud-on-stderr event.
+    if (isForeignSqliteLineage(db)) {
+      db.close();
+      const backup = backupLegacyStore(file);
+      db = openWithPragmas(file);
+      akaWarn(
+        `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
+          `${backup} and created a fresh store.`,
+      );
+    }
+
+    applyMigrations(db, file);
+    tightenPerms(file);
+
+    const policies = new SqlitePoliciesRepository(db);
+    const installedPacks = new SqliteInstalledPacksRepository(db);
+    const repositories = {
+      events: new SqliteEventsRepository(db),
+      findings: new SqliteFindingsRepository(db),
+      policies,
+      installedPacks,
+      scanLedger: new SqliteScanLedgerRepository(db),
+      exceptions: new SqliteExceptionsRepository(db),
+      resolutions: new SqliteResolutionsRepository(db),
+      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      security: new SqliteSecurityRepository(db),
+      detections: new SqliteDetectionsRepository(db),
+      shares: new SqliteSharesRepository(db),
+      policyCatalog: new SqlitePolicyCatalogRepository(installedPacks),
+      inventory: new SqliteInventoryRepository(db),
+      inventoryAssets: new SqliteInventoryAssetsRepository(db),
+      projectFiles: new SqliteProjectFilesRepository(db),
+      activity: new SqliteActivityRepository(db),
+      sourceProject: new SqliteSourceProjectRepository(db),
+      auditEvents: new SqliteAuditEventsRepository(db),
+      classifiedData: new SqliteClassifiedDataRepository(db),
+      inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
+      inspectionFindings: new SqliteInspectionFindingsRepository(db),
+      configInventory: new SqliteConfigInventoryRepository(db),
+    };
+    policies.seedDefaults();
+    return { db, ...repositories };
+  } catch (err) {
+    closeQuietly(db);
+    throw err;
+  }
+}
+
 export function openLocalDatabase(dir: string): LocalDatabase {
   ensureDataDirSync(dir);
   const file = join(dir, DB_FILENAME);
-  let db = openWithPragmas(file);
-
-  // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
-  // tenant-free lineage — same user_version space, so the applier would skip it,
-  // then every write would die on NOT NULL tenant_id and be swallowed fail-open
-  // (silent persistence loss). Back the old file up (recoverable) and start fresh
-  // so writes work; the reset is a one-time, loud-on-stderr event.
-  if (isForeignSqliteLineage(db)) {
-    db.close();
-    const backup = backupLegacyStore(file);
-    db = openWithPragmas(file);
-    akaWarn(
-      `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
-        `${backup} and created a fresh store.`,
-    );
-  }
-
-  applyMigrations(db);
-  tightenPerms(file);
-
-  const events = new SqliteEventsRepository(db);
-  const findings = new SqliteFindingsRepository(db);
-  const policies = new SqlitePoliciesRepository(db);
-  const installedPacks = new SqliteInstalledPacksRepository(db);
-  const scanLedger = new SqliteScanLedgerRepository(db);
-  const exceptions = new SqliteExceptionsRepository(db);
-  const resolutions = new SqliteResolutionsRepository(db);
-  const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
-  const security = new SqliteSecurityRepository(db);
-  const detections = new SqliteDetectionsRepository(db);
-  const shares = new SqliteSharesRepository(db);
-  const policyCatalog = new SqlitePolicyCatalogRepository(installedPacks);
-  const inventory = new SqliteInventoryRepository(db);
-  const inventoryAssets = new SqliteInventoryAssetsRepository(db);
-  const projectFiles = new SqliteProjectFilesRepository(db);
-  const activity = new SqliteActivityRepository(db);
-  const sourceProject = new SqliteSourceProjectRepository(db);
-  const auditEvents = new SqliteAuditEventsRepository(db);
-  const classifiedData = new SqliteClassifiedDataRepository(db);
-  const inspectionDefinitions = new SqliteInspectionDefinitionsRepository(db);
-  const inspectionFindings = new SqliteInspectionFindingsRepository(db);
-  const configInventory = new SqliteConfigInventoryRepository(db);
-  policies.seedDefaults();
+  const {
+    db,
+    events,
+    findings,
+    policies,
+    installedPacks,
+    scanLedger,
+    exceptions,
+    resolutions,
+    ruleProbeCache,
+    security,
+    detections,
+    shares,
+    policyCatalog,
+    inventory,
+    inventoryAssets,
+    projectFiles,
+    activity,
+    sourceProject,
+    auditEvents,
+    classifiedData,
+    inspectionDefinitions,
+    inspectionFindings,
+    configInventory,
+  } = openAndInitialize(file);
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
     failOpenTransaction(db, () => {
-      events.insertEvent(event);
-      // Scope dedup to the event's session so one sensitive value crossing
-      // several surfaces in one action (prompt → tool call) is recorded once.
       const sessionId = event.metadata?.sessionId;
-      findings.insertFindings(detected, sessionId ? { sessionId } : {});
+
+      // Plant the session's structural root before the capture's own row FKs
+      // onto it (see auditEvents.ensureSessionRoot for why this ordering is
+      // load-bearing — INSERT OR IGNORE does not suppress a foreign-key
+      // violation, so without the root the whole capture would roll back).
+      if (sessionId) {
+        auditEvents.ensureSessionRoot(sessionId, event.occurredAt);
+      }
+
+      // The capture's own audit row. Content-addressed on (sessionId,
+      // contentHash, filePath) — captureId — so re-ingesting identical content in
+      // the same session never duplicates it, yet two DISTINCT files with
+      // byte-identical content stay two rows (see captureId). All four capture
+      // kinds (prompt/response/code_change/tool_use) map onto AuditEventType as
+      // themselves — see the superset invariant documented there.
+      const auditEventId = captureId(
+        sessionId ?? null,
+        event.contentHash,
+        event.metadata?.filePath ?? null,
+      );
+      auditEvents.insertAuditEvent({
+        id: auditEventId,
+        eventType: event.kind,
+        startedAt: event.occurredAt,
+        parentId: sessionId,
+        rootSessionId: sessionId,
+        content: event.content,
+        contentHash: event.contentHash,
+        attributes: toCaptureAttributes(event),
+      });
+
+      // Definitions first, keyed by (ruleId, version) — mirrors
+      // recordConfigScan's structure — so each finding resolves its
+      // content-addressed definition id without minting one itself. The capture
+      // path's version folds in category+severity (captureDefinitionVersion), so
+      // the map collapses to one definition upsert per distinct
+      // (ruleId, category, severity) — a pack update that reclassifies a rule
+      // mints a new definition row rather than being frozen at first-write.
+      const definitionIds = new Map<string, string>();
+      for (const finding of detected) {
+        // Scope dedup to the event's session so one sensitive value crossing
+        // several surfaces in one action (prompt → tool call) is recorded
+        // once — the legacy cross-surface guarantee, rejoined onto the
+        // generalized tables (see SqliteInspectionFindingsRepository).
+        if (
+          sessionId &&
+          inspectionFindings.isSessionDuplicate(finding.ruleId, finding.maskedMatch, sessionId)
+        ) {
+          continue;
+        }
+        // Guard against resubmitting the identical capture: the audit event
+        // row itself is content-addressed and idempotent (INSERT OR IGNORE),
+        // but an in-flight finding's own row id is a fresh random uuid per
+        // call, so without this check a replayed capture would duplicate its
+        // findings even though its parent event never duplicates.
+        if (
+          inspectionFindings.isEventDuplicate(
+            auditEventId,
+            finding.ruleId,
+            finding.maskedMatch,
+            finding.span.start,
+            finding.span.end,
+          )
+        ) {
+          continue;
+        }
+        const key = `${finding.ruleId}@${captureDefinitionVersion(finding)}`;
+        let definitionId = definitionIds.get(key);
+        if (!definitionId) {
+          definitionId = inspectionDefinitions.upsert(toCaptureDefinitionInput(finding));
+          definitionIds.set(key, definitionId);
+        }
+        inspectionFindings.insertFinding({
+          id: finding.id,
+          auditEventId,
+          inspectionDefinitionId: definitionId,
+          span: finding.span,
+          maskedMatch: finding.maskedMatch,
+          actionTaken: finding.actionTaken,
+          confidence: finding.confidence,
+          findingKey: finding.findingKey ?? undefined,
+        });
+      }
     });
   }
 

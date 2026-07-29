@@ -4,7 +4,7 @@
 
 **AKA Security — We secure agent harnesses at the source.**
 
-AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught and kept on your machine, not sent to a model or a third party.
+AI Traffic Control (`ai-tc`) is an open-source control plane for coding agents. It watches an agent session's traffic (prompts, tool calls, responses, file reads), scans each event against your rule packs, and decides what happens next: monitor, warn, redact, block, or a manual exception. Secrets and regulated data like PCI, PHI, and PII are caught locally: live detection and enforcement never send them to a model or a third party. The one exception is the opt-in `/aka:setup` calibration, which does send what its history scan finds to the model API to be rated.[^egress]
 
 `ai-tc` is the detection engine. For harness posture — safe-default permissions, structural command guards, and credential deny rules for Claude Code — pair it with [claude-tools](https://github.com/akasecurity/claude-tools). The two compose: posture from claude-tools, detection from ai-tc.
 
@@ -65,7 +65,9 @@ In Claude Code:
 
 ### Claude Desktop
 
-Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and nothing leaves your machine to scan it.
+Claude Desktop is supported too; the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) covers both. `ai-tc` runs locally alongside your agent. There's no backend to stand up, and no scanning happens off your machine.[^egress]
+
+[^egress]: Detection and enforcement run locally — no AKA server, no account, and no built-in network client (the source uses no `fetch`). Three narrow paths do reach the network, all through child processes: package-manager installs/updates (`npm`/`claude`), the plugin's `npm audit signatures` supply-chain check, and the **opt-in** `/aka:setup` calibration. That last one is the only path that carries your data: to rate false positives and severity, its judge step sends what an initial history scan finds — for each finding, the raw unmasked value including any secret, plus roughly 120 characters of the surrounding transcript text on either side (any other secrets detected in that window are masked) — to the model API through the `claude` CLI. That's the same model provider your agent already uses, and it happens only after you explicitly opt in. You can withdraw the grant later to stop future scans, but data already sent cannot be recalled.
 
 ## Docs
 

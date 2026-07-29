@@ -9,7 +9,7 @@
     "./drizzle": "./src/drizzle/index.ts"
   },
   "scripts": {
-    "lint": "eslint src test",
+    "lint": "eslint src test && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "gen:sqlite-ddl": "drizzle-kit generate --config drizzle.config.local.ts && node scripts/gen-sqlite-ddl.mjs"

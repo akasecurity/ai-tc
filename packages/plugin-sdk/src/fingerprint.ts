@@ -6,6 +6,7 @@
 export type { FingerprintKey } from '@akasecurity/persistence';
 export {
   fingerprintValue,
+  isCurrentKeyVersion,
   loadOrCreateFingerprintKey,
   readFingerprintKey,
   rotateFingerprintKey,

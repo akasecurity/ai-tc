@@ -1,0 +1,9 @@
+{
+  "//": "Replaces the root `test` dependsOn (build, ^build, ^typecheck). Dropping `build` is the point: web-ui's build is `next build`, and both suites (a pure header gate + Server Actions over node:sqlite) read no build output, so keeping it would put a full production build on the critical path of `pnpm test`. `^build` goes with it as a side effect of overriding the key — a no-op today, since none of web-ui's workspace dependencies has a build script (only cli, web-ui and the plugin do). `^typecheck` is kept: it is what invalidates this package when a dependency's source changes, since libs are consumed as raw source.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "dependsOn": ["^typecheck"]
+    }
+  }
+}

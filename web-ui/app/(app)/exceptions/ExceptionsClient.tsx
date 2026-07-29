@@ -8,7 +8,11 @@ import {
   PageHead,
   RotateKeyDialog,
 } from '@akasecurity/dashboard-ui';
-import type { BlockedDetection, DetectionException } from '@akasecurity/schema';
+import type {
+  BlockedDetection,
+  DetectionException,
+  FingerprintKeyState,
+} from '@akasecurity/schema';
 import { Button } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -21,14 +25,14 @@ export function ExceptionsClient({
   blocked,
   includeTerminal,
   blockedWindow,
-  keyVersion,
+  keyState,
   activePermanent,
 }: {
   items: DetectionException[];
   blocked: BlockedDetection[];
   includeTerminal: boolean;
   blockedWindow: BlockedWindow;
-  keyVersion: number | null;
+  keyState: FingerprintKeyState;
   activePermanent: DetectionException[];
 }) {
   const router = useRouter();
@@ -36,6 +40,11 @@ export function ExceptionsClient({
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
+
+  // The rotate button and dialog only label WHICH version is being replaced, so
+  // "absent" and "unreadable" both correctly read as unknown there. The strip
+  // gets the full state, because for it the two mean different things.
+  const keyVersion = keyState.status === 'present' ? keyState.version : null;
 
   const setBlockedWindow = (next: BlockedWindow) => {
     const sp = new URLSearchParams();
@@ -106,6 +115,7 @@ export function ExceptionsClient({
         }}
         blockedWindow={blockedWindow}
         onBlockedWindowChange={setBlockedWindow}
+        keyState={keyState}
       />
 
       <ExceptionsTableView

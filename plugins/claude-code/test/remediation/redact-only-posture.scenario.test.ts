@@ -44,6 +44,7 @@ describe("'Redact only' through the built remediate.js persists the standing pos
 
     journey.intro();
     journey.onboardHistorical('full');
+    journey.onboardModelJudge();
     const triage = journey.backfillTriage().stdout;
     preview = journey.applyPreview(triage).stdout;
     CalibrationFrame.parse(readFrameJsonBlock(preview));

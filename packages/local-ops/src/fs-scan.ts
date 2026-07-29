@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative } from 'node:path';
+import { basename, extname, join, relative, resolve } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
 import {
@@ -14,11 +14,16 @@ import {
   redact,
   scan,
 } from '@akasecurity/detections';
-import type { LocalDatabase } from '@akasecurity/persistence';
+import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
+import {
+  computeFindingKey,
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+} from '@akasecurity/persistence';
 import { toPosix } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
-  DetectedFinding,
+  DetectedFindingWithKey,
   EventMetadata,
   IngestEvent,
   Rule,
@@ -187,6 +192,14 @@ export interface ScanPathOptions {
   // A rule absent from the map (or no map) falls back to DEFAULT_ACTIONS[category].
   ruleActions?: ReadonlyMap<string, ActionTaken> | undefined;
   sourceTool?: SourceTool | undefined;
+  // The ~/.aka/data directory (the same one passed to openLocalDatabase) —
+  // where the exception fingerprint key lives. Lets an at-rest finding's
+  // finding_key use the SAME keyed-HMAC value fingerprint the plugin's live
+  // capture path uses (see createPluginRuntime's keyForLedger), so a file
+  // scanned by both `aka scan`/the web-ui AND the plugin reconciles onto one
+  // row. Omitted (or an unreadable/corrupt key file) falls back to the masked
+  // match — a finding_key is still produced, just keyed on a weaker identity.
+  dataDir?: string | undefined;
 }
 
 // Per-file detail for machine consumers (`aka scan --format json`, CI gates).
@@ -195,7 +208,7 @@ export interface ScanPathOptions {
 export interface ScannedFileFindings {
   path: string;
   gitignored: boolean;
-  findings: DetectedFinding[];
+  findings: DetectedFindingWithKey[];
 }
 
 export interface ScanPathResult {
@@ -254,7 +267,35 @@ export function scanPathIntoStore(
   let findingCount = 0;
   const files: ScannedFileFindings[] = [];
   const egressFiles: FileEgressHits[] = [];
-  for (const { path: file, gitignored } of collectFiles(target)) {
+
+  // Resolved (and possibly minted) at most once per scan call, mirroring
+  // createPluginRuntime's keyForLedger(): the first finding is the moment a
+  // stable value fingerprint becomes relevant, so a clean scan never touches
+  // the key file. Fails open — a missing dataDir or a corrupt/unreadable key
+  // file leaves the key unavailable (undefined = not tried yet, null =
+  // unavailable) rather than aborting the scan; computeFindingKey still gets
+  // called below, just with the masked-match fallback.
+  let fingerprintKey: FingerprintKey | null | undefined;
+  function resolveFingerprintKey(): FingerprintKey | null {
+    if (fingerprintKey === undefined) {
+      try {
+        fingerprintKey = opts.dataDir ? loadOrCreateFingerprintKey(opts.dataDir) : null;
+      } catch {
+        fingerprintKey = null;
+      }
+    }
+    return fingerprintKey;
+  }
+
+  // Absolutize the walk root before any path reaches computeFindingKey /
+  // metadata.filePath. `aka scan` / `aka scan .` default `target` to a RELATIVE
+  // path, but the plugin's worktree scanner keys on ABSOLUTE paths and
+  // computeFindingKey only normalizes backslashes — so a relative target would
+  // mint a different finding_key for the same file+secret and never reconcile
+  // (ON CONFLICT (finding_key)) across the two tools. resolve() is relative to
+  // process.cwd() — the same base the callers' statSync(target) already uses —
+  // and is a no-op on the already-absolute paths the web-ui folder picker passes.
+  for (const { path: file, gitignored } of collectFiles(resolve(target))) {
     let text: string;
     try {
       text = readFileSync(file, 'utf8');
@@ -283,19 +324,33 @@ export function scanPathIntoStore(
       content: redact(text, matches), // store the REDACTED file, never the raw secret
       metadata,
     };
-    const findings: DetectedFinding[] = matches.map((m) => ({
-      id: randomUUID(),
-      eventId,
-      ruleId: m.ruleId,
-      category: m.category,
-      severity: m.severity,
-      span: m.span,
-      maskedMatch: maskMatch(m.rawMatch),
-      // Per-pack action (monitor-by-default) when the installed snapshot supplies
-      // one, else the per-category fallback — mirrors the live path's resolveAction.
-      actionTaken: opts.ruleActions?.get(m.ruleId) ?? DEFAULT_ACTIONS[m.category],
-      confidence: m.confidence,
-    }));
+    const findings: DetectedFindingWithKey[] = matches.map((m) => {
+      const maskedMatch = maskMatch(m.rawMatch);
+      const key = resolveFingerprintKey();
+      // The SAME keyed HMAC fingerprint used for detection exceptions /
+      // blocked_detections when a fingerprint key is available; falls back to
+      // the masked match when it is not (no dataDir, or a corrupt key file) —
+      // mirrors createPluginRuntime's capture(), so the two callers derive
+      // byte-identical finding_keys for the same (ruleId, filePath, value).
+      const valueFingerprint = key ? fingerprintValue(key, m.rawMatch) : maskedMatch;
+      return {
+        id: randomUUID(),
+        eventId,
+        ruleId: m.ruleId,
+        category: m.category,
+        severity: m.severity,
+        span: m.span,
+        maskedMatch,
+        // Per-pack action (monitor-by-default) when the installed snapshot supplies
+        // one, else the per-category fallback — mirrors the live path's resolveAction.
+        actionTaken: opts.ruleActions?.get(m.ruleId) ?? DEFAULT_ACTIONS[m.category],
+        confidence: m.confidence,
+        // Every fs-scan finding is at-rest (kind: 'code_change' with a
+        // filePath), unlike the plugin's in-flight captures, so — unlike
+        // runtime.ts's isAtRest branch — a finding_key is unconditional here.
+        findingKey: computeFindingKey({ ruleId: m.ruleId, filePath: file, valueFingerprint }),
+      };
+    });
     db.recordCapture(event, findings);
     files.push({ path: file, gitignored, findings });
     findingCount += findings.length;

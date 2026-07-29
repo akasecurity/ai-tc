@@ -24,8 +24,8 @@
     "@commitlint/config-conventional": "^21.2.0",
     "eslint": "^9.0.0",
     "lefthook": "^2.1.10",
-    "prettier": "^3.9.5",
-    "turbo": "^2.10.5",
+    "prettier": "^3.9.6",
+    "turbo": "^2.10.7",
     "typescript": "^5.8.0"
   },
   "pnpm": {

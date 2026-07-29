@@ -1,7 +1,14 @@
-// Pure logic for the dependency-audit CI gate: waiver validation, `pnpm audit`
-// payload parsing, advisory classification, and Markdown report generation.
-// The CLI entry (audit-dependencies.ts) owns all I/O; everything here is
-// side-effect-free so the unit suite can drive it with canned payloads.
+// Pure logic for the dependency-audit CI gate: waiver validation, audit
+// payload parsing (pnpm's v1 format and npm's v2 format), advisory
+// classification, and Markdown report generation. The CLI entry
+// (audit-dependencies.ts) owns all I/O; everything here is side-effect-free
+// so the unit suite can drive it with canned payloads.
+
+// The gate runs in one of two modes — `pnpm audit` over the workspace
+// lockfile, or `npm audit` over an end-user resolution of the published CLI's
+// runtime dependencies — and every waiver names the mode it applies to.
+export const AUDIT_MODES = ['workspace', 'artifact'] as const;
+export type AuditMode = (typeof AUDIT_MODES)[number];
 
 export interface AuditAdvisory {
   id?: number;
@@ -22,6 +29,7 @@ export interface AuditPayload {
 
 export interface Waiver {
   advisory: string;
+  scope: AuditMode;
   reason: string;
   expires: string;
   module?: string;
@@ -70,6 +78,11 @@ export function validateWaivers(raw: unknown): Waiver[] {
     const waiver = entry as Partial<Waiver>;
     if (typeof waiver.advisory !== 'string' || waiver.advisory.trim() === '') {
       throw new WaiverConfigError('every waiver needs an "advisory" (a GHSA or CVE id)');
+    }
+    if (waiver.scope !== 'workspace' && waiver.scope !== 'artifact') {
+      throw new WaiverConfigError(
+        `waiver ${waiver.advisory} needs a "scope" ("workspace" or "artifact")`,
+      );
     }
     if (typeof waiver.reason !== 'string' || waiver.reason.trim() === '') {
       throw new WaiverConfigError(`waiver ${waiver.advisory} needs a non-empty "reason"`);
@@ -124,6 +137,87 @@ export function parseAuditPayload(stdout: string, stderr = ''): AuditPayload {
   return parsed as AuditPayload;
 }
 
+// npm emits the v2 audit format instead: a "vulnerabilities" map keyed by
+// package name, each entry's "via" mixing advisory objects with plain
+// package-name strings (transitive links). Only the objects are advisories;
+// they carry no CVE list, so an artifact-scoped waiver must use the GHSA id.
+export interface NpmAuditVia {
+  source?: number;
+  name?: string;
+  title?: string;
+  url?: string;
+  severity?: string;
+  range?: string;
+}
+
+export interface NpmAuditEntry {
+  name?: string;
+  severity?: string;
+  via?: (NpmAuditVia | string)[];
+  nodes?: string[];
+}
+
+export interface NpmAuditPayload {
+  vulnerabilities: Record<string, NpmAuditEntry>;
+  metadata?: { vulnerabilities?: Record<string, number> };
+}
+
+// The same completed-audit test as parseAuditPayload, for npm's v2 output:
+// JSON that carries a "vulnerabilities" object and no top-level "error".
+export function parseNpmAuditPayload(stdout: string, stderr = ''): NpmAuditPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    const detail = (stderr || stdout || '').trim().slice(0, 400);
+    throw new Error(`npm audit did not return JSON (registry unreachable?): ${detail}`);
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    'error' in parsed ||
+    !('vulnerabilities' in parsed)
+  ) {
+    const transport = (parsed as { error?: { code?: string; summary?: string } } | null)?.error;
+    const detail = transport
+      ? `${transport.code ?? ''} ${transport.summary ?? ''}`.trim()
+      : 'output has no "vulnerabilities" field';
+    throw new Error(`npm audit did not complete: ${detail.slice(0, 400)}`);
+  }
+  return parsed as NpmAuditPayload;
+}
+
+const GHSA_URL = /\/advisories\/(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$/i;
+
+// Reduces an npm v2 payload to the AuditPayload shape pnpm produces, so
+// classification and reporting are shared across both modes. Each advisory
+// object becomes one entry keyed by advisory id and package, and the entry's
+// resolved node paths stand in for pnpm's dependency paths. npm's counts
+// carry a "total" the pnpm format does not; it is dropped so the report's
+// totals line reads the same in both modes.
+export function normalizeNpmAudit(payload: NpmAuditPayload): AuditPayload {
+  const advisories: Record<string, AuditAdvisory> = {};
+  for (const entry of Object.values(payload.vulnerabilities)) {
+    for (const via of entry.via ?? []) {
+      if (typeof via !== 'object') continue;
+      const ghsa = GHSA_URL.exec(via.url ?? '')?.[1];
+      const module = via.name ?? entry.name;
+      const key = `${ghsa ?? String(via.source ?? '')}:${module ?? ''}`;
+      const normalized: AuditAdvisory = { cves: [], findings: [{ paths: entry.nodes ?? [] }] };
+      if (via.source !== undefined) normalized.id = via.source;
+      if (ghsa !== undefined) normalized.github_advisory_id = ghsa;
+      if (module !== undefined) normalized.module_name = module;
+      if (via.severity !== undefined) normalized.severity = via.severity;
+      if (via.title !== undefined) normalized.title = via.title;
+      if (via.url !== undefined) normalized.url = via.url;
+      advisories[key] ??= normalized;
+    }
+  }
+  const counts = { ...(payload.metadata?.vulnerabilities ?? {}) };
+  delete counts.total;
+  return { advisories, metadata: { vulnerabilities: counts } };
+}
+
 // pnpm's own suppression channel (`pnpm.auditConfig.ignoreCves`/`ignoreGhsas`)
 // filters advisories out of the payload and into `muted` — with no expiry, no
 // reason, and no report row. The gate refuses to run while anything is muted
@@ -136,6 +230,12 @@ export function assertNothingMuted(payload: AuditPayload): void {
         'muted advisories carry no expiry or review trail — use .github/audit-waivers.json instead',
     );
   }
+}
+
+// Waivers apply per audit: a run selects only the waivers scoped to it, so
+// classify() never sees — and never marks stale — the other audit's waivers.
+export function waiversFor(mode: AuditMode, waivers: Waiver[]): Waiver[] {
+  return waivers.filter((waiver) => waiver.scope === mode);
 }
 
 export function waiverMatches(waiver: Waiver, advisory: AuditAdvisory): boolean {
@@ -199,19 +299,48 @@ function advisoryRow(advisory: AuditAdvisory): string {
   return `| ${mdEscape(advisory.module_name)} | ${advisory.severity ?? ''} | [${id}](${advisory.url ?? ''}) | ${mdEscape(advisory.title)} | ${via} |`;
 }
 
+export const REPORT_STYLES: Record<
+  AuditMode,
+  { title: string; headline: string; fixHint: string[] }
+> = {
+  workspace: {
+    title: 'Dependency audit — workspace',
+    headline: '`pnpm audit` over the workspace lockfile',
+    fixHint: [
+      'Fix by upgrading the dependency or raising its floor via `pnpm.overrides`; if no fixed',
+      'release exists, add an expiring waiver — see CONTRIBUTING.md ("Dependency advisories and waivers").',
+    ],
+  },
+  artifact: {
+    title: 'Dependency audit — shipped artifact',
+    headline: "`npm audit` over an end-user resolution of the published CLI's runtime dependencies",
+    fixHint: [
+      'Fix by raising the affected range in cli/package.json `dependencies` so a fresh `npm install`',
+      'resolves a patched release — workspace `pnpm.overrides` do not reach end-user installs, and a',
+      'copy nested under another package is pinned by that package, not by this repo. If the fix is',
+      'blocked upstream, add an expiring waiver — see CONTRIBUTING.md ("Dependency advisories and waivers").',
+    ],
+  },
+};
+
 export function buildReport({
+  mode,
   counts,
   blocking,
   waived,
   stale,
   nonBlocking,
-}: Classification & { counts: Record<string, number> }): string {
-  const lines = ['# Dependency audit', ''];
+}: Classification & { mode: AuditMode; counts: Record<string, number> }): string {
+  const style = REPORT_STYLES[mode];
+  const lines = [`# ${style.title}`, ''];
   const totals = Object.entries(counts)
     .filter(([, n]) => n > 0)
     .map(([severity, n]) => `${String(n)} ${severity}`)
     .join(', ');
-  lines.push(`\`pnpm audit\` — gate: **high/critical** — found: ${totals || 'no advisories'}.`, '');
+  lines.push(
+    `${style.headline} — gate: **high/critical** — found: ${totals || 'no advisories'}.`,
+    '',
+  );
 
   if (blocking.length > 0) {
     lines.push(`## Blocking advisories (${String(blocking.length)})`, '');
@@ -221,11 +350,7 @@ export function buildReport({
     );
     for (const advisory of blocking) lines.push(advisoryRow(advisory));
     lines.push('');
-    lines.push(
-      'Fix by upgrading the dependency or raising its floor via `pnpm.overrides`; if no fixed',
-      'release exists, add an expiring waiver — see CONTRIBUTING.md ("Dependency advisories and waivers").',
-      '',
-    );
+    lines.push(...style.fixHint, '');
   } else {
     lines.push('No blocking advisories.', '');
   }

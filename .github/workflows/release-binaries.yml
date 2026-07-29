@@ -19,6 +19,25 @@ on:
 permissions:
   contents: read
 
+# One release per tag at a time. A single tag push can start more than one run;
+# left unguarded they fan out in parallel and both reach the release job, where each
+# creates the same GitHub Release and force-moves `bin-latest` — a race on the
+# published assets and on the tag the install one-liners bootstrap from. Interleaving
+# two runs' uploads can pair binaries with a SHA256SUMS that does not describe them,
+# which the installers reject fail-closed.
+#
+# cancel-in-progress is false deliberately: interrupting a run midway through creating
+# the Release or moving `bin-latest` is worse than making it wait. This serializes
+# rather than deduplicates — a queued duplicate still runs once the first finishes and
+# replaces the assets with its own build, which stays self-consistent.
+#
+# The group is per-ref so a duplicate of the same tag queues behind its twin. A
+# workflow-wide group would also queue unrelated versions, and GitHub cancels a pending
+# run when a newer one joins the group — dropping a real release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: ${{ matrix.target }}

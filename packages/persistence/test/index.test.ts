@@ -51,6 +51,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'inspectionDefinitionId',
   'inspectionFindingId',
   'inventoryId',
+  'isCurrentKeyVersion',
+  'keyStateOf',
   'llmCallId',
   'loadOrCreateFingerprintKey',
   'migrateLegacyLayout',

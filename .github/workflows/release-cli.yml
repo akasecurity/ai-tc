@@ -20,6 +20,18 @@ on:
         type: boolean
         default: false
 
+# One release per tag at a time. A single tag push can start more than one run.
+# A duplicate is already self-limiting here: npm rejects a re-publish of the same
+# (name, version), so the losing run fails at the publish step and never reaches the
+# `cli-latest` move or the Release. That safety is a consequence of publish running
+# first — this group holds whatever the step order, and stops two runs overlapping.
+# It does not make a duplicate disappear: the queued run still executes afterward and
+# still fails at publish. cancel-in-progress is false so a run is never interrupted
+# midway through publishing or force-moving a tag.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Tag pushes get no run of the main CI workflow (it triggers only on main
   # pushes/PRs), so the release re-verifies the tagged commit itself — nothing

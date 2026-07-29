@@ -177,14 +177,35 @@ function linkHost(input: InventoryInput, hostId: string | undefined): InventoryI
   return hostId ? { ...input, hostId } : input;
 }
 
+// Closing is cleanup: a failure here (already closed, or the close itself
+// failing) must never replace the error that caused it.
+function closeQuietly(db: DatabaseSync): void {
+  try {
+    db.close();
+  } catch {
+    // nothing to salvage — the caller's original error is what matters
+  }
+}
+
 // Open the store with the shared PRAGMAs: WAL lets the plugin (events/findings)
 // and an optional local reader share the file; busy_timeout absorbs brief
 // contention; foreign keys enforce the event→finding reference.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA busy_timeout = 2000');
-  db.exec('PRAGMA foreign_keys = ON');
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 2000');
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (err) {
+    // The OS handle exists the moment the constructor returns, but SQLite does
+    // not read the file until a statement runs — so a corrupt store opens fine
+    // and answers SQLITE_NOTADB here. Without this the handle leaks: on Windows
+    // that keeps the file locked for the life of the process, and in the
+    // long-lived dashboard server (which memoizes the handle only on success) a
+    // corrupt store would leak one more on every attempt.
+    closeQuietly(db);
+    throw err;
+  }
   return db;
 }
 
@@ -245,54 +266,107 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
   return backup;
 }
 
+/**
+ * Open the store and bring it to a usable state: pragmas, the legacy-lineage
+ * reset, migrations, permissions, every repository, and the default policies.
+ *
+ * ONE try covers all of it, because the handle is ours from the moment the
+ * constructor returns and every step after that can throw — migrations on an
+ * unmigratable schema, `tightenPerms` on a hostile filesystem, a repository
+ * constructor's eager `db.prepare` on a schema this build does not expect (a
+ * store written by a newer binary leaves `user_version` ahead, so the applier
+ * skips and the prepares meet columns that are not there), `seedDefaults` on a
+ * read-only disk. Guarding only some of those leaves the rest leaking the
+ * handle, which is the Windows file lock this exists to prevent — so the guard
+ * is one window over the whole sequence rather than one per known thrower.
+ */
+function openAndInitialize(file: string) {
+  let db = openWithPragmas(file);
+  try {
+    // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
+    // tenant-free lineage — same user_version space, so the applier would skip it,
+    // then every write would die on NOT NULL tenant_id and be swallowed fail-open
+    // (silent persistence loss). Back the old file up (recoverable) and start fresh
+    // so writes work; the reset is a one-time, loud-on-stderr event.
+    if (isForeignSqliteLineage(db)) {
+      // Snapshot through the OPEN handle (VACUUM INTO) before it is closed and
+      // the original store cleared — a bare rename after close can lose
+      // un-checkpointed WAL frames. backupLegacyStore closes the handle itself,
+      // on its throw path too, so there is no close to do here; the catch below
+      // reaching an already-closed handle is what closeQuietly absorbs.
+      const backup = backupLegacyStore(db, file);
+      db = openWithPragmas(file);
+      akaWarn(
+        `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
+          `${backup} and created a fresh store.`,
+      );
+    }
+
+    applyMigrations(db, file);
+    tightenPerms(file);
+
+    const policies = new SqlitePoliciesRepository(db);
+    const installedPacks = new SqliteInstalledPacksRepository(db);
+    const repositories = {
+      events: new SqliteEventsRepository(db),
+      findings: new SqliteFindingsRepository(db),
+      policies,
+      installedPacks,
+      scanLedger: new SqliteScanLedgerRepository(db),
+      exceptions: new SqliteExceptionsRepository(db),
+      resolutions: new SqliteResolutionsRepository(db),
+      ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      security: new SqliteSecurityRepository(db),
+      detections: new SqliteDetectionsRepository(db),
+      shares: new SqliteSharesRepository(db),
+      policyCatalog: new SqlitePolicyCatalogRepository(installedPacks),
+      inventory: new SqliteInventoryRepository(db),
+      inventoryAssets: new SqliteInventoryAssetsRepository(db),
+      projectFiles: new SqliteProjectFilesRepository(db),
+      activity: new SqliteActivityRepository(db),
+      sourceProject: new SqliteSourceProjectRepository(db),
+      auditEvents: new SqliteAuditEventsRepository(db),
+      classifiedData: new SqliteClassifiedDataRepository(db),
+      inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
+      inspectionFindings: new SqliteInspectionFindingsRepository(db),
+      configInventory: new SqliteConfigInventoryRepository(db),
+    };
+    policies.seedDefaults();
+    return { db, ...repositories };
+  } catch (err) {
+    closeQuietly(db);
+    throw err;
+  }
+}
+
 export function openLocalDatabase(dir: string): LocalDatabase {
   ensureDataDirSync(dir);
   const file = join(dir, DB_FILENAME);
-  let db = openWithPragmas(file);
-
-  // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
-  // tenant-free lineage — same user_version space, so the applier would skip it,
-  // then every write would die on NOT NULL tenant_id and be swallowed fail-open
-  // (silent persistence loss). Back the old file up (recoverable) and start fresh
-  // so writes work; the reset is a one-time, loud-on-stderr event.
-  if (isForeignSqliteLineage(db)) {
-    // Snapshot through the open handle (VACUUM INTO) before it is closed and the
-    // original store cleared — a bare rename after close can lose un-checkpointed
-    // WAL frames. See backupLegacyStore.
-    const backup = backupLegacyStore(db, file);
-    db = openWithPragmas(file);
-    akaWarn(
-      `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +
-        `${backup} and created a fresh store.`,
-    );
-  }
-
-  applyMigrations(db, file);
-  tightenPerms(file);
-
-  const events = new SqliteEventsRepository(db);
-  const findings = new SqliteFindingsRepository(db);
-  const policies = new SqlitePoliciesRepository(db);
-  const installedPacks = new SqliteInstalledPacksRepository(db);
-  const scanLedger = new SqliteScanLedgerRepository(db);
-  const exceptions = new SqliteExceptionsRepository(db);
-  const resolutions = new SqliteResolutionsRepository(db);
-  const ruleProbeCache = new SqliteRuleProbeCacheRepository(db);
-  const security = new SqliteSecurityRepository(db);
-  const detections = new SqliteDetectionsRepository(db);
-  const shares = new SqliteSharesRepository(db);
-  const policyCatalog = new SqlitePolicyCatalogRepository(installedPacks);
-  const inventory = new SqliteInventoryRepository(db);
-  const inventoryAssets = new SqliteInventoryAssetsRepository(db);
-  const projectFiles = new SqliteProjectFilesRepository(db);
-  const activity = new SqliteActivityRepository(db);
-  const sourceProject = new SqliteSourceProjectRepository(db);
-  const auditEvents = new SqliteAuditEventsRepository(db);
-  const classifiedData = new SqliteClassifiedDataRepository(db);
-  const inspectionDefinitions = new SqliteInspectionDefinitionsRepository(db);
-  const inspectionFindings = new SqliteInspectionFindingsRepository(db);
-  const configInventory = new SqliteConfigInventoryRepository(db);
-  policies.seedDefaults();
+  const {
+    db,
+    events,
+    findings,
+    policies,
+    installedPacks,
+    scanLedger,
+    exceptions,
+    resolutions,
+    ruleProbeCache,
+    security,
+    detections,
+    shares,
+    policyCatalog,
+    inventory,
+    inventoryAssets,
+    projectFiles,
+    activity,
+    sourceProject,
+    auditEvents,
+    classifiedData,
+    inspectionDefinitions,
+    inspectionFindings,
+    configInventory,
+  } = openAndInitialize(file);
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session

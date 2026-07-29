@@ -24,6 +24,8 @@ function config(dataDir: string): PluginConfig {
       policy: 'redact',
       historicalAccess: 'full',
       dataSharesInPlace: true,
+      vaultKeyCustody: 'file',
+      vaultInlineReveal: 'masked',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

@@ -94,9 +94,11 @@ describe('SQLITE_MIGRATIONS', () => {
     }
   });
 
-  it('is tenant-free: no tenant_id/user_id columns, no tenants/users/auth tables', () => {
+  it('is tenant-free: no tenant-scoped columns, no tenants/users/auth tables', () => {
     const all = SQLITE_MIGRATIONS.map((m) => m.sql).join('\n');
-    expect(all).not.toContain('tenant_id');
+    // The whole tenant_ prefix, not just tenant_id: any tenant-scoped column
+    // belongs to the extended (multi-tenant) schema, never to this store.
+    expect(all).not.toContain('tenant_');
     expect(all).not.toContain('user_id');
     for (const table of ['tenants', 'users', 'account', 'session', 'verification']) {
       expect(all).not.toContain(`CREATE TABLE \`${table}\``);

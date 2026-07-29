@@ -242,8 +242,10 @@ export {
   type ExceptionsTableViewProps,
 } from './exceptions/ExceptionsTableView.tsx';
 export {
+  blockedRowBlockReason,
   type ExceptionState,
   exceptionState,
+  isBlockedRowApprovable,
   SCOPE_ANSWER_LABEL,
   SCOPE_ANSWERS,
   SCOPE_LABEL,

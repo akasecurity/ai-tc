@@ -95,9 +95,12 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(footnote).toMatch(/rule, category, severity/i);
   });
 
-  // No lint rule bans `fetch` today (engineering#5) — the ban is a convention
-  // enforced by review. Claiming enforcement the CI does not provide is the same
-  // overclaim this footnote exists to retire.
+  // A lint rule DOES ban `fetch` now (`no-restricted-globals` and friends in
+  // packages/eslint-config, documented in CLAUDE.md §4), so this is no longer the
+  // false claim it once was. The guard stays for a different reason: nothing ties
+  // README prose to that config, so an enforcement claim here would silently
+  // outlive the rule that justified it. The footnote describes what the source
+  // does — "the source uses no `fetch`" — which the reader can check.
   it('does not claim `fetch` is enforced by tooling', () => {
     expect(text).not.toMatch(/`?fetch`? is banned/i);
     expect(text).not.toMatch(/`?fetch`? is blocked/i);

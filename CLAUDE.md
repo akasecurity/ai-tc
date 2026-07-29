@@ -49,7 +49,23 @@ Prefer a file-scoped config opt-out over an inline disable — an inline disable
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source. Network access happens **only through child processes**, and there are three such paths:
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source.
+
+ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
+
+- the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
+- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
+
+Two files carry a genuine local-only opt-out:
+
+| Site                                                                    | Allowed specifier | Why                                                                                                                |
+| ----------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)           | `node:net`        | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`) | `node:http`       | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                 |
+
+Both are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. Adding a third site means updating this table.
+
+Network access happens **only through child processes**, and there are three such paths:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).

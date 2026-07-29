@@ -124,4 +124,16 @@ describe('/aka:setup journey — model-judge consent granted (control)', () => {
 
     expect(journey.judgeWasInvoked()).toBe(true);
   });
+
+  // The transcript-suppression control, proven where it actually has to hold:
+  // in the environment of the spawned child, not in the object judgeEnv
+  // returned. These two vars are what keep the raw hits riding stdin out of
+  // ~/.claude/projects, where this product's own scanner would later find them.
+  // The harness clears both from the script's env, so their presence here can
+  // only have come from judgeEnv() through spawnClaude's execFileSync options.
+  it('hands the judge subprocess the transcript-suppression env', () => {
+    const seen = journey.judgeEnvSeen();
+    expect(seen.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
+    expect(seen.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+  });
 });

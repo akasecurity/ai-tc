@@ -1,5 +1,14 @@
 import type * as ChildProcess from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,23 +16,42 @@ import { TriageHit } from '@akasecurity/schema';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
-import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+import {
+  judgeEnv,
+  parseVerdict,
+  runJudge,
+  spawnClaude,
+  toJudgePayload,
+} from '../../src/triage/judge.ts';
 
-// No test in this file may reach a live model. judge.ts's only live path is
-// spawnClaude -> execFileSync('claude', …), so that one function is replaced
-// with a throwing spy: an accidental live call fails loudly here instead of
-// quietly sending raw secrets to the API. The rest of node:child_process is
-// left real. The afterAll below asserts the spy was never reached at all.
+// No test in this file may reach a live model. EVERY child-process entry point
+// node exposes is routed to one throwing spy, not just the execFileSync
+// spawnClaude happens to use today: a guard bound to one function name goes
+// vacuously green the moment the implementation reaches for spawnSync instead,
+// which is the opposite of what a fail-closed guard is for.
 const liveSpawn = vi.hoisted(() =>
-  vi.fn((): never => {
+  // Typed with the args it may receive (rather than declaring them) so the
+  // recorded calls stay inspectable for the wiring test below.
+  vi.fn<(...args: unknown[]) => never>(() => {
     throw new Error('a unit test must never spawn a live model');
   }),
 );
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof ChildProcess>()),
+  exec: liveSpawn,
+  execFile: liveSpawn,
   execFileSync: liveSpawn,
+  execSync: liveSpawn,
+  fork: liveSpawn,
+  spawn: liveSpawn,
+  spawnSync: liveSpawn,
 }));
 
+// The guard for every test EXCEPT the one deliberate probe below, which drives
+// spawnClaude into the spy on purpose to pin its call shape and clears the spy
+// in a `finally` the moment it has asserted. Splitting the two is what lets the
+// wiring be tested at all: a bare "never called" forbids the one test that
+// proves the judge env reaches execFileSync.
 afterAll(() => {
   expect(liveSpawn).not.toHaveBeenCalled();
 });
@@ -49,11 +77,24 @@ afterEach(() => {
 // the parent command's stderr, and a whole-value `not.toContain` stays green on
 // exactly that. Mirrors expectNoEchoOf in web-ui/test/actions/exceptions.test.ts.
 const ECHO_RUN = 8;
-function expectNoEchoOf(message: string, value: string): void {
+function expectNoEchoOf(message: string | undefined, value: string): void {
+  expect(message).toBeDefined();
+  const haystack = message ?? '';
   for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
-    expect(message).not.toContain(value.slice(i, i + ECHO_RUN));
+    expect(haystack).not.toContain(value.slice(i, i + ECHO_RUN));
   }
-  if (value.length < ECHO_RUN) expect(message).not.toContain(value);
+  if (value.length < ECHO_RUN) expect(haystack).not.toContain(value);
+}
+
+// Every value the env holds under `name`, whatever its casing. Windows' env
+// block is case-INSENSITIVE but case-PRESERVING: `process.env.PATH` reads it,
+// yet spreading process.env into a plain object (which judgeEnv does) can yield
+// the key as `Path` there, so a bare `env.PATH` assertion reads undefined on a
+// Windows runner. Matching every casing keeps the assertion about the value.
+function envValues(env: NodeJS.ProcessEnv, name: string): (string | undefined)[] {
+  return Object.keys(env)
+    .filter((key) => key.toLowerCase() === name.toLowerCase())
+    .map((key) => env[key]);
 }
 
 // A `claude -p --output-format json` envelope with `result` set to `text`.
@@ -127,11 +168,32 @@ describe('judgeEnv', () => {
   }
 
   it('sets both suppression vars on every platform', () => {
+    // Cleared first so the assertion is about judgeEnv rather than about
+    // whatever the developer running this happens to export.
+    vi.stubEnv('CLAUDE_CODE_SKIP_PROMPT_HISTORY', undefined);
+    vi.stubEnv('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', undefined);
     for (const platform of ['darwin', 'linux', 'win32'] as const) {
       withEnv(platform, (env) => {
         // The transcript suppressor: no prompt history written, auth preserved.
         expect(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
         // Telemetry-off. Not a transcript guard, but part of the pinned pair.
+        expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+      });
+    }
+  });
+
+  it('overrides a parent env that disables them', () => {
+    // The override wins only because the spread comes FIRST in judgeEnv's
+    // object literal. Move it to the end — the kind of tidy-up that reads as
+    // harmless — and a parent carrying `0` wins instead: the child writes a
+    // transcript, and the raw hits riding stdin land in ~/.claude/projects for
+    // the product's own scanner to find. A parent that carries neither key (the
+    // normal case, and CI) cannot catch that reorder, so seed both disabled.
+    vi.stubEnv('CLAUDE_CODE_SKIP_PROMPT_HISTORY', '0');
+    vi.stubEnv('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0');
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      withEnv(platform, (env) => {
+        expect(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
         expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
       });
     }
@@ -160,7 +222,7 @@ describe('judgeEnv', () => {
     vi.stubEnv('PATH', '/probe/bin');
     withEnv('linux', (env) => {
       expect(env.AKA_JUDGE_ENV_PROBE).toBe('inherited');
-      expect(env.PATH).toBe('/probe/bin');
+      expect(envValues(env, 'PATH')).toContain('/probe/bin');
     });
   });
 
@@ -206,6 +268,53 @@ describe('judgeEnv', () => {
 
       vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
       expect(judgeEnv(platform).CLAUDE_CONFIG_DIR).toBeUndefined();
+    }
+  });
+});
+
+// -------------------------------------------------------------------------
+// spawnClaude: what the production seam actually hands the child process
+// -------------------------------------------------------------------------
+
+// runJudge's tests assert what deps.spawn RECEIVES. This asserts what
+// spawnClaude PASSES ON — the other half of the same boundary, and the half
+// nothing covered. Drop `env` from the execFileSync options and every runJudge
+// test stays green while the real child inherits the parent env instead: no
+// suppression vars, a transcript written, raw secrets at rest in
+// ~/.claude/projects. The journey harness drives this seam for real through a
+// PATH shim, but reaching the shim does not depend on the env, so only a direct
+// assertion on the call shape pins it.
+describe('spawnClaude', () => {
+  it('passes the judge env and the prompt on stdin to execFileSync', () => {
+    const env = judgeEnv('linux');
+    const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;
+    try {
+      // The spy throws by design; the call it recorded is what is under test.
+      expect(() => spawnClaude(argv, env, 'RUBRIC + raw hits')).toThrow();
+
+      const [call] = liveSpawn.mock.calls;
+      if (call === undefined) throw new Error('spawnClaude reached no child-process function');
+      const [file, args, opts] = call as [
+        string,
+        readonly string[],
+        { env?: NodeJS.ProcessEnv; input?: string },
+      ];
+
+      expect(file).toBe('claude');
+      expect(args).toEqual([...argv]);
+      // Identity, not shape: the env judgeEnv built is the object handed over,
+      // so no copy can drop a key on the way.
+      expect(opts.env).toBe(env);
+      expect(opts.env?.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
+      expect(opts.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+      // The prompt rides stdin and never argv — argv has an ARG_MAX ceiling and
+      // is visible on the process list.
+      expect(opts.input).toBe('RUBRIC + raw hits');
+      expect(args.join(' ')).not.toContain('RUBRIC');
+    } finally {
+      // The one sanctioned call: cleared so the afterAll guard still speaks for
+      // every other test in this file.
+      liveSpawn.mockClear();
     }
   });
 });
@@ -507,6 +616,54 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
+  it('a cleanup fault never replaces the error the judge is throwing', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('removability here is decided by POSIX mode bits');
+    }
+    // A directory its owner cannot write to cannot have its children unlinked,
+    // so a recursive remove of the parent fails with a real EACCES from the
+    // real syscall. Root ignores mode bits, and a cleanup that SUCCEEDS leaves
+    // the error unreplaced too — so this test passes for the wrong reason
+    // without first proving the fault takes for whoever is running it.
+    const lock = (parent: string): string => {
+      const locked = join(parent, 'locked');
+      mkdirSync(locked);
+      writeFileSync(join(locked, 'child'), 'x');
+      chmodSync(locked, 0o500);
+      return locked;
+    };
+
+    const probe = ownedDir();
+    const probeLocked = lock(probe);
+    let faultTakes = false;
+    try {
+      rmSync(probe, { recursive: true, force: true });
+    } catch {
+      faultTakes = true;
+    }
+    if (!faultTakes) ctx.skip('this user can remove a write-protected directory');
+    chmodSync(probeLocked, 0o700);
+
+    let locked = '';
+    const { dir, threw } = runDarwin((env) => {
+      locked = lock(env.CLAUDE_CONFIG_DIR ?? '');
+      throw Object.assign(new Error(`Command failed: claude ${hit.rawMatch}`), { status: 7 });
+    });
+    try {
+      // The fs error from the failed removal did NOT displace the raw-free one
+      // the caller has to act on — apply-suppressions prints exactly this
+      // message to the parent's stderr.
+      expect((threw as Error).message).toBe('claude -p judge subprocess failed (exit 7)');
+      expectNoEchoOf((threw as Error).message, hit.rawMatch);
+      // The positive control: the dir survived, so the cleanup really did fail
+      // rather than this passing against a removal that quietly worked.
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      if (locked !== '') chmodSync(locked, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('never removes an inherited CLAUDE_CONFIG_DIR off darwin', () => {
     // Off darwin judgeEnv mints nothing, so CLAUDE_CONFIG_DIR is whatever the
     // parent carried — a real config dir the user may point at their own Claude
@@ -556,8 +713,6 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
 // handling. Each case seeds all three raw-bearing fields and asserts none
 // survives.
 describe('runJudge — spawn failure metadata', () => {
-  const CONTEXT_FRAGMENT = 'export KEY=';
-
   // A rejected spawn shaped like execFileSync's: the raw hits in every field it
   // really populates, plus whichever metadata this case is pinning.
   function failWith(meta: Record<string, unknown>): Error {
@@ -609,21 +764,25 @@ describe('runJudge — spawn failure metadata', () => {
     it(`surfaces ${name} and nothing else`, () => {
       const err = failWith(meta);
       expect(err.message).toBe(`claude -p judge subprocess failed (${expected})`);
-      // The raw value and the surrounding transcript window both stay inside.
+      // The raw value and the surrounding transcript window both stay inside,
+      // run by run: a truncated echo is still a live credential's prefix.
       expectNoEchoOf(err.message, hit.rawMatch);
-      expect(err.message).not.toContain(CONTEXT_FRAGMENT);
+      expectNoEchoOf(err.message, hit.context);
       // Nor may the raw-bearing original ride out attached: util.inspect and
       // most loggers print `cause`, which would undo the whole strip.
       expect(err.cause).toBeUndefined();
-      expect(Object.keys(err)).not.toContain('stdout');
-      expect(Object.keys(err)).not.toContain('stderr');
+      // A whitelist, not a blacklist of `stdout`/`stderr`: a fresh Error has no
+      // own enumerable keys at all, so this catches ANY property a future
+      // "attach the original for debugging" bolts on, whatever it is named.
+      expect(Object.keys(err)).toEqual([]);
     });
   }
 
   it('does not fall back to the live spawn when deps.spawn is missing', () => {
     // The seam is required, not defaulted. A future `deps.spawn ?? spawnClaude`
-    // would turn any caller that forgot to inject into a live egress; this fails
-    // instead, and the module-level execFileSync spy proves nothing was spawned.
+    // would turn any caller that forgot to inject into a live egress. It fails
+    // as the programming error it is rather than as a subprocess that never
+    // ran, and the spawn-family spy proves nothing was spawned.
     const err = (() => {
       try {
         runJudge([hit], { loadRubric: () => 'RUBRIC' } as unknown as JudgeDeps);
@@ -632,7 +791,8 @@ describe('runJudge — spawn failure metadata', () => {
       }
       throw new Error('expected runJudge to throw');
     })();
-    expect(err.message).toContain('judge subprocess failed');
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe('runJudge requires deps.spawn — there is no live-spawn fallback');
     expectNoEchoOf(err.message, hit.rawMatch);
     expect(liveSpawn).not.toHaveBeenCalled();
   });

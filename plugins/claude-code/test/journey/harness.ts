@@ -136,6 +136,20 @@ export class SetupJourney {
     return existsSync(this.judgeSentinelPath);
   }
 
+  // The environment the judge subprocess ACTUALLY received, as the stub read it
+  // off its own process.env. judgeEnv()'s unit tests pin the env that
+  // runJudge hands its spawn seam; only this pins that spawnClaude's
+  // execFileSync options carry it all the way to the child. Dropping `env`
+  // there leaves the child inheriting this harness's env instead — which still
+  // resolves the stub on PATH, so nothing else here would notice.
+  judgeEnvSeen(): Record<string, string | null> {
+    if (!existsSync(this.judgeSentinelPath)) throw new Error('the judge stub never ran');
+    return JSON.parse(readFileSync(this.judgeSentinelPath, 'utf8')) as Record<
+      string,
+      string | null
+    >;
+  }
+
   private get judgeSentinelPath(): string {
     return join(this.binDir, 'judge-invoked');
   }
@@ -390,6 +404,12 @@ export class SetupJourney {
       // Stub judge first on PATH so apply-suppressions' `claude -p` spawn hits it,
       // never a live model.
       PATH: `${this.binDir}:${HOST_ENV.PATH ?? ''}`,
+      // Cleared so judgeEnvSeen() proves something: if these reached the stub
+      // merely by being inherited from here, the assertion would hold even with
+      // spawnClaude passing no env at all. Node drops undefined entries when it
+      // builds the child's environment block, so this really unsets them.
+      CLAUDE_CODE_SKIP_PROMPT_HISTORY: undefined,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined,
     };
     try {
       const stdout = execFileSync(process.execPath, [join(SCRIPTS_DIR, script), ...args], {
@@ -422,8 +442,14 @@ export class SetupJourney {
     const src = `#!/usr/bin/env node
 'use strict';
 // Record that the judge actually ran, so a test can prove the consent gate
-// stopped the egress at the process boundary (see judgeWasInvoked).
-require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, '1');
+// stopped the egress at the process boundary (see judgeWasInvoked) — and WITH
+// WHAT environment, so a test can prove judgeEnv's transcript-suppression vars
+// survived the trip through spawnClaude's execFileSync (see judgeEnvSeen).
+require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, JSON.stringify({
+  CLAUDE_CODE_SKIP_PROMPT_HISTORY: process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY ?? null,
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ?? null,
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
+}));
 const prompt = require('node:fs').readFileSync(0, 'utf8');
 const fences = [...String(prompt).matchAll(/\`\`\`[a-z]*\\n([\\s\\S]*?)\`\`\`/g)];
 const block = fences.length ? fences[fences.length - 1][1] : '';

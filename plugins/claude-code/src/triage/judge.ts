@@ -184,10 +184,18 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
   const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
+  // No live-spawn fallback: a caller that forgot the seam must fail as the
+  // programming error it is, loudly and before any raw is assembled, rather
+  // than be quietly routed to the real `claude`. Thrown ahead of the try so
+  // nothing has been minted yet and the message carries no hit content.
+  if (typeof deps.spawn !== 'function') {
+    throw new TypeError('runJudge requires deps.spawn — there is no live-spawn fallback');
+  }
+
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;
-  // One read of the platform for both the env construction and the cleanup, so
-  // the branch that CREATES the temp config dir and the branch that REMOVES it
-  // can never disagree.
+  // Resolved once and passed to both the env construction and the cleanup, so a
+  // test can drive the darwin branch — and the removal that pairs with it — on
+  // any host. Production passes nothing and gets the real platform.
   const platform = deps.platform ?? process.platform;
   const env = judgeEnv(platform);
   try {
@@ -214,7 +222,14 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
     // it would destroy their configuration. Only the dir judgeEnv() minted on
     // darwin is ever removed here.
     if (platform === 'darwin' && env.CLAUDE_CONFIG_DIR) {
-      rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+      try {
+        rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+      } catch {
+        // A throw here would REPLACE whatever the try block is throwing — the
+        // raw-free spawn/parse failure the caller has to act on — with an fs
+        // error about a throwaway path. The dir is a mkdtemp under tmpdir(),
+        // so leaking it beats losing the real failure.
+      }
     }
   }
 }

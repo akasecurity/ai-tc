@@ -366,9 +366,13 @@ violation on `aka.db` must throw.
 
 Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
-prefix. `expectNoEchoOf` (`web-ui/test/actions/exceptions.test.ts`) is the **required form
-for every error assertion in that file**, including the ones a newly covered action brings
-with it — a plain `not.toContain(rawValue)` on an error is a defect, not a style choice.
+prefix. `expectNoEchoOf` is the **required form for every error assertion in a suite that
+already defines it** — today `web-ui/test/actions/exceptions.test.ts` and
+`plugins/claude-code/test/triage/judge.test.ts` — including the ones a newly covered action
+or seam brings with it; a plain `not.toContain(rawValue)` on an error is a defect, not a
+style choice. It is not reachable across a package wall, so a third suite that needs it
+copies it rather than importing it, and copies the `expect(value).toBeDefined()` guard with
+it — without that guard an `undefined` message satisfies the loop vacuously.
 This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
 stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
 fragment is stored on purpose; and an assertion that some non-secret string is absent — an

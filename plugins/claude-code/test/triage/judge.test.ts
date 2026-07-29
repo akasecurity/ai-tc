@@ -1,9 +1,60 @@
-import { rmSync } from 'node:fs';
+import type * as ChildProcess from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { TriageHit } from '@akasecurity/schema';
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { JudgeDeps } from '../../src/triage/judge.ts';
 import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+
+// No test in this file may reach a live model. judge.ts's only live path is
+// spawnClaude -> execFileSync('claude', …), so that one function is replaced
+// with a throwing spy: an accidental live call fails loudly here instead of
+// quietly sending raw secrets to the API. The rest of node:child_process is
+// left real. The afterAll below asserts the spy was never reached at all.
+const liveSpawn = vi.hoisted(() =>
+  vi.fn((): never => {
+    throw new Error('a unit test must never spawn a live model');
+  }),
+);
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof ChildProcess>()),
+  execFileSync: liveSpawn,
+}));
+
+afterAll(() => {
+  expect(liveSpawn).not.toHaveBeenCalled();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+// Temp dirs a test created itself (as opposed to ones judgeEnv minted), removed
+// after each case whether or not the assertion under test passed.
+const OWNED: string[] = [];
+function ownedDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'aka-judge-test-'));
+  OWNED.push(dir);
+  return dir;
+}
+afterEach(() => {
+  while (OWNED.length > 0) rmSync(OWNED.pop() ?? '', { recursive: true, force: true });
+});
+
+// A raw value is absent from an error only if no RUN of it survives: a branch
+// that echoed a truncated value would still hand a live credential's prefix to
+// the parent command's stderr, and a whole-value `not.toContain` stays green on
+// exactly that. Mirrors expectNoEchoOf in web-ui/test/actions/exceptions.test.ts.
+const ECHO_RUN = 8;
+function expectNoEchoOf(message: string, value: string): void {
+  for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
+    expect(message).not.toContain(value.slice(i, i + ECHO_RUN));
+  }
+  if (value.length < ECHO_RUN) expect(message).not.toContain(value);
+}
 
 // A `claude -p --output-format json` envelope with `result` set to `text`.
 const envelope = (text: string): string => JSON.stringify({ result: text, is_error: false });
@@ -56,29 +107,120 @@ describe('parseVerdict', () => {
   });
 });
 
+// The env judgeEnv() builds IS the transcript-suppression control: it is the
+// only thing keeping the raw hits on stdin out of ~/.claude/projects, where the
+// product's own scanner would later find them. Every branch is pinned here, and
+// the platform is injected rather than read, so the darwin branch runs on every
+// runner — CI has no macOS machine, and a `if (process.platform === 'darwin')`
+// guard would mean these assertions execute nowhere.
 describe('judgeEnv', () => {
-  it('sets CLAUDE_CODE_SKIP_PROMPT_HISTORY=1 (and a fresh CLAUDE_CONFIG_DIR on darwin)', () => {
-    const env = judgeEnv();
+  // Take the env, assert against it, then remove any dir it minted.
+  function withEnv(platform: NodeJS.Platform, assert: (env: NodeJS.ProcessEnv) => void): void {
+    const env = judgeEnv(platform);
     try {
-      expect(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
-      if (process.platform === 'darwin') expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
+      assert(env);
     } finally {
-      if (env.CLAUDE_CONFIG_DIR) rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+      if (platform === 'darwin' && env.CLAUDE_CONFIG_DIR) {
+        rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+      }
+    }
+  }
+
+  it('sets both suppression vars on every platform', () => {
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      withEnv(platform, (env) => {
+        // The transcript suppressor: no prompt history written, auth preserved.
+        expect(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
+        // Telemetry-off. Not a transcript guard, but part of the pinned pair.
+        expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+      });
+    }
+  });
+
+  it('does not override HOME — Linux keeps credentials under $HOME', () => {
+    // Isolating HOME would look like stronger containment and would in fact
+    // break auth on Linux, so the deliberate decision is pinned: whatever the
+    // parent carries passes through byte-for-byte on every platform, including
+    // the one that also gets a throwaway CLAUDE_CONFIG_DIR.
+    const home = ownedDir();
+    vi.stubEnv('HOME', home);
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      withEnv(platform, (env) => {
+        expect(env.HOME).toBe(home);
+        expect(env.HOME).not.toBe(env.CLAUDE_CONFIG_DIR);
+      });
+    }
+  });
+
+  it('inherits the rest of the parent env (PATH and auth reach the child)', () => {
+    // The subprocess must find `claude` and authenticate — the isolation is of
+    // the transcript, not of the environment. A future "harden it by building a
+    // clean env" would break the spawn and is a regression, not an improvement.
+    vi.stubEnv('AKA_JUDGE_ENV_PROBE', 'inherited');
+    vi.stubEnv('PATH', '/probe/bin');
+    withEnv('linux', (env) => {
+      expect(env.AKA_JUDGE_ENV_PROBE).toBe('inherited');
+      expect(env.PATH).toBe('/probe/bin');
+    });
+  });
+
+  it('mints a fresh, empty CLAUDE_CONFIG_DIR per call on darwin', () => {
+    const first = judgeEnv('darwin').CLAUDE_CONFIG_DIR;
+    const second = judgeEnv('darwin').CLAUDE_CONFIG_DIR;
+    try {
+      expect(first).toBeTruthy();
+      expect(second).toBeTruthy();
+      // Fresh per call: two concurrent judges never share config state.
+      expect(first).not.toBe(second);
+      for (const dir of [first, second]) {
+        if (dir === undefined) throw new Error('darwin judgeEnv minted no CLAUDE_CONFIG_DIR');
+        expect(statSync(dir).isDirectory()).toBe(true);
+        expect(readdirSync(dir)).toEqual([]);
+      }
+    } finally {
+      for (const dir of [first, second]) {
+        if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('replaces an inherited CLAUDE_CONFIG_DIR on darwin rather than writing into it', () => {
+    const real = ownedDir();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', real);
+    withEnv('darwin', (env) => {
+      expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
+      expect(env.CLAUDE_CONFIG_DIR).not.toBe(real);
+    });
+    // The user's own config dir is untouched by the swap.
+    expect(existsSync(real)).toBe(true);
+  });
+
+  it('leaves CLAUDE_CONFIG_DIR alone off darwin (the mkdtemp is darwin-only)', () => {
+    // The non-darwin path deliberately does nothing here: an inherited value
+    // passes through, and an absent one stays absent. Setting one off darwin
+    // would point the child at an empty config dir and break its auth.
+    const inherited = ownedDir();
+    for (const platform of ['linux', 'win32'] as const) {
+      vi.stubEnv('CLAUDE_CONFIG_DIR', inherited);
+      expect(judgeEnv(platform).CLAUDE_CONFIG_DIR).toBe(inherited);
+
+      vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+      expect(judgeEnv(platform).CLAUDE_CONFIG_DIR).toBeUndefined();
     }
   });
 });
 
-describe('runJudge', () => {
-  const hit: TriageHit = {
-    ruleId: 'core-secret/aws',
-    category: 'secret',
-    severity: 'high',
-    maskedMatch: 'A***Z',
-    rawMatch: 'AKIAIOSFODNN7EXAMPLE',
-    context: 'export KEY=AKIAIOSFODNN7EXAMPLE # prod',
-    confidence: 0.9,
-  };
+const hit: TriageHit = {
+  ruleId: 'core-secret/aws',
+  category: 'secret',
+  severity: 'high',
+  maskedMatch: 'A***Z',
+  rawMatch: 'AKIAIOSFODNN7EXAMPLE',
+  context: 'export KEY=AKIAIOSFODNN7EXAMPLE # prod',
+  confidence: 0.9,
+};
 
+describe('runJudge', () => {
   it('spawns claude -p with --no-session-persistence + --output-format json, and the prompt on stdin', () => {
     let seenArgv: readonly string[] = [];
     let seenEnv: NodeJS.ProcessEnv = {};
@@ -280,7 +422,9 @@ describe('runJudge', () => {
       throw new Error('expected runJudge to throw');
     } catch (err) {
       const message = (err as Error).message;
-      expect(message).not.toContain(hit.rawMatch);
+      // Run-by-run, not whole: a branch echoing a truncated value still hands a
+      // live credential's prefix to the parent's stderr.
+      expectNoEchoOf(message, hit.rawMatch);
       expect(message).not.toContain('export KEY=');
       // still useful: it names the failure + surfaces the raw-free exit status
       expect(message).toContain('judge subprocess failed');
@@ -289,5 +433,207 @@ describe('runJudge', () => {
       // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
       expect((err as Error).cause).toBeUndefined();
     }
+  });
+});
+
+// -------------------------------------------------------------------------
+// The darwin config dir's lifecycle: minted by judgeEnv, removed in `finally`
+// -------------------------------------------------------------------------
+
+// A dir left behind is a dir the judge's config — and whatever the CLI wrote
+// into it — survives in. The platform is injected so both branches run on every
+// runner. Each case captures the dir the child actually saw, asserts it exists
+// DURING the call, and asserts it is gone after: an absence check alone would
+// pass just as well against a dir that was never created.
+describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
+  const rubric = (): string => 'RUBRIC';
+
+  // Run the judge on darwin with `outcome` deciding what the fake spawn does,
+  // and report the config dir the child was handed plus whether it existed then.
+  function runDarwin(outcome: (env: NodeJS.ProcessEnv) => string): {
+    dir: string;
+    existedDuringCall: boolean;
+    threw: unknown;
+  } {
+    let dir = '';
+    let existedDuringCall = false;
+    let threw: unknown;
+    const spawn = (_argv: readonly string[], env: NodeJS.ProcessEnv): string => {
+      dir = env.CLAUDE_CONFIG_DIR ?? '';
+      existedDuringCall = dir !== '' && existsSync(dir);
+      return outcome(env);
+    };
+    try {
+      runJudge([hit], { spawn, loadRubric: rubric, platform: 'darwin' });
+    } catch (err) {
+      threw = err;
+    }
+    return { dir, existedDuringCall, threw };
+  }
+
+  it('removes the dir after a successful judgment', () => {
+    const { dir, existedDuringCall, threw } = runDarwin(() => envelope(VERDICT_FENCE));
+    expect(threw).toBeUndefined();
+    expect(existedDuringCall).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('removes the dir when the spawn throws', () => {
+    const { dir, existedDuringCall, threw } = runDarwin(() => {
+      throw Object.assign(new Error('Command failed: claude'), { status: 1 });
+    });
+    expect(threw).toBeInstanceOf(Error);
+    expect(existedDuringCall).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('removes the dir when the verdict is unparseable', () => {
+    // The parse throws AFTER the spawn returns — a different path out of the
+    // try than the spawn failure, and one a `catch`-based cleanup would miss.
+    const { dir, existedDuringCall, threw } = runDarwin(() => 'not a json envelope');
+    expect(threw).toBeInstanceOf(Error);
+    expect(existedDuringCall).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('removes the dir even when the subprocess wrote into it', () => {
+    // `recursive: true` matters: the real CLI writes config into this dir, and a
+    // plain unlink would fail on a non-empty directory and leak it.
+    const { dir, threw } = runDarwin((env) => {
+      writeFileSync(join(env.CLAUDE_CONFIG_DIR ?? '', 'config.json'), '{"leftover":true}');
+      return envelope(VERDICT_FENCE);
+    });
+    expect(threw).toBeUndefined();
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('never removes an inherited CLAUDE_CONFIG_DIR off darwin', () => {
+    // Off darwin judgeEnv mints nothing, so CLAUDE_CONFIG_DIR is whatever the
+    // parent carried — a real config dir the user may point at their own Claude
+    // install. The platform check gating the removal is what stops the cleanup
+    // recursively deleting it; drop it and this run destroys their config.
+    const real = ownedDir();
+    writeFileSync(join(real, 'settings.json'), '{"theme":"dark"}');
+
+    for (const platform of ['linux', 'win32'] as const) {
+      vi.stubEnv('CLAUDE_CONFIG_DIR', real);
+      let seen = '';
+      // Both exits from the try — clean return and spawn failure — reach the
+      // same `finally`, so both are checked.
+      runJudge([hit], {
+        spawn: (_argv, env) => {
+          seen = env.CLAUDE_CONFIG_DIR ?? '';
+          return envelope(VERDICT_FENCE);
+        },
+        loadRubric: rubric,
+        platform,
+      });
+      expect(seen).toBe(real);
+      expect(existsSync(join(real, 'settings.json'))).toBe(true);
+
+      expect(() =>
+        runJudge([hit], {
+          spawn: () => {
+            throw new Error('boom');
+          },
+          loadRubric: rubric,
+          platform,
+        }),
+      ).toThrow();
+      expect(existsSync(join(real, 'settings.json'))).toBe(true);
+    }
+  });
+});
+
+// -------------------------------------------------------------------------
+// spawnFailureMeta: what a failed spawn is allowed to say
+// -------------------------------------------------------------------------
+
+// A spawn error carries the raw hits in `.stdout`/`.stderr` (and historically in
+// `.message`, which echoed the argv the prompt used to ride). The re-thrown
+// error must carry ONLY exit status, signal, and node error code — the three
+// fields that describe how the process died and nothing about what it was
+// handling. Each case seeds all three raw-bearing fields and asserts none
+// survives.
+describe('runJudge — spawn failure metadata', () => {
+  const CONTEXT_FRAGMENT = 'export KEY=';
+
+  // A rejected spawn shaped like execFileSync's: the raw hits in every field it
+  // really populates, plus whichever metadata this case is pinning.
+  function failWith(meta: Record<string, unknown>): Error {
+    let caught: unknown;
+    try {
+      runJudge([hit], {
+        spawn: (argv, _env, stdin) => {
+          throw Object.assign(
+            // execFileSync's own message shape, and the pre-stdin regression:
+            // the whole prompt echoed back through argv.
+            new Error(`Command failed: claude ${argv.join(' ')} ${stdin}`),
+            {
+              stdout: `partial output ${hit.rawMatch}`,
+              stderr: `stderr trailer ${hit.context}`,
+              ...meta,
+            },
+          );
+        },
+        loadRubric: () => 'RUBRIC',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    if (!(caught instanceof Error)) throw new Error('expected runJudge to throw an Error');
+    return caught;
+  }
+
+  const CASES: { name: string; meta: Record<string, unknown>; expected: string }[] = [
+    { name: 'an exit status', meta: { status: 2 }, expected: 'exit 2' },
+    { name: 'a terminating signal', meta: { signal: 'SIGKILL' }, expected: 'signal SIGKILL' },
+    {
+      name: 'a node error code (claude not on PATH)',
+      meta: { code: 'ENOENT' },
+      expected: 'ENOENT',
+    },
+    {
+      name: 'all three at once',
+      meta: { status: 143, signal: 'SIGTERM', code: 'ETIMEDOUT' },
+      expected: 'exit 143, signal SIGTERM, ETIMEDOUT',
+    },
+    {
+      name: 'nothing usable',
+      meta: { status: null, signal: null },
+      expected: 'unknown error',
+    },
+  ];
+
+  for (const { name, meta, expected } of CASES) {
+    it(`surfaces ${name} and nothing else`, () => {
+      const err = failWith(meta);
+      expect(err.message).toBe(`claude -p judge subprocess failed (${expected})`);
+      // The raw value and the surrounding transcript window both stay inside.
+      expectNoEchoOf(err.message, hit.rawMatch);
+      expect(err.message).not.toContain(CONTEXT_FRAGMENT);
+      // Nor may the raw-bearing original ride out attached: util.inspect and
+      // most loggers print `cause`, which would undo the whole strip.
+      expect(err.cause).toBeUndefined();
+      expect(Object.keys(err)).not.toContain('stdout');
+      expect(Object.keys(err)).not.toContain('stderr');
+    });
+  }
+
+  it('does not fall back to the live spawn when deps.spawn is missing', () => {
+    // The seam is required, not defaulted. A future `deps.spawn ?? spawnClaude`
+    // would turn any caller that forgot to inject into a live egress; this fails
+    // instead, and the module-level execFileSync spy proves nothing was spawned.
+    const err = (() => {
+      try {
+        runJudge([hit], { loadRubric: () => 'RUBRIC' } as unknown as JudgeDeps);
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error('expected runJudge to throw');
+    })();
+    expect(err.message).toContain('judge subprocess failed');
+    expectNoEchoOf(err.message, hit.rawMatch);
+    expect(liveSpawn).not.toHaveBeenCalled();
   });
 });

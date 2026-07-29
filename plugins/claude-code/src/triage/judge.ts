@@ -78,14 +78,19 @@ export function parseVerdict(stdout: string): TriageRecommendation {
 // caller (runJudge) removes it after the call. DISABLE_NONESSENTIAL_TRAFFIC is
 // telemetry-off only (NOT a transcript guard) — kept to match the documented
 // scripted-Claude pattern in eval/run.ts.
-export function judgeEnv(): NodeJS.ProcessEnv {
+//
+// The parent env is spread in whole and only those keys are overridden: HOME
+// passes through untouched, because Linux keeps credentials under $HOME and
+// isolating it there breaks auth. `platform` is a parameter (defaulting to the
+// real one) so the darwin branch is exercised on every runner.
+export function judgeEnv(platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     // eslint-disable-next-line n/no-process-env -- subprocess must inherit PATH/auth
     ...process.env,
     CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
-  if (process.platform === 'darwin') {
+  if (platform === 'darwin') {
     env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'aka-judge-cfg-'));
   }
   return env;
@@ -139,6 +144,9 @@ export interface JudgeDeps {
   // Override the rubric source (defaults to eval/prompt.md); injectable so
   // tests need not read the real file.
   loadRubric?: () => string;
+  // Host platform, defaulting to the real one. Injectable so the darwin-only
+  // CLAUDE_CONFIG_DIR branch — and its cleanup — run on every runner.
+  platform?: NodeJS.Platform;
 }
 
 // Minimize a hit before it crosses to the model. The rubric judges the actual
@@ -177,7 +185,11 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;
-  const env = judgeEnv();
+  // One read of the platform for both the env construction and the cleanup, so
+  // the branch that CREATES the temp config dir and the branch that REMOVES it
+  // can never disagree.
+  const platform = deps.platform ?? process.platform;
+  const env = judgeEnv(platform);
   try {
     // The spawn is isolated from the parse: a spawn failure (execFileSync) throws
     // an error whose captured stdout/stderr may still carry raw content even
@@ -196,7 +208,12 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
     }
     return parseVerdict(stdout);
   } finally {
-    if (process.platform === 'darwin' && env.CLAUDE_CONFIG_DIR) {
+    // The platform check gates the removal, and the order matters: off darwin
+    // CLAUDE_CONFIG_DIR is whatever the parent env carried — a real config dir
+    // a user may point at their own Claude install — and recursively removing
+    // it would destroy their configuration. Only the dir judgeEnv() minted on
+    // darwin is ever removed here.
+    if (platform === 'darwin' && env.CLAUDE_CONFIG_DIR) {
       rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
     }
   }

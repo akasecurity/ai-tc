@@ -63,11 +63,20 @@ which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 | --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
 | The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a dynamic specifier        |
 | `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | Nothing on Linux; the job is Linux-only             |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only   |
 
 The middle one is a vitest `setupFiles` entry every package wires (see [Testing](#testing));
 the last runs the whole suite inside a loopback-only network namespace via
-`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked.
+`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked
+(`tools/ci/egress-probe.mjs` is that proof — it connects to its own loopback listener
+before trusting a failed connect, so a probe that cannot reach anything is never mistaken
+for an absent network).
+
+**What none of the three sees** is code no test runs. All of them observe either source
+text or an executed call, so an untested path can still reach out — which is why the
+gate table's third row says "a path the suite never executes" rather than "nothing". The
+packaged artifact is the other uncovered surface: nothing here installs the published
+tarball and exercises it under a block.
 
 ## Package dependency rules
 
@@ -199,14 +208,23 @@ skills/               agent skills (e.g. write-detection-rule)
    not linted today. Point the `lint` script at them if you can; several need a
    `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
 
+   Files at the **repo root**, owned by no package, are a different case and are now
+   covered: `pnpm lint:root` / `pnpm typecheck:root` (`eslint.root.config.mjs`,
+   `tsconfig.root.json`) lint and type-check `test/setup/**` and `tools/ci/**`. Both
+   run outside Turbo — `pnpm lint`/`pnpm typecheck` are `turbo run …`, which drives
+   per-package scripts, and the repo root is not a package — so CI runs them as their
+   own steps beside `format:check`. Anything new at the repo root belongs in those two
+   globs; otherwise esbuild strips its types without checking them and nothing lints it.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
    unguarded are the assertions next to it (a missing config, a config that never
    extends the shared one, a `lint` script that misses a directory).
 
-7. If it has a `test` script, wire the no-network guard into its
-   `vitest.config.ts` and add its name to `EXPECTED_VITEST_PACKAGES` in
+7. If it has a `test` script, run those tests through **vitest** and wire the
+   no-network guard into its `vitest.config.ts`, then add its name to
+   `EXPECTED_VITEST_PACKAGES` in
    `packages/eslint-config/test/no-network-runtime.test.js`. Copy the block from a
    neighbour at the same depth — the relative path is `../../` from
    `packages/<name>/`, `../` from a repo-root package:
@@ -216,6 +234,13 @@ skills/               agent skills (e.g. write-detection-rule)
    // …
    test: { setupFiles: [noNetworkGuard], … }
    ```
+
+   The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
+   package testing through anything else (`node --test`, say) runs with no runtime
+   network guard at all. That suite enumerates every package with a `test` script
+   and fails on any that is not vitest, so such a package has to be argued into
+   `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
+   way, since every entry is a hole in the guarantee.
 
 ## Commit messages
 
@@ -314,9 +339,11 @@ database in a real temp dir, which is what catches real SQLite semantics.
 entry. It refuses any outbound connection that is not loopback — TCP (and therefore
 TLS, HTTP, HTTP/2, `fetch`), UDP, and the DNS `resolve*` family — and its error
 **names the call site**, digging past ~60 frames of bundled undici to find the line
-that actually reached out. Loopback (`127.0.0.0/8`, `::1`, `localhost`) and
-unix/named-pipe sockets stay open; the CLI's port probe and the dashboard boot test
-depend on them.
+that actually reached out. It prefers this repo's own code over a `node_modules`
+frame, since a transitive dependency reaching out is the case the ESLint ban cannot
+see and the frame a reader has to act on is the one that called it. Loopback
+(`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
+port probe and the dashboard boot test depend on them.
 
 Four things about it are load-bearing:
 
@@ -332,13 +359,33 @@ Four things about it are load-bearing:
   CI job exists. Do not describe the guard as covering shell-outs.
 - **Every package must wire it**, at the right relative depth. The same suite fails
   the workspace if a package drops the entry, points it at a path that does not
-  resolve to the guard, or is added without one.
+  resolve to the guard, or is added without one. That last one holds for packages
+  that test through **vitest**; a package testing through another runner cannot load
+  a `setupFiles` entry at all, so the suite enumerates every package with a `test`
+  script and fails on any non-vitest one unless it is named in
+  `EXPECTED_NON_VITEST_TEST_PACKAGES` (empty, and each entry would be a real hole).
 
-There is **no opt-out and no env escape hatch**. A test that needs the outside world
-needs an injectable seam instead — `local-ops`' `ReportDeps.viewVersion` and
-`judge.ts`'s `spawnClaude` are the two worked examples, and neither `vi.mock`s
-`execFileSync`: they take the boundary as a parameter, so the network call site is
-never reached rather than being intercepted.
+The only opt-out is **`takeBlockedAttempts()`**, and there is no env escape hatch or
+config flag. Draining is how a test consumes a refusal it provoked on purpose, so it
+is also the way to hide one — the seam is deliberate, narrow, and visible in review.
+A test that needs the outside world needs an injectable seam instead — `local-ops`'
+`ReportDeps.viewVersion` and `judge.ts`'s `spawnClaude` are the two worked examples,
+and neither `vi.mock`s `execFileSync`: they take the boundary as a parameter, so the
+network call site is never reached rather than being intercepted.
+
+`dns.lookup` is deliberately **not** patched (the connect guard already gates what it
+feeds). Be accurate about what that leaves: a bare lookup still discloses the hostname
+to whoever runs the resolver, which is real egress even though it is not a dependency
+on a remote service. Only the Linux `No-network` job blocks it.
+
+**The CI script is a tested artifact, not a script nobody reads.** It is the only gate
+covering child processes, and its whole value is a positive control that refuses to run
+vacuously — which is worthless if nothing exercises it. The same suite drives
+`tools/ci/no-network-test.sh` with a `PATH` of hand-written stubs and pins every
+outcome: probe tooling missing, DNS still resolving, the target still answering, the
+probe reporting itself broken, the probe file gone, started as root, and the one green
+path where the command actually runs. Change a probe and a case fails; delete one and
+the case that covered it fails.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +

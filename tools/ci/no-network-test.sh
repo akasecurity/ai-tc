@@ -18,6 +18,9 @@
 # fault-injection.ts` uses to build a read-only store, so those cases would
 # report `effective: false` and skip. `setpriv` hands the original uid/gid back
 # before the command runs, so this job exercises the same suite as every other.
+# For the same reason it refuses to START as root: there would be no unprivileged
+# identity to drop back to, and the suite would run with those cases quietly
+# skipped. Run it as the unprivileged user; it elevates itself.
 #
 # WHAT THE VITEST GUARD DOES NOT COVER, and this does: a child process. A
 # shell-out (`npm view`, `claude -p`) is a separate process with its own copy of
@@ -25,7 +28,10 @@
 # has nowhere to go.
 #
 # Linux only — it is the CI job's mechanism, not a developer workflow. The vitest
-# guard runs everywhere, on every platform, in every job.
+# guard runs everywhere, on every platform, in every job. Every refusal path
+# below is driven with stubbed probe tooling by
+# `packages/eslint-config/test/no-network-runtime.test.js`: a positive control
+# that nothing exercises is one edit away from being decorative.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -39,6 +45,17 @@ fi
 # environment needs a sudoers SETENV grant that is not guaranteed, while `env` is
 # just the command sudo was asked to run.
 if [ "${AKA_NO_NETWORK_INSIDE:-}" != "1" ]; then
+  # Refuse rather than run weakened. See "WHY IT DROPS BACK TO THE CALLER": as
+  # root the drop-back below is a no-op, and the read-only-store cases skip
+  # instead of asserting. That is a quieter suite still reporting green, so it
+  # fails here and there is deliberately no override.
+  if [ "$(id -u)" -eq 0 ]; then
+    echo "no-network: FAILED — started as root. This script elevates itself; running" >&2
+    echo "no-network: it as root leaves no unprivileged identity to drop back to, and" >&2
+    echo "no-network: the read-only-store cases in packages/persistence would skip" >&2
+    echo "no-network: rather than assert. Run it as the unprivileged user." >&2
+    exit 2
+  fi
   exec sudo env \
     AKA_NO_NETWORK_INSIDE=1 \
     "AKA_NO_NETWORK_UID=$(id -u)" \
@@ -49,6 +66,8 @@ if [ "${AKA_NO_NETWORK_INSIDE:-}" != "1" ]; then
     DO_NOT_TRACK=1 \
     TURBO_TELEMETRY_DISABLED=1 \
     NEXT_TELEMETRY_DISABLED=1 \
+    TURBO_NO_UPDATE_NOTIFIER=1 \
+    NO_UPDATE_NOTIFIER=1 \
     unshare --net -- "$0" "$@"
 fi
 
@@ -88,7 +107,7 @@ echo "no-network: verifying egress is actually blocked"
 # A probe whose own tooling is missing reports "not blocked = false" and the
 # control passes without probing anything — the precise shape of vacuous pass it
 # exists to prevent. Demand the tools first.
-for tool in getent timeout ip; do
+for tool in getent node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "no-network: FAILED — '$tool' is not installed, so the egress probe below" >&2
     echo "no-network: cannot run and would pass without proving anything." >&2
@@ -102,19 +121,35 @@ if getent hosts registry.npmjs.org >/dev/null 2>&1; then
   exit 1
 fi
 
-# 1.1.1.1:443 is a literal, so this probe needs no DNS. Any outcome other than a
-# connection failure means packets are still leaving.
-if timeout 10 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
-  echo "no-network: FAILED — a TCP connection to 1.1.1.1:443 succeeded." >&2
-  echo "no-network: the suite would have passed without proving anything." >&2
+# The TCP half. 1.1.1.1:443 is a literal, so it needs no DNS. The probe proves
+# its own mechanism against a loopback listener before trusting a failure, and
+# reports BROKEN rather than "blocked" when that does not work — so a probe that
+# cannot connect to anything can never be read as an absent network. It also
+# subsumes the loopback check this used to make by grepping `ip addr`: a real
+# bind-and-connect is the property the suite depends on, where a matching line of
+# `ip` output was only a proxy for it. See egress-probe.mjs.
+probe="${0%/*}/egress-probe.mjs"
+if [ ! -f "$probe" ]; then
+  echo "no-network: FAILED — the egress probe is missing at $probe, so the TCP" >&2
+  echo "no-network: half of the control cannot run." >&2
   exit 1
 fi
 
-# Loopback must still work, or the run below would fail for the wrong reason.
-if ! ip addr show lo | grep -q 'inet 127\.0\.0\.1'; then
-  echo "no-network: FAILED — loopback is not up; the suite needs it." >&2
+probe_status=0
+node "$probe" 1.1.1.1 443 || probe_status=$?
+case "$probe_status" in
+0) ;;
+1)
+  echo "no-network: FAILED — a TCP connection to 1.1.1.1:443 succeeded." >&2
+  echo "no-network: the suite would have passed without proving anything." >&2
   exit 1
-fi
+  ;;
+*)
+  echo "no-network: FAILED — the egress probe could not run (exit $probe_status), so" >&2
+  echo "no-network: it cannot show the network is gone. Its own output is above." >&2
+  exit 1
+  ;;
+esac
 
 echo "no-network: egress is blocked, loopback is up — running: $*"
 exec "$@"

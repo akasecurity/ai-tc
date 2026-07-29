@@ -1,8 +1,17 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import dns from 'node:dns';
-import { existsSync, globSync, readFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  globSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createConnection, createServer, Socket } from 'node:net';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,12 +38,13 @@ import {
 // behavioral cases below exercise the guard that is already installed rather
 // than a copy of it.
 //
-// Three properties are guarded here:
+// Five properties are guarded here:
 //
-//  1. STRUCTURAL — every package that runs vitest wires the guard, and the
-//     relative path it wires actually resolves to the one guard file. Thirteen
-//     hand-written paths at two different depths is exactly the shape that
-//     drifts, and a package that quietly drops the entry would run unguarded
+//  1. STRUCTURAL — every package that runs tests does so through vitest, wires
+//     the guard, and wires a relative path that actually resolves to the one
+//     guard file. Thirteen hand-written paths at two different depths is exactly
+//     the shape that drifts, and a package that quietly drops the entry — or
+//     tests through a runner with no setupFiles at all — would run unguarded
 //     with CI green. turbo.json and ci.yml are pinned for the same reason: the
 //     guard outside every package's inputs would replay cached greens, and the
 //     CI job is the only thing covering child processes.
@@ -45,10 +55,21 @@ import {
 //     recorded, which is what the setup file's afterEach/afterAll turn into a
 //     failure.
 //
-//  3. AUDITED OPT-OUT — the guard file imports node:net / node:dgram / node:dns,
-//     which the shared ban forbids. That is the enforcement, not a violation of
-//     it, but it is only defensible while it stays exactly those three: the file
-//     is linted here and any FOURTH network ban it trips fails this suite.
+//  3. THE CI SCRIPT — driven directly, with a PATH of stubs, through every
+//     refusal it can produce plus the one green path. It is the only gate that
+//     can see a child process, and its value is entirely in a positive control
+//     that refuses to run vacuously; nothing exercising that control leaves it
+//     one edit from decorative.
+//
+//  4. THE EGRESS PROBE — the three exit codes the script branches on, including
+//     the one that must never be read as "blocked": the probe reporting that it
+//     could not run.
+//
+//  5. AUDITED OPT-OUTS — the guard imports node:net / node:dgram / node:dns and
+//     the probe imports node:net, which the shared ban forbids. That is the
+//     enforcement, not a violation of it, but it is only defensible while it
+//     stays exactly that: both files are linted here with the raw ban and one
+//     more specifier in either fails this suite.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../..');
@@ -56,6 +77,9 @@ const REPO_ROOT = resolve(HERE, '../../..');
 const GUARD_REL = 'test/setup/no-network.ts';
 const GUARD_ABS = join(REPO_ROOT, ...GUARD_REL.split('/'));
 const CI_SCRIPT_REL = 'tools/ci/no-network-test.sh';
+const CI_SCRIPT_ABS = join(REPO_ROOT, ...CI_SCRIPT_REL.split('/'));
+const PROBE_REL = 'tools/ci/egress-probe.mjs';
+const PROBE_ABS = join(REPO_ROOT, ...PROBE_REL.split('/'));
 
 // --- 1. Structural: every vitest package wires the guard ---------------------
 
@@ -97,10 +121,16 @@ const SETUP_ENTRY = /setupFiles\s*:\s*\[[^\]]*\bnoNetworkGuard\b[^\]]*\]/;
 const GUARD_URL = /new URL\(\s*'([^']*test\/setup\/no-network\.ts)'\s*,\s*import\.meta\.url\s*\)/;
 
 /**
- * Every workspace package whose `test` script runs vitest, with how (and
- * whether) its vitest config wires the guard.
+ * Every workspace package that runs tests AT ALL, tagged with whether it does so
+ * through vitest and, if it does, how (and whether) its config wires the guard.
+ *
+ * Enumerating on `test` rather than on `vitest` is the point. Filtering to
+ * vitest up front would drop a package that runs `node --test` from BOTH sides
+ * of the pinned comparison below — missing from the derived list and missing
+ * from the expectation — so it would ship an unguarded suite with this file
+ * green. The runner is a property to assert, not a precondition for looking.
  */
-function vitestPackages() {
+function testPackages() {
   const dirs = [
     ...new Set(
       workspaceGlobs()
@@ -115,14 +145,18 @@ function vitestPackages() {
       const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
       return { dir, posixDir, name: pkg.name ?? posixDir, testScript: pkg.scripts?.test ?? '' };
     })
-    .filter((p) => /(^|[\s/])vitest([\s/]|$)/.test(p.testScript))
+    .filter((p) => p.testScript.trim() !== '')
     .map((p) => {
+      const runsVitest = /(^|[\s/])vitest([\s/]|$)/.test(p.testScript);
       const configAbs = join(REPO_ROOT, p.dir, 'vitest.config.ts');
-      if (!existsSync(configAbs)) return { ...p, hasConfig: false, wired: false, resolved: null };
+      if (!runsVitest || !existsSync(configAbs)) {
+        return { ...p, runsVitest, hasConfig: false, wired: false, resolved: null };
+      }
       const source = stripComments(readFileSync(configAbs, 'utf8'));
       const url = GUARD_URL.exec(source);
       return {
         ...p,
+        runsVitest,
         hasConfig: true,
         wired: SETUP_ENTRY.test(source),
         resolved: url ? resolve(dirname(configAbs), url[1]) : null,
@@ -130,7 +164,8 @@ function vitestPackages() {
     });
 }
 
-const VITEST_PACKAGES = vitestPackages();
+const TEST_PACKAGES = testPackages();
+const VITEST_PACKAGES = TEST_PACKAGES.filter((p) => p.runsVitest);
 
 // The exact set expected to run vitest, pinned by name. A derived-vs-derived
 // comparison cannot catch a package the enumeration silently dropped, because it
@@ -153,9 +188,25 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/web-ui',
 ];
 
+// Packages that run tests through something other than vitest, and so cannot
+// load a vitest setupFile. Keep this EMPTY. Every entry is a suite running with
+// no runtime network guard at all, which is a hole in the guarantee and must be
+// a deliberate, reviewed decision carrying its reason — the guard would have to
+// be re-implemented for that runner, or the package argued out of needing one.
+const EXPECTED_NON_VITEST_TEST_PACKAGES = [];
+
 describe('every vitest package loads the no-network guard', () => {
   it('enumerates exactly the packages that run vitest', () => {
     expect(VITEST_PACKAGES.map((p) => p.name).sort()).toEqual([...EXPECTED_VITEST_PACKAGES].sort());
+  });
+
+  it('no package runs tests outside vitest without a named exemption', () => {
+    // The gap this closes: a package whose `test` script is `node --test` is
+    // invisible to a vitest-only enumeration, so it would be absent from the
+    // derived list AND from the expectation above and fail nothing, while
+    // running every one of its tests with the network wide open.
+    const outside = TEST_PACKAGES.filter((p) => !p.runsVitest).map((p) => p.name);
+    expect(outside.sort()).toEqual([...EXPECTED_NON_VITEST_TEST_PACKAGES].sort());
   });
 
   it('the guard file the configs point at exists', () => {
@@ -188,10 +239,45 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     expect(turbo).toMatch(/"globalDependencies"\s*:\s*\[[^\]]*"test\/setup\/\*\*"/);
   });
 
+  it("turbo.json puts ci.yml and the CI script in this suite's task inputs", () => {
+    // Without these two entries the assertions below are self-defeating. They
+    // read files that live in no package, so deleting the No-network job leaves
+    // this task's hash untouched; turbo replays the cached pass from a prior
+    // commit and the assertion guarding the job never executes. The one job that
+    // would have re-run it from scratch is the job that was deleted.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs =
+      /"@akasecurity\/eslint-config#test"\s*:\s*\{[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+        turbo,
+      );
+    expect(inputs).not.toBeNull();
+    expect(inputs[1]).toContain('$TURBO_ROOT$/.github/workflows/ci.yml');
+    expect(inputs[1]).toContain('$TURBO_ROOT$/tools/ci/**');
+  });
+
   it('ci.yml runs the suite through the egress-blocking script', () => {
     // The vitest guard cannot see a child process; this job is what does.
     const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain(CI_SCRIPT_REL);
+  });
+
+  it('ci.yml runs the repo-root lint and typecheck passes', () => {
+    // `pnpm lint`/`pnpm typecheck` are turbo, which drives per-package scripts,
+    // and the repo root is not a package — so the guard and the probe are
+    // covered by these two steps and nothing else. Drop them and both files go
+    // back to being the only sources here that nothing lints or type-checks.
+    const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(ci).toContain('pnpm lint:root');
+    expect(ci).toContain('pnpm typecheck:root');
+
+    const root = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+    // The scripts must actually reach both files, not just exist.
+    expect(root.scripts['lint:root']).toContain('test/setup');
+    expect(root.scripts['lint:root']).toContain('tools/ci');
+    expect(root.scripts['typecheck:root']).toContain('tsconfig.root.json');
+    const rootTsconfig = readFileSync(join(REPO_ROOT, 'tsconfig.root.json'), 'utf8');
+    expect(rootTsconfig).toContain('test/setup');
+    expect(rootTsconfig).toContain('tools/ci');
   });
 
   it('the CI script is tracked as executable', () => {
@@ -417,40 +503,299 @@ describe('loopback still works', () => {
   });
 });
 
-// --- 3. The guard file's own opt-out, measured rather than assumed -----------
+// --- 3. The CI script: the only gate that can see a child process ------------
+
+// Everything above covers the IN-PROCESS guard. A shell-out has its own copy of
+// node:net and is invisible to it, so tools/ci/no-network-test.sh is the only
+// thing standing between the guarantee and `npm view` / `claude -p`. Its whole
+// value is a positive control that refuses to run vacuously — and a positive
+// control nothing exercises is one edit away from being decorative. Deleting its
+// probes leaves the job green, exiting 0, having proved nothing.
+//
+// Phase 3 is driven directly here: PATH holds nothing but hand-written stubs, so
+// each outcome is produced on demand with no namespace, no sudo and no real
+// network. AKA_NO_NETWORK_INSIDE/_DROPPED are the script's own phase markers.
+
+const BASH = '/bin/bash';
+
+/** A stub that just exits. @param {number} code */
+const exits = (code) => `#!/bin/sh\nexit ${String(code)}\n`;
+/** A stub that prints and exits 0. @param {string} text */
+const prints = (text) => `#!/bin/sh\necho '${text}'\n`;
+
+const MARKER = 'the-suite-actually-ran';
+
+/** Skip where the harness cannot run at all rather than passing vacuously. */
+function requirePosixShell(ctx) {
+  if (process.platform === 'win32' || !existsSync(BASH)) {
+    ctx.skip(`needs ${BASH}; the script is the Linux CI job's mechanism`);
+  }
+}
+
+/**
+ * Run the CI script with a PATH built from `stubs` alone.
+ * @param {{ stubs: Record<string, string>, args?: string[], env?: Record<string, string>,
+ *           scriptDir?: string | null }} options
+ */
+function runCiScript({ stubs, args = [MARKER], env = {}, scriptDir = null }) {
+  const binDir = mkdtempSync(join(tmpdir(), 'aka-no-network-stub-'));
+  try {
+    for (const [name, body] of Object.entries(stubs)) {
+      const file = join(binDir, name);
+      writeFileSync(file, body);
+      chmodSync(file, 0o755);
+    }
+    // scriptDir relocates the script so `${0%/*}/egress-probe.mjs` misses.
+    let script = CI_SCRIPT_ABS;
+    if (scriptDir !== null) {
+      script = join(scriptDir, 'no-network-test.sh');
+      writeFileSync(script, readFileSync(CI_SCRIPT_ABS, 'utf8'));
+      chmodSync(script, 0o755);
+    }
+    const result = spawnSync(BASH, [script, ...args], {
+      encoding: 'utf8',
+      env: {
+        PATH: binDir,
+        HOME: binDir,
+        AKA_NO_NETWORK_INSIDE: '1',
+        AKA_NO_NETWORK_DROPPED: '1',
+        ...env,
+      },
+    });
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
+/** The stub set for a run where egress really is gone: nothing resolves, nothing connects. */
+const blockedStubs = () => ({
+  id: prints('1001'),
+  getent: exits(1), // no name resolves
+  node: exits(0), // the probe reports the target unreachable
+  [MARKER]: prints(MARKER),
+});
+
+describe('the CI script refuses to run vacuously', () => {
+  it('runs the command when egress is genuinely gone', (ctx) => {
+    requirePosixShell(ctx);
+    // The positive control for this whole block: every case below asserts a
+    // refusal, and a script that refused unconditionally would satisfy all of
+    // them while never running the suite it exists to run.
+    const run = runCiScript({ stubs: blockedStubs() });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('egress is blocked, loopback is up');
+    expect(run.stdout).toContain(MARKER);
+  });
+
+  it('refuses to start as root, before reaching sudo', (ctx) => {
+    requirePosixShell(ctx);
+    // Started as root there is no unprivileged identity to drop back to, so the
+    // read-only-store cases in packages/persistence would report
+    // `effective: false` and skip — a quieter suite still reporting green.
+    const run = runCiScript({
+      stubs: { ...blockedStubs(), id: prints('0') },
+      env: { AKA_NO_NETWORK_INSIDE: '', AKA_NO_NETWORK_DROPPED: '' },
+    });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('started as root');
+    // sudo is not on the stub PATH, so reaching it would be a 127 instead.
+    expect(run.status).not.toBe(127);
+  });
+
+  it('refuses with no command to run', (ctx) => {
+    requirePosixShell(ctx);
+    const run = runCiScript({ stubs: blockedStubs(), args: [] });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('usage:');
+  });
+
+  it.each(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
+    requirePosixShell(ctx);
+    // A probe whose own tooling is absent reports "not blocked = false" and the
+    // control passes having probed nothing. This is the exact vacuous pass the
+    // tool check exists to prevent, so each tool is pinned by name.
+    const stubs = blockedStubs();
+    delete stubs[missing];
+    const run = runCiScript({ stubs });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain(`'${missing}' is not installed`);
+    expect(run.stdout).not.toContain(MARKER);
+  });
+
+  it('fails when DNS still resolves', (ctx) => {
+    requirePosixShell(ctx);
+    const run = runCiScript({ stubs: { ...blockedStubs(), getent: exits(0) } });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('DNS still resolves');
+    expect(run.stdout).not.toContain(MARKER);
+  });
+
+  it('fails when the TCP probe reports the target answered', (ctx) => {
+    requirePosixShell(ctx);
+    const run = runCiScript({ stubs: { ...blockedStubs(), node: exits(1) } });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('1.1.1.1:443 succeeded');
+    expect(run.stdout).not.toContain(MARKER);
+  });
+
+  it('fails when the probe reports itself broken rather than treating it as blocked', (ctx) => {
+    requirePosixShell(ctx);
+    // Exit 3 is "I could not run", which must never be read as "the network is
+    // gone" — that conflation is the whole failure mode this file guards.
+    const run = runCiScript({ stubs: { ...blockedStubs(), node: exits(3) } });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('could not run');
+    expect(run.stdout).not.toContain(MARKER);
+  });
+
+  it('fails when the probe file is missing', (ctx) => {
+    requirePosixShell(ctx);
+    const elsewhere = mkdtempSync(join(tmpdir(), 'aka-no-network-relocated-'));
+    try {
+      const run = runCiScript({ stubs: blockedStubs(), scriptDir: elsewhere });
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain('egress probe is missing');
+      expect(run.stdout).not.toContain(MARKER);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- 4. The egress probe itself ----------------------------------------------
+
+// The probe replaces a bash `/dev/tcp` one-liner, whose failure is ambiguous:
+// bash built without --enable-net-redirections fails the redirection for reasons
+// that have nothing to do with the network, and the caller reads that as "egress
+// blocked". So the probe proves its own mechanism against a loopback listener
+// first, and the three outcomes below are its whole contract with the script.
+//
+// Both targets here are loopback, so these cases never reach for the network —
+// the guard installed in this very process would refuse them if they did.
+
+/** @param {string} host @param {number} port */
+function runProbe(host, port) {
+  const result = spawnSync(process.execPath, [PROBE_ABS, host, String(port)], {
+    encoding: 'utf8',
+  });
+  return { status: result.status, stderr: result.stderr ?? '' };
+}
+
+/** A listening loopback server, and its port. */
+function listenOnLoopback() {
+  return new Promise((done) => {
+    const server = createServer((connection) => {
+      connection.destroy();
+    });
+    server.listen(0, '127.0.0.1', () => {
+      done({ server, port: server.address().port });
+    });
+  });
+}
+
+/** @param {import('node:net').Server} server */
+function closeServer(server) {
+  return new Promise((done) => {
+    server.close(() => {
+      done(undefined);
+    });
+  });
+}
+
+describe('the egress probe', () => {
+  it('reports a reachable target as NOT blocked', async () => {
+    const { server, port } = await listenOnLoopback();
+    try {
+      const run = runProbe('127.0.0.1', port);
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain('ANSWERED');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('reports an unreachable target as blocked', async () => {
+    // Bind then release, so the port is one nothing is listening on rather than
+    // a number guessed to be free.
+    const { server, port } = await listenOnLoopback();
+    await closeServer(server);
+
+    const run = runProbe('127.0.0.1', port);
+    expect(run.status).toBe(0);
+    // The mechanism proof has to appear too: "unreachable" is only meaningful
+    // once the probe has shown it can reach something.
+    expect(run.stderr).toContain('loopback round trip');
+    expect(run.stderr).toContain('unreachable');
+  });
+
+  it('reports junk arguments as broken, not as blocked', async () => {
+    const run = runProbe('127.0.0.1', 'not-a-port');
+    expect(run.status).toBe(3);
+    expect(run.stderr).toContain('not a port');
+  });
+
+  it('drains no refusal — every target above is loopback', () => {
+    expect(takeBlockedAttempts()).toEqual([]);
+  });
+});
+
+// --- 5. Both opt-outs, measured rather than assumed --------------------------
+
+// Two files in this repo import banned network modules on purpose: the vitest
+// guard patches node:net/node:dgram/node:dns, and the CI probe opens a socket.
+// In both cases that IS the enforcement — but only while it stays exactly what
+// it is today. eslint.root.config.mjs grants each file its opt-out so the FULL
+// ruleset can cover it; these cases lint the same files with the raw ban (no
+// `allow`) so widening the config cannot quietly widen what is permitted.
+
+/**
+ * Which network specifiers a file trips, named per finding. Anything that is not
+ * a plain import of an expected module comes back as a describable string so the
+ * failure says what it actually found.
+ * @param {string} file @param {readonly string[]} expected
+ */
+function networkBansTrippedBy(file, expected) {
+  const source = readFileSync(file, 'utf8');
+  const lines = source.split('\n');
+  // No filename: flat config resolves a path against the linter's base path, and
+  // these files sit outside the package, which reports "no matching
+  // configuration" instead of linting. The rules here are path-independent.
+  const messages = new Linter().verify(source, {
+    languageOptions: { parser: tseslint.parser, ecmaVersion: 'latest', sourceType: 'module' },
+    rules: networkGuard[0].rules,
+  });
+  const specifiers = messages.map((message) => {
+    const line = lines[message.line - 1] ?? '';
+    const named = expected.find((mod) => line.includes(`'${mod}'`));
+    return named ?? `${String(message.ruleId)} @ line ${String(message.line)}: ${line.trim()}`;
+  });
+  return {
+    specifiers: [...new Set(specifiers)].sort(),
+    allImports: messages.every((m) => m.ruleId === 'no-restricted-imports'),
+  };
+}
 
 describe('the guard file trips exactly the bans it must', () => {
-  // node:net / node:dgram / node:dns are banned workspace-wide, and the guard
-  // imports all three — that IS the enforcement. It is defensible only while it
-  // stays those three, so lint the real file with the shared network guard and
-  // pin the result. A fourth ban (a fetch, an http import, a dynamic require)
-  // fails here.
+  // Defensible only while it stays these three. A fourth ban — a fetch, an http
+  // import, a dynamic require — fails here.
   const EXPECTED_OPT_OUTS = ['node:dgram', 'node:dns', 'node:net'];
 
   it('reports only the three module imports it exists to enforce', () => {
-    const source = readFileSync(GUARD_ABS, 'utf8');
-    const lines = source.split('\n');
-    // No filename: flat config resolves a path against the linter's base path,
-    // and this file sits outside the package, which reports "no matching
-    // configuration" instead of linting. The rules here are path-independent.
-    const messages = new Linter().verify(source, {
-      languageOptions: {
-        parser: tseslint.parser,
-        ecmaVersion: 'latest',
-        sourceType: 'module',
-      },
-      rules: networkGuard[0].rules,
-    });
+    const { specifiers, allImports } = networkBansTrippedBy(GUARD_ABS, EXPECTED_OPT_OUTS);
+    expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(allImports).toBe(true);
+  });
+});
 
-    // Every finding must be an import of one of the three, on its own import
-    // line — not a fetch, a global, or a dynamic specifier.
-    const specifiers = messages.map((message) => {
-      const line = lines[message.line - 1] ?? '';
-      const named = EXPECTED_OPT_OUTS.find((mod) => line.includes(`'${mod}'`));
-      return named ?? `${String(message.ruleId)} @ line ${String(message.line)}: ${line.trim()}`;
-    });
+describe('the egress probe trips exactly the ban it must', () => {
+  // The probe opens TCP sockets and nothing else. A SECOND specifier here means
+  // the CI tooling grew a network surface nobody reviewed.
+  const EXPECTED_OPT_OUTS = ['node:net'];
 
-    expect([...new Set(specifiers)].sort()).toEqual(EXPECTED_OPT_OUTS);
-    expect(messages.every((m) => m.ruleId === 'no-restricted-imports')).toBe(true);
+  it('reports only node:net', () => {
+    const { specifiers, allImports } = networkBansTrippedBy(PROBE_ABS, EXPECTED_OPT_OUTS);
+    expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(allImports).toBe(true);
   });
 });

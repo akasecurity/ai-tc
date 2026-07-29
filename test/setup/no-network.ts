@@ -26,6 +26,10 @@
  * would be swallowed and the run would go green having reached the network. Each
  * refusal is therefore also RECORDED, and `afterEach`/`afterAll` hooks fail the
  * run on any recording that was not drained. A swallowed refusal is still fatal.
+ * `takeBlockedAttempts()` is the one seam through that: a test provoking a
+ * refusal on purpose has to drain it, and draining is therefore also the way to
+ * hide one. It is deliberate, it is exported for the guard's own suite, and it
+ * is the only opt-out that exists — there is no env switch and no config flag.
  *
  * KNOWN RESIDUALS, stated rather than silently covered:
  *   - A CHILD PROCESS is a separate process with its own copy of these modules,
@@ -34,12 +38,21 @@
  *     loopback-only network namespace — see tools/ci/no-network-test.sh.
  *   - `dns.lookup` is NOT patched. It is the OS resolver `net.connect` itself
  *     calls, so guarding it would duplicate the connect guard while risking the
- *     internal `util.promisify` contract that `dns.promises` is built on. A bare
- *     `dns.lookup` with no connect after it is a DNS query, not a dependency on
- *     a remote service. The `resolve*` family IS patched: those speak to a
- *     nameserver directly and nothing internal routes through them.
+ *     internal `util.promisify` contract that `dns.promises` is built on. Be
+ *     clear about what that leaves open: a bare `dns.lookup` with no connect
+ *     after it still discloses the hostname to whoever runs the resolver, which
+ *     for a local-first product is real egress, not a non-event. What it is not
+ *     is a DEPENDENCY on a remote service, which is what this guard measures.
+ *     Only the Linux namespace job blocks it; every other platform does not.
+ *     The `resolve*` family IS patched: those speak to a nameserver directly and
+ *     nothing internal routes through them.
  *   - A native addon opening its own socket bypasses every JS-level patch. No
  *     dependency here has one, and the namespace job catches it anyway.
+ *   - ATTRIBUTION IS BEST-EFFORT across an await. A refusal recorded after its
+ *     test has finished — a floating promise, a late timer — fails the NEXT
+ *     test's `afterEach`, because that is the next hook to run. The run still
+ *     fails, which is the point; the recorded stack is what identifies the real
+ *     culprit, so read that rather than the test the failure is attached to.
  */
 import dgram from 'node:dgram';
 import dns from 'node:dns';
@@ -125,19 +138,29 @@ const stackFrames = (stack: string): string[] =>
 
 // A frame in Node itself (`at node:internal/...`, `at connect (node:...)`) or
 // with no source location at all (`at new Promise (<anonymous>)`). Everything
-// undici does on the way to a `fetch()` looks like this, and none of it is the
-// line a reader has to change.
+// the built-in `fetch()` does on the way to the socket looks like this, and none
+// of it is the line a reader has to change.
 const OPAQUE_FRAME = /^\s+at node:|\((?:node:|<anonymous>)/;
 
+// A frame inside an installed dependency. Skipped in favour of repo code for the
+// same reason: naming `node_modules/some-client/dist/index.js` is true but not
+// where the fix goes. This matters most for the case the lint ban structurally
+// cannot see — a TRANSITIVE dependency reaching out — where every non-opaque
+// frame near the socket belongs to the dependency rather than to us.
+const VENDOR_FRAME = /[\\/]node_modules[\\/]/;
+
 /**
- * The innermost frame belonging to real source: the code that reached out. Falls
- * back to the OUTERMOST frame rather than reporting nothing — if every frame is
- * opaque, the caller furthest from the socket is the most informative one left.
+ * The innermost frame belonging to this repo's own source: the code that reached
+ * out. Degrades in steps rather than reporting nothing — a dependency's frame if
+ * that is all there is, then the OUTERMOST frame, since with everything opaque
+ * the caller furthest from the socket is the most informative one left.
  */
 function callSiteOf(frames: readonly string[]): string {
+  const visible = frames.filter(
+    (line) => !OPAQUE_FRAME.test(line) && !line.includes('no-network.ts'),
+  );
   const own =
-    frames.find((line) => !OPAQUE_FRAME.test(line) && !line.includes('no-network.ts')) ??
-    frames[frames.length - 1];
+    visible.find((line) => !VENDOR_FRAME.test(line)) ?? visible[0] ?? frames[frames.length - 1];
   return own?.trim().replace(/^at /, '') ?? '(call site unavailable)';
 }
 
@@ -214,7 +237,11 @@ export function blockedTcpTarget(args: readonly unknown[]): string | null {
 
 type AnyFn = (this: unknown, ...args: unknown[]) => unknown;
 
-const realConnect = Socket.prototype.connect as unknown as AnyFn;
+// Read through a cast to a plain function PROPERTY rather than as a method
+// reference. Capturing the original unbound function is the mechanism —
+// `guardedConnect` re-applies it with the caller's own `this` — and the shape
+// below is what the dgram and dns guards use for the same reason.
+const realConnect = (Socket.prototype as unknown as { connect: AnyFn }).connect;
 
 function guardedConnect(this: unknown, ...args: unknown[]): unknown {
   const target = blockedTcpTarget(args);
@@ -245,12 +272,16 @@ function guardDgram(method: 'send' | 'connect', kind: string): void {
   const prototype = dgram.Socket.prototype as unknown as Record<string, AnyFn>;
   const real = prototype[method];
   if (typeof real !== 'function') return;
+  // Rebound rather than closed over directly: `noUncheckedIndexedAccess` types
+  // the lookup as `AnyFn | undefined`, and the narrowing above does not reach
+  // inside the closure. Same shape as `guardDnsResolvers` below.
+  const realFn: AnyFn = real;
   function guarded(this: unknown, ...args: unknown[]): unknown {
     const address = dgramAddress(args);
     if (address !== undefined && !isLoopbackHost(address)) {
       refuse(kind, address, guarded);
     }
-    return real.apply(this, args);
+    return realFn.apply(this, args);
   }
   prototype[method] = guarded;
 }
@@ -304,7 +335,7 @@ function guardDnsResolvers(carrier: Record<string, unknown> | undefined): void {
 
 const dnsModule = dns as unknown as Record<string, unknown>;
 guardDnsResolvers(dnsModule);
-guardDnsResolvers(dns.promises as unknown as Record<string, unknown>);
+guardDnsResolvers(dns.promises);
 guardDnsResolvers(dns.Resolver.prototype as unknown as Record<string, unknown>);
 guardDnsResolvers(dns.promises.Resolver.prototype as unknown as Record<string, unknown>);
 

@@ -78,6 +78,20 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # `pnpm lint`/`pnpm typecheck` are `turbo run …`, which drives per-package
+      # scripts — and the repo root is not a workspace package. So the two files
+      # carrying the runtime half of the no-network guarantee
+      # (test/setup/no-network.ts, tools/ci/egress-probe.mjs) were reachable by
+      # no ESLint pass and no tsc invocation at all: esbuild strips their types
+      # without checking them, so a type error there surfaced nowhere. These two
+      # steps are their only coverage, and they run outside Turbo for the same
+      # reason format:check does.
+      - name: Lint (repo root)
+        run: pnpm lint:root
+
+      - name: Typecheck (repo root)
+        run: pnpm typecheck:root
+
       - name: Test
         run: pnpm test
 

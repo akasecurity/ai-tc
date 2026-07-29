@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   HANDLING_SECTION_DESCRIPTION,
@@ -10,6 +11,11 @@ import {
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
   POLICY_CHOICES,
+  VAULT_CHOICES,
+  VAULT_SECTION_DESCRIPTION,
+  VAULT_SECTION_LABEL,
+  vaultChoiceOf,
+  type WorkspaceSettingsFormViewProps,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
 // Nothing on this page happens on a hook, and nothing happens the moment it is
@@ -27,13 +33,15 @@ import {
 // test-only constants in the published binary.
 const ALWAYS_FALSE = [/next hook/i, /nothing is altered/i, /immediately/i, /right away/i];
 
-// Every string the form renders: both section headings, both section
-// descriptions, and each choice's label and description.
+// Every string the form renders: each section's heading and description, and
+// each choice's label and description.
 const FORM_COPY: Record<string, string> = {
   HANDLING_SECTION_LABEL,
   HANDLING_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
   HISTORICAL_SECTION_DESCRIPTION,
+  VAULT_SECTION_LABEL,
+  VAULT_SECTION_DESCRIPTION,
   ...Object.fromEntries(
     POLICY_CHOICES.flatMap((c) => [
       [`POLICY_CHOICES.${c.value}.label`, c.label],
@@ -44,6 +52,12 @@ const FORM_COPY: Record<string, string> = {
     HISTORICAL_CHOICES.flatMap((c) => [
       [`HISTORICAL_CHOICES.${c.value}.label`, c.label],
       [`HISTORICAL_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  ...Object.fromEntries(
+    VAULT_CHOICES.flatMap((c) => [
+      [`VAULT_CHOICES.${c.value}.label`, c.label],
+      [`VAULT_CHOICES.${c.value}.description`, c.description],
     ]),
   ),
 };
@@ -122,5 +136,58 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
   it('defaults to revoked wording never assuming the grant', () => {
     const revoked = MODEL_JUDGE_CHOICES.find((c) => c.value === 'revoked');
     expect(revoked?.description).toMatch(/never assumed/i);
+  });
+});
+
+// The vault grant is a custody change: 'on' means detected values survive as
+// recoverable ciphertext instead of being destroyed, and the pointers that
+// replace them are legible to anyone who can read the files they land in. The
+// copy must disclose both, and must not present switching off as an eraser.
+describe('WorkspaceSettingsFormView vault-consent section', () => {
+  const off = VAULT_CHOICES.find((c) => c.value === 'off');
+  const on = VAULT_CHOICES.find((c) => c.value === 'on');
+
+  it('offers exactly the off/on pair, with off marked as the default', () => {
+    expect(VAULT_CHOICES.map((c) => c.value)).toEqual(['off', 'on']);
+    expect(off?.label).toMatch(/default/i);
+  });
+
+  it('derives the current choice from the stored grant: present → on, absent → off', () => {
+    expect(vaultChoiceOf(undefined)).toBe('off');
+    expect(
+      vaultChoiceOf({
+        acknowledgedAt: '2026-01-01T00:00:00.000Z',
+        version: VAULT_CONSENT_VERSION,
+      }),
+    ).toBe('on');
+  });
+
+  it("discloses what 'on' stores: recoverable copies of secrets, encrypted, on this machine", () => {
+    expect(on?.description).toMatch(/recoverable/i);
+    expect(on?.description).toMatch(/encrypted/i);
+    expect(on?.description).toMatch(/this machine/i);
+    expect(on?.description).toMatch(/secrets/i);
+  });
+
+  it('discloses what the pointers reveal, and to whom', () => {
+    expect(on?.description).toMatch(/where each secret is used/i);
+    expect(on?.description).toMatch(/share the same secret/i);
+    expect(on?.description).toMatch(/anyone who can read/i);
+  });
+
+  it('does not present switching off as an eraser — the CLI purge is', () => {
+    expect(on?.description).toMatch(/does not erase/i);
+    expect(on?.description).toMatch(/purging the vault from the CLI/i);
+  });
+
+  it('keeps the off default free of any storage', () => {
+    expect(off?.description).toMatch(/nothing recoverable is stored/i);
+  });
+
+  it('emits only the choice string — no acknowledgedAt/version leaves the form', () => {
+    // The grant object is stamped by the server action; the form's save payload
+    // carries the bare 'off' | 'on' string and nothing a client could forge.
+    type Emitted = Parameters<WorkspaceSettingsFormViewProps['onSave']>[0]['vaultConsent'];
+    expectTypeOf<Emitted>().toEqualTypeOf<'off' | 'on'>();
   });
 });

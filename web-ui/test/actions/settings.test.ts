@@ -1,0 +1,138 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import type * as NodeOs from 'node:os';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { readWorkspaceSettings } from '@akasecurity/persistence';
+import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+
+import { saveSettings } from '../../app/(app)/settings/actions.ts';
+
+// `saveSettings` is the web surface that records and revokes the vault-consent
+// grant. The grant must always be stamped server-side ('on' has no input path
+// for a timestamp or version), a still-valid grant must survive re-saves with
+// its original acknowledgedAt, and 'off' must remove the field from the
+// persisted file entirely — revocation stops future vaulting without touching
+// what the vault already stores.
+//
+// The action resolves settings.json from `homedir()` (never process.env), so
+// the whole test is redirected into a temp home by mocking `node:os`;
+// `next/cache` is stubbed because revalidatePath needs a Next render context
+// that does not exist under vitest.
+const osHome = vi.hoisted(() => ({ dir: '' }));
+vi.mock('node:os', async (importActual) => {
+  const actual = await importActual<typeof NodeOs>();
+  return { ...actual, homedir: () => osHome.dir };
+});
+vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+
+let home: string;
+
+function settingsFile(): string {
+  return join(home, '.aka', 'settings', 'settings.json');
+}
+
+function rawSettings(): string {
+  return readFileSync(settingsFile(), 'utf8');
+}
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'aka-web-settings-'));
+  osHome.dir = home;
+});
+
+afterEach(() => {
+  rmSync(home, { recursive: true, force: true });
+});
+
+describe('saveSettings — vault-consent grant and revocation', () => {
+  it("records a server-stamped grant at the current consent version on 'on'", async () => {
+    const before = Date.now();
+    const res = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+    });
+    expect(res).toEqual({ ok: true });
+
+    const consent = readWorkspaceSettings().vaultConsent;
+    expect(consent?.version).toBe(VAULT_CONSENT_VERSION);
+    // The timestamp is minted by the action itself, so it lands inside this
+    // test's own execution window.
+    const acknowledged = Date.parse(consent?.acknowledgedAt ?? '');
+    expect(acknowledged).toBeGreaterThanOrEqual(before);
+    expect(acknowledged).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("keeps the original acknowledgedAt when 'on' is saved again", async () => {
+    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    const first = readWorkspaceSettings().vaultConsent;
+    expect(first).toBeDefined();
+
+    // A later save of unrelated edits with consent still 'on' must not
+    // re-stamp the grant — the recorded acknowledgment time is the consent
+    // record, not a last-touched time. Let the clock tick past the first stamp
+    // so a re-stamp could not coincide with it.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const res = await saveSettings({
+      policy: 'warn',
+      historicalAccess: 'session-only',
+      vaultConsent: 'on',
+    });
+    expect(res).toEqual({ ok: true });
+
+    const again = readWorkspaceSettings();
+    expect(again.policy).toBe('warn');
+    expect(again.vaultConsent).toEqual(first);
+  });
+
+  it("removes the field from the persisted file on 'off'", async () => {
+    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    expect(rawSettings()).toContain('vaultConsent');
+
+    const res = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'off',
+    });
+    expect(res).toEqual({ ok: true });
+
+    // Gone from the raw JSON, not merely parsed away: the absence of the key
+    // is what "not granted" means to every reader of this file.
+    const raw = rawSettings();
+    expect(raw).not.toContain('vaultConsent');
+    expect('vaultConsent' in (JSON.parse(raw) as Record<string, unknown>)).toBe(false);
+    expect(readWorkspaceSettings().vaultConsent).toBeUndefined();
+  });
+
+  it('rejects an unknown consent value and leaves the file untouched', async () => {
+    await saveSettings({ policy: 'redact', historicalAccess: 'session-only', vaultConsent: 'on' });
+    const before = rawSettings();
+
+    const res = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: 'granted',
+    });
+    expect(res.ok).toBe(false);
+    expect(rawSettings()).toBe(before);
+  });
+
+  it('rejects a client-supplied grant object — there is no input path for a timestamp', async () => {
+    // The input contract is the bare choice string. A caller that smuggles a
+    // pre-built grant (back-dated acknowledgment, forged version) past the
+    // type system must still be rejected at runtime, writing nothing.
+    const forged = { acknowledgedAt: '2001-01-01T00:00:00.000Z', version: VAULT_CONSENT_VERSION };
+    const res = await saveSettings({
+      policy: 'redact',
+      historicalAccess: 'session-only',
+      vaultConsent: forged as unknown as string,
+    });
+    expect(res.ok).toBe(false);
+    expect(() => rawSettings()).toThrow(); // nothing was ever written
+
+    // And the contract itself admits only a string — no object shape exists.
+    expectTypeOf<Parameters<typeof saveSettings>[0]['vaultConsent']>().toEqualTypeOf<string>();
+  });
+});

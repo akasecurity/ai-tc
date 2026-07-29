@@ -68,6 +68,21 @@ export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';
 export type {
+  CreateVaultGlueOptions,
+  DetokenizeTextOptions,
+  DetokenizeTextResult,
+  TokenizeTextResult,
+  VaultCore,
+  VaultGlue,
+} from './tokenize.ts';
+export {
+  createVaultGlue,
+  detokenizeText,
+  POINTER_UNAVAILABLE_TEXT,
+  tokenizeText,
+  tokenizeValue,
+} from './tokenize.ts';
+export type {
   AkaPluginAdapter,
   BlockedDetectionRef,
   CaptureHooks,

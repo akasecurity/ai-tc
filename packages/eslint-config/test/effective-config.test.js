@@ -1,24 +1,26 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, globSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { existsSync, globSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-// This file guards the per-package ESLint configs two ways.
+// This file guards the per-package ESLint configs three ways.
 //
 //  1. STRUCTURAL: every workspace package — enumerated from pnpm-workspace.yaml,
 //     not a hand-maintained glob — must ship an eslint.config.mjs that extends
 //     `@akasecurity/eslint-config`, must have a `lint` script that points eslint
-//     at every directory it ships code in, and must ship an
-//     eslint.scripts.config.mjs if it ships a scripts/ dir. A package missing any
-//     of these is invisible to `pnpm lint` and to a glob that only ever matched
-//     existing config files, so it would ship UNGUARDED for network calls with CI
-//     green. Both the package set and each package's code directories are DERIVED
-//     (from the manifest and from git-tracked lintable files), so a new package —
-//     or an existing one growing a new source dir — cannot fall outside the guard
-//     without the pinned expectations failing loudly.
+//     at every directory it ships code in AND at every lintable file sitting
+//     directly in its root, and must ship an eslint.scripts.config.mjs if it
+//     ships a scripts/ dir. A package missing any of these is invisible to
+//     `pnpm lint` and to a glob that only ever matched existing config files, so
+//     it would ship UNGUARDED for network calls with CI green. The package set,
+//     each package's code directories and each package's top-level files are all
+//     DERIVED (from the manifest and from git-tracked lintable files), so a new
+//     package — or an existing one growing a new source dir or a new root config
+//     file — cannot fall outside the guard without the pinned expectations
+//     failing loudly.
 //
 //  2. BEHAVIORAL: resolve each real config through ESLint and assert the network
 //     rules still fire on real code. Flat config resolves "last wins": the final
@@ -29,10 +31,21 @@ import { beforeAll, describe, expect, it } from 'vitest';
 //     dashboard opt-out) could silently drop a network ban with the unit suite
 //     still green. Here we assert the composition, not the components.
 //
-// The two compose into a closed loop: (1) guarantees every package ships a
-// config, (2) is fed the same derived list and proves each config enforces the
-// ban. A new package that forgets its config fails (1); one whose config fails
-// to wire the ban fails (2).
+//  3. FAULT INJECTION: run the real linter over real paths with network code
+//     planted in them. (1) and (2) both reason about configuration; neither
+//     parses a file. A root config file sits outside its package's tsconfig
+//     `include`, so the type-aware parser rejects it outright ("was not found by
+//     the project service") unless the config drops the type-aware rules for
+//     that path — and a file that fails to parse reports NO rule violations, so
+//     the ban would be structurally wired, behaviorally correct, and enforcing
+//     nothing. Only running the linter shows that.
+//
+// The three compose into a closed loop: (1) guarantees every package ships a
+// config and points eslint at everything it ships, (2) is fed the same derived
+// list and proves each config enforces the ban, (3) proves the files the ban
+// covers actually parse and report. A new package that forgets its config fails
+// (1); one whose config fails to wire the ban fails (2); one whose root files
+// cannot be linted at all fails (3).
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -66,9 +79,17 @@ const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 // bundled hooks into scripts/ (declared in turbo.json `build.outputs`, ignored
 // by git), and demanding a lint config for generated bundles would be wrong.
 //
-// Indexed once as parent dir -> immediate child dirs holding a lintable tracked
-// file at any depth, so each lookup is O(1) instead of a scan over every path.
-const LINTABLE_CHILD_DIRS = (() => {
+// Indexed once from one `git ls-files` walk into two maps, so each lookup is
+// O(1) instead of a scan over every path:
+//
+//   childDirs — parent dir -> immediate child dirs holding a lintable tracked
+//     file at any depth. This is the bucket `eslint src test` satisfies.
+//   rootFiles — parent dir -> lintable tracked files sitting DIRECTLY in it.
+//     A separate bucket because a root file has no directory segment to index:
+//     it can never appear in childDirs, so widening the source-dir check can
+//     never reach it, and every package keeps its build and tooling config
+//     (tsup.config.ts, vitest.config.ts, eslint.config.mjs) exactly there.
+const LINTABLE_TRACKED = (() => {
   let tracked;
   try {
     tracked = execFileSync('git', ['ls-files'], {
@@ -84,22 +105,31 @@ const LINTABLE_CHILD_DIRS = (() => {
     );
   }
   /** @type {Map<string, Set<string>>} */
-  const index = new Map();
+  const childDirs = new Map();
+  /** @type {Map<string, Set<string>>} */
+  const rootFiles = new Map();
   for (const file of tracked) {
     if (!file || !LINTABLE_EXT.test(file)) continue;
     const parts = file.split('/');
+    const parent = parts.slice(0, -1).join('/');
+    let siblings = rootFiles.get(parent);
+    if (!siblings) rootFiles.set(parent, (siblings = new Set()));
+    siblings.add(/** @type {string} */ (parts.at(-1)));
     for (let i = 0; i < parts.length - 1; i++) {
-      const parent = parts.slice(0, i).join('/');
-      let children = index.get(parent);
-      if (!children) index.set(parent, (children = new Set()));
-      children.add(parts[i]);
+      const ancestor = parts.slice(0, i).join('/');
+      let children = childDirs.get(ancestor);
+      if (!children) childDirs.set(ancestor, (children = new Set()));
+      children.add(/** @type {string} */ (parts[i]));
     }
   }
-  return index;
+  return { childDirs, rootFiles };
 })();
 
 /** The immediate subdirectories of `dir` that hold lintable tracked source. */
-const lintableChildDirs = (dir) => [...(LINTABLE_CHILD_DIRS.get(dir) ?? [])].sort();
+const lintableChildDirs = (dir) => [...(LINTABLE_TRACKED.childDirs.get(dir) ?? [])].sort();
+
+/** The lintable tracked files sitting directly in `dir`, no subdirectory. */
+const lintableRootFiles = (dir) => [...(LINTABLE_TRACKED.rootFiles.get(dir) ?? [])].sort();
 
 // Scripts live behind a SEPARATE second lint pass (`--no-config-lookup -c
 // eslint.scripts.config.mjs scripts`), so they are excluded from the main
@@ -192,7 +222,7 @@ function workspaceGlobs() {
  * @returns {{
  *   name: string, dir: string, label: string, lintScript: string,
  *   configRel: string, hasConfig: boolean, extendsShared: boolean,
- *   sourceDirs: string[], hasScriptsDir: boolean,
+ *   codeDirs: string[], sourceDirs: string[], rootFiles: string[], hasScriptsDir: boolean,
  *   scriptsConfigRel: string, hasScriptsConfig: boolean, scriptsExtendsShared: boolean,
  * }[]}
  */
@@ -230,6 +260,8 @@ function discoverWorkspacePackages() {
       // config is probed at, so scripts/ drops out.
       codeDirs,
       sourceDirs: codeDirs.filter((d) => d !== SCRIPTS_DIR),
+      // The other half of what the lint script must cover, derived the same way.
+      rootFiles: lintableRootFiles(posixDir),
       hasScriptsDir: codeDirs.includes(SCRIPTS_DIR),
       scriptsConfigRel,
       hasScriptsConfig,
@@ -295,6 +327,46 @@ const ESLINT_VALUE_FLAGS = new Set([
 const unquote = (token) => token.replace(/^['"]|['"]$/g, '');
 
 /**
+ * Every eslint invocation in a `lint` script, in order — its `-c`/`--config`
+ * override (undefined when the invocation uses ordinary config lookup) and its
+ * positional path targets. Kept as invocations rather than one flat target list
+ * because the fault-injection run below has to reproduce ONE of them faithfully:
+ * cli lints `src test *.config.*` under eslint.config.mjs and `scripts` under
+ * eslint.scripts.config.mjs, so running the flattened target list under either
+ * config lints half the package with the wrong ruleset. Only the `-c <file>`
+ * form is read — the repo uses it everywhere, and `--config=<file>` falls
+ * through as a plain flag, which costs the config override but never a target.
+ * @param {string} lintScript
+ * @returns {{ configName: string | undefined, targets: string[] }[]}
+ */
+function eslintInvocations(lintScript) {
+  const invocations = [];
+  for (const command of lintScript.split(/&&|\|\||;/)) {
+    const tokens = command.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
+    const start = tokens.findIndex((t) => /(?:^|\/)eslint$/.test(unquote(t)));
+    if (start === -1) continue;
+    /** @type {{ configName: string | undefined, targets: string[] }} */
+    const invocation = { configName: undefined, targets: [] };
+    for (let i = start + 1; i < tokens.length; i++) {
+      const token = unquote(tokens[i]);
+      if (token.startsWith('-')) {
+        if (ESLINT_VALUE_FLAGS.has(token)) {
+          const next = tokens[i + 1];
+          if ((token === '-c' || token === '--config') && next !== undefined) {
+            invocation.configName = unquote(next);
+          }
+          i++;
+        }
+        continue;
+      }
+      invocation.targets.push(token);
+    }
+    invocations.push(invocation);
+  }
+  return invocations;
+}
+
+/**
  * The positional path targets of every eslint invocation in a `lint` script.
  * Asserting on these rather than substring-matching the raw command string is
  * what makes the coverage check mean something: `eslint .` is broader than
@@ -304,23 +376,7 @@ const unquote = (token) => token.replace(/^['"]|['"]$/g, '');
  * @param {string} lintScript
  * @returns {string[]}
  */
-function eslintTargets(lintScript) {
-  const targets = [];
-  for (const command of lintScript.split(/&&|\|\||;/)) {
-    const tokens = command.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
-    const start = tokens.findIndex((t) => /(?:^|\/)eslint$/.test(unquote(t)));
-    if (start === -1) continue;
-    for (let i = start + 1; i < tokens.length; i++) {
-      const token = unquote(tokens[i]);
-      if (token.startsWith('-')) {
-        if (ESLINT_VALUE_FLAGS.has(token)) i++;
-        continue;
-      }
-      targets.push(token);
-    }
-  }
-  return targets;
-}
+const eslintTargets = (lintScript) => eslintInvocations(lintScript).flatMap((i) => i.targets);
 
 /**
  * Whether an eslint path target lints everything in `dir`. A target covers the
@@ -337,6 +393,35 @@ function targetCoversDir(target, dir) {
   const base = (globAt === -1 ? normalized : normalized.slice(0, globAt)).replace(/\/+$/, '');
   if (base === '') return true;
   return dir === base || dir.startsWith(`${base}/`);
+}
+
+/**
+ * Whether an eslint path target lints the package-relative file `file`. A target
+ * covers it when it IS the file, when it is `.` or a directory the file sits
+ * under, or when it is a glob the file matches.
+ *
+ * targetCoversDir's literal-prefix reduction is deliberately NOT reused: it
+ * answers "could this target reach anything under that directory", and reduces
+ * every leading-glob pattern to an empty prefix that covers everything. For a
+ * file that is the wrong question — it would let `*.config.*` vacuously "cover"
+ * middleware.ts, which is exactly the uncovered-root-file case this bucket
+ * exists to catch. So the glob is matched against the filename for real, via
+ * path.posix.matchesGlob so a Windows checkout answers identically. A pattern
+ * the matcher rejects counts as NOT covering: the guard then names the file as
+ * uncovered, which is the side to fail on.
+ * @param {string} target
+ * @param {string} file package-relative posix path
+ */
+function targetCoversFile(target, file) {
+  const normalized = target.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (normalized === '.' || normalized === '') return true;
+  if (normalized === file) return true;
+  if (file.startsWith(`${normalized}/`)) return true;
+  try {
+    return posix.matchesGlob(file, normalized);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -360,6 +445,21 @@ function configViolations(guarded) {
         return (p.codeDirs ?? []).some((d) => !targets.some((t) => targetCoversDir(t, d)));
       })
       .map((p) => p.label),
+    // Top-level files are their own bucket, and the reason is structural rather
+    // than an oversight: a file sitting directly in a package root contributes
+    // no directory segment, so it can never enter codeDirs and the check above
+    // cannot see it however the source dirs are widened. Every package keeps its
+    // build and tooling config there, which is shipped OSS source — a `fetch()`
+    // in tsup.config.ts is exactly the thing the workspace ban exists to stop.
+    // Each offender names its uncovered files, because "add a target" is not
+    // actionable without knowing which ones are missing.
+    rootFilesNotWired: guarded.flatMap((p) => {
+      const targets = eslintTargets(p.lintScript);
+      const uncovered = (p.rootFiles ?? []).filter(
+        (f) => !targets.some((t) => targetCoversFile(t, f)),
+      );
+      return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
+    }),
     // `eslint <src> <test>` never reaches scripts/, so a scripts/ dir needs its
     // own network-guard config (run with --no-config-lookup as a second pass).
     missingScriptsConfig: guarded
@@ -484,18 +584,34 @@ const importOf = (specifier) => `import probe from ${JSON.stringify(specifier)};
 // path-scoped block unexercised — the last-wins mistake this suite exists to
 // catch. Packages with a scripts/ dir contribute their scripts config too.
 const PROBE_TARGETS = GUARDED_PACKAGES.flatMap((p) => {
+  const pkgDir = join(REPO_ROOT, p.dir);
   const targets = p.hasConfig
     ? (p.sourceDirs.length ? p.sourceDirs : ['src']).map((d) => ({
         id: `${p.configRel} @ ${d}/`,
-        pkgDir: join(REPO_ROOT, p.dir),
+        pkgDir,
         configName: 'eslint.config.mjs',
         relFile: `${d}/__network_ban_probe__.ts`,
       }))
     : [];
+  // Top-level files are probed at their REAL paths, never a synthetic name.
+  // Which config block claims a root file depends on its filename — the build
+  // and tooling config resolves through `rootConfigFiles` with the type-aware
+  // rules off, while web-ui's middleware.ts keeps them — so an invented name
+  // would exercise a block that no real file resolves to.
+  if (p.hasConfig) {
+    for (const file of p.rootFiles) {
+      targets.push({
+        id: `${p.configRel} @ ${file}`,
+        pkgDir,
+        configName: 'eslint.config.mjs',
+        relFile: file,
+      });
+    }
+  }
   if (p.hasScriptsConfig) {
     targets.push({
       id: `${p.scriptsConfigRel} @ scripts/`,
-      pkgDir: join(REPO_ROOT, p.dir),
+      pkgDir,
       configName: 'eslint.scripts.config.mjs',
       relFile: 'scripts/__network_ban_probe__.mjs',
     });
@@ -563,6 +679,23 @@ describe('every workspace package ships a network-guarded eslint config', () => 
     ).toEqual([]);
   });
 
+  it('every guarded package has a lint script covering every top-level file it ships', () => {
+    const { rootFilesNotWired } = configViolations(GUARDED_PACKAGES);
+    expect(
+      rootFilesNotWired,
+      rootFilesNotWired.length
+        ? 'These packages ship a lintable file directly in their root that no eslint invocation in ' +
+            'their `lint` script targets. `eslint src test` can never reach one — a root file has no ' +
+            'directory segment — so it is unlinted by construction and a `fetch()` there passes ' +
+            '`pnpm lint` (CLAUDE.md "No network calls"). Add a target that covers it: `*.config.*` ' +
+            "covers the build and tooling config, anything else is named explicitly (see web-ui's " +
+            'middleware.ts). A root config file also sits outside the tsconfig `include`, so the ' +
+            'package eslint config must spread `...rootConfigFiles` after its projectService block ' +
+            `or the type-aware parser rejects the file instead of linting it:\n  ${rootFilesNotWired.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
   it('every package with a scripts/ dir ships a network-guarded scripts config', () => {
     const { missingScriptsConfig, scriptsNotExtending } = configViolations(GUARDED_PACKAGES);
     expect(
@@ -611,11 +744,12 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
     name: '@akasecurity/newpkg',
     dir: 'packages/newpkg',
     label: '@akasecurity/newpkg (packages/newpkg)',
-    lintScript: 'eslint src test',
+    lintScript: 'eslint src test *.config.*',
     hasConfig: true,
     extendsShared: true,
     codeDirs: ['src', 'test'],
     sourceDirs: ['src'],
+    rootFiles: ['vitest.config.ts'],
     hasScriptsDir: false,
     hasScriptsConfig: false,
     scriptsExtendsShared: false,
@@ -644,6 +778,40 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
     expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
   });
 
+  it('names a package whose lint script misses a top-level file, and the file', () => {
+    const v = configViolations([
+      pkg({ lintScript: 'eslint src test', rootFiles: ['tsup.config.ts', 'vitest.config.ts'] }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([
+      '@akasecurity/newpkg (packages/newpkg) → tsup.config.ts, vitest.config.ts',
+    ]);
+    // The source dirs ARE covered, so the codeDirs bucket sees nothing wrong.
+    // That is the whole point of tracking root files separately.
+    expect(v.lintNotWired).toEqual([]);
+  });
+
+  it('names only the top-level files a partial glob misses', () => {
+    const v = configViolations([
+      pkg({
+        lintScript: 'eslint src test *.config.*',
+        rootFiles: ['vitest.config.ts', 'setup.ts'],
+      }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg) → setup.ts']);
+  });
+
+  it('clears a package whose lint script names its top-level files explicitly', () => {
+    const v = configViolations([
+      pkg({
+        lintScript: 'eslint app middleware.ts test *.config.*',
+        codeDirs: ['app', 'test'],
+        sourceDirs: ['app', 'test'],
+        rootFiles: ['middleware.ts', 'next.config.ts'],
+      }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([]);
+  });
+
   it('names a package with a scripts/ dir and no scripts config', () => {
     const v = configViolations([pkg({ hasScriptsDir: true, hasScriptsConfig: false })]);
     expect(v.missingScriptsConfig).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
@@ -669,6 +837,7 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
       missing: [],
       notExtending: [],
       lintNotWired: [],
+      rootFilesNotWired: [],
       missingScriptsConfig: [],
       scriptsNotExtending: [],
     });
@@ -711,7 +880,7 @@ describe('the config-file checks (tested on synthetic source)', () => {
   });
 });
 
-describe('eslintTargets / targetCoversDir (the lint-coverage check)', () => {
+describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage check)', () => {
   // The predicate this replaces was a substring match on the command string,
   // which rejected a broader-and-correct `eslint .` and accepted
   // `eslint src/index.ts` as covering src/. Pin both directions.
@@ -722,6 +891,19 @@ describe('eslintTargets / targetCoversDir (the lint-coverage check)', () => {
         'eslint src test && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
       ),
     ).toEqual(['src', 'test', 'scripts']);
+  });
+
+  it('splits a script into its invocations, each with its own config override', () => {
+    // The fault injection reproduces ONE invocation, so which targets belong to
+    // which config has to survive the parse.
+    expect(
+      eslintInvocations(
+        'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+      ),
+    ).toEqual([
+      { configName: undefined, targets: ['src', 'test', '*.config.*'] },
+      { configName: 'eslint.scripts.config.mjs', targets: ['scripts'] },
+    ]);
   });
 
   it('does not mistake a value-taking flag argument for a target', () => {
@@ -778,6 +960,61 @@ describe('eslintTargets / targetCoversDir (the lint-coverage check)', () => {
     expect(covers('eslint src/index.ts test/a.test.ts', ['src', 'test'])).toBe(false);
     // A dir the package ships but the script forgets must be flagged.
     expect(covers('eslint src test', ['src', 'test', 'eval'])).toBe(false);
+  });
+
+  it('treats an exact filename, `.`, and a matching glob as covering a top-level file', () => {
+    expect(targetCoversFile('tsup.config.ts', 'tsup.config.ts')).toBe(true);
+    expect(targetCoversFile('.', 'tsup.config.ts')).toBe(true);
+    expect(targetCoversFile('./', 'tsup.config.ts')).toBe(true);
+    expect(targetCoversFile('*.config.*', 'tsup.config.ts')).toBe(true);
+    expect(targetCoversFile('**/*.ts', 'tsup.config.ts')).toBe(true);
+    // The awkward real one: schema's drizzle config is not `<name>.config.ts`,
+    // so a `*.config.{ts,mjs}` brace list would miss it and `*.config.*` must not.
+    expect(targetCoversFile('*.config.*', 'drizzle.config.local.ts')).toBe(true);
+    expect(targetCoversFile('*.config.{ts,mjs}', 'drizzle.config.local.ts')).toBe(false);
+  });
+
+  it('does NOT treat a source dir as covering a top-level file', () => {
+    // This is the gap the bucket exists to close: `eslint src test` reaches
+    // nothing in the package root, however many dirs it names.
+    expect(targetCoversFile('src', 'vitest.config.ts')).toBe(false);
+    expect(targetCoversFile('test', 'vitest.config.ts')).toBe(false);
+    expect(targetCoversFile('src/**/*.ts', 'vitest.config.ts')).toBe(false);
+  });
+
+  it('does NOT let a non-matching glob vacuously cover a top-level file', () => {
+    // targetCoversDir reduces `*.config.*` to an empty literal prefix and calls
+    // it covering, which is right for a directory and wrong for a file. Matching
+    // the pattern for real is what keeps `eslint app *.config.*` from claiming
+    // to cover middleware.ts.
+    expect(targetCoversFile('*.config.*', 'middleware.ts')).toBe(false);
+    expect(targetCoversFile('*.mjs', 'vitest.config.ts')).toBe(false);
+    // A glob anchored at the root does not reach into a subdirectory either.
+    expect(targetCoversFile('*.config.*', 'src/a.config.ts')).toBe(false);
+  });
+
+  it('accepts the real repo forms for top-level files', () => {
+    const covers = (script, files) => {
+      const targets = eslintTargets(script);
+      return files.every((f) => targets.some((t) => targetCoversFile(t, f)));
+    };
+    expect(
+      covers('eslint src test *.config.*', [
+        'eslint.config.mjs',
+        'tsup.config.ts',
+        'vitest.config.ts',
+      ]),
+    ).toBe(true);
+    expect(
+      covers('eslint app middleware.ts test *.config.*', [
+        'middleware.ts',
+        'next.config.ts',
+        'postcss.config.mjs',
+      ]),
+    ).toBe(true);
+    expect(covers('eslint .', ['tsup.config.ts'])).toBe(true);
+    // The pre-fix form: source dirs only, root files unreachable.
+    expect(covers('eslint src test', ['tsup.config.ts'])).toBe(false);
   });
 });
 
@@ -968,4 +1205,198 @@ describe('cli scripts-config file-scoped opt-out (real config)', () => {
       'no-restricted-imports',
     );
   });
+});
+
+describe('rootConfigFiles type-aware opt-out (real config)', () => {
+  // Linting a package's top-level config files costs the type-aware rules on
+  // them: no tsconfig `include` owns those paths, so the type-aware parser
+  // refuses the file outright rather than reporting on it. Two things about that
+  // trade have to stay true, and neither is visible from the config source —
+  // flat config resolves last-wins across three or four spread blocks.
+  //
+  //   1. The ban the files are linted FOR is untouched. Everything syntactic
+  //      survives disableTypeChecked; only the rules that need a type checker go.
+  //   2. The opt-out stops at the package root. It is scoped to `*.config.*`
+  //      with no `**/`, so src/ keeps the type-aware rules, which are
+  //      load-bearing there.
+  const cliDir = join(REPO_ROOT, 'cli');
+  const resolved = { rootConfig: undefined, source: undefined };
+
+  beforeAll(async () => {
+    resolved.rootConfig = await resolveConfig(cliDir, 'tsup.config.ts');
+    resolved.source = await resolveConfig(cliDir, 'src/cli.ts');
+  }, RESOLVE_TIMEOUT_MS);
+
+  it('drops the type-aware rules on a top-level config file', () => {
+    // Not a goal in itself — it is the concession that makes the file lintable
+    // at all. Pinned so the reason a root file parses stays visible.
+    for (const rule of [
+      '@typescript-eslint/no-floating-promises',
+      '@typescript-eslint/no-unsafe-call',
+    ]) {
+      expect([0, 'off'], `${rule} on tsup.config.ts`).toContain(
+        severityOf(resolved.rootConfig, rule),
+      );
+    }
+  });
+
+  it('keeps the network ban and every other non-type-aware rule on it', () => {
+    const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved.rootConfig));
+    for (const key of KEYS) {
+      expect(fired, `tsup.config.ts :: ${key}`).toContain(key);
+    }
+    for (const rule of [
+      'n/no-process-env',
+      'no-console',
+      '@typescript-eslint/no-explicit-any',
+      'simple-import-sort/imports',
+    ]) {
+      expect([2, 'error'], `${rule} on tsup.config.ts`).toContain(
+        severityOf(resolved.rootConfig, rule),
+      );
+    }
+  });
+
+  it('does NOT leak the type-aware opt-out into src/', () => {
+    for (const rule of [
+      '@typescript-eslint/no-floating-promises',
+      '@typescript-eslint/no-unsafe-call',
+    ]) {
+      expect([2, 'error'], `${rule} on src/cli.ts`).toContain(severityOf(resolved.source, rule));
+    }
+  });
+});
+
+// --- Fault injection: plant network code and run the real linter -------------
+
+describe('a planted network call in a top-level file is reported', () => {
+  // Everything above reasons about CONFIGURATION and never parses a file. That
+  // is a real blind spot for top-level files specifically: they sit outside
+  // their package's tsconfig `include`, so the type-aware parser rejects them
+  // with "was not found by the project service" unless the config drops the
+  // type-aware rules for that path — and a file that fails to parse reports a
+  // fatal message and NO rule violations. The ban would be structurally wired,
+  // behaviorally correct, and catching nothing. Only linting shows that.
+
+  /** @type {Map<string, ESLint>} */
+  const eslintByPkg = new Map();
+  beforeAll(() => {
+    for (const p of GUARDED_PACKAGES.filter((x) => x.hasConfig)) {
+      eslintByPkg.set(p.name, new ESLint({ cwd: join(REPO_ROOT, p.dir) }));
+    }
+  });
+
+  // One case per real top-level file, so a failure names the file rather than
+  // the package. lintText resolves the real config for the real path and lints
+  // the planted text in place of the file's own — the same fault as appending
+  // it on disk, without a write that a killed run could leave behind.
+  const ROOT_FILE_CASES = GUARDED_PACKAGES.filter((p) => p.hasConfig).flatMap((p) =>
+    p.rootFiles.map((file) => ({ id: `${p.dir}/${file}`, pkg: p.name, dir: p.dir, file })),
+  );
+
+  it('has a case for every top-level file in every guarded package', () => {
+    // A vacuous-pass guard: an empty case list would make every it.each below
+    // disappear and the suite would report green while checking nothing.
+    expect(ROOT_FILE_CASES.length).toBeGreaterThanOrEqual(GUARDED_PACKAGES.length);
+  });
+
+  it.each(ROOT_FILE_CASES)(
+    'reports every network form planted in $id',
+    async ({ pkg, dir, file }) => {
+      const eslint = /** @type {ESLint} */ (eslintByPkg.get(pkg));
+      const abs = join(REPO_ROOT, dir, file);
+      expect(
+        await eslint.isPathIgnored(abs),
+        `${dir}/${file} is excluded by an eslint ignore`,
+      ).toBe(false);
+      const [result] = await eslint.lintText(NETWORK_SNIPPET, { filePath: abs, warnIgnored: true });
+      const messages = result?.messages ?? [];
+      // A fatal parse error is the failure mode this case exists for: it means
+      // no rule ran, so the assertions below would be reporting on an empty set.
+      expect(
+        messages.filter((m) => m.fatal).map((m) => m.message),
+        `${dir}/${file} did not parse, so no rule ran against it`,
+      ).toEqual([]);
+      const fired = new Set(messages.map((m) => m.ruleId));
+      for (const key of KEYS) {
+        expect(fired, `${dir}/${file} :: ${key}`).toContain(key);
+      }
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
+describe('end to end: eslint run the way the lint script runs it finds a planted root config file', () => {
+  // The case above lints one path at a time, which proves the config bans the
+  // network there but not that the `lint` script's own targets ENUMERATE it —
+  // the half of the gap that let a `fetch()` in cli/tsup.config.ts pass
+  // `pnpm lint`. So plant a real file in a package root and run eslint over the
+  // targets parsed out of the real script. cli is the package to do it in: it
+  // carries three top-level config files and the two-invocation script, so the
+  // targets have to be split by invocation or the scripts pass lints half the
+  // package under the wrong config.
+  const PROBE_FILE = '__aka_network_probe__.config.ts';
+  const pkg = GUARDED_PACKAGES.find((p) => p.name === '@akasecurity/cli');
+  const pkgDir = pkg ? join(REPO_ROOT, pkg.dir) : '';
+  const probeAbs = pkgDir ? join(pkgDir, PROBE_FILE) : '';
+
+  // Belt and braces with the finally below: an assertion that throws mid-test
+  // must never leave a file behind that turns the next `pnpm lint` red for a
+  // reason nobody can trace back to here.
+  afterAll(() => {
+    if (probeAbs) rmSync(probeAbs, { force: true });
+  });
+
+  it('is a real package (the enumeration still finds cli)', () => {
+    expect(pkg, '@akasecurity/cli is missing from the workspace enumeration').toBeDefined();
+  });
+
+  it(
+    'reports the planted file with every network rule',
+    async () => {
+      const invocations = eslintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript);
+      const invocation = invocations.find((i) =>
+        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
+      );
+      expect(
+        invocation,
+        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+      ).toBeDefined();
+      const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
+        invocation
+      );
+
+      writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
+      try {
+        const eslint = new ESLint({
+          cwd: pkgDir,
+          ...(configName ? { overrideConfigFile: join(pkgDir, configName) } : {}),
+        });
+        const results = await eslint.lintFiles(targets);
+        const probe = results.find((r) => r.filePath === probeAbs);
+        expect(
+          probe,
+          `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the lint script's targets do ` +
+            'not enumerate top-level files, which is exactly how a fetch() in tsup.config.ts passed ' +
+            '`pnpm lint`',
+        ).toBeDefined();
+        const messages = /** @type {ESLint.LintResult} */ (probe).messages;
+        expect(
+          messages.filter((m) => m.fatal).map((m) => m.message),
+          `${PROBE_FILE} did not parse, so no rule ran against it`,
+        ).toEqual([]);
+        const fired = new Set(messages.map((m) => m.ruleId));
+        for (const key of KEYS) {
+          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+        }
+        expect(
+          /** @type {ESLint.LintResult} */ (probe).errorCount,
+          'the planted file must fail the lint run, not merely warn',
+        ).toBeGreaterThan(0);
+      } finally {
+        rmSync(probeAbs, { force: true });
+      }
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
 });

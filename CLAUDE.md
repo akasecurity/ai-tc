@@ -170,27 +170,29 @@ skills/               agent skills (e.g. write-detection-rule)
 
 1. Create `packages/<name>/package.json` with `"name": "@akasecurity/<name>"`
 2. Extend `../../tsconfig.base.json`
-3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
+3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`, and spread
+   `...rootConfigFiles` **after** the block that turns `projectService` on. Root config
+   files sit outside the tsconfig `include`, so the type-aware parser rejects them
+   outright (`was not found by the project service`) and reports nothing else about
+   them; that block drops the type-aware rules for `*.config.*` at the package root so
+   they lint. Every network ban is syntactic and still fires.
 4. Export from `src/index.ts`
 5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` over
-   **every directory the package ships code in**, whatever they are named (a bare `.`
-   counts; naming individual files does not). Turbo silently skips a package with no
-   `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
-   dir of **hand-written (git-tracked)** scripts needs its own
-   `eslint.scripts.config.mjs` plus a second pass
+   **every directory the package ships code in and every lintable file at its root**,
+   whatever they are named (a bare `.` counts; naming individual files counts only for
+   those files, not for the directory they sit in). Turbo silently skips a package with
+   no `lint` script, so a config nothing points ESLint at enforces nothing. `*.config.*`
+   is the standing target for the build and tooling config; name any other root file
+   explicitly (see `web-ui`'s `middleware.ts`). A `scripts/` dir of **hand-written
+   (git-tracked)** scripts needs its own `eslint.scripts.config.mjs` plus a second pass
    (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
    `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
-
-   Note the current limit: the guard checks **directories only**, so top-level files
-   at a package root (`tsup.config.ts`, `vitest.config.ts`, …) are outside it and are
-   not linted today. Point the `lint` script at them if you can; several need a
-   `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
-
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
    unguarded are the assertions next to it (a missing config, a config that never
-   extends the shared one, a `lint` script that misses a directory).
+   extends the shared one, a `lint` script that misses a directory or a root file, a
+   root file the linter cannot parse).
 
 ## Commit messages
 

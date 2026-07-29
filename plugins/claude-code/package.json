@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "lint": "eslint src test eval",
+    "lint": "eslint src test eval *.config.*",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepack": "tsup"

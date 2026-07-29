@@ -374,3 +374,11 @@ stay whole-value, because `maskMatch` deliberately keeps a fragment visible and 
 fragment is stored on purpose; and an assertion that some non-secret string is absent — an
 internal error-class name, say — is a different property that `expectNoEchoOf` does not
 express.
+
+Assert against the value **that call supplied**, never a module constant the case does not
+send. A case driven with an inert literal and asserted against a shared `VALUE` cannot fail
+however the branch is worded, so it stays green while the branch echoes the live value it
+was handed. Name each case's own inputs. This is the same family as the two rules above: an
+absence assertion is only worth its green if it could have gone red — so before trusting a
+new one, break the property it claims to guard, re-run, and treat a still-green suite as a
+defect in the test.

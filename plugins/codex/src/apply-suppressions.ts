@@ -30,6 +30,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import { runApply } from '@akasecurity/setup-wizard';
 
+import { isModelJudgeConsentValid } from './triage/consent.ts';
 import { runJudge, spawnCodex } from './triage/judge.ts';
 import { adapterPresenter } from './triage/presenter.ts';
 
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
     },
     now: () => Date.now(),
     createdBy: resolveCreatedBy,
+    modelJudgeConsent: () => isModelJudgeConsentValid(loadConfig().settings.modelJudgeConsent),
     stdout: (s) => process.stdout.write(s),
     present: adapterPresenter,
     stderr: (s) => process.stderr.write(s),

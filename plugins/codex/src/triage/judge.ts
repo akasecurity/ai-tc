@@ -38,6 +38,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { maskText } from '@akasecurity/plugin-sdk';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 import { parseRecommendation } from '@akasecurity/setup-wizard';
 
@@ -144,9 +145,30 @@ export interface JudgeDeps {
 // argv) so a large hit set never trips the OS's ARG_MAX and so raw can't leak
 // via a spawn error's argv-echoing `.message`. --ephemeral is what keeps the
 // prompt out of ~/.codex/sessions. Always removes the temp output dir.
+
+// The minimized egress projection: what actually crosses to the model. The
+// finding's own rawMatch must cross (the rubric judges the value), and the
+// context window crosses only after re-masking, so any OTHER detectable secret
+// in the window never leaves raw. filePath, valueFingerprint, and keyVersion
+// are dropped before egress — a new TriageHit field is not disclosed to the
+// model unless this projection and the consent copy are updated together.
+// maskText is fail-secure: a masking fault over-redacts, never leaks.
+// The spread is load-bearing: it drops the fields from a COPY, never off the
+// source hit — the surfaced-secrets writeback still reads filePath off the
+// original in-memory hits, so mutating in place here would break that path.
+export function toJudgePayload(
+  hit: TriageHit,
+): Omit<TriageHit, 'filePath' | 'valueFingerprint' | 'keyVersion'> {
+  const payload: TriageHit = { ...hit, context: maskText(hit.context) };
+  delete payload.filePath;
+  delete payload.valueFingerprint;
+  delete payload.keyVersion;
+  return payload;
+}
+
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
   const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
-  const hitsJsonl = hits.map((h) => JSON.stringify(h)).join('\n');
+  const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
   const outDir = mkdtempSync(join(tmpdir(), 'aka-judge-'));

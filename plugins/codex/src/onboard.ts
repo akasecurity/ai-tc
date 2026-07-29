@@ -29,7 +29,11 @@ import {
   severityFloorPosture,
 } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { HistoricalAccess, SimpleDetectionPolicy } from '@akasecurity/schema';
+import {
+  HistoricalAccess,
+  MODEL_JUDGE_PAYLOAD_VERSION,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
 import { parsePosture } from '@akasecurity/setup-wizard';
 
 import { show } from './present.ts';
@@ -79,6 +83,16 @@ if (rawHistorical !== undefined) {
   else answers.historicalAccess = parsed.data;
 }
 
+// The distinct consent for sending findings to the model API (separate from
+// --historical, which only governs reading rollouts). A boolean flag: its
+// presence records consent against the current payload-shape version.
+if (process.argv.includes('--model-judge-consent')) {
+  answers.modelJudgeConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+  };
+}
+
 const rawPosture = flags.get('posture');
 const useFloor = process.argv.includes('--floor');
 const recalibrate = process.argv.includes('--recalibrate');
@@ -89,13 +103,30 @@ const recalibrate = process.argv.includes('--recalibrate');
 if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
 
 if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
-  fail('nothing to save — pass --policy, --historical, --posture and/or --floor');
+  fail(
+    'nothing to save — pass --policy, --historical, --model-judge-consent, --posture and/or --floor',
+  );
 }
+
+// Recording the model-judge consent is not an onboarding-posture answer: it
+// grants an egress, and on the wizard's Yes path this write's confirmation is
+// the only signal the grant registered. So it gets its own line rather than the
+// historical-scan one, and a consent-only write does not run the posture pass
+// below — acknowledging an egress must never be able to change enforcement.
+const wroteConsent = answers.modelJudgeConsent !== undefined;
+const wrotePosture = answers.policy !== undefined || answers.historicalAccess !== undefined;
 
 if (Object.keys(answers).length > 0) {
   try {
     const settings = applyOnboarding(answers);
-    process.stdout.write(show("Got it — I'll look over Codex's recent work to tune things."));
+    if (wrotePosture) {
+      process.stdout.write(show("Got it — I'll look over Codex's recent work to tune things."));
+    }
+    if (wroteConsent) {
+      process.stdout.write(
+        show("Noted — I'll send findings to the model to rate them. You can revoke that anytime."),
+      );
+    }
     // Caps any existing block/redact category rows to warn once when this
     // store's chosen handling is 'warn'. Failure here does not fail the
     // settings write above.

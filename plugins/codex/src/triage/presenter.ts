@@ -7,7 +7,7 @@
  */
 import type { AdapterPresenter } from '@akasecurity/setup-wizard';
 
-import { frameCalibration, frameEmptyState } from '../calibration.ts';
+import { frameCalibration, frameEmptyState, zeroCountFrame } from '../calibration.ts';
 import { fenced, show } from '../present.ts';
 import { renderApplied, renderRecommendedPosture, STORE_UNAVAILABLE_NOTE } from '../render.ts';
 import { frameJsonBlock } from '../setup-frame-json.ts';
@@ -19,6 +19,7 @@ export const adapterPresenter: AdapterPresenter = {
   frameJsonBlock,
   frameEmptyState,
   frameCalibration,
+  zeroCountFrame,
   renderRecommendedPosture,
   // The applied card's Ready line resolves against the installed skill
   // registry — closed over here so the shared core never reads it.

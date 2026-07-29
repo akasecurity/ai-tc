@@ -1,7 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalDependencies": ["tsconfig.base.json", "rules/**"],
+  // test/setup/** is the no-network guard every package loads as a vitest
+  // setupFile. It lives outside every package, so nothing would otherwise put it
+  // in a `test` task's hash — weakening or deleting it would leave every package
+  // replaying a cached green produced under the OLD guard, which is a false
+  // green for the guarantee it exists to enforce.
+  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
   "tasks": {
     "build": {
       "dependsOn": ["^build", "^typecheck"],

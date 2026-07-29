@@ -1,4 +1,13 @@
+import { fileURLToPath } from 'node:url';
+
 import { defineConfig } from 'vitest/config';
+
+// Every test file runs behind the no-network guard: it refuses any outbound
+// connection that is not loopback and names the call site that made it. Wired
+// per package because each one runs its own vitest;
+// packages/eslint-config/test/no-network-runtime.test.js fails the workspace
+// if a package drops the entry or points it at the wrong path.
+const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
 
 // The rule timing tests exercise real ReDoS backtracking behavior via checkRuleTiming
 // and filterUnsafeRules; catastrophic patterns can take well over a second to evaluate
@@ -7,6 +16,7 @@ import { defineConfig } from 'vitest/config';
 // and packages/plugin-runtime for the same reason under heavy workspace contention).
 export default defineConfig({
   test: {
+    setupFiles: [noNetworkGuard],
     environment: 'node',
     testTimeout: 20_000,
     hookTimeout: 20_000,

@@ -56,6 +56,19 @@ The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked so any _other_ detectable secret in the window does not cross raw) and `id` (a sequential counter the rubric requires the model to echo). `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. The grant is revocable under Settings, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
 
+**Three gates enforce this, and they cover different things.** Losing track of which is
+which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
+
+| Gate                                          | Catches                                             | Cannot see                                          |
+| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a dynamic specifier        |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | Nothing on Linux; the job is Linux-only             |
+
+The middle one is a vitest `setupFiles` entry every package wires (see [Testing](#testing));
+the last runs the whole suite inside a loopback-only network namespace via
+`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked.
+
 ## Package dependency rules
 
 The store-reading packages read the local SQLite store directly through
@@ -192,6 +205,18 @@ skills/               agent skills (e.g. write-detection-rule)
    unguarded are the assertions next to it (a missing config, a config that never
    extends the shared one, a `lint` script that misses a directory).
 
+7. If it has a `test` script, wire the no-network guard into its
+   `vitest.config.ts` and add its name to `EXPECTED_VITEST_PACKAGES` in
+   `packages/eslint-config/test/no-network-runtime.test.js`. Copy the block from a
+   neighbour at the same depth — the relative path is `../../` from
+   `packages/<name>/`, `../` from a repo-root package:
+
+   ```ts
+   const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
+   // …
+   test: { setupFiles: [noNetworkGuard], … }
+   ```
+
 ## Commit messages
 
 Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refactor:`. Enforced by commitlint on commit-msg.
@@ -282,6 +307,38 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
+
+### The no-network guard
+
+`test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
+entry. It refuses any outbound connection that is not loopback — TCP (and therefore
+TLS, HTTP, HTTP/2, `fetch`), UDP, and the DNS `resolve*` family — and its error
+**names the call site**, digging past ~60 frames of bundled undici to find the line
+that actually reached out. Loopback (`127.0.0.0/8`, `::1`, `localhost`) and
+unix/named-pipe sockets stay open; the CLI's port probe and the dashboard boot test
+depend on them.
+
+Four things about it are load-bearing:
+
+- **A refusal is recorded as well as thrown.** Almost every boundary here is
+  deliberately fail-open, so a throw inside a `catch {}` would be swallowed and the
+  run would go green having reached the network. `afterEach`/`afterAll` fail on any
+  undrained record. A test that provokes a refusal on purpose must drain it with
+  `takeBlockedAttempts()`.
+- **It imports `node:net`/`node:dgram`/`node:dns`, which the lint ban forbids.**
+  That is the enforcement, not a violation. `packages/eslint-config/test/no-network-runtime.test.js`
+  lints the file and fails if it trips a **fourth** ban.
+- **A child process is invisible to it**, which is the whole reason the `No-network`
+  CI job exists. Do not describe the guard as covering shell-outs.
+- **Every package must wire it**, at the right relative depth. The same suite fails
+  the workspace if a package drops the entry, points it at a path that does not
+  resolve to the guard, or is added without one.
+
+There is **no opt-out and no env escape hatch**. A test that needs the outside world
+needs an injectable seam instead — `local-ops`' `ReportDeps.viewVersion` and
+`judge.ts`'s `spawnClaude` are the two worked examples, and neither `vi.mock`s
+`execFileSync`: they take the boundary as a parameter, so the network call site is
+never reached rather than being intercepted.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +

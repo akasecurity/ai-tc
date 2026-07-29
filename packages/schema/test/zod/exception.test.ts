@@ -94,6 +94,7 @@ describe('ExceptionBundleEntry', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(Object.keys(result.data).sort()).toEqual([
+        'capability',
         'conditions',
         'expiresAt',
         'id',

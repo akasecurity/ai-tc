@@ -45,6 +45,7 @@ export const COL = {
   valueFingerprint: 'value_fingerprint',
   keyVersion: 'key_version',
   maskedValue: 'masked_value',
+  capability: 'capability',
   maxUses: 'max_uses',
   useCount: 'use_count',
   justification: 'justification',

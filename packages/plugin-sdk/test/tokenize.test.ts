@@ -237,6 +237,7 @@ describe('vault glue', () => {
           tokenize: () => Promise.resolve(Symbol('unused')),
           detokenize: () => Promise.resolve(Symbol('unused')),
           describePointer: () => Promise.resolve(null),
+          resolvePointerIdentity: () => Promise.resolve(null),
         },
       });
       expect(() => {
@@ -250,6 +251,7 @@ describe('vault glue', () => {
       tokenize: () => Promise.reject(new Error('store locked')),
       detokenize: () => Promise.reject(new Error('store locked')),
       describePointer: () => Promise.reject(new Error('store locked')),
+      resolvePointerIdentity: () => Promise.reject(new Error('store locked')),
     };
 
     it('a tokenize fault destroys the value one-way', async () => {

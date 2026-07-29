@@ -106,3 +106,34 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(text).not.toMatch(/`?fetch`? is blocked/i);
   });
 });
+
+// CLAUDE.md §4 counts the `aka <name>` dispatch as a fourth child-process path,
+// and it is one — but it is not a fourth path AKA takes. The CLI execs a program
+// the user installed and named, so folding it into the footnote's count would
+// imply ai-tc sends something it does not, while omitting it entirely leaves the
+// footnote's "all through child processes" reading as a complete list when it is
+// not. The copy does both halves: it names the dispatch and holds it outside the
+// count. Neither half works alone, so both are pinned here.
+//
+// Root README only — the dispatch is a CLI feature, and the plugin README
+// describes the plugin.
+describe('README.md aka-<name> dispatch disclosure', () => {
+  const footnote = READMES[0].text
+    .split('\n')
+    .filter(isFootnoteDefinition)
+    .join(' ')
+    .replace(/\s+/g, ' ');
+
+  it('names the dispatch without folding it into the three-path count', () => {
+    expect(footnote).toMatch(/Three narrow paths/);
+    expect(footnote).toMatch(/aka-<name>/);
+    expect(footnote).toMatch(/not one of the three/i);
+  });
+
+  // The whole point of naming it is that its behaviour is undescribable from
+  // here. Copy that characterized the child would be asserting something this
+  // repo cannot check.
+  it('disclaims knowledge of what the dispatched program does', () => {
+    expect(footnote).toMatch(/does not bundle, pin or verify it/i);
+  });
+});

@@ -311,6 +311,41 @@ function readKeyForApprove(dir: string): FingerprintKey | null {
   }
 }
 
+// A ledger row reduced to the fields a grant is built from — and the ONLY place
+// this file derives them, so the version check below sits on the single path to
+// a grant rather than beside it. A selection path added later reaches
+// createGrant through here or not at all.
+//
+// The row carries the fingerprint computed when the hook blocked, under
+// whichever key was live then; the ledger is retained far longer than a rotation
+// takes, so a row can outlive its key. Enforcement fingerprints under the
+// CURRENT key and scopes its bundle query to that version, so a grant built from
+// such a row is inert the moment it is created — and reporting success for one
+// is worse than the grant going quiet, because the operator just deliberately
+// created this one.
+function grantFieldsFrom(
+  entry: BlockedDetection,
+  key: FingerprintKey | null,
+): Pick<
+  CreateExceptionInput,
+  'ruleId' | 'category' | 'valueFingerprint' | 'keyVersion' | 'maskedValue'
+> {
+  if (!isCurrentKeyVersion(key, entry.keyVersion)) {
+    throw new Error(
+      key === null
+        ? `cannot approve ${entry.reference}: the fingerprint key file is missing, so the fingerprint recorded for it can no longer be matched — trigger the detection again`
+        : `cannot approve ${entry.reference}: it was blocked under fingerprint key v${String(entry.keyVersion)} and the key is now v${String(key.version)}, so a grant from it could never match — trigger the detection again`,
+    );
+  }
+  return {
+    ruleId: entry.ruleId,
+    category: entry.category,
+    valueFingerprint: entry.valueFingerprint,
+    keyVersion: entry.keyVersion,
+    maskedValue: entry.maskedValue,
+  };
+}
+
 async function pickBlocked(
   entries: BlockedDetection[],
   selector: string | undefined,
@@ -410,20 +445,10 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     const key = readKeyForApprove(dir);
     const entry = await pickBlocked(entries, selector === '' ? undefined : selector, io, key);
 
-    // The ledger row carries the fingerprint computed when the hook blocked,
-    // under whichever key was live then; the ledger is retained far longer than
-    // a rotation takes, so a row can outlive its key. Enforcement fingerprints
-    // under the CURRENT key and scopes its bundle query to that version, so a
-    // grant built from such a row is inert the moment it is created. Refuse
-    // BEFORE prompting for scope and reason — an unusable row stays unusable
-    // whatever the user answers.
-    if (!isCurrentKeyVersion(key, entry.keyVersion)) {
-      throw new Error(
-        key === null
-          ? `cannot approve ${entry.reference}: the fingerprint key file is missing, so the fingerprint recorded for it can no longer be matched — trigger the detection again`
-          : `cannot approve ${entry.reference}: it was blocked under fingerprint key v${String(entry.keyVersion)} and the key is now v${String(key.version)}, so a grant from it could never match — trigger the detection again`,
-      );
-    }
+    // Derived — and so refused — BEFORE prompting for scope and reason: a row
+    // this rejects stays unusable whatever the user answers, and asking for a
+    // reason first spends the answer on a grant that is never written.
+    const grant = grantFieldsFrom(entry, key);
 
     const { scope, reason } = await resolveScopeAndReason(values, io);
     if (scope.scope === 'permanent') {
@@ -432,11 +457,7 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     // The grant is created FROM THE LEDGER ENTRY — the fingerprint was
     // computed when the hook blocked; the raw value never enters this process.
     const granted = await createGrant(db, {
-      ruleId: entry.ruleId,
-      category: entry.category,
-      valueFingerprint: entry.valueFingerprint,
-      keyVersion: entry.keyVersion,
-      maskedValue: entry.maskedValue,
+      ...grant,
       ...scope,
       justification: reason,
       conditions: null,

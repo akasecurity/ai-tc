@@ -477,14 +477,23 @@ describe('fillStore', () => {
       const db = store.openRaw();
       db.exec('PRAGMA journal_mode = WAL');
       db.exec('CREATE TABLE bulk (id INTEGER PRIMARY KEY, v TEXT)');
-      const filled = fillStore(db);
+      // Eight pages of headroom against a page-sized payload, so the wall
+      // arrives after eight rows. These writes have to stay in autocommit —
+      // growing the file row by row is what reaches the cap — and each one is
+      // its own WAL commit, the thing the Windows runner charges most for and
+      // charges unevenly. A 200-byte payload needs 38 of them for the same
+      // assertion, which is the difference between a second and a timeout on a
+      // loaded runner. The loop bound is a stop, not a target: if the cap never
+      // bites, the SQLITE_FULL assertion below fails instead of the test
+      // running on to a timeout.
+      const filled = fillStore(db, { headroomPages: 8 });
 
       const insert = db.prepare('INSERT INTO bulk (v) VALUES (?)');
-      const payload = 'x'.repeat(200);
+      const payload = 'x'.repeat(4096);
       let written = 0;
       let err: unknown;
       try {
-        for (let i = 0; i < 20_000; i += 1) {
+        for (let i = 0; i < 200; i += 1) {
           insert.run(payload);
           written += 1;
         }

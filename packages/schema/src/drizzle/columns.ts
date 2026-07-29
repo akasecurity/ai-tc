@@ -133,4 +133,19 @@ export const COL = {
   firstDetectedAt: 'first_detected_at',
   resolvedAt: 'resolved_at',
   evidence: 'evidence',
+  // Secret vault — the one reversible store. `occurrence_count` on secret_vault
+  // counts how often a VALUE was detected (the reuse signal); `pointer_count` on
+  // secret_vault_deref counts how many pointers ONE batched render resolved.
+  // Different tables, different meanings — deliberately not the same name.
+  pointerId: 'pointer_id',
+  fingerprintKeyVersion: 'fingerprint_key_version',
+  ciphertext: 'ciphertext',
+  nonce: 'nonce',
+  authTag: 'auth_tag',
+  occurrenceCount: 'occurrence_count',
+  at: 'at',
+  reason: 'reason',
+  outcome: 'outcome',
+  grantId: 'grant_id',
+  pointerCount: 'pointer_count',
 } as const;

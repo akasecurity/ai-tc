@@ -9,6 +9,8 @@ import type { BlockedDetectionRef, CaptureResult } from '@akasecurity/plugin-sdk
 import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 
 import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
+import type { RealizedRewrite } from '../protocol/notes.ts';
+import type { FieldTokenizer } from './pre-tool-use-decision.ts';
 import type { ScannableResponseField } from './tool-response.ts';
 import { replaceResponseField } from './tool-response.ts';
 
@@ -23,6 +25,10 @@ export interface ResponseScanOutcome {
   // value (pre-tool-use keeps the same split).
   blockedReferences: BlockedDetectionRef[];
   redactedReferences: BlockedDetectionRef[];
+  // What the tokenizer actually did across the redact fields — null when
+  // nothing was tokenized, so a caller never narrates a rewrite that did not
+  // happen.
+  realized: RealizedRewrite | null;
 }
 
 export async function scanResponseFields(
@@ -30,6 +36,7 @@ export async function scanResponseFields(
   response: unknown,
   fields: ScannableResponseField[],
   capture: (text: string) => Promise<CaptureResult>,
+  tokenizeField?: FieldTokenizer,
 ): Promise<ResponseScanOutcome> {
   const outcome: ResponseScanOutcome = {
     updated: response,
@@ -38,7 +45,9 @@ export async function scanResponseFields(
     warnedFindings: [],
     blockedReferences: [],
     redactedReferences: [],
+    realized: null,
   };
+  const realized: RealizedRewrite = { pointers: [], degraded: [] };
 
   for (const field of fields) {
     const result = await capture(field.text);
@@ -54,7 +63,26 @@ export async function scanResponseFields(
       outcome.withheldFindings.push(...result.findings);
       if (result.blockedReferences) outcome.blockedReferences.push(...result.blockedReferences);
     } else if (result.action === 'redact' && result.text !== null) {
-      outcome.updated = replaceResponseField(outcome.updated, field.path, result.text);
+      // Reversible rewrite when a tokenizer is supplied: exactly the enforced
+      // spans become pointers (or one-way placeholders where a span cannot be
+      // vaulted). Without one, the runtime's one-way text stands. A pointer
+      // already sitting in the output is never re-tokenized — the scan shields
+      // pointer spans before detection runs — so this pass is idempotent.
+      let rewritten = result.text;
+      const enforced = result.enforcedFindings ?? [];
+      if (tokenizeField && enforced.length > 0) {
+        try {
+          const tokenized = await tokenizeField(field.text, enforced);
+          rewritten = tokenized.text;
+          for (const token of tokenized.pointers) {
+            realized.pointers.push({ token, category: pointerCategoryOf(token) });
+          }
+          realized.degraded.push(...tokenized.degraded);
+        } catch {
+          // Tokenizer fault: the one-way text already in hand stands.
+        }
+      }
+      outcome.updated = replaceResponseField(outcome.updated, field.path, rewritten);
       outcome.redactedFindings.push(...result.findings);
       if (result.blockedReferences) outcome.redactedReferences.push(...result.blockedReferences);
     } else if (result.action === 'warn') {
@@ -62,7 +90,15 @@ export async function scanResponseFields(
     }
   }
 
+  if (realized.pointers.length > 0 || realized.degraded.length > 0) outcome.realized = realized;
   return outcome;
+}
+
+// The category segment of a pointer, read back off the wire form — the token
+// is self-describing precisely so consumers need no lookup for this.
+function pointerCategoryOf(token: string): string {
+  const match = /^\[\[aka:([a-z_]+):/.exec(token);
+  return match?.[1] ?? 'secret';
 }
 
 /**
@@ -72,14 +108,20 @@ export async function scanResponseFields(
  * banner's approve command carries — is unit-testable (the hook entry runs
  * main() on import and cannot be imported by tests).
  */
-export function responseEmitPayload(toolName: string, outcome: ResponseScanOutcome): unknown {
+export function responseEmitPayload(
+  toolName: string,
+  outcome: ResponseScanOutcome,
+  notes?: { note?: string | null | undefined; disclosure?: string | null | undefined },
+): unknown {
   const { withheldFindings, redactedFindings, warnedFindings } = outcome;
   if (withheldFindings.length > 0 || redactedFindings.length > 0) {
     const action = withheldFindings.length > 0 ? 'withheld' : 'redacted';
+    const note = notes?.note ?? null;
     return {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         updatedToolOutput: outcome.updated,
+        ...(note === null ? {} : { additionalContext: note }),
       },
       // The approve pointer stays OUT of the model-visible replacement text:
       // it is the user's audited escape hatch, not something to nudge an
@@ -92,6 +134,7 @@ export function responseEmitPayload(toolName: string, outcome: ResponseScanOutco
         warnedRuleIds: warnedFindings.length > 0 ? uniqueRuleIds(warnedFindings) : undefined,
         blockedRef:
           action === 'withheld' ? outcome.blockedReferences[0] : outcome.redactedReferences[0],
+        vaultDisclosure: notes?.disclosure ?? undefined,
       }),
     };
   }

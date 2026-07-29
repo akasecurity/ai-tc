@@ -17,18 +17,21 @@
 import { fileURLToPath } from 'node:url';
 
 import {
+  createVaultGlue,
   type FingerprintKey,
   fingerprintValue,
   loadConfig,
   loadOrCreateFingerprintKey,
   type PluginConfig,
 } from '@akasecurity/plugin-sdk';
-import { TriageHit } from '@akasecurity/schema';
+import { isVaultConsentValid, TriageHit } from '@akasecurity/schema';
 
 import { scanHistory, type ScanSummary } from './history/scan.ts';
+import { scrubTranscriptTail } from './history/tail-scrub.ts';
 import { type HistoryWalkOptions } from './history/transcripts.ts';
 import { reconcileHistory } from './history/usage.ts';
 import { fenced, indent } from './present.ts';
+import { platformRedactionScope } from './remediation/redact.ts';
 
 // The trailing sentinel that terminates a --triage stream. Its presence (and
 // only its presence) tells the consumer the stream was not truncated:
@@ -77,6 +80,9 @@ export interface BackfillDeps {
   // so runBackfill stays pure + testable; the CLI wiring below computes beforeMs and
   // the host session id.
   guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
+  // At-rest scrub of one visited transcript file (test seam). Defaults to the
+  // real tokenizing rewriter over a vault glue built once per run.
+  scrubFile?: (filePath: string) => Promise<{ rewritten: number } | null>;
 }
 
 export async function runBackfill(deps: BackfillDeps): Promise<void> {
@@ -162,6 +168,29 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
       // Token backfill is best-effort; the live Stop-hook pass recovers it.
     }
 
+    // At-rest scrub of the history just walked: every visited transcript is
+    // rewritten so detected secrets become recoverable vault pointers. Runs
+    // only when BOTH grants hold — historical access got us here, and vault
+    // consent authorizes keeping recoverable copies. Pointer spans are
+    // invisible to detection, so a re-run finds nothing to rewrite. Entirely
+    // best-effort: a scrub fault never fails the backfill.
+    let scrubbedFiles = 0;
+    if (isVaultConsentValid(cfg.settings.vaultConsent) && summary.visitedFiles.length > 0) {
+      try {
+        const scrubFile = deps.scrubFile ?? buildTranscriptScrubber();
+        for (const file of summary.visitedFiles) {
+          try {
+            const result = await scrubFile(file);
+            if (result !== null && result.rewritten > 0) scrubbedFiles += 1;
+          } catch {
+            // One bad file must not stop the rest.
+          }
+        }
+      } catch {
+        // Glue construction failed — history stays as scanned.
+      }
+    }
+
     if (triage) {
       // A completed scan that touched zero messages is a no-history run (a fresh
       // machine with nothing to calibrate from), distinct from a scan that examined
@@ -178,7 +207,16 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
         summary.findings > 0
           ? `Found ${String(summary.findings)} pre-install finding${summary.findings === 1 ? '' : 's'} — review them with /findings.`
           : 'No new pre-install secrets found in your history.';
-      io.stdout(`${fenced([heading, '', indent(scope), '', indent(result)].join('\n'))}\n`);
+      const lines = [heading, '', indent(scope), '', indent(result)];
+      if (scrubbedFiles > 0) {
+        lines.push(
+          '',
+          indent(
+            `Rewrote secrets in ${String(scrubbedFiles)} transcript file${scrubbedFiles === 1 ? '' : 's'} to recoverable vault pointers (aka vault show).`,
+          ),
+        );
+      }
+      io.stdout(`${fenced(lines.join('\n'))}\n`);
     }
   } catch (err) {
     if (triage) {
@@ -194,6 +232,19 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
       );
     }
   }
+}
+
+// The production scrub dependency: one vault glue for the whole pass, the
+// remediation scope guard for containment. Built lazily so an unconsented run
+// never constructs the vault.
+function buildTranscriptScrubber(): (filePath: string) => Promise<{ rewritten: number } | null> {
+  const glue = createVaultGlue();
+  const scope = platformRedactionScope();
+  return (filePath) =>
+    scrubTranscriptTail(filePath, {
+      tokenizeText: (text) => glue.tokenizeText(text),
+      scope,
+    });
 }
 
 // Guard so importing the exported helpers in tests never runs the CLI.

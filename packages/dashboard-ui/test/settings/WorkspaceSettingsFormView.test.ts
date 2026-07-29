@@ -46,6 +46,14 @@ const FORM_COPY: Record<string, string> = {
       [`HISTORICAL_CHOICES.${c.value}.description`, c.description],
     ]),
   ),
+  MODEL_JUDGE_SECTION_LABEL,
+  MODEL_JUDGE_SECTION_DESCRIPTION,
+  ...Object.fromEntries(
+    MODEL_JUDGE_CHOICES.flatMap((c) => [
+      [`MODEL_JUDGE_CHOICES.${c.value}.label`, c.label],
+      [`MODEL_JUDGE_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
 };
 
 describe('WorkspaceSettingsFormView copy', () => {
@@ -60,10 +68,12 @@ describe('WorkspaceSettingsFormView copy', () => {
 });
 
 // Granting 'full' here is the same consent the /aka:setup wizard collects, and it
-// is what gates the wizard's history sweep — whose judge step sends raw findings
-// to the model API. The wizard's own copy points users at this screen for scope
-// and revocation, so a description that stops at "may be scanned" would leave the
-// egress disclosed in one place and hidden in the other.
+// gates the wizard's history sweep — READING local surfaces, and nothing beyond
+// that. Sending what the sweep finds to the model API is the distinct model-judge
+// grant below, which the judge checks on every run. So this description has to
+// scope itself to the read and hand the egress off to that control: copy that
+// folds the two together tells a user who picked Full that they authorized a send
+// they did not, and leaves them looking for a revocation lever on the wrong one.
 describe('WorkspaceSettingsFormView historical-access copy', () => {
   const full = HISTORICAL_CHOICES.find((c) => c.value === 'full');
 
@@ -71,15 +81,21 @@ describe('WorkspaceSettingsFormView historical-access copy', () => {
     expect(full).toBeDefined();
   });
 
-  it('discloses the model-API egress the grant enables', () => {
-    expect(full?.description).toMatch(/model API/i);
-    expect(full?.description).toMatch(/raw values/i);
-    expect(full?.description).toMatch(/secrets/i);
+  it('scopes the grant to reading and hands the egress to the separate consent', () => {
+    expect(full?.description).toMatch(/reading them only/i);
+    expect(full?.description).toMatch(/separate/i);
+    expect(full?.description).toMatch(/model-judge consent/i);
   });
 
-  it('names the rest of the payload, not just the secret', () => {
-    expect(full?.description).toMatch(/transcript text/i);
-    // The file path is dropped before egress (toJudgePayload) — copy must not
+  // The earlier copy read "This also lets /aka:setup send what that scan finds —
+  // raw values including any secrets and the surrounding transcript text — to the
+  // model API". Describing that payload here is what makes the grant look like it
+  // authorizes the send, so the payload belongs on the control that does.
+  it('does not describe a payload this grant cannot authorize', () => {
+    expect(full?.description).not.toMatch(/this also lets/i);
+    expect(full?.description).not.toMatch(/raw values/i);
+    expect(full?.description).not.toMatch(/transcript text/i);
+    // The file path is dropped before egress (toJudgePayload) — no surface may
     // claim it crosses.
     expect(full?.description).not.toMatch(/file path/i);
   });
@@ -122,5 +138,28 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
   it('defaults to revoked wording never assuming the grant', () => {
     const revoked = MODEL_JUDGE_CHOICES.find((c) => c.value === 'revoked');
     expect(revoked?.description).toMatch(/never assumed/i);
+  });
+
+  // This control is the only surface that authorizes the send, so it carries the
+  // whole payload disclosure — not a euphemistic "sends findings". "Findings"
+  // reads as the masked rows shown elsewhere in the dashboard; what actually
+  // crosses is the raw value, a sized window of transcript text, and the labels
+  // the finding was scored with.
+  it('names the raw value, the context window, and the labels riding with them', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/raw, unmasked value/i);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/120 characters/);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/severity/i);
+  });
+
+  it('does not present revocation as a recall of what was already sent', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/cannot recall/i);
+  });
+
+  // The choice a user actually clicks has to say it too — a reader who acts on
+  // the radio label alone must not have to find the section blurb above it.
+  it('names the raw value on the grant choice itself, not only the section blurb', () => {
+    const granted = MODEL_JUDGE_CHOICES.find((c) => c.value === 'granted');
+    expect(granted?.description).toMatch(/raw, unmasked value/i);
+    expect(granted?.description).toMatch(/model API/i);
   });
 });

@@ -36,10 +36,11 @@ export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
   },
 ];
 
-// This is the same grant the /aka:setup wizard collects, and it is what gates
-// the wizard's history sweep. That sweep sends what it finds to the model API to
-// be rated, so the 'full' copy must disclose the egress here too — this is the
-// surface the wizard points at for scope and revocation.
+// This is the same grant the /aka:setup wizard collects, and it is what gates the
+// wizard's history sweep — READING local surfaces, nothing more. Sending what that
+// sweep finds to the model API is gated by the separate Model-judge consent below,
+// so the 'full' copy must point at that control rather than claim the egress for
+// itself: a user who grants Full here has not authorized any send.
 export const HISTORICAL_SECTION_LABEL = 'Historical access';
 
 export const HISTORICAL_SECTION_DESCRIPTION =
@@ -55,10 +56,10 @@ export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[]
     value: 'full',
     label: 'Full',
     description:
-      'Pre-install surfaces (existing configs, history) may be scanned too. This also lets ' +
-      '/aka:setup send what that scan finds — raw values including any secrets and the ' +
-      'surrounding transcript text — to the model API to be rated. ' +
-      'Switching back to Session only stops future scans; it cannot recall data already sent.',
+      'Pre-install surfaces (existing configs, history) may be scanned too. This grant covers ' +
+      'reading them only — sending what the scan finds to the model API is the separate ' +
+      'Model-judge consent below, which this one does not give. Switching back to Session ' +
+      'only stops future scans; it cannot recall data already sent.',
   },
 ];
 
@@ -71,8 +72,11 @@ export const MODEL_JUDGE_SECTION_LABEL = 'Model-judge consent';
 
 export const MODEL_JUDGE_SECTION_DESCRIPTION =
   'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
-  'send findings to the model API to sort real leaks from noise. The file path is never sent, ' +
-  'and any secrets in the surrounding context are masked before it goes.';
+  'send findings to the model API to sort real leaks from noise. Per finding that is the raw, ' +
+  'unmasked value including any secret, about 120 characters of surrounding transcript text, ' +
+  'and the rule, category, severity, masked value and confidence it was scored with. The file ' +
+  'path is never sent, and any secrets in the surrounding context are masked before it goes. ' +
+  'Revoking stops future scans; it cannot recall data already sent.';
 
 export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   {
@@ -85,7 +89,7 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
     value: 'granted',
     label: 'Granted',
     description:
-      'The setup scan may send each finding, plus surrounding context with any secrets in it masked, to the model API to sort real leaks from noise.',
+      'The setup scan may send each finding — its raw, unmasked value including any secret, plus surrounding context with any secrets in it masked — to the model API to sort real leaks from noise.',
   },
 ];
 

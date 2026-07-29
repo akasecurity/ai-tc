@@ -60,6 +60,25 @@ describe('setup.md 0.3 scan-offer copy', () => {
     expect(flat).toContain('it cannot recall anything already sent');
   });
 
+  // Step 1's picker grants the historical READ. Sending what that read found is
+  // the distinct model-judge grant collected in step 3, and the judge refuses to
+  // run without it. This copy used to say the historical consent's scope
+  // "includes the model-API judgment" — true while one grant covered both, false
+  // once the judge got its own gate. A user told that Yes here authorizes the
+  // send believes they have given a consent the product still means to ask for.
+  it('scopes the step-1 grant to reading, not to the send', () => {
+    expect(flat).toContain('This picker grants the historical read, not the model-API egress');
+    expect(flat).toContain('does not authorize sending anything to the model API');
+    expect(flat).not.toContain('which includes the model-API judgment');
+  });
+
+  // Two grants, two controls. Pointing a user who wants the send stopped at
+  // Historical access alone sends them to a toggle that does not stop it.
+  it('names both revocation controls, not only historical access', () => {
+    expect(flat).toContain('Settings → Historical access');
+    expect(flat).toContain('Settings → Model-judge consent');
+  });
+
   // The transcripts the values were read out of are untouched by the scan — the
   // earlier "not kept on the machine" phrasing read as a cleanup promise.
   it('does not imply the scan removes the values from disk', () => {
@@ -126,6 +145,27 @@ describe('setup.md step-3 model-judge consent gate', () => {
   it('names it a distinct egress, separate from the historical-read consent', () => {
     expect(step3).toContain('separate egress');
     expect(step3).toContain('its own explicit grant');
+  });
+
+  // toJudgePayload sends eight fields, not two: rawMatch and context plus the
+  // ruleId/category/severity/maskedMatch/confidence/id labels (judge.test.ts pins
+  // the exact key set against TriageHit.shape). Copy that stops at "the value and
+  // its context" and then closes with an absolute — "nothing else crosses" —
+  // understates the payload in the reassuring direction, which is the same defect
+  // this disclosure exists to correct, one level down. The enumeration is what
+  // makes the absolute true, so pin the enumeration.
+  it('names the non-sensitive labels that ride along with the value', () => {
+    const flatStep3 = step3.replace(/\s+/g, ' ');
+    expect(flatStep3).toContain(
+      'rule id, category, severity, the masked value, the confidence score',
+    );
+  });
+
+  // judgeEnv deliberately keeps the user's auth so the subprocess can reach the
+  // API, which makes the request attributable to their own account — a fact worth
+  // stating outright next to "a copy leaves the machine".
+  it('states the request is made under the user own credentials', () => {
+    expect(step3.replace(/\s+/g, ' ')).toContain('signs in as you');
   });
 
   // "Not now" implies a deferral that never comes and reads as if it withdrew

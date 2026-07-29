@@ -78,6 +78,23 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(footnote).toMatch(/cannot be recalled|cannot recall/i);
   });
 
+  // Reading the history and sending what it found are two separate grants, and
+  // the judge checks the second one on every run. A footnote that says "after you
+  // opt in" describes a single gate and understates the protection the product
+  // actually ships — the reader cannot tell that declining the send still leaves
+  // the local scan working.
+  it('names both opt-ins and that the judge will not run without the second', () => {
+    expect(footnote).toMatch(/two\*{0,2} separate opt-ins/i);
+    expect(footnote).toMatch(/without (?:that|the) second/i);
+  });
+
+  // filePath, valueFingerprint and keyVersion are dropped by toJudgePayload; the
+  // remaining scoring labels are not. Naming only the secret and the window
+  // leaves the labels undisclosed.
+  it('names the scoring labels that ride with the value', () => {
+    expect(footnote).toMatch(/rule, category, severity/i);
+  });
+
   // No lint rule bans `fetch` today (engineering#5) — the ban is a convention
   // enforced by review. Claiming enforcement the CI does not provide is the same
   // overclaim this footnote exists to retire.

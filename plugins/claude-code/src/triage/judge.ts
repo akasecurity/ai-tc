@@ -180,17 +180,18 @@ export function toJudgePayload(
 // via a spawn error's argv-echoing `.message`. judgeEnv()'s env is what keeps
 // the prompt out of any transcript. Always cleans up the darwin config dir.
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
-  const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
-  const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
-  const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
-
   // No live-spawn fallback: a caller that forgot the seam must fail as the
-  // programming error it is, loudly and before any raw is assembled, rather
-  // than be quietly routed to the real `claude`. Thrown ahead of the try so
-  // nothing has been minted yet and the message carries no hit content.
+  // programming error it is rather than be quietly routed to the real
+  // `claude`. First statement in the function, so it throws before the rubric
+  // is read, before any hit is projected, and before the darwin temp dir is
+  // minted — no raw is assembled for a call that cannot proceed.
   if (typeof deps.spawn !== 'function') {
     throw new TypeError('runJudge requires deps.spawn — there is no live-spawn fallback');
   }
+
+  const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
+  const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
+  const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
   const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;
   // Resolved once and passed to both the env construction and the cleanup, so a

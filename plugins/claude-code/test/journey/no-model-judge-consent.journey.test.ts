@@ -108,20 +108,35 @@ describe('/aka:setup journey — model-judge consent declined', () => {
 // the exact failure mode that let the disclosure drift in the first place.
 describe('/aka:setup journey — model-judge consent granted (control)', () => {
   const journey = new SetupJourney();
+  // Captured mid-chain: the sentinel's state after the historical grant but
+  // BEFORE the model-judge consent, which is the moment that distinguishes the
+  // two grants. It has to be read while the chain runs, so record it here and
+  // assert it below rather than re-deriving it after the fact.
+  let invokedBeforeConsent = true;
+
+  // The chain is shared setup, not a test — same shape as the declining leg
+  // above. Driving it from inside one `it` would leave every later case in this
+  // describe passing only because that `it` happened to run first: filter to a
+  // single case, reorder the file, or break the first one, and the rest fail
+  // reporting a broken control when the control is fine.
+  beforeAll(() => {
+    journey.seedTranscript();
+    journey.intro();
+    journey.onboardHistorical('full');
+    invokedBeforeConsent = journey.judgeWasInvoked();
+
+    journey.onboardModelJudge();
+    journey.applyPreview(journey.backfillTriage().stdout);
+  });
 
   afterAll(() => {
     journey.cleanup();
   });
 
   it('does spawn the judge once consent is recorded', () => {
-    journey.seedTranscript();
-    journey.intro();
-    journey.onboardHistorical('full');
-    expect(journey.judgeWasInvoked()).toBe(false);
-
-    journey.onboardModelJudge();
-    journey.applyPreview(journey.backfillTriage().stdout);
-
+    // Historical access alone does not authorize the egress...
+    expect(invokedBeforeConsent).toBe(false);
+    // ...the distinct model-judge consent does.
     expect(journey.judgeWasInvoked()).toBe(true);
   });
 

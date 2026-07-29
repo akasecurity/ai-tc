@@ -616,6 +616,29 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
+  it('replaces, and does not remove, an inherited CLAUDE_CONFIG_DIR on darwin', () => {
+    // The darwin-plus-inherited combination, driven through runJudge so the
+    // `finally` actually runs. judgeEnv's own test pins the replacement and the
+    // lifecycle test above pins that an inherited dir survives OFF darwin —
+    // but the interaction is what makes the removal safe, and asserting the two
+    // halves separately leaves the pair unpinned. On darwin the removal is
+    // unconditional, so it is judgeEnv REPLACING the inherited value that keeps
+    // `rmSync` off the user's real config dir; couple them here.
+    const real = ownedDir();
+    writeFileSync(join(real, 'settings.json'), '{"theme":"dark"}');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', real);
+
+    const { dir, existedDuringCall, threw } = runDarwin(() => envelope(VERDICT_FENCE));
+
+    expect(threw).toBeUndefined();
+    // The child got a throwaway, never the inherited dir.
+    expect(dir).not.toBe(real);
+    expect(existedDuringCall).toBe(true);
+    // The throwaway is gone; the user's own config dir and its contents are not.
+    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(join(real, 'settings.json'))).toBe(true);
+  });
+
   it('a cleanup fault never replaces the error the judge is throwing', (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('removability here is decided by POSIX mode bits');

@@ -14,7 +14,9 @@ import {
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
   VAULT_SECTION_LABEL,
+  VAULT_STALE_NOTICE,
   vaultChoiceOf,
+  vaultConsentStale,
   type WorkspaceSettingsFormViewProps,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
@@ -189,5 +191,28 @@ describe('WorkspaceSettingsFormView vault-consent section', () => {
     // carries the bare 'off' | 'on' string and nothing a client could forge.
     type Emitted = Parameters<WorkspaceSettingsFormViewProps['onSave']>[0]['vaultConsent'];
     expectTypeOf<Emitted>().toEqualTypeOf<'off' | 'on'>();
+  });
+});
+
+describe('stale vault grant', () => {
+  it('is stale only when a grant exists at an older version', () => {
+    expect(vaultConsentStale(undefined)).toBe(false);
+    expect(
+      vaultConsentStale({
+        acknowledgedAt: '2026-07-30T00:00:00.000Z',
+        version: VAULT_CONSENT_VERSION,
+      }),
+    ).toBe(false);
+    expect(
+      vaultConsentStale({
+        acknowledgedAt: '2026-07-30T00:00:00.000Z',
+        version: VAULT_CONSENT_VERSION - 1,
+      }),
+    ).toBe(true);
+  });
+
+  it('the notice says vaulting is paused and how re-consent happens', () => {
+    expect(VAULT_STALE_NOTICE).toContain('paused');
+    expect(VAULT_STALE_NOTICE).toContain('re-consent');
   });
 });

@@ -4,7 +4,8 @@ name: Dependency audit
 # unexpired waiver in .github/audit-waivers.json fails the check. The daily
 # schedule catches advisories published between merges — a scheduled failure
 # opens (or updates) an issue labeled `security-advisory` instead of failing
-# invisibly. The waiver process is documented in CONTRIBUTING.md.
+# invisibly. The gate lives in tools/audit-gate (a workspace package with its
+# own unit suite); the waiver process is documented in CONTRIBUTING.md.
 
 on:
   push:
@@ -39,9 +40,10 @@ jobs:
         with:
           node-version: 24
 
-      # The audit reads the lockfile only — no `pnpm install` needed.
+      # The audit reads the lockfile only — no `pnpm install` needed. Node 24
+      # runs the TypeScript entry directly (type stripping).
       - name: Audit dependencies (high/critical gate, waiver-aware)
-        run: node .github/scripts/audit-dependencies.mjs
+        run: node tools/audit-gate/src/audit-dependencies.ts
 
       - name: Publish the report to the run summary
         if: always()
@@ -73,15 +75,32 @@ jobs:
           node-version: 24
 
       # Re-run the audit to regenerate the report — cheaper than artifact
-      # plumbing, and the audit reads only the lockfile.
+      # plumbing, and the audit reads only the lockfile. The exit code is
+      # captured so the issue title matches what actually happened: 1 means
+      # real blocking advisories, anything else means the audit itself failed.
       - name: Regenerate the audit report
-        run: node .github/scripts/audit-dependencies.mjs || true
+        id: rerun
+        run: |
+          code=0
+          node tools/audit-gate/src/audit-dependencies.ts || code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
 
+      # Skips when the re-run comes back clean (the earlier failure was a
+      # transient blip). Comments on an existing issue only when the report
+      # carries an advisory id not already posted there, so a long-lived
+      # waived-or-unfixable advisory does not generate a comment per day.
       - name: Open or update the advisory issue
+        if: steps.rerun.outputs.code != '0'
         env:
           GH_TOKEN: ${{ github.token }}
+          RERUN_CODE: ${{ steps.rerun.outputs.code }}
         run: |
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "$RERUN_CODE" = "1" ]; then
+            title='Dependency audit: unresolved high-severity advisories'
+          else
+            title='Dependency audit could not complete'
+          fi
           {
             cat audit-report.md
             printf '\n_Scheduled audit run: %s_\n' "$run_url"
@@ -98,12 +117,22 @@ jobs:
             --state open --limit 1 \
             --json number --jq '.[0].number // empty')"
 
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
-          else
+          if [ -z "$existing" ]; then
             gh issue create \
               --repo "$GITHUB_REPOSITORY" \
-              --title 'Dependency audit: unresolved high-severity advisories' \
+              --title "$title" \
               --label security-advisory \
               --body-file issue-body.md
+          elif [ "$RERUN_CODE" = "1" ]; then
+            new_ids="$(grep -o 'GHSA-[a-z0-9-]*' audit-report.md | sort -u || true)"
+            seen_ids="$( { gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json body --jq '.body'; \
+                           gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body'; } \
+                         | grep -o 'GHSA-[a-z0-9-]*' | sort -u || true)"
+            if [ -n "$(comm -23 <(printf '%s\n' "$new_ids") <(printf '%s\n' "$seen_ids"))" ]; then
+              gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
+            else
+              echo "No advisories beyond those already reported on issue #$existing."
+            fi
+          else
+            echo "Audit incomplete (exit $RERUN_CODE); open issue #$existing already tracks the audit state."
           fi

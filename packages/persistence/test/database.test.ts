@@ -257,10 +257,19 @@ describe('openLocalDatabase — open / migrate / seed', () => {
 
     const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
-    // Nothing partial is left to mistake for a backup, and the moved-aside
-    // original is byte-for-byte the damaged store, not a truncated copy of it.
+    // Nothing partial is left to mistake for a backup.
     expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
-    expect(statSync(join(dir, backups[0] ?? '')).size).toBe(beforeSize);
+    // The moved-aside file is the damaged original, whole — not a truncated or
+    // re-created one. NOT byte-for-byte: `PRAGMA journal_mode = WAL` runs on the
+    // open before the copy fails and rewrites the header (4 bytes, the file
+    // format versions among them). So pin the two properties that do hold — the
+    // full length, and that the damage is still in it.
+    const moved = join(dir, backups[0] ?? '');
+    expect(statSync(moved).size).toBe(beforeSize);
+    const check = new DatabaseSync(moved);
+    const integrity = check.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
+    check.close();
+    expect(integrity.integrity_check).not.toBe('ok');
   });
 
   it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {

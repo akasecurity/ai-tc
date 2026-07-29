@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, rmSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -22,12 +21,12 @@ import {
 } from '@akasecurity/schema';
 
 import { captureId } from './ids.ts';
-import { backupPath, moveStoreAside, snapshotStore } from './internal/snapshot.ts';
+import { backupPath, discardStore, moveStoreAside, snapshotStore } from './internal/snapshot.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenPerms } from './paths.ts';
+import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -256,13 +255,15 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
 
   // Snapshot captured — drop the original store (main file + its now-stale
   // sidecars) so the fresh handle doesn't pair a new db with the old WAL. Only
-  // reached once the backup succeeded. `force` absorbs a concurrent opener on
-  // this same path having cleared the file first: that process took its own
-  // backup, so there is nothing left here to preserve.
-  rmSync(file, { force: true });
-  for (const sidecar of dbSidecars(file)) {
-    if (existsSync(sidecar)) rmSync(sidecar, { force: true });
-  }
+  // reached once the backup succeeded; a clear that fails takes the backup with
+  // it rather than orphaning a full-size copy per attempt (see discardStore).
+  //
+  // This is NOT safe against a second process running this same path: that one
+  // clears and immediately recreates the store, so a clear landing in between
+  // removes the store it just created and leaves it writing to an unlinked
+  // inode. The race predates the snapshot — the bare rename had it too — and
+  // nothing here addresses it.
+  discardStore(file, backup);
   return backup;
 }
 

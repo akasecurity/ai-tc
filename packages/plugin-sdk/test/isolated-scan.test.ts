@@ -57,6 +57,8 @@ const BENIGN = regexRule('pulled/benign', 'AKIA[A-Z0-9]{16}');
 
 const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
 const NEVER_READY_WORKER = new URL('./helpers/never-ready-scan-worker.ts', import.meta.url);
+const EXITING_WORKER = new URL('./helpers/exiting-scan-worker.ts', import.meta.url);
+const LATE_PROGRESS_WORKER = new URL('./helpers/late-progress-scan-worker.ts', import.meta.url);
 
 describe('the residual risk the probe battery leaves open', () => {
   it('clears the timing pre-flight and still never returns on the right text', () => {
@@ -204,6 +206,46 @@ describe('createIsolatedScanner.scan', () => {
     }
   });
 
+  it('names the rule at the SHIPPED attribution default, not just a test override', async () => {
+    // Every other attributing case lowers minAttributionMs to 50ms so it can
+    // use a short budget. That leaves the 500ms default — the guard that
+    // decides whether a real machine ever quarantines anything — unexercised in
+    // both directions. This is the "it still fires" half.
+    const scanner = createIsolatedScanner(
+      { verified: [], unverified: [BENIGN, HOSTILE] },
+      { budgetMs: BUDGET_MS },
+    );
+    try {
+      expect((await scanner.scan('nothing to find here')).status).toBe('ok');
+      const outcome = await scanner.scan(BATTERY_BLIND_TEXT, undefined, { attribute: true });
+      expect(outcome.status).toBe('timeout');
+      if (outcome.status !== 'timeout') return;
+      expect(outcome.culpritIndex).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('blames nobody for a rule that was merely resident when the deadline landed', async () => {
+    // …and the "it holds back" half. This worker announces rule 1 late and then
+    // hangs, which is what a machine freezing mid-scan looks like from the
+    // parent: rule 1's residency (~1.2s) clears the shipped 500ms floor easily,
+    // but is a minority of the ~3s job. A floor alone would quarantine rule 1
+    // forever on that; the share test is what refuses.
+    const scanner = createIsolatedScanner(
+      { verified: [], unverified: [BENIGN, HOSTILE] },
+      { budgetMs: BUDGET_MS, workerUrl: LATE_PROGRESS_WORKER },
+    );
+    try {
+      const outcome = await scanner.scan('anything', undefined, { attribute: true });
+      expect(outcome.status).toBe('timeout');
+      if (outcome.status !== 'timeout') return;
+      expect(outcome.culpritIndex).toBeUndefined();
+    } finally {
+      await scanner.close();
+    }
+  });
+
   it('blames nobody when the hang is not inside a single unverified rule', async () => {
     // The hostile rule is verified here, so it is only ever run as part of the
     // combined pass — the stage the parent must not attribute to any one rule.
@@ -317,6 +359,31 @@ describe('createIsolatedScanner failure reporting', () => {
       // Same verdict, without paying to start a thread that dies the same way.
       expect(outcome.status).toBe('unavailable');
       expect(performance.now() - started).toBeLessThan(1_000);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('does not respawn a worker that exited on its own', async () => {
+    // The quiet sibling of the crash case: this thread emits no 'error' at all,
+    // only an 'exit'. Without latching that, the pre-flight — which warns and
+    // CONTINUES on an unavailable prober — respawns a thread per rule and burns
+    // its whole 2s pass budget inside a pass that was already doomed.
+    const scanner = createIsolatedScanner(
+      { verified: [], unverified: [BENIGN] },
+      { budgetMs: 10_000, workerUrl: EXITING_WORKER },
+    );
+    try {
+      const first = await scanner.scan('first');
+      expect(first.status).toBe('unavailable');
+
+      const second = await scanner.scan('second');
+      expect(second.status).toBe('unavailable');
+      if (second.status !== 'unavailable') return;
+      // The latched wording, not a fresh 'exited before answering': that is the
+      // difference between remembering and rebuilding the thread.
+      expect(second.reason).toContain('crashed');
+      expect(second.reason).toContain('exited before answering');
     } finally {
       await scanner.close();
     }

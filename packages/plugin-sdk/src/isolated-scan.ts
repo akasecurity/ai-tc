@@ -88,6 +88,17 @@ export const ISOLATED_START_BUDGET_MS = 5_000;
 // and the verdict this feeds is persistent, so it errs toward naming nobody.
 const ATTRIBUTION_MIN_RULE_MS = 500;
 
+// …and how much of the whole job that rule must account for. A fixed floor
+// alone answers "was it running long enough to matter", never "was it the
+// reason" — a machine that freezes mid-rule clears any floor you pick, and the
+// verdict this feeds is persistent and never re-measured. A rule that genuinely
+// cannot return is entered early and holds the thread until it is killed, so
+// its residency approaches the whole elapsed job; a rule that was merely
+// resident when a stall hit does not. The ratio is scale-free — it needs no
+// retuning when the budget moves — which is the same reasoning
+// `CATASTROPHIC_RATIO` uses in the probe battery.
+const ATTRIBUTION_MIN_SHARE = 0.5;
+
 /** The two ways a job ends without an answer. Shared by both job kinds. */
 export type IsolatedFailure =
   // The deadline fired and the worker was terminated. `culpritIndex` indexes
@@ -258,11 +269,19 @@ export function createIsolatedScanner(
     if (pending !== job) return;
     // The worker cannot report which rule hung — it is about to be killed
     // mid-instruction — so the answer is whichever rule it announced last, and
-    // only when it has been on that rule long enough to be the cause.
-    const runningMs = performance.now() - job.progressAt;
-    const culpritIndex =
-      job.progressIndex >= 0 && runningMs >= minAttributionMs ? job.progressIndex : undefined;
-    const elapsedMs = performance.now() - job.startedAt;
+    // only when the evidence says that rule is the CAUSE rather than merely
+    // what happened to be running. Both tests have to pass: it ran long enough
+    // to matter at all, and it accounts for most of the job. Naming nobody
+    // costs one re-measurement next process; naming the wrong rule disables a
+    // legitimate detection until someone runs `aka detections unquarantine`.
+    const now = performance.now();
+    const runningMs = now - job.progressAt;
+    const elapsedMs = now - job.startedAt;
+    const blamed =
+      job.progressIndex >= 0 &&
+      runningMs >= minAttributionMs &&
+      runningMs >= elapsedMs * ATTRIBUTION_MIN_SHARE;
+    const culpritIndex = blamed ? job.progressIndex : undefined;
     kill(job.worker);
     failPending({ status: 'timeout', culpritIndex, elapsedMs });
   }
@@ -325,6 +344,14 @@ export function createIsolatedScanner(
     });
     started.on('exit', () => {
       if (worker !== started) return;
+      // Reaching here past the identity guard means the thread went on its own:
+      // both `kill()` and `close()` clear `worker` before terminating, so a
+      // parent-initiated exit returns above. A thread that dies by itself dies
+      // the same way again, so latch it — otherwise `filterUnsafeRules` keeps
+      // iterating (it warns and continues on `unavailable`) and spends the
+      // whole pass budget constructing threads that immediately exit.
+      // `??=` leaves a real 'error' message in place; 'error' is emitted first.
+      broken ??= 'the scan worker exited before answering';
       worker = undefined;
       if (readyWorker === started) readyWorker = undefined;
       failPending({ status: 'unavailable', reason: 'the scan worker exited before answering' });

@@ -109,7 +109,19 @@ async function runListSub(db: LocalDatabase): Promise<void> {
 // re-measurement — the rule is measured again the next time it loads, and lands
 // straight back in quarantine if it really is catastrophic.
 function runUnquarantineSub(db: LocalDatabase): void {
-  const cleared = db.ruleProbeCache.clearQuarantined();
+  const { refused, cleared } = db.ruleProbeCache.clearQuarantined();
+  // Three outcomes, not two. A refused write and an empty cache both clear zero
+  // rows, and collapsing them would print "nothing to clear" at a user whose
+  // rules are still quarantined — on the one command in this feature whose
+  // whole job is to undo a silent detection gap.
+  if (refused) {
+    process.stderr.write(
+      'aka detections unquarantine: the store refused the write (another process may be ' +
+        'holding it). Nothing was cleared — try again.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
   process.stdout.write(
     cleared === 0
       ? '✓ No quarantined rules — nothing to clear.\n'

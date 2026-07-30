@@ -2,12 +2,36 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderDetectionsTable, runDetections } from '../../src/commands/detections.ts';
+
+// The refusal itself is proven against a real contended store one layer down
+// (packages/persistence/test/repositories/rule-probe-cache.test.ts, via
+// lockStore). That helper does not cross the package wall, and what is left to
+// prove here is the CLI's three-way branch — so this forces the shape the
+// repository returns on a swallowed write instead of re-rolling the harness.
+const refuse = vi.hoisted(() => ({ clear: false }));
+vi.mock('@akasecurity/persistence', async (importOriginal) => {
+  const actual = await importOriginal<typeof Persistence>();
+  return {
+    ...actual,
+    openLocalDatabase: (...args: Parameters<typeof actual.openLocalDatabase>) => {
+      const db = actual.openLocalDatabase(...args);
+      if (refuse.clear) {
+        vi.spyOn(db.ruleProbeCache, 'clearQuarantined').mockReturnValue({
+          refused: true,
+          cleared: 0,
+        });
+      }
+      return db;
+    },
+  };
+});
 
 function item(overrides: Partial<DetectionListItem>): DetectionListItem {
   return {
@@ -58,18 +82,25 @@ describe('renderDetectionsTable', () => {
 describe('quarantined rules', () => {
   let home: string;
   let out: string;
+  let err: string;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'aka-detections-'));
     mkdirSync(dataDir(home), { recursive: true });
     out = '';
+    err = '';
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
       out += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      err += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
       return true;
     });
   });
 
   afterEach(() => {
+    refuse.clear = false;
     vi.restoreAllMocks();
     rmSync(home, { recursive: true, force: true });
     process.exitCode = undefined;
@@ -125,6 +156,27 @@ describe('quarantined rules', () => {
 
     expect(out).toContain('1 rule(s) quarantined');
     expect(out).toContain('aka detections unquarantine');
+  });
+
+  it('reports a refused write on stderr and exits non-zero, never as success', async () => {
+    // A refused DELETE and an empty cache both clear zero rows. Collapsing them
+    // would tell a user their rules are restored while every one of them is
+    // still quarantined — on the one command whose whole job is undoing a
+    // silent detection gap. Contention is the reachable trigger: WAL keeps the
+    // COUNT(*) reads working while the DELETE loses on busy_timeout.
+    seedVerdicts([
+      ['bad-a', 'quarantined'],
+      ['bad-b', 'quarantined'],
+    ]);
+    refuse.clear = true;
+    await runDetections(['unquarantine', '--home', home]);
+
+    expect(err).toContain('refused the write');
+    expect(process.exitCode).toBe(1);
+    expect(out).not.toContain('No quarantined rules');
+    expect(out).not.toContain('Cleared');
+    // And it told the truth: they really are still there.
+    expect(remaining()).toBe(2);
   });
 
   it('rejects an unknown subcommand and names the real ones', async () => {

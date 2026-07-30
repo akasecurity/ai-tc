@@ -78,7 +78,7 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(footnote).toMatch(/cannot be recalled|cannot recall/i);
   });
 
-  // No lint rule bans `fetch` today (engineering#5) — the ban is a convention
+  // No lint rule bans `fetch` today — the ban is a convention
   // enforced by review. Claiming enforcement the CI does not provide is the same
   // overclaim this footnote exists to retire.
   it('does not claim `fetch` is enforced by tooling', () => {

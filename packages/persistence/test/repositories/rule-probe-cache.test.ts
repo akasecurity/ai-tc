@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { lockStore } from '../helpers/fault-injection.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
 const store = useTempStore('aka-rule-probe-');
@@ -61,7 +62,7 @@ describe('clearing quarantine verdicts', () => {
     db.ruleProbeCache.setVerdict('bad-a', 'quarantined', 900);
     db.ruleProbeCache.setVerdict('bad-b', 'quarantined', 1_200);
 
-    expect(db.ruleProbeCache.clearQuarantined()).toBe(2);
+    expect(db.ruleProbeCache.clearQuarantined()).toEqual({ refused: false, cleared: 2 });
     expect(db.ruleProbeCache.countQuarantined()).toBe(0);
     // The rules come back only because their verdict is GONE, not overwritten:
     // an unseen key is what makes the next load measure them again.
@@ -75,8 +76,48 @@ describe('clearing quarantine verdicts', () => {
     const db = store.open();
     db.ruleProbeCache.setVerdict('safe-a', 'safe', 1);
 
-    expect(db.ruleProbeCache.clearQuarantined()).toBe(0);
+    expect(db.ruleProbeCache.clearQuarantined()).toEqual({ refused: false, cleared: 0 });
     expect(db.ruleProbeCache.getVerdict('safe-a')).toBeDefined();
+  });
+
+  it('reports a refused write as refused, not as nothing-to-clear', () => {
+    // The two produce the same row count, and only one of them means the
+    // quarantines are gone. Contention is the reachable trigger, not a
+    // read-only home: WAL leaves reads working, so both COUNT(*) queries
+    // succeed while the DELETE loses on busy_timeout — the caller sees a diff
+    // of zero and, without the flag, calls that success.
+    const db = store.open();
+    db.ruleProbeCache.setVerdict('bad-a', 'quarantined', 900);
+    db.ruleProbeCache.setVerdict('bad-b', 'quarantined', 1_200);
+
+    // The victim handle is open first: openLocalDatabase writes on the way in.
+    const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });
+    try {
+      const outcome = db.ruleProbeCache.clearQuarantined();
+
+      expect(outcome.refused).toBe(true);
+      // The honest part: nothing went, and the count still says so. Reporting
+      // `cleared: 0` alone is exactly the ambiguity `refused` resolves.
+      expect(outcome.cleared).toBe(0);
+      expect(db.ruleProbeCache.countQuarantined()).toBe(2);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it('clears normally once the contention is gone', () => {
+    // The positive control for the case above: same store, same handle, lock
+    // released — so the refusal was the lock and not something permanent about
+    // this repository or the temp store.
+    const db = store.open();
+    db.ruleProbeCache.setVerdict('bad-a', 'quarantined', 900);
+
+    const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });
+    expect(db.ruleProbeCache.clearQuarantined().refused).toBe(true);
+    lock.release();
+
+    expect(db.ruleProbeCache.clearQuarantined()).toEqual({ refused: false, cleared: 1 });
+    expect(db.ruleProbeCache.countQuarantined()).toBe(0);
   });
 
   it('survives a reopen — the verdicts are really gone, not just uncached', () => {

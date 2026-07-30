@@ -63,14 +63,22 @@ export class SqliteRuleProbeCacheRepository {
    *
    * Only 'quarantined' rows go — a 'safe' verdict is a measurement worth
    * keeping, and dropping it would make every rule pay the battery again.
-   * Returns how many were forgotten.
+   *
+   * Reports `refused` from the write's own result rather than inferring it from
+   * the row count. The two are NOT the same answer: `failOpenTransaction`
+   * swallows a contended DELETE (another writer holding the lock past
+   * `busy_timeout` — reads are unaffected in WAL), and a swallowed refusal
+   * leaves the count unchanged, which is indistinguishable from "there was
+   * nothing to clear". An undo that reports success while the quarantines are
+   * still in place is worse than one that fails, because the rules it claimed
+   * to restore are silently still disabled.
    */
-  clearQuarantined(): number {
+  clearQuarantined(): { refused: boolean; cleared: number } {
     const before = this.countQuarantined();
-    failOpenTransaction(this.db, () => {
+    const committed = failOpenTransaction(this.db, () => {
       this.clearQuarantinedStmt.run();
     });
-    return before - this.countQuarantined();
+    return { refused: !committed, cleared: before - this.countQuarantined() };
   }
 
   setVerdict(ruleKey: string, verdict: RuleProbeVerdict, worstProbeMs: number): void {

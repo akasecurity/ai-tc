@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
-import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
+import { getLoadedRules, maskMatch, redact } from '@akasecurity/detections';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -494,10 +494,15 @@ export function createPluginRuntime(
       // is what crosses into the worker too: "no rule ever sees a pointer" has
       // to hold wherever the engine runs, and the spans stay comparable because
       // the filler preserves every offset.
+      // ensureInitialized either assigns `scanner` or throws, so this cannot
+      // fire — and it is a guard rather than a second `scan()` call precisely
+      // because of that. A fallback arm here would be unreachable code on the
+      // one line where the pointer shield has to be applied, i.e. a place for
+      // the two paths to drift apart unnoticed. The outer catch owns the
+      // impossible case; it must never be an unshielded scan.
+      if (!scanner) throw new Error('the runtime initialized without a scanner');
       const shielded = shieldPointers(text);
-      const matched = scanner
-        ? await scanner.scan(shielded.text, context)
-        : scan(shielded.text, rules, context);
+      const matched = await scanner.scan(shielded.text, context);
       const findings = dropShieldedFindings(matched, shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);

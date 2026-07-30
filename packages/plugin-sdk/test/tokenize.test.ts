@@ -357,6 +357,9 @@ describe('sighting recording', () => {
   });
 
   afterEach(() => {
+    // Before the rm, as every other suite here does: this glue opened a store
+    // handle, and Windows refuses to remove a directory one is still held in.
+    glue.close();
     rmSync(base, { recursive: true, force: true });
   });
 

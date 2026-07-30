@@ -1,7 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
-  "globalDependencies": ["tsconfig.base.json", "rules/**"],
+  // test/setup/** is the no-network guard every package loads as a vitest
+  // setupFile. It lives outside every package, so nothing would otherwise put it
+  // in a `test` task's hash — weakening or deleting it would leave every package
+  // replaying a cached green produced under the OLD guard, which is a false
+  // green for the guarantee it exists to enforce.
+  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
   "tasks": {
     "build": {
       "dependsOn": ["^build", "^typecheck"],
@@ -32,8 +37,18 @@
     // fire. A stale hit here is a false-green CI for the no-network guarantee.
     //
     // So the inputs mirror everything the suite reads: the manifest, every
-    // package.json and eslint config, and every lintable source file in the
-    // workspace (the suite derives each package's code directories from them).
+    // package.json and eslint config, every lintable source file in the
+    // workspace (the suite derives each package's code directories from them),
+    // the CI workflow plus the egress-blocking script it drives, and the repo-root
+    // manifest and tsconfig behind `lint:root`/`typecheck:root`. Those last four
+    // are the subtlest entries here and the reason to be careful with this list:
+    // the suite asserts that ci.yml still runs the No-network job, and ci.yml is
+    // in no package. Without it, DELETING THAT JOB leaves this task's hash
+    // untouched, turbo replays the cached pass, and the assertion guarding the
+    // job never runs — the one job that would have re-run it from scratch being
+    // the job that was deleted. Neither the root package.json nor a root tsconfig
+    // is hashed by turbo on its own; both were measured, not assumed.
+
     // Explicit input globs are NOT filtered by .gitignore, so generated trees
     // are excluded by hand — without that, node_modules alone adds ~23k files to
     // the hash and every install perturbs it. This trades cache hits for
@@ -55,6 +70,10 @@
         "$TURBO_ROOT$/*/*/eslint.scripts.config.mjs",
         "$TURBO_ROOT$/*/**/*.{ts,tsx,js,jsx,mjs,cjs}",
         "$TURBO_ROOT$/*/*/**/*.{ts,tsx,js,jsx,mjs,cjs}",
+        "$TURBO_ROOT$/.github/workflows/ci.yml",
+        "$TURBO_ROOT$/tools/ci/**",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/tsconfig.root.json",
         "!$TURBO_ROOT$/**/node_modules/**",
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",

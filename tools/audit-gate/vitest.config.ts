@@ -7,16 +7,17 @@ import { defineConfig } from 'vitest/config';
 // per package because each one runs its own vitest;
 // packages/eslint-config/test/no-network-runtime.test.js fails the workspace
 // if a package drops the entry or points it at the wrong path.
+//
+// This package is the one whose PRODUCT job is to reach the registry, so it is
+// worth being precise: `pnpm audit`/`npm audit` run as child processes, which
+// the guard structurally cannot see, and these tests drive the gate's parsing
+// and waiver logic rather than the audits themselves. The guard is here to keep
+// that true — an in-process reach for the network from this suite is a defect.
 const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
 
-// Real FS + gateway work runs slowly on the Windows CI runner under parallel
-// load, so raise the per-test AND per-hook timeouts above vitest's 5s/10s
-// defaults (mirrors packages/persistence/vitest.config.ts).
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
     environment: 'node',
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
   },
 });

@@ -35,18 +35,32 @@ import { transcriptsDir } from '../history/transcripts.ts';
 // the only thing this module strikes, so the category is fixed.
 const REDACTED_PLACEHOLDER = '[REDACTED:SECRET]';
 
+// Matches `$`-pattern sequences that String.replace-family APIs expand ($&,
+// $', $`, $$, $1…, $<name>). Production replacements are vault pointers, which
+// never contain `$`, so refusing these costs nothing.
+const REPLACE_PATTERN_SEQUENCE = /\$[$&`'<0-9]/;
+
 // The string a struck occurrence of `rawValue` is rewritten to: the caller's
 // pre-resolved replacement when one is supplied (an async caller resolves vault
 // pointers ahead of this synchronous sweep), else the one-way placeholder. A
-// replacement must never be the raw value itself — an entry equal to it falls
-// back to the placeholder, so no map can make this module rewrite a secret
-// with itself and report it redacted.
+// replacement that CONTAINS the raw value (including the raw value itself)
+// falls back to the placeholder — honouring it would leave the secret readable
+// while reporting it redacted. So does a replacement carrying `$`-pattern
+// sequences: this module splices literally, but replace-family APIs expand
+// those sequences to re-insert the matched secret, so such a candidate is
+// never propagated anywhere.
 function replacementFor(
   rawValue: string,
   replacements: ReadonlyMap<string, string> | undefined,
 ): string {
   const candidate = replacements?.get(rawValue);
-  if (candidate === undefined || candidate === rawValue) return REDACTED_PLACEHOLDER;
+  if (
+    candidate === undefined ||
+    candidate.includes(rawValue) ||
+    REPLACE_PATTERN_SEQUENCE.test(candidate)
+  ) {
+    return REDACTED_PLACEHOLDER;
+  }
   return candidate;
 }
 
@@ -137,9 +151,9 @@ export interface RedactionDetail {
  *
  * `replacements` maps a raw value to the pre-resolved string it is rewritten to
  * — a recoverable vault pointer, resolved by the async caller because this sweep
- * must stay synchronous. A value with no entry (or with an entry equal to the
- * raw value itself) is struck with the one-way placeholder, so with no map the
- * behavior is byte-identical to the plain strike.
+ * must stay synchronous. A value with no entry — or with an entry that contains
+ * the raw value or `$`-pattern sequences — is struck with the one-way
+ * placeholder, so with no map the behavior is byte-identical to the plain strike.
  */
 export function redactLeakedKeysDetailed(
   targets: readonly RedactionTarget[],
@@ -171,23 +185,38 @@ export function redactLeakedKeysDetailed(
     }
     const struckHere: RedactionTarget[] = [];
     let pointeredHere = 0;
-    const struckValues = new Set<string>();
+    // rawValue → the replacement actually applied to this file, so a sibling
+    // target sharing the value counts the same way (pointered vs one-way) even
+    // when the first strike fell back to the placeholder.
+    const applied = new Map<string, string>();
     for (const target of fileTargets) {
-      // One raw value has exactly one replacement across the whole sweep, so a
-      // target and its same-value siblings always count the same way.
-      const replacement = replacementFor(target.rawValue, replacements);
       // A sibling target sharing this raw value already struck every occurrence
       // in this file, so `content.includes` is now false even though this
       // target's value IS redacted — count it struck rather than misreport it as
       // still exposed (two findings on one repeated value both resolve together).
-      if (struckValues.has(target.rawValue)) {
+      const prior = applied.get(target.rawValue);
+      if (prior !== undefined) {
         struckHere.push(target);
-        if (replacement !== REDACTED_PLACEHOLDER) pointeredHere += 1;
+        if (prior !== REDACTED_PLACEHOLDER) pointeredHere += 1;
         continue;
       }
       if (!content.includes(target.rawValue)) continue;
-      content = content.replaceAll(target.rawValue, replacement);
-      struckValues.add(target.rawValue);
+      let replacement = replacementFor(target.rawValue, replacements);
+      // Literal splice, never `replaceAll` with a string pattern — split/join
+      // carries no `$`-pattern semantics, so the replacement can never be
+      // expanded against the match it strikes.
+      let next = content.split(target.rawValue).join(replacement);
+      if (next.includes(target.rawValue)) {
+        // Bytes around a spliced replacement recombined into the raw value
+        // again (an overlap/boundary artifact) — strike one-way instead.
+        replacement = REDACTED_PLACEHOLDER;
+        next = content.split(target.rawValue).join(replacement);
+        // Still readable even after the placeholder pass: leave this value's
+        // occurrences as they were and do not count it redacted.
+        if (next.includes(target.rawValue)) continue;
+      }
+      content = next;
+      applied.set(target.rawValue, replacement);
       struckHere.push(target);
       if (replacement !== REDACTED_PLACEHOLDER) pointeredHere += 1;
     }

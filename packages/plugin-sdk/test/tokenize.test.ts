@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dataDir } from '../src/data-dir.ts';
 import type { VaultCore, VaultGlue } from '../src/tokenize.ts';
 import { createVaultGlue, POINTER_UNAVAILABLE_TEXT } from '../src/tokenize.ts';
+import { removeTree } from './helpers/remove-tree.ts';
 
 const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 const OTHER = 'AKIAI44QH8DHBEXAMPLE';
@@ -52,7 +53,7 @@ describe('vault glue', () => {
     // Windows will not remove a directory that still holds an open store
     // handle, so the glue must release before the temp base is cleared.
     glue.close();
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   describe('tokenizeText with findings', () => {
@@ -191,7 +192,7 @@ describe('vault glue', () => {
         db.close();
         ungranted.close();
       } finally {
-        rmSync(bare, { recursive: true, force: true });
+        removeTree(bare);
       }
     });
   });
@@ -303,7 +304,7 @@ describe('vault glue', () => {
         // safe on a degraded glue, which is the branch a caller cannot detect.
         degraded.close();
       } finally {
-        rmSync(badBase, { recursive: true, force: true });
+        removeTree(badBase);
       }
     });
   });
@@ -368,7 +369,7 @@ describe('sighting recording', () => {
     // Before the rm, as every other suite here does: this glue opened a store
     // handle, and Windows refuses to remove a directory one is still held in.
     glue.close();
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('records where a minted pointer landed, one row per location', async () => {

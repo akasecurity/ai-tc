@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -43,5 +44,47 @@ describe('package walls — the human reveal path', () => {
     for (const name of FORBIDDEN) {
       expect(deps).not.toContain(name);
     }
+  });
+});
+
+// Dependency lists alone cannot pin the wall: plugin-sdk is a legitimate
+// web-ui DEV dependency (test-fixture seeding), so a runtime import added to
+// app code would resolve and typecheck. Walk the actual source import
+// specifiers instead.
+describe('runtime source imports stay behind the wall', () => {
+  const FORBIDDEN = /@akasecurity\/(plugin-sdk|plugin-runtime|ai-tc-claude-code)/;
+
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        out.push(...walk(full));
+      } else if (/\.(ts|tsx)$/.test(entry.name)) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it('no web-ui app file or dashboard-ui source file imports a plugin package', () => {
+    const roots = [
+      fileURLToPath(new URL('../app', import.meta.url)),
+      fileURLToPath(new URL('../../packages/dashboard-ui/src', import.meta.url)),
+    ];
+    const offenders: string[] = [];
+    for (const root of roots) {
+      for (const file of walk(root)) {
+        const source = readFileSync(file, 'utf8');
+        for (const line of source.split('\n')) {
+          if (/^\s*(import|export)\b/.test(line) && FORBIDDEN.test(line)) {
+            offenders.push(file);
+            break;
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

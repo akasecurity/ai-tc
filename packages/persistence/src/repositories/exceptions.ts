@@ -134,6 +134,21 @@ const ACTIVE_PREDICATE = `revoked_at IS NULL
      AND (max_uses IS NULL OR use_count < max_uses)`;
 
 /**
+ * A grant authorizes a MODEL reveal only while it is active, carries the
+ * reveal capability, and has no conditions — the reveal path does not evaluate
+ * conditions, and a narrowing clause that is ignored would WIDEN the grant, so
+ * a conditioned grant fails closed here.
+ *
+ * Exported as the single definition of "authorizes a reveal right now": the
+ * vault inventory's badge subquery interpolates this same string (binding
+ * `:now`), so the dashboard can never call a value revealable where the
+ * crossing itself would refuse.
+ */
+export const ACTIVE_REVEAL_GRANT_PREDICATE = `capability = 'reveal_to_model'
+     AND conditions IS NULL
+     AND ${ACTIVE_PREDICATE}`;
+
+/**
  * Detection-exception grants + the short-lived blocked-detections ledger,
  * bound to one open DB. An exception is keyed by (ruleId, keyed fingerprint of
  * the exact detected value): rows carry the HMAC fingerprint and a masked
@@ -443,6 +458,10 @@ export class SqliteExceptionsRepository {
    * authorize a reveal. Read-only: the caller does NOT consume here, because a
    * revealed value re-enters the detection scan immediately afterward and the
    * suppression match there claims the use — one crossing, one use.
+   *
+   * A grant with `conditions` NEVER matches here: the reveal path does not yet
+   * evaluate conditions, and a narrowing clause that is ignored would WIDEN the
+   * grant instead. Fail closed until reveal-side condition evaluation exists.
    */
   activeRevealGrant(
     ruleId: string,
@@ -455,8 +474,8 @@ export class SqliteExceptionsRepository {
         this.db.prepare(
           `SELECT id FROM exceptions
             WHERE rule_id = :ruleId AND value_fingerprint = :valueFingerprint
-              AND key_version = :keyVersion AND capability = 'reveal_to_model'
-              AND ${ACTIVE_PREDICATE}
+              AND key_version = :keyVersion
+              AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
             LIMIT 1`,
         ),
         { ruleId, valueFingerprint, keyVersion, now },

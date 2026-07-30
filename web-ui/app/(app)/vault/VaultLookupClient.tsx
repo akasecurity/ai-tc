@@ -20,6 +20,7 @@ export function VaultLookupClient() {
 
   const [scope, setScope] = useState<ScopeAnswer | null>(null);
   const [justification, setJustification] = useState('');
+  const [confirmation, setConfirmation] = useState('');
   const [grantResult, setGrantResult] = useState<RevealGrantResult | null>(null);
   const [grantBusy, startGrantTransition] = useTransition();
 
@@ -40,7 +41,12 @@ export function VaultLookupClient() {
     if (scope === null || justification.trim() === '') return;
     startGrantTransition(async () => {
       setGrantResult(
-        await grantRevealFromPointer({ pointer: resolvedPointer, scope, justification }),
+        await grantRevealFromPointer({
+          pointer: resolvedPointer,
+          scope,
+          justification,
+          confirmation,
+        }),
       );
     });
   };
@@ -110,6 +116,21 @@ export function VaultLookupClient() {
                   Scope — pick one
                 </div>
                 <ScopePicker value={scope} onChange={setScope} />
+                {scope === 'permanent' ? (
+                  <label className="flex flex-col gap-1 text-xs text-text-2">
+                    A permanent reveal never expires. Retype the masked value shown above to
+                    confirm.
+                    <input
+                      className="rounded border border-border bg-surface px-2 py-1 font-mono"
+                      data-slot="permanent-confirmation"
+                      value={confirmation}
+                      onChange={(e) => {
+                        setConfirmation(e.target.value);
+                      }}
+                      placeholder="masked value"
+                    />
+                  </label>
+                ) : null}
               </div>
               <div>
                 <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">

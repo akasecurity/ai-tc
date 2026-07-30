@@ -1,11 +1,25 @@
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { PointerToken } from '@akasecurity/schema';
+import { POINTER_FORMAT_VERSION, PointerToken } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { loadOrCreateFingerprintKey, rotateFingerprintKey } from '../../src/fingerprint.ts';
+import {
+  fingerprintValue,
+  loadOrCreateFingerprintKey,
+  rotateFingerprintKey,
+} from '../../src/fingerprint.ts';
 import { SqliteSecretVaultRepository } from '../../src/repositories/secret-vault.ts';
+import {
+  base32Decode,
+  base32Encode,
+  bindingInput,
+  deriveSubkeys,
+  NONCE_BYTES,
+  POINTER_ID_BYTES,
+  seal,
+} from '../../src/vault/crypto.ts';
 import { FileKeyProvider } from '../../src/vault/key-provider.ts';
 import { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from '../../src/vault/vault.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
@@ -137,6 +151,69 @@ describe('SecretVault', () => {
     });
   });
 
+  // The wire tag is signed and verified under POINTER_FORMAT_VERSION on both
+  // sides, never under the row's own generation — verification runs before the
+  // row is looked up, so it cannot know that generation. A row sealed under an
+  // older generation must therefore still emit a token the vault accepts: its
+  // format version binds the ciphertext (AEAD AAD) and nothing else.
+  //
+  // Seals a row by hand under generation 1 while the constant is 2, which is the
+  // shape a future format bump leaves behind. Signing the tag under the row's
+  // generation instead makes the vault refuse the token it just minted.
+  describe('rows from an older wire generation', () => {
+    const OLD_GENERATION = POINTER_FORMAT_VERSION - 1;
+
+    async function seedOldGenerationRow(raw: string): Promise<void> {
+      const keys = new FileKeyProvider(join(dir, 'keys'));
+      const { material, version } = await keys.loadOrCreate();
+      const subkeys = deriveSubkeys(material);
+      const pointerId = randomBytes(POINTER_ID_BYTES);
+      const sealed = seal(
+        subkeys.enc,
+        raw,
+        bindingInput(version, pointerId, 'secret', OLD_GENERATION),
+        randomBytes(NONCE_BYTES),
+      );
+      const fingerprintKey = loadOrCreateFingerprintKey(dir);
+      repo.upsert(
+        {
+          pointerId: base32Encode(pointerId),
+          valueFingerprint: fingerprintValue(fingerprintKey, raw),
+          fingerprintKeyVersion: fingerprintKey.version,
+          keyVersion: version,
+          formatVersion: OLD_GENERATION,
+          category: 'secret',
+          ruleId: 'aws-access-key-id',
+          maskedMatch: 'A******E',
+          ciphertext: sealed.ciphertext.toString('base64'),
+          nonce: sealed.nonce.toString('base64'),
+          authTag: sealed.authTag.toString('base64'),
+        },
+        Date.now(),
+      );
+    }
+
+    it('emits a token the vault still accepts, and resolves it', async () => {
+      await seedOldGenerationRow(SECRET);
+      // Re-detection returns the stored row's token rather than minting.
+      const token = await tokenize(SECRET);
+      expect(must(repo.listAll()[0], 'a vault row').formatVersion).toBe(OLD_GENERATION);
+      await expect(
+        vault.detokenize(token, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(SECRET);
+    });
+
+    // describePointer and resolvePointerIdentity run the same tag check, so a
+    // drift between signing and verification takes out the masked badge and the
+    // reveal-grant path too — not just the read path.
+    it('still describes and identifies the row behind that token', async () => {
+      await seedOldGenerationRow(SECRET);
+      const token = await tokenize(SECRET);
+      expect(await vault.describePointer(token)).not.toBeNull();
+      expect(await vault.resolvePointerIdentity(token)).not.toBeNull();
+    });
+  });
+
   describe('unforgeable pointers', () => {
     it('refuses a fabricated pointer without auditing it', async () => {
       const forged = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
@@ -166,6 +243,57 @@ describe('SecretVault', () => {
       ).resolves.toBe(UNAVAILABLE);
     });
 
+    // base32 decoding discards trailing sub-byte bits, so a token whose last
+    // pointer-id character smuggles nonzero padding bits decodes to the SAME
+    // bytes as the canonical spelling — and its tag therefore still verifies.
+    // Only the exact spelling the vault emits may count as a pointer, or the
+    // audit and sighting dedup keys fragment across spellings of one pointer.
+    it('refuses a non-canonical trailing-bit spelling, without auditing it', async () => {
+      const token = await tokenize(SECRET);
+      const parts = must(
+        /^(\[\[aka:secret:[A-Z2-7]+\.)([A-Z2-7]{26})(\.[A-Z2-7]{16}\]\])$/.exec(token),
+        'token segments',
+      );
+      const id = must(parts[2], 'the pointer-id segment');
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+      // The 26th character carries 3 data bits + 2 zero padding bits; setting a
+      // padding bit changes the spelling but not the decoded bytes.
+      const lastIndex = alphabet.indexOf(must(id.at(-1), 'last char'));
+      const variantId = id.slice(0, -1) + alphabet.charAt(lastIndex | 1);
+      expect(variantId).not.toBe(id);
+      expect(base32Decode(variantId).equals(base32Decode(id))).toBe(true);
+
+      const variant = `${must(parts[1], 'prefix')}${variantId}${must(parts[3], 'suffix')}`;
+      await expect(
+        vault.detokenize(variant, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()).toHaveLength(0);
+
+      // The canonical spelling still resolves.
+      await expect(
+        vault.detokenize(token, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(SECRET);
+    });
+
+    // The key-version decoder tolerates leading zero bytes, so a zero-padded
+    // spelling names the same epoch as the minimal one. Same rule: not the
+    // canonical spelling, not a pointer.
+    it('refuses a zero-padded key-version spelling, without auditing it', async () => {
+      const token = await tokenize(SECRET);
+      // The minted token names epoch 1, encoded minimally as one byte ('AE').
+      const padded = base32Encode(Uint8Array.from([0, 1]));
+      const variant = token.replace('[[aka:secret:AE.', `[[aka:secret:${padded}.`);
+      expect(variant).not.toBe(token);
+      await expect(
+        vault.detokenize(variant, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()).toHaveLength(0);
+
+      await expect(
+        vault.detokenize(token, { target: 'human', reason: 'explicit-reveal' }),
+      ).resolves.toBe(SECRET);
+    });
+
     it('refuses a structurally invalid string outright', async () => {
       for (const junk of [
         '',
@@ -191,15 +319,92 @@ describe('SecretVault', () => {
       expect(rows[0]).toMatchObject({ target: 'model', outcome: 'refused', reason: 'model-input' });
     });
 
-    it('reveals with a grant, and records the crossing', async () => {
+    // A vault built without a grant verifier has no model road at all. Most
+    // construction sites are owner surfaces that only ever read for a human;
+    // this makes them structurally incapable of a crossing rather than merely
+    // not attempting one, so a caller cannot open the road by supplying an id.
+    it('refuses with no verifier wired, however good the grant id looks', async () => {
       const token = await tokenize(SECRET);
       await expect(
         vault.detokenize(token, { target: 'model', reason: 'model-input', grantId: 'g-1' }),
-      ).resolves.toBe(SECRET);
-      expect(derefRows()[0]).toMatchObject({
-        target: 'model',
-        outcome: 'revealed',
-        grantId: 'g-1',
+      ).resolves.toBe(UNAVAILABLE);
+      expect(derefRows()[0]).toMatchObject({ target: 'model', outcome: 'refused' });
+    });
+
+    // The vault is the last gate before raw leaves the store: with a verifier
+    // supplied, a grant id is checked against the ROW's identity rather than
+    // taken on trust from the caller.
+    describe('with a grant verifier', () => {
+      const withVerifier = (
+        verifyGrant: (
+          grantId: string,
+          identity: { ruleId: string; valueFingerprint: string; fingerprintKeyVersion: number },
+        ) => Promise<boolean>,
+      ): SecretVault =>
+        new SecretVault({
+          repo,
+          keys: new FileKeyProvider(join(dir, 'keys')),
+          fingerprintKey: loadOrCreateFingerprintKey(dir),
+          isConsented: () => consented,
+          verifyGrant,
+        });
+
+      it('refuses when the verifier does not cover the grant, and audits the refusal', async () => {
+        const token = await tokenize(SECRET);
+        const gated = withVerifier(() => Promise.resolve(false));
+        await expect(
+          gated.detokenize(token, { target: 'model', reason: 'model-input', grantId: 'g-forged' }),
+        ).resolves.toBe(UNAVAILABLE);
+        expect(derefRows()[0]).toMatchObject({ target: 'model', outcome: 'refused' });
+      });
+
+      it('reveals when the verifier covers the grant, checking the ROW identity', async () => {
+        const token = await tokenize(SECRET);
+        const row = must(repo.listAll()[0], 'the vault row');
+        const seen: { grantId: string; identity: unknown }[] = [];
+        const gated = withVerifier((grantId, identity) => {
+          seen.push({ grantId, identity });
+          return Promise.resolve(true);
+        });
+        await expect(
+          gated.detokenize(token, { target: 'model', reason: 'model-input', grantId: 'g-1' }),
+        ).resolves.toBe(SECRET);
+        expect(seen).toEqual([
+          {
+            grantId: 'g-1',
+            identity: {
+              ruleId: row.ruleId,
+              valueFingerprint: row.valueFingerprint,
+              fingerprintKeyVersion: row.fingerprintKeyVersion,
+            },
+          },
+        ]);
+        expect(derefRows()[0]).toMatchObject({ target: 'model', outcome: 'revealed' });
+      });
+
+      // Fail-secure at the last gate: a verifier fault refuses, never reveals.
+      it('refuses when the verifier throws', async () => {
+        const token = await tokenize(SECRET);
+        const gated = withVerifier(() => Promise.reject(new Error('store fault')));
+        await expect(
+          gated.detokenize(token, { target: 'model', reason: 'model-input', grantId: 'g-1' }),
+        ).resolves.toBe(UNAVAILABLE);
+        expect(derefRows()[0]).toMatchObject({ target: 'model', outcome: 'refused' });
+      });
+
+      // The verifier gates only the model crossing; human-target reveals do not
+      // consult it.
+      it('does not consult the verifier for a human-target de-reference', async () => {
+        const token = await tokenize(SECRET);
+        let called = false;
+        const gated = withVerifier(() => {
+          called = true;
+          return Promise.resolve(false);
+        });
+        await expect(
+          gated.detokenize(token, { target: 'human', reason: 'explicit-reveal' }),
+        ).resolves.toBe(SECRET);
+        expect(called).toBe(false);
       });
     });
   });

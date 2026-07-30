@@ -20,7 +20,7 @@ import type { VaultInventoryEntry } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
+import { grantRevealFromPointer, rotateKey } from '../../app/(app)/exceptions/actions.ts';
 import {
   purgeVault,
   revealEntry,
@@ -173,6 +173,25 @@ describe('revokeRevealGrant', () => {
     const result = await revokeRevealGrant({ grantId: before.revealGrantId });
     expect(result).toEqual({ ok: true });
     expect(inventory()[0]?.revealGrantId).toBeNull();
+  });
+});
+
+// Fingerprint-key rotation invalidates GRANTS by design; it must never split
+// the vault. Rotation re-keys every stored fingerprint under the new epoch, so
+// the same value detected again still finds its row — otherwise it would
+// fingerprint under the new key, miss dedup, and mint a second pointer for a
+// secret that already has one in circulation.
+describe('rotateKey keeps the vault whole', () => {
+  it('re-keys stored fingerprints so a re-detection reuses the pointer', async () => {
+    const pointer = await seedPointer();
+    expect(entryCount()).toBe(1);
+
+    expect(await rotateKey('rotate')).toEqual({ ok: true });
+    resetSingleton();
+
+    const again = await seedPointer();
+    expect(again).toBe(pointer);
+    expect(entryCount()).toBe(1);
   });
 });
 

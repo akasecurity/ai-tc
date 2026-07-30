@@ -26,7 +26,11 @@ import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerField } from './pointer-substitution.ts';
-import { decideInputPointers, denyPointerMessage } from './pointer-substitution.ts';
+import {
+  decideInputPointers,
+  denyPointerMessage,
+  denyUnresolvedPointerMessage,
+} from './pointer-substitution.ts';
 import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
 import { decidePreToolUse } from './pre-tool-use-decision.ts';
 import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-use-fields.ts';
@@ -72,32 +76,68 @@ async function main(): Promise<void> {
       pointerFields.push({ path: spec.path, text, executable: spec.executable });
     }
   }
-  const pointerOutcomes = await decideInputPointers(pointerFields, (text) =>
-    vaultGlue
-      ? vaultGlue.substituteModelPointers(text, { resolveGrant: vaultGlue.revealGrantResolver })
-      : Promise.resolve({
-          text,
-          revealed: [],
-          unresolved: [...text.matchAll(pointerTokenScanner())].map((m) => m[0]),
-        }),
-  );
-  if (pointerOutcomes.some((outcome) => outcome.disposition === 'deny')) {
+  // Executable fields are probed FIRST — grant resolution only, no
+  // de-reference. One ungranted pointer denies the whole call, and a call that
+  // is denied must never have audited a reveal for the pointers that WERE
+  // granted: the owner's crossing trail would then report values as sent to
+  // the model on a call that never ran.
+  const spentGrantIds: string[] = [];
+  let denyForPointer = false;
+  if (vaultGlue) {
+    for (const field of pointerFields.filter((f) => f.executable)) {
+      const probe = await vaultGlue.probeModelPointers(field.text, {
+        resolveGrant: vaultGlue.revealGrantResolver,
+      });
+      if (probe.ungranted.length > 0) denyForPointer = true;
+    }
+  } else {
+    denyForPointer = pointerFields.some((f) => f.executable && pointerTokenScanner().test(f.text));
+  }
+
+  const pointerOutcomes = denyForPointer
+    ? []
+    : await decideInputPointers(pointerFields, async (text) => {
+        if (!vaultGlue) {
+          return {
+            text,
+            revealed: [],
+            unresolved: [...text.matchAll(pointerTokenScanner())].map((m) => m[0]),
+            grantIds: [],
+          };
+        }
+        const result = await vaultGlue.substituteModelPointers(text, {
+          resolveGrant: vaultGlue.revealGrantResolver,
+        });
+        spentGrantIds.push(...result.grantIds);
+        return result;
+      });
+  // The probe settles most denials, but it cannot settle all of them: it only
+  // resolves grants, while the substitution above must additionally OPEN each
+  // row's ciphertext. A pointer whose grant resolves but whose value will not
+  // open reaches this point looking granted, and the substitution reports it
+  // back as a deny. Dropping that verdict would run the tool with the pointer
+  // still literal in a field that executes. That case gets its own message:
+  // the grant was never the problem, so pointing the user at granting one would
+  // send them somewhere that cannot help.
+  const unresolvedAfterGrant = pointerOutcomes.some((o) => o.disposition === 'deny');
+  if (denyForPointer || unresolvedAfterGrant) {
     await emit({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: denyPointerMessage(toolName),
+        permissionDecisionReason: denyForPointer
+          ? denyPointerMessage(toolName)
+          : denyUnresolvedPointerMessage(toolName),
       },
     });
     return;
   }
-
   // Fold granted de-refs into the input the rest of the hook sees: the secret
-  // scan then re-detects each revealed value, and the SAME grant satisfies
-  // suppression there (reveal is strictly stronger), consuming its use exactly
-  // once. Emitting must not depend on a detection outcome — with every
-  // revealed value suppressed, the decision below may be null, and the tool
-  // would otherwise run with the pointers still literal.
+  // scan re-detects each revealed value, and the SAME grant satisfies
+  // suppression there (reveal is strictly stronger) — without spending a
+  // second use, because the crossing already spent it. Emitting must not
+  // depend on a detection outcome: a suppressed or warn-only result would
+  // otherwise let the tool run with the pointers still literal.
   let effectiveInput = toolInput;
   let derefHappened = false;
   for (const outcome of pointerOutcomes) {
@@ -148,7 +188,12 @@ async function main(): Promise<void> {
         // every Bash command and one call per string leaf of every MCP payload,
         // and 'always' would copy that whole stream into the store to trail the
         // enforcement decisions that are the point of the kind.
-        kind === 'tool_use' ? { persist: 'with-findings' } : {},
+        {
+          ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
+          // Grants this call's pointer crossing already spent: suppression
+          // applies without charging a second use.
+          ...(spentGrantIds.length > 0 ? { preAuthorizedGrantIds: spentGrantIds } : {}),
+        },
       );
       scanned.push({ spec, text, result });
     }
@@ -176,10 +221,31 @@ async function main(): Promise<void> {
           })
       : undefined,
   );
+  const revealNote = `AKA revealed granted vault value(s) to this ${toolName} call — the reveal exception you approved authorized it.`;
   if (decision) {
-    await emit(
-      withProtocolNotes(decision.output, decision.realized, toolName, config, sessionId, vaultGlue),
+    const output = withProtocolNotes(
+      decision.output,
+      decision.realized,
+      toolName,
+      config,
+      sessionId,
+      vaultGlue,
     );
+    // A deref must survive EVERY non-deny outcome. A warn-only decision carries
+    // no hookSpecificOutput, so emitting it alone would run the tool with the
+    // literal pointers the grant just resolved.
+    if (derefHappened && !('hookSpecificOutput' in output)) {
+      await emit({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          updatedInput: effectiveInput,
+        },
+        systemMessage: `${output.systemMessage} ${revealNote}`,
+      });
+      return;
+    }
+    await emit(output);
     return;
   }
   // No detection outcome, but a grant rewrote the input: the tool must still
@@ -191,7 +257,7 @@ async function main(): Promise<void> {
         permissionDecision: 'allow',
         updatedInput: effectiveInput,
       },
-      systemMessage: `AKA revealed granted vault value(s) to this ${toolName} call — the reveal exception you approved authorized it.`,
+      systemMessage: revealNote,
     });
   }
 }

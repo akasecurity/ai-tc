@@ -230,6 +230,49 @@ describe('pointer tag', () => {
   });
 });
 
+// FROZEN golden vectors. These pin the wire format itself: the HKDF salt and
+// info labels, the binding-input layout (format version ‖ key version ‖
+// pointer id ‖ category), the HMAC tag truncation, and the token spelling.
+// If changing POINTER_FORMAT_VERSION, the HKDF labels/salt, or the binding
+// layout breaks this test, that is the test WORKING: every already-stored
+// ciphertext and every already-emitted token was produced under these exact
+// bytes, so the constant must not move without a migration story for stored
+// rows and outstanding tokens. Do not re-derive these values from the code —
+// that would freeze nothing.
+describe('golden vectors', () => {
+  const goldenMaster = Buffer.from(
+    '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+    'hex',
+  );
+  const goldenPointerId = Buffer.from('35757033727333637233742d7030316e', 'hex');
+
+  it('derives the frozen subkeys', () => {
+    const derived = deriveSubkeys(goldenMaster);
+    expect(derived.enc.toString('hex')).toBe(
+      '5b17fca2dc233fe14765c12ec39314c7877f3d6c63b4bfd0d0f4c9d0a4a85758',
+    );
+    expect(derived.sign.toString('hex')).toBe(
+      '8ace90e54da32192db58c01ddf83137dcb55e4aa3dbf99a05bb11f8adc8ea06f',
+    );
+  });
+
+  it('produces the frozen binding input', () => {
+    expect(bindingInput(1, goldenPointerId, 'secret').toString('hex')).toBe(
+      '00020000000135757033727333637233742d7030316e736563726574',
+    );
+  });
+
+  it('produces the exact frozen tag and token', () => {
+    const derived = deriveSubkeys(goldenMaster);
+    const tag = signPointer(derived.sign, 1, goldenPointerId, 'secret');
+    expect(tag.toString('hex')).toBe('1f418d000515357bc072');
+    expect(formatPointer('secret', 1, goldenPointerId, tag)).toBe(
+      '[[aka:secret:AE.GV2XAM3SOMZWG4RTOQWXAMBRNY.D5AY2AAFCU2XXQDS]]',
+    );
+    expect(verifyPointerTag(derived.sign, 1, goldenPointerId, 'secret', tag)).toBe(true);
+  });
+});
+
 describe('formatPointer', () => {
   it('emits a token the schema grammar accepts', async () => {
     const { PointerToken } = await import('@akasecurity/schema');

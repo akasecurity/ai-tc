@@ -30,7 +30,7 @@ import { type platformRedactionScope, resolveRedactableArtifact } from '../remed
 // whole-file read — acceptable because it runs in the detached reconcile
 // worker, off the hot hook path — but a pathological transcript must not
 // balloon the worker, so the read is capped.
-const MAX_SCRUB_BYTES = 32 * 1024 * 1024;
+const DEFAULT_MAX_SCRUB_BYTES = 32 * 1024 * 1024;
 
 export interface TailScrubDeps {
   // The vault-glue text tokenizer: self-scans, shields existing pointers so a
@@ -42,6 +42,9 @@ export interface TailScrubDeps {
   ): Promise<{ text: string; pointers: string[]; degraded: { category: string }[] }>;
   // The artifact roots whose contained files may be rewritten in place.
   scope: ReturnType<typeof platformRedactionScope>;
+  // Whole-file read cap in bytes; a larger file is skipped (null). Defaults to
+  // 32 MiB when unset.
+  maxBytes?: number;
 }
 
 /**
@@ -60,7 +63,11 @@ export async function scrubTranscriptTail(
     // Containment first: out of scope → never opened for writing.
     const realPath = resolveRedactableArtifact(filePath, deps.scope);
     if (realPath === null) return null;
-    if (statSync(realPath).size > MAX_SCRUB_BYTES) return null;
+    // Snapshot the stat up front: the size gates the whole-file read, the mode
+    // is re-applied to the rewrite, and size+mtime detect concurrent appends
+    // just before the rename below.
+    const statBefore = statSync(realPath);
+    if (statBefore.size > (deps.maxBytes ?? DEFAULT_MAX_SCRUB_BYTES)) return null;
 
     const content = readFileSync(realPath, 'utf8');
     // Line-by-line so the rewrite can only ever change bytes WITHIN a line —
@@ -84,7 +91,21 @@ export async function scrubTranscriptTail(
     // original — a crash mid-write leaves the transcript intact.
     const tmpPath = `${realPath}.aka-scrub.tmp`;
     try {
-      writeFileSync(tmpPath, lines.join('\n'));
+      // Preserve the transcript's permission bits: without an explicit mode
+      // the temp file is created at the umask default, and the rename would
+      // widen a 0600 transcript to world-readable.
+      writeFileSync(tmpPath, lines.join('\n'), { mode: statBefore.mode & 0o777 });
+      // The transcript is LIVE — Claude Code may have appended lines while the
+      // scrub tokenized its in-memory snapshot. Renaming the snapshot over a
+      // file that changed underneath would silently destroy those lines, so
+      // ANY difference since the first stat aborts the rewrite: a lost scrub
+      // is retried by the next reconcile pass, but lost transcript lines do
+      // not come back.
+      const statNow = statSync(realPath);
+      if (statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+        rmSync(tmpPath, { force: true, recursive: true });
+        return null;
+      }
       renameSync(tmpPath, realPath);
     } catch {
       try {

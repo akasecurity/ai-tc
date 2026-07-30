@@ -231,3 +231,46 @@ describe('SqliteSecretVaultRepository.purgeAll', () => {
     expect(vault.purgeAll()).toBe(0);
   });
 });
+
+// The inventory's revealable badge and the actual crossing must share ONE
+// definition of "an active reveal grant". The crossing (activeRevealGrant)
+// fails closed on a grant with conditions — the reveal path does not evaluate
+// them, and ignoring a narrowing clause would widen the grant — so the badge
+// must refuse the same grant, or the dashboard says "revealable" where the
+// de-reference then refuses.
+describe('SqliteSecretVaultRepository.listInventory grant badge', () => {
+  function grantRow(overrides: { conditions?: string | null } = {}): void {
+    raw
+      .prepare(
+        `INSERT INTO exceptions (
+           id, rule_id, category, value_fingerprint, key_version, masked_value,
+           capability, scope, expires_at, max_uses, use_count, last_used_at,
+           justification, conditions, created_by, created_via, created_at,
+           updated_at, revoked_at, revoked_by, revoke_reason
+         ) VALUES (
+           :id, 'aka.secret.aws-key', 'secret', :fp, 1, 'AKIA…XYZQ',
+           'reveal_to_model', 'permanent', NULL, NULL, 0, NULL,
+           'test', :conditions, 'tester', 'cli-add', :now,
+           :now, NULL, NULL, NULL
+         )`,
+      )
+      .run({
+        id: randomUUID(),
+        fp: FINGERPRINT_A,
+        conditions: overrides.conditions ?? null,
+        now: NOW,
+      });
+  }
+
+  it('badges a clean active reveal grant', () => {
+    vault.upsert(entry(), NOW);
+    grantRow();
+    expect(vault.listInventory(NOW)[0]?.revealGrantId).not.toBeNull();
+  });
+
+  it('refuses to badge a conditioned grant, exactly as the crossing refuses it', () => {
+    vault.upsert(entry(), NOW);
+    grantRow({ conditions: JSON.stringify({ repo: 'github.com/example/app' }) });
+    expect(vault.listInventory(NOW)[0]?.revealGrantId).toBeNull();
+  });
+});

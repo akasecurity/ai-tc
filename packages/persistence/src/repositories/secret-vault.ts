@@ -27,9 +27,11 @@ import type {
   VaultSighting,
   VaultSightingKind,
 } from '@akasecurity/schema';
+import { POINTER_FORMAT_VERSION } from '@akasecurity/schema';
 
 import { allRows, bindParams, countScalar, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
+import { ACTIVE_REVEAL_GRANT_PREDICATE } from './exceptions.ts';
 
 /** What a caller supplies when it asks for a value to be vaulted. */
 export interface VaultRowInsert {
@@ -37,6 +39,11 @@ export interface VaultRowInsert {
   valueFingerprint: string;
   fingerprintKeyVersion: number;
   keyVersion: number;
+  // The pointer-format generation the row's AAD is bound under — the AAD only,
+  // never a wire tag. Optional on insert; the store defaults it to format
+  // version 2, which is what every row written before the column existed was
+  // sealed under.
+  formatVersion?: number | undefined;
   category: string;
   ruleId: string;
   maskedMatch: string;
@@ -49,6 +56,8 @@ export interface VaultRowInsert {
 
 /** A stored row: the insert fields plus the counters the store maintains. */
 export interface VaultRow extends VaultRowInsert {
+  // Always present on a read — the column is NOT NULL with a default.
+  formatVersion: number;
   occurrenceCount: number;
   // epoch millis
   firstSeen: number;
@@ -79,6 +88,7 @@ const SELECT_COLUMNS = `
   value_fingerprint AS valueFingerprint,
   fingerprint_key_version AS fingerprintKeyVersion,
   key_version AS keyVersion,
+  format_version AS formatVersion,
   category,
   rule_id AS ruleId,
   masked_match AS maskedMatch,
@@ -113,12 +123,12 @@ export class SqliteSecretVaultRepository {
     this.insertStmt = db.prepare(
       `INSERT INTO secret_vault (
          pointer_id, value_fingerprint, fingerprint_key_version, key_version,
-         category, rule_id, masked_match, provider,
+         format_version, category, rule_id, masked_match, provider,
          ciphertext, nonce, auth_tag,
          occurrence_count, first_seen, last_seen
        ) VALUES (
          :pointerId, :valueFingerprint, :fingerprintKeyVersion, :keyVersion,
-         :category, :ruleId, :maskedMatch, :provider,
+         :formatVersion, :category, :ruleId, :maskedMatch, :provider,
          :ciphertext, :nonce, :authTag,
          1, :now, :now
        )`,
@@ -178,6 +188,7 @@ export class SqliteSecretVaultRepository {
               valueFingerprint: input.valueFingerprint,
               fingerprintKeyVersion: input.fingerprintKeyVersion,
               keyVersion: input.keyVersion,
+              formatVersion: input.formatVersion ?? POINTER_FORMAT_VERSION,
               category: input.category,
               ruleId: input.ruleId,
               maskedMatch: input.maskedMatch,
@@ -334,10 +345,7 @@ export class SqliteSecretVaultRepository {
                   WHERE e.rule_id = v.rule_id
                     AND e.value_fingerprint = v.value_fingerprint
                     AND e.key_version = v.fingerprint_key_version
-                    AND e.capability = 'reveal_to_model'
-                    AND e.revoked_at IS NULL
-                    AND (e.expires_at IS NULL OR e.expires_at > :now)
-                    AND (e.max_uses IS NULL OR e.use_count < e.max_uses)
+                    AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
                   LIMIT 1) AS grant_id
            FROM secret_vault v
           ORDER BY v.last_seen DESC`,

@@ -239,6 +239,27 @@ describe('aka exception approve <pointer> --reveal', () => {
       db.close();
     }
   });
+
+  // The only friction on a never-expiring reveal is the deliberate
+  // confirmation; non-interactively that means --yes or nothing.
+  it('refuses --permanent non-interactively without --yes, creating nothing', async () => {
+    const pointer = await seedPointer();
+    await expect(
+      runException(approveArgs(pointer, '--reveal', '--permanent', '--reason', 'x'), scriptedIo()),
+    ).rejects.toThrow(/--yes|interactive/);
+    expect(await openAndList()).toHaveLength(0);
+  });
+
+  it('accepts --permanent with --yes', async () => {
+    const pointer = await seedPointer();
+    await runException(
+      approveArgs(pointer, '--reveal', '--permanent', '--yes', '--reason', 'x'),
+      scriptedIo(),
+    );
+    const grants = await openAndList();
+    expect(grants[0]?.scope).toBe('permanent');
+    expect(grants[0]?.capability).toBe('reveal_to_model');
+  });
 });
 
 // Read every exception row (including terminal) from the store.

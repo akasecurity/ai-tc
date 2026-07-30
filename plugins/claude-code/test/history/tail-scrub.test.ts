@@ -1,4 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,6 +159,73 @@ describe('scrubTranscriptTail', () => {
   it('returns null for an unreadable path without throwing', async () => {
     expect(await scrubTranscriptTail(join(transcriptRoot, 'missing.jsonl'), deps)).toBeNull();
   });
+
+  it('aborts on the unclassifiable blanket: changed text with no pointers and no degraded spans', async () => {
+    const content = `{"text":"key ${SECRET}"}\n`;
+    const file = transcriptFile('blanket.jsonl', content);
+    // A tokenizer that rewrites the line but mints no pointer and degrades no
+    // span cannot tell secret from clean — honouring it would blanket-destroy
+    // transcript lines, so the scrub must abort with the file untouched.
+    const blanketDeps: TailScrubDeps = {
+      tokenizeText: () =>
+        Promise.resolve({ text: '[REDACTED-EVERYTHING]', pointers: [], degraded: [] }),
+      scope,
+    };
+
+    expect(await scrubTranscriptTail(file, blanketDeps)).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe(content);
+  });
+
+  it('skips a file larger than the configured byte cap, leaving it untouched', async () => {
+    const content = `{"text":"key ${SECRET}"}\n`;
+    const file = transcriptFile('oversized.jsonl', content);
+
+    expect(await scrubTranscriptTail(file, { ...deps, maxBytes: 8 })).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe(content);
+  });
+
+  it('aborts when the live transcript grew mid-scrub, keeping the appended lines intact', async () => {
+    const original = `{"text":"key ${SECRET}"}\n`;
+    const appended = '{"text":"appended while the scrub was tokenizing"}\n';
+    const file = transcriptFile('race.jsonl', original);
+    // A tokenizer that appends to the file mid-scrub, simulating Claude Code
+    // writing to the live transcript while the scrub works on its in-memory
+    // snapshot. Renaming the snapshot over the grown file would silently
+    // destroy the appended line, so the scrub must abort instead.
+    const racingDeps: TailScrubDeps = {
+      tokenizeText: (text) => {
+        appendFileSync(file, appended);
+        return Promise.resolve({
+          text: text.split(SECRET).join('[[aka:secret:RACE]]'),
+          pointers: ['[[aka:secret:RACE]]'],
+          degraded: [],
+        });
+      },
+      scope,
+    };
+
+    expect(await scrubTranscriptTail(file, racingDeps)).toBeNull();
+    // The post-append content — including the line the snapshot never saw —
+    // survives, and no tmp orphan remains.
+    expect(readFileSync(file, 'utf8')).toBe(original + appended);
+    const siblings = readdirSync(join(transcriptRoot, '-Users-me-project'));
+    expect(siblings.filter((entry) => entry.endsWith('.aka-scrub.tmp'))).toEqual([]);
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'preserves a 0600 transcript mode across the rewrite',
+    async () => {
+      const file = transcriptFile('mode.jsonl', `{"text":"key ${SECRET}"}\n`);
+      chmodSync(file, 0o600);
+
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 1 });
+
+      // The rewrite lands via a fresh temp file; without an explicit mode it
+      // would widen the 0600 transcript to the umask default.
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(readFileSync(file, 'utf8')).not.toContain(SECRET);
+    },
+  );
 
   // The fault posture when consent vanished mid-pass (the call site gates on
   // consent, so a consent-less glue is only reachable via revocation between

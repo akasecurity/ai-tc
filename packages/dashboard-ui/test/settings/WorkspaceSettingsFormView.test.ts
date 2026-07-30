@@ -1,4 +1,7 @@
+import type { WorkspaceSettings } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
@@ -7,6 +10,8 @@ import {
   HISTORICAL_CHOICES,
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
+  INLINE_REVEAL_CHOICES,
+  INLINE_REVEAL_SECTION_DESCRIPTION,
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
@@ -17,6 +22,7 @@ import {
   VAULT_STALE_NOTICE,
   vaultChoiceOf,
   vaultConsentStale,
+  WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
 
@@ -179,7 +185,7 @@ describe('WorkspaceSettingsFormView vault-consent section', () => {
 
   it('does not present switching off as an eraser — the CLI purge is', () => {
     expect(on?.description).toMatch(/does not erase/i);
-    expect(on?.description).toMatch(/purging the vault from the CLI/i);
+    expect(on?.description).toMatch(/purging the vault from the dashboard's Vault page/i);
   });
 
   it('keeps the off default free of any storage', () => {
@@ -214,5 +220,59 @@ describe('stale vault grant', () => {
   it('the notice says vaulting is paused and how re-consent happens', () => {
     expect(VAULT_STALE_NOTICE).toContain('paused');
     expect(VAULT_STALE_NOTICE).toContain('re-consent');
+  });
+});
+
+describe('inline reveal section', () => {
+  it('offers the three modes with masked as the labelled default', () => {
+    expect(INLINE_REVEAL_CHOICES.map((c) => c.value)).toEqual(['masked', 'full', 'off']);
+    expect(INLINE_REVEAL_CHOICES[0]?.label).toContain('default');
+  });
+
+  // The full-mode copy is the risk disclosure the consent step defers to — it
+  // must name the exposure, the cap, and the audit.
+  it('full-mode copy names the risk, the cap, and the audit', () => {
+    const full = INLINE_REVEAL_CHOICES.find((c) => c.value === 'full');
+    expect(full?.description).toMatch(/shoulder-surfed|screen-shared/);
+    expect(full?.description).toContain('two per message');
+    expect(full?.description).toContain('audited');
+  });
+
+  it('the section states it is display-only', () => {
+    expect(INLINE_REVEAL_SECTION_DESCRIPTION).toContain('Display-only');
+  });
+});
+
+describe('stale grant enables the one-save re-consent', () => {
+  const staleSettings: WorkspaceSettings = {
+    specVersion: 5,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    vaultConsent: {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      version: VAULT_CONSENT_VERSION + 1,
+    },
+  };
+
+  it('renders the notice AND an enabled Save button, untouched', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: staleSettings,
+        onSave: () => undefined,
+        busy: false,
+      }),
+    );
+    expect(html).toContain('data-slot="vault-stale-notice"');
+    // The documented recovery is ONE save with 'on' selected — so the button
+    // must not be disabled by the form starting clean.
+    // React renders the boolean attribute as disabled="" — the Tailwind
+    // `disabled:` variant classes must not trip this assertion.
+    const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
+    expect(saveButton).not.toBe('');
+    expect(saveButton).not.toContain('disabled=""');
   });
 });

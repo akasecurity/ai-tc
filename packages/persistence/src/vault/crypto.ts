@@ -174,6 +174,19 @@ export function open(encKey: Buffer, sealed: SealedValue, aad: Buffer): string |
 
 // ─── Pointer tag ─────────────────────────────────────────────────────────────
 
+// The tag is bound to POINTER_FORMAT_VERSION and takes NO per-row format
+// version — deliberately, and it is the one field of the binding input that
+// does not.
+//
+// A tag is verified BEFORE the row is looked up, so that a forged pointer is
+// unattributable and writes no audit row. Verification therefore cannot know
+// which generation a row was sealed under, and anything that signs under a
+// per-row version produces tags this function cannot check. Pinning both sides
+// to the same constant is what makes them unable to disagree; a signature that
+// accepted a version would let them.
+//
+// A format bump must bring a verification story for tags on already-stored
+// rows — see POINTER_FORMAT_VERSION. Nothing below survives a bump on its own.
 export function signPointer(
   signKey: Buffer,
   keyVersion: number,
@@ -181,7 +194,7 @@ export function signPointer(
   category: string,
 ): Buffer {
   return createHmac('sha256', signKey)
-    .update(bindingInput(keyVersion, pointerId, category))
+    .update(bindingInput(keyVersion, pointerId, category, POINTER_FORMAT_VERSION))
     .digest()
     .subarray(0, TAG_BYTES);
 }

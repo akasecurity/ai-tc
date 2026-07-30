@@ -313,6 +313,10 @@ export async function grantRevealFromPointer(input: {
   pointer: string;
   scope: string;
   justification: string;
+  // Required when scope is permanent: the masked value retyped, so a
+  // never-expiring reveal takes the same deliberate confirmation every other
+  // permanent grant does.
+  confirmation?: string;
 }): Promise<RevealGrantResult> {
   const justification = input.justification.trim();
   if (justification === '') {
@@ -361,6 +365,27 @@ export async function grantRevealFromPointer(input: {
     return { ok: false, error: 'Not a vault pointer — paste the full [[aka:...]] token.' };
   }
 
+  // A permanent reveal is the strongest grant in the product — a never-expiring
+  // authorization for raw to reach the model. It takes the same value-specific
+  // typed confirmation as every other permanent grant, re-checked here
+  // server-side; without a descriptor there is nothing meaningful to retype, so
+  // permanent is refused rather than waved through against an opaque preview.
+  if (scope.scope === 'permanent') {
+    if (descriptor === null) {
+      return {
+        ok: false,
+        error:
+          'A permanent reveal needs the value preview to confirm against — use a time-limited scope.',
+      };
+    }
+    if (input.confirmation !== descriptor.maskedMatch) {
+      return {
+        ok: false,
+        error: `A permanent reveal must be confirmed by retyping the masked value (${descriptor.maskedMatch}).`,
+      };
+    }
+  }
+
   try {
     const created = await db().exceptions.create({
       ruleId: identity.ruleId,
@@ -404,13 +429,13 @@ export async function revokeException(id: string, reason: string): Promise<Actio
  * every existing grant. The typed confirmation is re-checked here; the dialog
  * gate alone is not the control.
  */
-// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function rotateKey(confirmation: string): Promise<ActionResult> {
   if (confirmation !== 'rotate') {
     return { ok: false, error: 'Type "rotate" to confirm.' };
   }
+  let next: FingerprintKey;
   try {
-    rotateFingerprintKey(dataDir());
+    next = rotateFingerprintKey(dataDir());
   } catch (err) {
     // Rotation keeps its own PREFIX — what is being refused is the rotation,
     // not a grant — but not its own classification. Rotation writes as well as
@@ -419,6 +444,23 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
     // fix a chmod. That is the harm KEY_IO_ERROR exists to stop, and the CLI's
     // runRotateKey already routes through the same split.
     return { ok: false, error: `Could not rotate the fingerprint key. ${keyAccessError(err)}` };
+  }
+  // Grants invalidate by design; vault entries must NOT. Re-key their
+  // fingerprints under the new epoch so dedup keeps finding stored values —
+  // otherwise a re-detected value fingerprints under the new key, misses its
+  // row, and mints a second pointer for the same secret. Best-effort: a fault
+  // here leaves skipped rows resolving under their old epoch and must not fail
+  // the rotation that already happened.
+  try {
+    const vault = new SecretVault({
+      repo: db().secretVault,
+      keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
+      fingerprintKey: next,
+      isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
+    });
+    await vault.refreshFingerprints(next);
+  } catch {
+    // The rotation itself succeeded; a skipped refresh only degrades dedup.
   }
   revalidatePath('/exceptions');
   return { ok: true };

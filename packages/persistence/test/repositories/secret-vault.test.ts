@@ -1,36 +1,26 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
 import type { VaultRowInsert } from '../../src/repositories/secret-vault.ts';
 import { SqliteSecretVaultRepository } from '../../src/repositories/secret-vault.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+// The package's shared store harness owns the temp tree and closes every handle
+// it hands out at teardown.
+const store = useTempStore('aka-vault-');
 let raw: DatabaseSync;
 let vault: SqliteSecretVaultRepository;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-vault-'));
-  // openLocalDatabase applies the migrations; the repository under test runs on
-  // a second connection to the same migrated file.
-  db = openLocalDatabase(dir);
-  raw = new DatabaseSync(join(dir, DB_FILENAME));
+  // Applies the migrations; the repository under test runs on a second
+  // connection to the same migrated file.
+  store.open();
+  raw = store.openRaw();
   vault = new SqliteSecretVaultRepository(raw);
-});
-
-afterEach(() => {
-  raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 const FINGERPRINT_A = 'a'.repeat(64);

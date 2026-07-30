@@ -22,6 +22,17 @@ const BATTERY_BLIND_PATTERN = String.raw`(?:zzq)(a+)+$`;
 const BATTERY_BLIND_TEXT = `zzq${'a'.repeat(34)}!`;
 const BUDGET_MS = 1_500;
 
+// Startup grace period for every scanner built here, and the reason is the test
+// environment rather than the product's. CI runs the type-stripped `.ts` worker
+// under vitest with the whole workspace's suites in parallel; a cold start on
+// that path has been seen past 5s on a Windows runner, where the SHIPPED path
+// starts a bundled 25KB script in ~15ms. Leaving these on the product's own
+// ISOLATED_START_BUDGET_MS lets the runner's speed decide whether the assertion
+// under test runs at all — the scanner reports `unavailable` and the case fails
+// on something it was not written to measure. The two cases that ARE about the
+// start budget pass their own value, which wins over this one.
+const START_MS = 30_000;
+
 // Points the isolated scanner at a worker that dies at load, so a case can
 // exercise the degraded path without waiting out a deadline.
 const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
@@ -74,7 +85,7 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [] },
       fakeGateway(),
-      { workerUrl: CRASHING_WORKER },
+      { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
     );
     try {
       const findings = await scanner.scan(`key ${AWS_KEY} here`);
@@ -92,6 +103,7 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [regexRule('pulled/benign', 'TOKENX')] },
       fakeGateway(),
+      { startBudgetMs: START_MS },
     );
     expect((await scanner.scan(`TOKENX and ${AWS_KEY}`)).map((f) => f.ruleId).sort()).toEqual([
       'pulled/benign',
@@ -112,6 +124,7 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [gated] },
       fakeGateway(),
+      { startBudgetMs: START_MS },
     );
     try {
       const near = await scanner.scan(`${AWS_KEY} and TOKENX`);
@@ -135,6 +148,7 @@ describe('createGuardedScanner', () => {
       {
         budgetMs: BUDGET_MS,
         minAttributionMs: 50,
+        startBudgetMs: START_MS,
       },
     );
     try {
@@ -175,6 +189,7 @@ describe('createGuardedScanner', () => {
       {
         budgetMs: BUDGET_MS,
         minAttributionMs: 50,
+        startBudgetMs: START_MS,
       },
     );
     try {
@@ -205,6 +220,7 @@ describe('createGuardedScanner', () => {
       {
         budgetMs: BUDGET_MS,
         minAttributionMs: 50,
+        startBudgetMs: START_MS,
       },
     );
     try {
@@ -233,7 +249,7 @@ describe('createGuardedScanner', () => {
     const scanner = createGuardedScanner(
       { verified: [VERIFIED_SECRET], unverified: [unverified] },
       fakeGateway(),
-      { workerUrl: CRASHING_WORKER },
+      { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
     );
     try {
       const findings = await scanner.scan(`TOKENX next to ${AWS_KEY}`);

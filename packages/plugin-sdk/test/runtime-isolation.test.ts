@@ -76,6 +76,17 @@ const PULLED_KEYWORD: Rule = {
 
 const BUDGET_MS = 1_500;
 
+// Startup grace period for every scanner built here, and the reason is the test
+// environment rather than the product's. CI runs the type-stripped `.ts` worker
+// under vitest with the whole workspace's suites in parallel; a cold start on
+// that path has been seen past 5s on a Windows runner, where the SHIPPED path
+// starts a bundled 25KB script in ~15ms. Leaving these on the product's own
+// ISOLATED_START_BUDGET_MS lets the runner's speed decide whether the assertion
+// under test runs at all — the scanner reports `unavailable` and the case fails
+// on something it was not written to measure. The two cases that ARE about the
+// start budget pass their own value, which wins over this one.
+const START_MS = 30_000;
+
 // Points the isolated scanner at a module that throws on load, so a case that
 // must not reach a worker fails loudly if it ever does.
 const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
@@ -210,7 +221,7 @@ describe('a pulled rule that never returns', () => {
     silenceStderr();
     const gw = fakeGateway(bundle([HOSTILE]), clearedByPreflight(HOSTILE));
     const rt = createPluginRuntime(gw, settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
     });
     try {
       const text = `${HOSTILE_TEXT} and SECRET_MARKER`;
@@ -243,7 +254,7 @@ describe('a pulled rule that never returns', () => {
     const verdicts = clearedByPreflight(HOSTILE);
 
     const first = createPluginRuntime(fakeGateway(bundle([HOSTILE]), verdicts), settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
     });
     try {
       await first.processText(HOSTILE_TEXT);
@@ -259,7 +270,7 @@ describe('a pulled rule that never returns', () => {
     // verdict and drops the rule before it can reach a scan, so this costs no
     // budget at all rather than another termination.
     const second = createPluginRuntime(fakeGateway(bundle([HOSTILE]), verdicts), settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50 },
+      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
     });
     try {
       const started = performance.now();
@@ -282,7 +293,7 @@ describe('a pulled rule that hangs the timing battery itself', () => {
     silenceStderr();
     const verdicts = new Map<string, RuleProbeVerdictEntry>();
     const rt = createPluginRuntime(fakeGateway(bundle([BATTERY_KILLER]), verdicts), settings(), {
-      scanIsolation: { probeBudgetMs: BUDGET_MS },
+      scanIsolation: { probeBudgetMs: BUDGET_MS, startBudgetMs: START_MS },
     });
     try {
       const started = performance.now();
@@ -353,7 +364,7 @@ describe('what isolation costs when nothing is wrong', () => {
     // load — so finishing at all proves the in-process path was taken. This is
     // the steady state of a machine that installed no extra pack.
     const rt = createPluginRuntime(fakeGateway(bundle()), settings(), {
-      scanIsolation: { workerUrl: CRASHING_WORKER },
+      scanIsolation: { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
     });
     try {
       const result = await rt.processText('deploy with SECRET_MARKER now');
@@ -370,7 +381,7 @@ describe('what isolation costs when nothing is wrong', () => {
     // worker URL is the proof: this can only pass by never starting a thread,
     // for the gate or for the scan.
     const rt = createPluginRuntime(fakeGateway(bundle([PULLED_KEYWORD])), settings(), {
-      scanIsolation: { workerUrl: CRASHING_WORKER },
+      scanIsolation: { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
     });
     try {
       const result = await rt.processText('TOKENX beside SECRET_MARKER');

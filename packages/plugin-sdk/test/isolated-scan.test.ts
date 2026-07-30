@@ -55,6 +55,25 @@ const HOSTILE = regexRule('pulled/battery-blind', BATTERY_BLIND_PATTERN);
 const BATTERY_KILLER = regexRule('pulled/battery-killer', BATTERY_KILLING_PATTERN);
 const BENIGN = regexRule('pulled/benign', 'AKIA[A-Z0-9]{16}');
 
+// Startup grace period for every scanner built here, and the reason is the test
+// environment rather than the product's. CI runs the type-stripped `.ts` worker
+// under vitest with the whole workspace's suites in parallel; a cold start on
+// that path has been seen past 5s on a Windows runner, where the SHIPPED path
+// starts a bundled 25KB script in ~15ms. Leaving these on the product's own
+// ISOLATED_START_BUDGET_MS lets the runner's speed decide whether the assertion
+// under test runs at all — the scanner reports `unavailable` and the case fails
+// on something it was not written to measure. The two cases that ARE about the
+// start budget pass their own value, which wins over this one.
+const START_MS = 30_000;
+
+// Applies START_MS unless the case sets its own.
+function isolated(
+  data: Parameters<typeof createIsolatedScanner>[0],
+  opts: Parameters<typeof createIsolatedScanner>[1] = {},
+) {
+  return createIsolatedScanner(data, { startBudgetMs: START_MS, ...opts });
+}
+
 const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
 const NEVER_READY_WORKER = new URL('./helpers/never-ready-scan-worker.ts', import.meta.url);
 const EXITING_WORKER = new URL('./helpers/exiting-scan-worker.ts', import.meta.url);
@@ -74,7 +93,7 @@ describe('the residual risk the probe battery leaves open', () => {
 
 describe('createIsolatedScanner.probe', () => {
   it('measures an ordinary rule and reports the battery verdict', async () => {
-    const scanner = createIsolatedScanner({ verified: [], unverified: [] });
+    const scanner = isolated({ verified: [], unverified: [] });
     try {
       const outcome = await scanner.probe(BENIGN);
       expect(outcome.status).toBe('ok');
@@ -89,7 +108,7 @@ describe('createIsolatedScanner.probe', () => {
   });
 
   it('reports the rule the battery clears as safe, so nothing over-quarantines', async () => {
-    const scanner = createIsolatedScanner({ verified: [], unverified: [] });
+    const scanner = isolated({ verified: [], unverified: [] });
     try {
       const outcome = await scanner.probe(HOSTILE);
       expect(outcome.status).toBe('ok');
@@ -108,10 +127,7 @@ describe('createIsolatedScanner.probe', () => {
     // rule IS running it, so the gate meant to catch a catastrophic pattern is
     // itself hung by one. Left on the calling thread this call never returns
     // and the hook is killed by the harness — which fails open, unscanned.
-    const scanner = createIsolatedScanner(
-      { verified: [], unverified: [] },
-      { probeBudgetMs: 1_500 },
-    );
+    const scanner = isolated({ verified: [], unverified: [] }, { probeBudgetMs: 1_500 });
     try {
       const started = performance.now();
       const outcome = await scanner.probe(BATTERY_KILLER);
@@ -129,10 +145,7 @@ describe('createIsolatedScanner.probe', () => {
   it('keeps measuring after a terminated probe', async () => {
     // A hostile rule in the middle of a pack must not deny the rest of the pack
     // its verdict — the thread it killed is replaceable.
-    const scanner = createIsolatedScanner(
-      { verified: [], unverified: [] },
-      { probeBudgetMs: 1_000 },
-    );
+    const scanner = isolated({ verified: [], unverified: [] }, { probeBudgetMs: 1_000 });
     try {
       expect((await scanner.probe(BATTERY_KILLER)).status).toBe('timeout');
       const after = await scanner.probe(BENIGN);
@@ -147,7 +160,7 @@ describe('createIsolatedScanner.probe', () => {
 
 describe('createIsolatedScanner.scan', () => {
   it('returns the findings of the whole ruleset', async () => {
-    const scanner = createIsolatedScanner({ verified: [BENIGN], unverified: [] });
+    const scanner = isolated({ verified: [BENIGN], unverified: [] });
     try {
       const outcome = await scanner.scan('key AKIA0123456789ABCDEF here');
       expect(outcome.status).toBe('ok');
@@ -164,7 +177,7 @@ describe('createIsolatedScanner.scan', () => {
     // rules, so an ordinary scan does not pay it: one scan() call, no progress
     // messages, and therefore no culprit. This is what keeps the isolated cost
     // scaling like the in-process cost.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
       { budgetMs: BUDGET_MS, minAttributionMs: 50 },
     );
@@ -180,7 +193,7 @@ describe('createIsolatedScanner.scan', () => {
   });
 
   it('terminates a rule that never returns, and says which one it was', async () => {
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
       { budgetMs: BUDGET_MS, minAttributionMs: 50 },
     );
@@ -211,7 +224,7 @@ describe('createIsolatedScanner.scan', () => {
     // use a short budget. That leaves the 500ms default — the guard that
     // decides whether a real machine ever quarantines anything — unexercised in
     // both directions. This is the "it still fires" half.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
       { budgetMs: BUDGET_MS },
     );
@@ -232,7 +245,7 @@ describe('createIsolatedScanner.scan', () => {
     // parent: rule 1's residency (~1.2s) clears the shipped 500ms floor easily,
     // but is a minority of the ~3s job. A floor alone would quarantine rule 1
     // forever on that; the share test is what refuses.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
       { budgetMs: BUDGET_MS, workerUrl: LATE_PROGRESS_WORKER },
     );
@@ -249,7 +262,7 @@ describe('createIsolatedScanner.scan', () => {
   it('blames nobody when the hang is not inside a single unverified rule', async () => {
     // The hostile rule is verified here, so it is only ever run as part of the
     // combined pass — the stage the parent must not attribute to any one rule.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [HOSTILE], unverified: [BENIGN] },
       { budgetMs: BUDGET_MS, minAttributionMs: 50 },
     );
@@ -272,7 +285,7 @@ describe('createIsolatedScanner.scan', () => {
     // not scoped to its own worker settles the WRONG job — the next scan comes
     // back "the scan worker exited before answering" while a perfectly healthy
     // thread is running it.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
       { budgetMs: 1_500, minAttributionMs: 50 },
     );
@@ -291,7 +304,7 @@ describe('createIsolatedScanner.scan', () => {
 
 describe('createIsolatedScanner failure reporting', () => {
   it('reports a worker that dies before answering as a crash, not a timeout', async () => {
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       { budgetMs: 10_000, workerUrl: CRASHING_WORKER },
     );
@@ -318,7 +331,7 @@ describe('createIsolatedScanner failure reporting', () => {
     // the two were one budget a cold machine would look exactly like a
     // catastrophic rule — and that misreading gets a legitimate rule
     // quarantined forever, which nothing undoes on its own.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       { budgetMs: 60_000, startBudgetMs: 400, workerUrl: NEVER_READY_WORKER },
     );
@@ -335,7 +348,7 @@ describe('createIsolatedScanner failure reporting', () => {
   it('does not charge worker startup to the job budget', async () => {
     // A budget far below a cold start: the job still succeeds, because the
     // deadline does not begin until the worker says it can take work.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [BENIGN], unverified: [] },
       { budgetMs: 250, startBudgetMs: 20_000 },
     );
@@ -348,7 +361,7 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('does not respawn a worker that already died on its own', async () => {
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       { budgetMs: 10_000, workerUrl: CRASHING_WORKER },
     );
@@ -369,7 +382,7 @@ describe('createIsolatedScanner failure reporting', () => {
     // only an 'exit'. Without latching that, the pre-flight — which warns and
     // CONTINUES on an unavailable prober — respawns a thread per rule and burns
     // its whole 2s pass budget inside a pass that was already doomed.
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       { budgetMs: 10_000, workerUrl: EXITING_WORKER },
     );
@@ -390,7 +403,7 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('reports a missing worker script rather than scanning unbounded', async () => {
-    const scanner = createIsolatedScanner(
+    const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       { workerUrl: new URL('file:///aka-no-such-dir/scan-worker.js') },
     );
@@ -403,7 +416,7 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('answers nothing once closed', async () => {
-    const scanner = createIsolatedScanner({ verified: [BENIGN], unverified: [] });
+    const scanner = isolated({ verified: [BENIGN], unverified: [] });
     await scanner.close();
     const outcome = await scanner.scan('anything');
     expect(outcome.status).toBe('unavailable');

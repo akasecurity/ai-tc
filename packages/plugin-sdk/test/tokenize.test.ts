@@ -287,16 +287,24 @@ describe('vault glue', () => {
     });
 
     it('an unopenable store degrades construction, not the session', async () => {
-      const fileAsBase = join(mkdtempSync(join(tmpdir(), 'aka-glue-bad-')), 'not-a-dir');
-      writeFileSync(fileAsBase, 'occupied');
-      const degraded = createVaultGlue({ base: fileAsBase });
-      await expect(
-        degraded.tokenizeValue(SECRET, {
-          ruleId: 'r',
-          category: 'pii',
-          maskedMatch: 'A******E',
-        }),
-      ).resolves.toBe('[REDACTED:PII]');
+      const badBase = mkdtempSync(join(tmpdir(), 'aka-glue-bad-'));
+      try {
+        const fileAsBase = join(badBase, 'not-a-dir');
+        writeFileSync(fileAsBase, 'occupied');
+        const degraded = createVaultGlue({ base: fileAsBase });
+        await expect(
+          degraded.tokenizeValue(SECRET, {
+            ruleId: 'r',
+            category: 'pii',
+            maskedMatch: 'A******E',
+          }),
+        ).resolves.toBe('[REDACTED:PII]');
+        // Opened nothing, so this releases nothing — pinning that close() is
+        // safe on a degraded glue, which is the branch a caller cannot detect.
+        degraded.close();
+      } finally {
+        rmSync(badBase, { recursive: true, force: true });
+      }
     });
   });
 

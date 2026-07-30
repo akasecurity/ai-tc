@@ -1,17 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import { PointerToken } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
 import { loadOrCreateFingerprintKey, rotateFingerprintKey } from '../../src/fingerprint.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
 import { SqliteSecretVaultRepository } from '../../src/repositories/secret-vault.ts';
 import { FileKeyProvider } from '../../src/vault/key-provider.ts';
 import { CONSENT_ABSENT, SecretVault, UNAVAILABLE } from '../../src/vault/vault.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // Narrowing helper: the lint config forbids non-null assertions, and these
 // lookups are all "the row we just wrote must be there" assertions anyway.
@@ -24,8 +21,11 @@ const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 const OTHER = 'AKIAI44QH8DHBEXAMPLE';
 
 describe('SecretVault', () => {
+  // The package's shared store harness owns the temp tree and every handle it
+  // hands out. Re-rolling this by hand is what leaked a migration handle here
+  // and broke the suite's teardown on Windows.
+  const store = useTempStore('aka-vault-');
   let dir: string;
-  let migrated: ReturnType<typeof openLocalDatabase>;
   let db: DatabaseSync;
   let repo: SqliteSecretVaultRepository;
   let vault: SecretVault;
@@ -40,22 +40,15 @@ describe('SecretVault', () => {
     });
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'aka-vault-'));
+    dir = store.dataDir;
     // Applies the migrations; the repository under test runs on a second
-    // connection to the same file. BOTH handles must be closed before the temp
-    // dir is removed — Windows refuses to delete a directory that still has an
-    // open handle inside it (EPERM), where POSIX unlinks it happily.
-    migrated = openLocalDatabase(dir);
-    db = new DatabaseSync(join(dir, DB_FILENAME));
+    // connection to the same file. The harness closes both at teardown, so
+    // neither can be left open to block removal of the tree on Windows.
+    store.open();
+    db = store.openRaw();
     repo = new SqliteSecretVaultRepository(db);
     consented = true;
     vault = build();
-  });
-
-  afterEach(() => {
-    db.close();
-    migrated.close();
-    rmSync(dir, { recursive: true, force: true });
   });
 
   const tokenize = async (raw: string, category = 'secret'): Promise<string> => {

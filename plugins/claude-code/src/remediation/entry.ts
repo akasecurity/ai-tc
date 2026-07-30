@@ -209,7 +209,7 @@ async function route(
   // a partial redaction never reports the same "resolved" framing as a complete one.
   const redaction = isRedactRoute
     ? await redactSurfacedSecrets(findings)
-    : { redactedKeys: 0, unredacted: [] as readonly MaskedSecretFinding[] };
+    : { redactedKeys: 0, pointeredKeys: 0, unredacted: [] as readonly MaskedSecretFinding[] };
   const redactedKeys = redaction.redactedKeys;
   const outcome = routeRemediationOption(option, {
     redact: () => redactedKeys,
@@ -228,6 +228,7 @@ async function route(
           show(
             renderRedactionOutcome({
               redactedKeys: outcome.redactedKeys,
+              pointeredKeys: redaction.pointeredKeys,
               findings,
               unredactedFindings: redaction.unredacted,
             }),
@@ -244,6 +245,7 @@ async function route(
         const deliverable = resolveRemediationDeliverable({
           findings,
           redactedKeys: outcome.redactedKeys,
+          pointeredKeys: redaction.pointeredKeys,
           unredactedFindings: redaction.unredacted,
           cwd: process.cwd(),
         });

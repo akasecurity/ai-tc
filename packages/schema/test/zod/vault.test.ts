@@ -105,6 +105,7 @@ describe('deref audit taxonomy', () => {
       'view-render',
       'model-input',
       'remediation',
+      'purge',
     ]);
     expect(VaultDerefReason.safeParse('whatever').success).toBe(false);
   });
@@ -118,6 +119,7 @@ describe('deref audit taxonomy', () => {
     expect(isBatchedDerefReason('model-input')).toBe(false);
     expect(isBatchedDerefReason('explicit-reveal')).toBe(false);
     expect(isBatchedDerefReason('remediation')).toBe(false);
+    expect(isBatchedDerefReason('purge')).toBe(false);
   });
 
   it('defaults pointerCount to 1 for an unbatched row', () => {

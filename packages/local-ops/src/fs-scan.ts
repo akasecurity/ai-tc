@@ -4,6 +4,7 @@ import { basename, extname, join, relative, resolve } from 'node:path';
 
 import type { FileEgressHits } from '@akasecurity/detections';
 import {
+  dropShieldedFindings,
   EGRESS_CODE_EXTENSIONS,
   extractEgress,
   extractManifestSdks,
@@ -13,6 +14,7 @@ import {
   maskMatch,
   redact,
   scan,
+  shieldPointers,
 } from '@akasecurity/detections';
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
 import {
@@ -308,7 +310,14 @@ export function scanPathIntoStore(
     const fileEgress = extractFileEgress(file, text);
     if (fileEgress) egressFiles.push(fileEgress);
 
-    const matches = scan(text, opts.rules);
+    // Files legitimately contain vault pointers (the plugin's Write/Edit hook
+    // puts them there), and a pointer's base32 body is exactly what a generic
+    // entropy rule matches. Shield pointer spans BEFORE the engine runs — the
+    // same-length filler keeps every other span's offsets valid against the
+    // original text, so redaction and stored spans below still line up — and
+    // drop any finding that touches a shielded span.
+    const shielded = shieldPointers(text);
+    const matches = dropShieldedFindings(scan(shielded.text, opts.rules), shielded.spans);
     if (matches.length === 0) continue;
 
     const eventId = randomUUID();

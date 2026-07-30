@@ -477,23 +477,30 @@ describe('fillStore', () => {
       const db = store.openRaw();
       db.exec('PRAGMA journal_mode = WAL');
       db.exec('CREATE TABLE bulk (id INTEGER PRIMARY KEY, v TEXT)');
-      // Eight pages of headroom against a page-sized payload, so the wall
-      // arrives after eight rows. These writes have to stay in autocommit —
-      // growing the file row by row is what reaches the cap — and each one is
-      // its own WAL commit, the thing the Windows runner charges most for and
-      // charges unevenly. A 200-byte payload needs 38 of them for the same
-      // assertion, which is the difference between a second and a timeout on a
-      // loaded runner. The loop bound is a stop, not a target: if the cap never
-      // bites, the SQLITE_FULL assertion below fails instead of the test
-      // running on to a timeout.
+      // Autocommit is required here, unlike the sibling test below: this asserts
+      // that the rows committed BEFORE the cap was reached survive it, and one
+      // wrapping transaction would roll every one of them back. So the cost has
+      // to be bounded by the number of commits instead.
+      //
+      // Each row is sized to consume a whole page, so the cap is reached in
+      // `headroomPages` writes rather than the ~40 that 200-byte rows took —
+      // and, more to the point, the loop can never run away. Every iteration is
+      // its own WAL commit, which the sibling below measured at tens of seconds
+      // for 500 of them on the Windows runner; the old 20_000 bound was three
+      // orders of magnitude past that, so any platform where SQLITE_FULL
+      // arrived later than it does here blew the 20s budget and reported a
+      // timeout instead of the assertion that would have explained it.
       const filled = fillStore(db, { headroomPages: 8 });
+      const pageSize = (db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
 
       const insert = db.prepare('INSERT INTO bulk (v) VALUES (?)');
-      const payload = 'x'.repeat(4096);
+      const payload = 'x'.repeat(pageSize);
       let written = 0;
       let err: unknown;
       try {
-        for (let i = 0; i < 200; i += 1) {
+        // Comfortably above the 8 writes the headroom allows, so a platform that
+        // fills later still fails on the result code below rather than the clock.
+        for (let i = 0; i < 64; i += 1) {
           insert.run(payload);
           written += 1;
         }

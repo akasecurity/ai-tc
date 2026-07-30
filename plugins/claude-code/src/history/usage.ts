@@ -20,6 +20,7 @@
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
+  createVaultGlue,
   providerFromModelId,
   resolveInventoryContext,
   resolveRepoNwo,
@@ -35,9 +36,11 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { harnessFromTool } from '@akasecurity/schema';
+import { harnessFromTool, isVaultConsentValid } from '@akasecurity/schema';
 
+import { platformRedactionScope } from '../remediation/redact.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
+import { scrubTranscriptTail } from './tail-scrub.ts';
 import {
   type AssistantUsageRecord,
   iterateUsageAndToolCalls,
@@ -427,6 +430,38 @@ export async function reconcileSessionTail(
       offset: nextOffset,
       lastPromptId: result.lastPromptId,
     });
+    // The store now reflects this tail; scrub the transcript FILE itself so a raw
+    // secret in the new lines (Claude Code logs a prompt even when a hook blocked
+    // it) does not stay at rest in plaintext. Gated on VAULT CONSENT ALONE —
+    // deliberately not on historicalAccess, which governs reading pre-install
+    // history: this tail is the live session's own data, and gating the scrub on
+    // historical access would leave session-only users' residue permanently
+    // unscrubbed. Without consent nothing here runs and no vault is constructed.
+    // Every failure is swallowed — the reconcile pass never fails because
+    // scrubbing did.
+    if (isVaultConsentValid(config.settings.vaultConsent)) {
+      try {
+        const glue = createVaultGlue();
+        const scrubbed = await scrubTranscriptTail(transcriptPath, {
+          tokenizeText: (text) =>
+            glue.tokenizeText(text, {
+              sighting: { location: transcriptPath, kind: 'transcript' },
+            }),
+          scope: platformRedactionScope(),
+        });
+        // A rewrite changes the file's byte layout, so the just-persisted offset
+        // no longer marks a line boundary. Reset it: the next pass re-reads the
+        // whole (now pointer-bearing) file, which the idempotent writes absorb.
+        if (scrubbed !== null && scrubbed.rewritten > 0) {
+          writeOffset(config.dataDir, sessionId, {
+            offset: 0,
+            lastPromptId: result.lastPromptId,
+          });
+        }
+      } catch {
+        // Best-effort at-rest scrub — never break the reconcile pass.
+      }
+    }
     return { llmCalls: result.llmCalls, skipped: result.skipped, toolCalls };
   } finally {
     await gateway.close();

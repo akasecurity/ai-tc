@@ -22,4 +22,15 @@ describe('plugin identity consistency', () => {
     const pkg = readManifest('../package.json');
     expect(plugin.version).toBe(pkg.version);
   });
+
+  it('cli, claude-code plugin, and codex plugin share one version line', () => {
+    // All three artifacts bundle the same @akasecurity/* workspace packages and
+    // release together, so a lone bump ships artifacts that disagree about
+    // which workspace state they carry.
+    const cli = readManifest('../../../cli/package.json');
+    const claudeCode = readManifest('../../../plugins/claude-code/package.json');
+    const codex = readManifest('../package.json');
+    expect(claudeCode.version).toBe(cli.version);
+    expect(codex.version).toBe(cli.version);
+  });
 });

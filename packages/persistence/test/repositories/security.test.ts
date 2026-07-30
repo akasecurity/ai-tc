@@ -621,4 +621,16 @@ describe('scanCoverage', () => {
       'api',
     ]);
   });
+
+  it('pins the codex row: supported at partial (80) coverage', async () => {
+    // The Codex plugin's live PreToolUse/PostToolUse hooks cover Bash calls but
+    // not yet apply_patch, so the curated fact is partial coverage — never 100,
+    // never unsupported.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'codex')).toEqual({
+      provider: 'codex',
+      coverage: 80,
+      supported: true,
+    });
+  });
 });

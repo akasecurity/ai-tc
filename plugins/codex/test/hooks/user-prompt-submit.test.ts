@@ -15,6 +15,9 @@ const PLUGIN_ROOT = join(HERE, '..', '..');
 // The built entry (built before tests run — turbo's test task depends on
 // build). Driving it proves the emit SITE, not just the exported constants.
 const HOOK_SCRIPT = join(PLUGIN_ROOT, 'scripts', 'user-prompt-submit.js');
+// The onboarding writer — stamping onboardedAt is what retires the first-run
+// nudge, so the onboarded-home case below runs the real built script.
+const ONBOARD_SCRIPT = join(PLUGIN_ROOT, 'scripts', 'onboard.js');
 
 interface HookRun {
   stdout: string;
@@ -144,6 +147,53 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(run.status).toBe(0);
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+function submitCleanPrompt(home: string, sessionId: string): HookRun {
+  return runHook(home, {
+    prompt: 'what does this function do?',
+    session_id: sessionId,
+    cwd: '/tmp',
+    hook_event_name: 'UserPromptSubmit',
+  });
+}
+
+describe('user-prompt-submit first-run nudge — once per session, retired by onboarding', () => {
+  it('nudges a clean prompt from an un-onboarded home, naming the setup skill', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-nudge-'));
+    try {
+      const first = submitCleanPrompt(home, 'sess-nudge');
+      expect(first.status).toBe(0);
+      const payload = JSON.parse(first.stdout) as { systemMessage?: string };
+      expect(payload.systemMessage).toContain('aka-setup');
+      expect(first.stdout).not.toContain('"decision":"block"');
+
+      // Same session id against the same home: the one-per-session claim keeps
+      // every later prompt silent instead of re-nudging on each submit.
+      const second = submitCleanPrompt(home, 'sess-nudge');
+      expect(second.status).toBe(0);
+      expect(second.stdout).toBe('');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('emits nothing once the home is onboarded', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-onboarded-'));
+    try {
+      // The real onboarding writer stamps onboardedAt — the flag the nudge
+      // keys on — so this is the post-setup state, not a seeded lookalike.
+      execFileSync(process.execPath, [ONBOARD_SCRIPT, '--historical', 'session-only'], {
+        env: { HOME: home, USERPROFILE: home },
+        encoding: 'utf8',
+      });
+      const run = submitCleanPrompt(home, 'sess-onboarded');
+      expect(run.status).toBe(0);
+      expect(run.stdout).toBe('');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -17,19 +17,31 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // nothing else in the system (not `aka init`, not the plugin hooks) ever
 // modifies an installed pack, so this subcommand (and its dashboard/plugin
 // equivalents) is the only way a pack moves to a new version.
+//
+// `aka detections unquarantine` is the undo for the one verdict the machine
+// reaches on its own: a pulled/custom regex rule that blew the ReDoS timing
+// budget, or had to be terminated mid-scan, is cached as quarantined and
+// dropped from every later scan. That verdict is a wall-clock judgement, so a
+// loaded or slow machine can reach it about a rule that is in fact fine —
+// without this there is no way back short of deleting the store.
+const SUBCOMMANDS = ['update', 'unquarantine'] as const;
+type Subcommand = (typeof SUBCOMMANDS)[number] | 'list';
+
 export async function runDetections(argv: string[]): Promise<void> {
-  // Parse first, THEN read the subcommand from the positionals — `update` must
-  // be recognized wherever it lands (e.g. after --home <dir>), not only at
+  // Parse first, THEN read the subcommand from the positionals — a subcommand
+  // must be recognized wherever it lands (e.g. after --home <dir>), not only at
   // argv[0], or a flag-first invocation would silently run the list instead.
   const { values, positionals } = parseArgs({
     args: argv,
     options: { ...HOME_OPTION, all: { type: 'boolean' } },
     allowPositionals: true,
   });
-  const sub = positionals[0] === 'update' ? 'update' : 'list';
+  const named = SUBCOMMANDS.find((s) => s === positionals[0]);
+  const sub: Subcommand = named ?? 'list';
   if (sub === 'list' && positionals.length > 0) {
     process.stderr.write(
-      `aka detections: unknown subcommand '${positionals[0] ?? ''}' (did you mean \`aka detections update\`?)\n`,
+      `aka detections: unknown subcommand '${positionals[0] ?? ''}' ` +
+        `(expected one of: ${SUBCOMMANDS.join(', ')})\n`,
     );
     process.exitCode = 1;
     return;
@@ -46,6 +58,8 @@ export async function runDetections(argv: string[]): Promise<void> {
     db.installedPacks.recordInventory(bundledDetections(), cliRecordedBy());
     if (sub === 'update') {
       await runUpdateSub(db, positionals.slice(1), values.all === true);
+    } else if (sub === 'unquarantine') {
+      runUnquarantineSub(db);
     } else {
       await runListSub(db);
     }
@@ -67,6 +81,17 @@ async function runListSub(db: LocalDatabase): Promise<void> {
   out.write(
     `\n${String(items.length)} pack(s) · ${String(items.reduce((n, i) => n + i.ruleCount, 0))} rule(s) · ${String(active)} enabled\n`,
   );
+  // Surfaced here because the only other place it is ever mentioned is a line
+  // on a hook's stderr, which the harness normally swallows. A quarantined rule
+  // is a rule that silently stopped detecting.
+  const quarantined = db.ruleProbeCache.countQuarantined();
+  if (quarantined > 0) {
+    out.write(
+      `\n⚠ ${String(quarantined)} rule(s) quarantined for exceeding the ReDoS timing budget — ` +
+        `they are excluded from every scan.\n` +
+        `  aka detections unquarantine          # forget the verdicts and measure them again\n`,
+    );
+  }
   if (counts.updates > 0) {
     out.write(
       `\n⬆ ${String(counts.updates)} update(s) available. Updates are manual — apply with:\n` +
@@ -76,6 +101,33 @@ async function runListSub(db: LocalDatabase): Promise<void> {
   } else {
     out.write('\n✓ All detection packs are up to date with this CLI.\n');
   }
+}
+
+// Clears every cached quarantine verdict. Deliberately all-or-nothing: the
+// cache is keyed by a content hash of the pattern, not by rule id, so there is
+// no per-rule handle a user could name. Forgetting a verdict only costs one
+// re-measurement — the rule is measured again the next time it loads, and lands
+// straight back in quarantine if it really is catastrophic.
+function runUnquarantineSub(db: LocalDatabase): void {
+  const { refused, cleared } = db.ruleProbeCache.clearQuarantined();
+  // Three outcomes, not two. A refused write and an empty cache both clear zero
+  // rows, and collapsing them would print "nothing to clear" at a user whose
+  // rules are still quarantined — on the one command in this feature whose
+  // whole job is to undo a silent detection gap.
+  if (refused) {
+    process.stderr.write(
+      'aka detections unquarantine: the store refused the write (another process may be ' +
+        'holding it). Nothing was cleared — try again.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(
+    cleared === 0
+      ? '✓ No quarantined rules — nothing to clear.\n'
+      : `✓ Cleared ${String(cleared)} quarantine verdict(s). Each rule is measured again the ` +
+          `next time it loads, and is re-quarantined if it still exceeds the budget.\n`,
+  );
 }
 
 async function runUpdateSub(db: LocalDatabase, ids: string[], all: boolean): Promise<void> {

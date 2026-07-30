@@ -87,6 +87,26 @@ const BUDGET_MS = 1_500;
 // start budget pass their own value, which wins over this one.
 const START_MS = 30_000;
 
+// An elapsed ceiling for a path that runs in a worker. Every such path pays a
+// worker START before it can spend a BUDGET, and the start is granted START_MS
+// above — so a ceiling derived from the budgets alone bounds the wrong term. It
+// is also the term that moves: a budget is a wall-clock deadline and costs the
+// same everywhere, while a cold start is whatever the runner makes it, and on
+// Windows the observed elapsed for the two-cycle case below was 16.6s against a
+// budgets-only ceiling of 15s. That case then failed on startup this file had
+// deliberately granted 30s for, which is the same "the runner decides whether
+// the assertion runs at all" failure START_MS exists to prevent.
+//
+// `starts` is how many times the path builds a worker; `budgetUnits` keeps
+// whatever multiple of BUDGET_MS the case already justified.
+const isolationCeilingMs = (starts: number, budgetUnits: number): number =>
+  starts * START_MS + budgetUnits * BUDGET_MS;
+
+// Above the ceilings below, so a path that blows its bound fails on the
+// assertion — which names what was exceeded — rather than on vitest's 20s
+// package default, which just says the test timed out.
+const ISOLATION_CASE_TIMEOUT_MS = 120_000;
+
 // Points the isolated scanner at a module that throws on load, so a case that
 // must not reach a worker fails loudly if it ever does.
 const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta.url);
@@ -217,37 +237,42 @@ afterEach(() => {
 });
 
 describe('a pulled rule that never returns', () => {
-  it('is terminated, and the capture still decides on the built-in packs', async () => {
-    silenceStderr();
-    const gw = fakeGateway(bundle([HOSTILE]), clearedByPreflight(HOSTILE));
-    const rt = createPluginRuntime(gw, settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
-    });
-    try {
-      const text = `${HOSTILE_TEXT} and SECRET_MARKER`;
-      const started = performance.now();
-      const result = await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text });
-      const elapsedMs = performance.now() - started;
+  it(
+    'is terminated, and the capture still decides on the built-in packs',
+    async () => {
+      silenceStderr();
+      const gw = fakeGateway(bundle([HOSTILE]), clearedByPreflight(HOSTILE));
+      const rt = createPluginRuntime(gw, settings(), {
+        scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
+      });
+      try {
+        const text = `${HOSTILE_TEXT} and SECRET_MARKER`;
+        const started = performance.now();
+        const result = await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text });
+        const elapsedMs = performance.now() - started;
 
-      // Fail-open in the sense that matters: the call returns. Left in-process
-      // this text runs longer than the harness would ever wait, and a hook the
-      // harness kills lets the whole tool call through unscanned. Worst case
-      // here is TWO budgets — the scan, then the retry that names the rule —
-      // and the ceiling is loose on top of that.
-      expect(elapsedMs).toBeLessThan(BUDGET_MS * 10);
-      // The bundled rule in the same text is untouched by the termination.
-      expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
-      expect(result.action).toBe('warn');
-      // Anything keyed on the ruleset fingerprint has to stop writing now: the
-      // fingerprint still names the pulled rule that is no longer running.
-      expect(rt.scanIsolationDegraded()).toBe(true);
-      // And the event was still persisted, with the finding masked as usual.
-      expect(gw.records).toHaveLength(1);
-      expect(gw.records[0]?.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
-    } finally {
-      await rt.close();
-    }
-  });
+        // Fail-open in the sense that matters: the call returns. Left in-process
+        // this text runs longer than the harness would ever wait, and a hook the
+        // harness kills lets the whole tool call through unscanned. Worst case
+        // here is TWO budgets — the scan, then the retry that names the rule —
+        // and TWO worker starts to spend them on, which is what the ceiling has
+        // to cover; see isolationCeilingMs.
+        expect(elapsedMs).toBeLessThan(isolationCeilingMs(2, 10));
+        // The bundled rule in the same text is untouched by the termination.
+        expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+        expect(result.action).toBe('warn');
+        // Anything keyed on the ruleset fingerprint has to stop writing now: the
+        // fingerprint still names the pulled rule that is no longer running.
+        expect(rt.scanIsolationDegraded()).toBe(true);
+        // And the event was still persisted, with the finding masked as usual.
+        expect(gw.records).toHaveLength(1);
+        expect(gw.records[0]?.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
 
   it('is quarantined, so the next process never loads it again', async () => {
     silenceStderr();
@@ -284,33 +309,41 @@ describe('a pulled rule that never returns', () => {
 });
 
 describe('a pulled rule that hangs the timing battery itself', () => {
-  it('is terminated during the pre-flight, and the capture still decides', async () => {
-    // The gate that decides whether a pulled rule is safe works by running the
-    // rule. Measured on this thread it never returns, the hook is killed by the
-    // harness at 10s, and a killed hook fails open — the whole tool call goes
-    // through unscanned. That is the same bypass the scan bound exists for, one
-    // call earlier, so the measurement runs where it can be killed too.
-    silenceStderr();
-    const verdicts = new Map<string, RuleProbeVerdictEntry>();
-    const rt = createPluginRuntime(fakeGateway(bundle([BATTERY_KILLER]), verdicts), settings(), {
-      scanIsolation: { probeBudgetMs: BUDGET_MS, startBudgetMs: START_MS },
-    });
-    try {
-      const started = performance.now();
-      const result = await rt.processText('deploy with SECRET_MARKER now');
-      expect(performance.now() - started).toBeLessThan(BUDGET_MS * 8);
+  it(
+    'is terminated during the pre-flight, and the capture still decides',
+    async () => {
+      // The gate that decides whether a pulled rule is safe works by running the
+      // rule. Measured on this thread it never returns, the hook is killed by the
+      // harness at 10s, and a killed hook fails open — the whole tool call goes
+      // through unscanned. That is the same bypass the scan bound exists for, one
+      // call earlier, so the measurement runs where it can be killed too.
+      silenceStderr();
+      const verdicts = new Map<string, RuleProbeVerdictEntry>();
+      const rt = createPluginRuntime(fakeGateway(bundle([BATTERY_KILLER]), verdicts), settings(), {
+        scanIsolation: { probeBudgetMs: BUDGET_MS, startBudgetMs: START_MS },
+      });
+      try {
+        const started = performance.now();
+        const result = await rt.processText('deploy with SECRET_MARKER now');
+        // Same shape as the two-cycle case above: the pre-flight builds a worker
+        // to measure in, so the start belongs in the ceiling. This one has not
+        // gone red, but on the Windows numbers it was inside ~1.5x of its
+        // budgets-only bound, which is the margin the other case was flaking at.
+        expect(performance.now() - started).toBeLessThan(isolationCeilingMs(1, 8));
 
-      // A measurement that had to be terminated is the strongest unsafe verdict
-      // there is, and it is cached, so the next process never loads the rule.
-      const key = ruleProbeKey(BATTERY_KILLER);
-      expect(key).toBeDefined();
-      expect(verdicts.get(key ?? '')?.verdict).toBe('quarantined');
-      // …and the built-in packs are untouched by any of it.
-      expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
-    } finally {
-      await rt.close();
-    }
-  });
+        // A measurement that had to be terminated is the strongest unsafe verdict
+        // there is, and it is cached, so the next process never loads the rule.
+        const key = ruleProbeKey(BATTERY_KILLER);
+        expect(key).toBeDefined();
+        expect(verdicts.get(key ?? '')?.verdict).toBe('quarantined');
+        // …and the built-in packs are untouched by any of it.
+        expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
 });
 
 // The pointer shield's guarantee is "no rule ever sees a pointer, whatever rules

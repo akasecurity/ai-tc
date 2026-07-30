@@ -384,6 +384,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const DOCUMENTED_OPT_OUTS = {
   'cli/eslint.config.mjs': ['node:net'],
   'cli/eslint.scripts.config.mjs': ['node:http'],
+  // The repo-root config lints the vitest no-network guard (which imports all
+  // three transports it patches) and the CI egress probe (node:net). Both are
+  // file-scoped; see CLAUDE.md §4.
+  'eslint.root.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
 };
 
 /** The module names a resolved `no-restricted-imports` value bans, or null if absent. */

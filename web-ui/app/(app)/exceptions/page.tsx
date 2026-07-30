@@ -1,5 +1,14 @@
-import { BLOCKED_WINDOW_MS, resolveBlockedWindow } from '@akasecurity/dashboard-ui';
-import { dataDir, keyStateOf, readFingerprintKey } from '@akasecurity/persistence';
+import {
+  BLOCKED_WINDOW_MS,
+  isBlockedRowApprovable,
+  resolveBlockedWindow,
+} from '@akasecurity/dashboard-ui';
+import {
+  BLOCKED_DETECTIONS_RETENTION_MS,
+  dataDir,
+  keyStateOf,
+  readFingerprintKey,
+} from '@akasecurity/persistence';
 import type { FingerprintKeyState } from '@akasecurity/schema';
 import { toBlockedDetectionDescriptor, toExceptionDescriptor } from '@akasecurity/schema';
 
@@ -21,17 +30,25 @@ export default async function ExceptionsPage({
   const params = await searchParams;
   const includeTerminal = params.all === '1';
   const blockedWindow = resolveBlockedWindow(params.window);
+  // Two ledger reads, two different questions. The strip shows the window the
+  // user picked; the rotate dialog has to name what rotation costs, and that is
+  // the whole retention window — the same one approveBlocked looks a reference
+  // up against. Counting only the selected chip (30 minutes by default, against
+  // a day of retention) would understate a one-way action.
+  //
   // The store rows carry the keyed valueFingerprint — a correlation key that
-  // must never reach the browser. Everything below crosses into a client
-  // component (and so into the RSC payload), so the rows are projected to
-  // their fingerprint-free descriptors here, at the server boundary.
-  const [items, blocked] = await Promise.all([
+  // must never reach the browser. `items` and `blocked` cross into a client
+  // component (and so into the RSC payload), so they are projected to their
+  // fingerprint-free descriptors here, at the server boundary; `retained`
+  // stays server-side and only its count crosses.
+  const [items, blocked, retained] = await Promise.all([
     db()
       .exceptions.list({ includeTerminal })
       .then((rows) => rows.map(toExceptionDescriptor)),
     db()
       .exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow])
       .then((rows) => rows.map(toBlockedDetectionDescriptor)),
+    db().exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS),
   ]);
 
   // The key as three distinct states, not `number | null`: an unreadable key
@@ -55,6 +72,11 @@ export default async function ExceptionsPage({
       (ex.maxUses === null || ex.useCount < ex.maxUses),
   );
 
+  // Only the rows rotation actually takes something from: one already recorded
+  // under an older key (or under a key that is now missing) is unapprovable
+  // already, so counting it would overstate the loss.
+  const approvableBlocked = retained.filter((b) => isBlockedRowApprovable(b, keyState)).length;
+
   return (
     <ExceptionsClient
       items={items}
@@ -63,6 +85,7 @@ export default async function ExceptionsPage({
       blockedWindow={blockedWindow}
       keyState={keyState}
       activePermanent={activePermanent}
+      approvableBlocked={approvableBlocked}
     />
   );
 }

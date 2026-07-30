@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 
+import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 const setupMd = readFileSync(new URL('../commands/setup.md', import.meta.url), 'utf8');
@@ -39,12 +40,27 @@ describe('setup.md 0.3 scan-offer copy', () => {
   // Whitespace-normalized so these assertions are not coupled to prose line wrapping.
   const flat = setupMd.replace(/\s+/g, ' ');
 
+  // Step 1's own section, sliced the way forkSection and step3 are, for the same
+  // reason: the point of this disclosure is that it appears BEFORE the step-1
+  // picker, and a whole-file assertion proves only that the sentence exists
+  // somewhere in the document. Moving it to step 3 — or to the end of the file —
+  // leaves a full-file guard green while the property it names is gone.
+  //
+  // POSITIVE claims about step-1 copy assert on this slice. NEGATIVE ones stay on
+  // `flat`: a retired phrase must be absent from the WHOLE document, not merely
+  // from this section, so scoping those would weaken them.
+  const step1Start = setupMd.indexOf('## 1. Offer the retroactive scan');
+  const step1End = setupMd.indexOf('\n## 2', step1Start);
+  const step1 = setupMd
+    .slice(step1Start, step1End === -1 ? undefined : step1End)
+    .replace(/\s+/g, ' ');
+
   it('discloses the model-API egress plainly', () => {
-    expect(flat).toContain(
+    expect(step1).toContain(
       'sends the raw, unmasked values — including any secrets — to the model API through the `claude` CLI',
     );
-    expect(flat).toContain('A copy of each value leaves the machine');
-    expect(flat).toContain('Do not present the picker until you have said this');
+    expect(step1).toContain('A copy of each value leaves the machine');
+    expect(step1).toContain('Do not present the picker until you have said this');
   });
 
   // What crosses is the minimized payload, not just the matched secret: rawMatch
@@ -52,18 +68,39 @@ describe('setup.md 0.3 scan-offer copy', () => {
   // toJudgePayload drops filePath before egress, so copy that still names the
   // file path overstates the payload — pin that it is gone, not present.
   it('names the whole payload, not just the secret', () => {
-    expect(flat).toContain('about 120 characters of the surrounding transcript text');
+    expect(step1).toContain(
+      'about 120 characters of the surrounding transcript text on either side',
+    );
     expect(flat).not.toContain('the path of the transcript file it came from');
   });
 
   it('does not present revocation as a recall of what was already sent', () => {
-    expect(flat).toContain('it cannot recall anything already sent');
+    expect(step1).toContain('it cannot recall anything already sent');
+  });
+
+  // Step 1's picker grants the historical READ. Sending what that read found is
+  // the distinct model-judge grant collected in step 3, and the judge refuses to
+  // run without it. This copy used to say the historical consent's scope
+  // "includes the model-API judgment" — true while one grant covered both, false
+  // once the judge got its own gate. A user told that Yes here authorizes the
+  // send believes they have given a consent the product still means to ask for.
+  it('scopes the step-1 grant to reading, not to the send', () => {
+    expect(step1).toContain('This picker grants the historical read, not the model-API egress');
+    expect(step1).toContain('does not authorize sending anything to the model API');
+    expect(flat).not.toContain('which includes the model-API judgment');
+  });
+
+  // Two grants, two controls. Pointing a user who wants the send stopped at
+  // Historical access alone sends them to a toggle that does not stop it.
+  it('names both revocation controls, not only historical access', () => {
+    expect(step1).toContain('Settings → Historical access');
+    expect(step1).toContain('Settings → Model-judge consent');
   });
 
   // The transcripts the values were read out of are untouched by the scan — the
   // earlier "not kept on the machine" phrasing read as a cleanup promise.
   it('does not imply the scan removes the values from disk', () => {
-    expect(flat).toContain('The transcripts those values came from stay on disk untouched');
+    expect(step1).toContain('The transcripts those values came from stay on disk untouched');
     expect(flat).not.toContain('not kept on the machine');
   });
 
@@ -71,9 +108,9 @@ describe('setup.md 0.3 scan-offer copy', () => {
   // would still pass if the paragraph were moved below the option list, so
   // assert the actual ordering against the picker's own copy.
   it('places the disclosure ahead of the consent picker', () => {
-    const disclosureAt = flat.indexOf('sends the raw, unmasked values');
-    const questionAt = flat.indexOf("Want me to look over what Claude's been up to?");
-    const yesOptionAt = flat.indexOf('scan my real work here');
+    const disclosureAt = step1.indexOf('sends the raw, unmasked values');
+    const questionAt = step1.indexOf("Want me to look over what Claude's been up to?");
+    const yesOptionAt = step1.indexOf('scan my real work here');
 
     expect(disclosureAt).toBeGreaterThan(-1);
     expect(questionAt).toBeGreaterThan(disclosureAt);
@@ -126,6 +163,76 @@ describe('setup.md step-3 model-judge consent gate', () => {
   it('names it a distinct egress, separate from the historical-read consent', () => {
     expect(step3).toContain('separate egress');
     expect(step3).toContain('its own explicit grant');
+  });
+
+  // toJudgePayload sends eight fields, not two: rawMatch and context plus the
+  // ruleId/category/severity/maskedMatch/confidence/id labels (judge.test.ts pins
+  // the exact key set against TriageHit.shape). Copy that stops at "the value and
+  // its context" and then closes with an absolute — "nothing else crosses" —
+  // understates the payload in the reassuring direction, which is the same defect
+  // this disclosure exists to correct, one level down. The enumeration is what
+  // makes the absolute true, so pin the enumeration.
+  it('names the non-sensitive labels that ride along with the value', () => {
+    const flatStep3 = step3.replace(/\s+/g, ' ');
+    expect(flatStep3).toContain(
+      'rule id, category, severity, the masked value, the confidence score',
+    );
+  });
+
+  // CONTEXT_RADIUS is applied to BOTH ends of the match span (history/scan.ts),
+  // so the window is roughly 240 characters, not 120. This is the picker that
+  // authorizes the send, so a bare number without "either side" halves the
+  // payload on the surface where it matters most. Pin the qualifier, not the
+  // digits — /120 characters/ alone would stay green through the halving.
+  it('sizes the context window on both sides, not just one', () => {
+    const flatStep3 = step3.replace(/\s+/g, ' ');
+    expect(flatStep3).toContain(
+      '120 characters of the surrounding transcript text on either side of it',
+    );
+  });
+
+  // Derived from the schema rather than pinned to a phrase. `toJudgePayload` is
+  // disclosed-by-default — `{ ...hit }` minus three deletes — so a new TriageHit
+  // field crosses to the model API with no code edit at all. The only other
+  // exhaustiveness guard is judge.test.ts's classification case, and silencing
+  // that is a one-line append to its DISCLOSED list, after which no copy
+  // assertion moves. This table makes a widened payload red on the consent
+  // surface until the surface names it, which is what CLAUDE.md §4 promises.
+  //
+  // Copied per suite rather than shared: these surfaces sit behind different
+  // package walls and word the same field differently, the same reason
+  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  const STEP3_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
+    rawMatch: /rawMatch|raw detected value/i,
+    context: /transcript text on either side/i,
+    ruleId: /rule id/i,
+    category: /category/i,
+    severity: /severity/i,
+    maskedMatch: /masked value/i,
+    confidence: /confidence/i,
+    id: /counter/i,
+    // Dropped by toJudgePayload before egress — nothing to disclose.
+    filePath: null,
+    valueFingerprint: null,
+    keyVersion: null,
+  };
+
+  it('classifies every TriageHit field as named-in-the-disclosure or dropped', () => {
+    expect(Object.keys(STEP3_DISCLOSURE).sort()).toEqual(Object.keys(TriageHit.shape).sort());
+  });
+
+  it.each(Object.entries(STEP3_DISCLOSURE).filter((e): e is [string, RegExp] => e[1] !== null))(
+    'names the disclosed field %s',
+    (_field, pattern) => {
+      expect(step3.replace(/\s+/g, ' ')).toMatch(pattern);
+    },
+  );
+
+  // judgeEnv deliberately keeps the user's auth so the subprocess can reach the
+  // API, which makes the request attributable to their own account — a fact worth
+  // stating outright next to "a copy leaves the machine".
+  it('states the request is made under the user own credentials', () => {
+    expect(step3.replace(/\s+/g, ' ')).toContain('signs in as you');
   });
 
   // "Not now" implies a deferral that never comes and reads as if it withdrew

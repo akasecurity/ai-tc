@@ -27,6 +27,7 @@ export function ExceptionsClient({
   blockedWindow,
   keyState,
   activePermanent,
+  approvableBlocked,
 }: {
   items: ExceptionDescriptor[];
   blocked: BlockedDetectionDescriptor[];
@@ -34,6 +35,7 @@ export function ExceptionsClient({
   blockedWindow: BlockedWindow;
   keyState: FingerprintKeyState;
   activePermanent: ExceptionDescriptor[];
+  approvableBlocked: number;
 }) {
   const router = useRouter();
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
@@ -147,6 +149,7 @@ export function ExceptionsClient({
           if (!open) setError(null);
         }}
         activePermanent={activePermanent}
+        approvableBlocked={approvableBlocked}
         keyVersion={keyVersion}
         onConfirm={submitRotate}
         busy={busy}

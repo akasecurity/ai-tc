@@ -440,8 +440,14 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', async () => {
     /** @type {Record<string, string[]>} */
     const found = {};
-    for (const file of configs) {
-      const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
+    // Loaded concurrently rather than in an await-loop: these are 18 independent
+    // module reads whose cost is resolution and I/O, and serializing them
+    // multiplies under the parallel load turbo puts on a CI runner. Node's module
+    // cache makes the order irrelevant, and each config writes only its own key.
+    const loaded = await Promise.all(
+      configs.map(async (file) => [file, await import(pathToFileURL(join(REPO_ROOT, file)).href)]),
+    );
+    for (const [file, mod] of loaded) {
       for (const entry of mod.default) {
         const permitted = networkSpecifiersPermittedBy(entry.rules);
         if (permitted.length === 0) continue;

@@ -248,6 +248,7 @@ const WORKSPACE_PACKAGES = discoverWorkspacePackages();
 // drop / rename.
 const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-claude-code',
+  '@akasecurity/audit-gate',
   '@akasecurity/cli',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',

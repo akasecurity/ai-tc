@@ -12,6 +12,7 @@ const {
   capture,
   close,
   rulesetFingerprint,
+  scanIsolationDegraded,
   knownContentHashes,
   scanLedger,
   recordScanned,
@@ -24,6 +25,7 @@ const {
   capture: vi.fn(),
   close: vi.fn(),
   rulesetFingerprint: vi.fn(),
+  scanIsolationDegraded: vi.fn(() => false),
   knownContentHashes: vi.fn(),
   scanLedger: vi.fn(),
   recordScanned: vi.fn(),
@@ -49,7 +51,7 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
 
 vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint })),
+  createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint, scanIsolationDegraded })),
   // A getter, so `versionMaterial.value` is re-read on every scan rather than
   // frozen at module-mock time.
   get EGRESS_VERSION_MATERIAL() {

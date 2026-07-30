@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { MatchResult, ScanContext } from '@akasecurity/detections';
-import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
+import { getLoadedRules, maskMatch, redact } from '@akasecurity/detections';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -19,6 +19,10 @@ import { buildIngestEvent, contentHashOf } from './events.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
+import type { GuardedScanner } from './guarded-scan.ts';
+import { createGuardedScanner } from './guarded-scan.ts';
+import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
+import { createIsolatedScanner } from './isolated-scan.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
@@ -104,7 +108,7 @@ let bundlesPacked = false;
 export function createPluginRuntime(
   gateway: DataGateway,
   settings: WorkspaceSettings,
-  opts?: { dataDir?: string | undefined },
+  opts?: { dataDir?: string | undefined; scanIsolation?: IsolatedScanOptions | undefined },
 ): PluginRuntime {
   if (!bundlesPacked) {
     registerBundledPacks();
@@ -114,6 +118,10 @@ export function createPluginRuntime(
   const dataDir = opts?.dataDir;
   let policies: Policy[] = [];
   let rules: Rule[] = [];
+  // Runs the scan under a hard wall-clock bound when the ruleset carries any
+  // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
+  // is known (see ensureInitialized).
+  let scanner: GuardedScanner | undefined;
   let bundleExceptions: ExceptionBundleEntry[] = [];
   let initialized = false;
   // Resolution indexes built ONCE from the bundle (see ensureInitialized): the
@@ -164,8 +172,41 @@ export function createPluginRuntime(
       return key !== undefined && bundledProbeKeys.has(key);
     });
     const needsGate = incoming.filter((rule) => !ciVerified.includes(rule));
-    const safeBundleRules = [...ciVerified, ...(await filterUnsafeRules(needsGate, gateway))];
-    rules = bundle.rulesComplete ? safeBundleRules : [...getLoadedRules(), ...safeBundleRules];
+    // The timing battery decides whether a pattern is safe by driving it into
+    // backtracking, so measuring a rule is itself a way to hang on it — the
+    // measurement runs on a thread that can be killed, never on this one.
+    // Built on first use, so a machine whose verdicts are all cached (the
+    // steady state) starts no thread for the gate at all.
+    let prober: IsolatedScanner | undefined;
+    const gated = await filterUnsafeRules(needsGate, gateway, {
+      prober: {
+        probe: (rule) => {
+          prober ??= createIsolatedScanner({ verified: [], unverified: [] }, opts?.scanIsolation);
+          return prober.probe(rule);
+        },
+      },
+    });
+    await prober?.close();
+    // A rule that clears the timing gate has an EMPIRICAL verdict behind it: it
+    // beat one fixed probe battery, which a pattern written against that battery
+    // can do while still backtracking forever on real text. So the scan itself
+    // runs under a hard, engine-level bound whenever such a rule is in play —
+    // and in-process at no added cost when none is (see guarded-scan.ts).
+    //
+    // Only a REGEX matcher can run without an upper bound. A keyword matcher
+    // compiles one fully-escaped literal per keyword, which cannot backtrack
+    // whatever the pack author wrote, so a pulled keyword rule runs in-process
+    // like a bundled one — a keyword-only custom pack starts no worker at all.
+    const verified: Rule[] = bundle.rulesComplete
+      ? [...ciVerified]
+      : [...getLoadedRules(), ...ciVerified];
+    const unverified: Rule[] = [];
+    for (const rule of gated) {
+      if (rule.matcher.type === 'regex') unverified.push(rule);
+      else verified.push(rule);
+    }
+    rules = [...verified, ...unverified];
+    scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
     initialized = true;
   }
@@ -449,9 +490,20 @@ export function createPluginRuntime(
       await ensureInitialized();
       // Vault pointers are blanked out of the scanned text first, so no
       // installed rule can ever match inside one (same-length filler keeps
-      // every other offset valid against the original text).
+      // every other offset valid against the original text). The shielded text
+      // is what crosses into the worker too: "no rule ever sees a pointer" has
+      // to hold wherever the engine runs, and the spans stay comparable because
+      // the filler preserves every offset.
+      // ensureInitialized either assigns `scanner` or throws, so this cannot
+      // fire — and it is a guard rather than a second `scan()` call precisely
+      // because of that. A fallback arm here would be unreachable code on the
+      // one line where the pointer shield has to be applied, i.e. a place for
+      // the two paths to drift apart unnoticed. The outer catch owns the
+      // impossible case; it must never be an unshielded scan.
+      if (!scanner) throw new Error('the runtime initialized without a scanner');
       const shielded = shieldPointers(text);
-      const findings = dropShieldedFindings(scan(shielded.text, rules, context), shielded.spans);
+      const matched = await scanner.scan(shielded.text, context);
+      const findings = dropShieldedFindings(matched, shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted);
@@ -592,11 +644,28 @@ export function createPluginRuntime(
     }
   }
 
+  // True once a scan lost its worker and every pulled/custom-pack regex rule was
+  // dropped for the rest of this process. A caller that records "this input was
+  // scanned" against `rulesetFingerprint()` must not do so afterwards: the
+  // fingerprint still names the full ruleset, so a clean row written now would
+  // suppress a re-read that the dropped rules never got to make.
+  function scanIsolationDegraded(): boolean {
+    return scanner?.degraded() ?? false;
+  }
+
   async function close(): Promise<void> {
+    try {
+      // The worker thread must not outlive the runtime that started it — a
+      // stray thread would hold the process open past the hook's own exit.
+      await scanner?.close();
+    } catch {
+      // A thread that will not shut down cleanly must not cost the caller its
+      // store handle, which is the close that actually matters.
+    }
     await gateway.close();
   }
 
-  return { processText, capture, rulesetFingerprint, close };
+  return { processText, capture, rulesetFingerprint, scanIsolationDegraded, close };
 }
 
 // Persistence policy for capture(): 'always' records an event for every call
@@ -622,5 +691,10 @@ export interface PluginRuntime {
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.
   rulesetFingerprint(): Promise<string>;
+  // True once the pulled/custom-pack regex rules were dropped mid-process
+  // because a scan lost its worker. Anything keyed on `rulesetFingerprint()`
+  // must stop writing once this is true — the fingerprint describes a ruleset
+  // that is no longer the one running.
+  scanIsolationDegraded(): boolean;
   close(): Promise<void>;
 }

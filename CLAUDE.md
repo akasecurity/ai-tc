@@ -56,14 +56,16 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Two files carry a genuine local-only opt-out:
+Four files carry a genuine local-only opt-out:
 
-| Site                                                                    | Allowed specifier | Why                                                                                                                |
-| ----------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)           | `node:net`        | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`) | `node:http`       | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                 |
+| Site                                                                    | Allowed specifier                    | Why                                                                                                                |
+| ----------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)           | `node:net`                           | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`) | `node:http`                          | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                 |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)               | `node:net`, `node:dgram`, `node:dns` | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress       |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)              | `node:net`                           | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                     |
 
-Both are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. Adding a third site means updating this table.
+All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. Adding another opt-out site means updating this table.
 
 Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 
@@ -85,7 +87,7 @@ which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
 | Gate                                          | Catches                                             | Cannot see                                          |
 | --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a dynamic specifier        |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`   |
 | `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
 | The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only   |
 

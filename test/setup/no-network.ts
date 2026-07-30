@@ -5,7 +5,7 @@
  * The lint ban (`no-restricted-globals` / `no-restricted-imports` /
  * `no-restricted-syntax` in `@akasecurity/eslint-config`) stops a network
  * primitive being WRITTEN. It cannot show that nothing DEPENDS on the network at
- * runtime: a transitive dependency, a dynamic specifier, or a host global all
+ * runtime: a transitive dependency, a non-literal `import()`, or a host global all
  * reach the wire without ever tripping a rule. This file closes that half by
  * refusing the connection itself, and it names the call site that made it.
  *
@@ -44,8 +44,10 @@
  *     for a local-first product is real egress, not a non-event. What it is not
  *     is a DEPENDENCY on a remote service, which is what this guard measures.
  *     Only the Linux namespace job blocks it; every other platform does not.
- *     The `resolve*` family IS patched: those speak to a nameserver directly and
- *     nothing internal routes through them.
+ *     The `resolve*` family IS patched — on the `dns` object, on both `Resolver`
+ *     prototypes, and, via `syncBuiltinESMExports`, on named ESM imports of
+ *     `node:dns`/`node:dns/promises` — since those speak to a nameserver
+ *     directly and nothing internal routes through them.
  *   - A native addon opening its own socket bypasses every JS-level patch. No
  *     dependency here has one, and the namespace job catches it anyway.
  *   - ATTRIBUTION IS BEST-EFFORT across an await. A refusal recorded after its
@@ -56,6 +58,7 @@
  */
 import dgram from 'node:dgram';
 import dns from 'node:dns';
+import { syncBuiltinESMExports } from 'node:module';
 import { Socket } from 'node:net';
 
 import { afterAll, afterEach } from 'vitest';
@@ -338,6 +341,16 @@ guardDnsResolvers(dnsModule);
 guardDnsResolvers(dns.promises);
 guardDnsResolvers(dns.Resolver.prototype as unknown as Record<string, unknown>);
 guardDnsResolvers(dns.promises.Resolver.prototype as unknown as Record<string, unknown>);
+
+// The calls above patch the `dns` exports object and both `Resolver` prototypes
+// by property assignment. Node's builtin ESM facade snapshots a module's named
+// exports on first evaluation — which the `import dns from 'node:dns'` above
+// forces before these run — so a named import (`import { resolve4 } from
+// 'node:dns'`, or the same off `node:dns/promises`, which shares the exports
+// object) would bind to the ORIGINAL resolver and slip the guard. Re-syncing the
+// facade rebinds those names to the guarded functions. The TCP/UDP halves patch
+// prototypes, resolved at call time, so this does not affect them.
+syncBuiltinESMExports();
 
 // --- backstops --------------------------------------------------------------
 

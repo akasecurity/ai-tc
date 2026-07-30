@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createSocket } from 'node:dgram';
-import dns from 'node:dns';
+import dns, { resolve4 as namedResolve4 } from 'node:dns';
 import {
   chmodSync,
   existsSync,
@@ -32,7 +32,7 @@ import {
 //
 // The lint ban stops a network primitive being WRITTEN. It says nothing about
 // whether anything DEPENDS on the network at runtime: a transitive dependency, a
-// dynamic specifier, or a host global all reach the wire without tripping a rule.
+// non-literal `import()`, or a host global all reach the wire without tripping a rule.
 // test/setup/no-network.ts closes that by refusing the connection itself, and
 // every package loads it as a vitest setupFile — including this one, so the
 // behavioral cases below exercise the guard that is already installed rather
@@ -452,6 +452,19 @@ describe('outbound attempts are refused', () => {
     expect(viaResolver.attempts.map((a) => a.target)).toEqual(['example.com']);
   });
 
+  it('blocks a DNS query reached through a named ESM import', () => {
+    // The module object and the Resolver prototypes are patched by property
+    // assignment. A named import binds to the snapshot Node's ESM facade takes on
+    // first evaluation, so without `syncBuiltinESMExports()` in the setup file
+    // `namedResolve4` would be the ORIGINAL, unpatched resolver and reach the
+    // nameserver. This is the vector an externalized dependency has and a
+    // first-party file does not (a repo-authored `node:dns` import is lint-banned).
+    const viaNamedImport = provoke(() => {
+      namedResolve4('example.com', () => undefined);
+    });
+    expect(viaNamedImport.attempts.map((a) => a.target)).toEqual(['example.com']);
+  });
+
   it('records a refusal even when the caller swallows it', () => {
     // Nearly every boundary in this codebase is deliberately fail-open, so a
     // guard that only threw would be silently defeated by a bare `catch {}`.
@@ -672,8 +685,11 @@ describe('the CI script refuses to run vacuously', () => {
 // blocked". So the probe proves its own mechanism against a loopback listener
 // first, and the three outcomes below are its whole contract with the script.
 //
-// Both targets here are loopback, so these cases never reach for the network —
-// the guard installed in this very process would refuse them if they did.
+// These cases spawn the probe as a CHILD process (runProbe → spawnSync), which
+// the in-process guard structurally cannot see, and both probe targets are
+// loopback anyway. The only socket this realm opens is the loopback listener in
+// listenOnLoopback, and the guard patches connect/send/resolve, not listen — so
+// section 4 makes no in-process outbound attempt for the guard to record.
 
 /** @param {string} host @param {number} port */
 function runProbe(host, port) {
@@ -734,10 +750,6 @@ describe('the egress probe', () => {
     const run = runProbe('127.0.0.1', 'not-a-port');
     expect(run.status).toBe(3);
     expect(run.stderr).toContain('not a port');
-  });
-
-  it('drains no refusal — every target above is loopback', () => {
-    expect(takeBlockedAttempts()).toEqual([]);
   });
 });
 

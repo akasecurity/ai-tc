@@ -7,7 +7,7 @@
     ".": "./src/lib.ts"
   },
   "scripts": {
-    "lint": "eslint src test",
+    "lint": "eslint src test *.config.*",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

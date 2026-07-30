@@ -57,21 +57,30 @@ The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
-registry: `.github/workflows/audit.yml` runs `pnpm audit` (via `tools/audit-gate`) on every
+registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
 PR and daily, sending the workspace dependency graph — package names and versions,
-including the `@akasecurity/*` workspace importers — to the registry's audit endpoint.
-That is repository tooling, not a product path; nothing a user installs performs it.
+including the `@akasecurity/*` workspace importers — to the registry's audit endpoint; it
+also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
+temp dir, sending that (public-package) graph the same way. That is repository tooling,
+not a product path; nothing a user installs performs it.
 
 ## Dependency advisories
 
-CI gates every PR (and a daily run) on `pnpm audit` via `tools/audit-gate`: a **high or
-critical** advisory in `pnpm-lock.yaml` fails the check, so a new or bumped dependency
-that carries one will not merge. Fix by upgrading, or by raising a floor in the root
-`pnpm.overrides` (the existing entries there are exactly such floors). Only when an
-advisory has no fixed release reachable from the tree, add an **expiring** waiver to
-`.github/audit-waivers.json` — format and process in CONTRIBUTING.md ("Dependency
-advisories and waivers"). `pnpm.auditConfig.ignoreCves`/`ignoreGhsas` is not an approved
-suppression route: the gate refuses to run while anything is muted there.
+CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`
+over `pnpm-lock.yaml`, and `npm audit` over an end-user resolution of the published
+CLI's runtime `dependencies` (`--artifact` mode — coverage the workspace lockfile
+cannot provide, since consumers re-resolve the published ranges and `pnpm.overrides`
+do not reach them). A **high or critical** advisory in either fails the check, so a
+new or bumped dependency that carries one will not merge. Fix a workspace hit by
+upgrading, or by raising a floor in the root `pnpm.overrides` (the existing entries
+there are exactly such floors); fix an artifact hit by raising the range in
+`cli/package.json` — or, when the vulnerable copy is pinned by another package (e.g.
+next's own pins), by bumping that package once upstream moves. Only when an advisory
+has no fixed release reachable from the tree, add an **expiring** waiver to
+`.github/audit-waivers.json`, scoped to the audit it applies to — format and process
+in CONTRIBUTING.md ("Dependency advisories and waivers").
+`pnpm.auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route: the
+gate refuses to run while anything is muted there.
 
 ## Package dependency rules
 

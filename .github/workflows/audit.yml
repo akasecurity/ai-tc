@@ -1,11 +1,14 @@
 name: Dependency audit
 
-# Gates every change on `pnpm audit`: a high or critical advisory without an
-# unexpired waiver in .github/audit-waivers.json fails the check. The daily
-# schedule catches advisories published between merges — a scheduled failure
-# opens (or updates) an issue labeled `security-advisory` instead of failing
-# invisibly. The gate lives in tools/audit-gate (a workspace package with its
-# own unit suite); the waiver process is documented in CONTRIBUTING.md.
+# Gates every change on two audits: `pnpm audit` over the workspace lockfile,
+# and `npm audit` over the resolution an end user gets from installing the
+# published CLI (whose runtime ranges — e.g. next's own pins — the workspace
+# lockfile never covers). A high or critical advisory without an unexpired
+# waiver in .github/audit-waivers.json fails the check. The daily schedule
+# catches advisories published between merges — a scheduled failure opens (or
+# updates) an issue labeled `security-advisory` instead of failing invisibly.
+# The gate lives in tools/audit-gate (a workspace package with its own unit
+# suite); the waiver process is documented in CONTRIBUTING.md.
 
 on:
   push:
@@ -40,17 +43,27 @@ jobs:
         with:
           node-version: 24
 
-      # The audit reads the lockfile only — no `pnpm install` needed. Node 24
-      # runs the TypeScript entry directly (type stripping).
-      - name: Audit dependencies (high/critical gate, waiver-aware)
+      # The workspace audit reads the lockfile only — no `pnpm install`
+      # needed. Node 24 runs the TypeScript entry directly (type stripping).
+      - name: Audit workspace dependencies (high/critical gate, waiver-aware)
         run: node tools/audit-gate/src/audit-dependencies.ts
 
-      - name: Publish the report to the run summary
+      # The artifact audit resolves cli/package.json's runtime dependencies
+      # with npm in a temp dir — the tree an end-user install produces. It runs
+      # even when the workspace audit fails, so one run surfaces both signals.
+      - name: Audit shipped-artifact resolution (high/critical gate, waiver-aware)
+        if: ${{ !cancelled() }}
+        run: node tools/audit-gate/src/audit-dependencies.ts --artifact
+
+      - name: Publish the reports to the run summary
         if: always()
         run: |
-          if [ -f audit-report.md ]; then
-            cat audit-report.md >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for report in audit-report.md artifact-audit-report.md; do
+            if [ -f "$report" ]; then
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+              printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
   # Scheduled runs must not fail silently: surface a failing daily audit as a
   # tracked issue. PR runs skip this — the red check on the PR is the signal.
@@ -74,15 +87,25 @@ jobs:
         with:
           node-version: 24
 
-      # Re-run the audit to regenerate the report — cheaper than artifact
-      # plumbing, and the audit reads only the lockfile. The exit code is
-      # captured so the issue title matches what actually happened: 1 means
-      # real blocking advisories, anything else means the audit itself failed.
-      - name: Regenerate the audit report
+      # Re-run both audits to regenerate the reports — cheaper than artifact
+      # plumbing between jobs. The exit codes are folded into one so the issue
+      # title matches what actually happened: 1 (either audit found blocking
+      # advisories) wins over an incomplete audit, and 0 means both re-runs
+      # came back clean.
+      - name: Regenerate the audit reports
         id: rerun
         run: |
-          code=0
-          node tools/audit-gate/src/audit-dependencies.ts || code=$?
+          code_ws=0
+          node tools/audit-gate/src/audit-dependencies.ts || code_ws=$?
+          code_art=0
+          node tools/audit-gate/src/audit-dependencies.ts --artifact || code_art=$?
+          if [ "$code_ws" = "1" ] || [ "$code_art" = "1" ]; then
+            code=1
+          elif [ "$code_ws" != "0" ]; then
+            code=$code_ws
+          else
+            code=$code_art
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
       # Skips when the re-run comes back clean (the earlier failure was a
@@ -102,7 +125,12 @@ jobs:
             title='Dependency audit could not complete'
           fi
           {
-            cat audit-report.md
+            for report in audit-report.md artifact-audit-report.md; do
+              if [ -f "$report" ]; then
+                cat "$report"
+                printf '\n'
+              fi
+            done
             printf '\n_Scheduled audit run: %s_\n' "$run_url"
           } > issue-body.md
 
@@ -124,7 +152,7 @@ jobs:
               --label security-advisory \
               --body-file issue-body.md
           elif [ "$RERUN_CODE" = "1" ]; then
-            new_ids="$(grep -o 'GHSA-[a-z0-9-]*' audit-report.md | sort -u || true)"
+            new_ids="$(cat audit-report.md artifact-audit-report.md 2>/dev/null | grep -o 'GHSA-[a-z0-9-]*' | sort -u || true)"
             seen_ids="$( { gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json body --jq '.body'; \
                            gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body'; } \
                          | grep -o 'GHSA-[a-z0-9-]*' | sort -u || true)"

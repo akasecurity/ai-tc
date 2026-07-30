@@ -1,5 +1,7 @@
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
+export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
+export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';

@@ -45,11 +45,24 @@ export interface RotateKeyDialogProps {
  * stops matching (rows remain for audit) because fingerprints cannot be
  * re-keyed without the raw values, which are never stored.
  *
- * Both things fingerprints are stored in are named before the user commits —
- * the permanent grants that stop applying, and the blocked-ledger rows that
- * stop being approvable. The ledger half is the easy one to forget: those rows
- * go on appearing under "Recently blocked" afterwards, correctly marked
- * unapprovable, which is a worse place to learn it than here.
+ * Named before the user commits: the two stores holding GRANTABLE fingerprints
+ * — the permanent grants that stop applying, and the blocked-ledger rows that
+ * stop being approvable. The ledger half is the easy one to forget, because
+ * those rows go on appearing under "Recently blocked" afterwards, correctly
+ * marked unapprovable, which is a worse place to learn it than here.
+ *
+ * That is NOT an enumeration of everything a rotation touches. Two things sit
+ * outside it, and the narrower framing above is not evidence that either needs
+ * nothing:
+ *   - `secret_vault` holds a third keyed fingerprint, and is the only one
+ *     rotation spares: rotateKey re-keys it rather than invalidating it, so a
+ *     stored value stays matchable and there is no cost to disclose.
+ *   - `inspection_findings.finding_key` is a hash DERIVED from the same keyed
+ *     fingerprint, so a rotation moves it even though the secret has not
+ *     changed. Nothing in this dialog covers that, and it has a write side
+ *     effect rather than only a matching one — a later re-scan diffs the moved
+ *     key against the old one and can record a still-live secret as fixed at
+ *     source.
  */
 export function RotateKeyDialog({
   open,

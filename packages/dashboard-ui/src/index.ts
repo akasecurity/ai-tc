@@ -247,6 +247,7 @@ export {
   type ExceptionState,
   exceptionState,
   isBlockedRowApprovable,
+  LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote,
   SCOPE_ANSWER_LABEL,
   SCOPE_ANSWERS,

@@ -6,6 +6,7 @@ import {
   blockedRowBlockReason,
   exceptionState,
   isBlockedRowApprovable,
+  LEDGER_WINDOW_HOURS,
   rotationBlockedLedgerNote,
 } from '../../src/exceptions/meta.ts';
 
@@ -187,17 +188,40 @@ describe('rotationBlockedLedgerNote', () => {
   });
 
   it('shows the count, and agrees with itself on singular and plural', () => {
-    expect(rotationBlockedLedgerNote(1)).toContain('1 recently blocked detection is still');
-    expect(rotationBlockedLedgerNote(1)).not.toMatch(/detections/);
-    expect(rotationBlockedLedgerNote(4)).toContain('4 recently blocked detections are still');
+    // Noun and verb asserted separately: the window phrase sits between them,
+    // so pinning the adjacency would fail on a wording change that is still
+    // grammatical — which is not what this case is for.
+    const one = rotationBlockedLedgerNote(1);
+    expect(one).toContain('1 recently blocked detection');
+    expect(one).toContain('is still approvable');
+    expect(one).not.toMatch(/detections/);
+
+    const many = rotationBlockedLedgerNote(4);
+    expect(many).toContain('4 recently blocked detections');
+    expect(many).toContain('are still approvable');
   });
 
-  it('never claims a number it was not given', () => {
+  it('names its window, so the number can be reconciled with the strip', () => {
+    // The count spans the ledger's whole retention window while the strip shows
+    // the selected chip — 30 minutes by default. Unqualified, "recently" leaves
+    // the reader with a figure several times what is on screen and no way to
+    // account for it, which is close to the failure this line exists to prevent.
+    for (const count of [1, 2, 17]) {
+      expect(rotationBlockedLedgerNote(count)).toContain(
+        `from the last ${String(LEDGER_WINDOW_HOURS)} hours`,
+      );
+    }
+  });
+
+  it('claims no number it was not given, beyond that window', () => {
     // The count is threaded from a store read; a hard-coded digit in the
-    // sentence would survive every count and be wrong for all but one.
+    // sentence would survive every count and be wrong for all but one. The
+    // window is the ONLY other number allowed, and it must appear after the
+    // count — pinned as an exact list rather than a loosened pattern, so a
+    // stray figure still fails.
     for (const count of CASES) {
       const digits = rotationBlockedLedgerNote(count).match(/\d+/g) ?? [];
-      expect(digits).toEqual(count === 0 ? [] : [String(count)]);
+      expect(digits).toEqual(count === 0 ? [] : [String(count), String(LEDGER_WINDOW_HOURS)]);
     }
   });
 });

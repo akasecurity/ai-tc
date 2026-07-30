@@ -66,6 +66,21 @@ export function blockedRowBlockReason(
 }
 
 /**
+ * The blocked-ledger retention window, in hours, as the rotate note names it.
+ *
+ * The count the note carries is taken over the ledger's whole retention window,
+ * while the strip behind the dialog shows whichever lookback chip is selected —
+ * 30 minutes by default. So the number routinely exceeds what is on screen, and
+ * a reader who cannot reconcile the two has been given a figure they cannot
+ * trust. Naming the window is what makes it reconcilable.
+ *
+ * The authority is BLOCKED_DETECTIONS_RETENTION_MS in @akasecurity/persistence,
+ * which this package does not depend on and must not. Hosts that have both pin
+ * them together instead.
+ */
+export const LEDGER_WINDOW_HOURS = 24;
+
+/**
  * What a key rotation costs the blocked-detections ledger, as a line the rotate
  * dialog shows before the user commits.
  *
@@ -84,12 +99,15 @@ export function blockedRowBlockReason(
  */
 export function rotationBlockedLedgerNote(stillApprovable: number): string {
   if (stillApprovable <= 0) {
+    // No number, so no window to name — this variant claims nothing the reader
+    // could try to reconcile with the strip behind the dialog.
     return 'Recently blocked detections are invalidated too: the ledger outlives a rotation, so its rows stay listed as a record of what was blocked but stop being approvable. Trigger the detection again to approve it under the new key.';
   }
+  const window = `from the last ${String(LEDGER_WINDOW_HOURS)} hours`;
   const subject =
     stillApprovable === 1
-      ? '1 recently blocked detection is still approvable; after rotating, none are'
-      : `${String(stillApprovable)} recently blocked detections are still approvable; after rotating, none are`;
+      ? `1 recently blocked detection ${window} is still approvable; after rotating, none are`
+      : `${String(stillApprovable)} recently blocked detections ${window} are still approvable; after rotating, none are`;
   return `${subject}. They stay listed as a record of what was blocked — trigger the detection again to approve under the new key.`;
 }
 

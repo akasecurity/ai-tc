@@ -12,7 +12,13 @@ import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BLOCKED_WINDOW_MS, BLOCKED_WINDOWS, ROTATE_CONFIRMATION } from '@akasecurity/dashboard-ui';
+import {
+  BLOCKED_WINDOW_MS,
+  BLOCKED_WINDOWS,
+  LEDGER_WINDOW_HOURS,
+  ROTATE_CONFIRMATION,
+  rotationBlockedLedgerNote,
+} from '@akasecurity/dashboard-ui';
 import { maskMatch } from '@akasecurity/detections';
 import {
   BLOCKED_DETECTIONS_RETENTION_MS,
@@ -730,6 +736,19 @@ describe('rotateKey — one string compare from invalidating every grant', () =>
       expect(readFingerprintKey(dir)).toBeNull();
     });
 
+    it('names the ledger window the count is actually taken over', () => {
+      // The rotate note tells the reader the count spans the last N hours.
+      // dashboard-ui cannot import the retention constant — it depends on
+      // ui-kit and schema only — so the figure in that copy is a literal with
+      // nothing local holding it to the truth. This suite has both sides, so it
+      // is where they get pinned: widen the retention window without touching
+      // the copy and the dialog starts quoting a window that no longer exists.
+      expect(LEDGER_WINDOW_HOURS * 60 * 60 * 1000).toBe(BLOCKED_DETECTIONS_RETENTION_MS);
+      expect(rotationBlockedLedgerNote(3)).toContain(
+        `from the last ${String(LEDGER_WINDOW_HOURS)} hours`,
+      );
+    });
+
     it('accepts exactly the token the dialog makes the user type', async () => {
       // The action hard-codes the literal and the dialog exports its own
       // constant. If either moves, rotation silently stops working (fail
@@ -1431,11 +1450,15 @@ describe('revokeException — terminal, audit-retained, and easy to no-op silent
 
   describe('a store that cannot be read fails closed with a message, not a crash', () => {
     it('returns an error instead of rejecting when the revoke throws', async () => {
-      // The repository runs its UPDATE synchronously and wraps the result in a
-      // resolved promise, so a failing store throws straight out of the call
-      // rather than rejecting one — a promise `.catch` never sees it. Uncaught,
-      // it reaches the client as a framework error page instead of the guidance
-      // every other action in this file returns.
+      // Corrupting the file makes db() throw while OPENING the store, so
+      // revoke()'s UPDATE is never reached — that is the seam this case
+      // actually drives. The sibling seam, the UPDATE itself throwing, fails
+      // identically: the repository runs it synchronously and hands back an
+      // already-resolved promise. Both throw out of the call rather than
+      // rejecting a promise a `.catch` could see, both sit inside the action's
+      // try, and the pre-fix code rejected on either — reaching the client as a
+      // framework error page instead of the guidance every other action here
+      // returns.
       const grant = await activeGrant();
       resetSingleton(); // close the handle before overwriting the file
       writeFileSync(join(dir, 'aka.db'), 'not a database\n');

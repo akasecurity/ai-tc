@@ -42,6 +42,12 @@ export interface CaptureResult {
   // The (possibly redacted) text to pass through, or null if blocked
   text: string | null;
   findings: MatchResult[];
+  // For a 'redact' decision: exactly the findings whose spans the rewritten
+  // `text` replaced (warn/log findings in the same field are not in it). A
+  // caller substituting its own rewrite — a reversible one — must cover these
+  // spans and only these, or the rewrite diverges from what the policy
+  // enforced.
+  enforcedFindings?: MatchResult[];
   // Blocked-detections ledger rows recorded for this capture (one per unique
   // enforced (rule, value) pair), so adapters can surface them in the block
   // message for the CLI approve flow. Absent when nothing was enforced or no

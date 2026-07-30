@@ -19,6 +19,7 @@ import { buildIngestEvent, contentHashOf } from './events.ts';
 import { computeFindingKey } from './finding-key.ts';
 import type { FingerprintKey } from './fingerprint.ts';
 import { fingerprintValue, loadOrCreateFingerprintKey, readFingerprintKey } from './fingerprint.ts';
+import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -38,6 +39,12 @@ const ACTION_PRIORITY: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow
 interface ExceptionEvalContext {
   sourceTool?: SourceTool | undefined;
   metadata?: EventMetadata | undefined;
+  // Grant ids whose use was ALREADY spent by this same capture's pointer
+  // crossing. A matching entry suppresses without consuming and without the
+  // budget re-check — the budget was spent by the crossing that revealed the
+  // value now being scanned, and charging it twice would re-tokenize the very
+  // value the grant just revealed.
+  preAuthorizedGrantIds?: readonly string[] | undefined;
 }
 
 // A grant is active while unexpired and under its use budget. The bundle's
@@ -266,7 +273,12 @@ export function createPluginRuntime(
     if (worst === 'block') return { action: 'block', text: null, findings };
     if (worst === 'redact') {
       const redactFindings = findings.filter((f) => actionFor(f) === 'redact');
-      return { action: 'redact', text: redact(text, redactFindings), findings };
+      return {
+        action: 'redact',
+        text: redact(text, redactFindings),
+        findings,
+        enforcedFindings: redactFindings,
+      };
     }
     return { action: worst, text, findings };
   }
@@ -339,9 +351,19 @@ export function createPluginRuntime(
       }
 
       const now = Date.now();
+      const preAuthorized = new Set(ctx.preAuthorizedGrantIds ?? []);
       for (const [pair, group] of groups) {
         const entry = entries.get(pair);
-        if (!entry || !entryIsActive(entry, now) || !conditionsMatch(entry.conditions, ctx)) {
+        if (!entry) continue;
+        // A crossing this capture already spent: apply without consuming and
+        // without re-checking the budget the crossing just used up.
+        if (preAuthorized.has(entry.id)) {
+          if (!conditionsMatch(entry.conditions, ctx)) continue;
+          for (const finding of group) excepted.add(finding);
+          exceptionIds.push(entry.id);
+          continue;
+        }
+        if (!entryIsActive(entry, now) || !conditionsMatch(entry.conditions, ctx)) {
           continue;
         }
         // Fail-secure consume: a throw counts as "does not apply".
@@ -425,7 +447,11 @@ export function createPluginRuntime(
   ): Promise<{ decision: CaptureResult; excepted: Set<MatchResult>; exceptionIds: string[] }> {
     try {
       await ensureInitialized();
-      const findings = scan(text, rules, context);
+      // Vault pointers are blanked out of the scanned text first, so no
+      // installed rule can ever match inside one (same-length filler keeps
+      // every other offset valid against the original text).
+      const shielded = shieldPointers(text);
+      const findings = dropShieldedFindings(scan(shielded.text, rules, context), shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
       const decision = decide(findings, text, excepted);
@@ -454,7 +480,11 @@ export function createPluginRuntime(
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
       filePath ? { filePath } : undefined,
-      { sourceTool: input.sourceTool, metadata: input.metadata },
+      {
+        sourceTool: input.sourceTool,
+        metadata: input.metadata,
+        preAuthorizedGrantIds: opts.preAuthorizedGrantIds,
+      },
     );
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
@@ -578,6 +608,9 @@ export function createPluginRuntime(
 export interface CaptureOptions {
   persist?: 'always' | 'with-findings';
   dedupe?: 'content-hash';
+  // Grant ids already spent by this capture's own pointer crossing (see
+  // ExceptionEvalContext.preAuthorizedGrantIds).
+  preAuthorizedGrantIds?: readonly string[];
 }
 
 export interface PluginRuntime {

@@ -36,6 +36,16 @@ export type ExceptionConditions = z.infer<typeof ExceptionConditions>;
 // Tenant-free base (local store + wire bundle). NO `.meta({ id })`: an id
 // would register it in Zod's global registry and leak it into the
 // generated OpenAPI client.
+// What a grant authorizes. 'suppress' is today's semantics: the detection is
+// not hard-enforced (block/redact downgrades). 'reveal_to_model' is strictly
+// stronger: the vault may de-reference the value's pointer back to raw FOR THE
+// MODEL at an interception point — and, being stronger, it also satisfies
+// suppression (a revealed value is necessarily not blocked). A suppression
+// grant never reveals: the two are distinct so no existing grant silently
+// widens.
+export const ExceptionCapability = z.enum(['suppress', 'reveal_to_model']);
+export type ExceptionCapability = z.infer<typeof ExceptionCapability>;
+
 export const DetectionException = z.object({
   id: z.guid(),
   ruleId: z.string(),
@@ -52,6 +62,7 @@ export const DetectionException = z.object({
   keyVersion: z.number().int().positive(),
   // maskMatch() preview of the approved value — never the raw value.
   maskedValue: z.string(),
+  capability: ExceptionCapability.default('suppress'),
   scope: ExceptionScope,
   expiresAt: z.iso.datetime().nullable(),
   maxUses: z.number().int().positive().nullable(),
@@ -79,6 +90,7 @@ export const ExceptionBundleEntry = DetectionException.pick({
   ruleId: true,
   valueFingerprint: true,
   keyVersion: true,
+  capability: true,
   expiresAt: true,
   maxUses: true,
   useCount: true,

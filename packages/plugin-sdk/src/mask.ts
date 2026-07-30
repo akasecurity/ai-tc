@@ -1,6 +1,7 @@
 import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
 import type { DetectionCategory, Severity, Span } from '@akasecurity/schema';
 
+import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 
 // registerPack is keyed by pack id, so re-registering just overwrites (idempotent);
@@ -70,7 +71,11 @@ export function scanText(
   if (!ensureBundledPacks()) return { masked: '[REDACTED]', findings: [] };
   try {
     const rules = getLoadedRules();
-    const matches = scan(text, rules);
+    // Vault pointers are blanked before the scan so no rule can match inside
+    // one — a pointer must never be re-detected as a secret (same-length
+    // filler keeps every other offset valid against the original text).
+    const shielded = shieldPointers(text);
+    const matches = dropShieldedFindings(scan(shielded.text, rules), shielded.spans);
     if (matches.length === 0) return { masked: text, findings: [] };
 
     const byId = new Map(rules.map((r) => [r.id, r]));

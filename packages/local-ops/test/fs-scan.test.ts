@@ -339,6 +339,69 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
   });
 });
 
+// Files legitimately contain vault pointers (the plugin's Write/Edit hook puts
+// them there), and rule packs are user-installable — so a hostile entropy-style
+// rule that matches base32 runs (the exact shape of a pointer body) can always
+// exist. The shield blanks pointer spans before the engine runs; these cases
+// pin that fs-scan is one of the shielded surfaces.
+describe('scanPathIntoStore — pointer shield', () => {
+  const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
+  // A deliberately hostile rule matching base32 runs — it would re-detect a
+  // pointer body if the shield were absent. It also matches SECRET.
+  const HOSTILE_RULES: Rule[] = [
+    {
+      specVersion: 1,
+      id: 'shield-test/base32-run',
+      name: 'Base32 run (hostile fixture)',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: '[A-Z2-7]{20,}', flags: 'g' },
+    },
+  ];
+
+  it('reports a real secret beside a pointer (correct span) and nothing inside the pointer', () => {
+    const content = `token = ${POINTER}\nkey = '${SECRET}'\n`;
+    writeFileSync(join(root, 'app.ts'), content);
+    const pointerStart = content.indexOf(POINTER);
+    const pointerEnd = pointerStart + POINTER.length;
+
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
+      expect(result.findings).toBe(1);
+      const finding = result.files[0]?.findings[0];
+      expect(finding).toBeDefined();
+      // The span addresses the secret in the ORIGINAL text — same-length
+      // shielding preserves every non-pointer offset.
+      expect(content.slice(finding?.span.start, finding?.span.end)).toBe(SECRET);
+      // Zero findings touch the pointer.
+      for (const f of result.files[0]?.findings ?? []) {
+        expect(f.span.start >= pointerEnd || f.span.end <= pointerStart).toBe(true);
+      }
+      // The stored event keeps the pointer intact — no [REDACTED] rewrite of
+      // pointer text — while the secret is redacted.
+      const [event] = storedEvents(store);
+      expect(event?.content).toContain(POINTER);
+      expect(event?.content).not.toContain(SECRET);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('yields nothing for an already-pointerized file (idempotence)', () => {
+    writeFileSync(join(root, 'app.ts'), `token = ${POINTER}\n`);
+    const db = openLocalDatabase(store);
+    try {
+      const result = scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
+      expect(result.findings).toBe(0);
+      expect(result.files).toEqual([]);
+      expect(storedEvents(store)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 // The egress collection pass rides the same walk as detection scanning. What it
 // runs on is decided entirely here — the walker has no extension filter — so
 // these cases pin the gating: code extensions get URL/IP extraction, manifests

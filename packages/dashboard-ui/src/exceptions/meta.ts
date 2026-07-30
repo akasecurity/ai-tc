@@ -78,6 +78,14 @@ export const SCOPE_LABEL: Record<DetectionException['scope'], string> = {
   permanent: 'Permanent',
 };
 
+// Capability labels — what a grant authorizes. Suppression is the default and
+// renders unlabelled in the views; reveal-to-model is called out loudly because
+// it lets the value's raw form reach the model at tool boundaries.
+export const CAPABILITY_LABEL: Record<DetectionException['capability'], string> = {
+  suppress: 'Suppress',
+  reveal_to_model: 'Reveal to model',
+};
+
 // Provenance labels — how the grant was created.
 export const VIA_LABEL: Record<DetectionException['createdVia'], string> = {
   'cli-approve': 'CLI approve',

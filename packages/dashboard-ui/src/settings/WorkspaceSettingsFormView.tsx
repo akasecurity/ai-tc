@@ -1,6 +1,6 @@
 'use client';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { isModelJudgeConsentValid } from '@akasecurity/schema';
+import { isModelJudgeConsentValid, isVaultConsentValid } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -36,10 +36,11 @@ export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
   },
 ];
 
-// This is the same grant the /aka:setup wizard collects, and it is what gates
-// the wizard's history sweep. That sweep sends what it finds to the model API to
-// be rated, so the 'full' copy must disclose the egress here too — this is the
-// surface the wizard points at for scope and revocation.
+// This is the same grant the /aka:setup wizard collects, and it is what gates the
+// wizard's history sweep — READING local surfaces, nothing more. Sending what that
+// sweep finds to the model API is gated by the separate Model-judge consent below,
+// so the 'full' copy must point at that control rather than claim the egress for
+// itself: a user who grants Full here has not authorized any send.
 export const HISTORICAL_SECTION_LABEL = 'Historical access';
 
 export const HISTORICAL_SECTION_DESCRIPTION =
@@ -55,10 +56,10 @@ export const HISTORICAL_CHOICES: Choice<WorkspaceSettings['historicalAccess']>[]
     value: 'full',
     label: 'Full',
     description:
-      'Pre-install surfaces (existing configs, history) may be scanned too. This also lets ' +
-      '/aka:setup send what that scan finds — raw values including any secrets and the ' +
-      'surrounding transcript text — to the model API to be rated. ' +
-      'Switching back to Session only stops future scans; it cannot recall data already sent.',
+      'Pre-install surfaces (existing configs, history) may be scanned too. This grant covers ' +
+      'reading them only — sending what the scan finds to the model API is the separate ' +
+      'Model-judge consent below, which this one does not give. Switching back to Session ' +
+      'only stops future scans; it cannot recall data already sent.',
   },
 ];
 
@@ -71,8 +72,12 @@ export const MODEL_JUDGE_SECTION_LABEL = 'Model-judge consent';
 
 export const MODEL_JUDGE_SECTION_DESCRIPTION =
   'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
-  'send findings to the model API to sort real leaks from noise. The file path is never sent, ' +
-  'and any secrets in the surrounding context are masked before it goes.';
+  'send findings to the model API to sort real leaks from noise. Per finding that is the raw, ' +
+  'unmasked value including any secret, about 120 characters of surrounding transcript text on ' +
+  'either side of it, the rule, category, severity, masked value and confidence it was ' +
+  'scored with, and a sequential counter the model echoes back. The file ' +
+  'path is never sent, and any secrets in the surrounding context are masked before it goes. ' +
+  'Revoking stops future scans; it cannot recall data already sent.';
 
 export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
   {
@@ -85,9 +90,89 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
     value: 'granted',
     label: 'Granted',
     description:
-      'The setup scan may send each finding, plus surrounding context with any secrets in it masked, to the model API to sort real leaks from noise.',
+      'The setup scan may send each finding — its raw, unmasked value including any secret, plus about 120 characters of surrounding context on either side of it with any secrets in that window masked — to the model API to sort real leaks from noise.',
   },
 ];
+
+// This is a custody change from one-way redaction: with the grant, a detected
+// value survives as recoverable ciphertext instead of being destroyed. The form
+// only ever emits the choice string — the grant object itself (acknowledgedAt,
+// version) is stamped by the server action, never built client-side.
+export const VAULT_SECTION_LABEL = 'Reversible secret vault';
+
+export const VAULT_SECTION_DESCRIPTION =
+  'Whether redaction keeps a recoverable copy of what it removes. Off destroys detected ' +
+  'values as it redacts them; Vault & redact keeps an encrypted copy on this machine.';
+
+export type VaultConsentChoice = 'off' | 'on';
+
+export const VAULT_CHOICES: Choice<VaultConsentChoice>[] = [
+  {
+    value: 'off',
+    label: 'Off (default)',
+    description: 'Detected values keep being redacted irreversibly; nothing recoverable is stored.',
+  },
+  {
+    value: 'on',
+    label: 'Vault & redact',
+    description:
+      'A detected value is replaced by a pointer, and an encrypted, recoverable copy is ' +
+      'kept in the local vault under ~/.aka — this machine holds recoverable copies of ' +
+      'detected secrets, encrypted at rest. The pointers written into files and ' +
+      'transcripts show where each secret is used, and which places share the same ' +
+      'secret, to anyone who can read those files. Switching back to Off stops new ' +
+      'vaulting but does not erase what is already stored — purging the vault from the ' +
+      "dashboard's Vault page is what erases it.",
+  },
+];
+
+// The stored grant maps to the form choice: a recorded consent renders as 'on',
+// an absent one as 'off'.
+export const INLINE_REVEAL_SECTION_LABEL = 'Inline reveal in the terminal';
+
+export const INLINE_REVEAL_SECTION_DESCRIPTION =
+  "How a vault pointer renders inside Claude's on-screen replies. Display-only — the " +
+  'transcript and what the model sees always keep the pointer.';
+
+export const INLINE_REVEAL_CHOICES: Choice<WorkspaceSettings['vaultInlineReveal']>[] = [
+  {
+    value: 'masked',
+    label: 'Masked badge (default)',
+    description:
+      'Pointers render as a masked badge (category and partial value). No raw value is ' +
+      'resolved and nothing is written to the audit trail.',
+  },
+  {
+    value: 'full',
+    label: 'Full reveal',
+    description:
+      'Pointers resolve to the real value on screen, capped at two per message and never ' +
+      'inside code blocks or quotes. The risk is real: anything the model is induced to ' +
+      'mention renders in plaintext where it can be shoulder-surfed, screen-shared, or ' +
+      'copy-pasted onward. Every reveal is audited.',
+  },
+  {
+    value: 'off',
+    label: 'Off',
+    description: 'Replies are not modified; pointers show as-is.',
+  },
+];
+
+export function vaultChoiceOf(vaultConsent: WorkspaceSettings['vaultConsent']): VaultConsentChoice {
+  return vaultConsent ? 'on' : 'off';
+}
+
+// A grant recorded against an older consent version no longer authorizes
+// vaulting — the version bump means what the vault does has widened since the
+// user agreed. The form still derives 'on' (a grant exists) but must say the
+// grant is dormant and re-saving re-consents at the current version.
+export function vaultConsentStale(vaultConsent: WorkspaceSettings['vaultConsent']): boolean {
+  return vaultConsent !== undefined && !isVaultConsentValid(vaultConsent);
+}
+
+export const VAULT_STALE_NOTICE =
+  'Your grant was recorded against an older version of the vault — vaulting is paused ' +
+  'until you re-consent. Saving with "Vault & redact" selected re-consents to the current version.';
 
 function ChoiceGroup<T extends string>({
   name,
@@ -133,12 +218,13 @@ function ChoiceGroup<T extends string>({
 
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
-  // modelJudgeConsent is a plain boolean signal, not the stored record: the
-  // acknowledgement timestamp and payload version are stamped server-side, so a
-  // client-supplied one would only be discarded. true grants, false revokes.
+  // Both consents are plain answers, not the stored records: acknowledgement
+  // timestamps and versions are stamped server-side, so a client-supplied one
+  // would only be discarded. modelJudgeConsent: true grants, false revokes.
   onSave: (
-    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess'> & {
+    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
+      vaultConsent: VaultConsentChoice;
     },
   ) => void;
   busy?: boolean;
@@ -148,7 +234,7 @@ export interface WorkspaceSettingsFormViewProps {
 
 /**
  * The workspace settings editor — the web twin of the `/aka:setup` wizard's
- * policy + historical-access questions.
+ * policy, historical-access, and vault-consent questions.
  */
 export function WorkspaceSettingsFormView({
   settings,
@@ -168,10 +254,18 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
+  const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
   const dirty =
     policy !== settings.policy ||
     historicalAccess !== settings.historicalAccess ||
-    modelJudge !== initialModelJudge;
+    modelJudge !== initialModelJudge ||
+    vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
+    inlineReveal !== settings.vaultInlineReveal ||
+    // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
+    // selected and saving is the documented one-save re-consent, so staleness
+    // itself must enable Save.
+    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
     <div className="flex max-w-2xl flex-col gap-6">
@@ -203,6 +297,33 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
+      <section className="rounded-xl border border-border bg-surface p-5">
+        <SectionLabel>{VAULT_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{VAULT_SECTION_DESCRIPTION}</p>
+        {vaultConsentStale(settings.vaultConsent) ? (
+          <p className="mb-3 text-xs text-sev-high" data-slot="vault-stale-notice">
+            {VAULT_STALE_NOTICE}
+          </p>
+        ) : null}
+        <ChoiceGroup
+          name="vaultConsent"
+          choices={VAULT_CHOICES}
+          value={vaultConsent}
+          onChange={setVaultConsent}
+        />
+      </section>
+
+      <section>
+        <SectionLabel>{INLINE_REVEAL_SECTION_LABEL}</SectionLabel>
+        <p className="mb-3 text-xs text-text-3">{INLINE_REVEAL_SECTION_DESCRIPTION}</p>
+        <ChoiceGroup
+          name="vaultInlineReveal"
+          choices={INLINE_REVEAL_CHOICES}
+          value={inlineReveal}
+          onChange={setInlineReveal}
+        />
+      </section>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
@@ -213,9 +334,11 @@ export function WorkspaceSettingsFormView({
             onSave({
               policy,
               historicalAccess,
-              // Just the answer — the server stamps the acknowledgement time and
-              // the payload version the grant is recorded against.
+              // Just the answers — the server stamps the acknowledgement times
+              // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
+              vaultConsent,
+              vaultInlineReveal: inlineReveal,
             });
           }}
         >

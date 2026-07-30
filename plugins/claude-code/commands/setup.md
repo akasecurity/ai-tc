@@ -17,16 +17,26 @@ falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment needs the raw (unmasked) findings to rate
 them accurately, so it **sends them to the model API** through separate `claude`
-CLI subprocesses (a large history is judged in several batches). Two things
-cross for each finding: its **raw value**, and about **120 characters of the
-surrounding transcript text** on either side of it (any other secrets detected in
-that window are masked). Those subprocesses ask the `claude` CLI to write
-no transcript, so the raw values do not enter this conversation or your scannable
-history — but a copy of them **does leave the machine**, sent to the model
-provider like any other Claude prompt. You act only on the raw-free plan the
-subprocesses print back. The scan that produces those values is offered for
-explicit consent in step 1, and that consent must state the model-API egress
-plainly before it is given.
+CLI subprocesses (a large history is judged in several batches). Per finding it
+sends the **raw value**; about **120 characters of the surrounding transcript
+text** on either side of it, re-scanned first so every secret AKA's rules detect
+in that window is masked — including the finding's own value where it appears
+there, which leaves the raw value itself as the only raw text that crosses; and
+the finding's non-sensitive labels (rule id, category, severity, the masked
+value, the confidence score, and a counter the model echoes back). The source
+transcript's **path never crosses**. Those subprocesses ask the `claude` CLI to
+write no transcript, so the raw values do not enter this conversation or your
+scannable history — but a copy of them **does leave the machine**, sent to the
+model provider like any other Claude prompt. You act only on the raw-free plan
+the subprocesses print back.
+
+That send takes **two separate consents**, collected at two different points and
+neither implying the other: the **historical-read** grant in step 1 (may AKA
+read past transcripts at all) and the **model-judge** grant in step 3 (may what
+it found be sent to the model API). Each is stated plainly before its own
+picker, and the judge refuses to run without the step-3 grant. The vault grant
+in step 1b is a third, separate question about **local** custody — it authorizes
+no send, and nothing about it changes what leaves the machine.
 
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
@@ -132,22 +142,30 @@ interactive picker. The plugin can't draw its own selectable UI (it can't
 capture keystrokes), so do **not** print a fake option list or ask the user to
 "reply with a number"; let the picker collect the answer.
 
-**Disclose the model-API egress plainly before you show the picker — this is what
-the user is consenting to, so it must be visible before they choose.** State it in
+**This picker grants the historical read, not the model-API egress — disclose the
+egress here anyway, before you show it.** The read exists to feed the judgment, so
+the user has to see the whole shape before granting any part of it. State it in
 your own words, without softening it: if they say yes, AKA scans the last 30 days
-of Claude history, and to rate what it finds it **sends the raw, unmasked values —
+of Claude history, and — once they also give the separate model-judge grant asked
+in step 3 — to rate what it finds it **sends the raw, unmasked values —
 including any secrets — to the model API through the `claude` CLI**. Name what
 travels with each one: **its raw value, and about 120 characters of the
-surrounding transcript text on either side** (any other secrets detected in that
-window are masked). That is real network egress to the model provider (the same one your
+surrounding transcript text on either side** (that window is re-scanned first, so
+every secret AKA's rules detect in it is masked), plus the finding's non-sensitive
+labels — rule, category, severity, masked value, confidence, and a counter the
+model echoes back. The source file's path is **not** sent. That is real network
+egress to the model provider (the same one your
 Claude session already uses), not a purely local review. **A copy of each value
 leaves the machine.** The transcripts those values came from stay on disk
 untouched — nothing here removes them; that is the separate redaction step in
 step 6. The values are kept out of your local Claude transcript, and the findings
-are also recorded, masked, to the local store. The grant is revocable from the
-dashboard's **Settings → Historical access**, which stops future scans — it
-cannot recall anything already sent. Do not present the picker until you have
-said this.
+are also recorded, masked, to the local store. Say plainly that answering yes here
+sends nothing on its own — the send is a second, separate question in step 3, and
+declining it there stops the send while leaving this read grant in place. Both
+grants are revocable from the dashboard — the read under **Settings → Historical
+access**, the send under **Settings → Model-judge consent** — and revoking either
+stops future runs, but it cannot recall anything already sent. Do not present the
+picker until you have said this.
 
 **Want me to look over what Claude's been up to?** — "I'll scan Claude's recent work — transcripts, temp files, agent memory — and send what I find to the model to rate it, so I can tune what I bring you next."
 
@@ -157,17 +175,80 @@ Offer exactly two options:
 - **Not now** — "start light and I'll learn as we go"
 
 Choosing **Yes, take a look** records the same historical-review consent the wizard has
-always recorded — the identical scope (which includes the model-API judgment disclosed
-above), the one-time grant, and the same revocation semantics — so the simpler question
-broadens nothing about what AKA may access. Those granular scope and revocation details
-stay inspectable on request and in the dashboard, under **Settings → Historical access**,
-whose own copy repeats the model-API disclosure.
+always recorded — the identical scope, the one-time grant, and the same revocation
+semantics — so the simpler question broadens nothing about what AKA may access. That
+scope is **reading** local surfaces only; it does not authorize sending anything to the
+model API, which is the distinct grant step 3 collects. Those granular scope and
+revocation details stay inspectable on request and in the dashboard, under
+**Settings → Historical access**, whose own copy points at the separate
+**Model-judge consent** control for the egress.
+
+## 1b. Offer the reversible vault
+
+Ask this right after the scan question, on **both** answers to it — vaulting
+governs the live session either way, and asking before the backfill means a
+"yes" here lets that same backfill rewrite scanned history into recoverable
+pointers in one pass instead of leaving raw values sitting in transcripts.
+Use **AskUserQuestion**, as always — never a printed option list.
+
+**Disclose what changes before you show the picker — this is a custody change,
+and the user must see it before choosing.** State it plainly, in your own words,
+covering every point below; do not soften or skip any of them:
+
+- **Today, a detected secret is destroyed.** When a redact policy fires, the
+  value is replaced with `[REDACTED:…]` and is gone. With the vault, it is
+  replaced with a pointer like `[[aka:secret:…]]` instead, and an **encrypted,
+  recoverable copy is kept on this machine** — AES-256-GCM ciphertext in
+  `~/.aka/data`, key material in `~/.aka/keys` (keep that directory out of
+  backup and sync tools; an OS-keychain option exists in settings). Nothing is
+  sent anywhere — the vault is entirely local.
+- **The model only ever sees pointers.** It can keep working with them —
+  writing them into files, referring to them — without ever reading the value.
+  You see the real values in the dashboard's **Vault** page or with
+  `aka vault show <pointer>`; in the terminal, pointers in Claude's replies
+  render as masked badges by default (a full inline-reveal mode exists in
+  Settings, with its own risk disclosure there).
+- **Pointers are correlatable, and that is visible.** The same value always
+  gets the same pointer, so pointers written into files, commits, and
+  transcripts reveal **where** a secret is used and **which places share the
+  same secret** to anyone who can read those artifacts. The Vault page shows
+  you that same map (every sighting of every pointer) so the correlation is
+  never something only an outsider can see.
+- **What it unlocks:** a blocked prompt comes back with a paste-ready rewrite
+  (pointers in place of the secret) instead of a dead end; scanned history is
+  rewritten to recoverable pointers instead of staying raw on disk; and when
+  the agent genuinely needs a real value, you can grant it per-value with
+  `aka exception approve … --reveal-to-model` — audited every time.
+- **Revoking stops future vaulting; it erases nothing.** Values already stored
+  stay recoverable to you until you **purge** the vault (Vault page — the purge
+  is the eraser, and it makes every pointer everywhere permanently
+  unresolvable). Both controls live in the dashboard.
+
+**Keep detected secrets recoverable?** — "Replace detected secrets with pointers and keep an encrypted copy on this machine, or keep destroying them?"
+
+Offer exactly two options:
+
+- **Vault them** — "reversible: pointers for the model, real values for me, everything local"
+- **No — keep destroying them** — "irreversible redaction, exactly as before"
+
+Neither answer is nudged; the honest trade is recoverability against holding a
+recoverable copy at all.
 
 ## 2. Save the answer, then branch
 
-Branch on the answer from step 1. On the **Yes, take a look** path the onboarding
-writer runs, and it must run **before** the backfill (step 3), because the
-backfill script reads `historicalAccess` from the saved settings to decide
+**First, record the vault answer from step 1b — on both branches.** A
+**Vault them** answer runs the writer below; a **No** answer records nothing
+(absence IS the un-consented state — there is no "declined" marker to write).
+This must also run **before** the backfill, so a granted vault lets the same
+sweep rewrite scanned history into recoverable pointers:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --vault-consent grant
+```
+
+Then branch on the answer from step 1. On the **Yes, take a look** path the
+onboarding writer runs, and it must run **before** the backfill (step 3), because
+the backfill script reads `historicalAccess` from the saved settings to decide
 whether it's allowed to run. Omitting `--policy` is deliberate — the old global
 redact/warn toggle no longer drives enforcement (posture is per-category now);
 its field is kept for backward compatibility but this wizard doesn't ask about
@@ -258,12 +339,18 @@ leaves the machine, then use **AskUserQuestion** — the built-in picker (never 
 printed numbered list) — to collect the answer.
 
 Say plainly, before the picker: to sort real leaks from routine noise, AKA sends
-each finding's `rawMatch` (the raw detected value) plus the surrounding context
-window to the model API via `claude`. The **`filePath` is not sent**, and any
-secrets detected in that context window are **masked** before it goes — so the
-finding's own value is the only raw value that leaves. Nothing else about the
-finding or the file crosses. Note that masking covers the secrets AKA's rules
-detect; ordinary text in that window travels as-is.
+each finding's `rawMatch` (the raw detected value) plus about 120 characters of
+the surrounding transcript text on either side of it to the model API via `claude`.
+The **`filePath` is not sent**, and any secrets detected in that context window are **masked**
+before it goes — including the finding's own value where it appears there — so
+`rawMatch` is the only raw value that leaves. Riding alongside it are the
+finding's non-sensitive labels: rule id, category, severity, the masked value, the
+confidence score, and a sequential counter the model echoes back so a verdict can
+be matched to the finding it belongs to. Nothing else about the finding or the
+source file crosses — no path, and no fingerprint of the value. The subprocess
+signs in as you, exactly like any other Claude call, so the request is attributed
+to your own account. Note that masking covers the secrets AKA's rules detect;
+ordinary text in that window travels as-is.
 
 **Send findings to the model to sort real leaks from noise?** — "I'll send each
 detected value, plus a bit of surrounding context with any secrets in it masked,
@@ -312,8 +399,9 @@ The backfill sweeps prior Claude Code transcripts (last 30 days, all projects)
 and streams one masked-plus-raw triage hit per line; masked findings are
 recorded to the local store as a side effect. The adapter runs the
 false-positive/severity **judgment in separate `claude` subprocesses that send the
-raw hits — each one's value and its surrounding transcript text (other secrets in
-that window masked) — to the model API** (a large history is split into several batches; each asks
+raw hits — each one's value, its surrounding transcript text (every secret AKA
+detects in that window masked), and the finding's non-sensitive labels — to the
+model API** (a large history is split into several batches; each asks
 the CLI to write no local transcript), then prints back a **raw-free plan** you
 can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),

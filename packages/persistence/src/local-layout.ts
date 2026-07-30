@@ -37,6 +37,15 @@ export function dbPath(base: string = defaultDataDir()): string {
   return join(dataDir(base), 'aka.db');
 }
 
+// Key material lives in its own directory rather than beside the store, so a
+// backup or sync tool can exclude ~/.aka/keys/ and carry the database without
+// the means to decrypt it. That separation is the whole of what encryption at
+// rest buys here: it defends a copied database, not a live process on this
+// machine, which reads both by construction.
+export function keysDir(base: string = defaultDataDir()): string {
+  return join(base, 'keys');
+}
+
 // Create the dir owner-only, and tighten it even if it pre-existed with looser
 // permissions. chmod is best-effort (a no-op on platforms without POSIX modes,
 // e.g. Windows) and must never break the fail-open hook path.

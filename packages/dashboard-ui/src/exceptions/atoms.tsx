@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Badge, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 
 import type { ExceptionState, ScopeAnswer } from './meta.ts';
@@ -10,7 +10,7 @@ export function StateTag({ state }: { state: ExceptionState }) {
   return <Badge variant={STATE_TONE[state]}>{state}</Badge>;
 }
 
-export function StateTagFor({ exception, now }: { exception: DetectionException; now?: number }) {
+export function StateTagFor({ exception, now }: { exception: ExceptionDescriptor; now?: number }) {
   return <StateTag state={exceptionState(exception, now)} />;
 }
 

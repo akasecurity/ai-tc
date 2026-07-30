@@ -9,8 +9,8 @@ import {
   RotateKeyDialog,
 } from '@akasecurity/dashboard-ui';
 import type {
-  BlockedDetection,
-  DetectionException,
+  BlockedDetectionDescriptor,
+  ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
 import { Button } from '@akasecurity/ui-kit';
@@ -28,15 +28,15 @@ export function ExceptionsClient({
   keyState,
   activePermanent,
 }: {
-  items: DetectionException[];
-  blocked: BlockedDetection[];
+  items: ExceptionDescriptor[];
+  blocked: BlockedDetectionDescriptor[];
   includeTerminal: boolean;
   blockedWindow: BlockedWindow;
   keyState: FingerprintKeyState;
-  activePermanent: DetectionException[];
+  activePermanent: ExceptionDescriptor[];
 }) {
   const router = useRouter();
-  const [approving, setApproving] = useState<BlockedDetection | null>(null);
+  const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();

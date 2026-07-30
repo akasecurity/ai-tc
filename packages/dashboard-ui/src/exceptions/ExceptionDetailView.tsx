@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Button, Input } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -9,7 +9,7 @@ import { StateTagFor } from './atoms.tsx';
 import { exceptionState, SCOPE_LABEL, VIA_LABEL } from './meta.ts';
 
 export interface ExceptionDetailViewProps {
-  exception: DetectionException;
+  exception: ExceptionDescriptor;
   // Provided by the connected layer (a server action in the web-ui); omitted →
   // read-only detail. Only rendered while the grant is still active.
   onRevoke?: ((reason: string) => void) | undefined;
@@ -62,11 +62,6 @@ export function ExceptionDetailView({
           {VIA_LABEL[exception.createdVia]}
         </MetaItem>
         <MetaItem label="Key version">{String(exception.keyVersion)}</MetaItem>
-        <MetaItem label="Fingerprint">
-          <span className="font-mono text-xs text-text-3">
-            {exception.valueFingerprint.slice(0, 16)}…
-          </span>
-        </MetaItem>
       </div>
 
       <div>

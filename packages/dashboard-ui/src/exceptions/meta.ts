@@ -2,8 +2,8 @@
 // @akasecurity/dashboard-ui so every host renders
 // identical state/scope/provenance labelling.
 import type {
-  BlockedDetection,
-  DetectionException,
+  BlockedDetectionDescriptor,
+  ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
 import { isMatchableUnder } from '@akasecurity/schema';
@@ -16,7 +16,7 @@ export type Tone = NonNullable<BadgeProps['variant']>;
 // it is unrevoked, unexpired, and under its use budget.
 export type ExceptionState = 'active' | 'consumed' | 'expired' | 'revoked';
 
-export function exceptionState(ex: DetectionException, now = Date.now()): ExceptionState {
+export function exceptionState(ex: ExceptionDescriptor, now = Date.now()): ExceptionState {
   if (ex.revokedAt !== null) return 'revoked';
   if (ex.maxUses !== null && ex.useCount >= ex.maxUses) return 'consumed';
   if (ex.expiresAt !== null && Date.parse(ex.expiresAt) <= now) return 'expired';
@@ -36,7 +36,7 @@ export function exceptionState(ex: DetectionException, now = Date.now()): Except
  * two approve surfaces cannot drift on which rows are usable.
  */
 export function isBlockedRowApprovable(
-  row: Pick<BlockedDetection, 'keyVersion'>,
+  row: Pick<BlockedDetectionDescriptor, 'keyVersion'>,
   key: FingerprintKeyState,
 ): boolean {
   return isMatchableUnder(row.keyVersion, key);
@@ -48,7 +48,7 @@ export function isBlockedRowApprovable(
  * triggering the detection again.
  */
 export function blockedRowBlockReason(
-  row: Pick<BlockedDetection, 'keyVersion'>,
+  row: Pick<BlockedDetectionDescriptor, 'keyVersion'>,
   key: FingerprintKeyState,
 ): string | null {
   if (isBlockedRowApprovable(row, key)) return null;
@@ -72,14 +72,14 @@ export const STATE_TONE: Record<ExceptionState, Tone> = {
   revoked: 'critical',
 };
 
-export const SCOPE_LABEL: Record<DetectionException['scope'], string> = {
+export const SCOPE_LABEL: Record<ExceptionDescriptor['scope'], string> = {
   once: 'Once',
   temporary: 'Temporary',
   permanent: 'Permanent',
 };
 
 // Provenance labels — how the grant was created.
-export const VIA_LABEL: Record<DetectionException['createdVia'], string> = {
+export const VIA_LABEL: Record<ExceptionDescriptor['createdVia'], string> = {
   'cli-approve': 'CLI approve',
   'cli-add': 'CLI add',
   'web-approve': 'Web approve',

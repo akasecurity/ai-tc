@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import type { BlockedDetection } from '../../src/zod/exception.ts';
 import {
   DetectionException,
   ExceptionBundleEntry,
+  ExceptionDescriptor,
   ExceptionScope,
+  toBlockedDetectionDescriptor,
+  toExceptionDescriptor,
 } from '../../src/zod/exception.ts';
 import { PolicyBundle } from '../../src/zod/policy.ts';
 
@@ -104,6 +108,55 @@ describe('ExceptionBundleEntry', () => {
         'valueFingerprint',
       ]);
     }
+  });
+});
+
+describe('ExceptionDescriptor / toExceptionDescriptor', () => {
+  it('omits exactly the keyed fingerprint and keeps everything else', () => {
+    const descriptor = toExceptionDescriptor(DetectionException.parse(validException));
+    expect(Object.keys(descriptor).sort()).toEqual(
+      Object.keys(validException)
+        .filter((key) => key !== 'valueFingerprint')
+        .sort(),
+    );
+    expect(descriptor.maskedValue).toBe(validException.maskedValue);
+    expect(descriptor.keyVersion).toBe(validException.keyVersion);
+  });
+
+  it('does not mutate the row it projects', () => {
+    const row = DetectionException.parse(validException);
+    toExceptionDescriptor(row);
+    expect(row.valueFingerprint).toBe(validException.valueFingerprint);
+  });
+
+  it('parses a full row by stripping the fingerprint (unknown keys drop)', () => {
+    const parsed = ExceptionDescriptor.parse(validException);
+    expect(Object.keys(parsed)).not.toContain('valueFingerprint');
+  });
+});
+
+describe('toBlockedDetectionDescriptor', () => {
+  const ledgerRow: BlockedDetection = {
+    reference: 'blk-1234',
+    ruleId: 'aws-access-key-id',
+    category: 'secret',
+    valueFingerprint: 'a'.repeat(64),
+    keyVersion: 1,
+    maskedValue: 'AKIA****************',
+    sessionId: null,
+    repo: 'github.com/acme/api',
+    blockedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('omits exactly the keyed fingerprint and keeps everything else', () => {
+    const descriptor = toBlockedDetectionDescriptor(ledgerRow);
+    expect(Object.keys(descriptor).sort()).toEqual(
+      Object.keys(ledgerRow)
+        .filter((key) => key !== 'valueFingerprint')
+        .sort(),
+    );
+    expect(descriptor.reference).toBe(ledgerRow.reference);
+    expect(ledgerRow.valueFingerprint).toBe('a'.repeat(64));
   });
 });
 

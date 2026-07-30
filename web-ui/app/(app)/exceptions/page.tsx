@@ -1,6 +1,7 @@
 import { BLOCKED_WINDOW_MS, resolveBlockedWindow } from '@akasecurity/dashboard-ui';
 import { dataDir, keyStateOf, readFingerprintKey } from '@akasecurity/persistence';
 import type { FingerprintKeyState } from '@akasecurity/schema';
+import { toBlockedDetectionDescriptor, toExceptionDescriptor } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { ExceptionsClient } from './ExceptionsClient';
@@ -20,9 +21,17 @@ export default async function ExceptionsPage({
   const params = await searchParams;
   const includeTerminal = params.all === '1';
   const blockedWindow = resolveBlockedWindow(params.window);
+  // The store rows carry the keyed valueFingerprint — a correlation key that
+  // must never reach the browser. Everything below crosses into a client
+  // component (and so into the RSC payload), so the rows are projected to
+  // their fingerprint-free descriptors here, at the server boundary.
   const [items, blocked] = await Promise.all([
-    db().exceptions.list({ includeTerminal }),
-    db().exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow]),
+    db()
+      .exceptions.list({ includeTerminal })
+      .then((rows) => rows.map(toExceptionDescriptor)),
+    db()
+      .exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow])
+      .then((rows) => rows.map(toBlockedDetectionDescriptor)),
   ]);
 
   // The key as three distinct states, not `number | null`: an unreadable key

@@ -86,6 +86,21 @@ export const ExceptionBundleEntry = DetectionException.pick({
 });
 export type ExceptionBundleEntry = z.infer<typeof ExceptionBundleEntry>;
 
+// What a presentation surface may know about a grant. Carries no
+// valueFingerprint — the keyed HMAC is a correlation key and must never reach
+// a view layer or the browser, the same rule PointerDescriptor states for
+// vault pointers. keyVersion stays: it is a bare key epoch, not a correlation
+// key, and the views need it to say which grants a rotation invalidates.
+export const ExceptionDescriptor = DetectionException.omit({ valueFingerprint: true });
+export type ExceptionDescriptor = z.infer<typeof ExceptionDescriptor>;
+
+/** Strip the keyed fingerprint from a grant row before it crosses to a view. */
+export function toExceptionDescriptor(exception: DetectionException): ExceptionDescriptor {
+  const descriptor: ExceptionDescriptor & { valueFingerprint?: string } = { ...exception };
+  delete descriptor.valueFingerprint;
+  return descriptor;
+}
+
 // One "a detection was just blocked/redacted" record from the short-lived
 // (30-minute) blocked-detections ledger: everything the approve flows — CLI
 // and web-ui — need to create an exception without the user retyping the
@@ -106,6 +121,18 @@ export interface BlockedDetection {
 
 // Insert shape: the persistence repo stamps blocked_at at write time.
 export type BlockedDetectionInput = Omit<BlockedDetection, 'blockedAt'>;
+
+// The ledger row minus its keyed fingerprint — the same egress rule as
+// ExceptionDescriptor. The approve flows round-trip `reference` and the server
+// re-reads the full row, so the fingerprint never needs to leave it.
+export type BlockedDetectionDescriptor = Omit<BlockedDetection, 'valueFingerprint'>;
+
+/** Strip the keyed fingerprint from a ledger row before it crosses to a view. */
+export function toBlockedDetectionDescriptor(row: BlockedDetection): BlockedDetectionDescriptor {
+  const descriptor: BlockedDetectionDescriptor & { valueFingerprint?: string } = { ...row };
+  delete descriptor.valueFingerprint;
+  return descriptor;
+}
 
 /**
  * What the machine's fingerprint key file amounts to right now.

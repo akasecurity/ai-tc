@@ -43,6 +43,12 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     args: ['approve', 'add', 'list', 'show', 'revoke', 'rotate-key'],
   },
   {
+    name: 'vault',
+    argHint: '[show]',
+    summary: 'Reveal a vaulted secret by its pointer (every reveal is audited)',
+    args: ['show'],
+  },
+  {
     name: 'tui',
     argHint: '[view]',
     summary: 'Interactive colour dashboard — health|findings|recommend|audit (needs a TTY)',

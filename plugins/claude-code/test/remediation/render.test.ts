@@ -338,3 +338,97 @@ describe('renderRedactionOutcome — redact-only confirmation', () => {
     expect(outcome).toContain(awsFinding().where.filePath);
   });
 });
+
+describe('pointered-strike copy — recoverable vault pointers', () => {
+  const entries: readonly RotationChecklistEntry[] = [
+    {
+      provider: 'stripe',
+      maskedToken: MASKED_STRIPE,
+      consolePath: 'dashboard.stripe.com → Developers → API keys',
+      occurrenceSpread: 1,
+    },
+  ];
+
+  it('the clean confirmation says the values are recoverable when every struck value was pointered', () => {
+    const findings = [stripeFinding(), awsFinding()];
+    expect(
+      renderRedactionOutcome({
+        redactedKeys: 2,
+        pointeredKeys: 2,
+        findings,
+        unredactedFindings: [],
+      }),
+    ).toBe(
+      '✓ Redacted 2 keys. 2 values were replaced with recoverable vault pointers — ' +
+        'view them in the dashboard or with `aka vault show`.',
+    );
+  });
+
+  it('a mixed outcome names only the pointered share as recoverable', () => {
+    const findings = [stripeFinding(), awsFinding()];
+    const outcome = renderRedactionOutcome({
+      redactedKeys: 2,
+      pointeredKeys: 1,
+      findings,
+      unredactedFindings: [],
+    });
+    expect(outcome).toContain('✓ Redacted 2 keys.');
+    expect(outcome).toContain('1 value was replaced with recoverable vault pointers');
+  });
+
+  it('pointeredKeys 0 (or omitted) keeps the irreversible wording byte-identical — a one-way strike is never described as recoverable', () => {
+    const findings = [stripeFinding()];
+    const plain = renderRedactionOutcome({ redactedKeys: 1, findings, unredactedFindings: [] });
+    const zeroed = renderRedactionOutcome({
+      redactedKeys: 1,
+      pointeredKeys: 0,
+      findings,
+      unredactedFindings: [],
+    });
+    expect(plain).toBe('✓ Redacted 1 key.');
+    expect(zeroed).toBe(plain);
+    expect(plain).not.toContain('recoverable');
+  });
+
+  it('the partial outcome still names the values that WERE pointered as recoverable', () => {
+    const secondAwsFinding = { ...awsFinding(), where: { filePath: '/tmp/second-agent-dump.txt' } };
+    const findings = [stripeFinding(), awsFinding(), secondAwsFinding];
+    const outcome = renderRedactionOutcome({
+      redactedKeys: 2,
+      pointeredKeys: 2,
+      findings,
+      unredactedFindings: [secondAwsFinding],
+    });
+    expect(outcome).toContain(
+      'Redacted 2 of 3 keys; 1 key still needs attention in /tmp/second-agent-dump.txt',
+    );
+    expect(outcome).toContain('2 values were replaced with recoverable vault pointers');
+  });
+
+  it('the resolved summary carries the recoverable sentence on its redaction line — and drops it when nothing was pointered', () => {
+    const findings = [stripeFinding(), awsFinding()];
+    const pointered = renderResolvedSummary({
+      redactedKeys: 2,
+      pointeredKeys: 2,
+      findings,
+      unredactedFindings: [],
+      location: 'repo root',
+      entries,
+    });
+    expect(pointered).toContain('Leaked secrets — resolved');
+    expect(pointered).toContain(
+      '✓ Redacted 2 keys across 2 transcripts. 2 values were replaced with recoverable vault pointers — ' +
+        'view them in the dashboard or with `aka vault show`.',
+    );
+
+    const struckOnly = renderResolvedSummary({
+      redactedKeys: 2,
+      findings,
+      unredactedFindings: [],
+      location: 'repo root',
+      entries,
+    });
+    expect(struckOnly).toContain('✓ Redacted 2 keys across 2 transcripts');
+    expect(struckOnly).not.toContain('recoverable');
+  });
+});

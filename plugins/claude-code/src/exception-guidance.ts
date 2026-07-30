@@ -79,6 +79,9 @@ export interface WithheldBannerInput {
   // only their spans masked.
   withheldRuleIds?: string | undefined;
   redactedRuleIds?: string | undefined;
+  // The vault disclosure line for a tokenized redact: whether the replaced
+  // values are recoverable, and where the user sees them.
+  vaultDisclosure?: string | undefined;
   // Warn-action rules flagged in OTHER fields of the same response. Without a
   // line of their own they would vanish: the warn-only systemMessage branch is
   // unreachable once any field was rewritten.
@@ -109,6 +112,7 @@ export function withheldBanner(input: WithheldBannerInput): string {
     ...(input.redactedRuleIds ? [`${SHADE.full} Redacted: ${input.redactedRuleIds}`] : []),
     ...(input.warnedRuleIds ? [`${SHADE.full} Also flagged (warn): ${input.warnedRuleIds}`] : []),
     `${SHADE.full} ${subject} never reached the model.`,
+    ...(input.vaultDisclosure ? [`${SHADE.full} ${input.vaultDisclosure}`] : []),
     `${SHADE.full} ${approve}`,
     `${SHADE.full} More: aka exception --help`,
   ].join('\n');

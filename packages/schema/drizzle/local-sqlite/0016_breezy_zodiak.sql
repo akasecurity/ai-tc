@@ -1,0 +1,1 @@
+ALTER TABLE `exceptions` ADD `capability` text DEFAULT 'suppress' NOT NULL;

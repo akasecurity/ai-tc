@@ -19,6 +19,8 @@ export { resolveEgress } from './egress/resolve.ts';
 export type { ScanContext } from './engine.ts';
 export { getLoadedRules, redact, registerPack, scan } from './engine.ts';
 export { maskMatch } from './mask.ts';
+export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
+export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 export {
   CONFIG_POSTURE_RULES,
   configPostureDefinitions,

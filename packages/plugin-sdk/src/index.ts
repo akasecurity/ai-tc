@@ -54,6 +54,8 @@ export { maskText, scanText } from './mask.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
 export type { NonGitProject } from './paths.ts';
 export { resolveNonGitProject, toPosix } from './paths.ts';
+export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
+export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export { resolveProjectFiles } from './project-files.ts';
@@ -82,6 +84,26 @@ export { createPluginRuntime } from './runtime.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';
 export { throttled } from './throttle.ts';
+export type {
+  CreateVaultGlueOptions,
+  DetokenizeTextOptions,
+  DetokenizeTextResult,
+  ModelDerefGrantResolver,
+  SubstitutePointersResult,
+  TokenizeTextResult,
+  VaultCore,
+  VaultGlue,
+} from './tokenize.ts';
+export {
+  createVaultGlue,
+  describePointerSafe,
+  detokenizeText,
+  hasPointer,
+  POINTER_UNAVAILABLE_TEXT,
+  substituteModelPointers,
+  tokenizeText,
+  tokenizeValue,
+} from './tokenize.ts';
 export type {
   AkaPluginAdapter,
   BlockedDetectionRef,

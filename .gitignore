@@ -16,6 +16,10 @@ coverage
 .DS_Store
 plugins/claude-code/scripts/
 
+# written by tools/audit-gate on every run, always at the repo root
+/audit-report.md
+/artifact-audit-report.md
+
 # Per-developer Claude Code settings (plugin enablement etc.) stay local.
 .claude/settings.local.json
 

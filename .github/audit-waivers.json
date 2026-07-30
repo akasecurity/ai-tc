@@ -1,0 +1,32 @@
+{
+  "waivers": [
+    {
+      "advisory": "GHSA-mh99-v99m-4gvg",
+      "scope": "workspace",
+      "module": "brace-expansion",
+      "reason": "No patched release on the 1.x line — the fix ships only in 5.0.8, and the advisory's <=5.0.7 range sweeps every earlier major. The 1.x copy is reached solely through eslint > minimatch@3 (lint-time dev tooling, not part of any shipped bundle); the fix becomes reachable only via the ESLint 10 major bump tracked separately — drop this waiver when that lands.",
+      "expires": "2026-08-26"
+    },
+    {
+      "advisory": "GHSA-6g55-p6wh-862q",
+      "scope": "artifact",
+      "module": "postcss",
+      "reason": "The fix ships in postcss 8.5.12, but next 15.5.x pins postcss at exactly 8.4.31 and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
+      "expires": "2026-08-28"
+    },
+    {
+      "advisory": "GHSA-r28c-9q8g-f849",
+      "scope": "artifact",
+      "module": "postcss",
+      "reason": "The fix ships in postcss 8.5.18, but next 15.5.x pins postcss at exactly 8.4.31 and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
+      "expires": "2026-08-28"
+    },
+    {
+      "advisory": "GHSA-f88m-g3jw-g9cj",
+      "scope": "artifact",
+      "module": "sharp",
+      "reason": "The fix ships in sharp 0.35.0, but next 15.5.x declares sharp ^0.34.x and an end-user install resolves next's own range, so neither a direct dependency nor a workspace override reaches it; the dashboard has no next/image usage, so sharp is never loaded at runtime. Bump next once it allows sharp >=0.35.0.",
+      "expires": "2026-08-28"
+    }
+  ]
+}

@@ -47,6 +47,9 @@ export default defineConfig({
     'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     'post-tool-use': 'src/hooks/post-tool-use.ts',
+    // Display-side pointer rendering: rewrites assistant-text deltas on screen
+    // only (the transcript and the model keep the original)
+    'message-display': 'src/hooks/message-display.ts',
     stop: 'src/hooks/stop.ts',
     // The isolated scan's worker thread. hooks.json never names it — the plugin
     // SDK starts it by path from whichever hook is running, and every hook

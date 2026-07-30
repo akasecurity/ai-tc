@@ -6,16 +6,31 @@ import { maskMatch, scan } from '@akasecurity/detections';
 import type { CreateExceptionInput, FingerprintKey } from '@akasecurity/persistence';
 import {
   BLOCKED_DETECTIONS_RETENTION_MS,
+  createKeyProvider,
   dataDir,
   DuplicateActiveExceptionError,
   fingerprintValue,
   isCurrentKeyVersion,
+  keysDir,
   loadOrCreateFingerprintKey,
   readFingerprintKey,
+  readWorkspaceSettings,
   rotateFingerprintKey,
+  SecretVault,
 } from '@akasecurity/persistence';
-import type { BlockedDetection, ResolvedScope, Rule } from '@akasecurity/schema';
-import { scopeFromAnswer } from '@akasecurity/schema';
+import type {
+  BlockedDetection,
+  PointerDescriptor,
+  PointerIdentity,
+  ResolvedScope,
+  Rule,
+} from '@akasecurity/schema';
+import {
+  DetectionCategory,
+  isVaultConsentValid,
+  PointerToken,
+  scopeFromAnswer,
+} from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -275,6 +290,129 @@ export async function addException(input: {
   });
 }
 
+export type RevealGrantResult = { ok: true; grantIdPrefix: string } | { ok: false; error: string };
+
+// The category segment of a shape-valid pointer. The PointerToken pattern pins
+// the segment to the DetectionCategory members, so this only returns null for
+// a string that never passed PointerToken.safeParse.
+function categoryFromToken(token: string): DetectionCategory | null {
+  const segment = token.slice('[[aka:'.length).split(':')[0] ?? '';
+  const parsed = DetectionCategory.safeParse(segment);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Mint a reveal-to-model grant from a resolved vault pointer (the dashboard
+ * twin of `aka exception approve --reveal-to-model`). No raw value is touched:
+ * the pointer resolves to the vault row's raw-free identity (rule + keyed
+ * fingerprint + key version), which is exactly what the grant matches on. The
+ * fingerprint never reaches the browser — only an id prefix comes back. Scope
+ * timestamps and expiry are stamped server-side from the validated choice.
+ */
+export async function grantRevealFromPointer(input: {
+  pointer: string;
+  scope: string;
+  justification: string;
+  // Required when scope is permanent: the masked value retyped, so a
+  // never-expiring reveal takes the same deliberate confirmation every other
+  // permanent grant does.
+  confirmation?: string;
+}): Promise<RevealGrantResult> {
+  const justification = input.justification.trim();
+  if (justification === '') {
+    return { ok: false, error: 'A justification is required — it is the audit trail.' };
+  }
+  const scope = resolveScope(input.scope);
+  if ('error' in scope) return { ok: false, error: scope.error };
+
+  // Reject anything that is not pointer-shaped before it reaches the vault.
+  const parsed = PointerToken.safeParse(input.pointer.trim());
+  if (!parsed.success) {
+    return { ok: false, error: 'Not a vault pointer — paste the full [[aka:...]] token.' };
+  }
+
+  let identity: PointerIdentity | null;
+  let descriptor: PointerDescriptor | null;
+  try {
+    const vault = new SecretVault({
+      repo: db().secretVault,
+      keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
+      fingerprintKey: loadOrCreateFingerprintKey(dataDir()),
+      // Read live so a consent revocation applies to the very next call.
+      isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
+    });
+    identity = await vault.resolvePointerIdentity(parsed.data);
+    descriptor = identity === null ? null : await vault.describePointer(parsed.data);
+  } catch {
+    // Corrupt key file or unreadable store — same outward shape as an
+    // unresolvable pointer; the error never carries store internals.
+    identity = null;
+    descriptor = null;
+  }
+  if (identity === null) {
+    return {
+      ok: false,
+      error:
+        'The pointer could not be resolved — it is not one this machine issued, or its entry was purged.',
+    };
+  }
+
+  // The descriptor is presentation data; if it is unavailable the grant still
+  // binds correctly through the identity, with a category recovered from the
+  // token itself and a fully-opaque preview.
+  const category = descriptor?.category ?? categoryFromToken(parsed.data);
+  if (category === null) {
+    return { ok: false, error: 'Not a vault pointer — paste the full [[aka:...]] token.' };
+  }
+
+  // A permanent reveal is the strongest grant in the product — a never-expiring
+  // authorization for raw to reach the model. It takes the same value-specific
+  // typed confirmation as every other permanent grant, re-checked here
+  // server-side; without a descriptor there is nothing meaningful to retype, so
+  // permanent is refused rather than waved through against an opaque preview.
+  if (scope.scope === 'permanent') {
+    if (descriptor === null) {
+      return {
+        ok: false,
+        error:
+          'A permanent reveal needs the value preview to confirm against — use a time-limited scope.',
+      };
+    }
+    if (input.confirmation !== descriptor.maskedMatch) {
+      return {
+        ok: false,
+        error: `A permanent reveal must be confirmed by retyping the masked value (${descriptor.maskedMatch}).`,
+      };
+    }
+  }
+
+  try {
+    const created = await db().exceptions.create({
+      ruleId: identity.ruleId,
+      category,
+      valueFingerprint: identity.valueFingerprint,
+      keyVersion: identity.fingerprintKeyVersion,
+      maskedValue: descriptor?.maskedMatch ?? '···',
+      capability: 'reveal_to_model',
+      ...scope,
+      justification,
+      conditions: null,
+      createdBy: 'dashboard',
+      createdVia: 'web-approve',
+    });
+    revalidatePath('/exceptions');
+    return { ok: true, grantIdPrefix: created.id.slice(0, 8) };
+  } catch (err) {
+    if (err instanceof DuplicateActiveExceptionError) {
+      return {
+        ok: false,
+        error: 'An active exception for this value already exists — revoke it first.',
+      };
+    }
+    return { ok: false, error: 'Could not create the reveal grant.' };
+  }
+}
+
 /** Revoke an active grant (`aka exception revoke`) — terminal, audit-retained. */
 export async function revokeException(id: string, reason: string): Promise<ActionResult> {
   const revoked = await db()
@@ -291,13 +429,13 @@ export async function revokeException(id: string, reason: string): Promise<Actio
  * every existing grant. The typed confirmation is re-checked here; the dialog
  * gate alone is not the control.
  */
-// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function rotateKey(confirmation: string): Promise<ActionResult> {
   if (confirmation !== 'rotate') {
     return { ok: false, error: 'Type "rotate" to confirm.' };
   }
+  let next: FingerprintKey;
   try {
-    rotateFingerprintKey(dataDir());
+    next = rotateFingerprintKey(dataDir());
   } catch (err) {
     // Rotation keeps its own PREFIX — what is being refused is the rotation,
     // not a grant — but not its own classification. Rotation writes as well as
@@ -306,6 +444,23 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
     // fix a chmod. That is the harm KEY_IO_ERROR exists to stop, and the CLI's
     // runRotateKey already routes through the same split.
     return { ok: false, error: `Could not rotate the fingerprint key. ${keyAccessError(err)}` };
+  }
+  // Grants invalidate by design; vault entries must NOT. Re-key their
+  // fingerprints under the new epoch so dedup keeps finding stored values —
+  // otherwise a re-detected value fingerprints under the new key, misses its
+  // row, and mints a second pointer for the same secret. Best-effort: a fault
+  // here leaves skipped rows resolving under their old epoch and must not fail
+  // the rotation that already happened.
+  try {
+    const vault = new SecretVault({
+      repo: db().secretVault,
+      keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
+      fingerprintKey: next,
+      isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
+    });
+    await vault.refreshFingerprints(next);
+  } catch {
+    // The rotation itself succeeded; a skipped refresh only degrades dedup.
   }
   revalidatePath('/exceptions');
   return { ok: true };

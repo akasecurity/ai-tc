@@ -55,10 +55,20 @@ function parseKeyFile(raw: string): FingerprintKey {
   return { version, material: bytes };
 }
 
-// The tables that record WHICH key material produced a stored fingerprint. The
-// column is the version integer, so the version is the only handle either table
-// has on the key — see storedKeyVersionFloor.
-const KEY_VERSION_TABLES = ['exceptions', 'blocked_detections'];
+// Every table that records WHICH key material produced a stored fingerprint,
+// with the column holding that epoch. The version integer is the only handle any
+// of them has on the key — see storedKeyVersionFloor.
+//
+// secret_vault carries TWO version columns and only one of them belongs here:
+// `fingerprint_key_version` is the exception.key epoch its value_fingerprint was
+// derived under, while `key_version` is the vault-key epoch its ciphertext is
+// sealed under — a different key on a different rotation. Reading the latter
+// would tie two independent rotations together and skip versions on every mint.
+const KEY_VERSION_COLUMNS: Record<string, string> = {
+  exceptions: 'key_version',
+  blocked_detections: 'key_version',
+  secret_vault: 'fingerprint_key_version',
+};
 
 // SQLITE_ERROR — the generic code a missing table reports. node:sqlite gives
 // every SQLite failure the same `code` ('ERR_SQLITE_ERROR'), so only `errcode`
@@ -98,6 +108,12 @@ class FloorUnreadableError extends Error {
  * check exists to prevent. Reading the floor from the store closes that, because
  * the rows outlive the key file.
  *
+ * Vault rows count for the same reason and are the likeliest to be the only ones
+ * present: vaulting happens on ordinary detections, while the two grant tables
+ * stay empty until someone blocks or approves something. Colliding there also
+ * breaks one-value-one-pointer — the re-minted material stops matching every
+ * stored fingerprint, so a known secret mints a second row and a second pointer.
+ *
  * THROWS rather than guessing when the store cannot answer. Returning 0 on a
  * locked or damaged store would be the one direction that is unsafe: too LOW a
  * floor is exactly the collision above, so a swallowed failure quietly reopens
@@ -116,11 +132,11 @@ function storedKeyVersionFloor(dataDir: string): number {
     db = new DatabaseSync(file, { readOnly: true });
     db.exec(`PRAGMA busy_timeout = ${String(FLOOR_BUSY_TIMEOUT_MS)}`);
     let floor = 0;
-    for (const table of KEY_VERSION_TABLES) {
+    for (const [table, column] of Object.entries(KEY_VERSION_COLUMNS)) {
       try {
         // MAX() over an empty table is NULL, which arrives as a null column.
         const row = getRow<{ v: number | null }>(
-          db.prepare(`SELECT MAX(key_version) AS v FROM ${table}`),
+          db.prepare(`SELECT MAX(${column}) AS v FROM ${table}`),
         );
         floor = Math.max(floor, row?.v ?? 0);
       } catch (err) {

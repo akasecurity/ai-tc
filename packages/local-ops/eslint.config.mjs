@@ -1,5 +1,5 @@
 // @ts-check
-import { base, noEnterpriseImports } from '@akasecurity/eslint-config';
+import { base, noEnterpriseImports, rootConfigFiles } from '@akasecurity/eslint-config';
 
 export default [
   // Test fixture corpora are scanner INPUT, not compiled sources: they are
@@ -17,4 +17,5 @@ export default [
       },
     },
   },
+  ...rootConfigFiles,
 ];

@@ -87,6 +87,8 @@ function settings(): WorkspaceSettings {
     policy: 'redact',
     historicalAccess: 'session-only',
     dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
   };
 }
 
@@ -270,6 +272,45 @@ describe('a pulled rule that hangs the timing battery itself', () => {
       expect(verdicts.get(key ?? '')?.verdict).toBe('quarantined');
       // …and the built-in packs are untouched by any of it.
       expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
+    } finally {
+      await rt.close();
+    }
+  });
+});
+
+// The pointer shield's guarantee is "no rule ever sees a pointer, whatever rules
+// are installed" — and a PULLED rule is both the case where that matters most
+// (nobody audited it) and the only case where the scan leaves this thread. The
+// shield runs before the scan, so the text that crosses into the worker is
+// already blanked; these two cases are what keep that true.
+describe('a pulled rule and a vault pointer', () => {
+  // A generic high-entropy matcher, the shape that would happily match a
+  // pointer's own base32 body and re-tokenize a pointer into a pointer.
+  const GREEDY: Rule = {
+    specVersion: 1,
+    id: 'pulled/long-upper',
+    name: 'Long uppercase run',
+    category: 'custom',
+    severity: 'low',
+    matcher: { type: 'regex', pattern: '[A-Z]{20,}', flags: 'g' },
+  };
+  const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
+
+  it('fires on a bare match, so the absence below is the shield and not the rule', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([GREEDY])), settings());
+    try {
+      const result = await rt.processText(`token ${'A'.repeat(26)} here`);
+      expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('never matches inside the pointer, even though the scan ran in the worker', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle([GREEDY])), settings());
+    try {
+      const result = await rt.processText(`resubmit ${POINTER} please`);
+      expect(result.findings).toEqual([]);
     } finally {
       await rt.close();
     }

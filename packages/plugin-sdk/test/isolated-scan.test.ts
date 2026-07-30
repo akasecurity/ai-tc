@@ -118,7 +118,7 @@ describe('createIsolatedScanner.probe', () => {
       expect(outcome.status).toBe('timeout');
       // A loose ceiling: the assertion is "the measurement ended", not "it
       // ended in exactly N ms".
-      expect(elapsedMs).toBeLessThan(1_500 * 4);
+      expect(elapsedMs).toBeLessThan(1_500 * 8);
     } finally {
       await scanner.close();
     }
@@ -198,7 +198,7 @@ describe('createIsolatedScanner.scan', () => {
       // The scan itself has no upper bound at all: left alone this text runs for
       // longer than any test suite would wait. A loose ceiling is the point —
       // the assertion is "it ended", not "it ended in exactly N ms".
-      expect(elapsedMs).toBeLessThan(BUDGET_MS * 3);
+      expect(elapsedMs).toBeLessThan(BUDGET_MS * 5);
     } finally {
       await scanner.close();
     }

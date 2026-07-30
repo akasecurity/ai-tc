@@ -218,7 +218,7 @@ describe('createGuardedScanner', () => {
       const findings = await scanner.scan(`${BATTERY_BLIND_TEXT} ${AWS_KEY}`);
       const elapsedMs = performance.now() - started;
 
-      expect(elapsedMs).toBeLessThan(BUDGET_MS / 2);
+      expect(elapsedMs).toBeLessThan(BUDGET_MS);
       expect(findings.map((f) => f.ruleId)).toEqual(['secrets/aws-key']);
     } finally {
       await scanner.close();

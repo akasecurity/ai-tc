@@ -36,7 +36,11 @@ export type CreateExceptionInput = Pick<
   | 'conditions'
   | 'createdBy'
   | 'createdVia'
->;
+> & {
+  // Absent means 'suppress' — the pre-capability semantics, so no existing
+  // caller silently starts minting reveal grants.
+  capability?: DetectionExceptionType['capability'] | undefined;
+};
 
 // The ledger-entry shapes live in @akasecurity/schema (zod/exception.ts), shared with
 // the web-ui's approve flow; re-exported so persistence consumers keep importing
@@ -91,6 +95,7 @@ interface ExceptionRow {
   value_fingerprint: string;
   key_version: number;
   masked_value: string;
+  capability: string;
   scope: string;
   expires_at: number | null;
   max_uses: number | null;
@@ -250,11 +255,11 @@ export class SqliteExceptionsRepository {
       .prepare(
         `INSERT INTO exceptions (
              id, rule_id, category, value_fingerprint, key_version, masked_value,
-             scope, expires_at, max_uses, use_count, last_used_at, justification,
-             conditions, created_by, created_via, created_at, updated_at
+             capability, scope, expires_at, max_uses, use_count, last_used_at,
+             justification, conditions, created_by, created_via, created_at, updated_at
            ) VALUES (
              :id, :ruleId, :category, :valueFingerprint, :keyVersion, :maskedValue,
-             :scope, :expiresAt, :maxUses, 0, NULL, :justification,
+             :capability, :scope, :expiresAt, :maxUses, 0, NULL, :justification,
              :conditions, :createdBy, :createdVia, :now, :now
            )`,
       )
@@ -265,6 +270,7 @@ export class SqliteExceptionsRepository {
         valueFingerprint: input.valueFingerprint,
         keyVersion: input.keyVersion,
         maskedValue: input.maskedValue,
+        capability: input.capability ?? 'suppress',
         scope: input.scope,
         expiresAt: input.expiresAt === null ? null : isoToEpochMillis(input.expiresAt),
         maxUses: input.maxUses,
@@ -372,6 +378,7 @@ export class SqliteExceptionsRepository {
         ruleId: row.rule_id,
         valueFingerprint: row.value_fingerprint,
         keyVersion: row.key_version,
+        capability: row.capability,
         expiresAt: row.expires_at === null ? null : epochMillisToIso(row.expires_at),
         maxUses: row.max_uses,
         useCount: row.use_count,
@@ -430,6 +437,37 @@ export class SqliteExceptionsRepository {
   }
 
   /**
+   * The active reveal-to-model grant for a vaulted value's identity, or null.
+   * Matching is exact on (ruleId, valueFingerprint, keyVersion) — the same key
+   * suppression uses — plus the capability: a suppression grant must never
+   * authorize a reveal. Read-only: the caller does NOT consume here, because a
+   * revealed value re-enters the detection scan immediately afterward and the
+   * suppression match there claims the use — one crossing, one use.
+   */
+  activeRevealGrant(
+    ruleId: string,
+    valueFingerprint: string,
+    keyVersion: number,
+    now = Date.now(),
+  ): Promise<{ id: string } | null> {
+    try {
+      const row = getRow<{ id: string }>(
+        this.db.prepare(
+          `SELECT id FROM exceptions
+            WHERE rule_id = :ruleId AND value_fingerprint = :valueFingerprint
+              AND key_version = :keyVersion AND capability = 'reveal_to_model'
+              AND ${ACTIVE_PREDICATE}
+            LIMIT 1`,
+        ),
+        { ruleId, valueFingerprint, keyVersion, now },
+      );
+      return Promise.resolve(row ?? null);
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  /**
    * Retention sweep: delete TERMINAL rows (revoked, expired, or use-budget
    * exhausted) whose last transition is older than the retention window.
    * Active grants are never touched — evaluation ignores terminal rows by
@@ -461,6 +499,7 @@ function parseExceptionRow(row: ExceptionRow): DetectionExceptionType {
     valueFingerprint: row.value_fingerprint,
     keyVersion: row.key_version,
     maskedValue: row.masked_value,
+    capability: row.capability,
     scope: row.scope,
     expiresAt: row.expires_at === null ? null : epochMillisToIso(row.expires_at),
     maxUses: row.max_uses,

@@ -71,6 +71,7 @@ function entry(overrides: Partial<ExceptionBundleEntry> & { valueFingerprint: st
     id: randomUUID(),
     ruleId: 'ex/secret-marker',
     keyVersion: 1,
+    capability: 'suppress' as const,
     expiresAt: null,
     maxUses: null,
     useCount: 0,

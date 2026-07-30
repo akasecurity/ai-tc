@@ -1,0 +1,103 @@
+/**
+ * At-rest scrub of a live session's transcript file. Claude Code appends every
+ * prompt to `~/.claude/projects/*.jsonl` even when a hook blocked it, so a raw
+ * secret the tail scan just found is also sitting in plaintext on disk. This
+ * module rewrites those secret spans IN PLACE to vault pointers (via the
+ * injected vault-glue tokenizer), line by line, so the file stays valid
+ * newline-delimited JSON and untouched lines stay byte-identical.
+ *
+ * SCOPE LIMIT: the target must resolve (symlink-safe, real-path containment)
+ * inside the redaction scope's artifact roots. An out-of-scope path is never
+ * opened for writing — the same structural containment the remediation
+ * redactor enforces, reused from `remediation/redact.ts` rather than
+ * re-implemented.
+ *
+ * FAULT POSTURE: any error returns null and leaves the file as it was — the
+ * reconcile pass continues. The injected tokenizer is itself fail-secure: a
+ * span it cannot vault degrades to the one-way `[REDACTED:CATEGORY]`
+ * placeholder, so a fault destroys residue rather than leaking it. The one
+ * tokenizer outcome treated as a fault HERE is the unclassifiable blanket
+ * (a changed line with no pointers and no degraded spans — the tokenizer could
+ * not tell secret from clean): rewriting whole transcript lines to a blanket
+ * placeholder would destroy the user's transcript, so the scrub aborts with
+ * the file untouched instead.
+ */
+import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+
+import { type platformRedactionScope, resolveRedactableArtifact } from '../remediation/redact.ts';
+
+// Files larger than this are skipped whole (return null): this scrub does a
+// whole-file read — acceptable because it runs in the detached reconcile
+// worker, off the hot hook path — but a pathological transcript must not
+// balloon the worker, so the read is capped.
+const MAX_SCRUB_BYTES = 32 * 1024 * 1024;
+
+export interface TailScrubDeps {
+  // The vault-glue text tokenizer: self-scans, shields existing pointers so a
+  // re-run never re-tokenizes them, and replaces each secret span with a
+  // pointer (or a one-way placeholder on degrade).
+  tokenizeText(
+    text: string,
+    opts?: { findings?: unknown[] },
+  ): Promise<{ text: string; pointers: string[]; degraded: { category: string }[] }>;
+  // The artifact roots whose contained files may be rewritten in place.
+  scope: ReturnType<typeof platformRedactionScope>;
+}
+
+/**
+ * Scrub one transcript file: replace every detected secret span with a vault
+ * pointer, in place, preserving line structure and the trailing newline
+ * exactly as found. Returns the count of rewritten lines, `{ rewritten: 0 }`
+ * without writing when nothing matched, and null when the path is out of
+ * scope, oversized, unreadable, or anything failed (the file is then left
+ * byte-identical).
+ */
+export async function scrubTranscriptTail(
+  filePath: string,
+  deps: TailScrubDeps,
+): Promise<{ rewritten: number } | null> {
+  try {
+    // Containment first: out of scope → never opened for writing.
+    const realPath = resolveRedactableArtifact(filePath, deps.scope);
+    if (realPath === null) return null;
+    if (statSync(realPath).size > MAX_SCRUB_BYTES) return null;
+
+    const content = readFileSync(realPath, 'utf8');
+    // Line-by-line so the rewrite can only ever change bytes WITHIN a line —
+    // the newline structure (including a trailing newline, which survives the
+    // split/join round-trip as a final empty element) is preserved exactly.
+    const lines = content.split('\n');
+    let rewritten = 0;
+    for (const [i, line] of lines.entries()) {
+      if (line === '') continue;
+      const result = await deps.tokenizeText(line);
+      if (result.text === line) continue;
+      // A changed line that minted no pointer and degraded no span is the
+      // tokenizer's unclassifiable blanket — abort rather than destroy lines.
+      if (result.pointers.length === 0 && result.degraded.length === 0) return null;
+      lines[i] = result.text;
+      rewritten += 1;
+    }
+    if (rewritten === 0) return { rewritten: 0 };
+
+    // Atomic rewrite: full write to a sibling temp file, then rename over the
+    // original — a crash mid-write leaves the transcript intact.
+    const tmpPath = `${realPath}.aka-scrub.tmp`;
+    try {
+      writeFileSync(tmpPath, lines.join('\n'));
+      renameSync(tmpPath, realPath);
+    } catch {
+      try {
+        // `recursive: true` also clears a tmpPath that turned out to be a
+        // directory, not just a partially written file.
+        rmSync(tmpPath, { force: true, recursive: true });
+      } catch {
+        // temp file may not exist — nothing to clean up
+      }
+      return null;
+    }
+    return { rewritten };
+  } catch {
+    return null;
+  }
+}

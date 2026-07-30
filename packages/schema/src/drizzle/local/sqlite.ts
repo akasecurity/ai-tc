@@ -219,6 +219,11 @@ export const exceptions = sqliteTable(
     valueFingerprint: text(COL.valueFingerprint).notNull(),
     keyVersion: integer(COL.keyVersion).notNull(),
     maskedValue: text(COL.maskedValue).notNull(),
+    // What the grant authorizes; 'reveal_to_model' also satisfies suppression
+    // (strictly stronger), while 'suppress' never reveals.
+    capability: text(COL.capability, { enum: ['suppress', 'reveal_to_model'] })
+      .notNull()
+      .default('suppress'),
     scope: text(COL.scope, { enum: ['once', 'temporary', 'permanent'] }).notNull(),
     expiresAt: integer(COL.expiresAt),
     maxUses: integer(COL.maxUses),

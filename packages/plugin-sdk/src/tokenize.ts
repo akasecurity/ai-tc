@@ -86,6 +86,11 @@ export interface VaultCore {
     },
   ): Promise<string | symbol>;
   describePointer(token: string): Promise<PointerDescriptor | null>;
+  resolvePointerIdentity(token: string): Promise<{
+    ruleId: string;
+    valueFingerprint: string;
+    fingerprintKeyVersion: number;
+  } | null>;
 }
 
 // Resolves whether a model-echoed pointer may be de-referenced back to raw for
@@ -114,6 +119,12 @@ export interface VaultGlue {
     text: string,
     opts: { resolveGrant: ModelDerefGrantResolver },
   ): Promise<SubstitutePointersResult>;
+  // The live reveal-grant lookup for this store: a grant id when an active
+  // reveal-to-model exception covers the pointer's value, null otherwise.
+  // Always null on a degraded glue. Deliberately does NOT consume the grant:
+  // a revealed value re-enters the detection scan immediately, and the
+  // suppression match there claims the use — one crossing, one use.
+  revealGrantResolver: ModelDerefGrantResolver;
   /**
    * Release the store handle this glue opened. Idempotent, and a no-op on a
    * glue that opened nothing — a degraded one, or one built over an injected
@@ -174,14 +185,22 @@ function groupSpans(text: string, findings: MatchResult[]): SpanGroup[] {
   return groups;
 }
 
+const NULL_RESOLVER: ModelDerefGrantResolver = () => Promise.resolve(null);
+
 class SecretVaultGlue implements VaultGlue {
   readonly #vault: VaultCore;
+  readonly revealGrantResolver: ModelDerefGrantResolver;
   // Set only when THIS glue opened the store, so a glue over an injected vault
   // never closes a handle it does not own.
   #release: (() => void) | undefined;
 
-  constructor(vault: VaultCore, release?: () => void) {
+  constructor(
+    vault: VaultCore,
+    revealGrantResolver: ModelDerefGrantResolver = NULL_RESOLVER,
+    release?: () => void,
+  ) {
     this.#vault = vault;
+    this.revealGrantResolver = revealGrantResolver;
     this.#release = release;
   }
 
@@ -382,6 +401,8 @@ export interface CreateVaultGlueOptions {
   base?: string;
   // Test seam: a vault core to use instead of opening the real store.
   vault?: VaultCore;
+  // Test seam: a reveal-grant resolver to pair with an injected vault.
+  revealResolver?: ModelDerefGrantResolver;
 }
 
 /**
@@ -391,7 +412,7 @@ export interface CreateVaultGlueOptions {
  * resolves nothing — the two fail postures above, decided once at construction.
  */
 export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
-  if (options?.vault) return new SecretVaultGlue(options.vault);
+  if (options?.vault) return new SecretVaultGlue(options.vault, options.revealResolver);
   const base = options?.base ?? defaultDataDir();
   try {
     const dir = dataDir(base);
@@ -405,7 +426,23 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
       // process.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
     });
-    return new SecretVaultGlue(vault, () => {
+    // Grant matching is exact on the identity a grant is keyed by; anything
+    // failing along the way is a refusal, never a reveal.
+    const revealGrantResolver: ModelDerefGrantResolver = async (pointer) => {
+      try {
+        const identity = await vault.resolvePointerIdentity(pointer);
+        if (identity === null) return null;
+        const grant = await db.exceptions.activeRevealGrant(
+          identity.ruleId,
+          identity.valueFingerprint,
+          identity.fingerprintKeyVersion,
+        );
+        return grant?.id ?? null;
+      } catch {
+        return null;
+      }
+    };
+    return new SecretVaultGlue(vault, revealGrantResolver, () => {
       db.close();
     });
   } catch {
@@ -419,6 +456,7 @@ const UNOPENABLE_VAULT: VaultCore = {
   tokenize: () => Promise.resolve(Symbol('aka.vault.unopenable')),
   detokenize: () => Promise.resolve(Symbol('aka.vault.unopenable')),
   describePointer: () => Promise.resolve(null),
+  resolvePointerIdentity: () => Promise.resolve(null),
 };
 
 // The default glue the hooks use, built once per process against the shared

@@ -88,6 +88,7 @@ function exception(overrides: Partial<DetectionException> = {}): DetectionExcept
     valueFingerprint: 'f'.repeat(64),
     keyVersion: 1,
     maskedValue: 'AKIA…MPLE',
+    capability: 'suppress',
     scope: 'temporary',
     expiresAt: '2026-07-06T13:00:00.000Z',
     maxUses: null,

@@ -24,7 +24,7 @@ import { isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
 
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
-import { stringAtPath } from './paths.ts';
+import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerField } from './pointer-substitution.ts';
 import { decideInputPointers, denyPointerMessage } from './pointer-substitution.ts';
 import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   }
   const pointerOutcomes = await decideInputPointers(pointerFields, (text) =>
     vaultGlue
-      ? vaultGlue.substituteModelPointers(text, { resolveGrant: () => Promise.resolve(null) })
+      ? vaultGlue.substituteModelPointers(text, { resolveGrant: vaultGlue.revealGrantResolver })
       : Promise.resolve({
           text,
           revealed: [],
@@ -90,6 +90,23 @@ async function main(): Promise<void> {
       },
     });
     return;
+  }
+
+  // Fold granted de-refs into the input the rest of the hook sees: the secret
+  // scan then re-detects each revealed value, and the SAME grant satisfies
+  // suppression there (reveal is strictly stronger), consuming its use exactly
+  // once. Emitting must not depend on a detection outcome — with every
+  // revealed value suppressed, the decision below may be null, and the tool
+  // would otherwise run with the pointers still literal.
+  let effectiveInput = toolInput;
+  let derefHappened = false;
+  for (const outcome of pointerOutcomes) {
+    if (outcome.disposition !== 'deref' || outcome.text === undefined) continue;
+    effectiveInput = replaceAtPath(effectiveInput, outcome.path, outcome.text) as Record<
+      string,
+      unknown
+    >;
+    derefHappened = true;
   }
 
   // A store that cannot open means NOTHING is scanned or enforced for this
@@ -120,7 +137,7 @@ async function main(): Promise<void> {
   const scanned: ScannedField[] = [];
   try {
     for (const spec of fields) {
-      const text = stringAtPath(toolInput, spec.path);
+      const text = stringAtPath(effectiveInput, spec.path);
       if (text === undefined || text === '') continue;
 
       const result = await runtime.capture(
@@ -147,7 +164,7 @@ async function main(): Promise<void> {
   // 7eb59e55) applies here too.
   const decision = await decidePreToolUse(
     toolName,
-    toolInput,
+    effectiveInput,
     scanned,
     vaultGlue ? (text, findings) => vaultGlue.tokenizeText(text, { findings }) : undefined,
   );
@@ -155,6 +172,19 @@ async function main(): Promise<void> {
     await emit(
       withProtocolNotes(decision.output, decision.realized, toolName, config, sessionId, vaultGlue),
     );
+    return;
+  }
+  // No detection outcome, but a grant rewrote the input: the tool must still
+  // receive the revealed values rather than the literal pointers.
+  if (derefHappened) {
+    await emit({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: effectiveInput,
+      },
+      systemMessage: `AKA revealed granted vault value(s) to this ${toolName} call — the reveal exception you approved authorized it.`,
+    });
   }
 }
 

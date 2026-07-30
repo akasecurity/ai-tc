@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
+import { bundledDetections } from '@akasecurity/plugin-sdk';
+import type { BuiltinPolicyId } from '@akasecurity/schema';
+import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
@@ -83,6 +87,22 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
     }
   });
 
+  it('emits no block on a clean prompt', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-clean-'));
+    try {
+      const run = runHook(home, {
+        prompt: 'rename this variable across the module',
+        session_id: 'sess-clean',
+        cwd: '/tmp',
+        hook_event_name: 'UserPromptSubmit',
+      });
+      expect(run.status).toBe(0);
+      expect(run.stdout).not.toContain('"decision":"block"');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to allow and never throws when a store fault is injected (fail-open)', () => {
     const home = mkdtempSync(join(tmpdir(), 'aka-ups-failopen-'));
     try {
@@ -102,6 +122,148 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       expect(run.status).toBe(0);
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// The enforcement matrix, driven through the REAL built hook against a seeded
+// throwaway store. The secret value comes from the bundled rule's own
+// `examples` fixture so no secret-shaped literal lives in this file, and the
+// runHook env carries no PATH — the hook's best-effort clipboard spawn cannot
+// find a utility, so no real clipboard is ever written by this suite. The rule
+// is one whose example matches NO other bundled rule: a value two rules match
+// on overlapping spans degrades one-way by design (no pointer to assert on).
+const RULE_ID = 'secrets/twilio-key';
+function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; example: string } {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
+  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
+  }
+  return { pack, example };
+}
+const { pack: SECRET_PACK, example: SECRET_EXAMPLE } = secretFixture();
+const SECRET_PROMPT = `please deploy using this key: ${SECRET_EXAMPLE}`;
+
+// Install the bundled packs the way the gateway does on open, then assign the
+// secrets pack the policy under test — per-rule pack policies are what the
+// runtime's action resolution prefers.
+function seedSecretPolicy(home: string, policyId: BuiltinPolicyId): void {
+  const db = openLocalDatabase(join(home, '.aka', 'data'));
+  try {
+    db.installedPacks.recordInventory(bundledDetections());
+    db.installedPacks.setPolicy(SECRET_PACK.namespace, SECRET_PACK.packId, policyId);
+  } finally {
+    db.close();
+  }
+}
+
+function grantVaultConsent(home: string): void {
+  const dir = join(home, '.aka', 'settings');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'settings.json'),
+    JSON.stringify({
+      vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
+    }),
+  );
+}
+
+function submitSecretPrompt(home: string): HookRun {
+  return runHook(home, {
+    prompt: SECRET_PROMPT,
+    session_id: 'sess-enforce',
+    cwd: '/tmp',
+    hook_event_name: 'UserPromptSubmit',
+  });
+}
+
+describe('user-prompt-submit enforcement — redact blocks in every consent state', () => {
+  it('redact policy, no vault consent → block with the plain removal message, raw never on stdout', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-redact-off-'));
+    try {
+      seedSecretPolicy(home, 'redact');
+      const run = submitSecretPrompt(home);
+      expect(run.status).toBe(0);
+      const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toContain('twilio-key');
+      expect(payload.reason).toContain('Remove the flagged content and resubmit');
+      // Consent-off surfaces never touch the vault: no pointer, no vault talk.
+      expect(run.stdout).not.toContain('[[aka:');
+      // The never-leak assertion: the raw value appears nowhere on stdout.
+      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('redact policy, valid vault consent → block whose reason carries a pointerized rewrite', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-redact-on-'));
+    try {
+      seedSecretPolicy(home, 'redact');
+      grantVaultConsent(home);
+      const run = submitSecretPrompt(home);
+      expect(run.status).toBe(0);
+      const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toContain('never reached the model');
+      expect(payload.reason).toContain('[[aka:');
+      expect(payload.reason).toContain('paste and resubmit');
+      // The raw value appears nowhere in the pointerized output.
+      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('block policy, no vault consent → the plain removal-based block, unchanged', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-block-off-'));
+    try {
+      seedSecretPolicy(home, 'block');
+      const run = submitSecretPrompt(home);
+      expect(run.status).toBe(0);
+      const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toMatch(/^AKA blocked this prompt — flagged /);
+      expect(payload.reason).toContain('Remove the flagged content and resubmit');
+      expect(run.stdout).not.toContain('[[aka:');
+      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('block policy, valid vault consent → block whose reason carries the resubmit rewrite', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-block-on-'));
+    try {
+      seedSecretPolicy(home, 'block');
+      grantVaultConsent(home);
+      const run = submitSecretPrompt(home);
+      expect(run.status).toBe(0);
+      const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
+      expect(payload.decision).toBe('block');
+      expect(payload.reason).toContain('[[aka:');
+      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('warn policy → the prompt continues with a warning, never a block', () => {
+    const home = mkdtempSync(join(tmpdir(), 'aka-ups-warn-'));
+    try {
+      seedSecretPolicy(home, 'warn');
+      const run = submitSecretPrompt(home);
+      expect(run.status).toBe(0);
+      expect(run.stdout).not.toContain('"decision":"block"');
+      const payload = JSON.parse(run.stdout) as { systemMessage?: string };
+      expect(payload.systemMessage).toContain('twilio-key');
+      expect(payload.systemMessage).toContain('sent unchanged');
+      // The stale claim that prompts cannot be redacted is gone.
+      expect(payload.systemMessage).not.toContain('cannot be redacted');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

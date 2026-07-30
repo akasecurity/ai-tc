@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-claude-code",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "AI Traffic Control — inspect and govern AI prompts in Claude Code",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "lint": "eslint src test eval",
+    "lint": "eslint src test eval *.config.*",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepack": "tsup"

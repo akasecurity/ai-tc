@@ -19,6 +19,7 @@ function exception(overrides: Partial<DetectionException>): DetectionException {
     valueFingerprint: 'a'.repeat(64),
     keyVersion: 1,
     maskedValue: 'A****Z',
+    capability: 'suppress',
     scope: 'permanent',
     expiresAt: null,
     maxUses: null,
@@ -157,6 +158,13 @@ describe('rotationBlockedLedgerNote', () => {
   // rotation. Those rows are handled correctly afterwards — the strip marks
   // them unapprovable via blockedRowBlockReason above — but that is the user
   // finding out after the fact, which is what this line exists to prevent.
+  //
+  // Guarded as a pure function rather than through the rendered dialog, unlike
+  // the badge copy in views.test.tsx next door. That file's views are plain
+  // markup; RotateKeyDialog is built on the Radix dialog primitive, which calls
+  // hooks that renderToStaticMarkup cannot serve here, so a render assertion on
+  // it would not run at all. Keeping the sentence in meta.ts is what makes it
+  // reachable — the dialog holds no copy of its own to drift from.
   const CASES = [0, 1, 2, 17];
 
   it.each(CASES)('names the blocked ledger and the way back, at %i approvable', (count) => {

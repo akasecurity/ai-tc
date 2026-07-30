@@ -125,6 +125,31 @@ describe('resolveRemediationDeliverable', () => {
     expect(result.summary).toContain('Redacted 2 of 3 keys');
   });
 
+  it('threads pointeredKeys through to the recoverable-pointer sentence — and omits it by default', () => {
+    const repositoryRoot = mkdtempSync(join(tmpdir(), 'aka-deliverable-pointered-repo-'));
+    temporaryDirectories.push(repositoryRoot);
+    mkdirSync(join(repositoryRoot, '.git'));
+
+    const pointered = resolveRemediationDeliverable({
+      findings,
+      redactedKeys: 3,
+      pointeredKeys: 3,
+      cwd: repositoryRoot,
+    });
+    expect(pointered.summary).toContain('Leaked secrets — resolved');
+    expect(pointered.summary).toContain(
+      '3 values were replaced with recoverable vault pointers — ' +
+        'view them in the dashboard or with `aka vault show`.',
+    );
+
+    const struckOnly = resolveRemediationDeliverable({
+      findings,
+      redactedKeys: 3,
+      cwd: repositoryRoot,
+    });
+    expect(struckOnly.summary).not.toContain('recoverable');
+  });
+
   it('defaults unredactedFindings to empty — a caller that redacted every finding still gets the "resolved" framing', () => {
     const repositoryRoot = mkdtempSync(join(tmpdir(), 'aka-deliverable-default-repo-'));
     temporaryDirectories.push(repositoryRoot);

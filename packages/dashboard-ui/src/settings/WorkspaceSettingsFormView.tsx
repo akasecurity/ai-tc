@@ -1,6 +1,6 @@
 'use client';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { isModelJudgeConsentValid } from '@akasecurity/schema';
+import { isModelJudgeConsentValid, isVaultConsentValid } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -127,6 +127,18 @@ export function vaultChoiceOf(vaultConsent: WorkspaceSettings['vaultConsent']): 
   return vaultConsent ? 'on' : 'off';
 }
 
+// A grant recorded against an older consent version no longer authorizes
+// vaulting — the version bump means what the vault does has widened since the
+// user agreed. The form still derives 'on' (a grant exists) but must say the
+// grant is dormant and re-saving re-consents at the current version.
+export function vaultConsentStale(vaultConsent: WorkspaceSettings['vaultConsent']): boolean {
+  return vaultConsent !== undefined && !isVaultConsentValid(vaultConsent);
+}
+
+export const VAULT_STALE_NOTICE =
+  'Your grant was recorded against an older version of the vault — vaulting is paused ' +
+  'until you re-consent. Saving with "Vault & redact" selected re-consents to the current version.';
+
 function ChoiceGroup<T extends string>({
   name,
   choices,
@@ -247,6 +259,11 @@ export function WorkspaceSettingsFormView({
       <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>{VAULT_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{VAULT_SECTION_DESCRIPTION}</p>
+        {vaultConsentStale(settings.vaultConsent) ? (
+          <p className="mb-3 text-xs text-sev-high" data-slot="vault-stale-notice">
+            {VAULT_STALE_NOTICE}
+          </p>
+        ) : null}
         <ChoiceGroup
           name="vaultConsent"
           choices={VAULT_CHOICES}

@@ -616,10 +616,24 @@ describe('scanCoverage', () => {
       'claudecode',
       'cursor',
       'codex',
+      'claudeai',
       'chatgpt',
       'copilot',
       'api',
     ]);
+  });
+
+  it('pins the claudeai row: listed, not yet supported', async () => {
+    // The claude-ai source exists in the schema before any capture surface
+    // ships for it, so the coverage table names it explicitly at zero rather
+    // than omitting it — an omitted provider reads as an oversight, a zero
+    // row reads as a decision.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'claudeai')).toEqual({
+      provider: 'claudeai',
+      coverage: 0,
+      supported: false,
+    });
   });
 
   it('pins the codex row: supported at partial (80) coverage', async () => {

@@ -35,11 +35,14 @@ import { readFileSync } from 'node:fs';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import {
   createPluginRuntime,
+  createVaultGlue,
   loadConfig,
+  maskMatch,
   resolveRepo,
   safeMaskedMatch,
 } from '@akasecurity/plugin-sdk';
-import type { MaskedSecretFinding } from '@akasecurity/schema';
+import type { DetectionCategory, MaskedSecretFinding } from '@akasecurity/schema';
+import { isVaultConsentValid } from '@akasecurity/schema';
 
 import { transcriptsDir } from '../history/transcripts.ts';
 import { deriveProvider } from '../triage/surfaced-secrets.ts';
@@ -85,19 +88,78 @@ function enforcedScope(overrides: RedactSurfacedSecretsOverrides): RedactionScop
   return { artifactRoots: roots };
 }
 
-// One recovered (finding, rawValue) redaction target, or undefined when no
-// on-disk occurrence matching this finding's (provider, maskedToken) pair was
-// found in the scanned content.
+// One recovered redaction target plus the detection identity of the on-disk
+// occurrence it came from — the identity the vault needs to mint a pointer for
+// the value. Undefined when no occurrence matching this finding's
+// (provider, maskedToken) pair was found in the scanned content.
+interface RecoveredTarget {
+  target: RedactionTarget;
+  ruleId: string;
+  category: DetectionCategory;
+}
+
 function recoverTarget(
   finding: MaskedSecretFinding,
-  matches: readonly { ruleId: string; rawMatch: string }[],
-): RedactionTarget | undefined {
+  matches: readonly { ruleId: string; rawMatch: string; category: DetectionCategory }[],
+): RecoveredTarget | undefined {
   const hit = matches.find(
     (m) =>
       deriveProvider(m.ruleId) === finding.provider &&
       safeMaskedMatch(m.rawMatch) === finding.maskedToken,
   );
-  return hit === undefined ? undefined : { where: finding.where, rawValue: hit.rawMatch };
+  return hit === undefined
+    ? undefined
+    : {
+        target: { where: finding.where, rawValue: hit.rawMatch },
+        ruleId: hit.ruleId,
+        category: hit.category,
+      };
+}
+
+// Whether the settings on record carry a currently valid vault consent.
+// Fail-closed: a settings load fault reads as no consent, so the strike stays
+// the plain one-way redaction rather than attempting to vault.
+function hasValidVaultConsent(base: string | undefined): boolean {
+  try {
+    return isVaultConsentValid(loadConfig(base).settings.vaultConsent);
+  } catch {
+    return false;
+  }
+}
+
+// The pre-resolved replacement map for the synchronous strike: each DISTINCT
+// raw value among the recovered targets is tokenized ONCE, so the same key
+// leaked into several artifacts resolves to one pointer everywhere. Only a
+// well-formed pointer return lands in the map — a degraded `[REDACTED:…]`
+// return is dropped, because the synchronous default already strikes one-way.
+// Any fault yields an empty map (plain strike), never a throw: the glue is
+// built to never surface raw or throw, and this guard is belt-and-braces on
+// top of that.
+async function buildPointerReplacements(
+  recovered: readonly RecoveredTarget[],
+  base: string | undefined,
+): Promise<ReadonlyMap<string, string>> {
+  const replacements = new Map<string, string>();
+  try {
+    const glue = createVaultGlue(base === undefined ? undefined : { base });
+    const distinct = new Map<string, RecoveredTarget>();
+    for (const entry of recovered) {
+      if (!distinct.has(entry.target.rawValue)) distinct.set(entry.target.rawValue, entry);
+    }
+    for (const [rawValue, entry] of distinct) {
+      const replacement = await glue.tokenizeValue(rawValue, {
+        ruleId: entry.ruleId,
+        category: entry.category,
+        maskedMatch: maskMatch(rawValue),
+      });
+      if (replacement.startsWith('[[aka:') && replacement !== rawValue) {
+        replacements.set(rawValue, replacement);
+      }
+    }
+  } catch {
+    return new Map();
+  }
+  return replacements;
 }
 
 // The real outcome of a redaction pass: the count of keys actually struck, plus
@@ -109,6 +171,11 @@ function recoverTarget(
 // all-clear this shape exists to prevent.
 export interface SurfacedRedactionResult {
   readonly redactedKeys: number;
+  // How many of `redactedKeys` were replaced with recoverable vault pointers
+  // rather than the irreversible placeholder — set only when a valid vault
+  // consent is on record, 0 otherwise. The caller's copy must distinguish the
+  // two: a pointered value is viewable again, a struck value is gone.
+  readonly pointeredKeys: number;
   readonly unredacted: readonly MaskedSecretFinding[];
 }
 
@@ -122,12 +189,19 @@ export interface SurfacedRedactionResult {
  * because a best-effort recovery pass failed. The actual in-place striking is
  * delegated entirely to `redactLeakedKeysDetailed`, so its binding-scope,
  * atomic-write, and per-file fail-open guarantees apply unchanged.
+ *
+ * With a valid vault consent on record the strike is RECOVERABLE: each distinct
+ * recovered value is tokenized into the local secret vault and its occurrences
+ * are rewritten to the resulting pointer instead of the one-way placeholder
+ * (`pointeredKeys` reports how many keys landed that way). Without consent — or
+ * on any vault fault — nothing is vaulted and the strike is byte-identical to
+ * the plain one-way redaction.
  */
 export async function redactSurfacedSecrets(
   findings: readonly MaskedSecretFinding[],
   overrides: RedactSurfacedSecretsOverrides = {},
 ): Promise<SurfacedRedactionResult> {
-  if (findings.length === 0) return { redactedKeys: 0, unredacted: [] };
+  if (findings.length === 0) return { redactedKeys: 0, pointeredKeys: 0, unredacted: [] };
   const scope = enforcedScope(overrides);
 
   // Group by file, and set aside any finding whose artifact does not resolve
@@ -145,15 +219,20 @@ export async function redactSurfacedSecrets(
     if (existing) existing.push(finding);
     else byFile.set(finding.where.filePath, [finding]);
   }
-  if (byFile.size === 0) return { redactedKeys: 0, unredacted: findings };
+  if (byFile.size === 0) return { redactedKeys: 0, pointeredKeys: 0, unredacted: findings };
 
   // Every finding whose raw value could not be recovered — because its file
   // vanished/is unreadable, the re-scan found no matching occurrence, or it was
   // out-of-scope above — accumulates here. `recovered` pairs a finding with the
   // redaction target derived from it, so a struck/unstruck target can be traced
   // back to the finding it came from.
+  // Whether a valid vault consent is on record. Without it no vault is ever
+  // constructed and the strike below is byte-identical to the plain one-way
+  // redaction. An unreadable settings file counts as no consent.
+  const vaultConsented = hasValidVaultConsent(overrides.dataDirBase);
+
   const unrecovered: MaskedSecretFinding[] = [...outOfScope];
-  const recovered: { finding: MaskedSecretFinding; target: RedactionTarget }[] = [];
+  const recovered: { finding: MaskedSecretFinding; recovery: RecoveredTarget }[] = [];
   try {
     const config = loadConfig(overrides.dataDirBase);
     const gateway = resolveDataGateway(config);
@@ -167,7 +246,7 @@ export async function redactSurfacedSecrets(
           unrecovered.push(...fileFindings); // vanished/unreadable artifact — best-effort, skip it
           continue;
         }
-        let matches: { ruleId: string; rawMatch: string }[];
+        let matches: { ruleId: string; rawMatch: string; category: DetectionCategory }[];
         try {
           matches = (await runtime.processText(content)).findings;
         } catch {
@@ -175,9 +254,9 @@ export async function redactSurfacedSecrets(
           continue;
         }
         for (const finding of fileFindings) {
-          const target = recoverTarget(finding, matches);
-          if (target === undefined) unrecovered.push(finding);
-          else recovered.push({ finding, target });
+          const recovery = recoverTarget(finding, matches);
+          if (recovery === undefined) unrecovered.push(finding);
+          else recovered.push({ finding, recovery });
         }
       }
     } finally {
@@ -191,17 +270,29 @@ export async function redactSurfacedSecrets(
     }
   } catch {
     // Config/store unavailable — recover nothing rather than break the session.
-    return { redactedKeys: 0, unredacted: findings };
+    return { redactedKeys: 0, pointeredKeys: 0, unredacted: findings };
   }
 
-  const { redactedKeys, struck } = redactLeakedKeysDetailed(
-    recovered.map((r) => r.target),
+  // With a valid consent the strike becomes recoverable: each distinct raw
+  // value is pre-resolved to a vault pointer, and the synchronous sweep below
+  // substitutes those pointers instead of the one-way placeholder. Without
+  // consent no map is built at all, so the sweep is the plain legacy strike.
+  const replacements = vaultConsented
+    ? await buildPointerReplacements(
+        recovered.map((r) => r.recovery),
+        overrides.dataDirBase,
+      )
+    : undefined;
+
+  const { redactedKeys, pointeredKeys, struck } = redactLeakedKeysDetailed(
+    recovered.map((r) => r.recovery.target),
     scope,
+    replacements,
   );
   const struckTargets = new Set(struck);
   const unredacted = [
     ...unrecovered,
-    ...recovered.filter((r) => !struckTargets.has(r.target)).map((r) => r.finding),
+    ...recovered.filter((r) => !struckTargets.has(r.recovery.target)).map((r) => r.finding),
   ];
-  return { redactedKeys, unredacted };
+  return { redactedKeys, pointeredKeys, unredacted };
 }

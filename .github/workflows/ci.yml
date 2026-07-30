@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `edited` is on top of the three default types (opened, synchronize,
+    # reopened) because retargeting a PR's BASE fires only `edited`. Without it
+    # a stacked PR moved onto main after its parent merged never runs this
+    # workflow at all: the branch filter above now matches, but no event does,
+    # so the required checks stay absent and the merge is blocked forever with
+    # nothing to re-run. The cost is a run on title/body edits too — GitHub
+    # gives one `edited` type for all three — which the concurrency group below
+    # bounds, since it cancels a superseded run per PR ref.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read

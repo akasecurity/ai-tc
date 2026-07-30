@@ -34,6 +34,11 @@ jobs:
         if: ${{ steps.meta.outputs.update-type == 'version-update:semver-major' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job never checks out, so there is no git remote for `gh` to
+          # infer the repository from. The `gh pr` calls below pass a full URL
+          # and are fine, but `gh label create` has no such context and would
+          # shell out to git and fail. GH_REPO supplies it without a checkout.
+          GH_REPO: ${{ github.repository }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           DEP: ${{ steps.meta.outputs.dependency-names }}
           FROM: ${{ steps.meta.outputs.previous-version }}

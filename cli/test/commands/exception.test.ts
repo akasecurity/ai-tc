@@ -482,4 +482,44 @@ describe('aka exception list / revoke', () => {
     await runException(['list', '--home', home], emptyIo);
     expect(emptyIo.output()).toContain("'aka exception list --all'");
   });
+
+  it('tags a reveal-to-model grant so it cannot be read as a plain suppression', async () => {
+    // A suppress grant via the normal add flow...
+    await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--for', '1h', '--reason', 'window'],
+      scriptedIo(`${VALUE}\n`),
+    );
+    // ...and a reveal-to-model grant seeded the way the mint flow writes it.
+    const key = loadOrCreateFingerprintKey(dir);
+    const db = openLocalDatabase(dir);
+    try {
+      await db.exceptions.create({
+        ruleId: 'secrets/generic-credential',
+        category: 'secret',
+        valueFingerprint: fingerprintValue(key, 'not-the-listed-value'),
+        keyVersion: key.version,
+        maskedValue: 'gh*…ret',
+        capability: 'reveal_to_model',
+        scope: 'temporary',
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        maxUses: null,
+        justification: 'agent needs the live key',
+        conditions: null,
+        createdBy: 'tester (local)',
+        createdVia: 'cli-approve',
+      });
+    } finally {
+      db.close();
+    }
+
+    const listIo = scriptedIo();
+    await runException(['list', '--home', home], listIo);
+    const out = listIo.output();
+    // Only the reveal row carries the tag; the suppress row is unchanged.
+    expect(out).toContain('gh*…ret · REVEALS-TO-MODEL');
+    expect(out.match(/REVEALS-TO-MODEL/g)).toHaveLength(1);
+    // The list is metadata-only even for reveal grants — masked, never raw.
+    expect(out).not.toContain(VALUE);
+    expect(out).not.toContain('not-the-listed-value');
+  });
 });

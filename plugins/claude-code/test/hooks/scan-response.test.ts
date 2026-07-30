@@ -137,6 +137,7 @@ function outcome(partial: Partial<ResponseScanOutcome>): ResponseScanOutcome {
     warnedFindings: [],
     blockedReferences: [],
     redactedReferences: [],
+    realized: null,
     ...partial,
   };
 }

@@ -56,6 +56,14 @@ The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked so any _other_ detectable secret in the window does not cross raw) and `id` (a sequential counter the rubric requires the model to echo). `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. The grant is revocable under Settings, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
 
+These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
+registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
+PR and daily, sending the workspace dependency graph — package names and versions,
+including the `@akasecurity/*` workspace importers — to the registry's audit endpoint; it
+also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
+temp dir, sending that (public-package) graph the same way. That is repository tooling,
+not a product path; nothing a user installs performs it.
+
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
@@ -76,7 +84,27 @@ for an absent network).
 text or an executed call, so an untested path can still reach out — which is why the
 gate table's third row says "a path the suite never executes" rather than "nothing". The
 packaged artifact is the other uncovered surface: nothing here installs the published
-tarball and exercises it under a block.
+tarball and exercises it under a block. Note also that the three gates scope to the
+**product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
+runs in its own workflow rather than inside the `No-network` job's namespace.
+
+## Dependency advisories
+
+CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`
+over `pnpm-lock.yaml`, and `npm audit` over an end-user resolution of the published
+CLI's runtime `dependencies` (`--artifact` mode — coverage the workspace lockfile
+cannot provide, since consumers re-resolve the published ranges and `pnpm.overrides`
+do not reach them). A **high or critical** advisory in either fails the check, so a
+new or bumped dependency that carries one will not merge. Fix a workspace hit by
+upgrading, or by raising a floor in the root `pnpm.overrides` (the existing entries
+there are exactly such floors); fix an artifact hit by raising the range in
+`cli/package.json` — or, when the vulnerable copy is pinned by another package (e.g.
+next's own pins), by bumping that package once upstream moves. Only when an advisory
+has no fixed release reachable from the tree, add an **expiring** waiver to
+`.github/audit-waivers.json`, scoped to the audit it applies to — format and process
+in CONTRIBUTING.md ("Dependency advisories and waivers").
+`pnpm.auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route: the
+gate refuses to run while anything is muted there.
 
 ## Package dependency rules
 
@@ -186,48 +214,55 @@ packages/             the workspace libraries (schema · persistence · local-op
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
+tools/                repo tooling: installer one-liners + the audit-gate workspace
+                      package (the CI dependency-audit gate; never shipped)
 ```
 
 ## Adding a new workspace package
 
 1. Create `packages/<name>/package.json` with `"name": "@akasecurity/<name>"`
 2. Extend `../../tsconfig.base.json`
-3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`
+3. Add an `eslint.config.mjs` extending `@akasecurity/eslint-config`, and spread
+   `...rootConfigFiles` **after** the block that turns `projectService` on. Root config
+   files sit outside the tsconfig `include`, so the type-aware parser rejects them
+   outright (`was not found by the project service`) and reports nothing else about
+   them; that block drops the type-aware rules for `*.config.*` at the package root so
+   they lint. Every network ban is syntactic and still fires.
 4. Export from `src/index.ts`
 5. Add `"lint"` and `"typecheck"` scripts — the `lint` script must run `eslint` over
-   **every directory the package ships code in**, whatever they are named (a bare `.`
-   counts; naming individual files does not). Turbo silently skips a package with no
-   `lint` script, so a config nothing points ESLint at enforces nothing. A `scripts/`
-   dir of **hand-written (git-tracked)** scripts needs its own
-   `eslint.scripts.config.mjs` plus a second pass
+   **every directory the package ships code in and every lintable file at its root**,
+   whatever they are named (a bare `.` counts; naming individual files counts only for
+   those files, not for the directory they sit in). Turbo silently skips a package with
+   no `lint` script, so a config nothing points ESLint at enforces nothing. `*.config.*`
+   is the standing target for the build and tooling config; name any other root file
+   explicitly (see `web-ui`'s `middleware.ts`). A `scripts/` dir of **hand-written
+   (git-tracked)** scripts needs its own `eslint.scripts.config.mjs` plus a second pass
    (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
    `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
 
-   Note the current limit: the guard checks **directories only**, so top-level files
-   at a package root (`tsup.config.ts`, `vitest.config.ts`, …) are outside it and are
-   not linted today. Point the `lint` script at them if you can; several need a
-   `tsconfig`/`allowDefaultProject` change before ESLint can parse them.
-
-   Files at the **repo root**, owned by no package, are a different case and are now
-   covered: `pnpm lint:root` / `pnpm typecheck:root` (`eslint.root.config.mjs`,
-   `tsconfig.root.json`) lint and type-check `test/setup/**` and `tools/ci/**`. Both
-   run outside Turbo — `pnpm lint`/`pnpm typecheck` are `turbo run …`, which drives
-   per-package scripts, and the repo root is not a package — so CI runs them as their
-   own steps beside `format:check`. Anything new at the repo root belongs in those two
-   globs; otherwise esbuild strips its types without checking them and nothing lints it.
+   That covers files a **package** owns. Files at the **repo root**, owned by no
+   package, are a separate case with its own pass: `pnpm lint:root` /
+   `pnpm typecheck:root` (`eslint.root.config.mjs`, `tsconfig.root.json`) lint and
+   type-check `test/setup/**` and `tools/ci/**`. Both run outside Turbo — `pnpm lint`
+   and `pnpm typecheck` are `turbo run …`, which drives per-package scripts, and the
+   repo root is not a package — so CI runs them as their own steps beside
+   `format:check`. Anything new at the repo root belongs in those two globs; otherwise
+   esbuild strips its types without checking them and nothing lints it.
 
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
    unguarded are the assertions next to it (a missing config, a config that never
-   extends the shared one, a `lint` script that misses a directory).
+   extends the shared one, a `lint` script that misses a directory or a root file, a
+   root file the linter cannot parse).
 
 7. If it has a `test` script, run those tests through **vitest** and wire the
    no-network guard into its `vitest.config.ts`, then add its name to
    `EXPECTED_VITEST_PACKAGES` in
    `packages/eslint-config/test/no-network-runtime.test.js`. Copy the block from a
    neighbour at the same depth — the relative path is `../../` from
-   `packages/<name>/`, `../` from a repo-root package:
+   `packages/<name>/`, `plugins/<name>/` or `tools/<name>/`, and `../` from a
+   repo-root package (`cli`, `web-ui`):
 
    ```ts
    const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
@@ -470,11 +505,23 @@ violation on `aka.db` must throw.
 
 Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
-prefix. `expectNoEchoOf` (`web-ui/test/actions/exceptions.test.ts`) is the **required form
-for every error assertion in that file**, including the ones a newly covered action brings
-with it — a plain `not.toContain(rawValue)` on an error is a defect, not a style choice.
+prefix. `expectNoEchoOf` is the **required form for every error assertion in a suite that
+already defines it** — today `web-ui/test/actions/exceptions.test.ts` and
+`plugins/claude-code/test/triage/judge.test.ts` — including the ones a newly covered action
+or seam brings with it; a plain `not.toContain(rawValue)` on an error is a defect, not a
+style choice. It is not reachable across a package wall, so a third suite that needs it
+copies it rather than importing it, and copies the `expect(value).toBeDefined()` guard with
+it — without that guard an `undefined` message satisfies the loop vacuously.
 This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
 stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
 fragment is stored on purpose; and an assertion that some non-secret string is absent — an
 internal error-class name, say — is a different property that `expectNoEchoOf` does not
 express.
+
+Assert against the value **that call supplied**, never a module constant the case does not
+send. A case driven with an inert literal and asserted against a shared `VALUE` cannot fail
+however the branch is worded, so it stays green while the branch echoes the live value it
+was handed. Name each case's own inputs. This is the same family as the two rules above: an
+absence assertion is only worth its green if it could have gone red — so before trusting a
+new one, break the property it claims to guard, re-run, and treat a still-green suite as a
+defect in the test.

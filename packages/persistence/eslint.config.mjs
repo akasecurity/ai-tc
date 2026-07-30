@@ -1,5 +1,5 @@
 // @ts-check
-import { base, noEnterpriseImports } from '@akasecurity/eslint-config';
+import { base, noEnterpriseImports, rootConfigFiles } from '@akasecurity/eslint-config';
 
 export default [
   ...base,
@@ -12,4 +12,5 @@ export default [
       },
     },
   },
+  ...rootConfigFiles,
 ];

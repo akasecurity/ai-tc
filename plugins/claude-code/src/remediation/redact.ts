@@ -35,6 +35,35 @@ import { transcriptsDir } from '../history/transcripts.ts';
 // the only thing this module strikes, so the category is fixed.
 const REDACTED_PLACEHOLDER = '[REDACTED:SECRET]';
 
+// Matches `$`-pattern sequences that String.replace-family APIs expand ($&,
+// $', $`, $$, $1…, $<name>). Production replacements are vault pointers, which
+// never contain `$`, so refusing these costs nothing.
+const REPLACE_PATTERN_SEQUENCE = /\$[$&`'<0-9]/;
+
+// The string a struck occurrence of `rawValue` is rewritten to: the caller's
+// pre-resolved replacement when one is supplied (an async caller resolves vault
+// pointers ahead of this synchronous sweep), else the one-way placeholder. A
+// replacement that CONTAINS the raw value (including the raw value itself)
+// falls back to the placeholder — honouring it would leave the secret readable
+// while reporting it redacted. So does a replacement carrying `$`-pattern
+// sequences: this module splices literally, but replace-family APIs expand
+// those sequences to re-insert the matched secret, so such a candidate is
+// never propagated anywhere.
+function replacementFor(
+  rawValue: string,
+  replacements: ReadonlyMap<string, string> | undefined,
+): string {
+  const candidate = replacements?.get(rawValue);
+  if (
+    candidate === undefined ||
+    candidate.includes(rawValue) ||
+    REPLACE_PATTERN_SEQUENCE.test(candidate)
+  ) {
+    return REDACTED_PLACEHOLDER;
+  }
+  return candidate;
+}
+
 // One leaked key to strike: the finding's where-found reference (the raw-free
 // MaskedSecretFinding location — the artifact path, plus an optional span) and the
 // raw value to remove. The scope limit is enforced on `where.filePath`.
@@ -103,6 +132,11 @@ export function resolveRedactableArtifact(filePath: string, scope: RedactionScop
 // (rather than only how many) can compare its input targets against `struck`.
 export interface RedactionDetail {
   readonly redactedKeys: number;
+  // How many of `redactedKeys` were rewritten to a caller-supplied replacement
+  // (a recoverable vault pointer) rather than the one-way placeholder — so a
+  // caller's copy can say exactly which strikes are recoverable and which are
+  // irreversible. Always ≤ `redactedKeys`; 0 when no replacements were supplied.
+  readonly pointeredKeys: number;
   readonly struck: readonly RedactionTarget[];
 }
 
@@ -114,10 +148,17 @@ export interface RedactionDetail {
  * Targets against the same file are folded into a single read/rewrite. Each file is
  * handled best-effort: a read or write failure on one artifact is skipped so the
  * rest of the batch is still redacted.
+ *
+ * `replacements` maps a raw value to the pre-resolved string it is rewritten to
+ * — a recoverable vault pointer, resolved by the async caller because this sweep
+ * must stay synchronous. A value with no entry — or with an entry that contains
+ * the raw value or `$`-pattern sequences — is struck with the one-way
+ * placeholder, so with no map the behavior is byte-identical to the plain strike.
  */
 export function redactLeakedKeysDetailed(
   targets: readonly RedactionTarget[],
   scope: RedactionScope = platformRedactionScope(),
+  replacements?: ReadonlyMap<string, string>,
 ): RedactionDetail {
   // Group the in-scope targets (keeping each target's identity, not just its raw
   // value) by the real path of the file they strike, so a file with several leaked
@@ -133,6 +174,7 @@ export function redactLeakedKeysDetailed(
   }
 
   let redactedKeys = 0;
+  let pointeredKeys = 0;
   const struck: RedactionTarget[] = [];
   for (const [filePath, fileTargets] of byFile) {
     let content: string;
@@ -142,20 +184,41 @@ export function redactLeakedKeysDetailed(
       continue; // unreadable or vanished artifact — skip, don't abort the batch
     }
     const struckHere: RedactionTarget[] = [];
-    const struckValues = new Set<string>();
+    let pointeredHere = 0;
+    // rawValue → the replacement actually applied to this file, so a sibling
+    // target sharing the value counts the same way (pointered vs one-way) even
+    // when the first strike fell back to the placeholder.
+    const applied = new Map<string, string>();
     for (const target of fileTargets) {
       // A sibling target sharing this raw value already struck every occurrence
       // in this file, so `content.includes` is now false even though this
       // target's value IS redacted — count it struck rather than misreport it as
       // still exposed (two findings on one repeated value both resolve together).
-      if (struckValues.has(target.rawValue)) {
+      const prior = applied.get(target.rawValue);
+      if (prior !== undefined) {
         struckHere.push(target);
+        if (prior !== REDACTED_PLACEHOLDER) pointeredHere += 1;
         continue;
       }
       if (!content.includes(target.rawValue)) continue;
-      content = content.replaceAll(target.rawValue, REDACTED_PLACEHOLDER);
-      struckValues.add(target.rawValue);
+      let replacement = replacementFor(target.rawValue, replacements);
+      // Literal splice, never `replaceAll` with a string pattern — split/join
+      // carries no `$`-pattern semantics, so the replacement can never be
+      // expanded against the match it strikes.
+      let next = content.split(target.rawValue).join(replacement);
+      if (next.includes(target.rawValue)) {
+        // Bytes around a spliced replacement recombined into the raw value
+        // again (an overlap/boundary artifact) — strike one-way instead.
+        replacement = REDACTED_PLACEHOLDER;
+        next = content.split(target.rawValue).join(replacement);
+        // Still readable even after the placeholder pass: leave this value's
+        // occurrences as they were and do not count it redacted.
+        if (next.includes(target.rawValue)) continue;
+      }
+      content = next;
+      applied.set(target.rawValue, replacement);
       struckHere.push(target);
+      if (replacement !== REDACTED_PLACEHOLDER) pointeredHere += 1;
     }
     if (struckHere.length === 0) continue;
     // Write atomically: a full write to a sibling temp file, then rename over the
@@ -176,13 +239,14 @@ export function redactLeakedKeysDetailed(
       }
       continue; // write failed — don't count keys that were not persisted
     }
-    // Count only after the rewrite is on disk, so the returned count reflects keys
+    // Count only after the rewrite is on disk, so the returned counts reflect keys
     // actually redacted rather than merely matched.
     redactedKeys += struckHere.length;
+    pointeredKeys += pointeredHere;
     struck.push(...struckHere);
   }
 
-  return { redactedKeys, struck };
+  return { redactedKeys, pointeredKeys, struck };
 }
 
 /**

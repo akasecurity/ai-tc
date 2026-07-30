@@ -9,16 +9,21 @@
  * and the project, upsert them, and open the Session audit-event root. All the
  * logic lives in @akasecurity/plugin-runtime; this script is just Claude Code stdio glue.
  *
- * Emits nothing (SessionStart has no decision to make). Fully fail-open: any error
- * → no output, exit 0.
+ * Emits nothing (SessionStart has no decision to make) — except when the user
+ * has granted vault consent, in which case it injects the standing vault
+ * protocol brief as additionalContext. Fully fail-open: any error → no output,
+ * exit 0.
  */
 import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
+import { isVaultConsentValid } from '@akasecurity/schema';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
-import { getString, parseJson, readStdin } from './shared.ts';
+import { sessionProtocolMarker } from '../protocol/marker.ts';
+import { standingBrief } from '../protocol/notes.ts';
+import { emit, getString, parseJson, readStdin } from './shared.ts';
 
 // The plugin's own version, read from the manifest the hook command passes as
 // argv[2] (same source as the intro card). Best-effort: an unreadable/old
@@ -62,8 +67,25 @@ async function main(): Promise<void> {
   // reconcile throttle (so it never piles onto a recent Stop spawn) and fully
   // best-effort — a missing path or any error just skips it, the Stop path covers it.
   const transcriptPath = input ? getString(input, 'transcript_path') : undefined;
+  const config = loadConfig();
   if (sessionId !== undefined && transcriptPath !== undefined) {
-    triggerReconcile(loadConfig().dataDir, sessionId, transcriptPath);
+    triggerReconcile(config.dataDir, sessionId, transcriptPath);
+  }
+
+  // Standing vault-protocol brief: only when the user has granted vault
+  // consent does this hook emit anything at all — the brief teaches the model
+  // what a pointer is and carries the per-session authenticity marker.
+  // Without consent the vault is inert and SessionStart stays silent.
+  if (isVaultConsentValid(config.settings.vaultConsent)) {
+    await emit({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: standingBrief({
+          marker: sessionProtocolMarker(config.dataDir, sessionId),
+          inlineReveal: config.settings.vaultInlineReveal,
+        }),
+      },
+    });
   }
 }
 

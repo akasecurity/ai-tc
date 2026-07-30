@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, renameSync, rmSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -22,11 +21,18 @@ import {
 } from '@akasecurity/schema';
 
 import { captureId } from './ids.ts';
+import {
+  backupPath,
+  discardStore,
+  moveStoreAside,
+  reapStalePartials,
+  snapshotStore,
+} from './internal/snapshot.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
-import { DB_FILENAME, dbSidecars, ensureDataDirSync, tightenFile, tightenPerms } from './paths.ts';
+import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
@@ -213,18 +219,64 @@ function openWithPragmas(file: string): DatabaseSync {
 }
 
 // Move an incompatible legacy store aside (recoverable) so a fresh one can be
-// created. The handle was closed first, checkpointing the WAL into the main file,
-// so the -wal/-shm/-journal sidecars are stale and removed — a fresh handle would
-// otherwise pair the new db with the old WAL. Returns the backup path.
-function backupLegacyStore(file: string): string {
-  const backup = `${file}.legacy.${String(Date.now())}.bak`;
-  renameSync(file, backup);
-  // The backup is a full copy of the prompt corpus, so hold it to the same 0600
-  // as the live store — rename preserves the source's (possibly loose) mode.
-  tightenFile(backup);
-  for (const sidecar of dbSidecars(file)) {
-    if (existsSync(sidecar)) rmSync(sidecar);
+// created. Snapshots the store through the still-open handle with VACUUM INTO
+// (see snapshotStore) — a consistent, fully-materialized single-file copy that
+// folds in committed WAL frames without depending on a checkpoint. A bare rename
+// of the main file plus deleting the -wal/-shm/-journal sidecars would instead
+// lose any committed-but-un-checkpointed frames: SQLite checkpoints only when
+// the LAST connection closes, so under the product's multi-process open model
+// the close-time checkpoint does not run at all and those frames sit in the -wal
+// the delete then destroys — a "recoverable" backup that silently drops the
+// store's newest data.
+//
+// A store the snapshot cannot copy — a corrupt page, no room for a second copy —
+// falls back to moving the whole set aside intact (moveStoreAside), which needs
+// neither. That keeps the reset working, and the reset is the point: a store that
+// can never be reset is one whose writes never work again. Only if the fallback
+// also fails does the error propagate, leaving the original where it is rather
+// than destroying it on a best-effort basis.
+//
+// The handle is closed on every path. Returns the backup path.
+function backupLegacyStore(db: DatabaseSync, file: string): string {
+  // A prior open killed mid-snapshot leaves a `.partial` beside the store that
+  // nothing else reaps; clear the abandoned ones before writing a new copy.
+  reapStalePartials(file);
+  const backup = backupPath(file, 'legacy');
+  let snapshotted = false;
+  let snapshotError: unknown;
+  try {
+    snapshotStore(db, backup);
+    snapshotted = true;
+  } catch (error) {
+    snapshotError = error;
+  } finally {
+    // Closed before either path touches the store files, and on the throw path
+    // too: the handle is unreachable to the caller by then, so nothing else
+    // could close it. On Windows a live handle blocks both the remove and the
+    // fallback's rename.
+    db.close();
   }
+
+  if (!snapshotted) {
+    akaWarn(
+      `Could not snapshot the incompatible ${DB_FILENAME} (${String(snapshotError)}); ` +
+        'moving the store aside with its sidecars instead.',
+    );
+    moveStoreAside(file, backup);
+    return backup;
+  }
+
+  // Snapshot captured — drop the original store (main file + its now-stale
+  // sidecars) so the fresh handle doesn't pair a new db with the old WAL. Only
+  // reached once the backup succeeded; a clear that fails takes the backup with
+  // it rather than orphaning a full-size copy per attempt (see discardStore).
+  //
+  // This is NOT safe against a second process running this same path: that one
+  // clears and immediately recreates the store, so a clear landing in between
+  // removes the store it just created and leaves it writing to an unlinked
+  // inode. The race predates the snapshot — the bare rename had it too — and
+  // nothing here addresses it.
+  discardStore(file, backup);
   return backup;
 }
 
@@ -251,8 +303,12 @@ function openAndInitialize(file: string) {
     // (silent persistence loss). Back the old file up (recoverable) and start fresh
     // so writes work; the reset is a one-time, loud-on-stderr event.
     if (isForeignSqliteLineage(db)) {
-      db.close();
-      const backup = backupLegacyStore(file);
+      // Snapshot through the OPEN handle (VACUUM INTO) before it is closed and
+      // the original store cleared — a bare rename after close can lose
+      // un-checkpointed WAL frames. backupLegacyStore closes the handle itself,
+      // on its throw path too, so there is no close to do here; the catch below
+      // reaching an already-closed handle is what closeQuietly absorbs.
+      const backup = backupLegacyStore(db, file);
       db = openWithPragmas(file);
       akaWarn(
         `Detected an older, incompatible (tenant-bearing) ${DB_FILENAME}; backed it up to ` +

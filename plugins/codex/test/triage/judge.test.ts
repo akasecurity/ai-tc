@@ -1,9 +1,11 @@
-import { existsSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { JudgeDeps } from '../../src/triage/judge.ts';
 import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
 
 const VERDICT_FENCE = [
@@ -24,7 +26,10 @@ const outFileOf = (argv: readonly string[]): string => {
 // A fake spawn that plays the subprocess's one observable role: writing the
 // last-message file at the argv-named path.
 const fakeSpawn =
-  (lastMessage: string, seen?: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; stdin?: string }) =>
+  (
+    lastMessage: string,
+    seen?: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; stdin?: string },
+  ) =>
   (argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): void => {
     if (seen) {
       seen.argv = argv;
@@ -306,6 +311,84 @@ describe('runJudge', () => {
       // and the raw-bearing spawn error is NOT chained as `cause` — a future
       // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
       expect((err as Error).cause).toBeUndefined();
+    }
+  });
+
+  it('does not fall back to the live spawn when deps.spawn is missing', () => {
+    // The seam is required, not defaulted. A future `deps.spawn ?? spawnCodex`
+    // would turn any caller that forgot to inject into a live egress. It fails
+    // as the programming error it is — a TypeError before the rubric is read
+    // or any raw hit is assembled into a prompt.
+    const err = (() => {
+      try {
+        runJudge([hit], { loadRubric: () => 'RUBRIC' } as unknown as JudgeDeps);
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error('expected runJudge to throw');
+    })();
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe('runJudge requires deps.spawn — there is no live-spawn fallback');
+    expect(err.message).not.toContain(hit.rawMatch);
+  });
+
+  it('a cleanup fault never replaces the error the judge is throwing', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('removability here is decided by POSIX mode bits');
+    }
+    // A directory its owner cannot write to cannot have its children unlinked,
+    // so a recursive remove of the parent fails with a real EACCES from the
+    // real syscall. Root ignores mode bits, and a cleanup that SUCCEEDS leaves
+    // the error unreplaced too — so this test passes for the wrong reason
+    // without first proving the fault takes for whoever is running it.
+    const lock = (parent: string): string => {
+      const locked = join(parent, 'locked');
+      mkdirSync(locked);
+      writeFileSync(join(locked, 'child'), 'x');
+      chmodSync(locked, 0o500);
+      return locked;
+    };
+    const scratch = mkdtempSync(join(tmpdir(), 'aka-judge-fault-probe-'));
+    const probeLocked = lock(scratch);
+    let faultTakes = false;
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      faultTakes = true;
+    }
+    if (!faultTakes) ctx.skip('this user can remove a write-protected directory');
+    chmodSync(probeLocked, 0o700);
+    rmSync(scratch, { recursive: true, force: true });
+
+    let outDir = '';
+    let locked = '';
+    const threw = (() => {
+      try {
+        runJudge([hit], {
+          spawn: (argv) => {
+            outDir = dirname(outFileOf(argv));
+            locked = lock(outDir);
+            throw Object.assign(new Error(`Command failed: codex ${hit.rawMatch}`), { status: 7 });
+          },
+          loadRubric: () => 'RUBRIC',
+        });
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error('expected runJudge to throw');
+    })();
+    try {
+      // The fs error from the failed removal did NOT displace the raw-free one
+      // the caller has to act on — apply-suppressions prints exactly this
+      // message to the parent's stderr.
+      expect(threw.message).toBe('codex exec judge subprocess failed (exit 7)');
+      expect(threw.message).not.toContain(hit.rawMatch);
+      // The positive control: the dir survived, so the cleanup really did fail
+      // rather than this passing against a removal that quietly worked.
+      expect(existsSync(outDir)).toBe(true);
+    } finally {
+      if (locked !== '') chmodSync(locked, 0o700);
+      rmSync(outDir, { recursive: true, force: true });
     }
   });
 });

@@ -18,7 +18,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
+  decideInputPointerDeny,
   decidePreToolUse,
+  denyPointerMessage,
   EXECUTABLE_REDACT_NOTE,
   SCANNABLE_FIELDS,
 } from '../../src/hooks/pre-tool-use-decision.ts';
@@ -297,5 +299,43 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// A shape-valid vault pointer (RFC 4648 base32 segments: 2-char key version,
+// 26-char pointer id, 16-char tag) — pointerTokenScanner matches on shape, so
+// any well-formed token exercises the deny.
+const POINTER = `[[aka:secret:AA.${'A'.repeat(26)}.${'A'.repeat(16)}]]`;
+
+describe('decideInputPointerDeny', () => {
+  it('denies a pointer in an executable field, in every consent state', () => {
+    const output = decideInputPointerDeny('Bash', { command: `echo ${POINTER}` }, [BASH_COMMAND]);
+    expect(output?.hookSpecificOutput.permissionDecision).toBe('deny');
+    const reason = output?.hookSpecificOutput.permissionDecisionReason ?? '';
+    expect(reason).toBe(denyPointerMessage('Bash'));
+    // The reason tells the user how to proceed without ever suggesting the
+    // plugin could substitute the value itself — the resolve path it names is
+    // the audited CLI reveal, not an exception grant this harness cannot honor.
+    expect(reason).toContain('aka vault show');
+    expect(reason).not.toContain('aka exception approve');
+  });
+
+  it('lets a pointer in a NON-executable field pass to the normal scan', () => {
+    // apply_patch content is durable text, not something the host executes —
+    // a pointer there is data, decided by the regular capture pipeline.
+    expect(
+      decideInputPointerDeny('apply_patch', { input: `body ${POINTER}` }, [APPLY_PATCH_INPUT]),
+    ).toBeNull();
+  });
+
+  it('ignores clean commands and lookalike tokens with an invented category', () => {
+    expect(decideInputPointerDeny('Bash', { command: 'ls -la' }, [BASH_COMMAND])).toBeNull();
+    // The category alternation is pinned to DetectionCategory members: a
+    // lookalike must not trip the deny (it cannot reach a de-reference path
+    // anywhere, so denying it would be pure friction).
+    const lookalike = `[[aka:bogus:AA.${'A'.repeat(26)}.${'A'.repeat(16)}]]`;
+    expect(
+      decideInputPointerDeny('Bash', { command: `echo ${lookalike}` }, [BASH_COMMAND]),
+    ).toBeNull();
   });
 });

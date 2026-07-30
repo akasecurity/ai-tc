@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { bundledDetections } from '@akasecurity/plugin-sdk';
+import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { handleRequest } from '../../src/native-host/host.ts';
@@ -170,5 +173,73 @@ describe('handleRequest (native-messaging host)', () => {
       action: 'log',
       ruleIds: [],
     });
+  });
+});
+
+// The capture text-shaping contract against a seeded per-detection policy —
+// the same installed_packs.policy_id assignment the Detections dashboard
+// writes. The secret value comes from the bundled rule's own `examples`
+// fixture so no secret-shaped literal lives in this file.
+const RULE_ID = 'secrets/twilio-key';
+function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; example: string } {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
+  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
+  }
+  return { pack, example };
+}
+const { pack: SECRET_PACK, example: SECRET_EXAMPLE } = secretFixture();
+
+// Install the bundled packs the way the gateway does on open, then assign the
+// secrets pack the policy under test — per-rule pack policies are what the
+// runtime's action resolution prefers.
+function seedSecretPolicy(policyId: BuiltinPolicyId): void {
+  const db = openLocalDatabase(dir);
+  try {
+    db.installedPacks.recordInventory(bundledDetections());
+    db.installedPacks.setPolicy(SECRET_PACK.namespace, SECRET_PACK.packId, policyId);
+  } finally {
+    db.close();
+  }
+}
+
+async function captureSecret(): Promise<
+  Extract<Awaited<ReturnType<typeof handleRequest>>, { type: 'capture' }>
+> {
+  const response = await handleRequest(
+    {
+      type: 'capture',
+      requestId: 'p1',
+      sessionId: 'browser-p1',
+      tool: 'chatgpt',
+      kind: 'prompt',
+      text: `deploy with ${SECRET_EXAMPLE} now`,
+    },
+    config,
+  );
+  if (response.type !== 'capture') throw new Error('expected a capture response');
+  return response;
+}
+
+describe('capture response text shaping (per-detection policy)', () => {
+  it('block: the response carries text: null so the composer sends nothing', async () => {
+    seedSecretPolicy('block');
+    const response = await captureSecret();
+
+    expect(response.action).toBe('block');
+    expect(response.text).toBeNull();
+    expect(response.ruleIds).toContain(RULE_ID);
+  });
+
+  it('redact: the response text is the masked rewrite, never the raw value', async () => {
+    seedSecretPolicy('redact');
+    const response = await captureSecret();
+
+    expect(response.action).toBe('redact');
+    expect(response.text).toBeTypeOf('string');
+    expect(response.text).toContain('[REDACTED:SECRET]');
+    expect(response.text).not.toContain(SECRET_EXAMPLE);
+    expect(response.ruleIds).toContain(RULE_ID);
   });
 });

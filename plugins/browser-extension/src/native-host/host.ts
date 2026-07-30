@@ -17,9 +17,14 @@
  * gets an `error` response instead of taking the process down.
  */
 import { homedir } from 'node:os';
+import type { Readable, Writable } from 'node:stream';
 
 import { handleCapture, handleSessionStart, resolveDataGateway } from '@akasecurity/plugin-runtime';
-import type { PluginConfig, ResolvedCodexProvider, ResolvedProvider } from '@akasecurity/plugin-sdk';
+import type {
+  PluginConfig,
+  ResolvedCodexProvider,
+  ResolvedProvider,
+} from '@akasecurity/plugin-sdk';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import type { SourceTool } from '@akasecurity/schema';
 
@@ -136,8 +141,12 @@ export async function handleRequest(
   }
 }
 
-async function main(): Promise<void> {
-  for await (const raw of readMessages(process.stdin)) {
+export async function runHost(
+  stdin: Readable,
+  stdout: Writable,
+  configForTool: ConfigForTool = defaultConfigForTool,
+): Promise<void> {
+  for await (const raw of readMessages(stdin)) {
     if (!isHostRequest(raw)) {
       // A well-formed frame this host version doesn't recognize (extension/
       // host version skew) still gets an error reply when it carries a
@@ -147,7 +156,7 @@ async function main(): Promise<void> {
       if (typeof raw === 'object' && raw !== null && 'requestId' in raw) {
         const requestId = (raw as Record<string, unknown>).requestId;
         if (typeof requestId === 'string') {
-          await writeMessage(process.stdout, {
+          await writeMessage(stdout, {
             type: 'error',
             requestId,
             ok: false,
@@ -158,10 +167,10 @@ async function main(): Promise<void> {
       continue;
     }
     try {
-      const response = await handleRequest(raw);
-      await writeMessage(process.stdout, response);
+      const response = await handleRequest(raw, configForTool);
+      await writeMessage(stdout, response);
     } catch (error) {
-      await writeMessage(process.stdout, {
+      await writeMessage(stdout, {
         type: 'error',
         requestId: raw.requestId,
         ok: false,
@@ -169,6 +178,10 @@ async function main(): Promise<void> {
       });
     }
   }
+}
+
+async function main(): Promise<void> {
+  await runHost(process.stdin, process.stdout);
 }
 
 // Native-messaging hosts run detached from the terminal, so there's no

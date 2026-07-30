@@ -471,11 +471,25 @@ describe('lockStore against the product write path', () => {
 });
 
 describe('fillStore', () => {
-  it('raises SQLITE_FULL from the engine, leaving the store intact', () => {
+  // The synchronous=OFF handle below takes the fill loop's fsyncs away, but the
+  // migrated store this test seeds first still opens at the product's own
+  // durability settings, on a runner whose disk speed the suite does not
+  // control. Headroom over the config-wide 20s rather than a slow Windows disk
+  // flaking a passing test.
+  it('raises SQLITE_FULL from the engine, leaving the store intact', { timeout: 60_000 }, () => {
     withTempStore((store) => {
       seedStore(store);
       const db = store.openRaw();
       db.exec('PRAGMA journal_mode = WAL');
+      // Autocommit is load-bearing below: each row is its own commit, so
+      // `written` counts rows that really committed and can be compared against
+      // count(*). At the default synchronous level that means one WAL fsync per
+      // row, and on the Windows runner's disks under parallel load those syncs
+      // are what pushed this test past the timeout. SQLITE_FULL comes out of
+      // page allocation rather than the sync path — the run reaches it after
+      // the same number of rows either way — and every assertion here reads the
+      // live handle, so crash durability is not part of what is being proved.
+      db.exec('PRAGMA synchronous = OFF');
       db.exec('CREATE TABLE bulk (id INTEGER PRIMARY KEY, v TEXT)');
       const filled = fillStore(db);
 
@@ -484,6 +498,12 @@ describe('fillStore', () => {
       let written = 0;
       let err: unknown;
       try {
+        // A safety bound, not the expected count: the cap is two pages of
+        // headroom plus whatever the freelist holds, so the engine runs out
+        // after a couple of hundred rows. The bound stays generous because a
+        // page size or freelist this test does not control decides the real
+        // number, and a bound that ran out first would report as a failure to
+        // raise SQLITE_FULL.
         for (let i = 0; i < 20_000; i += 1) {
           insert.run(payload);
           written += 1;

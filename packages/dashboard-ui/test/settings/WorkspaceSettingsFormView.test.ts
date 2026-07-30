@@ -1,5 +1,5 @@
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { TriageHit, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
@@ -62,6 +62,14 @@ const FORM_COPY: Record<string, string> = {
       [`HISTORICAL_CHOICES.${c.value}.description`, c.description],
     ]),
   ),
+  MODEL_JUDGE_SECTION_LABEL,
+  MODEL_JUDGE_SECTION_DESCRIPTION,
+  ...Object.fromEntries(
+    MODEL_JUDGE_CHOICES.flatMap((c) => [
+      [`MODEL_JUDGE_CHOICES.${c.value}.label`, c.label],
+      [`MODEL_JUDGE_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
   ...Object.fromEntries(
     VAULT_CHOICES.flatMap((c) => [
       [`VAULT_CHOICES.${c.value}.label`, c.label],
@@ -82,10 +90,12 @@ describe('WorkspaceSettingsFormView copy', () => {
 });
 
 // Granting 'full' here is the same consent the /aka:setup wizard collects, and it
-// is what gates the wizard's history sweep — whose judge step sends raw findings
-// to the model API. The wizard's own copy points users at this screen for scope
-// and revocation, so a description that stops at "may be scanned" would leave the
-// egress disclosed in one place and hidden in the other.
+// gates the wizard's history sweep — READING local surfaces, and nothing beyond
+// that. Sending what the sweep finds to the model API is the distinct model-judge
+// grant below, which the judge checks on every run. So this description has to
+// scope itself to the read and hand the egress off to that control: copy that
+// folds the two together tells a user who picked Full that they authorized a send
+// they did not, and leaves them looking for a revocation lever on the wrong one.
 describe('WorkspaceSettingsFormView historical-access copy', () => {
   const full = HISTORICAL_CHOICES.find((c) => c.value === 'full');
 
@@ -93,15 +103,21 @@ describe('WorkspaceSettingsFormView historical-access copy', () => {
     expect(full).toBeDefined();
   });
 
-  it('discloses the model-API egress the grant enables', () => {
-    expect(full?.description).toMatch(/model API/i);
-    expect(full?.description).toMatch(/raw values/i);
-    expect(full?.description).toMatch(/secrets/i);
+  it('scopes the grant to reading and hands the egress to the separate consent', () => {
+    expect(full?.description).toMatch(/reading them only/i);
+    expect(full?.description).toMatch(/separate/i);
+    expect(full?.description).toMatch(/model-judge consent/i);
   });
 
-  it('names the rest of the payload, not just the secret', () => {
-    expect(full?.description).toMatch(/transcript text/i);
-    // The file path is dropped before egress (toJudgePayload) — copy must not
+  // The earlier copy read "This also lets /aka:setup send what that scan finds —
+  // raw values including any secrets and the surrounding transcript text — to the
+  // model API". Describing that payload here is what makes the grant look like it
+  // authorizes the send, so the payload belongs on the control that does.
+  it('does not describe a payload this grant cannot authorize', () => {
+    expect(full?.description).not.toMatch(/this also lets/i);
+    expect(full?.description).not.toMatch(/raw values/i);
+    expect(full?.description).not.toMatch(/transcript text/i);
+    // The file path is dropped before egress (toJudgePayload) — no surface may
     // claim it crosses.
     expect(full?.description).not.toMatch(/file path/i);
   });
@@ -144,6 +160,80 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
   it('defaults to revoked wording never assuming the grant', () => {
     const revoked = MODEL_JUDGE_CHOICES.find((c) => c.value === 'revoked');
     expect(revoked?.description).toMatch(/never assumed/i);
+  });
+
+  // This control is the only surface that authorizes the send, so it carries the
+  // whole payload disclosure — not a euphemistic "sends findings". "Findings"
+  // reads as the masked rows shown elsewhere in the dashboard; what actually
+  // crosses is the raw value, a sized window of transcript text, and the labels
+  // the finding was scored with.
+  //
+  // `on either side` is load-bearing, not decoration: CONTEXT_RADIUS is applied
+  // to BOTH ends of the match span (history/scan.ts), so the window is ~240
+  // characters, not 120. A bare /120 characters/ assertion passes either way —
+  // it proves the number is present, not that the claim is true — which is the
+  // containment-not-truth failure these guards exist to retire.
+  it('names the raw value, the sized context window, and the labels riding with them', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/raw, unmasked value/i);
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(
+      /120 characters of surrounding transcript text on either side/,
+    );
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/severity/i);
+  });
+
+  it('does not present revocation as a recall of what was already sent', () => {
+    expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/cannot recall/i);
+  });
+
+  // Derived from the schema rather than pinned to a phrase. `toJudgePayload` is
+  // disclosed-by-default — `{ ...hit }` minus three deletes — so a new TriageHit
+  // field crosses to the model API with no code edit. The plugin's
+  // judge.test.ts classification case is the only other exhaustiveness guard, and
+  // a one-line append to its DISCLOSED list silences it without moving any copy
+  // assertion. This table is what makes a widened payload red on the control that
+  // authorizes the send, which is what CLAUDE.md §4 promises.
+  //
+  // Copied here rather than shared with the plugin's suites: this is a separate
+  // package and words the same fields differently, the same reason expectNoEchoOf
+  // is copied rather than imported (CLAUDE.md, Testing).
+  const BLURB_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
+    rawMatch: /raw, unmasked value/i,
+    context: /transcript text on either side/i,
+    ruleId: /\brule\b/i,
+    category: /category/i,
+    severity: /severity/i,
+    maskedMatch: /masked value/i,
+    confidence: /confidence/i,
+    id: /counter/i,
+    // Dropped by toJudgePayload before egress — nothing to disclose.
+    filePath: null,
+    valueFingerprint: null,
+    keyVersion: null,
+  };
+
+  it('classifies every TriageHit field as named-in-the-blurb or dropped', () => {
+    expect(Object.keys(BLURB_DISCLOSURE).sort()).toEqual(Object.keys(TriageHit.shape).sort());
+  });
+
+  it.each(Object.entries(BLURB_DISCLOSURE).filter((e): e is [string, RegExp] => e[1] !== null))(
+    'names the disclosed field %s',
+    (_field, pattern) => {
+      expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(pattern);
+    },
+  );
+
+  // The choice a user actually clicks carries the CLASS of data and the SIZE of
+  // the window — the two facts that change the decision. The full label
+  // enumeration (rule/category/severity/masked value/confidence/counter) stays in
+  // the section blurb above, where the schema table enforces it: those are
+  // non-sensitive, and stacking them into the radio would bury the raw-value
+  // warning in a list, making the label less readable rather than more. So this is
+  // a deliberate split, not an omission.
+  it('names the raw value and the sized window on the grant choice itself', () => {
+    const granted = MODEL_JUDGE_CHOICES.find((c) => c.value === 'granted');
+    expect(granted?.description).toMatch(/raw, unmasked value/i);
+    expect(granted?.description).toMatch(/120 characters of surrounding context on either side/);
+    expect(granted?.description).toMatch(/model API/i);
   });
 });
 

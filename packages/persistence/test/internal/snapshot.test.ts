@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,9 +22,10 @@ import {
   backupPath,
   discardStore,
   moveStoreAside,
+  reapStalePartials,
   snapshotStore,
 } from '../../src/internal/snapshot.ts';
-import { corruptStore } from '../helpers/fault-injection.ts';
+import { corruptStore, primaryCode, SQLITE_CORRUPT } from '../helpers/fault-injection.ts';
 
 let dir: string;
 
@@ -151,10 +153,18 @@ describe('snapshotStore', () => {
 
     const db = new DatabaseSync(file);
     const backup = backupPath(file, 'legacy');
-    expect(() => {
+    let err: unknown;
+    try {
       snapshotStore(db, backup);
-    }).toThrow();
+    } catch (e) {
+      err = e;
+    }
     db.close();
+    // Pin that the COPY ran and failed on the corrupt page — not that some
+    // earlier statement threw. The two absence assertions below would hold for
+    // free if snapshotStore never reached VACUUM INTO (e.g. the pre-copy
+    // rmSync(partial) throwing), so a bare toThrow would not distinguish them.
+    expect(primaryCode(err)).toBe(SQLITE_CORRUPT);
 
     expect(existsSync(backup)).toBe(false);
     expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
@@ -343,5 +353,61 @@ describe('discardStore', () => {
 
     expect(existsSync(backup)).toBe(false); // no orphan left behind
     expect(existsSync(file)).toBe(true); // the original is untouched
+  });
+
+  it('keeps the published backup when the main file is gone but a sidecar cannot be cleared', () => {
+    // The main file clears, then a sidecar removal throws — a root-owned inode on
+    // POSIX, a live `-shm` mapping on Windows. Reproduced with a non-empty
+    // directory standing in for the `-wal`, which rmSync refuses without
+    // `recursive` on every platform. The original is now half gone, so the backup
+    // is the ONLY copy left and must survive the throw, not be dropped with it.
+    const file = join(dir, 'aka.db');
+    writeFileSync(file, 'ORIGINAL');
+    mkdirSync(`${file}-wal`);
+    writeFileSync(join(`${file}-wal`, 'inner'), 'x');
+    const backup = join(dir, 'aka.db.legacy.1.cccccccc.bak');
+    writeFileSync(backup, 'the only copy');
+
+    expect(() => {
+      discardStore(file, backup);
+    }).toThrow();
+
+    expect(existsSync(file)).toBe(false); // the main file really was removed
+    expect(existsSync(backup)).toBe(true); // the last copy survived — orphaned beats lost
+  });
+});
+
+describe('reapStalePartials', () => {
+  it('reaps an abandoned .partial but spares a fresh one and the published .bak', () => {
+    const file = join(dir, 'aka.db');
+    writeFileSync(file, 'store');
+    // A leftover from a killed run: a `.partial` whose mtime is frozen an hour
+    // ago (utimesSync, so no wall-clock wait — the package bans timing tests).
+    const stale = `${file}.legacy.1.aaaaaaaa.bak.partial`;
+    writeFileSync(stale, 'abandoned copy');
+    const anHourAgo = new Date(Date.now() - 60 * 60_000);
+    utimesSync(stale, anHourAgo, anHourAgo);
+    // A copy another opener has in flight: same prefix and suffix, mtime now.
+    const live = `${file}.pre-drop.1.bbbbbbbb.bak.partial`;
+    writeFileSync(live, 'in flight');
+    // A published backup ends in `.bak`, not `.bak.partial`, so it is off limits.
+    const published = `${file}.pre-drop.1.cccccccc.bak`;
+    writeFileSync(published, 'a real backup');
+
+    reapStalePartials(file);
+
+    expect(existsSync(stale)).toBe(false); // abandoned → reaped
+    expect(existsSync(live)).toBe(true); // in flight → left alone
+    expect(existsSync(published)).toBe(true); // published backup → never touched
+    expect(existsSync(file)).toBe(true); // the store itself → never touched
+  });
+
+  it('does nothing, and never throws, when the data dir has no stale partials', () => {
+    const file = join(dir, 'aka.db');
+    writeFileSync(file, 'store');
+    expect(() => {
+      reapStalePartials(file);
+    }).not.toThrow();
+    expect(existsSync(file)).toBe(true);
   });
 });

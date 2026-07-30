@@ -13,7 +13,7 @@ import {
 } from './db/migrations/introspection.ts';
 import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
 import { bindParams } from './internal/rows.ts';
-import { backupPath, snapshotStore } from './internal/snapshot.ts';
+import { backupPath, reapStalePartials, snapshotStore } from './internal/snapshot.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
 
@@ -292,6 +292,8 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
 // why the copy goes through VACUUM INTO and lands via a `.partial` rename. A
 // failure still throws and is caught by the caller, which defers the drop.
 export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
+  // Clear any `.partial` a prior open left behind before staging a new copy.
+  reapStalePartials(file);
   const backup = backupPath(file, 'pre-drop');
   snapshotStore(db, backup);
   return backup;

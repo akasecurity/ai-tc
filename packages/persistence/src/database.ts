@@ -21,7 +21,13 @@ import {
 } from '@akasecurity/schema';
 
 import { captureId } from './ids.ts';
-import { backupPath, discardStore, moveStoreAside, snapshotStore } from './internal/snapshot.ts';
+import {
+  backupPath,
+  discardStore,
+  moveStoreAside,
+  reapStalePartials,
+  snapshotStore,
+} from './internal/snapshot.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
@@ -232,6 +238,9 @@ function openWithPragmas(file: string): DatabaseSync {
 //
 // The handle is closed on every path. Returns the backup path.
 function backupLegacyStore(db: DatabaseSync, file: string): string {
+  // A prior open killed mid-snapshot leaves a `.partial` beside the store that
+  // nothing else reaps; clear the abandoned ones before writing a new copy.
+  reapStalePartials(file);
   const backup = backupPath(file, 'legacy');
   let snapshotted = false;
   let snapshotError: unknown;

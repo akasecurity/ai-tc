@@ -42,6 +42,7 @@ const exceptionRow: DetectionException = {
   valueFingerprint: FINGERPRINT,
   keyVersion: 3,
   maskedValue: 'AKIA****************',
+  capability: 'suppress',
   scope: 'permanent',
   expiresAt: null,
   maxUses: null,

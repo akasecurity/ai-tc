@@ -2,9 +2,11 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { applyOnboarding } from '@akasecurity/persistence';
 import type { PluginRuntime } from '@akasecurity/plugin-sdk';
-import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
+import { createVaultGlue, safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { MaskedSecretFinding } from '@akasecurity/schema';
+import { pointerTokenScanner, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // A toggle a single test flips to make the adapter's runtime `close()` throw —
@@ -64,6 +66,15 @@ function findingFor(filePath: string, rawValue: string): MaskedSecretFinding {
     where: { filePath },
     state: 'unknown',
   };
+}
+
+// Record a valid vault consent in the throwaway ~/.aka the adapter reads —
+// what flips the strike from the one-way placeholder to recoverable pointers.
+function grantVaultConsent(base: string): void {
+  applyOnboarding(
+    { vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION } },
+    base,
+  );
 }
 
 describe('redactSurfacedSecrets — the production redaction adapter', () => {
@@ -161,7 +172,68 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
 
   it('returns 0 and touches nothing for an empty findings set', async () => {
     const result = await redactSurfacedSecrets([], { home, dataDirBase });
-    expect(result).toEqual({ redactedKeys: 0, unredacted: [] });
+    expect(result).toEqual({ redactedKeys: 0, pointeredKeys: 0, unredacted: [] });
+  });
+
+  it('with vault consent, the strike becomes recoverable pointers — one pointer per distinct value, detokenizable back to the key', async () => {
+    grantVaultConsent(dataDirBase);
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const fileA = join(projectDir, 'a.jsonl');
+    const fileB = join(projectDir, 'b.jsonl');
+    // The SAME key leaked into two transcripts — it must resolve to ONE
+    // pointer, substituted in both files.
+    writeFileSync(fileA, `{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+    writeFileSync(fileB, `{"content":"same key ${TRANSCRIPT_KEY} again"}`);
+
+    const result = await redactSurfacedSecrets(
+      [findingFor(fileA, TRANSCRIPT_KEY), findingFor(fileB, TRANSCRIPT_KEY)],
+      { home, dataDirBase },
+    );
+
+    expect(result.redactedKeys).toBe(2);
+    expect(result.pointeredKeys).toBe(2);
+    expect(result.unredacted).toEqual([]);
+
+    const afterA = readFileSync(fileA, 'utf8');
+    const afterB = readFileSync(fileB, 'utf8');
+    for (const after of [afterA, afterB]) {
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+      expect(after).not.toContain('[REDACTED:SECRET]');
+    }
+    const pointersA = afterA.match(pointerTokenScanner());
+    const pointersB = afterB.match(pointerTokenScanner());
+    expect(pointersA).toHaveLength(1);
+    // One distinct value → one pointer, identical across both artifacts.
+    expect(pointersB).toEqual(pointersA);
+
+    // The pointer is genuinely recoverable: the same store detokenizes it back
+    // to the original key.
+    const glue = createVaultGlue({ base: dataDirBase });
+    const back = await glue.detokenizeText(afterA, { target: 'human', reason: 'display' });
+    expect(back.revealed).toBe(1);
+    expect(back.text).toBe(`{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+  });
+
+  it('without vault consent the strike is byte-identical to the legacy one-way redaction', async () => {
+    // No consent is ever granted in this test — the default state of the
+    // throwaway store.
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptFile = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptFile, `{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+
+    const result = await redactSurfacedSecrets([findingFor(transcriptFile, TRANSCRIPT_KEY)], {
+      home,
+      dataDirBase,
+    });
+
+    expect(result.redactedKeys).toBe(1);
+    expect(result.pointeredKeys).toBe(0);
+    expect(result.unredacted).toEqual([]);
+    expect(readFileSync(transcriptFile, 'utf8')).toBe(
+      '{"content":"a key [REDACTED:SECRET] in a prompt"}',
+    );
   });
 
   it('reports a vanished/unreadable artifact as unredacted rather than silently dropping it', async () => {

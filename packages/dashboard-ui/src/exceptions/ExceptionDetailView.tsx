@@ -5,7 +5,7 @@ import { useState } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
-import { StateTagFor } from './atoms.tsx';
+import { CapabilityTagFor, StateTagFor } from './atoms.tsx';
 import { exceptionState, SCOPE_LABEL, VIA_LABEL } from './meta.ts';
 
 export interface ExceptionDetailViewProps {
@@ -34,7 +34,18 @@ export function ExceptionDetailView({
           {exception.id.slice(0, 8)}
         </span>
         <StateTagFor exception={exception} />
+        <CapabilityTagFor exception={exception} />
       </div>
+
+      {exception.capability === 'reveal_to_model' && (
+        <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
+          <SectionLabel className="text-sev-critical">Reveal to model</SectionLabel>
+          <p className="text-sm text-text-2">
+            While this grant is active, the model can receive this value&apos;s raw form at tool
+            boundaries. Every crossing is audited in the vault&apos;s de-reference trail.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-3">
         <MetaItem label="Rule">

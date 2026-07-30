@@ -367,6 +367,7 @@ describe('SqliteExceptionsRepository', () => {
           ruleId: active.ruleId,
           valueFingerprint: active.valueFingerprint,
           keyVersion: 1,
+          capability: 'suppress',
           expiresAt: active.expiresAt,
           maxUses: 3,
           useCount: 0,

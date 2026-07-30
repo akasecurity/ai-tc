@@ -1,0 +1,1 @@
+ALTER TABLE `secret_vault` ADD `format_version` integer DEFAULT 2 NOT NULL;

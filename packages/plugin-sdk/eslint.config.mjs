@@ -1,5 +1,5 @@
 // @ts-check
-import { base } from '@akasecurity/eslint-config';
+import { base, rootConfigFiles } from '@akasecurity/eslint-config';
 
 export default [
   ...base,
@@ -11,6 +11,7 @@ export default [
       },
     },
   },
+  ...rootConfigFiles,
   {
     // provider.ts resolves the LLM provider from the host process env at
     // SessionStart (Bedrock/Vertex flags + ANTHROPIC_BASE_URL). The opt-out is

@@ -976,7 +976,11 @@ export function renderExceptions(exceptions: DetectionException[], nowMs = Date.
 
   const rows = exceptions.map((e) => [
     e.id.slice(0, 8),
-    e.maskedValue,
+    // A reveal grant is strictly stronger than a plain suppression: while it is
+    // active the model can receive this value's RAW form at tool boundaries.
+    // Tag the row so it can never be mistaken for a suppress-only grant. The
+    // value itself stays masked — this list shows metadata, never raw values.
+    e.capability === 'reveal_to_model' ? `${e.maskedValue} · REVEALS-TO-MODEL` : e.maskedValue,
     e.ruleId,
     e.scope,
     relativeExpiry(e.expiresAt, nowMs),

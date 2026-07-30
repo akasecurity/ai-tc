@@ -3,7 +3,13 @@ import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Badge, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 
 import type { ExceptionState, ScopeAnswer } from './meta.ts';
-import { exceptionState, SCOPE_ANSWER_LABEL, SCOPE_ANSWERS, STATE_TONE } from './meta.ts';
+import {
+  CAPABILITY_LABEL,
+  exceptionState,
+  SCOPE_ANSWER_LABEL,
+  SCOPE_ANSWERS,
+  STATE_TONE,
+} from './meta.ts';
 
 /** Lifecycle state chip (derived, never stored). */
 export function StateTag({ state }: { state: ExceptionState }) {
@@ -12,6 +18,18 @@ export function StateTag({ state }: { state: ExceptionState }) {
 
 export function StateTagFor({ exception, now }: { exception: ExceptionDescriptor; now?: number }) {
   return <StateTag state={exceptionState(exception, now)} />;
+}
+
+/**
+ * Capability chip. Rendered ONLY for reveal-to-model grants — while such a
+ * grant is active the model can receive the value's raw form at tool
+ * boundaries, so the register flags it on every surface. Suppression (the
+ * default) stays unlabelled: repeating "suppress" on every row would bury the
+ * one capability that matters.
+ */
+export function CapabilityTagFor({ exception }: { exception: ExceptionDescriptor }) {
+  if (exception.capability !== 'reveal_to_model') return null;
+  return <Badge variant="critical">{CAPABILITY_LABEL.reveal_to_model}</Badge>;
 }
 
 /**

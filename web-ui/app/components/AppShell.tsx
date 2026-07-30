@@ -39,6 +39,7 @@ const NAV: NavItem[] = [
   { label: 'Detections', icon: ListIcon, href: '/detections' },
   { label: 'Policies', icon: PolicyIcon, href: '/policies' },
   { label: 'Exceptions', icon: KeyIcon, href: '/exceptions' },
+  { label: 'Vault', icon: KeyIcon, href: '/vault' },
   { label: 'Scan', icon: SearchIcon, href: '/scan' },
   { label: 'Updates', icon: RefreshIcon, href: '/updates' },
   { label: 'Settings', icon: SettingsIcon, href: '/settings' },

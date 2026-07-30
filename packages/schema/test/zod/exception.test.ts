@@ -98,6 +98,7 @@ describe('ExceptionBundleEntry', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(Object.keys(result.data).sort()).toEqual([
+        'capability',
         'conditions',
         'expiresAt',
         'id',
@@ -113,9 +114,12 @@ describe('ExceptionBundleEntry', () => {
 
 describe('ExceptionDescriptor / toExceptionDescriptor', () => {
   it('omits exactly the keyed fingerprint and keeps everything else', () => {
-    const descriptor = toExceptionDescriptor(DetectionException.parse(validException));
+    // Keys are compared against the PARSED row, not the raw fixture, so a
+    // field the schema fills by default (e.g. capability) counts as "kept".
+    const row = DetectionException.parse(validException);
+    const descriptor = toExceptionDescriptor(row);
     expect(Object.keys(descriptor).sort()).toEqual(
-      Object.keys(validException)
+      Object.keys(row)
         .filter((key) => key !== 'valueFingerprint')
         .sort(),
     );

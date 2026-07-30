@@ -256,6 +256,30 @@ export const noEnterpriseImports = tseslint.config({
   },
 });
 
+// Every package keeps its build and tooling config at its own root —
+// tsup.config.ts, vitest.config.ts, eslint.config.mjs, drizzle.config.local.ts.
+// Those files are OSS source and belong behind the network ban, but they sit
+// outside the tsconfig `include`, which lists only the compiled source dirs. The
+// type-aware parser rejects a file no project owns ("was not found by the
+// project service") and reports nothing else about it, so pointing `lint` at
+// them means switching the type-aware rules off for exactly those paths. That
+// costs the type-aware rules on a handful of config files and buys the
+// no-network ban on all of them: every network rule is syntactic — restricted
+// globals, member access, static imports, dynamic import/require — so all four
+// still fire here.
+//
+// The glob is root-anchored (no `**/`), so a config file under src/ or test/ is
+// left alone and keeps full type-aware linting. Spread this AFTER the block that
+// turns `projectService` on: flat config resolves last-wins, so the order is
+// what disables it for these paths.
+/** @type {import('eslint').Linter.Config[]} */
+export const rootConfigFiles = [
+  {
+    files: ['*.config.*'],
+    ...tseslint.configs.disableTypeChecked,
+  },
+];
+
 // A standalone config that enforces ONLY the no-network guarantee — the four
 // bans above and nothing else. Point a second lint pass at it (see cli's
 // `eslint.scripts.config.mjs`) to cover files that are not compiled sources:

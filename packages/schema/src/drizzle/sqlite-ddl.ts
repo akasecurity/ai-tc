@@ -91,4 +91,16 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0015_busy_vengeance',
     sql: 'CREATE TABLE `secret_vault` (\n\t`pointer_id` text PRIMARY KEY NOT NULL,\n\t`value_fingerprint` text NOT NULL,\n\t`fingerprint_key_version` integer NOT NULL,\n\t`key_version` integer NOT NULL,\n\t`category` text NOT NULL,\n\t`rule_id` text NOT NULL,\n\t`masked_match` text NOT NULL,\n\t`provider` text,\n\t`ciphertext` text NOT NULL,\n\t`nonce` text NOT NULL,\n\t`auth_tag` text NOT NULL,\n\t`occurrence_count` integer DEFAULT 1 NOT NULL,\n\t`first_seen` integer NOT NULL,\n\t`last_seen` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `uq_secret_vault_value` ON `secret_vault` (`value_fingerprint`);--> statement-breakpoint\nCREATE TABLE `secret_vault_deref` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`pointer_id` text NOT NULL,\n\t`at` integer NOT NULL,\n\t`target` text NOT NULL,\n\t`reason` text NOT NULL,\n\t`outcome` text NOT NULL,\n\t`grant_id` text,\n\t`pointer_count` integer DEFAULT 1 NOT NULL\n);\n--> statement-breakpoint\nCREATE INDEX `idx_secret_vault_deref_pointer` ON `secret_vault_deref` (`pointer_id`);--> statement-breakpoint\nCREATE INDEX `idx_secret_vault_deref_reason_at` ON `secret_vault_deref` (`reason`,`at`);',
   },
+  {
+    tag: '0016_breezy_zodiak',
+    sql: "ALTER TABLE `exceptions` ADD `capability` text DEFAULT 'suppress' NOT NULL;",
+  },
+  {
+    tag: '0017_rainy_kat_farrell',
+    sql: 'CREATE TABLE `secret_vault_sighting` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`pointer_id` text NOT NULL,\n\t`location` text NOT NULL,\n\t`kind` text NOT NULL,\n\t`first_seen` integer NOT NULL,\n\t`last_seen` integer NOT NULL\n);\n--> statement-breakpoint\nCREATE UNIQUE INDEX `uq_secret_vault_sighting` ON `secret_vault_sighting` (`pointer_id`,`location`);',
+  },
+  {
+    tag: '0018_serious_tana_nile',
+    sql: 'ALTER TABLE `secret_vault` ADD `format_version` integer DEFAULT 2 NOT NULL;',
+  },
 ];

@@ -219,6 +219,11 @@ export const exceptions = sqliteTable(
     valueFingerprint: text(COL.valueFingerprint).notNull(),
     keyVersion: integer(COL.keyVersion).notNull(),
     maskedValue: text(COL.maskedValue).notNull(),
+    // What the grant authorizes; 'reveal_to_model' also satisfies suppression
+    // (strictly stronger), while 'suppress' never reveals.
+    capability: text(COL.capability, { enum: ['suppress', 'reveal_to_model'] })
+      .notNull()
+      .default('suppress'),
     scope: text(COL.scope, { enum: ['once', 'temporary', 'permanent'] }).notNull(),
     expiresAt: integer(COL.expiresAt),
     maxUses: integer(COL.maxUses),
@@ -708,6 +713,13 @@ export const secretVault = sqliteTable(
     fingerprintKeyVersion: integer(COL.fingerprintKeyVersion).notNull(),
     // The vault-key epoch this row's ciphertext is sealed under.
     keyVersion: integer(COL.keyVersion).notNull(),
+    // The pointer-format generation (POINTER_FORMAT_VERSION) this row's
+    // ciphertext AAD is bound under — the AAD only, never the wire tag, which
+    // is checked against the current constant before any row is looked up.
+    // Recorded per row so a future format bump can still open and re-seal
+    // existing entries instead of stranding them. Default 2: every row written
+    // before this column existed was sealed under format version 2.
+    formatVersion: integer(COL.formatVersion).notNull().default(2),
     // Fixed at first mint, never updated on re-detection: the same value seen
     // later under a different rule's category keeps its minted category, so one
     // value always yields exactly one wire token.
@@ -731,6 +743,29 @@ export const secretVault = sqliteTable(
   ],
 );
 
+// SECRET VAULT SIGHTING — where a pointer has been written: one row per
+// (pointer, location), timestamps bumped on re-sighting. Deliberately no FK to
+// secret_vault: the record of where pointers went is itself evidence and must
+// survive a purge, exactly like the deref trail.
+export const secretVaultSighting = sqliteTable(
+  'secret_vault_sighting',
+  {
+    id: text(COL.id).primaryKey(),
+    pointerId: text(COL.pointerId).notNull(),
+    location: text(COL.location).notNull(),
+    kind: text(COL.kind, {
+      enum: ['prompt', 'tool-input', 'tool-output', 'file', 'transcript'],
+    }).notNull(),
+    firstSeen: integer(COL.firstSeen).notNull(),
+    lastSeen: integer(COL.lastSeen).notNull(),
+  },
+  (t) => [
+    // Also serves every by-pointer lookup as its left prefix — no separate
+    // single-column index.
+    uniqueIndex('uq_secret_vault_sighting').on(t.pointerId, t.location),
+  ],
+);
+
 // SECRET VAULT DEREF — the audit trail. Every de-reference writes one, whatever
 // the outcome. Never carries the raw value or the ciphertext.
 export const secretVaultDeref = sqliteTable(
@@ -743,7 +778,7 @@ export const secretVaultDeref = sqliteTable(
     at: integer(COL.at).notNull(),
     target: text(COL.target, { enum: ['human', 'model'] }).notNull(),
     reason: text(COL.reason, {
-      enum: ['display', 'explicit-reveal', 'view-render', 'model-input', 'remediation'],
+      enum: ['display', 'explicit-reveal', 'view-render', 'model-input', 'remediation', 'purge'],
     }).notNull(),
     outcome: text(COL.outcome, { enum: ['revealed', 'refused', 'unavailable'] }).notNull(),
     // Present only on a model crossing a reveal grant authorized.

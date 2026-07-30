@@ -4,7 +4,7 @@
  * collects the answers conversationally, then runs:
  *
  *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only> \
- *     --posture <json> --floor
+ *     --vault-consent <grant|revoke> --posture <json> --floor
  *
  * Each flag is optional and additive: omit one and its current value (or the
  * default) is kept, so a later wizard step is one more flag with no rewrite.
@@ -33,6 +33,7 @@ import {
   HistoricalAccess,
   MODEL_JUDGE_PAYLOAD_VERSION,
   SimpleDetectionPolicy,
+  VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
 
 import { parsePosture } from './onboard-posture.ts';
@@ -93,6 +94,29 @@ if (process.argv.includes('--model-judge-consent')) {
   };
 }
 
+// The vault-consent answer. `grant` stamps the acknowledgment HERE — the flag
+// carries no timestamp or version, so a caller can never supply either; `revoke`
+// clears the stored grant (an explicit undefined overrides the merged value and
+// the key is dropped on write). Revoking stops future vaulting only — entries
+// already stored stay until the vault is purged.
+const rawVaultConsent = flags.get('vault-consent');
+let vaultConsentAction: 'grant' | 'revoke' | undefined;
+if (rawVaultConsent !== undefined) {
+  if (rawVaultConsent === 'grant' || rawVaultConsent === 'revoke') {
+    vaultConsentAction = rawVaultConsent;
+  } else {
+    fail(`invalid --vault-consent "${rawVaultConsent}" (expected grant or revoke)`);
+  }
+}
+if (vaultConsentAction === 'grant') {
+  answers.vaultConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    version: VAULT_CONSENT_VERSION,
+  };
+} else if (vaultConsentAction === 'revoke') {
+  answers.vaultConsent = undefined;
+}
+
 const rawPosture = flags.get('posture');
 const useFloor = process.argv.includes('--floor');
 const recalibrate = process.argv.includes('--recalibrate');
@@ -103,7 +127,7 @@ const recalibrate = process.argv.includes('--recalibrate');
 if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
 
 if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
-  fail('nothing to save — pass --policy, --historical, --posture and/or --floor');
+  fail('nothing to save — pass --policy, --historical, --vault-consent, --posture and/or --floor');
 }
 
 // Recording the model-judge consent is not an onboarding-posture answer: it
@@ -123,6 +147,17 @@ if (Object.keys(answers).length > 0) {
     if (wroteConsent) {
       process.stdout.write(
         show("Noted — I'll send findings to the model to rate them. You can revoke that anytime."),
+      );
+    }
+    if (vaultConsentAction === 'grant') {
+      process.stdout.write(
+        show('Okay — detected secrets will be kept recoverable in your local encrypted vault.'),
+      );
+    } else if (vaultConsentAction === 'revoke') {
+      process.stdout.write(
+        show(
+          'Okay — new detections will no longer be vaulted. Anything already stored stays until you purge the vault.',
+        ),
       );
     }
     // Caps any existing block/redact category rows to warn once when this

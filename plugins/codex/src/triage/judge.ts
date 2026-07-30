@@ -95,9 +95,12 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // so unit tests inject a fake and NEVER hit a live model. The prompt (which
 // carries the raw hits) rides on stdin rather than argv — argv has an OS
 // ceiling (ARG_MAX, ~1MB on most platforms) that a large hit set can exceed,
-// failing the spawn with E2BIG; stdin has no such limit. `codex exec`'s
-// stdout (run logging that can echo raw content) is captured here and
+// failing the spawn with E2BIG; stdin has no such limit. BOTH of `codex exec`'s
+// output streams (run logging that can echo raw content) are captured here and
 // discarded — the verdict comes from the --output-last-message file instead.
+// The stdio option is explicit because execFileSync's default writes the
+// child's stderr through to the parent's stderr, which flows into the wizard
+// conversation — the transcript --ephemeral exists to keep raw content out of.
 export function spawnCodex(argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): void {
   execFileSync('codex', [...argv], {
     env,
@@ -105,6 +108,7 @@ export function spawnCodex(argv: readonly string[], env: NodeJS.ProcessEnv, stdi
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 32 * 1024 * 1024,
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
 
@@ -167,6 +171,15 @@ export function toJudgePayload(
 }
 
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
+  // No live-spawn fallback: a caller that forgot the seam must fail as the
+  // programming error it is rather than be quietly routed to the real
+  // `codex`. First statement in the function, so it throws before the rubric
+  // is read, before any hit is projected, and before the temp output dir is
+  // minted — no raw is assembled for a call that cannot proceed.
+  if (typeof deps.spawn !== 'function') {
+    throw new TypeError('runJudge requires deps.spawn — there is no live-spawn fallback');
+  }
+
   const rubric = deps.loadRubric?.() ?? readFileSync(DEFAULT_RUBRIC_PATH, 'utf8');
   const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
@@ -205,6 +218,13 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
     }
     return parseVerdict(lastMessage);
   } finally {
-    rmSync(outDir, { recursive: true, force: true });
+    try {
+      rmSync(outDir, { recursive: true, force: true });
+    } catch {
+      // A throw here would REPLACE whatever the try block is throwing — the
+      // raw-free spawn/parse failure the caller has to act on — with an fs
+      // error about a throwaway path. The dir is a mkdtemp under tmpdir(),
+      // so leaking it beats losing the real failure.
+    }
   }
 }

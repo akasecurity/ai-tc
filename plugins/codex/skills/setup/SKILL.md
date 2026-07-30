@@ -271,7 +271,10 @@ user's data off the machine, so do **not** mark either one recommended.
 
 **Send findings to the model to sort real leaks from noise?** — "I'll send each
 detected value, plus a bit of surrounding context with any secrets in it masked,
-to the model to tell real leaks from routine noise. The file path stays local."
+to the model to tell real leaks from routine noise. The file path stays local.
+This consent is saved machine-wide in AKA's settings, so it also covers the
+same triage step in AKA's other harness plugins on this machine — revoke it
+anytime from the dashboard."
 
 1. **Yes, send them** — "let the model triage what I found"
 2. **No, keep it local** — "skip the model triage and start from the safe defaults"
@@ -805,10 +808,21 @@ relayed to the user. If you summarized one instead of pasting it, paste it now.
 ## Known limitation
 
 Live PreToolUse/PostToolUse redaction currently covers `Bash` shell calls only —
-Codex does not yet fire these hooks for `apply_patch` (file-write) calls (see
-`hooks/hooks.json` and `src/hooks/pre-tool-use-decision.ts` for the tracking
-issue). File-write content is still covered by the prompt/response scan and by
+Codex does not yet fire these hooks for `apply_patch` (file-write) calls (an
+upstream Codex hook-coverage gap). File-write content is still covered by the
+prompt/response scan and by
 the consent-gated historical scan this wizard offers in steps 1/3, just not
 redacted before it is written. If the user asks why a secret in a file edit
 wasn't caught live, explain this gap honestly rather than implying full
 coverage.
+
+The reversible secret vault is not yet wired for Codex sessions, so this wizard
+does not offer the vault-consent step: everything AKA redacts here is one-way
+(the safe direction), and nothing this plugin captures is ever vaulted — even
+when vault consent was granted through the Claude Code wizard on the same
+machine. Vault pointers minted elsewhere still render as literal `[[aka:...]]`
+tokens in Codex output (Codex has no display-side hook to badge them), and a
+pointer inside a Bash command is denied rather than executed or substituted.
+If the user asks about recovering a redacted value, point them at the vault
+surfaces that do exist on this machine (`aka vault show`, the dashboard's
+Vault page) rather than implying this plugin can reveal anything.

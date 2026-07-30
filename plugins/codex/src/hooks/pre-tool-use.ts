@@ -23,7 +23,11 @@
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 
 import type { ScannedField } from './pre-tool-use-decision.ts';
-import { decidePreToolUse, SCANNABLE_FIELDS } from './pre-tool-use-decision.ts';
+import {
+  decideInputPointerDeny,
+  decidePreToolUse,
+  SCANNABLE_FIELDS,
+} from './pre-tool-use-decision.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
@@ -39,6 +43,21 @@ async function main(): Promise<void> {
   const fields = SCANNABLE_FIELDS[toolName];
   const rawToolInput = input.tool_input;
   if (!fields || typeof rawToolInput !== 'object' || rawToolInput === null) return;
+
+  // A model-echoed vault pointer in text that EXECUTES is decided before the
+  // secret scan (and before the store is even opened): this plugin never
+  // substitutes pointers, so an ungranted pointer must deny outright rather
+  // than run as literal text. Pointers reach Codex from the same machine's
+  // vault surfaces (the Claude Code plugin, the wizard's history scrub).
+  const pointerDeny = decideInputPointerDeny(
+    toolName,
+    rawToolInput as Record<string, unknown>,
+    fields,
+  );
+  if (pointerDeny) {
+    await emit(pointerDeny);
+    return;
+  }
 
   const config = loadConfig();
   const gateway = openGatewayOrNull(config);

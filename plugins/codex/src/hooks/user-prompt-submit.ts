@@ -15,7 +15,8 @@
  *   no output                            → allow
  *
  * Codex cannot rewrite prompt text on this event either, so a `redact` decision
- * degrades to a warning here, same as Claude Code; true redaction happens in
+ * BLOCKS here, same as Claude Code — warning and passing the prompt through
+ * would send the raw secret to the model. True in-place redaction happens in
  * pre-tool-use via updatedInput.
  *
  * This is also the first-run nudge point: on a clean prompt from a machine that
@@ -70,7 +71,10 @@ async function main(): Promise<void> {
     await runtime.close();
   }
 
-  if (result.action === 'block') {
+  if (result.action === 'block' || result.action === 'redact') {
+    // A redact policy blocks here too: this surface has no prompt-rewrite
+    // channel, so the only way to honor "the raw value must not reach the
+    // model" is to stop the prompt with removal-based guidance.
     await emit({
       decision: 'block',
       reason: blockMessage({
@@ -81,9 +85,12 @@ async function main(): Promise<void> {
     });
     return;
   }
-  if (result.action === 'redact' || result.action === 'warn') {
+  if (result.action === 'warn') {
+    // A warn never escalates: the prompt continues, flagged. A warned value is
+    // ledgered like a blocked one, so when a reference exists the message
+    // points at the same out-of-band approve flow.
     await emit({
-      systemMessage: `AKA flagged sensitive content (${uniqueRuleIds(result.findings)}). Prompts cannot be redacted in place — sent unchanged.${exceptionPointer(result.blockedReferences)}`,
+      systemMessage: `AKA flagged sensitive content (${uniqueRuleIds(result.findings)}) — sent unchanged.${exceptionPointer(result.blockedReferences)}`,
     });
     return;
   }
@@ -91,7 +98,7 @@ async function main(): Promise<void> {
   if (!config.onboarded && claimOnboardingNudge(config.dataDir, sessionId)) {
     await emit({
       systemMessage:
-        'AKA is active and monitoring your prompts (log-only by default — nothing is blocked or redacted yet). Run the aka:setup skill to choose your installation type and set enforcement (warn/redact/block) per detection.',
+        'AKA is active and monitoring your prompts (log-only by default — nothing is blocked or redacted yet). Run the aka-setup skill to choose your installation type and set enforcement (warn/redact/block) per detection.',
     });
   }
 }

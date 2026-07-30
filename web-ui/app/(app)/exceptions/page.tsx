@@ -1,5 +1,14 @@
-import { BLOCKED_WINDOW_MS, resolveBlockedWindow } from '@akasecurity/dashboard-ui';
-import { dataDir, keyStateOf, readFingerprintKey } from '@akasecurity/persistence';
+import {
+  BLOCKED_WINDOW_MS,
+  isBlockedRowApprovable,
+  resolveBlockedWindow,
+} from '@akasecurity/dashboard-ui';
+import {
+  BLOCKED_DETECTIONS_RETENTION_MS,
+  dataDir,
+  keyStateOf,
+  readFingerprintKey,
+} from '@akasecurity/persistence';
 import type { FingerprintKeyState } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
@@ -20,9 +29,15 @@ export default async function ExceptionsPage({
   const params = await searchParams;
   const includeTerminal = params.all === '1';
   const blockedWindow = resolveBlockedWindow(params.window);
-  const [items, blocked] = await Promise.all([
+  // Two ledger reads, two different questions. The strip shows the window the
+  // user picked; the rotate dialog has to name what rotation costs, and that is
+  // the whole retention window — the same one approveBlocked looks a reference
+  // up against. Counting only the selected chip (30 minutes by default, against
+  // a day of retention) would understate a one-way action.
+  const [items, blocked, retained] = await Promise.all([
     db().exceptions.list({ includeTerminal }),
     db().exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow]),
+    db().exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS),
   ]);
 
   // The key as three distinct states, not `number | null`: an unreadable key
@@ -46,6 +61,11 @@ export default async function ExceptionsPage({
       (ex.maxUses === null || ex.useCount < ex.maxUses),
   );
 
+  // Only the rows rotation actually takes something from: one already recorded
+  // under an older key (or under a key that is now missing) is unapprovable
+  // already, so counting it would overstate the loss.
+  const approvableBlocked = retained.filter((b) => isBlockedRowApprovable(b, keyState)).length;
+
   return (
     <ExceptionsClient
       items={items}
@@ -54,6 +74,7 @@ export default async function ExceptionsPage({
       blockedWindow={blockedWindow}
       keyState={keyState}
       activePermanent={activePermanent}
+      approvableBlocked={approvableBlocked}
     />
   );
 }

@@ -127,6 +127,28 @@ describe('createSubmitInterceptor', () => {
     expect(h.banners[0]?.tone).toBe('redact');
   });
 
+  it('warn: banner names the flagged rules and the message still goes out exactly once', async () => {
+    const h = harness([capture({ action: 'warn', ruleIds: ['core-pii/email'] })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.banners[0]?.tone).toBe('warn');
+    expect(h.banners[0]?.message).toContain('core-pii/email');
+    expect(h.setTextCalls).toHaveLength(0);
+    expect(h.submitted()).toBe(1);
+    expect(h.relayCalls).toHaveLength(1);
+  });
+
+  it('redact with no text field: the original text passes through unchanged, no rewrite', async () => {
+    const h = harness([capture({ action: 'redact', ruleIds: ['r1'] })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.setTextCalls).toHaveLength(0);
+    expect(h.composer.textContent).toBe('the composer text');
+    expect(h.submitted()).toBe(1);
+  });
+
   it('fail-open: a relay error still lets the original message through, once', async () => {
     const h = harness([]); // relay rejects
     h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);

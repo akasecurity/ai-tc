@@ -18,6 +18,7 @@ function exception(overrides: Partial<DetectionException>): DetectionException {
     valueFingerprint: 'a'.repeat(64),
     keyVersion: 1,
     maskedValue: 'A****Z',
+    capability: 'suppress',
     scope: 'permanent',
     expiresAt: null,
     maxUses: null,

@@ -571,7 +571,12 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
     // rather than guarding the grant. Every other path reached the grant with no
     // check of its own. They are enumerated here because the guard is only
     // trustworthy if it sits where all of them converge.
-    describe('every selection path ends at the same refusal', () => {
+    //
+    // LEDGER paths only. A pointer selector with --reveal-to-model is a sixth way
+    // into `aka exception approve` and is deliberately not one of these: a reveal
+    // grant is matched on its vault row's own triple, so the current fingerprint
+    // key has no say in whether it resolves. See exception-reveal.test.ts.
+    describe('every ledger selection path ends at the same refusal', () => {
       it('refuses a row selected by the masked value from the block message', async () => {
         await seedBlocked('9c04d7');
         rotateFingerprintKey(dir);
@@ -633,7 +638,10 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
           () => undefined,
           (e: unknown) => e as Error,
         );
-        expect(err).toBeInstanceOf(Error);
+        // The search comes up empty, so this refuses inside pickBlocked and never
+        // reaches the grant site — pin the wording, or a TypeError from a broken
+        // search would satisfy the case it is named for.
+        expect(err?.message).toMatch(/no blocked detection matches/);
         expect(await grants()).toHaveLength(0);
         // The selector may be a live secret however the refusal is reached.
         expect(err?.message).not.toContain(VALUE);
@@ -644,10 +652,13 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         // The one shape where the by-value path can still FIND a stale row: the
         // key file keeps its material and only its version advances, so the
         // pasted value fingerprints to exactly what the row stored. Rotation
-        // never produces this — it is what a hand-edited key file leaves — and
-        // it is the only construction under which dropping either the search's
-        // version filter or the grant-site check would write a grant that the
-        // enforcement bundle, scoped to the current version, could never match.
+        // never produces this — it is what a hand-edited key file leaves.
+        //
+        // Both layers have to go before a grant is written: drop the search's
+        // version filter and the grant site still throws; drop the grant site and
+        // the search still finds nothing. This is the only construction where
+        // dropping BOTH writes a grant the enforcement bundle, scoped to the
+        // current version, could never match.
         await seedBlocked('ab1e01');
         const key = readFingerprintKey(dir);
         if (!key) throw new Error('seeded store has no key');
@@ -665,7 +676,10 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
           () => undefined,
           (e: unknown) => e as Error,
         );
-        expect(err).toBeInstanceOf(Error);
+        // Same refusal site as the case above: the version filter drops the row
+        // from the search, so pickBlocked reports no match rather than the grant
+        // site reporting a stale version.
+        expect(err?.message).toMatch(/no blocked detection matches/);
         expect(await grants()).toHaveLength(0);
         expect(err?.message).not.toContain(VALUE);
         expect(io.output()).not.toContain(VALUE);
@@ -716,5 +730,45 @@ describe('aka exception list / revoke', () => {
     const emptyIo = scriptedIo();
     await runException(['list', '--home', home], emptyIo);
     expect(emptyIo.output()).toContain("'aka exception list --all'");
+  });
+
+  it('tags a reveal-to-model grant so it cannot be read as a plain suppression', async () => {
+    // A suppress grant via the normal add flow...
+    await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--for', '1h', '--reason', 'window'],
+      scriptedIo(`${VALUE}\n`),
+    );
+    // ...and a reveal-to-model grant seeded the way the mint flow writes it.
+    const key = loadOrCreateFingerprintKey(dir);
+    const db = openLocalDatabase(dir);
+    try {
+      await db.exceptions.create({
+        ruleId: 'secrets/generic-credential',
+        category: 'secret',
+        valueFingerprint: fingerprintValue(key, 'not-the-listed-value'),
+        keyVersion: key.version,
+        maskedValue: 'gh*…ret',
+        capability: 'reveal_to_model',
+        scope: 'temporary',
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        maxUses: null,
+        justification: 'agent needs the live key',
+        conditions: null,
+        createdBy: 'tester (local)',
+        createdVia: 'cli-approve',
+      });
+    } finally {
+      db.close();
+    }
+
+    const listIo = scriptedIo();
+    await runException(['list', '--home', home], listIo);
+    const out = listIo.output();
+    // Only the reveal row carries the tag; the suppress row is unchanged.
+    expect(out).toContain('gh*…ret · REVEALS-TO-MODEL');
+    expect(out.match(/REVEALS-TO-MODEL/g)).toHaveLength(1);
+    // The list is metadata-only even for reveal grants — masked, never raw.
+    expect(out).not.toContain(VALUE);
+    expect(out).not.toContain('not-the-listed-value');
   });
 });

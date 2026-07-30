@@ -52,6 +52,8 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
     policy,
     historicalAccess: 'session-only',
     dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
   };
 }
 

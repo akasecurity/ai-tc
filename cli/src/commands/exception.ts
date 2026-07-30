@@ -4,7 +4,13 @@ import { parseArgs } from 'node:util';
 import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
 import type { BlockedDetection, LocalDatabase } from '@akasecurity/persistence';
 import type { CreateExceptionInput } from '@akasecurity/persistence';
-import { openLocalDatabase } from '@akasecurity/persistence';
+import {
+  createKeyProvider,
+  keysDir,
+  openLocalDatabase,
+  readWorkspaceSettings,
+  SecretVault,
+} from '@akasecurity/persistence';
 import type { FingerprintKey } from '@akasecurity/plugin-sdk';
 import {
   dataDir,
@@ -16,7 +22,13 @@ import {
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionException, ResolvedScope } from '@akasecurity/schema';
-import { resolveScopeFlags, scopeFromAnswer } from '@akasecurity/schema';
+import {
+  DetectionCategory,
+  isVaultConsentValid,
+  PointerToken,
+  resolveScopeFlags,
+  scopeFromAnswer,
+} from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { formatRelative, formatTimestamp } from '../lib/duration.ts';
@@ -44,7 +56,7 @@ const SCOPE_REQUIRED = `a scope is required — pick exactly one (there is no de
   --permanent       until revoked (typed confirmation required)`;
 
 const VERB_HELP: Record<string, string> = {
-  approve: `Usage: aka exception approve [reference|value] [flags]
+  approve: `Usage: aka exception approve [reference|value|pointer] [flags]
 
 Grant an exception from a detection blocked in the last 30 minutes. Select the
 block by the reference from the block message, the masked value shown there,
@@ -52,13 +64,21 @@ or by pasting the blocked value itself. A pasted value is matched by its keyed
 fingerprint and never stored or echoed — but it does land in your shell
 history, so prefer the reference where that matters.
 
+A vault pointer ([[aka:...]] — quote it in the shell) selects the vaulted
+value behind it and requires --reveal: the grant lets the model receive that
+value's RAW form at tool boundaries while it is active, with every crossing
+audited. Revoke any time with 'aka exception revoke <id>'.
+
 Flags:
+  --reveal-to-model   grant reveal-to-model instead of suppression (required with a
+                      pointer selector; --reveal is accepted as shorthand)
   --once | --for <30m|1h|24h> | --permanent   scope (required, pick one)
   --reason "<why>"    required; prompted on a terminal if omitted
   --yes               skip confirmations (non-interactive use)
   --home <dir>        alternate AKA home (default: ~/.aka)
 
 Example: aka exception approve 3f2a --for 1h --reason "temp deploy creds"
+Example: aka exception approve '[[aka:secret:...]]' --reveal-to-model --for 1h --reason "agent needs the live key"
 `,
   add: `Usage: aka exception add --rule <ruleId> [--stdin] [flags]
 
@@ -311,10 +331,10 @@ function readKeyForApprove(dir: string): FingerprintKey | null {
   }
 }
 
-// A ledger row reduced to the fields a grant is built from — and the ONLY place
-// this file derives them, so the version check below sits on the single path to
-// a grant rather than beside it. A selection path added later reaches
-// createGrant through here or not at all.
+// A ledger row reduced to the fields a grant is built from — the one place this
+// file derives them FROM A LEDGER ROW, so the version check below sits on that
+// path rather than beside it, and a selection path added later has somewhere
+// obvious to go.
 //
 // The row carries the fingerprint computed when the hook blocked, under
 // whichever key was live then; the ledger is retained far longer than a rotation
@@ -323,6 +343,13 @@ function readKeyForApprove(dir: string): FingerprintKey | null {
 // such a row is inert the moment it is created — and reporting success for one
 // is worse than the grant going quiet, because the operator just deliberately
 // created this one.
+//
+// A reveal grant from a vault pointer deliberately does NOT come through here.
+// Its identity — rule, fingerprint, key version — is read off one vault row and
+// matched on that same triple at every crossing, so a row a fingerprint re-key
+// skipped keeps its old fingerprint and old version together and its grant still
+// resolves. Refusing it on the current version would refuse a grant that does
+// enforce. Only the ledger path is scoped to the current version.
 function grantFieldsFrom(
   entry: BlockedDetection,
   key: FingerprintKey | null,
@@ -411,21 +438,108 @@ async function pickBlocked(
   const answer = await io.ask(`Which one? [1-${String(entries.length)}]: `);
   const index = Number.parseInt(answer.trim(), 10);
   const picked = Number.isInteger(index) ? entries[index - 1] : undefined;
-  if (!picked) throw new Error(`invalid choice '${answer.trim()}'`);
+  // Never echo the answer: the prompt sits under a list of the user's own
+  // blocked secrets, and a pasted VALUE instead of a number must not land in
+  // stderr or captured logs.
+  if (!picked)
+    throw new Error(`invalid choice — enter a number between 1 and ${String(entries.length)}`);
   return picked;
+}
+
+// The category segment of a pointer token. Safe on any parsed PointerToken:
+// the token grammar pins the segment to the DetectionCategory members.
+function pointerCategory(pointer: string): DetectionCategory {
+  const body = pointer.slice('[[aka:'.length);
+  return DetectionCategory.parse(body.slice(0, body.indexOf(':')));
+}
+
+// Mint a reveal-to-model grant for the vaulted value behind a pointer. The
+// grant identity (rule, fingerprint, key version) comes from the vault row —
+// the raw value never enters this process, and only masked/descriptor data is
+// ever printed.
+async function runApproveReveal(
+  pointer: string,
+  values: ScopeReasonFlags & { yes?: boolean | undefined },
+  io: Prompter,
+  base: string,
+): Promise<void> {
+  const dir = dataDir(base);
+  const db = openLocalDatabase(dir);
+  try {
+    const vault = new SecretVault({
+      repo: db.secretVault,
+      keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
+      fingerprintKey: loadOrCreateFingerprintKey(dir),
+      // Read live so a consent revocation applies to the very next call.
+      isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
+    });
+    const identity = await vault.resolvePointerIdentity(pointer);
+    if (identity === null) {
+      throw new Error(
+        'the pointer is unknown here — not one this machine issued (forged or tampered), its vault entry was purged, or the key material is unavailable; nothing was granted',
+      );
+    }
+    // Badge data only. A vanished descriptor still never shows raw anything.
+    const descriptor = await vault.describePointer(pointer);
+    const maskedValue = descriptor?.maskedMatch ?? '···';
+    const { scope, reason } = await resolveScopeAndReason(values, io);
+    if (scope.scope === 'permanent') {
+      await confirmPermanent(io, maskedValue, values.yes === true);
+    }
+    const granted = await createGrant(db, {
+      ruleId: identity.ruleId,
+      category: descriptor?.category ?? pointerCategory(pointer),
+      valueFingerprint: identity.valueFingerprint,
+      keyVersion: identity.fingerprintKeyVersion,
+      maskedValue,
+      capability: 'reveal_to_model',
+      ...scope,
+      justification: reason,
+      conditions: null,
+      createdBy: resolveCreatedBy(),
+      createdVia: 'cli-approve',
+    });
+    io.out(
+      `Reveal grant ${shortId(granted.id)}: ${granted.ruleId}  ${granted.maskedValue}  ${scopeSummary(granted)}\n` +
+        `While this grant is active the model can receive this value's RAW form at\n` +
+        `tool boundaries. Every crossing is audited. Revoke with: aka exception revoke ${shortId(granted.id)}\n`,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 async function runApprove(argv: string[], io: Prompter): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { ...HOME_OPTION, ...SCOPE_OPTIONS },
+    options: {
+      ...HOME_OPTION,
+      ...SCOPE_OPTIONS,
+      'reveal-to-model': { type: 'boolean' },
+      // Shorthand for --reveal-to-model.
+      reveal: { type: 'boolean' },
+    },
     allowPositionals: true,
   });
   if (values.help) {
     io.out(VERB_HELP.approve ?? '');
     return;
   }
-  const dir = dataDir(homeBase(values.home));
+  const base = homeBase(values.home);
+  const wantsReveal = values['reveal-to-model'] === true || values.reveal === true;
+  // A pointer selector routes to the vault, not the blocked-detections ledger.
+  const candidate = positionals[0]?.trim();
+  const pointer = candidate === undefined ? undefined : PointerToken.safeParse(candidate);
+  if (pointer?.success === true) {
+    if (!wantsReveal) {
+      throw new Error(
+        'that selector is a vault pointer — approving one mints a reveal-to-model grant, which must be asked for explicitly: add --reveal-to-model',
+      );
+    }
+    await runApproveReveal(pointer.data, values, io, base);
+    return;
+  }
+  const dir = dataDir(base);
   const db = openLocalDatabase(dir);
   try {
     const entries = await db.exceptions.recentBlocked();
@@ -435,15 +549,15 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
       );
       return;
     }
-    // Trim paste artifacts (a multi-line paste arrives with embedded
-    // newlines); a whitespace-only selector falls back to the bare picker.
-    const selector = positionals[0]?.trim();
+    // `candidate` already trimmed paste artifacts (a multi-line paste arrives
+    // with embedded newlines); a whitespace-only selector falls back to the
+    // bare picker.
     // Resolved ONCE: the picker fingerprints a by-value selector with it and
     // marks rows it will refuse, and the guard below checks the chosen row
     // against it. Reading the file twice duplicated the parse and left a window
     // for the two reads to disagree.
     const key = readKeyForApprove(dir);
-    const entry = await pickBlocked(entries, selector === '' ? undefined : selector, io, key);
+    const entry = await pickBlocked(entries, candidate === '' ? undefined : candidate, io, key);
 
     // Derived — and so refused — BEFORE prompting for scope and reason: a row
     // this rejects stays unusable whatever the user answers, and asking for a
@@ -456,8 +570,12 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     }
     // The grant is created FROM THE LEDGER ENTRY — the fingerprint was
     // computed when the hook blocked; the raw value never enters this process.
+    // With the reveal opt-in, the same ledger identity mints the stronger
+    // capability: the value's pointer may then de-reference to raw for the
+    // model, and — being strictly stronger — the grant suppresses too.
     const granted = await createGrant(db, {
       ...grant,
+      ...(wantsReveal ? { capability: 'reveal_to_model' as const } : {}),
       ...scope,
       justification: reason,
       conditions: null,
@@ -465,6 +583,11 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
       createdVia: 'cli-approve',
     });
     printGranted(io, granted);
+    if (wantsReveal) {
+      io.out(
+        'While this grant is active the model can receive this value in RAW form at tool boundaries; every crossing is audited.\n',
+      );
+    }
     io.out('Resubmit the blocked prompt — it will now pass.\n');
   } finally {
     db.close();
@@ -638,7 +761,13 @@ async function runList(argv: string[], io: Prompter): Promise<void> {
       const row = [
         shortId(ex.id),
         ex.ruleId,
-        ex.maskedValue,
+        // A reveal grant is strictly stronger than a plain suppression: while
+        // it is active the model can receive this value's RAW form at tool
+        // boundaries. Tag the row so it reads differently from a suppress-only
+        // grant. The value stays masked — the list never shows raw values.
+        ex.capability === 'reveal_to_model'
+          ? `${ex.maskedValue} · REVEALS-TO-MODEL`
+          : ex.maskedValue,
         ex.scope,
         // An expiry countdown is meaningless once the budget/revocation ended
         // the grant ("consumed · expires in 24m" reads as a contradiction);
@@ -803,9 +932,9 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
         return;
       }
     }
-    let version: number;
+    let next: FingerprintKey;
     try {
-      version = rotateFingerprintKey(dir).version;
+      next = rotateFingerprintKey(dir);
     } catch (err) {
       // An unusable key file must not print a stack trace — surface the reason
       // with a way forward matched to it. (Grants under a corrupt key already
@@ -814,8 +943,33 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
       throw new Error(`cannot rotate: ${message}\n${keyAccessHint(err, dir)}`, { cause: err });
     }
     io.out(
-      `Fingerprint key rotated — new key version v${String(version)}.\nExisting grants no longer match; re-approve deliberately where still needed.\n`,
+      `Fingerprint key rotated — new key version v${String(next.version)}.\nExisting grants no longer match; re-approve deliberately where still needed.\n`,
     );
+    // Grants invalidate by design; vault entries must NOT. Re-key their
+    // fingerprints under the new epoch so dedup keeps finding stored values —
+    // otherwise a re-detected value fingerprints under the new key, misses its
+    // row, and mints a second pointer for the same secret. Best-effort: a
+    // partial refresh degrades to skipped rows resolving under their old
+    // epoch, so a fault here must not fail the rotation that already happened.
+    try {
+      const base = homeBase(values.home);
+      const vault = new SecretVault({
+        repo: db.secretVault,
+        keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
+        fingerprintKey: next,
+        isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
+      });
+      const refreshed = await vault.refreshFingerprints(next);
+      if (refreshed > 0) {
+        io.out(
+          `Vault re-keyed — ${String(refreshed)} stored ${refreshed === 1 ? 'value' : 'values'} follow the new key; pointers are unchanged.\n`,
+        );
+      }
+    } catch {
+      io.out(
+        'Warning: the vault could not be re-keyed under the new fingerprint key.\nStored values still resolve, but re-detections may mint new pointers until it succeeds.\n',
+      );
+    }
   } finally {
     db.close();
   }

@@ -12,6 +12,7 @@ import { runScan } from './commands/scan.ts';
 import { runStats } from './commands/stats.ts';
 import { runTui } from './commands/tui.tsx';
 import { runUpdate } from './commands/update.ts';
+import { runVault } from './commands/vault.ts';
 import { homeBase } from './lib/args.ts';
 import type { ExternalDispatchDeps } from './lib/external-dispatch.ts';
 import {
@@ -30,6 +31,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   plugins: runPlugins,
   dashboard: runDashboard,
   exception: (argv) => runException(argv),
+  vault: (argv) => runVault(argv),
   tui: runTui,
   update: runUpdate,
   'check-updates': runCheckUpdates,

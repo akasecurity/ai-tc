@@ -46,6 +46,7 @@ import { SqliteProjectFilesRepository } from './repositories/project-files.ts';
 import { SqliteResolutionsRepository } from './repositories/resolutions.ts';
 import { SqliteRuleProbeCacheRepository } from './repositories/rule-probe-cache.ts';
 import { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
+import { SqliteSecretVaultRepository } from './repositories/secret-vault.ts';
 import { SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
 import { SqliteSourceProjectRepository } from './repositories/source-project.ts';
@@ -75,6 +76,9 @@ export interface LocalDatabase {
   // Worktree-scan skip ledger (path + mtime + hash per ruleset) — written by the
   // scanner so /aka:scan re-runs skip unchanged files, including clean ones.
   readonly scanLedger: SqliteScanLedgerRepository;
+  // Storage for the reversible secret vault. The crypto and the policy around
+  // it live in src/vault; this is only the rows.
+  readonly secretVault: SqliteSecretVaultRepository;
   // Detection-exception grants (canonical `exceptions` table: fingerprint-keyed,
   // consumed at enforcement time) + the short-lived blocked-detections ledger
   // the CLI approve flow reads.
@@ -314,6 +318,7 @@ function openAndInitialize(file: string) {
       policies,
       installedPacks,
       scanLedger: new SqliteScanLedgerRepository(db),
+      secretVault: new SqliteSecretVaultRepository(db),
       exceptions: new SqliteExceptionsRepository(db),
       resolutions: new SqliteResolutionsRepository(db),
       ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
@@ -350,6 +355,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     policies,
     installedPacks,
     scanLedger,
+    secretVault,
     exceptions,
     resolutions,
     ruleProbeCache,
@@ -623,6 +629,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     policies,
     installedPacks,
     scanLedger,
+    secretVault,
     exceptions,
     resolutions,
     ruleProbeCache,

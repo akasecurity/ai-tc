@@ -45,6 +45,7 @@ export const COL = {
   valueFingerprint: 'value_fingerprint',
   keyVersion: 'key_version',
   maskedValue: 'masked_value',
+  capability: 'capability',
   maxUses: 'max_uses',
   useCount: 'use_count',
   justification: 'justification',
@@ -139,6 +140,7 @@ export const COL = {
   // Different tables, different meanings — deliberately not the same name.
   pointerId: 'pointer_id',
   fingerprintKeyVersion: 'fingerprint_key_version',
+  formatVersion: 'format_version',
   ciphertext: 'ciphertext',
   nonce: 'nonce',
   authTag: 'auth_tag',

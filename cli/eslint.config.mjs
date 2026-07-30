@@ -1,5 +1,10 @@
 // @ts-check
-import { base, noNetworkImports, noNetworkSyntax } from '@akasecurity/eslint-config';
+import {
+  base,
+  noNetworkImports,
+  noNetworkSyntax,
+  rootConfigFiles,
+} from '@akasecurity/eslint-config';
 
 export default [
   ...base,
@@ -11,6 +16,7 @@ export default [
       },
     },
   },
+  ...rootConfigFiles,
   {
     // dashboard.ts's isPortFree() binds a probe server on 127.0.0.1 to detect an
     // in-use port before launching the dashboard — a local bind, not a network

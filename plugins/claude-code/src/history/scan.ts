@@ -24,6 +24,13 @@ export interface ScanSummary {
   findings: number; // findings recorded this run
   bySeverity: Record<string, number>;
   windowDays: number;
+  // Every distinct transcript file the walk visited — INCLUDING files whose
+  // messages were all deduped. The at-rest scrub keys off this list, and a
+  // re-run (where dedup skips every message) must still be able to scrub
+  // history it scanned before; collecting only finding-bearing files would
+  // make the scrub unreachable exactly when the user grants vault consent
+  // after the first sweep.
+  visitedFiles: string[];
 }
 
 // ±chars of surrounding text captured around a match span for the triage sink.
@@ -120,7 +127,15 @@ export async function scanHistory(
 ): Promise<ScanSummary> {
   const windowDays = opts.windowDays ?? 30;
   if (config.settings.historicalAccess !== 'full') {
-    return { consented: false, scanned: 0, skipped: 0, findings: 0, bySeverity: {}, windowDays };
+    return {
+      consented: false,
+      scanned: 0,
+      skipped: 0,
+      findings: 0,
+      bySeverity: {},
+      windowDays,
+      visitedFiles: [],
+    };
   }
 
   const gateway = resolveDataGateway(config);
@@ -129,11 +144,13 @@ export async function scanHistory(
   let scanned = 0;
   let skipped = 0;
   let findings = 0;
+  const visited = new Set<string>();
   try {
     // Hashes already in the store (and we add each one we record, so duplicate
     // messages within this same run dedup too).
     const seen = await gateway.knownContentHashes();
     for (const message of iterateHistory(opts)) {
+      visited.add(message.filePath);
       const hash = contentHashOf(message.text);
       if (seen.has(hash)) {
         skipped++;
@@ -175,5 +192,13 @@ export async function scanHistory(
   } finally {
     await runtime.close();
   }
-  return { consented: true, scanned, skipped, findings, bySeverity, windowDays };
+  return {
+    consented: true,
+    scanned,
+    skipped,
+    findings,
+    bySeverity,
+    windowDays,
+    visitedFiles: [...visited],
+  };
 }

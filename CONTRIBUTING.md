@@ -32,6 +32,74 @@ Comments explain **what** a piece of code does and any non-obvious local mechani
 doc rather than narrating a decision inline. This repository is public, so keep
 comments factual and reader-facing — no internal narration.
 
+## Dependency advisories and waivers
+
+Two security workflows run alongside the main build:
+
+- **Dependency audit** (`.github/workflows/audit.yml`, gate logic in
+  `tools/audit-gate`) — two audits on every PR and daily against `main`. The
+  **workspace audit** runs `pnpm audit` over the workspace lockfile. The **artifact
+  audit** runs `npm audit` over the resolution an end user gets from installing the
+  published `@akasecurity/cli`: it resolves the CLI's runtime `dependencies` with npm
+  in a temp dir, so advisories reachable only through the published ranges (e.g.
+  next's own pins) are caught too. In both, any **high or critical** advisory fails
+  the check; moderate and below are listed in the run summary but do not block. A
+  failing daily run opens (or updates) an issue labeled `security-advisory`, so an
+  advisory published between merges is surfaced without waiting for the next PR — and
+  it only adds a comment when a **new** advisory id appears, so a known long-lived
+  finding does not ping daily.
+- **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the TypeScript
+  workspace and the workflow files on every PR to `main` and weekly; findings appear
+  under the repository's **Security** tab.
+
+When the workspace audit fails, fix first: upgrade the dependency, or raise its floor
+via `pnpm.overrides` in the root `package.json` (the existing entries there are exactly
+such floors). Note that overrides cover the **workspace lockfile only**; end-user
+installs of the published packages resolve the published dependency ranges, which
+overrides do not reach — that consumer-side exposure is what the artifact audit gates.
+When the **artifact audit** fails, the fix is raising the affected range in
+`cli/package.json` `dependencies` so a fresh `npm install` resolves a patched release;
+a copy nested under another package (npm keeps e.g. next's exact pins under
+`node_modules/next/node_modules/`) can only be fixed by bumping that package once
+upstream raises its own pin. Only when an advisory has **no fixed release** reachable
+from our dependency tree, add a waiver to `.github/audit-waivers.json`:
+
+```json
+{
+  "waivers": [
+    {
+      "advisory": "GHSA-xxxx-xxxx-xxxx",
+      "scope": "workspace",
+      "module": "left-pad",
+      "reason": "Why this is unfixable today and why the exposure is acceptable.",
+      "expires": "2026-08-31"
+    }
+  ]
+}
+```
+
+- `advisory` is the GHSA id (preferred) or a CVE id. The artifact audit (npm's v2
+  report format) exposes only GHSA ids, so an artifact-scoped waiver must use the
+  GHSA id.
+- `scope` is **required**: `"workspace"` or `"artifact"`, naming the audit the waiver
+  applies to. An advisory hitting both audits takes one entry per scope. Scoping keeps
+  stale-waiver detection exact — each run judges only its own waivers.
+- `module` is optional but recommended: it pins the waiver to one package name, so the
+  same advisory id resurfacing through a different package is not silently suppressed.
+- `expires` is **required** — keep it short (about 30 days). The date is **inclusive**
+  and compared in UTC: a waiver dated `2026-08-31` still suppresses on the 31st and
+  lapses at UTC midnight after it. A lapsed waiver stops suppressing automatically, so
+  the advisory fails CI again and forces a fresh look for a fix. Waivers that no longer
+  match anything are flagged as stale in the audit report; remove them.
+- `class` is an optional annotation for the rare advisory that is a **false positive**
+  (for example the registry matching a workspace importer name against an unrelated
+  public package). Set `"class": "false-positive"`, say so plainly in `reason`, and a
+  longer expiry is acceptable there.
+- Waivers are reviewed like any other code change.
+- `pnpm.auditConfig.ignoreCves` / `ignoreGhsas` is **not** an approved suppression
+  route: pnpm-native ignores carry no expiry, no reason, and no report row, so the gate
+  refuses to run while anything is muted.
+
 ## Contributing detection rules
 
 Detection rules live in [`rules/`](rules/). Every rule ships with **positive and

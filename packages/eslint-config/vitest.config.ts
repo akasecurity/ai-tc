@@ -9,17 +9,16 @@ import { defineConfig } from 'vitest/config';
 // if a package drops the entry or points it at the wrong path.
 const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
 
-// These suites import every tracked ESLint config in the workspace, run the real
-// linter over ~100 fixtures, and drive the CI egress script through stubbed
-// PATHs. That is FS- and module-resolution-bound, and turbo runs all 14 package
-// test tasks in parallel — so on a 2-core CI runner it takes many times what it
-// takes on a developer machine. Raise the per-test AND per-hook timeouts above
-// vitest's 5s/10s defaults (mirrors packages/scanner/vitest.config.ts).
+// No package-wide timeout override on purpose. The slow work here is config
+// resolution, which is confined to `beforeAll` hooks that carry their own
+// budgets (no-network.test.js's CONFIG_LOAD_TIMEOUT_MS, effective-config.test.js's
+// RESOLVE_TIMEOUT_MS). Raising testTimeout for the package would spend that
+// budget on ~112 fixture-lint assertions that each run in well under a
+// millisecond, where a regression to multiple seconds should fail rather than
+// pass quietly.
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
     environment: 'node',
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
   },
 });

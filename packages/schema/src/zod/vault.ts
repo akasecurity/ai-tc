@@ -176,6 +176,49 @@ export const VaultDeref = z.object({
 });
 export type VaultDeref = z.infer<typeof VaultDeref>;
 
+// ─── Sightings — where a pointer has been seen ───────────────────────────────
+
+// The surface class a pointer landed on when it was minted or re-emitted.
+export const VaultSightingKind = z.enum([
+  'prompt',
+  'tool-input',
+  'tool-output',
+  'file',
+  'transcript',
+]);
+export type VaultSightingKind = z.infer<typeof VaultSightingKind>;
+
+// One place a pointer has been written. Deterministic pointers are correlatable
+// by design; this is the ledger that makes the correlation VISIBLE to the
+// owner — which files and surfaces carry a given value's pointer — instead of
+// discoverable only by whoever greps the artifacts. Raw-free: a location is a
+// path or a surface label, never content.
+export const VaultSighting = z.object({
+  location: z.string(),
+  kind: VaultSightingKind,
+  firstSeen: z.string(),
+  lastSeen: z.string(),
+});
+export type VaultSighting = z.infer<typeof VaultSighting>;
+
+// One inventory row for the dashboard: descriptor data plus the grant status
+// and everywhere the pointer has been sighted. Raw-free — no fingerprint, no
+// ciphertext, no value.
+export const VaultInventoryEntry = z.object({
+  pointerId: z.string(),
+  category: DetectionCategory,
+  provider: z.string().optional(),
+  maskedMatch: z.string(),
+  occurrences: z.number().int().nonnegative(),
+  firstSeen: z.string(),
+  lastSeen: z.string(),
+  // The active reveal-to-model grant covering this value, when one exists —
+  // the inventory badges it, the row links to revocation.
+  revealGrantId: z.string().nullable(),
+  sightings: z.array(VaultSighting),
+});
+export type VaultInventoryEntry = z.infer<typeof VaultInventoryEntry>;
+
 // ─── Settings-side vocabulary ────────────────────────────────────────────────
 
 // Where the vault master key lives. An OPEN discriminant: the custody vocabulary

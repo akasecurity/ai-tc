@@ -242,7 +242,8 @@ function buildTranscriptScrubber(): (filePath: string) => Promise<{ rewritten: n
   const scope = platformRedactionScope();
   return (filePath) =>
     scrubTranscriptTail(filePath, {
-      tokenizeText: (text) => glue.tokenizeText(text),
+      tokenizeText: (text) =>
+        glue.tokenizeText(text, { sighting: { location: filePath, kind: 'transcript' } }),
       scope,
     });
 }

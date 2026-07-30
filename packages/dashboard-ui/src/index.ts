@@ -260,6 +260,23 @@ export {
   type RotateKeyDialogProps,
 } from './exceptions/RotateKeyDialog.tsx';
 
+// Vault views — props-driven (no data fetching); the raw-free register of
+// vaulted values, the same-machine reuse signal, and the de-reference audit
+// trail. Fed by @akasecurity/persistence Server Components / Server Actions in
+// the OSS web-ui; all domain shapes are @akasecurity/schema vault types.
+export {
+  DEREF_REASON_LABEL,
+  RevealToModelBadge,
+  SIGHTING_KIND_LABEL,
+  SightingKindChip,
+} from './vault/atoms.tsx';
+export {
+  DerefAuditTableView,
+  type DerefAuditTableViewProps,
+} from './vault/DerefAuditTableView.tsx';
+export { VaultInventoryView, type VaultInventoryViewProps } from './vault/VaultInventoryView.tsx';
+export { VaultReuseView, type VaultReuseViewProps } from './vault/VaultReuseView.tsx';
+
 // Updates views — props-driven; the web twin of `aka check-updates` / `aka
 // update` / `aka plugins`. Fed by @akasecurity/local-ops via server actions in the
 // OSS web-ui.

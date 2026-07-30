@@ -86,7 +86,15 @@ async function main(): Promise<void> {
           { kind: 'response', sourceTool: 'claude-code', text, metadata },
           { persist: 'with-findings' },
         ),
-      vaultGlue ? (text, findings) => vaultGlue.tokenizeText(text, { findings }) : undefined,
+      vaultGlue
+        ? (text, findings) =>
+            vaultGlue.tokenizeText(text, {
+              findings,
+              sighting: filePath
+                ? { location: filePath, kind: 'file' }
+                : { location: `${toolName} output`, kind: 'tool-output' },
+            })
+        : undefined,
     );
   } finally {
     await runtime.close();

@@ -32,6 +32,7 @@ import type {
   PointerDescriptor,
   PointerToken,
   VaultDerefReason,
+  VaultSightingKind,
 } from '@akasecurity/schema';
 import { isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
 
@@ -93,6 +94,7 @@ export interface VaultCore {
     valueFingerprint: string;
     fingerprintKeyVersion: number;
   } | null>;
+  recordSighting?(pointerId: string, sighting: { location: string; kind: VaultSightingKind }): void;
 }
 
 // Resolves whether a model-echoed pointer may be de-referenced back to raw for
@@ -109,8 +111,16 @@ export interface SubstitutePointersResult {
   unresolved: PointerToken[];
 }
 
+export interface TokenizeSighting {
+  location: string;
+  kind: VaultSightingKind;
+}
+
 export interface VaultGlue {
-  tokenizeText(text: string, opts?: { findings?: MatchResult[] }): Promise<TokenizeTextResult>;
+  tokenizeText(
+    text: string,
+    opts?: { findings?: MatchResult[]; sighting?: TokenizeSighting },
+  ): Promise<TokenizeTextResult>;
   tokenizeValue(
     raw: string,
     meta: { ruleId: string; category: DetectionCategory; maskedMatch: string },
@@ -234,7 +244,7 @@ class SecretVaultGlue implements VaultGlue {
 
   async tokenizeText(
     text: string,
-    opts?: { findings?: MatchResult[] },
+    opts?: { findings?: MatchResult[]; sighting?: TokenizeSighting },
   ): Promise<TokenizeTextResult> {
     try {
       const findings = opts?.findings ?? this.#selfScan(text);
@@ -271,6 +281,19 @@ class SecretVaultGlue implements VaultGlue {
           else degraded.unshift({ category: finding.category });
         }
         out = out.slice(0, group.start) + replacement + out.slice(group.end);
+      }
+      // Where these pointers just landed — the ledger that makes pointer
+      // correlation visible to the owner. Best-effort: a bookkeeping fault
+      // never affects the rewrite.
+      if (opts?.sighting && pointers.length > 0) {
+        for (const pointer of pointers) {
+          try {
+            const id = pointer.split('.')[1];
+            if (id !== undefined) this.#vault.recordSighting?.(id, opts.sighting);
+          } catch {
+            // best-effort only
+          }
+        }
       }
       return { text: out, pointers, degraded };
     } catch {
@@ -432,6 +455,18 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
       // process.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
     });
+    // The vault core plus the sighting recorder: SecretVault owns crypto and
+    // audit; where a pointer LANDED is repository bookkeeping, wired in here so
+    // the glue's callers never touch the store directly.
+    const vaultWithSightings: VaultCore = {
+      tokenize: (raw, meta) => vault.tokenize(raw, meta),
+      detokenize: (token, opts) => vault.detokenize(token, opts),
+      describePointer: (token) => vault.describePointer(token),
+      resolvePointerIdentity: (token) => vault.resolvePointerIdentity(token),
+      recordSighting: (pointerId, sighting) => {
+        db.secretVault.recordSighting({ pointerId, ...sighting }, Date.now());
+      },
+    };
     // The resolver is a thin adapter over the decision seam: pointer →
     // raw-free identity → provider decision. Anything failing along the way is
     // a refusal, never a reveal.
@@ -446,7 +481,7 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
         return null;
       }
     };
-    return new SecretVaultGlue(vault, revealGrantResolver, () => {
+    return new SecretVaultGlue(vaultWithSightings, revealGrantResolver, () => {
       db.close();
     });
   } catch {

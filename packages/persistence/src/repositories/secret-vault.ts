@@ -15,9 +15,18 @@
 //
 // Timestamps cross this boundary as epoch milliseconds and are stored as SQLite
 // integers.
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
-import type { DetokenizeTarget, VaultDerefOutcome, VaultDerefReason } from '@akasecurity/schema';
+import type {
+  DetokenizeTarget,
+  VaultDeref,
+  VaultDerefOutcome,
+  VaultDerefReason,
+  VaultInventoryEntry,
+  VaultSighting,
+  VaultSightingKind,
+} from '@akasecurity/schema';
 
 import { allRows, bindParams, countScalar, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
@@ -257,6 +266,147 @@ export class SqliteSecretVaultRepository {
       'IMMEDIATE',
     );
     return destroyed;
+  }
+
+  /**
+   * Record (or re-stamp) one place a pointer has been written. One row per
+   * (pointer, location); a re-sighting bumps last_seen. Best-effort bookkeeping
+   * on hook paths — a failure must never affect the rewrite that triggered it,
+   * so callers wrap this, not the other way around.
+   */
+  recordSighting(
+    entry: { pointerId: string; location: string; kind: VaultSightingKind },
+    now: number,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO secret_vault_sighting (id, pointer_id, location, kind, first_seen, last_seen)
+         VALUES (:id, :pointerId, :location, :kind, :now, :now)
+         ON CONFLICT (pointer_id, location) DO UPDATE SET last_seen = :now`,
+      )
+      .run({
+        id: randomUUID(),
+        pointerId: entry.pointerId,
+        location: entry.location,
+        kind: entry.kind,
+        now,
+      });
+  }
+
+  listSightings(pointerId: string): VaultSighting[] {
+    const rows = allRows<{ location: string; kind: string; first_seen: number; last_seen: number }>(
+      this.db.prepare(
+        `SELECT location, kind, first_seen, last_seen FROM secret_vault_sighting
+          WHERE pointer_id = :pointerId ORDER BY last_seen DESC`,
+      ),
+      { pointerId },
+    );
+    return rows.map((r) => ({
+      location: r.location,
+      kind: r.kind as VaultSightingKind,
+      firstSeen: new Date(r.first_seen).toISOString(),
+      lastSeen: new Date(r.last_seen).toISOString(),
+    }));
+  }
+
+  /**
+   * The dashboard inventory: every vaulted value's descriptor data joined with
+   * its sightings and the active reveal-to-model grant when one exists.
+   * Raw-free by construction — neither the fingerprint nor the ciphertext
+   * columns are selected.
+   */
+  listInventory(now = Date.now()): VaultInventoryEntry[] {
+    const rows = allRows<{
+      pointer_id: string;
+      category: string;
+      rule_id: string;
+      masked_match: string;
+      provider: string | null;
+      occurrence_count: number;
+      first_seen: number;
+      last_seen: number;
+      grant_id: string | null;
+    }>(
+      this.db.prepare(
+        `SELECT v.pointer_id, v.category, v.rule_id, v.masked_match, v.provider,
+                v.occurrence_count, v.first_seen, v.last_seen,
+                (SELECT e.id FROM exceptions e
+                  WHERE e.rule_id = v.rule_id
+                    AND e.value_fingerprint = v.value_fingerprint
+                    AND e.key_version = v.fingerprint_key_version
+                    AND e.capability = 'reveal_to_model'
+                    AND e.revoked_at IS NULL
+                    AND (e.expires_at IS NULL OR e.expires_at > :now)
+                    AND (e.max_uses IS NULL OR e.use_count < e.max_uses)
+                  LIMIT 1) AS grant_id
+           FROM secret_vault v
+          ORDER BY v.last_seen DESC`,
+      ),
+      { now },
+    );
+    return rows.map((r) => ({
+      pointerId: r.pointer_id,
+      category: r.category as VaultInventoryEntry['category'],
+      ...(r.provider === null ? {} : { provider: r.provider }),
+      maskedMatch: r.masked_match,
+      occurrences: r.occurrence_count,
+      firstSeen: new Date(r.first_seen).toISOString(),
+      lastSeen: new Date(r.last_seen).toISOString(),
+      revealGrantId: r.grant_id,
+      sightings: this.listSightings(r.pointer_id),
+    }));
+  }
+
+  /**
+   * The de-reference trail, newest first. By default the batched, high-volume
+   * reasons (display, view-render) are hidden and counted instead — the rows
+   * that matter as a signal are the model crossings, and burying them under
+   * render noise would defeat the audit's purpose.
+   */
+  listDerefs(opts?: { includeBatched?: boolean; limit?: number }): {
+    rows: VaultDeref[];
+    hiddenBatched: number;
+  } {
+    const limit = opts?.limit ?? 200;
+    const where =
+      opts?.includeBatched === true ? '' : `WHERE reason NOT IN ('display', 'view-render')`;
+    const rows = allRows<{
+      id: string;
+      pointer_id: string;
+      at: number;
+      target: string;
+      reason: string;
+      outcome: string;
+      grant_id: string | null;
+      pointer_count: number;
+    }>(
+      this.db.prepare(
+        `SELECT id, pointer_id, at, target, reason, outcome, grant_id, pointer_count
+           FROM secret_vault_deref ${where}
+          ORDER BY at DESC, rowid DESC LIMIT :limit`,
+      ),
+      { limit },
+    );
+    const hiddenBatched =
+      opts?.includeBatched === true
+        ? 0
+        : countScalar(
+            this.db,
+            `SELECT count(*) AS n FROM secret_vault_deref WHERE reason IN ('display', 'view-render')`,
+          );
+    return {
+      rows: rows.map((r) => ({
+        id: r.id,
+        pointerId: r.pointer_id,
+        at: new Date(r.at).toISOString(),
+        target: r.target as VaultDeref['target'],
+        reason: r.reason as VaultDeref['reason'],
+        outcome: r.outcome as VaultDeref['outcome'],
+        ...(r.grant_id === null ? {} : { grantId: r.grant_id }),
+        pointerCount: r.pointer_count,
+      })),
+      hiddenBatched,
+    };
   }
 
   countEntries(): number {

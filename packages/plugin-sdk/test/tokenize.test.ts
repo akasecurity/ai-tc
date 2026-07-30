@@ -287,16 +287,24 @@ describe('vault glue', () => {
     });
 
     it('an unopenable store degrades construction, not the session', async () => {
-      const fileAsBase = join(mkdtempSync(join(tmpdir(), 'aka-glue-bad-')), 'not-a-dir');
-      writeFileSync(fileAsBase, 'occupied');
-      const degraded = createVaultGlue({ base: fileAsBase });
-      await expect(
-        degraded.tokenizeValue(SECRET, {
-          ruleId: 'r',
-          category: 'pii',
-          maskedMatch: 'A******E',
-        }),
-      ).resolves.toBe('[REDACTED:PII]');
+      const badBase = mkdtempSync(join(tmpdir(), 'aka-glue-bad-'));
+      try {
+        const fileAsBase = join(badBase, 'not-a-dir');
+        writeFileSync(fileAsBase, 'occupied');
+        const degraded = createVaultGlue({ base: fileAsBase });
+        await expect(
+          degraded.tokenizeValue(SECRET, {
+            ruleId: 'r',
+            category: 'pii',
+            maskedMatch: 'A******E',
+          }),
+        ).resolves.toBe('[REDACTED:PII]');
+        // Opened nothing, so this releases nothing — pinning that close() is
+        // safe on a degraded glue, which is the branch a caller cannot detect.
+        degraded.close();
+      } finally {
+        rmSync(badBase, { recursive: true, force: true });
+      }
     });
   });
 
@@ -335,5 +343,69 @@ describe('vault glue', () => {
       });
       expect(result).toEqual({ text: 'no pointers here', revealed: 0 });
     });
+  });
+});
+
+describe('sighting recording', () => {
+  let base: string;
+  let glue: VaultGlue;
+
+  beforeEach(() => {
+    base = mkdtempSync(join(tmpdir(), 'aka-glue-sight-'));
+    applyOnboarding(
+      {
+        vaultConsent: {
+          acknowledgedAt: new Date().toISOString(),
+          version: VAULT_CONSENT_VERSION,
+        },
+      },
+      base,
+    );
+    glue = createVaultGlue({ base });
+  });
+
+  afterEach(() => {
+    // Before the rm, as every other suite here does: this glue opened a store
+    // handle, and Windows refuses to remove a directory one is still held in.
+    glue.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('records where a minted pointer landed, one row per location', async () => {
+    const text = `key=${SECRET}`;
+    const opts = {
+      findings: [finding({ span: { start: 4, end: 4 + SECRET.length } })],
+      sighting: { location: '/repo/.env', kind: 'file' as const },
+    };
+    await glue.tokenizeText(text, opts);
+    // Re-sighting the same location bumps timestamps instead of duplicating.
+    await glue.tokenizeText(text, opts);
+    await glue.tokenizeText(text, {
+      ...opts,
+      sighting: { location: 'Write input', kind: 'tool-input' as const },
+    });
+
+    const db = new DatabaseSync(join(dataDir(base), 'aka.db'));
+    const rows = db
+      .prepare(`SELECT location, kind FROM secret_vault_sighting ORDER BY location`)
+      .all() as { location: string; kind: string }[];
+    db.close();
+    expect(rows).toEqual([
+      { location: '/repo/.env', kind: 'file' },
+      { location: 'Write input', kind: 'tool-input' },
+    ]);
+  });
+
+  it('a clean text records nothing', async () => {
+    await glue.tokenizeText('nothing here', {
+      findings: [],
+      sighting: { location: '/x', kind: 'file' },
+    });
+    const db = new DatabaseSync(join(dataDir(base), 'aka.db'));
+    const count = db.prepare('SELECT count(*) AS n FROM secret_vault_sighting').get() as {
+      n: number;
+    };
+    db.close();
+    expect(count.n).toBe(0);
   });
 });

@@ -1,25 +1,30 @@
 {
-  // The repo-root sources no workspace package owns: the vitest no-network guard
-  // and the CI egress probe. Every package's tsconfig covers only its own tree,
-  // so without this these two files — the pair that carries the whole runtime
-  // half of the no-network guarantee — would be the only .ts/.mjs in the repo
-  // that nothing type-checks. esbuild strips their types without checking them,
-  // so a genuine type error there surfaces nowhere at all.
+  // The repo-root sources no workspace package owns: the vitest no-network guard,
+  // the CI egress probe, and lint:root's own ESLint configs (root-level files, not
+  // directories — they carry `// @ts-check`, which is decorative unless something
+  // runs tsc over them). Every package's tsconfig covers only its own tree, so
+  // without this those files would be the only .ts/.mjs in the repo that nothing
+  // type-checks. esbuild strips their types without checking them, so a genuine
+  // type error there surfaces nowhere at all.
   //
   // Driven by `pnpm typecheck:root`, which CI runs as its own step. It is not a
   // Turbo task: Turbo runs per-package scripts and the repo root is not a
   // workspace package, which is exactly how these files fell outside coverage.
+  //
+  // The eslint-config test/ suites are deliberately absent: they are plain JS
+  // with untyped fixtures, not written for checkJs, and their static coverage is
+  // the ESLint network ban (see eslint.root.config.mjs), not the type checker.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
     // egress-probe.mjs is plain JS by necessity — a shell script execs it with
     // `node`, so it cannot be TypeScript. checkJs is what makes its JSDoc types
-    // load-bearing instead of decorative.
+    // (and the root ESLint configs') load-bearing instead of decorative.
     "allowJs": true,
     "checkJs": true,
     "declaration": false,
     "declarationMap": false,
     "types": ["node"]
   },
-  "include": ["test/setup", "tools/ci"]
+  "include": ["test/setup", "tools/ci", "eslint.root.config.mjs", "eslint.root.guard.config.mjs"]
 }

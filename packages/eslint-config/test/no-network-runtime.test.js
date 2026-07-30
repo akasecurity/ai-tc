@@ -80,6 +80,10 @@ const CI_SCRIPT_REL = 'tools/ci/no-network-test.sh';
 const CI_SCRIPT_ABS = join(REPO_ROOT, ...CI_SCRIPT_REL.split('/'));
 const PROBE_REL = 'tools/ci/egress-probe.mjs';
 const PROBE_ABS = join(REPO_ROOT, ...PROBE_REL.split('/'));
+// The two no-network enforcement suites, which live in HERE and reach no other
+// ESLint pass than lint:root's `eslint.root.guard.config.mjs` network-only pass.
+const NW_SUITE_ABS = join(HERE, 'no-network.test.js');
+const NW_RUNTIME_SUITE_ABS = join(HERE, 'no-network-runtime.test.js');
 
 // --- 1. Structural: every vitest package wires the guard ---------------------
 
@@ -404,6 +408,7 @@ describe('outbound attempts are refused', () => {
     // `at Object.connect (node:internal/tls/wrap)` — true and useless. This is
     // the case that decides whether the guard is worth more than a firewall
     // rule, so it is pinned separately from the direct-connect case above.
+    // eslint-disable-next-line no-restricted-globals -- a real fetch() is the point here: the runtime guard must refuse it. The ban stays live everywhere else in these suites.
     const reachOut = () => fetch('https://api.anthropic.com/v1/messages');
     const { attempts } = provoke(() => {
       // The rejection is irrelevant: the refusal is thrown and recorded
@@ -808,6 +813,38 @@ describe('the egress probe trips exactly the ban it must', () => {
 
   it('reports only node:net', () => {
     const { specifiers, allImports } = networkBansTrippedBy(PROBE_ABS, EXPECTED_OPT_OUTS);
+    expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(allImports).toBe(true);
+  });
+});
+
+// These two suites are the third opted-out site (via eslint.root.guard.config.mjs),
+// so they are held to the same raw-guard measure as the guard and probe above.
+
+describe('the no-network unit suite trips no bans at all', () => {
+  // no-network.test.js exercises every banned construct as a STRING fed to the
+  // linter; it imports nothing banned and calls nothing banned. A finding here
+  // means a fixture string became live code, or the suite grew a real network
+  // call — either way the guard.config need not, and does not, opt it out.
+  it('reports nothing', () => {
+    const { specifiers } = networkBansTrippedBy(NW_SUITE_ABS, []);
+    expect(specifiers).toEqual([]);
+  });
+});
+
+describe('the no-network runtime suite trips exactly the bans it must', () => {
+  // It imports the three transports it drives against the patched guard. Its one
+  // real fetch() carries an inline `no-restricted-globals` disable, which the raw
+  // guard honours, so only the three imports remain. A fourth ban — a new import,
+  // or a fetch that lost its disable — fails here, so widening the guard.config
+  // opt-out cannot quietly widen what these suites may reach.
+  const EXPECTED_OPT_OUTS = ['node:dgram', 'node:dns', 'node:net'];
+
+  it('reports only the three module imports it drives at runtime', () => {
+    const { specifiers, allImports } = networkBansTrippedBy(
+      NW_RUNTIME_SUITE_ABS,
+      EXPECTED_OPT_OUTS,
+    );
     expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
     expect(allImports).toBe(true);
   });

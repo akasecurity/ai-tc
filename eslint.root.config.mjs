@@ -60,11 +60,13 @@ export default [
       'no-restricted-syntax': noNetworkSyntax({ allow: PROBE_MODULES }),
     },
   },
-  // This config and commitlint's are themselves repo-root sources no package owns
-  // (lint:root names `*.config.*` as a target). Linted with the type-aware rules
-  // off, exactly as package config files are — the network ban is syntactic and
-  // still fires. tsconfig.root.json type-checks this file separately (it carries
-  // `// @ts-check`). Last-wins: this must follow the block that turns the project
-  // on, so the type-aware rules are off for these paths.
+  // The two root ESLint configs and commitlint's are themselves repo-root sources
+  // no package owns; lint:root names `*.config.*` as a target and it matches all
+  // three. rootConfigFiles lints them with the type-aware rules off — the network
+  // ban is syntactic and still fires. The two ESLint configs are also type-checked
+  // by tsconfig.root.json (they carry `// @ts-check`), so rootConfigFiles' "sits
+  // outside the tsconfig include" rationale now holds only for commitlint's, which
+  // is linted here and type-checked nowhere. Last-wins: this must follow the block
+  // that turns the project on.
   ...rootConfigFiles,
 ];

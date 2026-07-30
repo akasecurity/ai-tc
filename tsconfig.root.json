@@ -13,7 +13,13 @@
   //
   // The eslint-config test/ suites are deliberately absent: they are plain JS
   // with untyped fixtures, not written for checkJs, and their static coverage is
-  // the ESLint network ban (see eslint.root.config.mjs), not the type checker.
+  // the ESLint network ban (see eslint.root.config.mjs), not the type checker. Its
+  // src/, by contrast, is transitively PRESENT: type-checking the two root configs
+  // resolves `@akasecurity/eslint-config` through the workspace symlink to its real
+  // source, so packages/eslint-config/src/index.js enters this program and a type
+  // error there fails typecheck:root too — redundant with the package's own
+  // typecheck (same base config), not new coverage, but it does couple this pass
+  // to a package file.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,

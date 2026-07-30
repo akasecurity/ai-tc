@@ -172,6 +172,30 @@ function fakeGateway(b: PolicyBundle, verdicts = new Map<string, RuleProbeVerdic
   return gateway;
 }
 
+/**
+ * A pre-flight cache that already says "safe" for `rules`.
+ *
+ * Every case below whose premise is "the battery CLEARED this rule and the SCAN
+ * is what has to catch it" needs this. Without it the rule must survive a live
+ * measurement on the test runner first — and a slow or contended one can
+ * quarantine it at the gate instead, on either the battery's own 100ms
+ * per-probe budget or the prober's deadline. The scan bound then never runs,
+ * and the case still passes on its other assertions because the BUILT-IN packs
+ * did the detecting: a green test that exercised nothing it was written for.
+ * (Seen for real on the Windows runner, where backtracking is 4-5x slower.)
+ *
+ * This is also the honest steady state: a real machine measures a rule once,
+ * ever, and every scan after that reads the cached verdict.
+ */
+function clearedByPreflight(...rules: Rule[]): Map<string, RuleProbeVerdictEntry> {
+  const verdicts = new Map<string, RuleProbeVerdictEntry>();
+  for (const rule of rules) {
+    const key = ruleProbeKey(rule);
+    if (key !== undefined) verdicts.set(key, { verdict: 'safe', worstProbeMs: 0.1 });
+  }
+  return verdicts;
+}
+
 // The degraded path is loud by design; keep the suite's own output readable.
 function silenceStderr(): void {
   vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -184,7 +208,7 @@ afterEach(() => {
 describe('a pulled rule that never returns', () => {
   it('is terminated, and the capture still decides on the built-in packs', async () => {
     silenceStderr();
-    const gw = fakeGateway(bundle([HOSTILE]));
+    const gw = fakeGateway(bundle([HOSTILE]), clearedByPreflight(HOSTILE));
     const rt = createPluginRuntime(gw, settings(), {
       scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50 },
     });
@@ -216,7 +240,7 @@ describe('a pulled rule that never returns', () => {
 
   it('is quarantined, so the next process never loads it again', async () => {
     silenceStderr();
-    const verdicts = new Map<string, RuleProbeVerdictEntry>();
+    const verdicts = clearedByPreflight(HOSTILE);
 
     const first = createPluginRuntime(fakeGateway(bundle([HOSTILE]), verdicts), settings(), {
       scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50 },
@@ -297,7 +321,10 @@ describe('a pulled rule and a vault pointer', () => {
   const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
 
   it('fires on a bare match, so the absence below is the shield and not the rule', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle([GREEDY])), settings());
+    const rt = createPluginRuntime(
+      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+      settings(),
+    );
     try {
       const result = await rt.processText(`token ${'A'.repeat(26)} here`);
       expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
@@ -307,7 +334,10 @@ describe('a pulled rule and a vault pointer', () => {
   });
 
   it('never matches inside the pointer, even though the scan ran in the worker', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle([GREEDY])), settings());
+    const rt = createPluginRuntime(
+      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+      settings(),
+    );
     try {
       const result = await rt.processText(`resubmit ${POINTER} please`);
       expect(result.findings).toEqual([]);

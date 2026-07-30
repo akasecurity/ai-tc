@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { withTransaction } from '../internal/transactions.ts';
 import { seedSampleAuditEvents } from './sample-audit-events.ts';
 import { seedSampleInventory } from './sample-inventory.ts';
 import { seedSampleShares } from './sample-shares.ts';
@@ -19,26 +20,14 @@ export function seedSampleFixtures(db: DatabaseSync): void {
   // own, and on a file-backed store every commit is a separate flush — the cost
   // the Windows CI runner charges orders of magnitude more for than a local
   // disk does, which is enough to put a seeding test near the per-test timeout.
-  // A caller that already holds a transaction keeps it; this opens none of its
-  // own inside one.
-  if (db.isTransaction) {
-    seedAll(db);
-    return;
-  }
-  db.exec('BEGIN');
-  try {
-    seedAll(db);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-}
-
-function seedAll(db: DatabaseSync): void {
-  seedSampleShares(db);
-  seedSampleInventory(db);
-  seedSampleAuditEvents(db);
+  // withTransaction owns the BEGIN/COMMIT and the guarded ROLLBACK, and drops
+  // to a SAVEPOINT when the caller already holds a transaction, so a failed
+  // seed rethrows the real error rather than a ROLLBACK-on-an-aborted-tx one.
+  withTransaction(db, () => {
+    seedSampleShares(db);
+    seedSampleInventory(db);
+    seedSampleAuditEvents(db);
+  });
 }
 
 export { seedSampleAuditEvents, seedSampleInventory, seedSampleShares };

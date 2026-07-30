@@ -246,6 +246,152 @@ describe('redactLeakedKeys', () => {
     expect(readFileSync(present, 'utf8')).toContain('[REDACTED:SECRET]');
   });
 
+  describe('pre-resolved replacements (recoverable vault pointers)', () => {
+    // A well-formed pointer-shaped replacement, as the async vault caller would
+    // pre-resolve. Its exact shape is irrelevant to this module — any non-raw
+    // string a caller maps is substituted verbatim.
+    const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'2'.repeat(16)}]]`;
+
+    it('substitutes the mapped replacement, removes the raw value, and leaves every other byte identical', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      const before = `line one untouched\n{"content":"key ${TRANSCRIPT_KEY} here"}\nline three untouched\n`;
+      writeFileSync(transcriptFile, before);
+
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, POINTER]]),
+      );
+
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(1);
+      const after = readFileSync(transcriptFile, 'utf8');
+      // The rewrite is exactly the raw value's occurrences swapped for the
+      // pointer — no placeholder, no other byte touched.
+      expect(after).toBe(before.replaceAll(TRANSCRIPT_KEY, POINTER));
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+      expect(after).not.toContain('[REDACTED:SECRET]');
+    });
+
+    it('a value without a map entry still strikes one-way, and the counts separate the two', () => {
+      const transcriptFile = join(transcriptRoot, 'mixed.jsonl');
+      writeFileSync(transcriptFile, `pointered ${TRANSCRIPT_KEY} struck ${TEMP_KEY} end`);
+
+      const detail = redactLeakedKeysDetailed(
+        [
+          { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+          { where: { filePath: transcriptFile }, rawValue: TEMP_KEY },
+        ],
+        scope,
+        new Map([[TRANSCRIPT_KEY, POINTER]]),
+      );
+
+      expect(detail.redactedKeys).toBe(2);
+      expect(detail.pointeredKeys).toBe(1);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe(`pointered ${POINTER} struck [REDACTED:SECRET] end`);
+    });
+
+    it('a map entry equal to the raw value itself falls back to the one-way placeholder', () => {
+      const transcriptFile = join(transcriptRoot, 'self-map.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, TRANSCRIPT_KEY]]),
+      );
+
+      // The self-mapping entry is never honoured: the value is struck one-way
+      // and not counted as pointered.
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(0);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe('leaked [REDACTED:SECRET] here');
+    });
+
+    it('a map entry CONTAINING the raw value falls back to the one-way placeholder', () => {
+      const transcriptFile = join(transcriptRoot, 'containing-map.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      // A candidate that embeds the raw value would leave the secret readable
+      // while reporting it redacted — it must never be honoured.
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, `wrapped(${TRANSCRIPT_KEY})`]]),
+      );
+
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(0);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe('leaked [REDACTED:SECRET] here');
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+    });
+
+    it("a '$&' map entry falls back to the placeholder — the match is never re-inserted", () => {
+      const transcriptFile = join(transcriptRoot, 'dollar-map.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+
+      // '$&' is the replace-pattern sequence for "the matched substring": fed
+      // to a replace-family API it would rewrite the secret with itself and
+      // count it redacted. The sweep must refuse it and strike one-way.
+      const detail = redactLeakedKeysDetailed(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map([[TRANSCRIPT_KEY, '$&']]),
+      );
+
+      expect(detail.redactedKeys).toBe(1);
+      expect(detail.pointeredKeys).toBe(0);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe('leaked [REDACTED:SECRET] here');
+      expect(after).not.toContain(TRANSCRIPT_KEY);
+    });
+
+    it('an empty map behaves byte-identically to no map at all', () => {
+      const withMap = join(transcriptRoot, 'with-empty-map.jsonl');
+      const without = join(transcriptRoot, 'without-map.jsonl');
+      const content = `leaked ${TRANSCRIPT_KEY} twice ${TRANSCRIPT_KEY}`;
+      writeFileSync(withMap, content);
+      writeFileSync(without, content);
+
+      const mapDetail = redactLeakedKeysDetailed(
+        [{ where: { filePath: withMap }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+        new Map(),
+      );
+      const plainDetail = redactLeakedKeysDetailed(
+        [{ where: { filePath: without }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      expect(mapDetail.redactedKeys).toBe(plainDetail.redactedKeys);
+      expect(mapDetail.pointeredKeys).toBe(0);
+      expect(plainDetail.pointeredKeys).toBe(0);
+      expect(readFileSync(withMap)).toEqual(readFileSync(without));
+    });
+
+    it('counts every finding on a repeated pointered value, same as the one-way sibling rule', () => {
+      const transcriptFile = join(transcriptRoot, 'repeated-pointered.jsonl');
+      writeFileSync(transcriptFile, `one ${TRANSCRIPT_KEY} two ${TRANSCRIPT_KEY} done`);
+
+      const targets = [
+        { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+        { where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY },
+      ];
+      const detail = redactLeakedKeysDetailed(targets, scope, new Map([[TRANSCRIPT_KEY, POINTER]]));
+
+      // Both findings resolve on the single rewrite and both count pointered —
+      // one raw value has exactly one replacement across the sweep.
+      expect(detail.redactedKeys).toBe(2);
+      expect(detail.pointeredKeys).toBe(2);
+      expect(detail.struck).toEqual(targets);
+      const after = readFileSync(transcriptFile, 'utf8');
+      expect(after).toBe(`one ${POINTER} two ${POINTER} done`);
+    });
+  });
+
   describe('.aka-redact.tmp cleanup', () => {
     // Entries left behind matching the atomic-write sibling-temp-file naming.
     function orphanedTmpEntries(dir: string): string[] {

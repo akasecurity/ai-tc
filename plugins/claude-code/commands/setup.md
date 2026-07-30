@@ -30,11 +30,13 @@ scannable history — but a copy of them **does leave the machine**, sent to the
 model provider like any other Claude prompt. You act only on the raw-free plan
 the subprocesses print back.
 
-That takes **two separate consents**, collected at two different points and
+That send takes **two separate consents**, collected at two different points and
 neither implying the other: the **historical-read** grant in step 1 (may AKA
 read past transcripts at all) and the **model-judge** grant in step 3 (may what
 it found be sent to the model API). Each is stated plainly before its own
-picker, and the judge refuses to run without the step-3 grant.
+picker, and the judge refuses to run without the step-3 grant. The vault grant
+in step 1b is a third, separate question about **local** custody — it authorizes
+no send, and nothing about it changes what leaves the machine.
 
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
@@ -181,11 +183,72 @@ revocation details stay inspectable on request and in the dashboard, under
 **Settings → Historical access**, whose own copy points at the separate
 **Model-judge consent** control for the egress.
 
+## 1b. Offer the reversible vault
+
+Ask this right after the scan question, on **both** answers to it — vaulting
+governs the live session either way, and asking before the backfill means a
+"yes" here lets that same backfill rewrite scanned history into recoverable
+pointers in one pass instead of leaving raw values sitting in transcripts.
+Use **AskUserQuestion**, as always — never a printed option list.
+
+**Disclose what changes before you show the picker — this is a custody change,
+and the user must see it before choosing.** State it plainly, in your own words,
+covering every point below; do not soften or skip any of them:
+
+- **Today, a detected secret is destroyed.** When a redact policy fires, the
+  value is replaced with `[REDACTED:…]` and is gone. With the vault, it is
+  replaced with a pointer like `[[aka:secret:…]]` instead, and an **encrypted,
+  recoverable copy is kept on this machine** — AES-256-GCM ciphertext in
+  `~/.aka/data`, key material in `~/.aka/keys` (keep that directory out of
+  backup and sync tools; an OS-keychain option exists in settings). Nothing is
+  sent anywhere — the vault is entirely local.
+- **The model only ever sees pointers.** It can keep working with them —
+  writing them into files, referring to them — without ever reading the value.
+  You see the real values in the dashboard's **Vault** page or with
+  `aka vault show <pointer>`; in the terminal, pointers in Claude's replies
+  render as masked badges by default (a full inline-reveal mode exists in
+  Settings, with its own risk disclosure there).
+- **Pointers are correlatable, and that is visible.** The same value always
+  gets the same pointer, so pointers written into files, commits, and
+  transcripts reveal **where** a secret is used and **which places share the
+  same secret** to anyone who can read those artifacts. The Vault page shows
+  you that same map (every sighting of every pointer) so the correlation is
+  never something only an outsider can see.
+- **What it unlocks:** a blocked prompt comes back with a paste-ready rewrite
+  (pointers in place of the secret) instead of a dead end; scanned history is
+  rewritten to recoverable pointers instead of staying raw on disk; and when
+  the agent genuinely needs a real value, you can grant it per-value with
+  `aka exception approve … --reveal-to-model` — audited every time.
+- **Revoking stops future vaulting; it erases nothing.** Values already stored
+  stay recoverable to you until you **purge** the vault (Vault page — the purge
+  is the eraser, and it makes every pointer everywhere permanently
+  unresolvable). Both controls live in the dashboard.
+
+**Keep detected secrets recoverable?** — "Replace detected secrets with pointers and keep an encrypted copy on this machine, or keep destroying them?"
+
+Offer exactly two options:
+
+- **Vault them** — "reversible: pointers for the model, real values for me, everything local"
+- **No — keep destroying them** — "irreversible redaction, exactly as before"
+
+Neither answer is nudged; the honest trade is recoverability against holding a
+recoverable copy at all.
+
 ## 2. Save the answer, then branch
 
-Branch on the answer from step 1. On the **Yes, take a look** path the onboarding
-writer runs, and it must run **before** the backfill (step 3), because the
-backfill script reads `historicalAccess` from the saved settings to decide
+**First, record the vault answer from step 1b — on both branches.** A
+**Vault them** answer runs the writer below; a **No** answer records nothing
+(absence IS the un-consented state — there is no "declined" marker to write).
+This must also run **before** the backfill, so a granted vault lets the same
+sweep rewrite scanned history into recoverable pointers:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/onboard.js" --vault-consent grant
+```
+
+Then branch on the answer from step 1. On the **Yes, take a look** path the
+onboarding writer runs, and it must run **before** the backfill (step 3), because
+the backfill script reads `historicalAccess` from the saved settings to decide
 whether it's allowed to run. Omitting `--policy` is deliberate — the old global
 redact/warn toggle no longer drives enforcement (posture is per-category now);
 its field is kept for backward compatibility but this wizard doesn't ask about

@@ -88,6 +88,7 @@ function exception(overrides: Partial<DetectionException> = {}): DetectionExcept
     valueFingerprint: 'f'.repeat(64),
     keyVersion: 1,
     maskedValue: 'AKIA…MPLE',
+    capability: 'suppress',
     scope: 'temporary',
     expiresAt: '2026-07-06T13:00:00.000Z',
     maxUses: null,
@@ -220,14 +221,26 @@ describe('pure renderers', () => {
             useCount: 118,
           }),
           exception({ scope: 'once', maxUses: 1, useCount: 0 }),
+          exception({
+            maskedValue: 'ghp_…6789',
+            capability: 'reveal_to_model',
+            expiresAt: new Date(NOW + 55 * 60_000).toISOString(),
+          }),
         ],
         NOW,
       ),
     );
-    expect(out).toContain('Active exceptions (3)');
+    expect(out).toContain('Active exceptions (4)');
     expect(out).toContain('3f2a91ab'); // short id, enough for `aka exception revoke`
     expect(out).toContain('AKIA…MPLE'); // masked preview only — never a raw value
     expect(out).toContain('secrets/aws-access-key');
+    // A reveal-to-model grant is tagged so it can never be mistaken for a
+    // plain suppression — and ONLY that row carries the tag.
+    expect(out).toContain('ghp_…6789 · REVEALS-TO-MODEL');
+    expect(out.match(/REVEALS-TO-MODEL/g)).toHaveLength(1);
+    // The reveal row is still metadata-only: the value stays masked — this
+    // list must never itself become a reveal surface.
+    expect(out).not.toMatch(/ghp_[A-Za-z0-9]{6,}/);
     expect(out).toContain('in 42m'); // relative expiry
     expect(out).toContain('—'); // permanent grant has no expiry
     expect(out).toContain('118');
@@ -1188,6 +1201,8 @@ describe('runQuery — against a seeded standalone gateway', () => {
         policy: 'redact',
         historicalAccess: 'session-only',
         dataSharesInPlace: true,
+        vaultKeyCustody: 'file',
+        vaultInlineReveal: 'masked',
       },
       dataDir,
       dbPath: join(dataDir, 'aka.db'),

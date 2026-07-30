@@ -3,7 +3,7 @@ import type { DetectionException } from '@akasecurity/schema';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
-import { StateTagFor } from './atoms.tsx';
+import { CapabilityTagFor, StateTagFor } from './atoms.tsx';
 import { SCOPE_LABEL, VIA_LABEL } from './meta.ts';
 
 export interface ExceptionsTableViewProps {
@@ -60,7 +60,12 @@ export function ExceptionsTableView({
             >
               <TableCell className="font-mono text-xs text-text-3">{ex.id.slice(0, 8)}</TableCell>
               <TableCell className="font-mono text-xs">{ex.ruleId}</TableCell>
-              <TableCell className="font-mono text-xs">{ex.maskedValue}</TableCell>
+              <TableCell className="font-mono text-xs">
+                <span className="inline-flex items-center gap-2">
+                  {ex.maskedValue}
+                  <CapabilityTagFor exception={ex} />
+                </span>
+              </TableCell>
               <TableCell className="text-xs">{SCOPE_LABEL[ex.scope]}</TableCell>
               <TableCell className="text-xs text-text-2">
                 {ex.expiresAt === null ? '—' : relativeTime(ex.expiresAt)}

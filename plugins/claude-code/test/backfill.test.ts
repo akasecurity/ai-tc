@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
+import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BackfillDeps, BackfillIo } from '../src/backfill.ts';
@@ -42,7 +43,15 @@ function fakeIo(): { io: BackfillIo; stdout: string[]; stderr: string[]; failed:
 }
 
 function zeroSummary(): ScanSummary {
-  return { consented: true, scanned: 0, skipped: 0, findings: 0, bySeverity: {}, windowDays: 30 };
+  return {
+    consented: true,
+    scanned: 0,
+    skipped: 0,
+    findings: 0,
+    bySeverity: {},
+    windowDays: 30,
+    visitedFiles: [],
+  };
 }
 
 function baseDeps(overrides: Partial<BackfillDeps> = {}): BackfillDeps {
@@ -54,6 +63,8 @@ function baseDeps(overrides: Partial<BackfillDeps> = {}): BackfillDeps {
       policy: 'redact',
       historicalAccess: 'full',
       dataSharesInPlace: true,
+      vaultKeyCustody: 'file',
+      vaultInlineReveal: 'masked',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
@@ -155,6 +166,8 @@ describe('runBackfill — triage mode', () => {
         policy: 'redact',
         historicalAccess: 'session-only',
         dataSharesInPlace: true,
+        vaultKeyCustody: 'file',
+        vaultInlineReveal: 'masked',
       },
       dataDir,
       dbPath: join(dataDir, 'aka.db'),
@@ -282,5 +295,95 @@ describe('runBackfill — human mode (unchanged)', () => {
       'AKA could not scan your history right now. It will still protect everything from here on.\n',
     ]);
     expect(failed()).toBe(false);
+  });
+});
+
+describe('runBackfill — at-rest scrub of visited transcripts', () => {
+  const consent = { acknowledgedAt: '2026-07-30T00:00:00.000Z', version: VAULT_CONSENT_VERSION };
+
+  function summaryWithFiles(files: string[]): ScanSummary {
+    return { ...zeroSummary(), scanned: files.length, visitedFiles: files };
+  }
+
+  function depsWithConsent(
+    overrides: Partial<BackfillDeps>,
+    consented: boolean,
+  ): { deps: BackfillDeps; out: () => string } {
+    const { io, stdout } = fakeIo();
+    const base = baseDeps({ io, ...overrides });
+    const config = base.loadConfig();
+    if (consented) config.settings.vaultConsent = consent;
+    return { deps: { ...base, loadConfig: () => config }, out: () => stdout.join('') };
+  }
+
+  it('scrubs every visited file when vault consent is granted, and says so', async () => {
+    const scrubFile = vi.fn().mockResolvedValue({ rewritten: 2 });
+    const { deps, out } = depsWithConsent(
+      {
+        scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl', '/h/b.jsonl'])),
+        scrubFile,
+      },
+      true,
+    );
+    await runBackfill(deps);
+    expect(scrubFile.mock.calls.map((c): unknown => c[0])).toEqual(['/h/a.jsonl', '/h/b.jsonl']);
+    expect(out()).toContain('Rewrote secrets in 2 transcript files to recoverable vault pointers');
+  });
+
+  // Reading history was consented; KEEPING recoverable copies was not — the
+  // scrub must not run on the historical grant alone.
+  it('never scrubs without vault consent', async () => {
+    const scrubFile = vi.fn();
+    const { deps, out } = depsWithConsent(
+      { scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl'])), scrubFile },
+      false,
+    );
+    await runBackfill(deps);
+    expect(scrubFile).not.toHaveBeenCalled();
+    expect(out()).not.toContain('Rewrote');
+  });
+
+  it('a scrub fault fails nothing and claims nothing', async () => {
+    const scrubFile = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('locked'))
+      .mockResolvedValueOnce(null);
+    const { deps, out } = depsWithConsent(
+      {
+        scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl', '/h/b.jsonl'])),
+        scrubFile,
+      },
+      true,
+    );
+    await runBackfill(deps);
+    expect(out()).toContain('Historical scan complete');
+    expect(out()).not.toContain('Rewrote');
+  });
+
+  it('clean files (rewritten: 0) are not counted as scrubbed', async () => {
+    const scrubFile = vi.fn().mockResolvedValue({ rewritten: 0 });
+    const { deps, out } = depsWithConsent(
+      { scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl'])), scrubFile },
+      true,
+    );
+    await runBackfill(deps);
+    expect(out()).not.toContain('Rewrote');
+  });
+
+  // The --triage stdout stream is a machine protocol (hits + sentinel); the
+  // scrub still runs under both grants but must add nothing to that stream.
+  it('triage mode scrubs silently', async () => {
+    const scrubFile = vi.fn().mockResolvedValue({ rewritten: 1 });
+    const { deps, out } = depsWithConsent(
+      {
+        triage: true,
+        scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl'])),
+        scrubFile,
+      },
+      true,
+    );
+    await runBackfill(deps);
+    expect(scrubFile).toHaveBeenCalledTimes(1);
+    expect(out()).toBe(triageSentinel(0, 'complete'));
   });
 });

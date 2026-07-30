@@ -83,16 +83,20 @@ describe('applyMigrations tag ledger', () => {
       // stamped user_version accordingly. The count says "all but one applied" but
       // no longer says WHICH — positionally slicing replays 0003 ("table
       // egress_decision_override already exists") and never applies 0002.
+      // 0016 ALTERs the exceptions table 0002 creates, so a store that never
+      // ran 0002 cannot have run 0016 either — both are the missing set here,
+      // and reconciliation must apply them in tag order.
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0002_groovy_big_bertha') continue;
+        if (migration.tag === '0016_breezy_zodiak') continue;
         if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
         db.exec(migration.sql);
       }
-      db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length - 1)}`);
+      db.exec(`PRAGMA user_version = ${String(SQLITE_MIGRATIONS.length - 2)}`);
 
       applyMigrations(db);
 
-      // The genuinely missing migration ran; everything already present was
+      // The genuinely missing migrations ran; everything already present was
       // adopted into the ledger rather than replayed (a replay would throw).
       expect(schemaObjectExists(db, 'table', 'exceptions')).toBe(true);
       expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());

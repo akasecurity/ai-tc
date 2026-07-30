@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 
+import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 const setupMd = readFileSync(new URL('../commands/setup.md', import.meta.url), 'utf8');
@@ -189,6 +190,43 @@ describe('setup.md step-3 model-judge consent gate', () => {
       '120 characters of the surrounding transcript text on either side of it',
     );
   });
+
+  // Derived from the schema rather than pinned to a phrase. `toJudgePayload` is
+  // disclosed-by-default — `{ ...hit }` minus three deletes — so a new TriageHit
+  // field crosses to the model API with no code edit at all. The only other
+  // exhaustiveness guard is judge.test.ts's classification case, and silencing
+  // that is a one-line append to its DISCLOSED list, after which no copy
+  // assertion moves. This table makes a widened payload red on the consent
+  // surface until the surface names it, which is what CLAUDE.md §4 promises.
+  //
+  // Copied per suite rather than shared: these surfaces sit behind different
+  // package walls and word the same field differently, the same reason
+  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  const STEP3_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
+    rawMatch: /rawMatch|raw detected value/i,
+    context: /transcript text on either side/i,
+    ruleId: /rule id/i,
+    category: /category/i,
+    severity: /severity/i,
+    maskedMatch: /masked value/i,
+    confidence: /confidence/i,
+    id: /counter/i,
+    // Dropped by toJudgePayload before egress — nothing to disclose.
+    filePath: null,
+    valueFingerprint: null,
+    keyVersion: null,
+  };
+
+  it('classifies every TriageHit field as named-in-the-disclosure or dropped', () => {
+    expect(Object.keys(STEP3_DISCLOSURE).sort()).toEqual(Object.keys(TriageHit.shape).sort());
+  });
+
+  it.each(Object.entries(STEP3_DISCLOSURE).filter((e): e is [string, RegExp] => e[1] !== null))(
+    'names the disclosed field %s',
+    (_field, pattern) => {
+      expect(step3.replace(/\s+/g, ' ')).toMatch(pattern);
+    },
+  );
 
   // judgeEnv deliberately keeps the user's auth so the subprocess can reach the
   // API, which makes the request attributable to their own account — a fact worth

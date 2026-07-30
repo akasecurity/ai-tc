@@ -74,8 +74,8 @@ export const MODEL_JUDGE_SECTION_DESCRIPTION =
   'A separate consent from historical access: this governs whether the /aka:setup scan may ' +
   'send findings to the model API to sort real leaks from noise. Per finding that is the raw, ' +
   'unmasked value including any secret, about 120 characters of surrounding transcript text on ' +
-  'either side of it, and the rule, category, severity, masked value and confidence it was ' +
-  'scored with. The file ' +
+  'either side of it, the rule, category, severity, masked value and confidence it was ' +
+  'scored with, and a sequential counter the model echoes back. The file ' +
   'path is never sent, and any secrets in the surrounding context are masked before it goes. ' +
   'Revoking stops future scans; it cannot recall data already sent.';
 

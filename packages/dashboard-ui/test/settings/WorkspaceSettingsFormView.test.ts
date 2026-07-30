@@ -1,5 +1,5 @@
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { TriageHit, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
@@ -185,12 +185,50 @@ describe('WorkspaceSettingsFormView model-judge consent control', () => {
     expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(/cannot recall/i);
   });
 
+  // Derived from the schema rather than pinned to a phrase. `toJudgePayload` is
+  // disclosed-by-default — `{ ...hit }` minus three deletes — so a new TriageHit
+  // field crosses to the model API with no code edit. The plugin's
+  // judge.test.ts classification case is the only other exhaustiveness guard, and
+  // a one-line append to its DISCLOSED list silences it without moving any copy
+  // assertion. This table is what makes a widened payload red on the control that
+  // authorizes the send, which is what CLAUDE.md §4 promises.
+  //
+  // Copied here rather than shared with the plugin's suites: this is a separate
+  // package and words the same fields differently, the same reason expectNoEchoOf
+  // is copied rather than imported (CLAUDE.md, Testing).
+  const BLURB_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
+    rawMatch: /raw, unmasked value/i,
+    context: /transcript text on either side/i,
+    ruleId: /\brule\b/i,
+    category: /category/i,
+    severity: /severity/i,
+    maskedMatch: /masked value/i,
+    confidence: /confidence/i,
+    id: /counter/i,
+    // Dropped by toJudgePayload before egress — nothing to disclose.
+    filePath: null,
+    valueFingerprint: null,
+    keyVersion: null,
+  };
+
+  it('classifies every TriageHit field as named-in-the-blurb or dropped', () => {
+    expect(Object.keys(BLURB_DISCLOSURE).sort()).toEqual(Object.keys(TriageHit.shape).sort());
+  });
+
+  it.each(Object.entries(BLURB_DISCLOSURE).filter((e): e is [string, RegExp] => e[1] !== null))(
+    'names the disclosed field %s',
+    (_field, pattern) => {
+      expect(MODEL_JUDGE_SECTION_DESCRIPTION).toMatch(pattern);
+    },
+  );
+
   // The choice a user actually clicks carries the CLASS of data and the SIZE of
   // the window — the two facts that change the decision. The full label
-  // enumeration (rule/category/severity/masked value/confidence) stays in the
-  // section blurb above: those are non-sensitive, and stacking them into the
-  // radio would bury the raw-value warning in a list, making the label less
-  // readable rather than more. So this is a deliberate split, not an omission.
+  // enumeration (rule/category/severity/masked value/confidence/counter) stays in
+  // the section blurb above, where the schema table enforces it: those are
+  // non-sensitive, and stacking them into the radio would bury the raw-value
+  // warning in a list, making the label less readable rather than more. So this is
+  // a deliberate split, not an omission.
   it('names the raw value and the sized window on the grant choice itself', () => {
     const granted = MODEL_JUDGE_CHOICES.find((c) => c.value === 'granted');
     expect(granted?.description).toMatch(/raw, unmasked value/i);

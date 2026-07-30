@@ -11,6 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 
+import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 const READMES = [
@@ -70,7 +71,11 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
   // copy that still names the file path overstates it (the path no longer crosses).
   it('names the whole payload, not just the secret', () => {
     expect(footnote).toMatch(/secret/i);
-    expect(footnote).toMatch(/120 characters of the surrounding transcript text/);
+    // `on either side` is load-bearing: CONTEXT_RADIUS is applied to BOTH ends of
+    // the span (history/scan.ts), so ~240 characters cross. Without the qualifier
+    // this assertion stays green on copy that halves the window — the same
+    // containment-not-truth shape tightened on the other surfaces.
+    expect(footnote).toMatch(/120 characters of the surrounding transcript text on either side/);
     expect(footnote).not.toMatch(/path of the transcript file/);
   });
 
@@ -88,12 +93,43 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(footnote).toMatch(/without (?:that|the) second/i);
   });
 
-  // filePath, valueFingerprint and keyVersion are dropped by toJudgePayload; the
-  // remaining scoring labels are not. Naming only the secret and the window
-  // leaves the labels undisclosed.
-  it('names the scoring labels that ride with the value', () => {
-    expect(footnote).toMatch(/rule, category, severity/i);
+  // Derived from the schema rather than pinned to a phrase. `toJudgePayload` is
+  // disclosed-by-default — `{ ...hit }` minus three deletes — so a new TriageHit
+  // field crosses to the model API with no code edit. judge.test.ts's
+  // classification case is the only other exhaustiveness guard, and a one-line
+  // append to its DISCLOSED list silences it without moving any copy assertion.
+  // This table is what makes a widened payload red on the footnote until the
+  // footnote names it, which is what CLAUDE.md §4 promises.
+  //
+  // Copied per suite rather than shared: these surfaces sit behind different
+  // package walls and word the same field differently, the same reason
+  // expectNoEchoOf is copied rather than imported (CLAUDE.md, Testing).
+  const FOOTNOTE_DISCLOSURE: Record<keyof typeof TriageHit.shape, RegExp | null> = {
+    // "raw unmasked value" (root README) / "raw (unmasked) value" (plugin README).
+    rawMatch: /raw \(?unmasked\)? value/i,
+    context: /transcript text on either side/i,
+    ruleId: /\brule\b/i,
+    category: /category/i,
+    severity: /severity/i,
+    maskedMatch: /masked value/i,
+    confidence: /confidence/i,
+    id: /counter/i,
+    // Dropped by toJudgePayload before egress — nothing to disclose.
+    filePath: null,
+    valueFingerprint: null,
+    keyVersion: null,
+  };
+
+  it('classifies every TriageHit field as named-in-the-footnote or dropped', () => {
+    expect(Object.keys(FOOTNOTE_DISCLOSURE).sort()).toEqual(Object.keys(TriageHit.shape).sort());
   });
+
+  it.each(Object.entries(FOOTNOTE_DISCLOSURE).filter((e): e is [string, RegExp] => e[1] !== null))(
+    'names the disclosed field %s',
+    (_field, pattern) => {
+      expect(footnote).toMatch(pattern);
+    },
+  );
 
   // A lint rule DOES ban `fetch` now (`no-restricted-globals` and friends in
   // packages/eslint-config, documented in CLAUDE.md §4), so this is no longer the

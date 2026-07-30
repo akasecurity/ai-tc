@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Linter } from 'eslint';
 import { describe, expect, it } from 'vitest';
@@ -359,6 +358,8 @@ describe('noEnterpriseImports merge', () => {
   });
 });
 
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
 // ---------------------------------------------------------------------------
 // The documented opt-out allowlist
 // ---------------------------------------------------------------------------
@@ -369,26 +370,52 @@ describe('noEnterpriseImports merge', () => {
 // and the two could drift apart silently — the same containment problem the
 // egress copy guards exist to solve, one layer down.
 //
-// This walks the real workspace and asserts the opt-out set EXACTLY. A new
-// `allow:` anywhere fails here until both this list and the table are updated,
-// so the doc cannot outlive the configs. Deliberately exact rather than a
-// superset check: a guard that only forbids removals would let a third site in.
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-
+// This resolves each config as a MODULE and inspects the rule values it actually
+// produces, rather than grepping its bytes. Reading the resolved value is what
+// makes the audit hold up: an opt-out written `allow: NET_ALLOW` (a hoisted const
+// shared by the two rule calls — the natural way to write it) is invisible to a
+// literal-array regex, so a byte-level collector would report the documented set
+// and stay green with a third site present. It also cannot false-positive on the
+// unrelated rules that happen to take an `allow:` option (`no-empty-function`
+// among them), because it only ever diffs the network-module ban.
+//
+// The set is asserted EXACTLY, not as a superset: a guard that only forbids
+// removals would let a third site in.
 const DOCUMENTED_OPT_OUTS = {
   'cli/eslint.config.mjs': ['node:net'],
   'cli/eslint.scripts.config.mjs': ['node:http'],
 };
 
+/** The module names a resolved `no-restricted-imports` value bans, or null if absent. */
+function bannedNamesOf(ruleEntry) {
+  if (!Array.isArray(ruleEntry)) return null;
+  const opts = ruleEntry[1];
+  if (typeof opts !== 'object' || opts === null || !Array.isArray(opts.paths)) return null;
+  return new Set(opts.paths.map((entry) => entry.name));
+}
+
+/**
+ * The network specifiers a config entry PERMITS that the shipped default bans.
+ * Derived by differencing against `noNetworkImports()` with no allow list, so it
+ * keeps no copy of the module list and cannot drift from it.
+ */
+function networkSpecifiersPermittedBy(rules) {
+  const banned = bannedNamesOf(rules?.['no-restricted-imports']);
+  if (banned === null) return [];
+  const shipped = bannedNamesOf(noNetworkImports());
+  return [...shipped].filter((name) => !banned.has(name));
+}
+
 describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   /** Every tracked ESLint flat config in the workspace. */
   const configs = (() => {
-    let tracked;
     try {
-      tracked = execFileSync('git', ['ls-files', '*eslint*.config.mjs'], {
+      return execFileSync('git', ['ls-files', '*eslint*.config.mjs'], {
         cwd: REPO_ROOT,
         encoding: 'utf8',
-      }).split('\n');
+      })
+        .split('\n')
+        .filter(Boolean);
     } catch (cause) {
       throw new Error(
         'Could not list tracked files with `git ls-files`. This guard audits the real workspace ' +
@@ -396,7 +423,6 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
         { cause },
       );
     }
-    return tracked.filter(Boolean);
   })();
 
   // A guard that found no configs would pass every assertion below vacuously.
@@ -407,30 +433,49 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     }
   });
 
-  it('has exactly the opt-out sites CLAUDE.md §4 documents — no more, no fewer', () => {
+  it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', async () => {
     /** @type {Record<string, string[]>} */
     const found = {};
     for (const file of configs) {
-      const text = readFileSync(join(REPO_ROOT, file), 'utf8');
-      const specifiers = new Set();
-      // `allow: ['node:net']` — the option both noNetworkImports and
-      // noNetworkSyntax take. Collected per file, deduped across the two calls.
-      for (const m of text.matchAll(/allow:\s*\[([^\]]*)\]/g)) {
-        for (const s of m[1].matchAll(/['"]([^'"]+)['"]/g)) specifiers.add(s[1]);
+      const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
+      for (const entry of mod.default) {
+        const permitted = networkSpecifiersPermittedBy(entry.rules);
+        if (permitted.length === 0) continue;
+        // §4: "Both are file-scoped, never package-wide". Asserted on the entry
+        // that actually carries the exception, so a config growing an unrelated
+        // `files:` block elsewhere cannot satisfy it by proximity.
+        expect(entry.files, `${file}: network opt-out is package-wide`).toBeDefined();
+        found[file] = [...new Set([...(found[file] ?? []), ...permitted])].sort();
       }
-      if (specifiers.size > 0) found[file] = [...specifiers].sort();
     }
     expect(found).toEqual(DOCUMENTED_OPT_OUTS);
   });
 
-  // §4 says both are "file-scoped, never package-wide". An opt-out declared
-  // without a `files:` key would apply to the whole package, silently widening
-  // the exception past what the table claims.
-  it('keeps every opt-out file-scoped rather than package-wide', () => {
-    for (const file of Object.keys(DOCUMENTED_OPT_OUTS)) {
-      const text = readFileSync(join(REPO_ROOT, file), 'utf8');
-      const optOutBlock = text.slice(text.lastIndexOf('files:', text.indexOf('allow:')));
-      expect(optOutBlock).toMatch(/^files:/);
+  // §4 also claims each opt-out "drop[s] the static and dynamic bans together so
+  // the exception holds whichever import form the file uses". Asserted
+  // behaviourally through the real linter rather than by matching the generated
+  // esquery selector, whose escaping is an implementation detail.
+  it('permits its specifier in both the static and the dynamic form', async () => {
+    for (const [file, specifiers] of Object.entries(DOCUMENTED_OPT_OUTS)) {
+      const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
+      const optOut = mod.default.find(
+        (entry) => networkSpecifiersPermittedBy(entry.rules).length > 0,
+      );
+      expect(optOut, `${file}: no opt-out entry found`).toBeDefined();
+      for (const specifier of specifiers) {
+        const rules = {
+          'no-restricted-imports': optOut.rules['no-restricted-imports'],
+          'no-restricted-syntax': optOut.rules['no-restricted-syntax'],
+        };
+        expect(
+          lintWithRules(`import x from '${specifier}';`, rules),
+          `${file}: static import of ${specifier} still banned`,
+        ).toHaveLength(0);
+        expect(
+          lintWithRules(`await import('${specifier}');`, rules),
+          `${file}: dynamic import of ${specifier} still banned`,
+        ).toHaveLength(0);
+      }
     }
   });
 });

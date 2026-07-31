@@ -75,15 +75,20 @@ export function looseStorePaths(home: string): string[] {
 // corpus in aka.db, is written inside that target. Neither fact is visible from
 // the outside, and the runtime paths stay silent to keep hooks fail-open and
 // quiet, so `aka init` is where both are named.
-// POSIX-only, for the same reason looseStorePaths is.
+//
+// NOT POSIX-gated, unlike looseStorePaths. Windows applies no mode at all, so
+// there the redirection is the ONLY at-rest fact left to report — and a junction,
+// which lstat reports as a symlink, needs no elevation to create, so this is
+// reachable there. What drops away on Windows is the mode half, not the warning.
+// `platform` is a parameter so both branches are testable from any host.
 export function symlinkedStorePaths(
   home: string,
-): { path: string; target: string; mode?: number }[] {
-  if (process.platform === 'win32') return [];
+  platform: NodeJS.Platform = process.platform,
+): { path: string; target: string; mode?: number | undefined }[] {
   return storeTargets(home).flatMap((path) => {
     try {
       if (!lstatSync(path).isSymbolicLink()) return [];
-      return [{ path, target: linkTarget(path), mode: targetMode(path) }];
+      return [{ path, target: linkTarget(path), mode: targetMode(path, platform) }];
     } catch {
       return []; // absent → not a symlinked target
     }
@@ -108,8 +113,10 @@ function linkTarget(path: string): string {
 // symlinked path, because the chmod there was declined rather than rejected, and
 // without this the one actionable half of the warning ("that target is readable
 // by everyone") would go unsaid. Undefined when there is nothing to stat, so a
-// link resolving nowhere reads as unknown rather than as owner-only.
-function targetMode(path: string): number | undefined {
+// link resolving nowhere reads as unknown rather than as owner-only — and on
+// Windows, where no mode is ever applied and there is none to inherit.
+function targetMode(path: string, platform: NodeJS.Platform): number | undefined {
+  if (platform === 'win32') return undefined;
   try {
     return statSync(path).mode & 0o777; // statSync follows the link, which is the point
   } catch {
@@ -117,20 +124,34 @@ function targetMode(path: string): number | undefined {
   }
 }
 
-// The `aka init` warning for one symlinked store path. Names the inherited mode,
+// The `aka init` warnings for the symlinked store paths. Names the inherited mode
 // and says plainly when it is not owner-only — that is the sentence a reader has
 // to act on, and the loose-path warning can no longer carry it.
-function symlinkWarning({ path, target, mode }: { path: string; target: string; mode?: number }) {
-  const inherited =
-    mode === undefined
-      ? ''
-      : ` (currently ${formatMode(mode)}${(mode & 0o077) !== 0 ? ', NOT owner-only' : ''})`;
-  return (
-    `  ⚠ ${path} is a symlink to ${target}${inherited} — permissions are never changed ` +
-    `through a symlink, so the store keeps that target's own, and its contents (including ` +
-    `the prompt corpus in aka.db) are written there ` +
-    `(see the "Data at rest" note in SECURITY.md)\n`
-  );
+//
+// On Windows the permissions clause is dropped rather than reworded: no mode is
+// applied there at all (see SECURITY.md), so "the store keeps that target's own"
+// would describe a control that does not exist. The redirection stands on both.
+export function symlinkWarnings(
+  paths: { path: string; target: string; mode?: number | undefined }[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return paths
+    .map(({ path, target, mode }) => {
+      const inherited =
+        mode === undefined
+          ? ''
+          : ` (currently ${formatMode(mode)}${(mode & 0o077) !== 0 ? ', NOT owner-only' : ''})`;
+      const kept =
+        platform === 'win32'
+          ? ''
+          : "permissions are never changed through a symlink, so the store keeps that target's own, and ";
+      return (
+        `  ⚠ ${path} is a symlink to ${target}${inherited} — ${kept}its contents ` +
+        `(including the prompt corpus in aka.db) are written there ` +
+        `(see the "Data at rest" note in SECURITY.md)\n`
+      );
+    })
+    .join('');
 }
 
 function formatMode(mode: number): string {
@@ -234,7 +255,7 @@ export async function runInit(argv: string[]): Promise<void> {
       (loose.length > 0
         ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
         : '') +
-      symlinked.map(symlinkWarning).join(''),
+      symlinkWarnings(symlinked),
   );
 
   await offerPluginInstall(values.yes === true);

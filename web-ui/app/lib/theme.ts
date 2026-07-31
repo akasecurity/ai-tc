@@ -18,7 +18,8 @@ export const THEME_STORAGE_KEY = 'aka-theme';
 /** The class the CSS keys off, on <html>. Matches the `.dark` block in theme.css. */
 export const DARK_CLASS = 'dark';
 
-const DARK_QUERY = '(prefers-color-scheme: dark)';
+/** The media query for the OS preference. Exported so the init-script test can pin it. */
+export const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 export function isThemePreference(value: unknown): value is ThemePreference {
   return typeof value === 'string' && THEME_PREFERENCES.includes(value as ThemePreference);
@@ -94,15 +95,16 @@ export function serverPrefersDark(): boolean {
  * on a dark-mode load.
  *
  * It is a string rather than an imported function because it has to execute ahead
- * of the bundle. Kept minimal, and built from the constants above so the key and
- * class name cannot drift from the module.
+ * of the bundle.
+ *
+ * Deliberately a FLAT LITERAL, not built from the constants above. This string is
+ * injected with dangerouslySetInnerHTML, so interpolating into it is code
+ * construction — and `JSON.stringify` does not escape `</script>`, which makes it
+ * the wrong escape for an HTML script context however safe the inputs look today.
+ * Keeping it literal removes the sink outright.
+ *
+ * The values below still have to match the constants above; that agreement is
+ * pinned by web-ui/test/theme-init-script.test.ts rather than by construction.
  */
-export const THEME_INIT_SCRIPT = `(function(){try{var p=localStorage.getItem(${JSON.stringify(
-  THEME_STORAGE_KEY,
-)});var d=p===${JSON.stringify('dark')}||((p===null||p===${JSON.stringify(
-  'system',
-)})&&matchMedia(${JSON.stringify(
-  DARK_QUERY,
-)}).matches);document.documentElement.classList.toggle(${JSON.stringify(
-  DARK_CLASS,
-)},d);}catch(e){}})();`;
+export const THEME_INIT_SCRIPT =
+  '(function(){try{var p=localStorage.getItem("aka-theme");var d=p==="dark"||((p===null||p==="system")&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);}catch(e){}})();';

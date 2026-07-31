@@ -55,12 +55,21 @@ A mode is never applied **through a symlink**. If a store path — `~/.aka` itse
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`, or any store file — is a symlink,
 `ai-tc` leaves the target alone rather than changing the permissions of a directory
 you may be sharing on purpose. Two consequences follow, and neither is obvious from
-the outside, so `aka init` prints the link and what it resolves to:
+the outside, so `aka init` prints the link, what it resolves to, and the mode that
+target currently carries:
 
-- **The store keeps the target's own permissions**, which may be looser than `0700`.
-  Directories and files `ai-tc` creates _inside_ the target are still held owner-only.
+- **The store keeps the target's own permissions**, which may be looser than `0700` —
+  `aka init` says so explicitly when they are. Directories and files `ai-tc` creates
+  _inside_ the target are still held owner-only.
 - **The store is written inside the target** — including the prompt corpus in
   `aka.db`. A symlink pointing into a synced or shared folder puts that corpus there.
+  This is reported on Windows too, where no mode is applied at all and where the
+  redirection is the only at-rest fact left to report.
+
+A store directory that is a symlink resolving **nowhere** is refused rather than
+created through: `aka init` names the broken link and its missing target instead of
+failing with a bare `ENOENT`. Plugin hooks are unaffected — they fall back to
+unonboarded defaults, as they do for any home they cannot read.
 
 ## Supported versions
 

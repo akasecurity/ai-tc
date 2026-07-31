@@ -56,9 +56,30 @@ afterEach(() => {
 // paths init writes cannot cover what a later change adds — the migration's
 // `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
 // such file and no list here names it.
+//
+// Deliberately its own walk rather than a call into looseStorePaths: a test that
+// reuses the implementation it is checking cannot catch a bug in that walk.
 function storeTree(home: string): string[] {
   const entries = readdirSync(home, { withFileTypes: true, recursive: true });
   return [home, ...entries.map((e) => join(e.parentPath, e.name))];
+}
+
+// Is one walked path group/other-readable? `lstat`, not `stat`: stat follows a
+// link and would report its TARGET's mode as a store failure, and the mode a
+// symlinked store path keeps was never ours to set (see chmodBestEffort). A
+// sibling that vanished between the readdir and here — an atomic write's `.tmp`
+// — is not a finding; every other error must throw rather than read as clean,
+// so a permission denial can never empty the haystack an absence assertion
+// searches. The paths that must exist are asserted unguarded by the caller.
+function looseInTree(path: string): boolean {
+  try {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink()) return false;
+    return (stats.mode & 0o077) !== 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 describe('plugin-install offer identity', () => {
@@ -152,9 +173,12 @@ describe('runInit contract', () => {
       // holds vacuously over an empty tree.
       expect(tree).toContain(dbPath(dir));
       expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
-      expect(tree.filter((p) => (statSync(p).mode & 0o077) !== 0)).toEqual([]);
+      expect(tree.filter(looseInTree)).toEqual([]);
 
-      // The user-facing signal has to agree with the disk.
+      // The user-facing signal has to agree with the disk. It can: looseStorePaths
+      // walks data/ rather than naming a fixed set, so a loose backup or sidecar
+      // reaches this assertion. Before that fix it could not disagree about the
+      // one artifact the walk above exists to catch.
       const out = stdout.mock.calls.map((c) => String(c[0])).join('');
       expect(out).not.toContain('could not enforce owner-only permissions');
     } finally {

@@ -217,6 +217,57 @@ describe('looseStorePaths', () => {
     expect(looseStorePaths(dir)).toEqual([file]);
   });
 
+  it('reports a loose artifact beside the store that no enumerated target names', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // The layout is a fixed list; what sits beside the store is not. The legacy
+    // drop leaves an `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of
+    // the prompt corpus — on every run, and the SQLite sidecars appear with
+    // whichever journal mode is active. tightenFile/tightenPerms hold all of
+    // them at 0600, so one left group-readable is a rejected chmod, which is
+    // exactly what this warning exists to surface. Before this walk the store's
+    // only at-rest control could fail on the largest file in the directory and
+    // the user would never be told.
+    const settings = settingsDir(dir);
+    mkdirSync(settings, { recursive: true });
+    mkdirSync(dataDir(dir), { recursive: true });
+    const file = join(settings, 'settings.json');
+    writeFileSync(file, '{}');
+    for (const p of [dir, settings, dataDir(dir), file]) chmodSync(p, p === file ? 0o600 : 0o700);
+    expect(looseStorePaths(dir)).toEqual([]); // precondition: nothing enumerated is loose
+
+    const backup = join(dataDir(dir), 'aka.db.pre-drop.1785500790653.545ee74f.bak');
+    writeFileSync(backup, 'prompt corpus');
+    chmodSync(backup, 0o644);
+    const sidecar = join(dataDir(dir), 'aka.db-wal');
+    writeFileSync(sidecar, '');
+    chmodSync(sidecar, 0o644);
+
+    expect(looseStorePaths(dir).sort()).toEqual([backup, sidecar].sort());
+  });
+
+  it('does not report a `.partial` (loose by design mid-copy, not a rejected chmod)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // snapshotStore tightens its staging copy only just before the rename, so
+    // the file exists at the caller's umask for the whole VACUUM INTO and a copy
+    // cut short by a kill leaves a 0644 `.partial` behind on purpose. Naming it
+    // here would blame the filesystem for a mode nothing tried to apply — the
+    // same wrong diagnosis the symlink case below avoids.
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
+    const partial = join(dataDir(dir), 'aka.db.pre-drop.1.aaaaaaaa.bak.partial');
+    writeFileSync(partial, 'half a copy');
+    chmodSync(partial, 0o644);
+
+    expect(looseStorePaths(dir)).toEqual([]);
+  });
+
   it('makes `aka init` print a warning when a mode could not be applied', async () => {
     // macOS-only fault injection: chflags freezes the settings dir so init's
     // tighten of settings.json fails, and init must surface that (data/ stays

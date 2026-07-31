@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -61,6 +61,36 @@ function storeTargets(home: string): string[] {
   return [...storeContents(home).keys()];
 }
 
+// Every path whose owner-only MODE this command stands behind. The layout above
+// has to stay enumerated — some of it does not exist yet on a first run, and an
+// absent target is not a loose one — but the artifacts beside the store are not
+// a fixed list, so they are walked instead. SQLite's `-wal`/`-shm`/`-journal`
+// appear with whichever journal mode is active, and the legacy drop leaves an
+// `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the prompt corpus
+// — on every run, including a first one. `tightenPerms`/`tightenFile` already
+// hold all of them at 0600, so each is a path a rejected chmod can strand; a
+// hardcoded list here would never name one, and could not name whatever the
+// next migration adds.
+function storeModeTargets(home: string): string[] {
+  const targets = new Set(storeTargets(home));
+  const data = dataDir(home);
+  try {
+    for (const name of readdirSync(data)) {
+      // A `.partial` is the one artifact deliberately left at the umask: it
+      // exists for the whole of the `VACUUM INTO` that writes it and is only
+      // tightened just before the rename, so a copy cut short by a kill leaves
+      // a 0644 one behind on purpose (see snapshotStore). Reporting it would
+      // blame the filesystem for a mode nothing tried to apply — the wrong
+      // diagnosis, which is the same reason a symlinked path is skipped below.
+      if (name.endsWith('.partial')) continue;
+      targets.add(join(data, name));
+    }
+  } catch {
+    // absent or unreadable data dir — the enumerated layout still applies
+  }
+  return [...targets];
+}
+
 // The store paths whose owner-only mode could not be applied. `aka init` tightens
 // all of them; any that stay group/other-readable means the filesystem rejected
 // chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
@@ -69,7 +99,7 @@ function storeTargets(home: string): string[] {
 // actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
 export function looseStorePaths(home: string): string[] {
   if (process.platform === 'win32') return [];
-  return storeTargets(home).filter((p) => {
+  return storeModeTargets(home).filter((p) => {
     try {
       // A symlinked path is deliberately never chmod'd (see symlinkedStorePaths),
       // so reporting its target's mode here would blame the filesystem for a

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "//": "Two suites here assert against files outside this package, and the default inputs do not hash them — so the edit each guard exists to catch is the edit that leaves this task's hash untouched and replays a cached pass. privacy-claims.test.ts reads the repo-root README (its egress footnote is duplicated there); identity-consistency.test.ts reads the root README, cli/README.md, the marketplace manifest, and the CLI's init command, which is where the names it cross-checks come from. Same reasoning as packages/persistence/turbo.json.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/README.md",
+        "$TURBO_ROOT$/cli/README.md",
+        "$TURBO_ROOT$/.claude-plugin/marketplace.json",
+        "$TURBO_ROOT$/cli/src/commands/init.ts"
+      ]
+    }
+  }
+}

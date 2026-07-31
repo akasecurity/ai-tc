@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Linter } from 'eslint';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
   base,
@@ -429,6 +429,21 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     }
   })();
 
+  /**
+   * file → the config's default export. Loaded once here: each import pulls the
+   * full typescript-eslint graph, so paying it per test is marginal against the
+   * 5s per-test timeout on a cold-cache CI runner. The hook carries its own
+   * generous timeout instead.
+   */
+  const loadedConfigs = new Map();
+
+  beforeAll(async () => {
+    const modules = await Promise.all(
+      configs.map((file) => import(pathToFileURL(join(REPO_ROOT, file)).href)),
+    );
+    configs.forEach((file, i) => loadedConfigs.set(file, modules[i].default));
+  }, 60_000);
+
   // A guard that found no configs would pass every assertion below vacuously.
   it('found the workspace ESLint configs to audit', () => {
     expect(configs.length).toBeGreaterThanOrEqual(Object.keys(DOCUMENTED_OPT_OUTS).length);
@@ -437,12 +452,11 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     }
   });
 
-  it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', async () => {
+  it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', () => {
     /** @type {Record<string, string[]>} */
     const found = {};
     for (const file of configs) {
-      const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
-      for (const entry of mod.default) {
+      for (const entry of loadedConfigs.get(file)) {
         const permitted = networkSpecifiersPermittedBy(entry.rules);
         if (permitted.length === 0) continue;
         // §4: "Both are file-scoped, never package-wide". Asserted on the entry
@@ -459,12 +473,11 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   // the exception holds whichever import form the file uses". Asserted
   // behaviourally through the real linter rather than by matching the generated
   // esquery selector, whose escaping is an implementation detail.
-  it('permits its specifier in both the static and the dynamic form', async () => {
+  it('permits its specifier in both the static and the dynamic form', () => {
     for (const [file, specifiers] of Object.entries(DOCUMENTED_OPT_OUTS)) {
-      const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
-      const optOut = mod.default.find(
-        (entry) => networkSpecifiersPermittedBy(entry.rules).length > 0,
-      );
+      const config = loadedConfigs.get(file);
+      expect(config, `${file}: config was not among the tracked workspace configs`).toBeDefined();
+      const optOut = config.find((entry) => networkSpecifiersPermittedBy(entry.rules).length > 0);
       expect(optOut, `${file}: no opt-out entry found`).toBeDefined();
       for (const specifier of specifiers) {
         const rules = {

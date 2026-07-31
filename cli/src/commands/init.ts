@@ -137,6 +137,35 @@ function formatMode(mode: number): string {
   return `0${mode.toString(8).padStart(3, '0')}`;
 }
 
+// A store directory that is a symlink resolving nowhere cannot be created: mkdir
+// raises ENOENT naming a path that DOES exist, which reads as a missing parent
+// rather than a broken link. It also throws before the symlink report above is
+// ever reached, so without this the one diagnosis that would explain the failure
+// never prints. Refuse here instead, naming the link and its target.
+//
+// Not gated on POSIX — a broken link is broken everywhere, and none of this is
+// about modes. Checked for the three directories init creates through: the base,
+// settings/, and data/ (via openLocalDatabase).
+function assertStoreLinksResolve(home: string): void {
+  for (const dir of [home, settingsDir(home), dataDir(home)]) {
+    if (!isBrokenLink(dir)) continue;
+    throw new Error(
+      `${dir} is a symlink to ${linkTarget(dir)}, which does not exist — ` +
+        'create that target or remove the link, then re-run `aka init`',
+    );
+  }
+}
+
+// existsSync follows the link, so a link whose target is gone is exactly the
+// pair "lstat says symlink, exists says no".
+function isBrokenLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync(path);
+  } catch {
+    return false; // absent, or unreadable — not this diagnosis
+  }
+}
+
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
 // applies migrations, and seeds the default per-category policies). Idempotent:
@@ -150,6 +179,7 @@ export async function runInit(argv: string[]): Promise<void> {
   });
   const home = homeBase(values.home);
 
+  assertStoreLinksResolve(home);
   ensureDataDirSync(home);
   const settings = settingsDir(home);
   ensureDataDirSync(settings);

@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
@@ -313,6 +313,32 @@ describe('runInit on a symlinked home', () => {
 
     const out = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(out).toContain('(currently 0755, NOT owner-only)');
+  });
+
+  it.each([
+    ['the base', (home: string) => home],
+    ['settings/', (home: string) => settingsDir(home)],
+    ['data/', (home: string) => dataDir(home)],
+  ])('diagnoses a BROKEN link at %s instead of raising a bare ENOENT', async (_label, at, ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // mkdir on a dangling link raises `ENOENT ... mkdir '<path>'` at a path that
+    // does exist, which reads as a missing parent. It also throws before the
+    // symlink report runs, so the diagnosis that would explain it never prints.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const home = join(dir, 'linkhome');
+    mkdirSync(home);
+    const missing = join(dir, 'unmounted-volume');
+    const link = at(home);
+    if (link !== home) mkdirSync(dirname(link), { recursive: true });
+    if (link === home) rmSync(home, { recursive: true });
+    symlinkSync(missing, link);
+
+    await expect(runInit(['--home', home])).rejects.toThrow(
+      `${link} is a symlink to ${missing}, which does not exist`,
+    );
   });
 
   it('does not cry wolf when the symlink target is already owner-only', async (ctx) => {

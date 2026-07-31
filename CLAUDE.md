@@ -569,18 +569,86 @@ violation on `aka.db` must throw.
 
 Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
-prefix. `expectNoEchoOf` is the **required form for every error assertion in a suite that
-already defines it** — today `web-ui/test/actions/exceptions.test.ts` and
-`plugins/claude-code/test/triage/judge.test.ts` — including the ones a newly covered action
-or seam brings with it; a plain `not.toContain(rawValue)` on an error is a defect, not a
-style choice. It is not reachable across a package wall, so a third suite that needs it
-copies it rather than importing it, and copies the `expect(value).toBeDefined()` guard with
-it — without that guard an `undefined` message satisfies the loop vacuously.
-This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
-stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
-fragment is stored on purpose; and an assertion that some non-secret string is absent — an
-internal error-class name, say — is a different property that `expectNoEchoOf` does not
-express.
+prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion in a
+package that carries it** — today `web-ui/test/actions/exceptions.test.ts`, the CLI's
+`cli/test/helpers/no-echo.ts` (imported by `exception.test.ts` and `exception-reveal.test.ts`)
+and the plugin's `plugins/claude-code/test/helpers/no-echo.ts` (imported by `triage/judge.test.ts`,
+`triage/adapter.test.ts`, `triage/writeback.test.ts` and `hooks/resubmit-message.test.ts`) —
+including the ones a newly covered action or seam brings with it; a plain
+`not.toContain(rawValue)` is a defect, not a style choice. It binds by **package**, not by
+file: a suite that sits beside a helper does not get to keep the weaker form because it was
+written first.
+
+**Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
+The CLI's and the plugin's suites each import a `test/helpers/no-echo.ts` with its own tests
+in `no-echo.test.ts`: each case drives the helper with an output that leaks a run, and
+asserts both that the helper refuses it **and** that the whole-value form it replaced would
+have passed. That second half is what shows the assertion is _stronger_ rather than merely
+also-red, and it is why raising the run length or emptying the loop cannot go unnoticed —
+widening `ECHO_RUN` leaves every **caller** green, so the helper's own suite is the only
+thing that goes red. A package wall blocks the import, not the pattern, so a third package
+copies **both** files — including the `expect(value).toBeDefined()` guard, without which an
+`undefined` message satisfies the loop vacuously.
+
+**Capture the error outside the `catch`.** This shape passes while the function under test
+stops throwing entirely:
+
+```ts
+try {
+  parse(input);
+  throw new Error('expected parse to throw'); // caught by its own catch, below
+} catch (err) {
+  expect((err as Error).message).not.toContain(RAW); // asserts on THAT message
+}
+```
+
+The guard error carries no secret, so the absence check is satisfied by the test's own
+throw. Use `errorFrom(() => parse(input))` (the plugin's helper) or the CLI's
+`.then(() => undefined, (e) => e as Error)`, then assert what the error **says** before
+asserting what it **omits** — a never-thrown error arrives as `undefined` and `toBeDefined()`
+catches it. Naming the expected refusal is also the positive control: without it a case
+proves only that _some_ error said nothing, not that the guarded branch was the one reached.
+
+**Never point it at bytes that can come back empty.** Every `not.toContain` passes on `''`,
+and `toBeDefined()` does not catch that: it catches a never-thrown error arriving as
+`undefined`, while a Prompter's `output()` returns `string` and is never undefined, so the
+guard is **inert on stdout**. Where a path prints nothing at all, assert that —
+`expect(io.output()).toBe('')` — which goes red on anything printed there, raw or not.
+Where it does print, pin a **positive control** on the same bytes first.
+
+This applies to a **raw value**, in an **error** and on whatever further surface a suite
+binds below. At-rest and grant-shape assertions stay whole-value, because `maskMatch`
+deliberately keeps a fragment visible and that fragment is stored on purpose; and an
+assertion that some non-secret string is absent — an internal error-class name, say — is a
+different property that `expectNoEchoOf` does not express. Drive the window with a
+**high-entropy** fixture: against an English-phrase literal an eight-character window
+collides with ordinary output text instead of catching a leak. High-entropy does **not**
+mean credential-shaped — this repo is public, and a fixture that looks like a real secret
+does not belong in it. Where a suite needs both (`cli/test/commands/exception-reveal.test.ts`
+tokenizes a value the engine never scans), a random-looking string that matches no rule
+satisfies them together; where the value must match a rule, take it from that rule's own
+`examples` so no secret-shaped literal is written by hand.
+
+The CLI's `exception` suites bind it **wider than an error** — to their **stdout**
+assertions too, because a CLI's terminal output is where a leaked value gets scrolled,
+pasted into a bug report and captured by CI logs. That is safe rather than fragile **for
+the values those suites use**: what they print of a blocked **generic** secret is
+`maskMatch`'s first-and-last preview (`A******E`), two characters, which cannot fill an
+eight-character window. **It does not generalize to every value `maskMatch` handles.** The
+email branch reveals the first local character plus the **whole domain**
+(`user@example.com` → `u***@example.com`), and a single-character local part returns the
+input unchanged — both fill the window on purpose. A surface printing a pii/email preview is
+out of scope for the stdout half, not a leak it found; `no-echo.test.ts` pins both branches
+so that boundary is written down rather than re-derived. If the **generic** branch is ever
+widened past two characters, that suite goes red first, which is the correct answer and not
+a reason to loosen the callers back.
+
+**Bind it per assertion, never per file.** `cli/test/commands/vault.test.ts` is the worked
+example: its forged-pointer refusal pins absence like any other, but `aka vault show`'s
+success path prints the raw value **on purpose** and asserts `output().startsWith(RAW)`, so
+a run-by-run rule over that case would assert the opposite of the command's contract. Exempt
+the case, not the file — a file-level exemption also disarms the refusal paths in it, which
+are the ones a leak actually travels through.
 
 Assert against the value **that call supplied**, never a module constant the case does not
 send. A case driven with an inert literal and asserted against a shared `VALUE` cannot fail

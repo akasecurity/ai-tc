@@ -1,12 +1,12 @@
 cff-version: 1.2.0
-message: "If you use ai-tc, please cite it as below."
+message: 'If you use ai-tc, please cite it as below.'
 title: ai-tc
-abstract: "AI Traffic Control: an open-source, local-first control plane for coding agents. Intercepts prompts, tool calls, responses and file reads, scans each against rule packs for secrets and regulated data, then enforces policy — monitor, warn, redact, block, or exception."
+abstract: 'AI Traffic Control: an open-source, local-first control plane for coding agents. Intercepts prompts, tool calls, responses and file reads, scans each against rule packs for secrets and regulated data, then enforces policy — monitor, warn, redact, block, or exception.'
 type: software
 authors:
   - family-names: Lin
     given-names: William
-repository-code: "https://github.com/akasecurity/ai-tc"
-url: "https://akasecurity.io"
+repository-code: 'https://github.com/akasecurity/ai-tc'
+url: 'https://akasecurity.io'
 license: Apache-2.0
 version: 0.9.4

@@ -82,6 +82,22 @@ function looseInTree(path: string): boolean {
   }
 }
 
+const mode = (p: string): number => statSync(p).mode & 0o777;
+
+// The five paths `aka init` creates and holds to a documented mode, with that
+// mode. Kept as a pair so a case can assert the CONTRACT (0700 dirs, 0600 files)
+// rather than only owner-only-ness: `& 0o077` alone passes a 0400 file and a
+// 0700 one, neither of which is what SECURITY.md's "Data at rest" note promises.
+function documentedModes(home: string): [path: string, mode: number][] {
+  return [
+    [home, 0o700],
+    [settingsDir(home), 0o700],
+    [dataDir(home), 0o700],
+    [join(settingsDir(home), 'settings.json'), 0o600],
+    [dbPath(home), 0o600],
+  ];
+}
+
 describe('plugin-install offer identity', () => {
   it('emits offer copy carrying the canonical product name and tagline', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
@@ -121,12 +137,7 @@ describe('runInit contract', () => {
     await runInit(['--home', dir]);
 
     if (process.platform === 'win32') return;
-    const mode = (p: string): number => statSync(p).mode & 0o777;
-    expect(mode(dir)).toBe(0o700);
-    expect(mode(settingsDir(dir))).toBe(0o700);
-    expect(mode(dataDir(dir))).toBe(0o700);
-    expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
-    expect(mode(dbPath(dir))).toBe(0o600);
+    for (const [path, expected] of documentedModes(dir)) expect(mode(path)).toBe(expected);
   });
 
   it('holds every path under ~/.aka owner-only whatever umask the caller has', async (ctx) => {
@@ -168,11 +179,18 @@ describe('runInit contract', () => {
       // umask is ignored.
       expect(statSync(control).mode & 0o777).toBe(0o666);
 
+      // The documented contract first, exactly — 0700 dirs and 0600 files, not
+      // merely "no group or other bit". These five also stat unguarded, so a
+      // store artifact that vanished under the walk below cannot pass as clean.
+      for (const [path, expected] of documentedModes(dir)) expect(mode(path)).toBe(expected);
+
       const tree = storeTree(dir);
       // ...and the walk has to have reached the store, or "nothing is loose"
       // holds vacuously over an empty tree.
       expect(tree).toContain(dbPath(dir));
       expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
+      // Everything ELSE it found is owner-only too — the part a five-path list
+      // cannot cover, and where the pre-drop backup is caught.
       expect(tree.filter(looseInTree)).toEqual([]);
 
       // The user-facing signal has to agree with the disk. It can: looseStorePaths

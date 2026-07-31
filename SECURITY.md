@@ -51,6 +51,17 @@ neither sets nor asserts any Windows ACL. **Treat the store as unprotected at re
 on Windows** and rely on full-disk encryption (e.g. BitLocker) or your own directory
 ACLs.
 
+A mode is never applied **through a symlink**. If a store path — `~/.aka` itself,
+`~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`, or any store file — is a symlink,
+`ai-tc` leaves the target alone rather than changing the permissions of a directory
+you may be sharing on purpose. Two consequences follow, and neither is obvious from
+the outside, so `aka init` prints the link and what it resolves to:
+
+- **The store keeps the target's own permissions**, which may be looser than `0700`.
+  Directories and files `ai-tc` creates _inside_ the target are still held owner-only.
+- **The store is written inside the target** — including the prompt corpus in
+  `aka.db`. A symlink pointing into a synced or shared folder puts that corpus there.
+
 ## Supported versions
 
 Security fixes target the latest released version. Please upgrade to the latest

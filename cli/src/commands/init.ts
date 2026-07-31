@@ -31,8 +31,11 @@ import { runPlugins } from './plugins.ts';
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
-// Every path `aka init` creates and holds to an owner-only mode: the base, its
-// layout directories, and the two files that exist once init has run.
+// Every path the store spans and holds to an owner-only mode: the base, its
+// layout directories, and the two files that exist once init has run. Not all of
+// them are created by `aka init` — keys/ is minted lazily by the vault key
+// provider, on first use — so an absent path is the normal case and each caller
+// filters it out rather than treating it as a finding.
 function storeTargets(home: string): string[] {
   return [
     home,

@@ -22,6 +22,7 @@ import {
   DATA_FILE_MODE,
   dbSidecars,
   ensureDataDirSync,
+  tightenDir,
   tightenFile,
   tightenPerms,
   writeOwnerOnlyFileSync,
@@ -87,6 +88,111 @@ describe('ensureDataDirSync', () => {
     if (process.platform === 'win32') return;
     expect(mode(dir)).toBe(DATA_DIR_MODE);
   });
+
+  it('never chmods THROUGH a directory symlink (a victim dir keeps its mode)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // Fault injection: a store directory path (~/.aka, ~/.aka/data,
+    // ~/.aka/settings, ~/.aka/keys) is a planted symlink to a directory the
+    // invoking user owns but shares — a web root, a shared project dir. chmod
+    // follows links, so without the guard the victim is silently locked to 0700
+    // and group/other access breaks with no diagnostic.
+    const victim = join(base, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const link = join(base, '.aka');
+    symlinkSync(victim, link);
+
+    ensureDataDirSync(link);
+
+    expect(mode(victim)).toBe(0o755); // victim NOT tightened through the link
+    expect(lstatSync(link).isSymbolicLink()).toBe(true); // link left as-is
+  });
+
+  it('stays usable through a symlinked store dir rather than refusing it', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // The pinned decision for a symlinked store path is skip-and-surface, not
+    // refuse: a home a user deliberately symlinked (a dotfiles manager, another
+    // volume) must keep working, and a hook must never break on one. `aka init`
+    // is what names the link — see symlinkedStorePaths in the CLI.
+    const victim = join(base, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const link = join(base, '.aka');
+    symlinkSync(victim, link);
+
+    expect(() => {
+      ensureDataDirSync(link);
+    }).not.toThrow();
+    expect(existsSync(link)).toBe(true);
+  });
+
+  it('still tightens a real directory created INSIDE a symlinked home', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // Only the FINAL component is checked. Widening the guard to any symlinked
+    // ancestor would leave the whole store untightened under a deliberately
+    // symlinked ~/.aka — silently dropping its only at-rest control, which is a
+    // worse outcome than the one being fixed. data/ here is a real inode, so it
+    // is ours to hold at 0700.
+    //
+    // data/ must PRE-EXIST loose for this to mean anything: mkdir applies the
+    // mode at creation, so on a fresh dir the assertion passes whether or not the
+    // chmod ran, and an ancestor-widened guard would slip through green.
+    const victim = join(base, 'victim-shared');
+    mkdirSync(join(victim, 'data'), { recursive: true });
+    chmodSync(join(victim, 'data'), 0o755);
+    chmodSync(victim, 0o755);
+    const link = join(base, '.aka');
+    symlinkSync(victim, link);
+
+    ensureDataDirSync(join(link, 'data'));
+
+    expect(mode(join(victim, 'data'))).toBe(DATA_DIR_MODE);
+    expect(mode(victim)).toBe(0o755); // and the link's own target still untouched
+  });
+});
+
+describe('tightenDir', () => {
+  it('sets 0700 on an existing loose directory', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const dir = join(base, 'data');
+    mkdirSync(dir);
+    chmodSync(dir, 0o777);
+
+    tightenDir(dir);
+
+    expect(mode(dir)).toBe(DATA_DIR_MODE);
+  });
+
+  it('never chmods THROUGH a symlink (the plugin re-tightens the base every hook)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // loadConfig re-tightens the base dir on EVERY hook, so this is the hot path
+    // the guard has to hold on, not just `aka init`.
+    const victim = join(base, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const link = join(base, '.aka');
+    symlinkSync(victim, link);
+
+    tightenDir(link);
+
+    expect(mode(victim)).toBe(0o755);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
 });
 
 describe('dbSidecars', () => {
@@ -126,6 +232,27 @@ describe('tightenPerms', () => {
     }).not.toThrow();
     if (process.platform === 'win32') return;
     expect(mode(file)).toBe(DATA_FILE_MODE);
+  });
+
+  it('never chmods THROUGH a symlink planted at a sidecar path', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // A sidecar path is as plantable as settings.json in the loose-~/.aka state,
+    // and -wal/-shm/-journal do not exist until SQLite creates them, so the name
+    // is free for an attacker to take first.
+    const file = join(base, 'aka.db');
+    writeFileSync(file, '');
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    chmodSync(victim, 0o644);
+    symlinkSync(victim, `${file}-wal`);
+
+    tightenPerms(file);
+
+    expect(mode(victim)).toBe(0o644); // victim NOT tightened through the link
+    expect(mode(file)).toBe(DATA_FILE_MODE); // the real db still tightened
   });
 });
 

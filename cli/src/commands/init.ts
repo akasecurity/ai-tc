@@ -1,5 +1,5 @@
-import { existsSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 
@@ -9,7 +9,12 @@ import {
   installedPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
-import { openLocalDatabase, tightenFile, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import {
+  keysDir,
+  openLocalDatabase,
+  tightenFile,
+  writeOwnerOnlyFileSync,
+} from '@akasecurity/persistence';
 import {
   bundledDetections,
   dataDir,
@@ -26,6 +31,36 @@ import { runPlugins } from './plugins.ts';
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
+// Every path the store spans and holds to an owner-only mode, mapped to what
+// actually lands there. Not all of them are created by `aka init` — keys/ is
+// minted lazily by the vault key provider, on first use — so an absent path is
+// the normal case and each caller filters it out rather than treating it as a
+// finding.
+//
+// The description is load-bearing, not decoration: the symlink warning is
+// emitted once per path, and one generic sentence is wrong for most of them.
+// `aka.db` only ever lands under data/, so telling a reader their prompt corpus
+// went to ~/.aka/keys sends them to the wrong directory to check.
+const STORE_DB = 'the store database (including the prompt corpus)';
+const STORE_SETTINGS = 'your settings file';
+function storeContents(home: string): Map<string, string> {
+  return new Map([
+    [home, 'the store (including the prompt corpus in aka.db)'],
+    [settingsDir(home), STORE_SETTINGS],
+    [dataDir(home), STORE_DB],
+    [keysDir(home), 'the vault key'],
+    [join(settingsDir(home), 'settings.json'), STORE_SETTINGS],
+    [dbPath(home), STORE_DB],
+  ]);
+}
+
+// The same layout as a plain list, for the callers that only need the paths.
+// Derived from the map rather than kept beside it, so a path can never appear in
+// one and not the other.
+function storeTargets(home: string): string[] {
+  return [...storeContents(home).keys()];
+}
+
 // The store paths whose owner-only mode could not be applied. `aka init` tightens
 // all of them; any that stay group/other-readable means the filesystem rejected
 // chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
@@ -34,20 +69,165 @@ export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 // actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
 export function looseStorePaths(home: string): string[] {
   if (process.platform === 'win32') return [];
-  const targets = [
-    home,
-    settingsDir(home),
-    dataDir(home),
-    join(settingsDir(home), 'settings.json'),
-    dbPath(home),
-  ];
-  return targets.filter((p) => {
+  return storeTargets(home).filter((p) => {
     try {
+      // A symlinked path is deliberately never chmod'd (see symlinkedStorePaths),
+      // so reporting its target's mode here would blame the filesystem for a
+      // permission this code chose not to apply.
+      if (lstatSync(p).isSymbolicLink()) return false;
       return (statSync(p).mode & 0o077) !== 0; // any group/other bit → not owner-only
     } catch {
       return false; // absent → not a loose target
     }
   });
+}
+
+// The store paths that are symlinks, with what they resolve to and the mode that
+// target carries right now. A chmod is never applied through a symlink (see
+// @akasecurity/persistence's chmodBestEffort), so a symlinked store path keeps
+// whatever mode its target already had — and the store, including the prompt
+// corpus in aka.db, is written inside that target. Neither fact is visible from
+// the outside, and the runtime paths stay silent to keep hooks fail-open and
+// quiet, so `aka init` is where both are named.
+//
+// NOT POSIX-gated, unlike looseStorePaths. Windows applies no mode at all, so
+// there the redirection is the ONLY at-rest fact left to report — and a junction,
+// which lstat reports as a symlink, needs no elevation to create, so this is
+// reachable there. What drops away on Windows is the mode half, not the warning.
+// `platform` is a parameter so both branches are testable from any host.
+export function symlinkedStorePaths(
+  home: string,
+  platform: NodeJS.Platform = process.platform,
+): SymlinkedStorePath[] {
+  return [...storeContents(home)].flatMap(([path, holds]) => {
+    try {
+      if (!lstatSync(path).isSymbolicLink()) return [];
+      return [
+        {
+          path,
+          target: linkTarget(path),
+          holds,
+          // existsSync follows the link, so a target that is gone reads as
+          // absent here while lstat above still sees the link itself.
+          missing: !existsSync(path),
+          mode: targetMode(path, platform),
+        },
+      ];
+    } catch {
+      return []; // absent → not a symlinked target
+    }
+  });
+}
+
+// One symlinked store path: where it points, what lands there, whether the
+// target resolves, and the mode the store inherits from it.
+interface SymlinkedStorePath {
+  path: string;
+  target: string;
+  holds: string;
+  missing: boolean;
+  mode?: number | undefined;
+}
+
+// Where a link points, preferring the fully resolved absolute path — that is the
+// directory the store actually lands in, which is what the warning is about. A
+// link resolving nowhere has no real path, so fall back to its literal contents,
+// resolved against the link's own directory: readlink returns whatever was
+// stored, and a relative target on its own names nothing a reader can act on.
+function linkTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(dirname(path), readlinkSync(path));
+  }
+}
+
+// The mode the link's target carries. This is the permission the store actually
+// inherits, and it is the fact looseStorePaths can no longer report — it skips a
+// symlinked path, because the chmod there was declined rather than rejected, and
+// without this the one actionable half of the warning ("that target is readable
+// by everyone") would go unsaid. Undefined when there is nothing to stat, so a
+// link resolving nowhere reads as unknown rather than as owner-only — and on
+// Windows, where no mode is ever applied and there is none to inherit.
+function targetMode(path: string, platform: NodeJS.Platform): number | undefined {
+  if (platform === 'win32') return undefined;
+  try {
+    return statSync(path).mode & 0o777; // statSync follows the link, which is the point
+  } catch {
+    return undefined;
+  }
+}
+
+// The `aka init` warnings for the symlinked store paths. Each names what really
+// lands at that path, and the mode it inherits — saying plainly when that is not
+// owner-only, which is the sentence a reader has to act on and the one the
+// loose-path warning can no longer carry.
+//
+// Three shapes, because one sentence cannot be true of all of them:
+//   - a resolving link inherits a permission, so the mode is the story;
+//   - on Windows no mode is ever applied (see SECURITY.md), so claiming the
+//     target's own is kept would describe a control that does not exist there —
+//     the clause is dropped rather than reworded, and the redirection stands;
+//   - a link resolving NOWHERE inherits nothing and has received nothing. Saying
+//     it "keeps that target's own permissions" is false twice over: there is no
+//     target, and the write has not happened. What follows is a failure the next
+//     time something tries to create through it — for keys/, the vault key mint.
+export function symlinkWarnings(
+  paths: SymlinkedStorePath[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const seeAlso = '(see the "Data at rest" note in SECURITY.md)';
+  return paths
+    .map(({ path, target, holds, missing, mode }) => {
+      if (missing) {
+        return (
+          `  ⚠ ${path} is a symlink to ${target}, which does not exist — ${holds} ` +
+          `cannot be written there until you create that target or remove the link ${seeAlso}\n`
+        );
+      }
+      const inherited =
+        mode === undefined
+          ? ''
+          : ` (currently ${formatMode(mode)}${(mode & 0o077) !== 0 ? ', NOT owner-only' : ''})`;
+      const kept =
+        platform === 'win32' ? '' : 'permissions are never changed through a symlink, so ';
+      const under = platform === 'win32' ? '' : " under that target's own permissions";
+      return `  ⚠ ${path} is a symlink to ${target}${inherited} — ${kept}${holds} is written there${under} ${seeAlso}\n`;
+    })
+    .join('');
+}
+
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, '0')}`;
+}
+
+// A store directory that is a symlink resolving nowhere cannot be created: mkdir
+// raises ENOENT naming a path that DOES exist, which reads as a missing parent
+// rather than a broken link. It also throws before the symlink report above is
+// ever reached, so without this the one diagnosis that would explain the failure
+// never prints. Refuse here instead, naming the link and its target.
+//
+// Not gated on POSIX — a broken link is broken everywhere, and none of this is
+// about modes. Checked for the three directories init creates through: the base,
+// settings/, and data/ (via openLocalDatabase).
+function assertStoreLinksResolve(home: string): void {
+  for (const dir of [home, settingsDir(home), dataDir(home)]) {
+    if (!isBrokenLink(dir)) continue;
+    throw new Error(
+      `${dir} is a symlink to ${linkTarget(dir)}, which does not exist — ` +
+        'create that target or remove the link, then re-run `aka init`',
+    );
+  }
+}
+
+// existsSync follows the link, so a link whose target is gone is exactly the
+// pair "lstat says symlink, exists says no".
+function isBrokenLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync(path);
+  } catch {
+    return false; // absent, or unreadable — not this diagnosis
+  }
 }
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
@@ -63,6 +243,7 @@ export async function runInit(argv: string[]): Promise<void> {
   });
   const home = homeBase(values.home);
 
+  assertStoreLinksResolve(home);
   ensureDataDirSync(home);
   const settings = settingsDir(home);
   ensureDataDirSync(settings);
@@ -105,6 +286,7 @@ export async function runInit(argv: string[]): Promise<void> {
   }
 
   const loose = looseStorePaths(home);
+  const symlinked = symlinkedStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
       `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
@@ -115,7 +297,8 @@ export async function runInit(argv: string[]): Promise<void> {
         : '') +
       (loose.length > 0
         ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
-        : ''),
+        : '') +
+      symlinkWarnings(symlinked),
   );
 
   await offerPluginInstall(values.yes === true);

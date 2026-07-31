@@ -52,7 +52,7 @@ Promote any detection from monitor to warn, redact, or block from the dashboard,
 
 `ai-tc` keeps what it records in a local SQLite store at `~/.aka/data/aka.db`, with your settings beside it under `~/.aka/settings`. There is no database server to run and no schema to manage — the CLI, the plugin, and the dashboard all read and write that one file.
 
-That store is a running log of your agent sessions: prompts, responses, tool calls. Only the spans a rule flags are masked; the rest is kept verbatim and unencrypted, so `aka.db` builds up a full local record of what your agent saw. On macOS and Linux `ai-tc` creates the store directories owner-only (`0700`) and writes the files `0600`. Those file permissions are the only at-rest protection there is, and they do nothing on Windows.
+That store is a running log of your agent sessions: prompts, responses, tool calls. Only the spans a rule flags are masked; the rest is kept verbatim and unencrypted, so `aka.db` builds up a full local record of what your agent saw. On macOS and Linux the store directories are created owner-only (`0700`) and the files are written `0600`. Those permissions are the only at-rest control there is, and they do nothing on Windows.
 
 **[SECURITY.md](SECURITY.md)** has the full picture — every file the store spans, what to do on Windows, and how to report a vulnerability.
 

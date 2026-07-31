@@ -47,7 +47,7 @@ export function PolicyStatsView({
       <StatTile
         icon={TerminalIcon}
         iconBg="var(--color-violet-fill)"
-        iconColor="var(--color-violet)"
+        iconColor="var(--color-violet-ink)"
         label="Custom scripts"
         value={statValue(stats?.custom)}
         loading={loading}

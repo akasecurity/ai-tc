@@ -26,11 +26,12 @@ const FONT_SIZE_RATIO = 0.36;
 export function Provider({ id, size = 24 }: { id: ProviderId; size?: number }) {
   const p = PROVIDERS[id];
   // Vendor brand colors are fixed, so some land close to the surface they sit on
-  // (Cursor's is the dark theme's card color). The inset ring is theme-aware and keeps
-  // the tile's edge visible either way without altering the brand fill.
+  // (Cursor's IS the dark theme's card color). --color-mark-edge is a per-theme inset
+  // ring that keeps the tile's edge visible either way without altering the brand
+  // fill. DestMark in data-shares/atoms.tsx is the same tile and carries the same ring.
   return (
     <span
-      className="flex shrink-0 items-center justify-center rounded-lg font-display font-bold text-white ring-1 ring-inset ring-text/15"
+      className="flex shrink-0 items-center justify-center rounded-lg font-display font-bold text-white ring-1 ring-inset ring-mark-edge"
       style={{ width: size, height: size, background: p.color, fontSize: size * FONT_SIZE_RATIO }}
     >
       {p.short}

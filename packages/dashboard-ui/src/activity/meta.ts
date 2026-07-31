@@ -59,7 +59,12 @@ interface EventMeta {
 export const EVENT_META: Record<AuditEventKind, EventMeta> = {
   session: { label: 'Session', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
   prompt: { label: 'Prompt', icon: UserIcon, text: 'text-primary', fill: 'bg-primary-tint' },
-  response: { label: 'Response', icon: SparklesIcon, text: 'text-violet', fill: 'bg-violet-fill' },
+  response: {
+    label: 'Response',
+    icon: SparklesIcon,
+    text: 'text-violet-ink',
+    fill: 'bg-violet-fill',
+  },
   tool: { label: 'Tool', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
   hook: { label: 'Hook', icon: RouteIcon, text: 'text-sev-low-ink', fill: 'bg-sev-low-fill' },
   detection: {

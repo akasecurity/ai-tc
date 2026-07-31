@@ -161,6 +161,23 @@ export function noNetworkImports(opts = {}) {
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function noNetworkSyntax(opts = {}) {
+  return /** @type {import('eslint').Linter.RuleEntry} */ ([
+    'error',
+    ...networkSyntaxSelectors(opts),
+  ]);
+}
+
+/**
+ * Just the selector entries `noNetworkSyntax` wraps in a severity, so a config that
+ * has to add selectors of its own can carry these forward without unwrapping a
+ * `RuleEntry` union. `tonalInkTokens` below is the one caller that needs that; a
+ * flat-config `rules` entry REPLACES the rule's options rather than merging them,
+ * so anything overriding `no-restricted-syntax` must re-list these or silently drop
+ * the dynamic-import ban for its packages.
+ * @param {{ allow?: readonly string[] }} [opts]
+ * @returns {{ selector: string, message: string }[]}
+ */
+function networkSyntaxSelectors(opts = {}) {
   const { allow = [] } = opts;
   const exact = NETWORK_MODULES.filter((name) => !allow.includes(name)).map(escapeForSelector);
   // The npm clients also match any subpath, mirroring the `<client>/*` static
@@ -170,8 +187,7 @@ export function noNetworkSyntax(opts = {}) {
     (name) => `${escapeForSelector(`${name}/`)}.*`,
   );
   const pattern = [...exact, ...clientSubpaths].join('|');
-  return /** @type {import('eslint').Linter.RuleEntry} */ ([
-    'error',
+  return [
     {
       selector: `ImportExpression[source.value=/^(${pattern})$/]`,
       message: NO_NETWORK_MESSAGE,
@@ -180,8 +196,79 @@ export function noNetworkSyntax(opts = {}) {
       selector: `CallExpression[callee.name='require'] > Literal[value=/^(${pattern})$/]`,
       message: NO_NETWORK_MESSAGE,
     },
-  ]);
+  ];
 }
+
+// Every tonal family in @akasecurity/ui-kit's theme.css carries two foregrounds:
+// `--color-X` is the HUE (chart series, status dots, bar segments) and
+// `--color-X-ink` is TEXT on that family's tint. The hue is deliberately too light
+// to read as text on a pale surface — that is what keeps the severities tellable
+// apart in a chart — so a hue reached through `text-*` renders at around 2:1 and
+// fails WCAG 1.4.3 while compiling, rendering and passing review without complaint.
+//
+// `--color-primary` reads the other way round (it IS the ink, `--color-primary-solid`
+// is its fill), which is exactly why this is worth enforcing rather than
+// remembering: `text-primary` is right and `text-sev-critical` is wrong, and nothing
+// in the names says which.
+const TONAL_HUE_FAMILIES = [
+  'sev-critical',
+  'sev-high',
+  'sev-medium',
+  'sev-low',
+  'ok',
+  'teal',
+  'violet',
+];
+
+const TONAL_INK_MESSAGE =
+  'This is the HUE half of a tonal token pair and is too light to read as text (~2:1). ' +
+  'Use the -ink form for a foreground — text-sev-critical-ink, text-ok-ink — and keep the bare ' +
+  'hue for non-text marks (bg-* dots, bars, chart series). See the token comments in ' +
+  '@akasecurity/ui-kit/theme.css.';
+
+/**
+ * The `no-restricted-syntax` entries that reject a tonal HUE token used as a
+ * `text-*` utility, in both a plain string and a template literal.
+ *
+ * Scope, stated plainly: this catches the class-name form, which is where nearly
+ * all of these live. It cannot see a hue passed as a CSS variable string — an
+ * `iconColor="var(--color-ok)"` prop and an `iconBg="var(--color-ok-fill)"` prop are
+ * the same node to a selector — nor a class assembled from a non-literal
+ * (`` `text-${tone}` ``). Those stay a reading job.
+ *
+ * @returns {{ selector: string, message: string }[]}
+ */
+function tonalInkSelectors() {
+  // A leading non-word boundary so `text-ok` is caught bare, after a variant
+  // (`hover:text-ok`) and mid-class-list, but not as the tail of a longer word. The
+  // trailing lookahead is what lets `text-ok-ink` and `text-sev-low-fill` through.
+  const pattern = `(?:^|[^\\w-])text-(?:${TONAL_HUE_FAMILIES.join('|')})(?![\\w-])`;
+  return [
+    { selector: `Literal[value=/${pattern}/]`, message: TONAL_INK_MESSAGE },
+    { selector: `TemplateElement[value.raw=/${pattern}/]`, message: TONAL_INK_MESSAGE },
+  ];
+}
+
+// The tonal-token guard, for the packages that render Tailwind classes: ui-kit,
+// dashboard-ui and web-ui.
+//
+// It re-lists base's network selectors rather than only its own, because a
+// flat-config `rules` entry REPLACES the rule's options instead of merging them —
+// setting `no-restricted-syntax` bare here would silently drop base's
+// dynamic-import network ban for exactly these three packages. Same hazard
+// `noEnterpriseImports` above is written around.
+/** @type {import('eslint').Linter.Config[]} */
+export const tonalInkTokens = [
+  {
+    rules: {
+      'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
+        'error',
+        ...networkSyntaxSelectors(),
+        ...tonalInkSelectors(),
+      ]),
+    },
+  },
+];
 
 /** @type {import('typescript-eslint').ConfigArray} */
 export const base = tseslint.config(

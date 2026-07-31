@@ -112,9 +112,13 @@ export function DestMark({
 }) {
   if (kind === 'provider') {
     const { short, color } = providerMark(name, host);
+    // Same construction as Provider in shared/Provider.tsx — white lettermark on a
+    // fixed hex — so it carries the same per-theme inset ring. This palette has no
+    // value sitting on a surface color today; the ring is here so the two tiles
+    // cannot drift the next time either list gains a color.
     return (
       <span
-        className="inline-flex shrink-0 items-center justify-center rounded-lg font-display font-semibold text-white"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg font-display font-semibold text-white ring-1 ring-inset ring-mark-edge"
         style={{ width: size, height: size, background: color, fontSize: size * 0.34 }}
       >
         {short}

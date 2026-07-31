@@ -44,7 +44,7 @@ export function toneColors(tone: Tone): [string, string] {
     orange: ['var(--color-sev-high-ink)', 'var(--color-sev-high-fill)'],
     gray: ['var(--color-text-2)', 'var(--color-surface-3)'],
     blue: ['var(--color-sev-low-ink)', 'var(--color-sev-low-fill)'],
-    violet: ['var(--color-violet)', 'var(--color-violet-fill)'],
+    violet: ['var(--color-violet-ink)', 'var(--color-violet-fill)'],
   };
   return map[tone];
 }
@@ -70,7 +70,7 @@ export const MATCHER_META: Record<MatcherType, MatcherMeta> = {
   regex: {
     label: 'Regex',
     icon: BracesIcon,
-    color: 'var(--color-violet)',
+    color: 'var(--color-violet-ink)',
     fill: 'var(--color-violet-fill)',
     blurb: 'Pattern match',
   },

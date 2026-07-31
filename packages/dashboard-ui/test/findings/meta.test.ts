@@ -28,7 +28,7 @@ function buildInstance(id: string, status?: FindingStatus): FindingInstance {
 describe('categoryStyle', () => {
   it('returns the tinted classes for a known category', () => {
     expect(categoryStyle('secret')).toBe('bg-sev-critical-fill text-sev-critical-ink');
-    expect(categoryStyle('source_code')).toBe('bg-violet-fill text-violet');
+    expect(categoryStyle('source_code')).toBe('bg-violet-fill text-violet-ink');
   });
 
   it('falls back to a neutral surface tone for an off-enum category', () => {

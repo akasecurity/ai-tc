@@ -247,6 +247,40 @@ When adding a **new reusable component** to `@akasecurity/ui-kit`, follow the sh
   `badge.tsx`). No hardcoded hex — add a token to `theme.css` if one is missing.
 - Each component is its own file under `packages/ui-kit/src/`, exported from `src/index.ts`.
 
+### Tonal tokens come in pairs: a hue and an ink
+
+Every tonal family (`sev-critical`, `sev-high`, `sev-medium`, `sev-low`, `ok`, `teal`,
+`violet`) carries **two** foregrounds, and picking the wrong one is an accessibility bug
+that compiles, renders, and reads fine in review:
+
+- `--color-X` — the **hue**: chart series, status dots, bar segments. Non-text, so what
+  matters is staying distinguishable from its neighbours (WCAG 1.4.11).
+- `--color-X-ink` — **text** on that family's tint, and solid fills that carry text
+  (WCAG 1.4.3, 4.5:1).
+
+They cannot be collapsed. Forcing every hue dark enough to read as text on a pale tint
+crowds them into one luminance band — severity chart separation measured 1.69 before and
+1.05 after, with red/orange/yellow rendering as the same brown. So **a foreground always
+spells the `-ink` form**, and every family carries one even where its hue already clears
+4.5:1 (violet in light; all of them in dark, where ink == hue): a family missing its
+`-ink` makes `text-X-ink` generate no CSS at all, because an undefined theme variable
+produces no utility and the element silently inherits its color.
+
+`--color-primary` is the one exception and reads the other way round — it **is** the ink,
+and `--color-primary-solid` is its fill. So `text-primary` is right while
+`text-sev-critical` is wrong, and nothing in the names says which. That is why it is
+enforced rather than remembered: `tonalInkTokens` in `@akasecurity/eslint-config` is a
+`no-restricted-syntax` ban on a bare hue reached through `text-*`, spread by `ui-kit`,
+`dashboard-ui` and `web-ui`. It re-spreads `noNetworkSyntax()` because a flat-config
+`rules` entry **replaces** the rule's options rather than merging them — drop that and
+those three packages silently lose §4's dynamic-import ban.
+`packages/eslint-config/test/tonal-ink-tokens.test.js` pins both halves.
+
+What the ban does **not** see, and what still needs reading: a hue handed over as a CSS
+variable string, since `iconColor="var(--color-ok)"` and `iconBg="var(--color-ok-fill)"`
+are the same node to a selector (`toneColors()` and the `StatTile` `iconColor` prop are
+the live examples); and a class assembled from a non-literal.
+
 ## Detection rules
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR without fixtures is rejected by CI.

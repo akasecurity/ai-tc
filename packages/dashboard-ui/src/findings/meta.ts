@@ -60,7 +60,7 @@ export const CATEGORY_ICON: Record<FindingCategory, IconComponent> = {
 export const CATEGORY_STYLE: Record<FindingCategory, string> = {
   secret: 'bg-sev-critical-fill text-sev-critical-ink',
   pii: 'bg-sev-low-fill text-sev-low-ink',
-  source_code: 'bg-violet-fill text-violet',
+  source_code: 'bg-violet-fill text-violet-ink',
   external_share: 'bg-teal-fill text-teal-ink',
   mcp_server: 'bg-sev-high-fill text-sev-high-ink',
   customer_data: 'bg-sev-high-fill text-sev-high-ink',

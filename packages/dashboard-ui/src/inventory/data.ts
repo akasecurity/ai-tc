@@ -166,7 +166,7 @@ export const ASSET_META = {
     type: 'skill',
     label: 'Skills',
     icon: 'sparkles',
-    fg: 'text-violet',
+    fg: 'text-violet-ink',
     bg: 'bg-violet-fill',
   },
   mcp: {

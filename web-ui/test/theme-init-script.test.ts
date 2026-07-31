@@ -6,6 +6,7 @@ import {
   DARK_CLASS,
   DARK_QUERY,
   DEFAULT_THEME_PREFERENCE,
+  isThemePreference,
   THEME_INIT_SCRIPT,
   THEME_STORAGE_KEY,
 } from '../app/lib/theme.ts';
@@ -94,9 +95,31 @@ describe('THEME_INIT_SCRIPT — the pre-paint theme script', () => {
     expect(runInitScript({ stored: 'system', systemDark: false }).classes).toEqual([]);
   });
 
+  // The script's "anything that is not light follows the OS" shape is only correct
+  // while the module's fallback IS 'system'. Assert the constant rather than only
+  // interpolating it into a title: a title cannot fail, so flipping the default to
+  // 'light' would leave the two silently disagreeing under a name that now lies.
+  it('is written against a "system" default, and says so where it can fail', () => {
+    expect(DEFAULT_THEME_PREFERENCE).toBe('system');
+  });
+
   it(`follows the OS when nothing is stored (default is "${DEFAULT_THEME_PREFERENCE}")`, () => {
     expect(runInitScript({ stored: null, systemDark: true }).classes).toEqual([DARK_CLASS]);
     expect(runInitScript({ stored: null, systemDark: false }).classes).toEqual([]);
+  });
+
+  // An unrecognized value is what a hand-edit leaves, or a preference written by a
+  // later version and then rolled back. readStoredPreference runs it through
+  // isThemePreference and falls back to DEFAULT_THEME_PREFERENCE, so the script has
+  // to reach the same answer — otherwise the pre-paint class and the hydrated one
+  // disagree and the page flashes, which is the one thing the script is for.
+  it('treats an unrecognized stored value the way the module does — as the default', () => {
+    for (const stored of ['blue', 'Dark', 'high-contrast', '']) {
+      const resolved = isThemePreference(stored) ? stored : DEFAULT_THEME_PREFERENCE;
+      expect(resolved).toBe('system');
+      expect(runInitScript({ stored, systemDark: true }).classes).toEqual([DARK_CLASS]);
+      expect(runInitScript({ stored, systemDark: false }).classes).toEqual([]);
+    }
   });
 
   it('fails open to light when localStorage throws, rather than breaking the page', () => {

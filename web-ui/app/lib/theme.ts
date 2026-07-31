@@ -25,8 +25,18 @@ export function isThemePreference(value: unknown): value is ThemePreference {
   return typeof value === 'string' && THEME_PREFERENCES.includes(value as ThemePreference);
 }
 
+// The last choice that could NOT be written to localStorage — blocked site data, or
+// a full quota. This is the whole of what makes an unpersistable choice still apply
+// for the page: the picker's value comes from readStoredPreference below, so without
+// somewhere to hold it, a failed write means the next read misses it and the picker
+// snaps back to the default with the theme never applied. Cleared by the next
+// successful write and by a cross-tab write, so persisted state always wins once
+// there is any. Lost on reload — nothing pretends otherwise.
+let unpersisted: ThemePreference | null = null;
+
 /** Reads the stored preference, falling back to the default when absent or unreadable. */
 export function readStoredPreference(): ThemePreference {
+  if (unpersisted !== null) return unpersisted;
   try {
     const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
     return isThemePreference(raw) ? raw : DEFAULT_THEME_PREFERENCE;
@@ -44,18 +54,30 @@ const preferenceListeners = new Set<() => void>();
 /** Subscribes to preference changes, in this tab and across tabs. */
 export function subscribePreference(onChange: () => void): () => void {
   preferenceListeners.add(onChange);
-  window.addEventListener('storage', onChange);
+  const onStorage = (event: StorageEvent): void => {
+    // `storage` fires for every key in the origin; ignore the ones that are not ours
+    // so an unrelated write neither wakes React nor discards a held-in-memory choice.
+    // A null key means the whole store was cleared, which does concern us.
+    if (event.key !== null && event.key !== THEME_STORAGE_KEY) return;
+    // Another tab persisted a choice, so storage is authoritative again.
+    unpersisted = null;
+    onChange();
+  };
+  window.addEventListener('storage', onStorage);
   return () => {
     preferenceListeners.delete(onChange);
-    window.removeEventListener('storage', onChange);
+    window.removeEventListener('storage', onStorage);
   };
 }
 
 export function storePreference(preference: ThemePreference): void {
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, preference);
+    unpersisted = null;
   } catch {
-    // Not persisting is survivable — the choice still applies for this page.
+    // Not persisting is survivable: hold the choice in memory so it still applies for
+    // this page. It does not survive a reload.
+    unpersisted = preference;
   }
   for (const listener of preferenceListeners) listener();
 }
@@ -105,6 +127,17 @@ export function serverPrefersDark(): boolean {
  *
  * The values below still have to match the constants above; that agreement is
  * pinned by web-ui/test/theme-init-script.test.ts rather than by construction.
+ *
+ * The condition is `p !== "light"`, not `p === null || p === "system"`, so an
+ * unrecognized stored value resolves the same way here as it does in
+ * readStoredPreference — which runs it through isThemePreference and falls back to
+ * DEFAULT_THEME_PREFERENCE, i.e. follow the OS. Enumerating the two known keys
+ * instead sends a garbage value (a hand-edit, or a preference written by a later
+ * version and then rolled back) to light here and to the OS setting there: on an
+ * OS-dark machine the page would paint light and the effect would flip it to dark,
+ * which is the exact flash this script exists to prevent. That shape encodes
+ * DEFAULT_THEME_PREFERENCE === 'system'; the test asserts the default, so changing
+ * it cannot silently leave this line behind.
  */
 export const THEME_INIT_SCRIPT =
-  '(function(){try{var p=localStorage.getItem("aka-theme");var d=p==="dark"||((p===null||p==="system")&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);}catch(e){}})();';
+  '(function(){try{var p=localStorage.getItem("aka-theme");var d=p==="dark"||(p!=="light"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.classList.toggle("dark",d);}catch(e){}})();';

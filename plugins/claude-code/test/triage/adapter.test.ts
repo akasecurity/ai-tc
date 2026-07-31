@@ -18,6 +18,7 @@ import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { parseSurface } from '../../src/setup-show.ts';
 import { runApply } from '../../src/triage/adapter.ts';
 import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);
@@ -357,8 +358,12 @@ describe('runApply — preview is a raw-free egress boundary by construction', (
       throw new Error(`judge blew up near ${RAW} — export KEY=${RAW}`);
     });
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).not.toContain(RAW);
+    // Positive control first: the boundary really did replace the message, so
+    // the absence below is a property of the replacement rather than of an
+    // error that never carried anything. Then run by run — a boundary that
+    // withheld only PART of the value would still hand over a live prefix.
     expect((thrown as Error).message).toMatch(/withheld/i);
+    expectNoEchoOf((thrown as Error).message, RAW);
   });
 
   it('passes a raw-free error message through unchanged (keeps useful diagnostics)', async () => {

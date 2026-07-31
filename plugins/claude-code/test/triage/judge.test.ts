@@ -23,6 +23,7 @@ import {
   spawnClaude,
   toJudgePayload,
 } from '../../src/triage/judge.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // No test in this file may reach a live model. EVERY child-process entry point
 // node exposes is routed to one throwing spy, not just the execFileSync
@@ -72,20 +73,6 @@ afterEach(() => {
   while (OWNED.length > 0) rmSync(OWNED.pop() ?? '', { recursive: true, force: true });
 });
 
-// A raw value is absent from an error only if no RUN of it survives: a branch
-// that echoed a truncated value would still hand a live credential's prefix to
-// the parent command's stderr, and a whole-value `not.toContain` stays green on
-// exactly that. Mirrors expectNoEchoOf in web-ui/test/actions/exceptions.test.ts.
-const ECHO_RUN = 8;
-function expectNoEchoOf(message: string | undefined, value: string): void {
-  expect(message).toBeDefined();
-  const haystack = message ?? '';
-  for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
-    expect(haystack).not.toContain(value.slice(i, i + ECHO_RUN));
-  }
-  if (value.length < ECHO_RUN) expect(haystack).not.toContain(value);
-}
-
 // Every value the env holds under `name`, whatever its casing. Windows' env
 // block is case-INSENSITIVE but case-PRESERVING: `process.env.PATH` reads it,
 // yet spreading process.env into a plain object (which judgeEnv does) can yield
@@ -131,19 +118,30 @@ describe('parseVerdict', () => {
   it('never echoes the subprocess output in a failure (raw stays inside the judge)', () => {
     const raw = 'AKIAIOSFODNN7EXAMPLE';
     // A malformed envelope, a non-JSON envelope, and an unparseable result — all
-    // carrying the raw value. None of the thrown messages may contain it.
-    const cases = [
-      JSON.stringify({ is_error: true, result: `failed near ${raw}` }),
-      `not json at all ${raw}`,
-      JSON.stringify({ is_error: false, result: `no fence here, just ${raw}` }),
+    // carrying the raw value. None of the thrown messages may contain it, and
+    // none may contain a RUN of it either: this message reaches the parent
+    // command's stderr, outside the isolated judge, so a truncated echo hands
+    // over a live credential's prefix. Each case names the refusal it expects,
+    // which is the positive control — without it a case proves only that some
+    // error said nothing, not that the guarded branch was the one reached.
+    const cases: { stdout: string; refusal: RegExp }[] = [
+      {
+        stdout: JSON.stringify({ is_error: true, result: `failed near ${raw}` }),
+        refusal: /no usable result/,
+      },
+      { stdout: `not json at all ${raw}`, refusal: /non-JSON envelope/ },
+      {
+        stdout: JSON.stringify({ is_error: false, result: `no fence here, just ${raw}` }),
+        refusal: /unparseable TriageRecommendation/,
+      },
     ];
-    for (const stdout of cases) {
-      try {
-        parseVerdict(stdout);
-        throw new Error('expected parseVerdict to throw');
-      } catch (err) {
-        expect((err as Error).message).not.toContain(raw);
-      }
+    for (const { stdout, refusal } of cases) {
+      // Captured OUTSIDE the catch: a `throw` inside the `try` would be caught
+      // by that same `catch` and asserted against, so the case stayed green
+      // while parseVerdict stopped throwing at all.
+      const err = errorFrom(() => parseVerdict(stdout));
+      expect(err?.message).toMatch(refusal);
+      expectNoEchoOf(err?.message, raw);
     }
   });
 });

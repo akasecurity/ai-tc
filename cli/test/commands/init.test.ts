@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -16,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
+import { cachePath, writeCache } from '@akasecurity/local-ops';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -50,6 +52,52 @@ afterEach(() => {
   else delete (process.stdin as { isTTY?: boolean }).isTTY;
   vi.restoreAllMocks();
 });
+
+// Every path under `home`, the home itself included. A hardcoded list of the
+// paths init writes cannot cover what a later change adds — the migration's
+// `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
+// such file and no list here names it.
+//
+// Deliberately its own walk rather than a call into looseStorePaths: a test that
+// reuses the implementation it is checking cannot catch a bug in that walk.
+function storeTree(home: string): string[] {
+  const entries = readdirSync(home, { withFileTypes: true, recursive: true });
+  return [home, ...entries.map((e) => join(e.parentPath, e.name))];
+}
+
+// Is one walked path group/other-readable? `lstat`, not `stat`: stat follows a
+// link and would report its TARGET's mode as a store failure, and the mode a
+// symlinked store path keeps was never ours to set (see chmodBestEffort). A
+// sibling that vanished between the readdir and here — an atomic write's `.tmp`
+// — is not a finding; every other error must throw rather than read as clean,
+// so a permission denial can never empty the haystack an absence assertion
+// searches. The paths that must exist are asserted unguarded by the caller.
+function looseInTree(path: string): boolean {
+  try {
+    const stats = lstatSync(path);
+    if (stats.isSymbolicLink()) return false;
+    return (stats.mode & 0o077) !== 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+const mode = (p: string): number => statSync(p).mode & 0o777;
+
+// The five paths `aka init` creates and holds to a documented mode, with that
+// mode. Kept as a pair so a case can assert the CONTRACT (0700 dirs, 0600 files)
+// rather than only owner-only-ness: `& 0o077` alone passes a 0400 file and a
+// 0700 one, neither of which is what SECURITY.md's "Data at rest" note promises.
+function documentedModes(home: string): [path: string, mode: number][] {
+  return [
+    [home, 0o700],
+    [settingsDir(home), 0o700],
+    [dataDir(home), 0o700],
+    [join(settingsDir(home), 'settings.json'), 0o600],
+    [dbPath(home), 0o600],
+  ];
+}
 
 describe('plugin-install offer identity', () => {
   it('emits offer copy carrying the canonical product name and tagline', async () => {
@@ -90,12 +138,71 @@ describe('runInit contract', () => {
     await runInit(['--home', dir]);
 
     if (process.platform === 'win32') return;
-    const mode = (p: string): number => statSync(p).mode & 0o777;
-    expect(mode(dir)).toBe(0o700);
-    expect(mode(settingsDir(dir))).toBe(0o700);
-    expect(mode(dataDir(dir))).toBe(0o700);
-    expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
-    expect(mode(dbPath(dir))).toBe(0o600);
+    for (const [path, expected] of documentedModes(dir)) expect(mode(path)).toBe(expected);
+  });
+
+  it('holds every path under ~/.aka owner-only whatever umask the caller has', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    // What this pins is narrower than it looks, so state it exactly. No umask
+    // can loosen 0700/0600 — a umask only ever CLEARS bits, and neither mode has
+    // a group or other bit left to clear — so this case does NOT stand behind
+    // the chmod; the loose-home case above is what does. What it stands behind
+    // is that the modes never come from the caller's umask happening to be
+    // tight: anything created here with no explicit mode lands 0777/0666, where
+    // a default `umask 022` host would have shown the same bug as a milder
+    // 0755/0644, and a `umask 077` host would have hidden it outright.
+    //
+    // The walk is the other half — see storeTree.
+    //
+    // The umask is process-global and restored in the `finally`; vitest runs a
+    // file's tests in sequence, so the window is this case only. It also needs
+    // the default `forks` pool — setting the umask raises
+    // ERR_WORKER_UNSUPPORTED_OPERATION on a worker thread, so a switch to
+    // `pool: 'threads'` fails this case loudly rather than skipping it.
+    const outside = mkdtempSync(join(tmpdir(), 'aka-umask-control-'));
+    const control = join(outside, 'no-mode');
+
+    try {
+      const previousUmask = process.umask(0o000);
+      try {
+        writeFileSync(control, ''); // no explicit mode — the precondition below
+        await runInit(['--home', dir]);
+      } finally {
+        process.umask(previousUmask);
+      }
+
+      // Precondition: a no-mode file lands 0666 only under a genuinely
+      // permissive umask. Without it the case passes vacuously wherever the
+      // umask is ignored.
+      expect(statSync(control).mode & 0o777).toBe(0o666);
+
+      // The documented contract first, exactly — 0700 dirs and 0600 files, not
+      // merely "no group or other bit". These five also stat unguarded, so a
+      // store artifact that vanished under the walk below cannot pass as clean.
+      for (const [path, expected] of documentedModes(dir)) expect(mode(path)).toBe(expected);
+
+      const tree = storeTree(dir);
+      // ...and the walk has to have reached the store, or "nothing is loose"
+      // holds vacuously over an empty tree.
+      expect(tree).toContain(dbPath(dir));
+      expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
+      // Everything ELSE it found is owner-only too — the part a five-path list
+      // cannot cover, and where the pre-drop backup is caught.
+      expect(tree.filter(looseInTree)).toEqual([]);
+
+      // The user-facing signal has to agree with the disk. It can: looseStorePaths
+      // walks data/ rather than naming a fixed set, so a loose backup or sidecar
+      // reaches this assertion. Before that fix it could not disagree about the
+      // one artifact the walk above exists to catch.
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).not.toContain('could not enforce owner-only permissions');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('re-tightens a pre-existing loose settings.json on re-run (tighten is not gated on creating it)', async () => {
@@ -151,6 +258,87 @@ describe('looseStorePaths', () => {
     // Loosen settings.json → it (and only it) is reported.
     chmodSync(file, 0o644);
     expect(looseStorePaths(dir)).toEqual([file]);
+  });
+
+  it('reports a loose artifact beside the store that no enumerated target names', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // The layout is a fixed list; what sits beside the store is not. The legacy
+    // drop leaves an `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of
+    // the prompt corpus — on every run, and the SQLite sidecars appear with
+    // whichever journal mode is active. tightenFile/tightenPerms hold all of
+    // them at 0600, so one left group-readable is a rejected chmod, which is
+    // exactly what this warning exists to surface. Before this walk the store's
+    // only at-rest control could fail on the largest file in the directory and
+    // the user would never be told.
+    const settings = settingsDir(dir);
+    mkdirSync(settings, { recursive: true });
+    mkdirSync(dataDir(dir), { recursive: true });
+    const file = join(settings, 'settings.json');
+    writeFileSync(file, '{}');
+    for (const p of [dir, settings, dataDir(dir), file]) chmodSync(p, p === file ? 0o600 : 0o700);
+    expect(looseStorePaths(dir)).toEqual([]); // precondition: nothing enumerated is loose
+
+    const backup = join(dataDir(dir), 'aka.db.pre-drop.1785500790653.545ee74f.bak');
+    writeFileSync(backup, 'prompt corpus');
+    chmodSync(backup, 0o644);
+    const sidecar = join(dataDir(dir), 'aka.db-wal');
+    writeFileSync(sidecar, '');
+    chmodSync(sidecar, 0o644);
+
+    expect(looseStorePaths(dir).sort()).toEqual([backup, sidecar].sort());
+  });
+
+  it('stays silent about the update-check cache, which is a real store file held at 0600', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // Driven by the REAL writer, not a stand-in, because the property is that
+    // `writeCache`'s own mode agrees with what this walk stands behind. When it
+    // wrote at the caller's umask, walking data/ turned an ordinary `aka init`
+    // into "this filesystem rejects chmod" — nothing had rejected one, and
+    // nothing had attempted one. That misattribution is exactly what the
+    // `.partial` skip below exists to avoid, so it must not reappear here by a
+    // different route.
+    //
+    // Not reachable through runInit: the notice that writes this cache runs in
+    // main() after the handler returns, so only the writer itself can set it up.
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
+
+    writeCache(dir, {
+      checkedAt: Date.now(),
+      report: { statuses: [], availablePlugins: [] },
+      notifiedPluginIds: [],
+    });
+
+    expect(existsSync(cachePath(dir))).toBe(true); // precondition: the walk has it to find
+    expect(statSync(cachePath(dir)).mode & 0o777).toBe(0o600);
+    expect(looseStorePaths(dir)).toEqual([]);
+  });
+
+  it('does not report a `.partial` (loose by design mid-copy, not a rejected chmod)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // snapshotStore tightens its staging copy only just before the rename, so
+    // the file exists at the caller's umask for the whole VACUUM INTO and a copy
+    // cut short by a kill leaves a 0644 `.partial` behind on purpose. Naming it
+    // here would blame the filesystem for a mode nothing tried to apply — the
+    // same wrong diagnosis the symlink case below avoids.
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
+    const partial = join(dataDir(dir), 'aka.db.pre-drop.1.aaaaaaaa.bak.partial');
+    writeFileSync(partial, 'half a copy');
+    chmodSync(partial, 0o644);
+
+    expect(looseStorePaths(dir)).toEqual([]);
   });
 
   it('makes `aka init` print a warning when a mode could not be applied', async () => {

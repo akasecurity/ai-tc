@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { dataDir } from '@akasecurity/persistence';
+import { dataDir, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
 import { reinvokeArgv } from './self-exec.ts';
@@ -37,10 +37,20 @@ export function readCache(home: string): UpdateCache | null {
 
 // Persist the cache, but never provision ~/.aka — if the local store dir doesn't
 // exist the user hasn't run `aka init`, and a passive check must not create it.
+//
+// Written owner-only through the shared store writer, like every other file under
+// ~/.aka. A bare writeFileSync left this at the caller's umask — 0644 on a default
+// host — and it is the one file in data/ nothing ever tightens, so `aka init`
+// reported it as a store path whose chmod the filesystem had rejected. Nothing had
+// rejected one; nothing had attempted one. Routing through the shared writer keeps
+// that report meaning what it says: every file in data/ is one this product holds
+// to a mode. It also makes the write atomic (per-pid tmp + rename), which matters
+// because the detached `__update-refresh` child can be writing while the parent
+// command writes its notifiedPluginIds update.
 export function writeCache(home: string, cache: UpdateCache): void {
   if (!existsSync(dataDir(home))) return;
   try {
-    writeFileSync(cachePath(home), `${JSON.stringify(cache, null, 2)}\n`);
+    writeOwnerOnlyFileSync(cachePath(home), `${JSON.stringify(cache, null, 2)}\n`);
   } catch {
     // best-effort — a failed cache write must never break a command
   }

@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runException } from '../../src/commands/exception.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // `aka exception approve <pointer> --reveal` is the sanctioned door for "the
 // agent legitimately needs this raw value": it mints a reveal_to_model grant
@@ -27,11 +28,18 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // activeRevealGrant. The suite runs against the REAL node:sqlite store and
 // REAL key files (no vault mocking), mirroring vault.test.ts.
 
-// Not secret-shaped on purpose: tokenize never scans, and a plain string keeps
-// secret-looking literals out of this public file.
-const RAW = 'vaulted-value-for-reveal-grant-test';
+// Two constraints meet here. Not secret-SHAPED, because tokenize never scans
+// and a credential-looking literal has no business in a public file; but still
+// high-ENTROPY, because the absence check below slides an eight-character
+// window over this value, and against an English-phrase fixture those windows
+// are ordinary words that collide with the message's own wording instead of
+// catching a leak. Random-looking and rule-shaped for nothing satisfies both.
+const RAW = 'zq7vk2mx9tw4hb6njf3pd8sr5gc1ly';
 const RULE_ID = 'secrets/test-rule';
-const MASKED = 'vau…est';
+// Derived so the two cannot drift apart. Seven characters, which is shorter
+// than the echo window on purpose: this preview is stored and shown, so it must
+// never be able to fill it.
+const MASKED = `${RAW.slice(0, 3)}…${RAW.slice(-3)}`;
 
 // Scripted, non-interactive Prompter with captured output.
 function scriptedIo(): Prompter & { output: () => string } {
@@ -137,8 +145,12 @@ describe('aka exception approve <pointer> --reveal', () => {
     expect(out).toContain('RAW form');
     expect(out).toContain('audited');
     expect(out).toContain(`aka exception revoke ${grant.id.slice(0, 6)}`);
-    // The raw value itself never reaches the output.
-    expect(out).not.toContain(RAW);
+    // The raw value itself never reaches the output — not even a run of it.
+    // This is the confirmation for the grant that lets the model receive the
+    // value raw later, so the one surface that must not show it now is this one.
+    // The four assertions above are its positive control: the capture is live
+    // and full, so an absence within it means something.
+    expectNoEchoOf(out, RAW);
   });
 
   it('rejects a pointer without --reveal and creates nothing', async () => {

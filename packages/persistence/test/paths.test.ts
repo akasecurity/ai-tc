@@ -89,6 +89,27 @@ describe('ensureDataDirSync', () => {
     expect(mode(dir)).toBe(DATA_DIR_MODE);
   });
 
+  it('holds every level it creates at 0700, not just the leaf it tightens', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // The tighten reaches the LEAF only, so the mode passed to mkdir is the one
+    // thing holding the levels above it — and those are real store paths:
+    // openLocalDatabase(dataDir(home)) creates ~/.aka itself as a parent when
+    // the home does not exist yet, which is every first hook on a machine that
+    // has never run `aka init`. Drop the mkdir mode and data/ still self-heals
+    // through the tighten while ~/.aka is left at the caller's umask — 0755 on a
+    // default host, 0777 under a permissive one.
+    const dir = join(base, 'a', 'b', 'c');
+
+    ensureDataDirSync(dir);
+
+    for (const p of [join(base, 'a'), join(base, 'a', 'b'), dir]) {
+      expect(mode(p)).toBe(DATA_DIR_MODE);
+    }
+  });
+
   it('never chmods THROUGH a directory symlink (a victim dir keeps its mode)', (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('unprivileged symlink creation is not available on Windows');

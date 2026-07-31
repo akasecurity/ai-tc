@@ -87,11 +87,67 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # `pnpm lint`/`pnpm typecheck` are `turbo run …`, which drives per-package
+      # scripts — and the repo root is not a workspace package. So the two files
+      # carrying the runtime half of the no-network guarantee
+      # (test/setup/no-network.ts, tools/ci/egress-probe.mjs) were reachable by
+      # no ESLint pass and no tsc invocation at all: esbuild strips their types
+      # without checking them, so a type error there surfaced nowhere. These two
+      # steps are their only coverage, and they run outside Turbo for the same
+      # reason format:check does.
+      - name: Lint (repo root)
+        run: pnpm lint:root
+
+      - name: Typecheck (repo root)
+        run: pnpm typecheck:root
+
       - name: Test
         run: pnpm test
 
       - name: Build
         run: pnpm build
+
+  # No-network leg: the product's headline claim is that nothing leaves the
+  # machine. The lint ban (@akasecurity/eslint-config) stops a network primitive
+  # being WRITTEN; test/setup/no-network.ts refuses one being CALLED from inside
+  # a vitest worker. Neither can see a CHILD PROCESS — a shell-out to `npm view`
+  # or `claude -p` has its own copy of node:net — and a subprocess is exactly the
+  # path the guarantee is most likely to leak through. This job closes that: the
+  # whole suite runs inside a network namespace with nothing but loopback, so
+  # every process in the tree is covered, and the script verifies the block is
+  # real before running anything (an unreachable network and a broken command
+  # look identical from a green run).
+  #
+  # Deliberately NO Turbo cache restore. The cache key falls back through
+  # restore-keys to a prior commit's entry, so a restored cache would let turbo
+  # replay a green `test` task that never executed under the block — the job
+  # would report success having proved nothing. `--force` says the same thing
+  # twice, for a checkout that somehow arrives with a warm .turbo/cache. It goes
+  # to `turbo` directly: `pnpm test -- --force` forwards the flag to each task's
+  # own command (`vitest run --force`), which vitest rejects outright.
+  no-network:
+    name: No-network · Full suite, egress blocked
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # The one step that legitimately needs the registry. Everything after this
+      # runs with no route off the host.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and test with egress blocked
+        run: tools/ci/no-network-test.sh pnpm exec turbo run test --force
 
   # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child

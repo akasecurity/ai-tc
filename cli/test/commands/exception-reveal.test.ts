@@ -11,6 +11,7 @@ import {
   loadOrCreateFingerprintKey,
   openLocalDatabase,
   readWorkspaceSettings,
+  rotateFingerprintKey,
   SecretVault,
 } from '@akasecurity/persistence';
 import type { DetectionException } from '@akasecurity/schema';
@@ -259,6 +260,60 @@ describe('aka exception approve <pointer> --reveal', () => {
     const grants = await openAndList();
     expect(grants[0]?.scope).toBe('permanent');
     expect(grants[0]?.capability).toBe('reveal_to_model');
+  });
+
+  // The one place the pointer and ledger paths deliberately disagree, and the
+  // only case in either suite that rotates the key to show it.
+  //
+  // A ledger row keyed to a rotated-away version is refused, because enforcement
+  // there fingerprints under the CURRENT key and scopes its bundle query to that
+  // version — a grant from such a row could never match. A vault row is the
+  // opposite: its identity IS the row's own triple, and every crossing resolves
+  // that same triple, so the row's version is the correct version even once it is
+  // no longer current. Refusing on the current key here would refuse a grant that
+  // does enforce, and would make reveal permanently un-approvable for any row a
+  // re-key skipped.
+  describe('a rotated fingerprint key does not invalidate a reveal grant', () => {
+    it("mints under the vault row's key version, not the current one", async () => {
+      const pointer = await seedPointer();
+      const dir = dataDir(home);
+      const rowKey = loadOrCreateFingerprintKey(dir);
+
+      // Rotate the key WITHOUT the vault re-key that `aka exception rotate-key`
+      // attempts afterwards — that pass is per-row best-effort and warn-only, so
+      // this is the state it leaves behind for a row it could not refresh. The
+      // row keeps its old fingerprint and old version together, which is exactly
+      // why its grant still resolves.
+      const rotated = rotateFingerprintKey(dir);
+      expect(rotated.version).toBeGreaterThan(rowKey.version);
+
+      await runException(
+        approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'after rotation'),
+        scriptedIo(),
+      );
+
+      const grant = (await openAndList())[0];
+      if (!grant) throw new Error('grant row missing — the reveal approve was refused');
+      expect(grant.capability).toBe('reveal_to_model');
+      expect(grant.keyVersion).toBe(rowKey.version);
+      expect(grant.keyVersion).not.toBe(rotated.version);
+      expect(grant.valueFingerprint).toBe(fingerprintValue(rowKey, RAW));
+
+      // And it is reachable by the lookup the crossing actually performs, under
+      // the stale version — the assertion that makes the divergence load-bearing
+      // rather than cosmetic.
+      const db = openLocalDatabase(dir);
+      try {
+        const hit = await db.exceptions.activeRevealGrant(
+          RULE_ID,
+          fingerprintValue(rowKey, RAW),
+          rowKey.version,
+        );
+        expect(hit).toEqual({ id: grant.id });
+      } finally {
+        db.close();
+      }
+    });
   });
 });
 

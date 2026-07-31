@@ -331,6 +331,48 @@ function readKeyForApprove(dir: string): FingerprintKey | null {
   }
 }
 
+// A ledger row reduced to the fields a grant is built from — the one place this
+// file derives them FROM A LEDGER ROW, so the version check below sits on that
+// path rather than beside it, and a selection path added later has somewhere
+// obvious to go.
+//
+// The row carries the fingerprint computed when the hook blocked, under
+// whichever key was live then; the ledger is retained far longer than a rotation
+// takes, so a row can outlive its key. Enforcement fingerprints under the
+// CURRENT key and scopes its bundle query to that version, so a grant built from
+// such a row is inert the moment it is created — and reporting success for one
+// is worse than the grant going quiet, because the operator just deliberately
+// created this one.
+//
+// A reveal grant from a vault pointer deliberately does NOT come through here.
+// Its identity — rule, fingerprint, key version — is read off one vault row and
+// matched on that same triple at every crossing, so a row a fingerprint re-key
+// skipped keeps its old fingerprint and old version together and its grant still
+// resolves. Refusing it on the current version would refuse a grant that does
+// enforce. Only the ledger path is scoped to the current version.
+function grantFieldsFrom(
+  entry: BlockedDetection,
+  key: FingerprintKey | null,
+): Pick<
+  CreateExceptionInput,
+  'ruleId' | 'category' | 'valueFingerprint' | 'keyVersion' | 'maskedValue'
+> {
+  if (!isCurrentKeyVersion(key, entry.keyVersion)) {
+    throw new Error(
+      key === null
+        ? `cannot approve ${entry.reference}: the fingerprint key file is missing, so the fingerprint recorded for it can no longer be matched — trigger the detection again`
+        : `cannot approve ${entry.reference}: it was blocked under fingerprint key v${String(entry.keyVersion)} and the key is now v${String(key.version)}, so a grant from it could never match — trigger the detection again`,
+    );
+  }
+  return {
+    ruleId: entry.ruleId,
+    category: entry.category,
+    valueFingerprint: entry.valueFingerprint,
+    keyVersion: entry.keyVersion,
+    maskedValue: entry.maskedValue,
+  };
+}
+
 async function pickBlocked(
   entries: BlockedDetection[],
   selector: string | undefined,
@@ -517,20 +559,10 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     const key = readKeyForApprove(dir);
     const entry = await pickBlocked(entries, candidate === '' ? undefined : candidate, io, key);
 
-    // The ledger row carries the fingerprint computed when the hook blocked,
-    // under whichever key was live then; the ledger is retained far longer than
-    // a rotation takes, so a row can outlive its key. Enforcement fingerprints
-    // under the CURRENT key and scopes its bundle query to that version, so a
-    // grant built from such a row is inert the moment it is created. Refuse
-    // BEFORE prompting for scope and reason — an unusable row stays unusable
-    // whatever the user answers.
-    if (!isCurrentKeyVersion(key, entry.keyVersion)) {
-      throw new Error(
-        key === null
-          ? `cannot approve ${entry.reference}: the fingerprint key file is missing, so the fingerprint recorded for it can no longer be matched — trigger the detection again`
-          : `cannot approve ${entry.reference}: it was blocked under fingerprint key v${String(entry.keyVersion)} and the key is now v${String(key.version)}, so a grant from it could never match — trigger the detection again`,
-      );
-    }
+    // Derived — and so refused — BEFORE prompting for scope and reason: a row
+    // this rejects stays unusable whatever the user answers, and asking for a
+    // reason first spends the answer on a grant that is never written.
+    const grant = grantFieldsFrom(entry, key);
 
     const { scope, reason } = await resolveScopeAndReason(values, io);
     if (scope.scope === 'permanent') {
@@ -542,11 +574,7 @@ async function runApprove(argv: string[], io: Prompter): Promise<void> {
     // capability: the value's pointer may then de-reference to raw for the
     // model, and — being strictly stronger — the grant suppresses too.
     const granted = await createGrant(db, {
-      ruleId: entry.ruleId,
-      category: entry.category,
-      valueFingerprint: entry.valueFingerprint,
-      keyVersion: entry.keyVersion,
-      maskedValue: entry.maskedValue,
+      ...grant,
       ...(wantsReveal ? { capability: 'reveal_to_model' as const } : {}),
       ...scope,
       justification: reason,

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runException } from '../../src/commands/exception.ts';
 import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+import { main } from '../../src/main.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with
@@ -50,6 +51,38 @@ function scriptedIo(stdin = ''): Prompter & { output: () => string } {
     ask: () => Promise.reject(new Error('non-interactive test io')),
     askHidden: () => Promise.reject(new Error('non-interactive test io')),
     readAllStdin: () => Promise.resolve(stdin),
+  };
+}
+
+// Scripted TERMINAL Prompter — the branches a non-interactive run never reaches
+// (the numbered picker, the scope/reason prompts). Questions are recorded so a
+// test can assert what the user was NOT asked, and an unscripted question
+// rejects rather than hanging.
+function interactiveIo(
+  answers: string[],
+): Prompter & { output: () => string; asked: () => string[] } {
+  const chunks: string[] = [];
+  const questions: string[] = [];
+  const queued = [...answers];
+  return {
+    output: () => chunks.join(''),
+    asked: () => questions,
+    out: (text) => {
+      chunks.push(text);
+    },
+    err: (text) => {
+      chunks.push(text);
+    },
+    isInteractive: true,
+    ask: (question) => {
+      questions.push(question);
+      const next = queued.shift();
+      return next === undefined
+        ? Promise.reject(new Error(`unscripted prompt: ${question}`))
+        : Promise.resolve(next);
+    },
+    askHidden: () => Promise.reject(new Error('no hidden prompt expected')),
+    readAllStdin: () => Promise.resolve(''),
   };
 }
 
@@ -344,17 +377,39 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       }
     }
 
-    it('refuses a row blocked before a rotation', async () => {
+    it('refuses a row blocked before a rotation, naming both key versions', async () => {
       await seedBlocked('c0ffee');
       const rotated = rotateFingerprintKey(dir);
       expect(rotated.version).toBe(2);
 
-      await expect(
-        runException(
-          ['approve', 'c0ffee', '--home', home, '--once', '--reason', 'stale'],
-          scriptedIo(),
-        ),
-      ).rejects.toThrow(/could never match/);
+      const err = await runException(
+        ['approve', 'c0ffee', '--home', home, '--once', '--reason', 'stale'],
+        scriptedIo(),
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      // "cannot approve" alone leaves the operator guessing at a store they
+      // cannot inspect: the row's version and the live one are what say the
+      // grant is unwritable rather than the request being malformed.
+      expect(err?.message).toMatch(/could never match/);
+      expect(err?.message).toContain('v1');
+      expect(err?.message).toContain(`v${String(rotated.version)}`);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    it('refuses before asking for a scope or a reason', async () => {
+      // The refusal has to come first: an unusable row stays unusable whatever
+      // the user answers, and a permanent grant would otherwise make someone
+      // retype a masked value only to be told no.
+      await seedBlocked('5c09e5');
+      rotateFingerprintKey(dir);
+
+      const io = interactiveIo([]);
+      await expect(runException(['approve', '5c09e5', '--home', home], io)).rejects.toThrow(
+        /could never match/,
+      );
+      expect(io.asked()).toEqual([]);
       expect(await grants()).toHaveLength(0);
     });
 
@@ -436,6 +491,200 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       expect(err?.message).toMatch(/needs the fingerprint key/);
       expect(err?.message).not.toContain(unmatched);
       expect(readFingerprintKey(dir)).toBeNull();
+    });
+
+    it('reports a corrupt key file with recovery guidance, not a crash', async () => {
+      // Truncated, not garbage: a half-written key is what an interrupted write
+      // leaves, and it is the shape the store's own fault matrix injects. The
+      // strict parse throws with no errno, which is the ONE key failure that may
+      // be answered with "delete it" — a permissions error must not be.
+      await seedBlocked('c0dec0');
+      const keyPath = join(dir, 'exception.key');
+      truncateSync(keyPath, 10);
+      const onDisk = readFileSync(keyPath);
+
+      const err = await runException(
+        ['approve', 'c0dec0', '--home', home, '--once', '--reason', 'corrupt'],
+        scriptedIo(),
+      ).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(/cannot read the fingerprint key/);
+      expect(err?.message).toMatch(/Delete .*exception\.key to start fresh/);
+      expect(await grants()).toHaveLength(0);
+      // Deleting is the operator's deliberate act, not a side effect of a
+      // refused approve — and a replacement minted here would orphan every
+      // grant on the machine to answer a lookup.
+      expect(readFileSync(keyPath)).toEqual(onDisk);
+    });
+
+    it('never answers an UNREADABLE key with "delete it"', async (ctx) => {
+      // The corrupt guidance is the only one safe to act on. Aimed at a
+      // permissions failure it destroys every grant on the machine to fix a
+      // chmod — and the replacement key is exactly what makes a stale ledger row
+      // look current again, which is the failure this whole guard exists to
+      // stop. Mirrors the web action's split; one wording drifting is how the
+      // two surfaces come to give opposite advice about the same file.
+      if (process.platform === 'win32') {
+        ctx.skip('POSIX mode bits do not gate reads under Windows ACLs');
+      }
+      if (process.getuid?.() === 0) {
+        ctx.skip('root bypasses the mode bits this case depends on');
+      }
+      await seedBlocked('10cked0');
+      const keyPath = join(dir, 'exception.key');
+      chmodSync(keyPath, 0o000);
+      try {
+        const err = await runException(
+          ['approve', '10cked0', '--home', home, '--once', '--reason', 'unreadable'],
+          scriptedIo(),
+        ).then(
+          () => undefined,
+          (e: unknown) => e as Error,
+        );
+        expect(err?.message).toMatch(/cannot read the fingerprint key/);
+        expect(err?.message).toMatch(/do not delete it/i);
+        expect(err?.message).not.toMatch(/delete .*exception\.key to start fresh/i);
+        expect(await grants()).toHaveLength(0);
+      } finally {
+        chmodSync(keyPath, 0o600); // so the temp tree can be removed
+      }
+    });
+
+    it('rejects through the CLI dispatch, so the command exits non-zero', async () => {
+      // The exit code itself belongs to the bin shim (`cli.ts` maps a rejected
+      // main() to process.exitCode = 1). What can still go wrong is a swallow
+      // between runApprove and main(), which would report success for a grant
+      // that was never written — so pin that the refusal propagates that far.
+      await seedBlocked('e1e1e1');
+      rotateFingerprintKey(dir);
+
+      await expect(
+        main(['exception', 'approve', 'e1e1e1', '--home', home, '--once', '--reason', 'stale']),
+      ).rejects.toThrow(/could never match/);
+      expect(await grants()).toHaveLength(0);
+    });
+
+    // Selecting a row and granting from it are separate steps, and only the
+    // by-value search had a version filter — it needs the current key to
+    // fingerprint the selector at all, so the filter fell out of the mechanism
+    // rather than guarding the grant. Every other path reached the grant with no
+    // check of its own. They are enumerated here because the guard is only
+    // trustworthy if it sits where all of them converge.
+    //
+    // LEDGER paths only. A pointer selector with --reveal-to-model is a sixth way
+    // into `aka exception approve` and is deliberately not one of these: a reveal
+    // grant is matched on its vault row's own triple, so the current fingerprint
+    // key has no say in whether it resolves. See exception-reveal.test.ts.
+    describe('every ledger selection path ends at the same refusal', () => {
+      it('refuses a row selected by the masked value from the block message', async () => {
+        await seedBlocked('9c04d7');
+        rotateFingerprintKey(dir);
+
+        await expect(
+          runException(
+            ['approve', 'A******E', '--home', home, '--for', '1h', '--reason', 'mask selector'],
+            scriptedIo(),
+          ),
+        ).rejects.toThrow(/could never match/);
+        expect(await grants()).toHaveLength(0);
+      });
+
+      it('refuses the sole recent block it would otherwise pick automatically', async () => {
+        // No selector and exactly one row: the flow picks it without asking, so
+        // nothing the user typed stands between the stale row and the grant.
+        await seedBlocked('501e01');
+        rotateFingerprintKey(dir);
+
+        const io = scriptedIo();
+        await expect(
+          runException(['approve', '--home', home, '--once', '--reason', 'auto-pick'], io),
+        ).rejects.toThrow(/could never match/);
+        expect(io.output()).toContain('not approvable: recorded under key v1');
+        expect(await grants()).toHaveLength(0);
+      });
+
+      it('refuses a row chosen from the interactive picker', async () => {
+        await seedBlocked('aa0003');
+        await seedBlocked('bb0004');
+        rotateFingerprintKey(dir);
+
+        // No scope and no reason on the command line: on a healthy row the flow
+        // would go on to prompt for both, so the picker question being the ONLY
+        // one asked is what shows the refusal came first.
+        const io = interactiveIo(['1']);
+        await expect(runException(['approve', '--home', home], io)).rejects.toThrow(
+          /could never match/,
+        );
+        expect(io.asked()).toHaveLength(1);
+        expect(io.asked()[0]).toMatch(/Which one\?/);
+        expect(await grants()).toHaveLength(0);
+      });
+
+      it('never reaches a stale row by its raw value, and grants nothing', async () => {
+        // After a real rotation the search cannot reach the row at all — the new
+        // material fingerprints the pasted value differently, so nothing matches
+        // before any version is compared. That is the ordinary case, and it is
+        // why the by-value filter reads as belt-and-braces; the case that
+        // actually exercises the filter is the next test.
+        await seedBlocked('4b7e12');
+        rotateFingerprintKey(dir);
+
+        const io = scriptedIo();
+        const err = await runException(
+          ['approve', VALUE, '--home', home, '--once', '--reason', 'value selector'],
+          io,
+        ).then(
+          () => undefined,
+          (e: unknown) => e as Error,
+        );
+        // The search comes up empty, so this refuses inside pickBlocked and never
+        // reaches the grant site — pin the wording, or a TypeError from a broken
+        // search would satisfy the case it is named for.
+        expect(err?.message).toMatch(/no blocked detection matches/);
+        expect(await grants()).toHaveLength(0);
+        // The selector may be a live secret however the refusal is reached.
+        expect(err?.message).not.toContain(VALUE);
+        expect(io.output()).not.toContain(VALUE);
+      });
+
+      it('grants nothing by value when the version moved but the material did not', async () => {
+        // The one shape where the by-value path can still FIND a stale row: the
+        // key file keeps its material and only its version advances, so the
+        // pasted value fingerprints to exactly what the row stored. Rotation
+        // never produces this — it is what a hand-edited key file leaves.
+        //
+        // Both layers have to go before a grant is written: drop the search's
+        // version filter and the grant site still throws; drop the grant site and
+        // the search still finds nothing. This is the only construction where
+        // dropping BOTH writes a grant the enforcement bundle, scoped to the
+        // current version, could never match.
+        await seedBlocked('ab1e01');
+        const key = readFingerprintKey(dir);
+        if (!key) throw new Error('seeded store has no key');
+        writeFileSync(
+          join(dir, 'exception.key'),
+          `${JSON.stringify({ version: key.version + 1, material: key.material.toString('base64') })}\n`,
+          { mode: 0o600 },
+        );
+
+        const io = scriptedIo();
+        const err = await runException(
+          ['approve', VALUE, '--home', home, '--once', '--reason', 'same material'],
+          io,
+        ).then(
+          () => undefined,
+          (e: unknown) => e as Error,
+        );
+        // Same refusal site as the case above: the version filter drops the row
+        // from the search, so pickBlocked reports no match rather than the grant
+        // site reporting a stale version.
+        expect(err?.message).toMatch(/no blocked detection matches/);
+        expect(await grants()).toHaveLength(0);
+        expect(err?.message).not.toContain(VALUE);
+        expect(io.output()).not.toContain(VALUE);
+      });
     });
   });
 });

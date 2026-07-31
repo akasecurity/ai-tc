@@ -2,6 +2,13 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
+// Every test file runs behind the no-network guard: it refuses any outbound
+// connection that is not loopback and names the call site that made it. Wired
+// per package because each one runs its own vitest;
+// packages/eslint-config/test/no-network-runtime.test.js fails the workspace
+// if a package drops the entry or points it at the wrong path.
+const noNetworkGuard = fileURLToPath(new URL('../test/setup/no-network.ts', import.meta.url));
+
 // web-ui's test runner, covering two suites with different needs.
 //
 // The Server Action suites exercise the REAL node:sqlite store and the REAL
@@ -21,6 +28,7 @@ import { defineConfig } from 'vitest/config';
 // (left by any `next build`) into the run.
 export default defineConfig({
   test: {
+    setupFiles: [noNetworkGuard],
     environment: 'node',
     testTimeout: 20_000,
     hookTimeout: 20_000,

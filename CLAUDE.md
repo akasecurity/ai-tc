@@ -49,11 +49,29 @@ Prefer a file-scoped config opt-out over an inline disable — an inline disable
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source. Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
+The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source.
+
+ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
+
+- the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
+- the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
+
+Four files carry a genuine local-only opt-out:
+
+| Site                                                                    | Allowed specifier                    | Why                                                                                                                |
+| ----------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)           | `node:net`                           | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`) | `node:http`                          | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                 |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)               | `node:net`, `node:dgram`, `node:dns` | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress       |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)              | `node:net`                           | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                     |
+
+All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. Adding another opt-out site means updating this table.
+
+Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
-3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked so any _other_ detectable secret in the window does not cross raw) and `id` (a sequential counter the rubric requires the model to echo). `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. The grant is revocable under Settings, which stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly (see `plugins/claude-code/commands/setup.md`); it must never be described as staying "inside an isolated subprocess."
+3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked with `maskText`, which scans the **bundled** packs rather than the installed set — coverage is still complete because `buildTriageHit` has already redacted every other finding from the full-ruleset scan, and this hit's own value is masked here where it appears in the window; `rawMatch` is therefore the only raw value that crosses), `id` (a sequential counter the rubric requires the model to echo), and the non-sensitive scoring labels `ruleId`, `category`, `severity`, `maskedMatch` and `confidence`. `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. `historicalAccess` gates the READ only — a `full` grant authorizes no egress by itself, and no consent surface may imply that it does. Both grants are revocable under Settings, where **Historical access** and **Model-judge consent** are separate controls; revoking stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly; it must never be described as staying "inside an isolated subprocess." Four surfaces carry that copy and move together: `plugins/claude-code/commands/setup.md`, the `[^egress]` footnote in each of the two READMEs, and the Settings copy in `packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx`.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
@@ -63,6 +81,54 @@ including the `@akasecurity/*` workspace importers — to the registry's audit e
 also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
 temp dir, sending that (public-package) graph the same way. That is repository tooling,
 not a product path; nothing a user installs performs it.
+
+**Three gates enforce this, and they cover different things.** Losing track of which is
+which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
+
+| Gate                                          | Catches                                             | Cannot see                                          |
+| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`   |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only   |
+
+The middle one is a vitest `setupFiles` entry every package wires (see [Testing](#testing));
+the last runs the whole suite inside a loopback-only network namespace via
+`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked
+(`tools/ci/egress-probe.mjs` is that proof — it connects to its own loopback listener
+before trusting a failed connect, so a probe that cannot reach anything is never mistaken
+for an absent network).
+
+**What none of the three sees** is code no test runs. All of them observe either source
+text or an executed call, so an untested path can still reach out — which is why the
+gate table's third row says "a path the suite never executes" rather than "nothing". The
+packaged artifact is the other uncovered surface: nothing here installs the published
+tarball and exercises it under a block. Note also that the three gates scope to the
+**product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
+runs in its own workflow rather than inside the `No-network` job's namespace.
+
+The plugin also starts a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
+
+### 5. A scan that cannot be interrupted runs off the main thread
+
+`scan()` is synchronous and a regex has no upper bound, so a catastrophic pattern is not a stall but a **detection bypass**: the hook blows its 10 s harness timeout, and a timed-out hook fails open, letting the whole tool call through unscanned. Nothing on the calling thread can interrupt a running `exec`; the fail-open `catch` only catches throws.
+
+Two gates sit in front of that, and **both run on a worker thread**, because both are unbounded runs of an untrusted pattern:
+
+- **The timing pre-flight** (`packages/plugin-sdk/src/rule-quarantine.ts`) measures every pulled/custom-pack regex rule against the adversarial probe battery once, caches the verdict locally, and excludes a rule that blows the budget. This is **empirical** — it proves a pattern did not backtrack on the inputs the battery constructs, not that it cannot. And the battery decides by _driving the pattern into backtracking_, so measuring a rule is itself a way to hang on one: `(a|a|a|a)+$` passes `Rule.safeParse` and never returns on the battery's own derived probe. So `filterUnsafeRules` takes a **prober** and the plugin runtime always supplies one — the measurement runs where it can be killed. Without a prober it falls back to the calling thread, which is for callers that already control the rules they pass (tests, tooling), never a pulled pack.
+- **The isolated scan** (`packages/plugin-sdk/src/guarded-scan.ts` + `isolated-scan.ts` + `scan-worker.ts`) is the bound on the scan itself. Whenever the effective ruleset contains a regex rule that only the pre-flight stands behind, the whole scan runs in a `worker_thread` under a wall-clock deadline; `worker.terminate()` reaches V8's execution terminator, which interrupts a spinning regex. The terminated rule is quarantined through the pre-flight's own cache, so the next process never loads it, and the built-in packs keep detecting meanwhile.
+
+Four properties are load-bearing and easy to break by accident:
+
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, once per process; move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
+- **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+
+A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it. Anything that adds a new way to quarantine must keep both surfaces true.
+
+The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.
+
+**What this bound does NOT cover.** It is the plugin capture path only — `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The other two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. The web dashboard's `/scan` Server Action is the real hole — `web-ui/app/(app)/scan/actions.ts` → `packages/local-ops/src/fs-scan.ts` passes the installed-pack ruleset, pulled and custom packs included, straight to a synchronous in-process `scan()` with neither the pre-flight nor the deadline, and a Server Action has no harness timeout to be killed by. (`aka scan` passes no ruleset and falls back to the bundled registry, so the CLI is not exposed.) Closing it means giving `local-ops` a worker of its own, which is a separate change; until it lands, do not describe the ReDoS bound as covering the whole product.
 
 ## Dependency advisories
 
@@ -122,7 +188,15 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart), ignore (gitignore semantics for
-                     the SessionStart project-file walk)
+                     the SessionStart project-file walk), node:worker_threads
+                     (the isolated scan — see Architecture principles §5)
+                     `src/scan-worker.ts` is the worker's own entry, exported as the
+                     `./scan-worker` subpath and reachable only from `@akasecurity/detections`
+                     + `./isolated-scan-protocol.ts`. It must stay that narrow: Node loads it
+                     directly (bundled `.js` when installed, type-stripped `.ts` in the repo),
+                     so `src/bundled-packs.generated.ts` — 101 JSON imports without import
+                     attributes — would break it at load, and it never needs them anyway
+                     because the ruleset arrives over `workerData`.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 ```
 
@@ -215,12 +289,43 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    (git-tracked)** scripts needs its own `eslint.scripts.config.mjs` plus a second pass
    (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
    `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
+
+   That covers files a **package** owns. Files at the **repo root**, owned by no
+   package, are a separate case with its own pass: `pnpm lint:root` /
+   `pnpm typecheck:root` (`eslint.root.config.mjs`, `tsconfig.root.json`) lint and
+   type-check `test/setup/**` and `tools/ci/**`. Both run outside Turbo — `pnpm lint`
+   and `pnpm typecheck` are `turbo run …`, which drives per-package scripts, and the
+   repo root is not a package — so CI runs them as their own steps beside
+   `format:check`. Anything new at the repo root belongs in those two globs; otherwise
+   esbuild strips its types without checking them and nothing lints it.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
    unguarded are the assertions next to it (a missing config, a config that never
    extends the shared one, a `lint` script that misses a directory or a root file, a
    root file the linter cannot parse).
+
+7. If it has a `test` script, run those tests through **vitest** and wire the
+   no-network guard into its `vitest.config.ts`, then add its name to
+   `EXPECTED_VITEST_PACKAGES` in
+   `packages/eslint-config/test/no-network-runtime.test.js`. Copy the block from a
+   neighbour at the same depth — the relative path is `../../` from
+   `packages/<name>/`, `plugins/<name>/` or `tools/<name>/`, and `../` from a
+   repo-root package (`cli`, `web-ui`):
+
+   ```ts
+   const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
+   // …
+   test: { setupFiles: [noNetworkGuard], … }
+   ```
+
+   The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
+   package testing through anything else (`node --test`, say) runs with no runtime
+   network guard at all. That suite enumerates every package with a `test` script
+   and fails on any that is not vitest, so such a package has to be argued into
+   `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
+   way, since every entry is a hole in the guarantee.
 
 ## Commit messages
 
@@ -312,6 +417,60 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
+
+### The no-network guard
+
+`test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
+entry. It refuses any outbound connection that is not loopback — TCP (and therefore
+TLS, HTTP, HTTP/2, `fetch`), UDP, and the DNS `resolve*` family — and its error
+**names the call site**, digging past ~60 frames of bundled undici to find the line
+that actually reached out. It prefers this repo's own code over a `node_modules`
+frame, since a transitive dependency reaching out is the case the ESLint ban cannot
+see and the frame a reader has to act on is the one that called it. Loopback
+(`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
+port probe and the dashboard boot test depend on them.
+
+Four things about it are load-bearing:
+
+- **A refusal is recorded as well as thrown.** Almost every boundary here is
+  deliberately fail-open, so a throw inside a `catch {}` would be swallowed and the
+  run would go green having reached the network. `afterEach`/`afterAll` fail on any
+  undrained record. A test that provokes a refusal on purpose must drain it with
+  `takeBlockedAttempts()`.
+- **It imports `node:net`/`node:dgram`/`node:dns`, which the lint ban forbids.**
+  That is the enforcement, not a violation. `packages/eslint-config/test/no-network-runtime.test.js`
+  lints the file and fails if it trips a **fourth** ban.
+- **A child process is invisible to it**, which is the whole reason the `No-network`
+  CI job exists. Do not describe the guard as covering shell-outs.
+- **Every package must wire it**, at the right relative depth. The same suite fails
+  the workspace if a package drops the entry, points it at a path that does not
+  resolve to the guard, or is added without one. That last one holds for packages
+  that test through **vitest**; a package testing through another runner cannot load
+  a `setupFiles` entry at all, so the suite enumerates every package with a `test`
+  script and fails on any non-vitest one unless it is named in
+  `EXPECTED_NON_VITEST_TEST_PACKAGES` (empty, and each entry would be a real hole).
+
+The only opt-out is **`takeBlockedAttempts()`**, and there is no env escape hatch or
+config flag. Draining is how a test consumes a refusal it provoked on purpose, so it
+is also the way to hide one — the seam is deliberate, narrow, and visible in review.
+A test that needs the outside world needs an injectable seam instead — `local-ops`'
+`ReportDeps.viewVersion` and `judge.ts`'s `spawnClaude` are the two worked examples,
+and neither `vi.mock`s `execFileSync`: they take the boundary as a parameter, so the
+network call site is never reached rather than being intercepted.
+
+`dns.lookup` is deliberately **not** patched (the connect guard already gates what it
+feeds). Be accurate about what that leaves: a bare lookup still discloses the hostname
+to whoever runs the resolver, which is real egress even though it is not a dependency
+on a remote service. Only the Linux `No-network` job blocks it.
+
+**The CI script is a tested artifact, not a script nobody reads.** It is the only gate
+covering child processes, and its whole value is a positive control that refuses to run
+vacuously — which is worthless if nothing exercises it. The same suite drives
+`tools/ci/no-network-test.sh` with a `PATH` of hand-written stubs and pins every
+outcome: probe tooling missing, DNS still resolving, the target still answering, the
+probe reporting itself broken, the probe file gone, started as root, and the one green
+path where the command actually runs. Change a probe and a case fails; delete one and
+the case that covered it fails.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +

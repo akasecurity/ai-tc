@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
+import { corruptStore } from './helpers/fault-injection.ts';
 
 let dir: string;
 
@@ -166,6 +167,109 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     if (process.platform !== 'win32' && backupName !== undefined) {
       expect(statSync(join(dir, backupName)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it('preserves committed WAL frames in the legacy backup when no close checkpoint runs', (ctx) => {
+    // Regression: the legacy backup used to rename the main file aside and delete
+    // the -wal/-shm sidecars. SQLite checkpoints only when the LAST connection
+    // closes, so with a concurrent opener holding the store — the documented
+    // multi-process model — no close-time checkpoint runs at all and committed
+    // frames sit only in the -wal, which the delete then destroyed. The
+    // "recoverable" backup silently lost the store's newest writes. The snapshot
+    // now goes through VACUUM INTO, which folds committed WAL frames in without
+    // needing a checkpoint.
+    if (process.platform === 'win32') {
+      // The reproduction keeps a second connection open across the backup, and
+      // clearing an open store file is a sharing violation on Windows — a
+      // separate platform limitation, not the data loss this guards.
+      ctx.skip('a second open connection blocks clearing the store file on Windows');
+      return;
+    }
+
+    const file = join(dir, 'aka.db');
+
+    // A tenant-bearing (foreign-lineage) store in WAL mode. autocheckpoint = 0
+    // plus a never-closed writer keep every write — the schema included — stranded
+    // in the -wal, never folded into the main file.
+    const writer = new DatabaseSync(file);
+    writer.exec('PRAGMA journal_mode = WAL');
+    writer.exec('PRAGMA wal_autocheckpoint = 0');
+    writer.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
+    writer.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
+    writer.exec('PRAGMA user_version = 10');
+    writer.exec("INSERT INTO tenants (id) VALUES ('wal-only-tenant')");
+    writer.exec("INSERT INTO events (id, tenant_id) VALUES ('e1', 'wal-only-tenant')");
+
+    try {
+      // Opening detects the foreign lineage and backs the store up while the
+      // writer still holds the un-checkpointed WAL.
+      openLocalDatabase(dir).close();
+    } finally {
+      writer.close();
+    }
+
+    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    expect(backups).toHaveLength(1);
+    // The snapshot is published by renaming a `.partial` into place, so a
+    // completed backup leaves no partial file beside it.
+    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+    const [backupName] = backups;
+    const backup = new DatabaseSync(join(dir, backupName ?? ''));
+    // The WAL-only rows survived into the backup — a bare rename + sidecar
+    // delete would have dropped them (the rows, and even the tables themselves,
+    // lived only in the -wal that the delete destroyed). Both tables are
+    // checked: the whole snapshot has to survive, not one table of it.
+    const tenants = backup.prepare('SELECT id FROM tenants').all();
+    const events = backup.prepare('SELECT id, tenant_id FROM events').all();
+    backup.close();
+    expect(tenants).toEqual([{ id: 'wal-only-tenant' }]);
+    expect(events).toEqual([{ id: 'e1', tenant_id: 'wal-only-tenant' }]);
+  });
+
+  it('still resets a legacy store the snapshot cannot copy, keeping the original intact', async () => {
+    // A corrupt page fails VACUUM INTO but leaves page 1 readable, so the
+    // foreign-lineage probe still fires: the store must be reset or every write
+    // dies on NOT NULL tenant_id, swallowed fail-open. A snapshot is impossible
+    // here, so the whole store is moved aside instead — the reset still happens,
+    // and the damaged original is preserved rather than destroyed.
+    //
+    // The fixture stays at two tables and one row deliberately: the schema alone
+    // already spans the several pages corruptStore('page') needs, and this store
+    // is in rollback-journal mode, where a loop of per-row commits is a loop of
+    // fsyncs — slow enough on Windows CI to reach the per-test timeout by itself.
+    const file = join(dir, 'aka.db');
+    const legacy = new DatabaseSync(file);
+    legacy.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
+    legacy.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
+    legacy.exec('PRAGMA user_version = 10');
+    legacy.exec("INSERT INTO tenants (id) VALUES ('doomed-tenant')");
+    legacy.close();
+    const beforeSize = statSync(file).size;
+    corruptStore(file, 'page');
+
+    // The reset completes: the fresh store takes a write the legacy schema
+    // would have rejected.
+    const db = openLocalDatabase(dir);
+    const ev = event();
+    db.recordCapture(ev, [finding(ev.id)]);
+    expect(await db.findings.recentFindings()).toHaveLength(1);
+    db.close();
+
+    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    expect(backups).toHaveLength(1);
+    // Nothing partial is left to mistake for a backup.
+    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+    // The moved-aside file is the damaged original, whole — not a truncated or
+    // re-created one. NOT byte-for-byte: `PRAGMA journal_mode = WAL` runs on the
+    // open before the copy fails and rewrites the header (4 bytes, the file
+    // format versions among them). So pin the two properties that do hold — the
+    // full length, and that the damage is still in it.
+    const moved = join(dir, backups[0] ?? '');
+    expect(statSync(moved).size).toBe(beforeSize);
+    const check = new DatabaseSync(moved);
+    const integrity = check.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
+    check.close();
+    expect(integrity.integrity_check).not.toBe('ok');
   });
 
   it('writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default', () => {

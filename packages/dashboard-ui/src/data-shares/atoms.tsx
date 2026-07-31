@@ -18,12 +18,12 @@ import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } f
  * rather than verbs — see HttpMethod in @akasecurity/schema.
  */
 const METHOD_TONE: Record<HttpMethod, string> = {
-  GET: 'bg-sev-low-fill text-sev-low',
-  POST: 'bg-ok-fill text-ok',
-  PUT: 'bg-sev-high-fill text-sev-high',
-  DELETE: 'bg-sev-critical-fill text-sev-critical',
-  SDK: 'bg-ok-fill text-ok',
-  REF: 'bg-sev-medium-fill text-sev-medium',
+  GET: 'bg-sev-low-fill text-sev-low-ink',
+  POST: 'bg-ok-fill text-ok-ink',
+  PUT: 'bg-sev-high-fill text-sev-high-ink',
+  DELETE: 'bg-sev-critical-fill text-sev-critical-ink',
+  SDK: 'bg-ok-fill text-ok-ink',
+  REF: 'bg-sev-medium-fill text-sev-medium-ink',
 };
 export function MethodTag({ method }: { method: HttpMethod }) {
   return (
@@ -50,7 +50,7 @@ export function TransportTag({ transport, plain }: { transport: Transport; plain
       <span
         className={cn(
           'inline-flex items-center gap-1.5 text-xs font-semibold',
-          m.secure ? 'text-text-2' : 'text-sev-critical',
+          m.secure ? 'text-text-2' : 'text-sev-critical-ink',
         )}
       >
         <Icon aria-hidden focusable={false} className="size-3" />

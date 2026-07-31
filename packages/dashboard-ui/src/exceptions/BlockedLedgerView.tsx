@@ -43,11 +43,11 @@ export function BlockedLedgerView({
   return (
     <div className="mb-3.5 overflow-hidden rounded-xl border border-sev-high-fill bg-sev-high-fill">
       <div className="flex items-center gap-2.5 px-3.5 py-3">
-        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-high text-white">
+        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-high-ink text-on-accent">
           <SlashCircleIcon aria-hidden focusable={false} className="size-4" />
         </span>
         <span className="text-sm font-semibold text-text">Recently blocked</span>
-        <span className="rounded-full bg-sev-high px-2 py-0.5 text-xs font-bold text-white">
+        <span className="rounded-full bg-sev-high-ink px-2 py-0.5 text-xs font-bold text-on-accent">
           {items.length}
         </span>
         <span className="text-xs text-text-2">

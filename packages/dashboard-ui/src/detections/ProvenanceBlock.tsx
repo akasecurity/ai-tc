@@ -50,9 +50,13 @@ export function ProvenanceBlock({
 
       {state === 'update-available' ? (
         <div className="flex items-center gap-3 bg-sev-high-fill px-4 py-3">
-          <ArrowUpIcon aria-hidden focusable={false} className="size-4.5 shrink-0 text-sev-high" />
+          <ArrowUpIcon
+            aria-hidden
+            focusable={false}
+            className="size-4.5 shrink-0 text-sev-high-ink"
+          />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-sev-high">
+            <div className="text-sm font-semibold text-sev-high-ink">
               Update available · v{latestVersion}
             </div>
             <div className="mt-px text-xs leading-snug text-text-2">
@@ -63,7 +67,7 @@ export function ProvenanceBlock({
             <Button
               size="sm"
               onClick={onOpenUpdate}
-              className="shrink-0 bg-sev-high text-white hover:bg-sev-high"
+              className="shrink-0 bg-sev-high-ink text-on-accent hover:bg-sev-high-ink"
             >
               Update
             </Button>
@@ -71,7 +75,7 @@ export function ProvenanceBlock({
         </div>
       ) : state === 'up-to-date' ? (
         <div className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-text-3">
-          <CheckCircleIcon aria-hidden focusable={false} className="size-4 text-ok" />
+          <CheckCircleIcon aria-hidden focusable={false} className="size-4 text-ok-ink" />
           Up to date with upstream
         </div>
       ) : (

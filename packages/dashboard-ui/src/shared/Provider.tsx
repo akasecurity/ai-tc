@@ -25,9 +25,12 @@ const FONT_SIZE_RATIO = 0.36;
 /** A colored square lettermark for an AI provider. */
 export function Provider({ id, size = 24 }: { id: ProviderId; size?: number }) {
   const p = PROVIDERS[id];
+  // Vendor brand colors are fixed, so some land close to the surface they sit on
+  // (Cursor's is the dark theme's card color). The inset ring is theme-aware and keeps
+  // the tile's edge visible either way without altering the brand fill.
   return (
     <span
-      className="flex shrink-0 items-center justify-center rounded-lg font-display font-bold text-white"
+      className="flex shrink-0 items-center justify-center rounded-lg font-display font-bold text-white ring-1 ring-inset ring-text/15"
       style={{ width: size, height: size, background: p.color, fontSize: size * FONT_SIZE_RATIO }}
     >
       {p.short}

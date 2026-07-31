@@ -55,7 +55,7 @@ export function PolicyStatsView({
       <StatTile
         icon={ListIcon}
         iconBg="var(--color-ok-fill)"
-        iconColor="var(--color-ok)"
+        iconColor="var(--color-ok-ink)"
         label="Detections governed"
         value={statValue(stats?.detectionsGoverned)}
         loading={loading}
@@ -128,7 +128,9 @@ export function PolicyListView({
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
         {error ? (
-          <p className="px-2.5 py-2 text-sm text-sev-critical">Error loading policies: {error}</p>
+          <p className="px-2.5 py-2 text-sm text-sev-critical-ink">
+            Error loading policies: {error}
+          </p>
         ) : loading ? (
           <p className="px-2.5 py-2 text-sm text-text-3">Loading policies…</p>
         ) : items.length === 0 ? (

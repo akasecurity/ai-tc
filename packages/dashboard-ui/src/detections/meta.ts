@@ -38,12 +38,12 @@ export type Tone = 'gray' | 'orange' | 'primary' | 'red' | 'violet' | 'teal' | '
 export function toneColors(tone: Tone): [string, string] {
   const map: Record<Tone, [string, string]> = {
     primary: ['var(--color-primary)', 'var(--color-primary-tint)'],
-    teal: ['var(--color-teal)', 'var(--color-teal-fill)'],
-    green: ['var(--color-ok)', 'var(--color-ok-fill)'],
-    red: ['var(--color-sev-critical)', 'var(--color-sev-critical-fill)'],
-    orange: ['var(--color-sev-high)', 'var(--color-sev-high-fill)'],
+    teal: ['var(--color-teal-ink)', 'var(--color-teal-fill)'],
+    green: ['var(--color-ok-ink)', 'var(--color-ok-fill)'],
+    red: ['var(--color-sev-critical-ink)', 'var(--color-sev-critical-fill)'],
+    orange: ['var(--color-sev-high-ink)', 'var(--color-sev-high-fill)'],
     gray: ['var(--color-text-2)', 'var(--color-surface-3)'],
-    blue: ['var(--color-sev-low)', 'var(--color-sev-low-fill)'],
+    blue: ['var(--color-sev-low-ink)', 'var(--color-sev-low-fill)'],
     violet: ['var(--color-violet)', 'var(--color-violet-fill)'],
   };
   return map[tone];
@@ -77,7 +77,7 @@ export const MATCHER_META: Record<MatcherType, MatcherMeta> = {
   keyword: {
     label: 'Keyword',
     icon: FingerprintIcon,
-    color: 'var(--color-teal)',
+    color: 'var(--color-teal-ink)',
     fill: 'var(--color-teal-fill)',
     blurb: 'Literal lookup',
   },

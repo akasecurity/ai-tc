@@ -127,7 +127,7 @@ export function InventoryNav(props: InventoryNavProps) {
             <span
               className={cn(
                 'ml-auto inline-flex items-center gap-1.5 text-xs font-semibold',
-                attention ? 'text-sev-high' : 'text-ok',
+                attention ? 'text-sev-high-ink' : 'text-ok-ink',
               )}
             >
               <Ico name={attention ? 'flag' : 'check-circle'} className="size-3.5" />
@@ -306,9 +306,9 @@ function HarnessTreeRow(props: InventoryNavProps & { h: HarnessSummary }) {
           <div className="flex shrink-0 items-center gap-1.5">
             {unapproved > 0 && <span className="size-2 rounded-full bg-sev-critical" />}
             {h.flagCount === 0 ? (
-              <Ico name="check-circle" className="size-3.5 text-ok" />
+              <Ico name="check-circle" className="size-3.5 text-ok-ink" />
             ) : (
-              <span className="rounded-full bg-sev-high px-1.5 py-px text-xs font-bold text-white">
+              <span className="rounded-full bg-sev-high-ink px-1.5 py-px text-xs font-bold text-on-accent">
                 {h.flagCount}
               </span>
             )}
@@ -476,7 +476,7 @@ function ProjectNavRow({
       <div className="flex items-center gap-2.5">
         <AccessBar counts={c} />
         {c.blocked > 0 ? (
-          <span className="text-xs font-semibold text-sev-critical">{c.blocked} blocked</span>
+          <span className="text-xs font-semibold text-sev-critical-ink">{c.blocked} blocked</span>
         ) : (
           <span className="text-xs text-text-3">{c.total} files</span>
         )}

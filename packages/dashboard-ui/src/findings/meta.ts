@@ -58,14 +58,14 @@ export const CATEGORY_ICON: Record<FindingCategory, IconComponent> = {
 
 /** Per-category icon-tile fill + text color (falls back to a neutral surface tone). */
 export const CATEGORY_STYLE: Record<FindingCategory, string> = {
-  secret: 'bg-sev-critical-fill text-sev-critical',
-  pii: 'bg-sev-low-fill text-sev-low',
+  secret: 'bg-sev-critical-fill text-sev-critical-ink',
+  pii: 'bg-sev-low-fill text-sev-low-ink',
   source_code: 'bg-violet-fill text-violet',
-  external_share: 'bg-teal-fill text-teal',
-  mcp_server: 'bg-sev-high-fill text-sev-high',
-  customer_data: 'bg-sev-high-fill text-sev-high',
-  financial: 'bg-sev-high-fill text-sev-high',
-  phi: 'bg-sev-low-fill text-sev-low',
+  external_share: 'bg-teal-fill text-teal-ink',
+  mcp_server: 'bg-sev-high-fill text-sev-high-ink',
+  customer_data: 'bg-sev-high-fill text-sev-high-ink',
+  financial: 'bg-sev-high-fill text-sev-high-ink',
+  phi: 'bg-sev-low-fill text-sev-low-ink',
   custom: 'bg-surface-2 text-text-2',
 };
 
@@ -89,16 +89,16 @@ export const ACTION_META: Record<
   blocked: {
     label: 'Blocked',
     icon: SlashCircleIcon,
-    className: 'bg-sev-critical-fill text-sev-critical',
+    className: 'bg-sev-critical-fill text-sev-critical-ink',
   },
   redacted: { label: 'Redacted', icon: RedactIcon, className: 'bg-primary-tint text-primary' },
-  warned: { label: 'Warned', icon: AlertIcon, className: 'bg-sev-high-fill text-sev-high' },
-  allowed: { label: 'Allowed', icon: CheckIcon, className: 'bg-ok-fill text-ok' },
+  warned: { label: 'Warned', icon: AlertIcon, className: 'bg-sev-high-fill text-sev-high-ink' },
+  allowed: { label: 'Allowed', icon: CheckIcon, className: 'bg-ok-fill text-ok-ink' },
   monitored: { label: 'Monitored', icon: EyeIcon, className: 'bg-surface-3 text-text-2' },
   quarantined: {
     label: 'Quarantined',
     icon: ShieldIcon,
-    className: 'bg-sev-critical-fill text-sev-critical',
+    className: 'bg-sev-critical-fill text-sev-critical-ink',
   },
 };
 

@@ -53,7 +53,9 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
           />
         </div>
 
-        {result && !result.ok && <p className="mt-3 text-xs text-sev-critical">{result.error}</p>}
+        {result && !result.ok && (
+          <p className="mt-3 text-xs text-sev-critical-ink">{result.error}</p>
+        )}
         {result?.ok && (
           <div className="mt-3 rounded-lg border border-ok-fill bg-ok-fill px-3 py-2 text-xs text-text">
             Scanned {String(result.scanned)} file{result.scanned === 1 ? '' : 's'} ·{' '}

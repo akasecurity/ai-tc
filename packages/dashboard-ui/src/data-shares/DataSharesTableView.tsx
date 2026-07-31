@@ -112,7 +112,7 @@ function GroupRow({
                 {d.name}
               </span>
               {insecure && (
-                <span title="Sends over plaintext" className="inline-flex text-sev-critical">
+                <span title="Sends over plaintext" className="inline-flex text-sev-critical-ink">
                   <AlertIcon aria-hidden focusable={false} className="size-3.5" />
                 </span>
               )}
@@ -210,7 +210,7 @@ function SectionRow({ group }: { group: ShareDestinationGroup }) {
             <span
               className={cn(
                 'inline-flex items-center gap-1 text-xs',
-                group.kind === 'ip' ? 'text-sev-critical' : 'text-sev-high',
+                group.kind === 'ip' ? 'text-sev-critical-ink' : 'text-sev-high-ink',
               )}
             >
               <AlertIcon aria-hidden focusable={false} className="size-3" />

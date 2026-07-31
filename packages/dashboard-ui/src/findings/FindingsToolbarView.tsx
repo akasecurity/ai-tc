@@ -192,7 +192,7 @@ function MultiSelectFilter({
       >
         {label}
         {active && (
-          <span className="flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-text-inv">
+          <span className="flex size-4 items-center justify-center rounded-full bg-primary-solid text-[10px] font-semibold text-text-inv">
             {selected.length}
           </span>
         )}
@@ -213,7 +213,7 @@ function MultiSelectFilter({
               <span
                 className={cn(
                   'flex size-4 shrink-0 items-center justify-center rounded border',
-                  checked ? 'border-primary bg-primary text-text-inv' : 'border-border',
+                  checked ? 'border-primary-solid bg-primary-solid text-text-inv' : 'border-border',
                 )}
               >
                 {checked && <CheckIcon className="size-3" />}
@@ -284,7 +284,7 @@ export function ColumnsMenu({
               <span
                 className={cn(
                   'flex size-4 shrink-0 items-center justify-center rounded border',
-                  checked ? 'border-primary bg-primary text-text-inv' : 'border-border',
+                  checked ? 'border-primary-solid bg-primary-solid text-text-inv' : 'border-border',
                 )}
               >
                 {checked && <CheckIcon className="size-3" />}

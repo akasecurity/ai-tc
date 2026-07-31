@@ -150,7 +150,9 @@ export function DirectoryBrowser({ onSelect }: { onSelect: (path: string) => voi
 
             <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
               {loading && <div className="p-3 text-xs text-text-3">Loading…</div>}
-              {!loading && error && <div className="p-3 text-xs text-sev-critical">{error}</div>}
+              {!loading && error && (
+                <div className="p-3 text-xs text-sev-critical-ink">{error}</div>
+              )}
               {!loading &&
                 !error &&
                 entries.map((entry) => (

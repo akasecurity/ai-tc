@@ -107,10 +107,12 @@ export { ProviderChips, ProviderTag } from './findings/ProviderChips.tsx';
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).
 export {
+  AlertOctagonIcon,
   BoltIcon,
   BracesIcon,
   ExternalShareIcon,
   LayersIcon,
+  LockIcon,
   SearchIcon,
   ShieldCheckIcon,
   TerminalIcon,

@@ -106,7 +106,7 @@ export function DropdownMenuCheckboxItem({
       )}
       {...props}
     >
-      <span className="grid size-4 shrink-0 place-items-center rounded-[5px] border border-border-strong text-text-inv transition-colors group-data-[state=checked]:border-primary group-data-[state=checked]:bg-primary">
+      <span className="grid size-4 shrink-0 place-items-center rounded-[5px] border border-border-strong text-text-inv transition-colors group-data-[state=checked]:border-primary-solid group-data-[state=checked]:bg-primary-solid">
         <DropdownMenuPrimitive.ItemIndicator>
           <CheckMark className="size-3" />
         </DropdownMenuPrimitive.ItemIndicator>

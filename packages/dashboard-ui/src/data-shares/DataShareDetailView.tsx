@@ -271,7 +271,7 @@ export function DataShareDetailView({
           {blocked ? (
             <Button
               variant="outline"
-              className="flex-1 border-ok-fill text-ok hover:bg-ok-fill"
+              className="flex-1 border-ok-fill text-ok-ink hover:bg-ok-fill"
               disabled={isSettingDecision}
               onClick={() => {
                 onSetDecision('allow');

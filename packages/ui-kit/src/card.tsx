@@ -7,7 +7,7 @@ import { cn } from './lib/cn.ts';
  *
  *   <Card>
  *     <CardHeader>
- *       <CardIcon className="bg-sev-critical-fill text-sev-critical"><Icon /></CardIcon>
+ *       <CardIcon className="bg-sev-critical-fill text-sev-critical-ink"><Icon /></CardIcon>
  *       <CardHeading>
  *         <CardTitle>Open by severity</CardTitle>
  *         <CardDescription>131 findings</CardDescription>

@@ -17,6 +17,8 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
 // which composes these readers into its PluginConfig. A config.json written by
 // an earlier release may sit alongside settings.json; nothing reads it.
 
+export const SETTINGS_FILENAME = 'settings.json';
+
 /**
  * Read settings.json under the base, default-filled when absent. Fully
  * fail-open: a missing or corrupt file yields unonboarded defaults rather than
@@ -26,7 +28,7 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
  * so a web-ui page render never chmods.
  */
 export function readWorkspaceSettings(base: string = defaultDataDir()): WorkspaceSettings {
-  const record = readJson(join(settingsDir(base), 'settings.json'));
+  const record = readJson(join(settingsDir(base), SETTINGS_FILENAME));
   if (!record) return defaultWorkspaceSettings();
   try {
     // The schema default-fills every missing key, so an older settings.json
@@ -60,7 +62,7 @@ export function applyOnboarding(
     onboardedAt: answers.onboardedAt ?? current.onboardedAt ?? new Date().toISOString(),
   });
   ensureDataDirSync(dir);
-  const file = join(dir, 'settings.json');
+  const file = join(dir, SETTINGS_FILENAME);
   writeOwnerOnlyFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
   return merged;
 }

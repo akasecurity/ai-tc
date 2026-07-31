@@ -553,7 +553,7 @@ is not a runtime package-wall crossing.
 
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
 hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
-`aka.db.pre-drop.<ts>.bak` — a byte-for-byte copy of the pre-migration store — in that
+`aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store — in that
 directory on **every** run, and it is around 47% of the bytes there, so a name-list reader
 misses more of the store than a `-wal` pair ever covered. On top of that SQLite writes an
 `aka.db-journal` instead of the WAL pair wherever WAL silently no-ops (see `dbSidecars` in

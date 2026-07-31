@@ -38,11 +38,42 @@ responses, and tool calls. Only the spans a detection rule flags as sensitive ar
 masked; **everything else is stored verbatim and unencrypted**, so `aka.db`
 accumulates a full local prompt corpus. It is protected by **filesystem
 permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
-`~/.aka/data`, `~/.aka/settings`) are created owner-only (`0700`) and the files —
-`aka.db` and its `-wal`/`-shm` sidecars, `exception.key`, and `settings.json` — are
-written `0600`, so only your user account can read them. These modes are the only
-at-rest control, so treat a copy of the store (a backup, a synced folder, a stolen
-disk image) as sensitive.
+`~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
+and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
+`exception.key`, `settings.json`, and `vault.key` — are written `0600`, so only
+your user account can read them. These modes are the only at-rest control, so
+treat a copy of the store (a backup, a synced folder, a stolen disk image) as
+sensitive.
+
+Which of those sidecars exist depends on how SQLite is journalling. `-wal` and
+`-shm` are the pair it keeps in write-ahead logging, the mode it uses by default;
+where WAL is unavailable it silently falls back to a rollback journal and writes
+`-journal` instead — a DrvFs path such as `/mnt/c` under WSL, and some network
+mounts, behave that way. Any of the three can hold store content, so `ai-tc`
+tightens all three.
+
+`vault.key` is the one file that is not a copy of your data but the means to read
+it. If you consent to the secret vault, detected values are kept as recoverable
+encrypted rows in `aka.db`, and this key is what decrypts them. It lives in its own
+directory so that a backup or sync tool can exclude `~/.aka/keys/` and carry the
+store without the means to open what is vaulted — that separation is the whole of
+what encryption at rest buys here. The file appears only once vaulting is granted;
+without that consent there is no key and no recoverable copy.
+
+`ai-tc` also leaves copies of the store beside it: before a migration rewrites the
+schema, or a recovery resets a store it cannot open, it snapshots `aka.db` to a
+sibling `.bak` file. Where the store cannot be copied at all — a corrupt page, or
+no room for a second copy — it moves the whole set aside instead, so that backup
+carries its own `-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
+prompt corpus and are written `0600` too.
+
+A snapshot cut short part-way — a plugin hook killed at its timeout — can leave a
+`.bak.partial` behind at the process umask instead (the default permissions a new
+file gets, commonly `0644`, i.e. readable by every account on the machine).
+`ai-tc` clears abandoned ones only when it next takes a snapshot, so on a machine
+that never migrates or resets again, that copy stays as it is. Treat a
+`.bak.partial` under `~/.aka/data` as a full, readable copy of the store, and
+delete it.
 
 Those POSIX modes are a **no-op on Windows**: Node cannot apply them, so `ai-tc`
 sets no at-rest protection there. On Windows the store simply inherits whatever ACL

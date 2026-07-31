@@ -1,9 +1,10 @@
 import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 
 // The shared SQLite store holds prompt/file content and masked findings, so the
-// directory is owner-only and the DB files are written 0600. These mirror the
-// modes the plugin SDK applies to ~/.aka; persistence owns its own copy so it
-// never depends on the SDK's layout module.
+// directory is owner-only and the DB files are written 0600. This module is the
+// single definition of the ~/.aka layout and its modes; the plugin SDK's
+// data-dir module re-exports them from here rather than keeping a second copy,
+// so every writer under ~/.aka applies the same modes.
 //
 // These POSIX modes are the ONLY at-rest control on the store (there is no
 // encryption). They are a no-op on platforms without POSIX modes (Windows),

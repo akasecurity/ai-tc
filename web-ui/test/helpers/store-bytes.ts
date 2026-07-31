@@ -19,8 +19,9 @@ function errnoCode(err: unknown): string | undefined {
  * instead wherever WAL silently no-ops — DrvFs `/mnt/c` and some network mounts,
  * per `dbSidecars` in `packages/persistence/src/paths.ts` — so a WAL-only scan
  * reads files the data did not go to and reports clean. A migration
- * (`aka.db.pre-drop.<ts>.bak`) and the foreign-lineage reset
- * (`aka.db.legacy.<ts>.bak`) leave real copies in the same directory.
+ * (`aka.db.pre-drop.<ts>.<rand>.bak`) and the foreign-lineage reset
+ * (`aka.db.legacy.<ts>.<rand>.bak`) leave real copies in the same directory, and
+ * a snapshot killed part-way leaves a `.bak.partial` beside them.
  *
  * Files only: `isFile()` skips directories, and nothing writes one under the
  * data dir today (`paths.ts`, `fingerprint.ts` and `warn-era-cap.ts` all write

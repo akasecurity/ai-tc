@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -51,6 +52,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// Every path under `home`, the home itself included. A hardcoded list of the
+// paths init writes cannot cover what a later change adds — the migration's
+// `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
+// such file and no list here names it.
+function storeTree(home: string): string[] {
+  const entries = readdirSync(home, { withFileTypes: true, recursive: true });
+  return [home, ...entries.map((e) => join(e.parentPath, e.name))];
+}
+
 describe('plugin-install offer identity', () => {
   it('emits offer copy carrying the canonical product name and tagline', async () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
@@ -96,6 +106,60 @@ describe('runInit contract', () => {
     expect(mode(dataDir(dir))).toBe(0o700);
     expect(mode(join(settingsDir(dir), 'settings.json'))).toBe(0o600);
     expect(mode(dbPath(dir))).toBe(0o600);
+  });
+
+  it('holds every path under ~/.aka owner-only whatever umask the caller has', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    // What this pins is narrower than it looks, so state it exactly. No umask
+    // can loosen 0700/0600 — a umask only ever CLEARS bits, and neither mode has
+    // a group or other bit left to clear — so this case does NOT stand behind
+    // the chmod; the loose-home case above is what does. What it stands behind
+    // is that the modes never come from the caller's umask happening to be
+    // tight: anything created here with no explicit mode lands 0777/0666, where
+    // a default `umask 022` host would have shown the same bug as a milder
+    // 0755/0644, and a `umask 077` host would have hidden it outright.
+    //
+    // The walk is the other half — see storeTree.
+    //
+    // The umask is process-global and restored in the `finally`; vitest runs a
+    // file's tests in sequence, so the window is this case only. It also needs
+    // the default `forks` pool — setting the umask raises
+    // ERR_WORKER_UNSUPPORTED_OPERATION on a worker thread, so a switch to
+    // `pool: 'threads'` fails this case loudly rather than skipping it.
+    const outside = mkdtempSync(join(tmpdir(), 'aka-umask-control-'));
+    const control = join(outside, 'no-mode');
+
+    try {
+      const previousUmask = process.umask(0o000);
+      try {
+        writeFileSync(control, ''); // no explicit mode — the precondition below
+        await runInit(['--home', dir]);
+      } finally {
+        process.umask(previousUmask);
+      }
+
+      // Precondition: a no-mode file lands 0666 only under a genuinely
+      // permissive umask. Without it the case passes vacuously wherever the
+      // umask is ignored.
+      expect(statSync(control).mode & 0o777).toBe(0o666);
+
+      const tree = storeTree(dir);
+      // ...and the walk has to have reached the store, or "nothing is loose"
+      // holds vacuously over an empty tree.
+      expect(tree).toContain(dbPath(dir));
+      expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
+      expect(tree.filter((p) => (statSync(p).mode & 0o077) !== 0)).toEqual([]);
+
+      // The user-facing signal has to agree with the disk.
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).not.toContain('could not enforce owner-only permissions');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('re-tightens a pre-existing loose settings.json on re-run (tighten is not gated on creating it)', async () => {

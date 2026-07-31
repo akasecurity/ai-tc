@@ -45,6 +45,14 @@ function isSymlink(path: string): boolean {
 // created inside a symlinked home is still tightened, so a home a user chose to
 // symlink (a dotfiles manager, another volume) keeps the store's at-rest modes
 // instead of silently losing them.
+//
+// The check is an lstat, so it is NOT race-free: an attacker who swaps a real
+// path for a symlink between the lstat and the chmod still reaches the target.
+// Closing that needs openSync(O_NOFOLLOW) + fchmod, which cannot cover the
+// directory and file cases uniformly on every platform this ships to. The lstat
+// mirrors what tightenFile has always done and raises the bar without removing
+// the race — the precondition for winning it is write access to ~/.aka, which is
+// the loose state this repair exists to leave behind.
 function chmodBestEffort(path: string, mode: number): void {
   if (isSymlink(path)) return;
   try {

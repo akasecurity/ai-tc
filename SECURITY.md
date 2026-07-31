@@ -55,9 +55,10 @@ tightens all three.
 schema, or a recovery resets a store it cannot open, it snapshots `aka.db` to a
 sibling `.bak` file. Those copies hold the same prompt corpus and are written
 `0600` too. A snapshot cut short part-way — a plugin hook killed at its timeout —
-can leave a `.bak.partial` behind at the process umask (the default permissions a
-new file gets, commonly `0644`, i.e. readable by every account on the machine)
-until a later run sweeps it away.
+can leave a `.bak.partial` behind at the process umask instead (the default
+permissions a new file gets, commonly `0644`, i.e. readable by every account on
+the machine). `ai-tc` clears abandoned ones only when it next takes a snapshot,
+so on a machine that never migrates or resets again, that copy stays as it is.
 
 Those POSIX modes are a **no-op on Windows**: Node cannot apply them, so `ai-tc`
 sets no at-rest protection there. On Windows the store simply inherits whatever ACL

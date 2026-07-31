@@ -413,11 +413,30 @@ export async function grantRevealFromPointer(input: {
   }
 }
 
-/** Revoke an active grant (`aka exception revoke`) — terminal, audit-retained. */
+/**
+ * Revoke an active grant (`aka exception revoke`) — terminal, audit-retained.
+ * A blank reason is normalised away rather than stored: the column already
+ * encodes "none given" as NULL, and an empty string would be a second encoding
+ * of the same absence that reads as a recorded reason to anything asking
+ * `revoke_reason IS NOT NULL`.
+ */
 export async function revokeException(id: string, reason: string): Promise<ActionResult> {
-  const revoked = await db()
-    .exceptions.revoke(id, resolveCreatedBy(), reason.trim() === '' ? undefined : reason.trim())
-    .catch(() => false);
+  const note = reason.trim();
+
+  // Opening the handle and running the UPDATE are both synchronous, and the
+  // repository wraps the result in an already-resolved promise — so a failing
+  // store throws out of this call rather than rejecting a promise a `.catch`
+  // could see, and an uncaught throw reaches the client as a framework error
+  // page instead of the guidance every other action here returns. Kept separate
+  // from the refusal below because the two need different answers: a store that
+  // cannot be read is not evidence that the grant is gone, and saying so would
+  // leave someone believing a still-active bypass had been taken away.
+  let revoked: boolean;
+  try {
+    revoked = await db().exceptions.revoke(id, resolveCreatedBy(), note === '' ? undefined : note);
+  } catch {
+    return { ok: false, error: STORE_ERROR };
+  }
   if (!revoked) return { ok: false, error: 'No active exception with that id.' };
   revalidatePath('/exceptions');
   revalidatePath(`/exceptions/${id}`);

@@ -6,6 +6,8 @@ import {
   blockedRowBlockReason,
   exceptionState,
   isBlockedRowApprovable,
+  LEDGER_WINDOW_HOURS,
+  rotationBlockedLedgerNote,
 } from '../../src/exceptions/meta.ts';
 
 const NOW = Date.parse('2026-07-03T12:00:00.000Z');
@@ -146,5 +148,80 @@ describe('blockedRowBlockReason', () => {
     const reason = blockedRowBlockReason({ keyVersion: 1 }, { status: 'absent' });
     expect(reason).toMatch(/missing/i);
     expect(reason).toMatch(/trigger the detection again/i);
+  });
+});
+
+describe('rotationBlockedLedgerNote', () => {
+  // This is disclosure copy on a one-way action, so the assertions are about
+  // what the sentence must still SAY, not how it is worded. The dialog lists
+  // the permanent grants rotation orphans; without this it said nothing about
+  // the blocked ledger, which is retained for a day and so routinely outlives a
+  // rotation. Those rows are handled correctly afterwards — the strip marks
+  // them unapprovable via blockedRowBlockReason above — but that is the user
+  // finding out after the fact, which is what this line exists to prevent.
+  //
+  // Guarded as a pure function rather than through the rendered dialog, unlike
+  // the badge copy in views.test.tsx next door. That file's views are plain
+  // markup; RotateKeyDialog is built on the Radix dialog primitive, which calls
+  // hooks that renderToStaticMarkup cannot serve here, so a render assertion on
+  // it would not run at all. Keeping the sentence in meta.ts is what makes it
+  // reachable — the dialog holds no copy of its own to drift from.
+  const CASES = [0, 1, 2, 17];
+
+  it.each(CASES)('names the blocked ledger and the way back, at %i approvable', (count) => {
+    const note = rotationBlockedLedgerNote(count);
+    expect(note).toMatch(/blocked/i);
+    expect(note).toMatch(/approvable/i);
+    // The rows are not deleted — saying so would be a different (and wrong)
+    // claim about a ledger the user can still see.
+    expect(note).toMatch(/stay listed/i);
+    expect(note).toMatch(/trigger the detection again/i);
+  });
+
+  it('says the caveat applies even with nothing approvable', () => {
+    // The ledger refills within minutes of a rotation, so a note shown only
+    // when the count is non-zero would read as a caveat that only sometimes
+    // applies. It must state the invalidation without a number.
+    const note = rotationBlockedLedgerNote(0);
+    expect(note).toMatch(/invalidated too/i);
+    expect(note).not.toMatch(/\d/);
+  });
+
+  it('shows the count, and agrees with itself on singular and plural', () => {
+    // Noun and verb asserted separately: the window phrase sits between them,
+    // so pinning the adjacency would fail on a wording change that is still
+    // grammatical — which is not what this case is for.
+    const one = rotationBlockedLedgerNote(1);
+    expect(one).toContain('1 recently blocked detection');
+    expect(one).toContain('is still approvable');
+    expect(one).not.toMatch(/detections/);
+
+    const many = rotationBlockedLedgerNote(4);
+    expect(many).toContain('4 recently blocked detections');
+    expect(many).toContain('are still approvable');
+  });
+
+  it('names its window, so the number can be reconciled with the strip', () => {
+    // The count spans the ledger's whole retention window while the strip shows
+    // the selected chip — 30 minutes by default. Unqualified, "recently" leaves
+    // the reader with a figure several times what is on screen and no way to
+    // account for it, which is close to the failure this line exists to prevent.
+    for (const count of [1, 2, 17]) {
+      expect(rotationBlockedLedgerNote(count)).toContain(
+        `from the last ${String(LEDGER_WINDOW_HOURS)} hours`,
+      );
+    }
+  });
+
+  it('claims no number it was not given, beyond that window', () => {
+    // The count is threaded from a store read; a hard-coded digit in the
+    // sentence would survive every count and be wrong for all but one. The
+    // window is the ONLY other number allowed, and it must appear after the
+    // count — pinned as an exact list rather than a loosened pattern, so a
+    // stray figure still fails.
+    for (const count of CASES) {
+      const digits = rotationBlockedLedgerNote(count).match(/\d+/g) ?? [];
+      expect(digits).toEqual(count === 0 ? [] : [String(count), String(LEDGER_WINDOW_HOURS)]);
+    }
   });
 });

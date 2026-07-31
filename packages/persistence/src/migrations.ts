@@ -13,9 +13,9 @@ import {
 } from './db/migrations/introspection.ts';
 import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
 import { bindParams } from './internal/rows.ts';
+import { backupPath, reapStalePartials, snapshotStore } from './internal/snapshot.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
-import { tightenFile } from './paths.ts';
 
 // --- migration-DDL introspection --------------------------------------------
 // drizzle's generated SQLite DDL is rigidly formatted — backtick-quoted
@@ -288,22 +288,14 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
 }
 
 // Snapshots the live store aside immediately before the irreversible
-// legacy-table drop, while it stays open and in place. VACUUM INTO writes a
-// consistent, fully-materialized SINGLE-file copy through its own read
-// transaction — no `-wal`/`-shm` sidecars — so it captures committed WAL frames
-// that a raw copy of the main file would miss, without needing the WAL
-// checkpointed (a TRUNCATE checkpoint can be blocked by a concurrent reader and
-// return busy without throwing, leaving a raw copy silently torn/incomplete
-// under the product's multi-process open model). The bound parameter avoids any
-// path-quoting hazard. A failure still throws and is caught by the caller, which
-// defers the drop.
+// legacy-table drop, while it stays open and in place — see snapshotStore for
+// why the copy goes through VACUUM INTO and lands via a `.partial` rename. A
+// failure still throws and is caught by the caller, which defers the drop.
 export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
-  const backup = `${file}.pre-drop.${String(Date.now())}.bak`;
-  db.prepare('VACUUM INTO ?').run(backup);
-  // VACUUM INTO writes a brand-new file at the process umask (typically 0644),
-  // but it is a full copy of the prompt corpus, so tighten it to the store's
-  // own 0600.
-  tightenFile(backup);
+  // Clear any `.partial` a prior open left behind before staging a new copy.
+  reapStalePartials(file);
+  const backup = backupPath(file, 'pre-drop');
+  snapshotStore(db, backup);
   return backup;
 }
 

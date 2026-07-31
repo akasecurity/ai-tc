@@ -51,6 +51,10 @@ export default defineConfig({
     // only (the transcript and the model keep the original)
     'message-display': 'src/hooks/message-display.ts',
     stop: 'src/hooks/stop.ts',
+    // The isolated scan's worker thread. hooks.json never names it — the plugin
+    // SDK starts it by path from whichever hook is running, and every hook
+    // script lands in this same directory. See src/scan-worker.ts.
+    'scan-worker': 'src/scan-worker.ts',
     // Detached token-usage reconcile worker, spawned by the Stop hook (off the hot path)
     reconcile: 'src/reconcile.ts',
     statusline: 'src/statusline.ts',

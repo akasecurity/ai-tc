@@ -2,11 +2,14 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,7 +19,7 @@ import type * as LocalOps from '@akasecurity/local-ops';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { looseStorePaths, runInit } from '../../src/commands/init.ts';
+import { looseStorePaths, runInit, symlinkedStorePaths } from '../../src/commands/init.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
@@ -163,5 +166,124 @@ describe('looseStorePaths', () => {
     } finally {
       execFileSync('chflags', ['nouchg', settings]); // so afterEach can clean up
     }
+  });
+
+  it('does not report a symlinked path as loose (that mode was never ours to apply)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // statSync follows links, so a symlink to a 0755 dir looks group-readable.
+    // Reporting it here would blame the filesystem for rejecting a chmod that was
+    // deliberately skipped — the symlink warning is the accurate diagnosis.
+    const victim = join(dir, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const home = join(dir, 'linkhome');
+    symlinkSync(victim, home);
+
+    expect(looseStorePaths(home)).toEqual([]);
+  });
+});
+
+describe('symlinkedStorePaths', () => {
+  it('reports each symlinked store path with what it resolves to, and none when all are real', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // A real home reports nothing.
+    mkdirSync(settingsDir(dir), { recursive: true });
+    mkdirSync(dataDir(dir), { recursive: true });
+    expect(symlinkedStorePaths(dir)).toEqual([]);
+
+    // Each store directory a symlink can stand in for — ~/.aka is covered by the
+    // runInit case below; here the two layout leaves plus keys/, at a second
+    // home. Each is named with the directory the store actually lands in, fully
+    // resolved, so a chain of links still names the real destination (on macOS
+    // the tmpdir is itself reached through /var -> /private/var).
+    const home = join(dir, 'home2');
+    mkdirSync(home);
+    const elsewhereSettings = join(dir, 'elsewhere-settings');
+    const elsewhereData = join(dir, 'elsewhere-data');
+    const elsewhereKeys = join(dir, 'elsewhere-keys');
+    for (const victim of [elsewhereSettings, elsewhereData, elsewhereKeys]) mkdirSync(victim);
+    symlinkSync(elsewhereSettings, settingsDir(home));
+    symlinkSync(elsewhereData, dataDir(home));
+    symlinkSync(elsewhereKeys, join(home, 'keys'));
+
+    // Reported in store-layout order: settings/, data/, keys/.
+    expect(symlinkedStorePaths(home)).toEqual([
+      { path: settingsDir(home), target: realpathSync(elsewhereSettings) },
+      { path: dataDir(home), target: realpathSync(elsewhereData) },
+      { path: join(home, 'keys'), target: realpathSync(elsewhereKeys) },
+    ]);
+  });
+
+  it('still reports a link that resolves nowhere, naming its literal target', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // realpath has nothing to resolve on a dangling link; falling through to
+    // readlink keeps the report rather than dropping it as absent.
+    const home = join(dir, 'home3');
+    mkdirSync(home);
+    const missing = join(dir, 'unmounted-volume');
+    symlinkSync(missing, join(home, 'keys'));
+
+    expect(symlinkedStorePaths(home)).toEqual([{ path: join(home, 'keys'), target: missing }]);
+  });
+});
+
+describe('runInit on a symlinked home', () => {
+  it('leaves the victim directory mode unchanged and names the link', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // End-to-end through the real command: a symlink planted at the home path
+    // used to be followed — the target was chmod'd to 0700 and the whole store
+    // written inside it, with no warning. init must now leave the target's mode
+    // alone and say where the store went.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const victim = join(dir, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const home = join(dir, 'linkhome');
+    symlinkSync(victim, home);
+
+    await runInit(['--home', home]);
+
+    expect(statSync(victim).mode & 0o777).toBe(0o755); // victim NOT tightened
+    expect(lstatSync(home).isSymbolicLink()).toBe(true); // link left as-is
+
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain(`${home} is a symlink to ${realpathSync(victim)}`);
+    expect(out).toContain('prompt corpus');
+    // The wrong diagnosis must not also fire: nothing here rejected a chmod.
+    expect(out).not.toContain('could not enforce owner-only permissions');
+  });
+
+  it('still initializes the store through the link (surfaced, not refused)', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // The pinned decision: a home a user deliberately symlinked keeps working,
+    // and the directories init creates inside it are still held owner-only.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const victim = join(dir, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const home = join(dir, 'linkhome');
+    symlinkSync(victim, home);
+
+    await runInit(['--home', home]);
+
+    expect(existsSync(join(victim, 'settings', 'settings.json'))).toBe(true);
+    expect(existsSync(join(victim, 'data', 'aka.db'))).toBe(true);
+    expect(statSync(join(victim, 'data')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(victim, 'settings', 'settings.json')).mode & 0o777).toBe(0o600);
   });
 });

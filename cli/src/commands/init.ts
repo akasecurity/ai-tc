@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -9,7 +9,12 @@ import {
   installedPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
-import { openLocalDatabase, tightenFile, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import {
+  keysDir,
+  openLocalDatabase,
+  tightenFile,
+  writeOwnerOnlyFileSync,
+} from '@akasecurity/persistence';
 import {
   bundledDetections,
   dataDir,
@@ -26,6 +31,19 @@ import { runPlugins } from './plugins.ts';
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
+// Every path `aka init` creates and holds to an owner-only mode: the base, its
+// layout directories, and the two files that exist once init has run.
+function storeTargets(home: string): string[] {
+  return [
+    home,
+    settingsDir(home),
+    dataDir(home),
+    keysDir(home),
+    join(settingsDir(home), 'settings.json'),
+    dbPath(home),
+  ];
+}
+
 // The store paths whose owner-only mode could not be applied. `aka init` tightens
 // all of them; any that stay group/other-readable means the filesystem rejected
 // chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
@@ -34,20 +52,48 @@ export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 // actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
 export function looseStorePaths(home: string): string[] {
   if (process.platform === 'win32') return [];
-  const targets = [
-    home,
-    settingsDir(home),
-    dataDir(home),
-    join(settingsDir(home), 'settings.json'),
-    dbPath(home),
-  ];
-  return targets.filter((p) => {
+  return storeTargets(home).filter((p) => {
     try {
+      // A symlinked path is deliberately never chmod'd (see symlinkedStorePaths),
+      // so reporting its target's mode here would blame the filesystem for a
+      // permission this code chose not to apply.
+      if (lstatSync(p).isSymbolicLink()) return false;
       return (statSync(p).mode & 0o077) !== 0; // any group/other bit → not owner-only
     } catch {
       return false; // absent → not a loose target
     }
   });
+}
+
+// The store paths that are symlinks, with what they resolve to. A chmod is never
+// applied through a symlink (see @akasecurity/persistence's chmodBestEffort), so
+// a symlinked store path keeps whatever mode its target already had — and the
+// store, including the prompt corpus in aka.db, is written inside that target.
+// Neither fact is visible from the outside, and the runtime paths stay silent to
+// keep hooks fail-open and quiet, so `aka init` is where both are named.
+// POSIX-only, for the same reason looseStorePaths is.
+export function symlinkedStorePaths(home: string): { path: string; target: string }[] {
+  if (process.platform === 'win32') return [];
+  return storeTargets(home).flatMap((path) => {
+    try {
+      if (!lstatSync(path).isSymbolicLink()) return [];
+      return [{ path, target: linkTarget(path) }];
+    } catch {
+      return []; // absent → not a symlinked target
+    }
+  });
+}
+
+// Where a link points, preferring the fully resolved absolute path — that is the
+// directory the store actually lands in, which is what the warning is about. A
+// link resolving nowhere has no real path, so fall back to its literal contents
+// rather than dropping the report.
+function linkTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return readlinkSync(path);
+  }
 }
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
@@ -105,6 +151,7 @@ export async function runInit(argv: string[]): Promise<void> {
   }
 
   const loose = looseStorePaths(home);
+  const symlinked = symlinkedStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
       `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
@@ -115,7 +162,13 @@ export async function runInit(argv: string[]): Promise<void> {
         : '') +
       (loose.length > 0
         ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
-        : ''),
+        : '') +
+      symlinked
+        .map(
+          ({ path, target }) =>
+            `  ⚠ ${path} is a symlink to ${target} — permissions are never changed through a symlink, so the store keeps that target's own, and its contents (including the prompt corpus in aka.db) are written there (see the "Data at rest" note in SECURITY.md)\n`,
+        )
+        .join(''),
   );
 
   await offerPluginInstall(values.yes === true);

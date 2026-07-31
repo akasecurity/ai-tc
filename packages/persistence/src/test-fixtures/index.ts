@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { withTransaction } from '../internal/transactions.ts';
 import { seedSampleAuditEvents } from './sample-audit-events.ts';
 import { seedSampleInventory } from './sample-inventory.ts';
 import { seedSampleShares } from './sample-shares.ts';
@@ -15,9 +16,18 @@ import { seedSampleShares } from './sample-shares.ts';
  * gating — tests own their stores and seed exactly once.
  */
 export function seedSampleFixtures(db: DatabaseSync): void {
-  seedSampleShares(db);
-  seedSampleInventory(db);
-  seedSampleAuditEvents(db);
+  // One transaction, not one per row. In autocommit each insert commits on its
+  // own, and on a file-backed store every commit is a separate flush — the cost
+  // the Windows CI runner charges orders of magnitude more for than a local
+  // disk does, which is enough to put a seeding test near the per-test timeout.
+  // withTransaction owns the BEGIN/COMMIT and the guarded ROLLBACK, and drops
+  // to a SAVEPOINT when the caller already holds a transaction, so a failed
+  // seed rethrows the real error rather than a ROLLBACK-on-an-aborted-tx one.
+  withTransaction(db, () => {
+    seedSampleShares(db);
+    seedSampleInventory(db);
+    seedSampleAuditEvents(db);
+  });
 }
 
 export { seedSampleAuditEvents, seedSampleInventory, seedSampleShares };

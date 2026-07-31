@@ -143,6 +143,29 @@ describe('loadConfig', () => {
     expect(lstatSync(join(dir, 'settings.json')).isSymbolicLink()).toBe(true);
     expect(readFileSync(victim, 'utf8')).toBe('SECRET');
   });
+
+  it('does not chmod THROUGH a symlinked base ~/.aka on load, and still fails open', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // loadConfig re-tightens the base on EVERY hook, not just at `aka init`, so a
+    // symlink planted at ~/.aka would otherwise lock a victim-owned shared
+    // directory to 0700 on the next tool call. The hook must still get its config
+    // back — a hostile home can never break a session.
+    const victim = join(base, 'victim-shared');
+    mkdirSync(victim, { recursive: true });
+    chmodSync(victim, 0o755);
+    const link = join(base, '.aka');
+    symlinkSync(victim, link);
+
+    const cfg = loadConfig(link);
+
+    expect(statSync(victim).mode & 0o777).toBe(0o755); // victim NOT tightened through the link
+    expect(lstatSync(link).isSymbolicLink()).toBe(true); // link left as-is
+    expect(cfg.onboarded).toBe(false); // fail-open: unonboarded defaults, no throw
+    expect(cfg.settings.runMode).toBe('standalone');
+  });
 });
 
 describe('applyOnboarding', () => {

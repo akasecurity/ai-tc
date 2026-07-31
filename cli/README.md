@@ -9,6 +9,8 @@ The `aka` command-line tool for **[AI Traffic Control](https://github.com/akasec
 
 Everything runs on your machine. There's no account, no backend, and nothing leaves your computer to be scanned.
 
+The local store keeps your prompts and tool calls verbatim apart from the spans a rule masks, and file permissions — not encryption — are all that protect it. See [Data at rest](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md#data-at-rest) for which files it spans and what holds on Windows.
+
 ## Install
 
 ```bash

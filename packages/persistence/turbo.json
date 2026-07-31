@@ -1,0 +1,16 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "//": "at-rest-docs.test.ts asserts SECURITY.md and the three shipped READMEs against this package's own exports — the modes, the layout, every filename in the store. Those files sit in no package, so the default inputs (this directory plus globalDependencies) do not hash them: editing SECURITY.md alone would leave this task's hash untouched and turbo would replay a cached green, which is exactly the edit the guard exists to catch. CI happens to re-run it anyway — the No-network job restores no turbo cache and passes --force — but that is another job's flag, not a property of this task, and a local `pnpm test` replays the stale pass. Measured, not assumed: `turbo run test --filter=@akasecurity/persistence --dry=json` lists every input, and none of these four appeared before they were named here.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/SECURITY.md",
+        "$TURBO_ROOT$/README.md",
+        "$TURBO_ROOT$/cli/README.md",
+        "$TURBO_ROOT$/plugins/claude-code/README.md"
+      ]
+    }
+  }
+}

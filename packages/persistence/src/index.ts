@@ -6,6 +6,7 @@ export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';
 export {
+  EXCEPTION_KEY_FILENAME,
   fingerprintValue,
   isCurrentKeyVersion,
   keyStateOf,
@@ -102,7 +103,7 @@ export {
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
-export { applyOnboarding, readWorkspaceSettings } from './settings.ts';
+export { applyOnboarding, readWorkspaceSettings, SETTINGS_FILENAME } from './settings.ts';
 export {
   base32Decode,
   base32Encode,
@@ -117,6 +118,7 @@ export {
   createKeyProvider,
   FileKeyProvider,
   KeychainKeyProvider,
+  VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from './vault/key-provider.ts';
 export type {

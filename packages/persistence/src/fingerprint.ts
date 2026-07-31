@@ -25,11 +25,11 @@ export interface FingerprintKey {
   material: Buffer;
 }
 
-const KEY_FILENAME = 'exception.key';
+export const EXCEPTION_KEY_FILENAME = 'exception.key';
 const KEY_MATERIAL_BYTES = 32;
 
 function keyFilePath(dataDir: string): string {
-  return join(dataDir, KEY_FILENAME);
+  return join(dataDir, EXCEPTION_KEY_FILENAME);
 }
 
 // Strict parse of the on-disk shape `{ version, material: base64 }`. Throws on

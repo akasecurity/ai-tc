@@ -1,20 +1,28 @@
 // @ts-check
 //
-// Lints the repo-root sources no workspace package owns: the vitest no-network
-// guard and the CI egress probe. `pnpm lint` is `turbo run lint`, which drives
-// per-package scripts, and the repo root is not a workspace package — so these
-// two files were reachable by no ESLint pass at all. Driven by `pnpm lint:root`,
-// which CI runs as its own step, in the same spirit as the per-package
-// `eslint.scripts.config.mjs` second pass.
+// The full-ruleset half of `pnpm lint:root`, which lints the sources no
+// per-package `lint` pass reaches. `pnpm lint` is `turbo run lint`, which drives
+// per-package scripts and never sees the repo root, so lint:root runs as its own
+// CI step. This config covers the repo-root files no workspace package owns that
+// ARE written for the full ruleset: the vitest no-network guard, the CI egress
+// probe, and the repo-root `*.config.*` (this file and commitlint's). The plain-JS
+// enforcement suites under `packages/eslint-config/test` — which the eslint-config
+// package's deliberate no-op `lint` leaves behind every pass — get network-only
+// coverage from the sibling `eslint.root.guard.config.mjs`, the same split the
+// per-package `eslint.scripts.config.mjs` second pass makes for non-compiled JS.
 //
-// Both files import banned network modules on purpose: opening a socket is what
-// they are for. The opt-outs below are what let the full ruleset — type-aware
-// rules, import sorting, no-console, n/no-process-env — cover them at all,
-// rather than the files sitting outside every pass. Widening an opt-out here
-// does NOT quietly widen what is allowed: no-network-runtime.test.js lints both
-// files with the raw `networkGuard` (no `allow`) and fails if either trips one
-// more ban than it does today, so the exception stays measured.
-import { base, noNetworkImports, noNetworkSyntax } from '@akasecurity/eslint-config';
+// The guard and probe import banned network modules on purpose: opening a socket
+// is what they are for. The file-scoped opt-outs below are what let the full
+// ruleset cover them at all rather than leave them outside every pass. Widening an
+// opt-out here does NOT quietly widen what is allowed: no-network-runtime.test.js
+// re-lints each opted-out file with the raw `networkGuard` (no `allow`) and fails
+// if any trips one more ban than it does today, so every exception stays measured.
+import {
+  base,
+  noNetworkImports,
+  noNetworkSyntax,
+  rootConfigFiles,
+} from '@akasecurity/eslint-config';
 
 /** The three the vitest guard patches. Anything else is still banned there. */
 const GUARD_MODULES = ['node:net', 'node:dgram', 'node:dns'];
@@ -52,4 +60,13 @@ export default [
       'no-restricted-syntax': noNetworkSyntax({ allow: PROBE_MODULES }),
     },
   },
+  // The two root ESLint configs and commitlint's are themselves repo-root sources
+  // no package owns; lint:root names `*.config.*` as a target and it matches all
+  // three. rootConfigFiles lints them with the type-aware rules off — the network
+  // ban is syntactic and still fires. The two ESLint configs are also type-checked
+  // by tsconfig.root.json (they carry `// @ts-check`), so rootConfigFiles' "sits
+  // outside the tsconfig include" rationale now holds only for commitlint's, which
+  // is linted here and type-checked nowhere. Last-wins: this must follow the block
+  // that turns the project on.
+  ...rootConfigFiles,
 ];

@@ -31,20 +31,34 @@ import { runPlugins } from './plugins.ts';
 // in @akasecurity/schema so the CLI and plugin present the same name and tagline.
 export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 
-// Every path the store spans and holds to an owner-only mode: the base, its
-// layout directories, and the two files that exist once init has run. Not all of
-// them are created by `aka init` — keys/ is minted lazily by the vault key
-// provider, on first use — so an absent path is the normal case and each caller
-// filters it out rather than treating it as a finding.
+// Every path the store spans and holds to an owner-only mode, mapped to what
+// actually lands there. Not all of them are created by `aka init` — keys/ is
+// minted lazily by the vault key provider, on first use — so an absent path is
+// the normal case and each caller filters it out rather than treating it as a
+// finding.
+//
+// The description is load-bearing, not decoration: the symlink warning is
+// emitted once per path, and one generic sentence is wrong for most of them.
+// `aka.db` only ever lands under data/, so telling a reader their prompt corpus
+// went to ~/.aka/keys sends them to the wrong directory to check.
+const STORE_DB = 'the store database (including the prompt corpus)';
+const STORE_SETTINGS = 'your settings file';
+function storeContents(home: string): Map<string, string> {
+  return new Map([
+    [home, 'the store (including the prompt corpus in aka.db)'],
+    [settingsDir(home), STORE_SETTINGS],
+    [dataDir(home), STORE_DB],
+    [keysDir(home), 'the vault key'],
+    [join(settingsDir(home), 'settings.json'), STORE_SETTINGS],
+    [dbPath(home), STORE_DB],
+  ]);
+}
+
+// The same layout as a plain list, for the callers that only need the paths.
+// Derived from the map rather than kept beside it, so a path can never appear in
+// one and not the other.
 function storeTargets(home: string): string[] {
-  return [
-    home,
-    settingsDir(home),
-    dataDir(home),
-    keysDir(home),
-    join(settingsDir(home), 'settings.json'),
-    dbPath(home),
-  ];
+  return [...storeContents(home).keys()];
 }
 
 // The store paths whose owner-only mode could not be applied. `aka init` tightens
@@ -84,15 +98,35 @@ export function looseStorePaths(home: string): string[] {
 export function symlinkedStorePaths(
   home: string,
   platform: NodeJS.Platform = process.platform,
-): { path: string; target: string; mode?: number | undefined }[] {
-  return storeTargets(home).flatMap((path) => {
+): SymlinkedStorePath[] {
+  return [...storeContents(home)].flatMap(([path, holds]) => {
     try {
       if (!lstatSync(path).isSymbolicLink()) return [];
-      return [{ path, target: linkTarget(path), mode: targetMode(path, platform) }];
+      return [
+        {
+          path,
+          target: linkTarget(path),
+          holds,
+          // existsSync follows the link, so a target that is gone reads as
+          // absent here while lstat above still sees the link itself.
+          missing: !existsSync(path),
+          mode: targetMode(path, platform),
+        },
+      ];
     } catch {
       return []; // absent → not a symlinked target
     }
   });
+}
+
+// One symlinked store path: where it points, what lands there, whether the
+// target resolves, and the mode the store inherits from it.
+interface SymlinkedStorePath {
+  path: string;
+  target: string;
+  holds: string;
+  missing: boolean;
+  mode?: number | undefined;
 }
 
 // Where a link points, preferring the fully resolved absolute path — that is the
@@ -124,32 +158,41 @@ function targetMode(path: string, platform: NodeJS.Platform): number | undefined
   }
 }
 
-// The `aka init` warnings for the symlinked store paths. Names the inherited mode
-// and says plainly when it is not owner-only — that is the sentence a reader has
-// to act on, and the loose-path warning can no longer carry it.
+// The `aka init` warnings for the symlinked store paths. Each names what really
+// lands at that path, and the mode it inherits — saying plainly when that is not
+// owner-only, which is the sentence a reader has to act on and the one the
+// loose-path warning can no longer carry.
 //
-// On Windows the permissions clause is dropped rather than reworded: no mode is
-// applied there at all (see SECURITY.md), so "the store keeps that target's own"
-// would describe a control that does not exist. The redirection stands on both.
+// Three shapes, because one sentence cannot be true of all of them:
+//   - a resolving link inherits a permission, so the mode is the story;
+//   - on Windows no mode is ever applied (see SECURITY.md), so claiming the
+//     target's own is kept would describe a control that does not exist there —
+//     the clause is dropped rather than reworded, and the redirection stands;
+//   - a link resolving NOWHERE inherits nothing and has received nothing. Saying
+//     it "keeps that target's own permissions" is false twice over: there is no
+//     target, and the write has not happened. What follows is a failure the next
+//     time something tries to create through it — for keys/, the vault key mint.
 export function symlinkWarnings(
-  paths: { path: string; target: string; mode?: number | undefined }[],
+  paths: SymlinkedStorePath[],
   platform: NodeJS.Platform = process.platform,
 ): string {
+  const seeAlso = '(see the "Data at rest" note in SECURITY.md)';
   return paths
-    .map(({ path, target, mode }) => {
+    .map(({ path, target, holds, missing, mode }) => {
+      if (missing) {
+        return (
+          `  ⚠ ${path} is a symlink to ${target}, which does not exist — ${holds} ` +
+          `cannot be written there until you create that target or remove the link ${seeAlso}\n`
+        );
+      }
       const inherited =
         mode === undefined
           ? ''
           : ` (currently ${formatMode(mode)}${(mode & 0o077) !== 0 ? ', NOT owner-only' : ''})`;
       const kept =
-        platform === 'win32'
-          ? ''
-          : "permissions are never changed through a symlink, so the store keeps that target's own, and ";
-      return (
-        `  ⚠ ${path} is a symlink to ${target}${inherited} — ${kept}its contents ` +
-        `(including the prompt corpus in aka.db) are written there ` +
-        `(see the "Data at rest" note in SECURITY.md)\n`
-      );
+        platform === 'win32' ? '' : 'permissions are never changed through a symlink, so ';
+      const under = platform === 'win32' ? '' : " under that target's own permissions";
+      return `  ⚠ ${path} is a symlink to ${target}${inherited} — ${kept}${holds} is written there${under} ${seeAlso}\n`;
     })
     .join('');
 }

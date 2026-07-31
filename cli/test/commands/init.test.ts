@@ -225,9 +225,27 @@ describe('symlinkedStorePaths', () => {
     // Reported in store-layout order: settings/, data/, keys/ — each with the
     // mode the store inherits from that target, which is what init warns about.
     expect(symlinkedStorePaths(home)).toEqual([
-      { path: settingsDir(home), target: realpathSync(elsewhereSettings), mode: 0o755 },
-      { path: dataDir(home), target: realpathSync(elsewhereData), mode: 0o777 },
-      { path: join(home, 'keys'), target: realpathSync(elsewhereKeys), mode: 0o700 },
+      {
+        path: settingsDir(home),
+        target: realpathSync(elsewhereSettings),
+        holds: 'your settings file',
+        missing: false,
+        mode: 0o755,
+      },
+      {
+        path: dataDir(home),
+        target: realpathSync(elsewhereData),
+        holds: 'the store database (including the prompt corpus)',
+        missing: false,
+        mode: 0o777,
+      },
+      {
+        path: join(home, 'keys'),
+        target: realpathSync(elsewhereKeys),
+        holds: 'the vault key',
+        missing: false,
+        mode: 0o700,
+      },
     ]);
   });
 
@@ -246,7 +264,13 @@ describe('symlinkedStorePaths', () => {
     symlinkSync(missing, join(home, 'keys'));
 
     expect(symlinkedStorePaths(home)).toEqual([
-      { path: join(home, 'keys'), target: missing, mode: undefined },
+      {
+        path: join(home, 'keys'),
+        target: missing,
+        holds: 'the vault key',
+        missing: true,
+        mode: undefined,
+      },
     ]);
   });
 
@@ -263,7 +287,13 @@ describe('symlinkedStorePaths', () => {
     symlinkSync('../unmounted-volume', join(home, 'keys'));
 
     expect(symlinkedStorePaths(home)).toEqual([
-      { path: join(home, 'keys'), target: join(dir, 'unmounted-volume'), mode: undefined },
+      {
+        path: join(home, 'keys'),
+        target: join(dir, 'unmounted-volume'),
+        holds: 'the vault key',
+        missing: true,
+        mode: undefined,
+      },
     ]);
   });
 });
@@ -275,12 +305,18 @@ describe('symlinkWarnings', () => {
   // elevation to create. Driven through the injected platform so both copies are
   // pinned from any host; the DEFAULT binding is pinned by the runInit cases
   // above, which read the real process.platform.
-  const link = { path: '/home/u/.aka', target: '/srv/shared', mode: 0o755 };
+  const link = {
+    path: '/home/u/.aka',
+    target: '/srv/shared',
+    holds: 'the store (including the prompt corpus in aka.db)',
+    missing: false,
+    mode: 0o755,
+  };
 
   it('states the inherited permission on POSIX', () => {
     const out = symlinkWarnings([link], 'linux');
     expect(out).toContain('(currently 0755, NOT owner-only)');
-    expect(out).toContain("the store keeps that target's own");
+    expect(out).toContain("under that target's own permissions");
     expect(out).toContain('prompt corpus');
   });
 
@@ -288,10 +324,54 @@ describe('symlinkWarnings', () => {
     const out = symlinkWarnings([{ ...link, mode: undefined }], 'win32');
     expect(out).toContain('/home/u/.aka is a symlink to /srv/shared');
     expect(out).toContain('prompt corpus');
-    // No mode is applied on Windows at all, so claiming the store "keeps that
-    // target's own" would describe a control that does not exist there.
-    expect(out).not.toContain("the store keeps that target's own");
+    // No mode is applied on Windows at all, so claiming the target's own is
+    // kept would describe a control that does not exist there.
+    expect(out).not.toContain("under that target's own permissions");
     expect(out).not.toContain('currently');
+  });
+
+  // P1-a: the body is emitted once per store path, and aka.db only ever lands
+  // under data/. A single generic sentence claimed the prompt corpus goes to
+  // every one of them, which would send a reader to the wrong directory.
+  it('names what actually lands at each path, not the corpus everywhere', () => {
+    const out = symlinkWarnings(
+      [
+        { ...link, path: '/home/u/.aka/keys', holds: 'the vault key' },
+        { ...link, path: '/home/u/.aka/settings', holds: 'your settings file' },
+      ],
+      'linux',
+    );
+
+    expect(out).toContain('/home/u/.aka/keys is a symlink to /srv/shared');
+    expect(out).toContain('the vault key is written there');
+    expect(out).toContain('your settings file is written there');
+    // Neither path ever receives aka.db, so neither line may claim it does.
+    expect(out).not.toContain('prompt corpus');
+    expect(out).not.toContain('aka.db');
+  });
+
+  // P1-b: a link resolving nowhere inherits nothing and has received nothing.
+  // Claiming it keeps the target's permissions is false twice over.
+  it('says a link resolving nowhere has no target rather than inheriting one', () => {
+    const out = symlinkWarnings(
+      [
+        {
+          path: '/home/u/.aka/keys',
+          target: '/mnt/unmounted',
+          holds: 'the vault key',
+          missing: true,
+          mode: undefined,
+        },
+      ],
+      'linux',
+    );
+
+    expect(out).toContain('is a symlink to /mnt/unmounted, which does not exist');
+    expect(out).toContain('the vault key cannot be written there');
+    expect(out).toContain('create that target or remove the link');
+    // The two claims that are wrong for a target that is not there.
+    expect(out).not.toContain("under that target's own permissions");
+    expect(out).not.toContain('is written there');
   });
 
   it('reports no mode on Windows even where one is readable', (ctx) => {
@@ -308,10 +388,22 @@ describe('symlinkWarnings', () => {
     symlinkSync(victim, home);
 
     expect(symlinkedStorePaths(home, 'win32')).toEqual([
-      { path: home, target: realpathSync(victim), mode: undefined },
+      {
+        path: home,
+        target: realpathSync(victim),
+        holds: 'the store (including the prompt corpus in aka.db)',
+        missing: false,
+        mode: undefined,
+      },
     ]);
     expect(symlinkedStorePaths(home, 'linux')).toEqual([
-      { path: home, target: realpathSync(victim), mode: 0o755 },
+      {
+        path: home,
+        target: realpathSync(victim),
+        holds: 'the store (including the prompt corpus in aka.db)',
+        missing: false,
+        mode: 0o755,
+      },
     ]);
   });
 });

@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 
@@ -68,19 +68,22 @@ export function looseStorePaths(home: string): string[] {
   });
 }
 
-// The store paths that are symlinks, with what they resolve to. A chmod is never
-// applied through a symlink (see @akasecurity/persistence's chmodBestEffort), so
-// a symlinked store path keeps whatever mode its target already had — and the
-// store, including the prompt corpus in aka.db, is written inside that target.
-// Neither fact is visible from the outside, and the runtime paths stay silent to
-// keep hooks fail-open and quiet, so `aka init` is where both are named.
+// The store paths that are symlinks, with what they resolve to and the mode that
+// target carries right now. A chmod is never applied through a symlink (see
+// @akasecurity/persistence's chmodBestEffort), so a symlinked store path keeps
+// whatever mode its target already had — and the store, including the prompt
+// corpus in aka.db, is written inside that target. Neither fact is visible from
+// the outside, and the runtime paths stay silent to keep hooks fail-open and
+// quiet, so `aka init` is where both are named.
 // POSIX-only, for the same reason looseStorePaths is.
-export function symlinkedStorePaths(home: string): { path: string; target: string }[] {
+export function symlinkedStorePaths(
+  home: string,
+): { path: string; target: string; mode?: number }[] {
   if (process.platform === 'win32') return [];
   return storeTargets(home).flatMap((path) => {
     try {
       if (!lstatSync(path).isSymbolicLink()) return [];
-      return [{ path, target: linkTarget(path) }];
+      return [{ path, target: linkTarget(path), mode: targetMode(path) }];
     } catch {
       return []; // absent → not a symlinked target
     }
@@ -89,14 +92,49 @@ export function symlinkedStorePaths(home: string): { path: string; target: strin
 
 // Where a link points, preferring the fully resolved absolute path — that is the
 // directory the store actually lands in, which is what the warning is about. A
-// link resolving nowhere has no real path, so fall back to its literal contents
-// rather than dropping the report.
+// link resolving nowhere has no real path, so fall back to its literal contents,
+// resolved against the link's own directory: readlink returns whatever was
+// stored, and a relative target on its own names nothing a reader can act on.
 function linkTarget(path: string): string {
   try {
     return realpathSync(path);
   } catch {
-    return readlinkSync(path);
+    return resolve(dirname(path), readlinkSync(path));
   }
+}
+
+// The mode the link's target carries. This is the permission the store actually
+// inherits, and it is the fact looseStorePaths can no longer report — it skips a
+// symlinked path, because the chmod there was declined rather than rejected, and
+// without this the one actionable half of the warning ("that target is readable
+// by everyone") would go unsaid. Undefined when there is nothing to stat, so a
+// link resolving nowhere reads as unknown rather than as owner-only.
+function targetMode(path: string): number | undefined {
+  try {
+    return statSync(path).mode & 0o777; // statSync follows the link, which is the point
+  } catch {
+    return undefined;
+  }
+}
+
+// The `aka init` warning for one symlinked store path. Names the inherited mode,
+// and says plainly when it is not owner-only — that is the sentence a reader has
+// to act on, and the loose-path warning can no longer carry it.
+function symlinkWarning({ path, target, mode }: { path: string; target: string; mode?: number }) {
+  const inherited =
+    mode === undefined
+      ? ''
+      : ` (currently ${formatMode(mode)}${(mode & 0o077) !== 0 ? ', NOT owner-only' : ''})`;
+  return (
+    `  ⚠ ${path} is a symlink to ${target}${inherited} — permissions are never changed ` +
+    `through a symlink, so the store keeps that target's own, and its contents (including ` +
+    `the prompt corpus in aka.db) are written there ` +
+    `(see the "Data at rest" note in SECURITY.md)\n`
+  );
+}
+
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, '0')}`;
 }
 
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
@@ -166,12 +204,7 @@ export async function runInit(argv: string[]): Promise<void> {
       (loose.length > 0
         ? `  ⚠ could not enforce owner-only permissions on ${loose.join(', ')} — this filesystem rejects chmod, so the store has no at-rest protection here (see the "Data at rest" note in SECURITY.md)\n`
         : '') +
-      symlinked
-        .map(
-          ({ path, target }) =>
-            `  ⚠ ${path} is a symlink to ${target} — permissions are never changed through a symlink, so the store keeps that target's own, and its contents (including the prompt corpus in aka.db) are written there (see the "Data at rest" note in SECURITY.md)\n`,
-        )
-        .join(''),
+      symlinked.map(symlinkWarning).join(''),
   );
 
   await offerPluginInstall(values.yes === true);

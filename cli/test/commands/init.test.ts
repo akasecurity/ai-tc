@@ -208,31 +208,58 @@ describe('symlinkedStorePaths', () => {
     const elsewhereData = join(dir, 'elsewhere-data');
     const elsewhereKeys = join(dir, 'elsewhere-keys');
     for (const victim of [elsewhereSettings, elsewhereData, elsewhereKeys]) mkdirSync(victim);
+    // Distinct modes, none of them 0700: the inherited permission is reported
+    // per path, so a shared literal would not show it is read from the target.
+    chmodSync(elsewhereSettings, 0o755);
+    chmodSync(elsewhereData, 0o777);
+    chmodSync(elsewhereKeys, 0o700);
     symlinkSync(elsewhereSettings, settingsDir(home));
     symlinkSync(elsewhereData, dataDir(home));
     symlinkSync(elsewhereKeys, join(home, 'keys'));
 
-    // Reported in store-layout order: settings/, data/, keys/.
+    // Reported in store-layout order: settings/, data/, keys/ — each with the
+    // mode the store inherits from that target, which is what init warns about.
     expect(symlinkedStorePaths(home)).toEqual([
-      { path: settingsDir(home), target: realpathSync(elsewhereSettings) },
-      { path: dataDir(home), target: realpathSync(elsewhereData) },
-      { path: join(home, 'keys'), target: realpathSync(elsewhereKeys) },
+      { path: settingsDir(home), target: realpathSync(elsewhereSettings), mode: 0o755 },
+      { path: dataDir(home), target: realpathSync(elsewhereData), mode: 0o777 },
+      { path: join(home, 'keys'), target: realpathSync(elsewhereKeys), mode: 0o700 },
     ]);
   });
 
-  it('still reports a link that resolves nowhere, naming its literal target', (ctx) => {
+  it('still reports a link that resolves nowhere, naming an absolute target', (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('unprivileged symlink creation is not available on Windows');
       return;
     }
     // realpath has nothing to resolve on a dangling link; falling through to
-    // readlink keeps the report rather than dropping it as absent.
+    // readlink keeps the report rather than dropping it as absent. There is
+    // nothing to stat either, so the mode reads as unknown rather than as
+    // owner-only — an absent mode must not be reported as a safe one.
     const home = join(dir, 'home3');
     mkdirSync(home);
     const missing = join(dir, 'unmounted-volume');
     symlinkSync(missing, join(home, 'keys'));
 
-    expect(symlinkedStorePaths(home)).toEqual([{ path: join(home, 'keys'), target: missing }]);
+    expect(symlinkedStorePaths(home)).toEqual([
+      { path: join(home, 'keys'), target: missing, mode: undefined },
+    ]);
+  });
+
+  it('resolves a RELATIVE dangling target against the link, not the cwd', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // readlink returns whatever was stored, so a relative link reports a path
+    // that names nothing on its own — the reader cannot tell where the corpus
+    // would land. Resolve it against the link's own directory.
+    const home = join(dir, 'home4');
+    mkdirSync(home);
+    symlinkSync('../unmounted-volume', join(home, 'keys'));
+
+    expect(symlinkedStorePaths(home)).toEqual([
+      { path: join(home, 'keys'), target: join(dir, 'unmounted-volume'), mode: undefined },
+    ]);
   });
 });
 
@@ -263,6 +290,52 @@ describe('runInit on a symlinked home', () => {
     expect(out).toContain('prompt corpus');
     // The wrong diagnosis must not also fire: nothing here rejected a chmod.
     expect(out).not.toContain('could not enforce owner-only permissions');
+  });
+
+  it('names the mode the store inherits, and says when it is NOT owner-only', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // looseStorePaths skips a symlinked path (the chmod was declined, not
+    // rejected), so this warning is the ONLY place the store's real at-rest
+    // permission is stated. Without the mode a reader is told the target's
+    // permissions were kept, but never that they are readable by everyone —
+    // which is the whole point of the warning.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const victim = join(dir, 'victim-shared');
+    mkdirSync(victim);
+    chmodSync(victim, 0o755);
+    const home = join(dir, 'linkhome');
+    symlinkSync(victim, home);
+
+    await runInit(['--home', home]);
+
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('(currently 0755, NOT owner-only)');
+  });
+
+  it('does not cry wolf when the symlink target is already owner-only', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // The other half of the same property: a deliberately symlinked home that is
+    // already 0700 still gets the redirection warning (the corpus does land
+    // elsewhere) but must not be labelled loose, or the label stops meaning
+    // anything.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const victim = join(dir, 'victim-private');
+    mkdirSync(victim);
+    chmodSync(victim, 0o700);
+    const home = join(dir, 'linkhome');
+    symlinkSync(victim, home);
+
+    await runInit(['--home', home]);
+
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('(currently 0700)');
+    expect(out).not.toContain('NOT owner-only');
   });
 
   it('still initializes the store through the link (surfaced, not refused)', async (ctx) => {

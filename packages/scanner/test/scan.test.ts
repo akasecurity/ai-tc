@@ -13,6 +13,7 @@ const {
   close,
   knownContentHashes,
   rulesetFingerprint,
+  scanIsolationDegraded,
   scanLedger,
   recordScanned,
   openAtRestKeysForPath,
@@ -24,6 +25,7 @@ const {
   close: vi.fn(),
   knownContentHashes: vi.fn(),
   rulesetFingerprint: vi.fn(),
+  scanIsolationDegraded: vi.fn(() => false),
   scanLedger: vi.fn(),
   recordScanned: vi.fn(),
   openAtRestKeysForPath: vi.fn(),
@@ -46,7 +48,7 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
 
 vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint })),
+  createPluginRuntime: vi.fn(() => ({ capture, close, rulesetFingerprint, scanIsolationDegraded })),
 }));
 
 // dataSharesInPlace mirrors the schema default, so this suite exercises the
@@ -87,6 +89,8 @@ beforeEach(() => {
   // events, so the real gateway would not remember them across runs.
   knownContentHashes.mockImplementation(() => Promise.resolve(new Set<string>()));
   rulesetFingerprint.mockResolvedValue('ruleset-v1');
+  // The healthy default: isolation intact, so the ledger advances as usual.
+  scanIsolationDegraded.mockReturnValue(false);
   scanLedger.mockResolvedValue(new Map());
   recordScanned.mockResolvedValue(undefined);
   recordProjectEgress.mockResolvedValue({
@@ -160,6 +164,25 @@ describe('scanWorktree — scan ledger', () => {
     expect(keyV42).toMatch(/^[0-9a-f]{64}$/);
     expect(keyV42).not.toBe('ruleset-v42');
     expect(keyV43).not.toBe(keyV42);
+  });
+
+  it('writes no ledger rows at all when the scan lost its isolated worker', async () => {
+    // The ledger key was derived BEFORE the walk, from the full ruleset. If a
+    // scan lost its worker partway through, everything after that point ran
+    // without the pulled/custom rules — so writing these rows would file a
+    // partial scan under the full ruleset's hash, and the next run would skip
+    // exactly the files the dropped rules never saw. Skipping the batch costs a
+    // re-read; writing it hides the gap forever.
+    write('src/a.ts', 'const a = 1;');
+    write('src/b.ts', 'const b = 2;');
+    scanIsolationDegraded.mockReturnValue(true);
+
+    const summary = await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(recordScanned).not.toHaveBeenCalled();
+    // The files were still scanned and still reported — only the "you can skip
+    // these next time" claim is withheld.
+    expect(summary.scanned).toBe(2);
   });
 
   it('records a ledger entry for every processed file — including clean ones', async () => {

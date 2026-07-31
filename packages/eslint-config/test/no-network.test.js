@@ -381,6 +381,13 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 //
 // The set is asserted EXACTLY, not as a superset: a guard that only forbids
 // removals would let a third site in.
+// Budget for the one-off config load below. Deliberately generous: it bounds a
+// hang, it is not a performance assertion. The load measured ~4.7s on a CI
+// runner under full workspace parallelism against ~0.25s on a developer
+// machine, so the headroom absorbs a slower or more contended one without
+// loosening the per-test default that guards every other test in this file.
+const CONFIG_LOAD_TIMEOUT_MS = 60_000;
+
 const DOCUMENTED_OPT_OUTS = {
   'cli/eslint.config.mjs': ['node:net'],
   'cli/eslint.scripts.config.mjs': ['node:http'],
@@ -429,20 +436,32 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     }
   })();
 
-  /**
-   * file → the config's default export. Loaded once here: each import pulls the
-   * full typescript-eslint graph, so paying it per test is marginal against the
-   * 5s per-test timeout on a cold-cache CI runner. The hook carries its own
-   * generous timeout instead.
-   */
-  const loadedConfigs = new Map();
+  /** Each tracked config's module, resolved once below. */
+  const configModules = new Map();
+  /** Load failures, kept per file so a broken config names itself. */
+  const loadFailures = new Map();
 
+  // Importing every flat config pulls the whole typescript-eslint stack and is
+  // filesystem- and resolution-bound, so on a contended runner it costs many
+  // times what it does on a developer machine — past a default per-test timeout.
+  // Resolve once here under the hook's own budget; the tests below are then fast
+  // assertions on the cached result and keep vitest's tight per-test default,
+  // which still guards them. Mirrors effective-config.test.js's
+  // RESOLVE_TIMEOUT_MS, for the same reason.
+  //
+  // Settled individually rather than through Promise.all's fail-fast: one broken
+  // config should name itself instead of hiding the other 17 behind whichever
+  // happened to reject first.
   beforeAll(async () => {
-    const modules = await Promise.all(
+    const results = await Promise.allSettled(
       configs.map((file) => import(pathToFileURL(join(REPO_ROOT, file)).href)),
     );
-    configs.forEach((file, i) => loadedConfigs.set(file, modules[i].default));
-  }, 60_000);
+    results.forEach((result, i) => {
+      const file = configs[i];
+      if (result.status === 'fulfilled') configModules.set(file, result.value);
+      else loadFailures.set(file, result.reason);
+    });
+  }, CONFIG_LOAD_TIMEOUT_MS);
 
   // A guard that found no configs would pass every assertion below vacuously.
   it('found the workspace ESLint configs to audit', () => {
@@ -450,13 +469,20 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     for (const documented of Object.keys(DOCUMENTED_OPT_OUTS)) {
       expect(configs).toContain(documented);
     }
+    // A config that failed to load contributes nothing to `found`, so an
+    // undocumented opt-out inside it would be invisible below — the same
+    // vacuous pass this guard exists to prevent. Name every failure.
+    expect(
+      [...loadFailures].map(([file, cause]) => `${file}: ${String(cause)}`),
+      'workspace ESLint configs failed to load, so the audit below is partial',
+    ).toEqual([]);
   });
 
   it('has exactly the opt-out sites CLAUDE.md §4 documents, each file-scoped', () => {
     /** @type {Record<string, string[]>} */
     const found = {};
-    for (const file of configs) {
-      for (const entry of loadedConfigs.get(file)) {
+    for (const [file, mod] of configModules) {
+      for (const entry of mod.default) {
         const permitted = networkSpecifiersPermittedBy(entry.rules);
         if (permitted.length === 0) continue;
         // §4: "Both are file-scoped, never package-wide". Asserted on the entry
@@ -475,9 +501,11 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   // esquery selector, whose escaping is an implementation detail.
   it('permits its specifier in both the static and the dynamic form', () => {
     for (const [file, specifiers] of Object.entries(DOCUMENTED_OPT_OUTS)) {
-      const config = loadedConfigs.get(file);
-      expect(config, `${file}: config was not among the tracked workspace configs`).toBeDefined();
-      const optOut = config.find((entry) => networkSpecifiersPermittedBy(entry.rules).length > 0);
+      const mod = configModules.get(file);
+      expect(mod, `${file}: config was not loaded`).toBeDefined();
+      const optOut = mod.default.find(
+        (entry) => networkSpecifiersPermittedBy(entry.rules).length > 0,
+      );
       expect(optOut, `${file}: no opt-out entry found`).toBeDefined();
       for (const specifier of specifiers) {
         const rules = {

@@ -106,6 +106,30 @@ tarball and exercises it under a block. Note also that the three gates scope to 
 **product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
 runs in its own workflow rather than inside the `No-network` job's namespace.
 
+The plugin also starts a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
+
+### 5. A scan that cannot be interrupted runs off the main thread
+
+`scan()` is synchronous and a regex has no upper bound, so a catastrophic pattern is not a stall but a **detection bypass**: the hook blows its 10 s harness timeout, and a timed-out hook fails open, letting the whole tool call through unscanned. Nothing on the calling thread can interrupt a running `exec`; the fail-open `catch` only catches throws.
+
+Two gates sit in front of that, and **both run on a worker thread**, because both are unbounded runs of an untrusted pattern:
+
+- **The timing pre-flight** (`packages/plugin-sdk/src/rule-quarantine.ts`) measures every pulled/custom-pack regex rule against the adversarial probe battery once, caches the verdict locally, and excludes a rule that blows the budget. This is **empirical** — it proves a pattern did not backtrack on the inputs the battery constructs, not that it cannot. And the battery decides by _driving the pattern into backtracking_, so measuring a rule is itself a way to hang on one: `(a|a|a|a)+$` passes `Rule.safeParse` and never returns on the battery's own derived probe. So `filterUnsafeRules` takes a **prober** and the plugin runtime always supplies one — the measurement runs where it can be killed. Without a prober it falls back to the calling thread, which is for callers that already control the rules they pass (tests, tooling), never a pulled pack.
+- **The isolated scan** (`packages/plugin-sdk/src/guarded-scan.ts` + `isolated-scan.ts` + `scan-worker.ts`) is the bound on the scan itself. Whenever the effective ruleset contains a regex rule that only the pre-flight stands behind, the whole scan runs in a `worker_thread` under a wall-clock deadline; `worker.terminate()` reaches V8's execution terminator, which interrupts a spinning regex. The terminated rule is quarantined through the pre-flight's own cache, so the next process never loads it, and the built-in packs keep detecting meanwhile.
+
+Four properties are load-bearing and easy to break by accident:
+
+- **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
+- **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, once per process; move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
+- **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
+- **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+
+A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it. Anything that adds a new way to quarantine must keep both surfaces true.
+
+The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.
+
+**What this bound does NOT cover.** It is the plugin capture path only — `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The other two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. The web dashboard's `/scan` Server Action is the real hole — `web-ui/app/(app)/scan/actions.ts` → `packages/local-ops/src/fs-scan.ts` passes the installed-pack ruleset, pulled and custom packs included, straight to a synchronous in-process `scan()` with neither the pre-flight nor the deadline, and a Server Action has no harness timeout to be killed by. (`aka scan` passes no ruleset and falls back to the bundled registry, so the CLI is not exposed.) Closing it means giving `local-ops` a worker of its own, which is a separate change; until it lands, do not describe the ReDoS bound as covering the whole product.
+
 ## Dependency advisories
 
 CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`
@@ -164,7 +188,15 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart), ignore (gitignore semantics for
-                     the SessionStart project-file walk)
+                     the SessionStart project-file walk), node:worker_threads
+                     (the isolated scan — see Architecture principles §5)
+                     `src/scan-worker.ts` is the worker's own entry, exported as the
+                     `./scan-worker` subpath and reachable only from `@akasecurity/detections`
+                     + `./isolated-scan-protocol.ts`. It must stay that narrow: Node loads it
+                     directly (bundled `.js` when installed, type-stripped `.ts` in the repo),
+                     so `src/bundled-packs.generated.ts` — 101 JSON imports without import
+                     attributes — would break it at load, and it never needs them anyway
+                     because the ruleset arrives over `workerData`.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 ```
 

@@ -985,9 +985,13 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
       stderr: vi.fn(),
     });
     const blob = out.join('');
-    // The frame block itself never echoes the raw hit value.
     expect(blob).toContain('<<<AKA_FRAME_JSON');
-    expect(JSON.stringify(readFrameJsonBlock(blob))).not.toContain(RAW);
+    // The frame block itself never echoes the raw hit value — not even a run.
+    const frameJson = JSON.stringify(readFrameJsonBlock(blob));
+    // Positive control on the SAME bytes the absence check reads: a block that
+    // failed to parse serializes to 'null', which passes every absence check.
+    expect(frameJson).toContain('"counts"');
+    expectNoEchoOf(frameJson, RAW);
   });
 });
 
@@ -1088,7 +1092,11 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     const { frame } = await previewFrame(
       hit({ id: '0', filePath: '~/.claude/transcripts/2026-07-01.jsonl' }),
     );
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
+    const serialized = JSON.stringify(frame.maskedFindings);
+    // Positive control on the same bytes: an empty findings array serializes to
+    // '[]', which passes every absence check without proving anything.
+    expect(serialized).toContain(safeMaskedMatch(RAW));
+    expectNoEchoOf(serialized, RAW);
   });
 
   it('surfaces only the genuine hit on a mixed stream — the FP stays dismissed and counts stay coherent', async () => {
@@ -1148,9 +1156,12 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     ]);
     // The remediation count and the frame's important (genuine) count agree.
     expect(frame.maskedFindings).toHaveLength(frame.counts.important);
-    // No raw value from either hit rides into the emitted summaries.
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(OTHER);
+    // No raw value from either hit rides into the emitted summaries — not even
+    // a run. The toEqual above is the positive control: the findings really are
+    // populated, so an absence within them means something.
+    const serialized = JSON.stringify(frame.maskedFindings);
+    expectNoEchoOf(serialized, RAW);
+    expectNoEchoOf(serialized, OTHER);
   });
 });
 
@@ -1185,7 +1196,9 @@ describe('runApply — preview derives the masked false-positive pattern signal 
         ],
       },
     ]);
-    expect(JSON.stringify(frame.falsePositivePatterns)).not.toContain(RAW);
+    // The toMatchObject above is the positive control: the pattern group is
+    // populated, so an absence within its serialization means something.
+    expectNoEchoOf(JSON.stringify(frame.falsePositivePatterns), RAW);
   });
 
   it('omits falsePositivePatterns when nothing was marked a false positive', async () => {

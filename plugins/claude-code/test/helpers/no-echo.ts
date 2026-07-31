@@ -31,16 +31,18 @@ export const ECHO_RUN = 8;
  *    says before asserting what it omits.
  * 3. **It is for a raw value, not a deliberately revealed fragment.** A masked
  *    preview is built and shown on purpose, so at-rest and grant-shape
- *    assertions stay whole-value. No surface in this package prints a masked
- *    preview into bytes this helper searches; `cli/test/helpers/no-echo.ts`
- *    carries that boundary, including why an email preview fills the window
- *    legitimately while a generic secret's does not.
+ *    assertions stay whole-value — `triage/writeback.test.ts` on `maskedValue`
+ *    and `triage/surfaced-secrets.test.ts` on `maskedToken` are the two here.
+ *    A generic secret's preview reveals two characters and cannot fill the
+ *    window, which is what lets a surface printing one be searched at all;
+ *    `cli/test/helpers/no-echo.ts` carries the rest of that boundary, including
+ *    why an email preview fills the window legitimately.
  *
  * Shared by this package's suites because they sit behind one package wall.
  * Across a wall it cannot be imported, so `cli/test/helpers/no-echo.ts` and
- * `web-ui/test/actions/exceptions.test.ts` carry their own — a copy takes the
- * `toBeDefined()` guard and this file's suite with it, or the run length can be
- * widened back with nothing going red.
+ * `web-ui/test/helpers/no-echo.ts` are peers of this file — each a copy that
+ * takes the `toBeDefined()` guard and a `no-echo.test.ts` with it, or the run
+ * length can be widened back with nothing going red.
  */
 export function expectNoEchoOf(haystack: string | undefined, value: string): void {
   // Catches a never-thrown error arriving as `undefined`, which would otherwise

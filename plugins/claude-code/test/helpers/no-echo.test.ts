@@ -1,3 +1,4 @@
+import { maskMatch } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { ECHO_RUN, errorFrom, expectNoEchoOf } from './no-echo.ts';
@@ -65,13 +66,17 @@ describe('expectNoEchoOf', () => {
     expect(refuses(undefined, VALUE)).toBe(true);
   });
 
-  it('accepts a masked preview, which is built and shown on purpose', () => {
-    // The plugin's own mask keeps the first and last character around fixed
-    // asterisks, so it cannot fill the window. Widen that and this goes red
-    // HERE, where the reason is written down, rather than in a caller that
+  it('accepts the masked preview of a generic secret, which callers do print', () => {
+    // Call the PRODUCT's mask, never a hand-rolled one. A locally built literal
+    // asserts that a string this file constructed lacks a run of another string
+    // this file constructed — true by construction, and it stays true however
+    // maskMatch changes. Wired here, widening maskMatch's generic branch goes
+    // red HERE, where the reason is written down, rather than in a caller that
     // reads like an unrelated regression.
-    const masked = `${VALUE[0] ?? ''}${'*'.repeat(VALUE.length - 2)}${VALUE.at(-1) ?? ''}`;
-    expect(refuses(masked, VALUE)).toBe(false);
+    //
+    // @akasecurity/plugin-sdk re-exports it, so this crosses no package wall —
+    // src/remediation/surfaced-redact.ts imports it the same way.
+    expect(refuses(maskMatch(VALUE), VALUE)).toBe(false);
   });
 
   it('passes over empty bytes — the limit that makes a positive control mandatory', () => {

@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
@@ -7,7 +7,7 @@ import { CapabilityTagFor, StateTagFor } from './atoms.tsx';
 import { SCOPE_LABEL, VIA_LABEL } from './meta.ts';
 
 export interface ExceptionsTableViewProps {
-  items: DetectionException[];
+  items: ExceptionDescriptor[];
   // True when terminal (consumed/expired/revoked) rows are included — the
   // audit view; affects only the empty-state copy.
   includeTerminal: boolean;
@@ -15,8 +15,8 @@ export interface ExceptionsTableViewProps {
 }
 
 /**
- * The grants register — mirrors `aka exception list [--all]`. Fingerprints are
- * never shown here (they're derived audit detail); the masked preview is the
+ * The grants register — mirrors `aka exception list [--all]`. Fingerprints
+ * never reach this view (the descriptor omits them); the masked preview is the
  * value's identity for humans.
  */
 export function ExceptionsTableView({

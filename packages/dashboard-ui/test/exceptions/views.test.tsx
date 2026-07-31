@@ -1,4 +1,5 @@
-import type { DetectionException } from '@akasecurity/schema';
+import type { DetectionException, ExceptionDescriptor } from '@akasecurity/schema';
+import { toExceptionDescriptor } from '@akasecurity/schema';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
@@ -13,8 +14,12 @@ import { ExceptionsTableView } from '../../src/exceptions/ExceptionsTableView.ts
 
 const BADGE = 'Reveal to model';
 
-function exception(overrides: Partial<DetectionException>): DetectionException {
-  return {
+// Built as a full store row and projected, exactly as a server boundary does:
+// the views take the fingerprint-free descriptor, which excludes the field
+// rather than merely omitting it, so an unprojected row would not typecheck
+// here either.
+function exception(overrides: Partial<DetectionException>): ExceptionDescriptor {
+  return toExceptionDescriptor({
     id: '7d9f7a4e-1111-4222-8333-444455556666',
     ruleId: 'secrets/aws-access-key',
     category: 'secret',
@@ -37,7 +42,7 @@ function exception(overrides: Partial<DetectionException>): DetectionException {
     revokedBy: null,
     revokeReason: null,
     ...overrides,
-  };
+  });
 }
 
 const noop = (): void => undefined;

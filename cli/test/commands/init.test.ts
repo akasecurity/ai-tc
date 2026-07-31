@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
+import { cachePath, writeCache } from '@akasecurity/local-ops';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -288,6 +289,36 @@ describe('looseStorePaths', () => {
     chmodSync(sidecar, 0o644);
 
     expect(looseStorePaths(dir).sort()).toEqual([backup, sidecar].sort());
+  });
+
+  it('stays silent about the update-check cache, which is a real store file held at 0600', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    // Driven by the REAL writer, not a stand-in, because the property is that
+    // `writeCache`'s own mode agrees with what this walk stands behind. When it
+    // wrote at the caller's umask, walking data/ turned an ordinary `aka init`
+    // into "this filesystem rejects chmod" — nothing had rejected one, and
+    // nothing had attempted one. That misattribution is exactly what the
+    // `.partial` skip below exists to avoid, so it must not reappear here by a
+    // different route.
+    //
+    // Not reachable through runInit: the notice that writes this cache runs in
+    // main() after the handler returns, so only the writer itself can set it up.
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
+
+    writeCache(dir, {
+      checkedAt: Date.now(),
+      report: { statuses: [], availablePlugins: [] },
+      notifiedPluginIds: [],
+    });
+
+    expect(existsSync(cachePath(dir))).toBe(true); // precondition: the walk has it to find
+    expect(statSync(cachePath(dir)).mode & 0o777).toBe(0o600);
+    expect(looseStorePaths(dir)).toEqual([]);
   });
 
   it('does not report a `.partial` (loose by design mid-copy, not a rejected chmod)', (ctx) => {

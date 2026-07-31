@@ -80,6 +80,10 @@ const CI_SCRIPT_REL = 'tools/ci/no-network-test.sh';
 const CI_SCRIPT_ABS = join(REPO_ROOT, ...CI_SCRIPT_REL.split('/'));
 const PROBE_REL = 'tools/ci/egress-probe.mjs';
 const PROBE_ABS = join(REPO_ROOT, ...PROBE_REL.split('/'));
+// The two no-network enforcement suites, which live in HERE and reach no other
+// ESLint pass than lint:root's `eslint.root.guard.config.mjs` network-only pass.
+const NW_SUITE_ABS = join(HERE, 'no-network.test.js');
+const NW_RUNTIME_SUITE_ABS = join(HERE, 'no-network-runtime.test.js');
 
 // --- 1. Structural: every vitest package wires the guard ---------------------
 
@@ -264,21 +268,33 @@ describe('the guard cannot be cached or dropped out of CI', () => {
 
   it('ci.yml runs the repo-root lint and typecheck passes', () => {
     // `pnpm lint`/`pnpm typecheck` are turbo, which drives per-package scripts,
-    // and the repo root is not a package — so the guard and the probe are
-    // covered by these two steps and nothing else. Drop them and both files go
-    // back to being the only sources here that nothing lints or type-checks.
+    // and the repo root is not a package — so the guard, the probe, the repo-root
+    // configs and the enforcement suites are covered by these two steps and
+    // nothing else. Drop a target and those sources go back to being lint- or
+    // tsc-covered by nothing.
     const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain('pnpm lint:root');
     expect(ci).toContain('pnpm typecheck:root');
 
     const root = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    // The scripts must actually reach both files, not just exist.
-    expect(root.scripts['lint:root']).toContain('test/setup');
-    expect(root.scripts['lint:root']).toContain('tools/ci');
+    const lintRoot = root.scripts['lint:root'];
+    // The scripts must actually reach every target, not just exist.
+    expect(lintRoot).toContain('test/setup');
+    expect(lintRoot).toContain('tools/ci');
+    // The second pass is the ONLY thing that lints the enforcement suites — the
+    // eslint-config package's own `lint` is a deliberate no-op — and it hangs off
+    // a `&&` in a shell string, one careless edit from vanishing with the first
+    // pass still exit 0. The first pass names the repo-root `*.config.*`.
+    expect(lintRoot).toContain('packages/eslint-config/test');
+    expect(lintRoot).toContain('eslint.root.guard.config.mjs');
+    expect(lintRoot).toMatch(/\*\.config\.\*/);
     expect(root.scripts['typecheck:root']).toContain('tsconfig.root.json');
+
     const rootTsconfig = readFileSync(join(REPO_ROOT, 'tsconfig.root.json'), 'utf8');
     expect(rootTsconfig).toContain('test/setup');
     expect(rootTsconfig).toContain('tools/ci');
+    expect(rootTsconfig).toContain('eslint.root.config.mjs');
+    expect(rootTsconfig).toContain('eslint.root.guard.config.mjs');
   });
 
   it('the CI script is tracked as executable', () => {
@@ -404,6 +420,7 @@ describe('outbound attempts are refused', () => {
     // `at Object.connect (node:internal/tls/wrap)` — true and useless. This is
     // the case that decides whether the guard is worth more than a firewall
     // rule, so it is pinned separately from the direct-connect case above.
+    // eslint-disable-next-line no-restricted-globals -- a real fetch() is the point here: the runtime guard must refuse it. The ban stays live everywhere else in these suites.
     const reachOut = () => fetch('https://api.anthropic.com/v1/messages');
     const { attempts } = provoke(() => {
       // The rejection is irrelevant: the refusal is thrown and recorded
@@ -774,17 +791,38 @@ function networkBansTrippedBy(file, expected) {
   // No filename: flat config resolves a path against the linter's base path, and
   // these files sit outside the package, which reports "no matching
   // configuration" instead of linting. The rules here are path-independent.
-  const messages = new Linter().verify(source, {
-    languageOptions: { parser: tseslint.parser, ecmaVersion: 'latest', sourceType: 'module' },
-    rules: networkGuard[0].rules,
-  });
+  //
+  // `allowInlineConfig: false` is load-bearing. The one opt-out route the guard
+  // config grants these suites is an inline `eslint-disable` (the deliberate
+  // fetch), and `Linter#verify` honours those by default — so with the default,
+  // this measure would be blind to the exact route it exists to bound: a smuggled
+  // inline-disabled network global would pass unseen. lint:root still honours the
+  // disable; this measure deliberately does not.
+  const messages = new Linter().verify(
+    source,
+    {
+      languageOptions: { parser: tseslint.parser, ecmaVersion: 'latest', sourceType: 'module' },
+      rules: networkGuard[0].rules,
+    },
+    { allowInlineConfig: false },
+  );
   const specifiers = messages.map((message) => {
     const line = lines[message.line - 1] ?? '';
     const named = expected.find((mod) => line.includes(`'${mod}'`));
-    return named ?? `${String(message.ruleId)} @ line ${String(message.line)}: ${line.trim()}`;
+    if (named) return named;
+    // A non-import ban (a network global / member access) — name it by the
+    // offending identifier, not the line number, so the expectation stays put
+    // when the file shifts a line.
+    if (message.endLine === message.line && message.column && message.endColumn) {
+      return `global:${line.slice(message.column - 1, message.endColumn - 1)}`;
+    }
+    return `${String(message.ruleId)} @ line ${String(message.line)}: ${line.trim()}`;
   });
   return {
+    // Deduped for a readable failure; `count` is the raw total, so a SECOND
+    // inline-disabled fetch (which collapses into the first here) is still caught.
     specifiers: [...new Set(specifiers)].sort(),
+    count: messages.length,
     allImports: messages.every((m) => m.ruleId === 'no-restricted-imports'),
   };
 }
@@ -795,8 +833,9 @@ describe('the guard file trips exactly the bans it must', () => {
   const EXPECTED_OPT_OUTS = ['node:dgram', 'node:dns', 'node:net'];
 
   it('reports only the three module imports it exists to enforce', () => {
-    const { specifiers, allImports } = networkBansTrippedBy(GUARD_ABS, EXPECTED_OPT_OUTS);
+    const { specifiers, count, allImports } = networkBansTrippedBy(GUARD_ABS, EXPECTED_OPT_OUTS);
     expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(count).toBe(3);
     expect(allImports).toBe(true);
   });
 });
@@ -807,8 +846,45 @@ describe('the egress probe trips exactly the ban it must', () => {
   const EXPECTED_OPT_OUTS = ['node:net'];
 
   it('reports only node:net', () => {
-    const { specifiers, allImports } = networkBansTrippedBy(PROBE_ABS, EXPECTED_OPT_OUTS);
+    const { specifiers, count, allImports } = networkBansTrippedBy(PROBE_ABS, EXPECTED_OPT_OUTS);
     expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(count).toBe(1);
     expect(allImports).toBe(true);
+  });
+});
+
+// These two suites are the third opted-out site (via eslint.root.guard.config.mjs),
+// so they are held to the same raw-guard measure as the guard and probe above.
+
+describe('the no-network unit suite trips no bans at all', () => {
+  // no-network.test.js exercises every banned construct as a STRING fed to the
+  // linter; it imports nothing banned and calls nothing banned. A finding here
+  // means a fixture string became live code, or the suite grew a real network
+  // call — either way the guard.config need not, and does not, opt it out.
+  it('reports nothing', () => {
+    const { specifiers } = networkBansTrippedBy(NW_SUITE_ABS, []);
+    expect(specifiers).toEqual([]);
+  });
+});
+
+describe('the no-network runtime suite trips exactly the bans it must', () => {
+  // It imports the three transports it drives against the patched guard, plus the
+  // one deliberate fetch() the runtime block exercises. That fetch carries an
+  // inline `no-restricted-globals` disable — which lint:root honours but this
+  // measure does NOT (allowInlineConfig: false), so the fetch surfaces here and is
+  // pinned like any other ban. A smuggled fourth specifier fails on `specifiers`;
+  // a SECOND inline-disabled fetch — which the deduped set collapses into the
+  // first — fails on `count`. That is what stops the inline-disable route from
+  // quietly widening what these suites may reach.
+  const EXPECTED_OPT_OUTS = ['global:fetch', 'node:dgram', 'node:dns', 'node:net'];
+
+  it('reports the three module imports and the one deliberate fetch, nothing else', () => {
+    const { specifiers, count, allImports } = networkBansTrippedBy(
+      NW_RUNTIME_SUITE_ABS,
+      EXPECTED_OPT_OUTS,
+    );
+    expect(specifiers).toEqual(EXPECTED_OPT_OUTS);
+    expect(count).toBe(4);
+    expect(allImports).toBe(false);
   });
 });

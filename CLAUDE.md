@@ -56,16 +56,17 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Four files carry a genuine local-only opt-out:
+Five files carry a genuine local-only opt-out:
 
-| Site                                                                    | Allowed specifier                    | Why                                                                                                                |
-| ----------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)           | `node:net`                           | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`) | `node:http`                          | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                 |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)               | `node:net`, `node:dgram`, `node:dns` | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress       |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)              | `node:net`                           | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                     |
+| Site                                                                                          | Allowed specifier                                      | Why                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                 | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                       | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                     | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                    | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `eslint.root.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
 
-All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. Adding another opt-out site means updating this table.
+All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
 Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 
@@ -292,12 +293,25 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
 
    That covers files a **package** owns. Files at the **repo root**, owned by no
    package, are a separate case with its own pass: `pnpm lint:root` /
-   `pnpm typecheck:root` (`eslint.root.config.mjs`, `tsconfig.root.json`) lint and
-   type-check `test/setup/**` and `tools/ci/**`. Both run outside Turbo — `pnpm lint`
-   and `pnpm typecheck` are `turbo run …`, which drives per-package scripts, and the
-   repo root is not a package — so CI runs them as their own steps beside
-   `format:check`. Anything new at the repo root belongs in those two globs; otherwise
-   esbuild strips its types without checking them and nothing lints it.
+   `pnpm typecheck:root`, run outside Turbo (`pnpm lint`/`pnpm typecheck` are
+   `turbo run …`, which drives per-package scripts and never sees the repo root), so
+   CI runs them as their own steps beside `format:check`. `lint:root` is two
+   invocations — the same full-ruleset + network-only split a package makes with
+   `eslint src test` and its `eslint.scripts.config.mjs`: `eslint.root.config.mjs`
+   runs the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
+   `*.config.*`; `eslint.root.guard.config.mjs` runs the network-only guard over the
+   plain-JS enforcement suites in `packages/eslint-config/test/**`, which the
+   eslint-config package's no-op `lint` leaves behind every other pass.
+   `typecheck:root` runs `tsc -p tsconfig.root.json`.
+
+   Anything new at the repo root belongs in those passes — and a **file** at the
+   root is named explicitly, not folded into a directory glob (the same rule step 5
+   draws inside a package). `*.config.*` is the standing lint target for root config
+   and now catches the two root ESLint configs themselves; any other root file is
+   named by hand. A root file carrying `// @ts-check` (as both root configs do) is
+   also named in `tsconfig.root.json`'s `include`, or the directive is decorative —
+   nothing runs `tsc` over it and a real type error surfaces nowhere. Miss the pass
+   and esbuild strips its types unchecked and nothing lints it.
 
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only

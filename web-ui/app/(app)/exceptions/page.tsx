@@ -10,6 +10,7 @@ import {
   readFingerprintKey,
 } from '@akasecurity/persistence';
 import type { FingerprintKeyState } from '@akasecurity/schema';
+import { toBlockedDetectionDescriptor, toExceptionDescriptor } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { ExceptionsClient } from './ExceptionsClient';
@@ -34,9 +35,19 @@ export default async function ExceptionsPage({
   // the whole retention window — the same one approveBlocked looks a reference
   // up against. Counting only the selected chip (30 minutes by default, against
   // a day of retention) would understate a one-way action.
+  //
+  // The store rows carry the keyed valueFingerprint — a correlation key that
+  // must never reach the browser. `items` and `blocked` cross into a client
+  // component (and so into the RSC payload), so they are projected to their
+  // fingerprint-free descriptors here, at the server boundary; `retained`
+  // stays server-side and only its count crosses.
   const [items, blocked, retained] = await Promise.all([
-    db().exceptions.list({ includeTerminal }),
-    db().exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow]),
+    db()
+      .exceptions.list({ includeTerminal })
+      .then((rows) => rows.map(toExceptionDescriptor)),
+    db()
+      .exceptions.recentBlocked(BLOCKED_WINDOW_MS[blockedWindow])
+      .then((rows) => rows.map(toBlockedDetectionDescriptor)),
     db().exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS),
   ]);
 

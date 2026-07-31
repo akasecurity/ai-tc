@@ -1,5 +1,5 @@
 'use client';
-import type { BlockedDetection, FingerprintKeyState } from '@akasecurity/schema';
+import type { BlockedDetectionDescriptor, FingerprintKeyState } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
@@ -9,7 +9,7 @@ import { BlockedWindowSelect } from './BlockedWindowSelect.tsx';
 import { blockedRowBlockReason } from './meta.ts';
 
 export interface BlockedLedgerViewProps {
-  items: BlockedDetection[];
+  items: BlockedDetectionDescriptor[];
   onApprove: (reference: string) => void;
   blockedWindow: BlockedWindow;
   onBlockedWindowChange: (window: BlockedWindow) => void;
@@ -25,8 +25,9 @@ export interface BlockedLedgerViewProps {
 /**
  * The "blocked in the last N" strip — the web twin of the
  * `aka exception approve` picker, with a lookback window filter the CLI
- * doesn't have. Each row carries the keyed fingerprint and masked preview
- * only (never the raw value); Approve opens the grant dialog for that entry.
+ * doesn't have. Each row carries the masked preview only (never the raw value
+ * or its keyed fingerprint); Approve opens the grant dialog for that entry,
+ * and the server re-reads the full ledger row by `reference`.
  *
  * The ledger is retained for a day, so it outlives a key rotation and keeps
  * listing rows fingerprinted under the old key. Those rows are shown — they are

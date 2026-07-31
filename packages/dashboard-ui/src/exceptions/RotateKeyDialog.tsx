@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
@@ -24,7 +24,7 @@ export interface RotateKeyDialogProps {
   onOpenChange: (open: boolean) => void;
   // Active permanent grants that rotation will orphan — listed so the user
   // sees exactly what stops applying.
-  activePermanent: DetectionException[];
+  activePermanent: ExceptionDescriptor[];
   /**
    * Blocked-ledger rows still matchable under the current key — the ones
    * rotation makes unapprovable. Counted over the ledger's full retention

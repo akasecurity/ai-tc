@@ -1,4 +1,5 @@
 import { AmbiguousExceptionIdError } from '@akasecurity/persistence';
+import { toExceptionDescriptor } from '@akasecurity/schema';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
@@ -44,7 +45,9 @@ export default async function ExceptionDetailPage({ params }: { params: Promise<
           ← All exceptions
         </Link>
       </div>
-      <ExceptionDetailClient exception={exception} />
+      {/* Projected to the fingerprint-free descriptor at the server boundary —
+          the keyed valueFingerprint must never reach the browser. */}
+      <ExceptionDetailClient exception={toExceptionDescriptor(exception)} />
     </div>
   );
 }

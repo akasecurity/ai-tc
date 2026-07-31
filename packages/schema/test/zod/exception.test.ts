@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import type { BlockedDetection, BlockedDetectionDescriptor } from '../../src/zod/exception.ts';
 import {
   DetectionException,
   ExceptionBundleEntry,
+  ExceptionDescriptor,
   ExceptionScope,
+  toBlockedDetectionDescriptor,
+  toExceptionDescriptor,
 } from '../../src/zod/exception.ts';
 import { PolicyBundle } from '../../src/zod/policy.ts';
 
@@ -105,6 +109,97 @@ describe('ExceptionBundleEntry', () => {
         'valueFingerprint',
       ]);
     }
+  });
+});
+
+describe('ExceptionDescriptor / toExceptionDescriptor', () => {
+  it('omits exactly the keyed fingerprint and keeps everything else', () => {
+    // Keys are compared against the PARSED row, not the raw fixture, so a
+    // field the schema fills by default (e.g. capability) counts as "kept".
+    const row = DetectionException.parse(validException);
+    const descriptor = toExceptionDescriptor(row);
+    expect(Object.keys(descriptor).sort()).toEqual(
+      Object.keys(row)
+        .filter((key) => key !== 'valueFingerprint')
+        .sort(),
+    );
+    expect(descriptor.maskedValue).toBe(validException.maskedValue);
+    expect(descriptor.keyVersion).toBe(validException.keyVersion);
+  });
+
+  it('does not mutate the row it projects', () => {
+    const row = DetectionException.parse(validException);
+    toExceptionDescriptor(row);
+    expect(row.valueFingerprint).toBe(validException.valueFingerprint);
+  });
+
+  it('parses a full row by stripping the fingerprint (unknown keys drop)', () => {
+    const parsed = ExceptionDescriptor.parse(validException);
+    expect(Object.keys(parsed)).not.toContain('valueFingerprint');
+  });
+
+  it('refuses an unprojected row at the type level, not just a literal', () => {
+    // The point of the optional-never exclusion. A plain omit would accept
+    // this: every property the descriptor asks for is present on a full row,
+    // so a surface typed against it would keep compiling with the projection
+    // call in front of it deleted — which is exactly how the fingerprint gets
+    // back into the browser with nothing red. Pinned on a `declare`d row, not
+    // an object literal, because excess-property checking already rejects
+    // literals and would make this pass for the wrong reason.
+    const row = DetectionException.parse(validException);
+    // @ts-expect-error -- a full grant row is not an ExceptionDescriptor
+    const unprojected: ExceptionDescriptor = row;
+    // The runtime value is still the row; only the assignment is refused.
+    expect(unprojected.id).toBe(validException.id);
+
+    const ledgerRow: BlockedDetection = {
+      reference: 'blk-9999',
+      ruleId: 'aws-access-key-id',
+      category: 'secret',
+      valueFingerprint: 'b'.repeat(64),
+      keyVersion: 1,
+      maskedValue: 'AKIA****************',
+      sessionId: null,
+      repo: null,
+      blockedAt: '2026-01-01T00:00:00.000Z',
+    };
+    // @ts-expect-error -- a full ledger row is not a BlockedDetectionDescriptor
+    const unprojectedLedger: BlockedDetectionDescriptor = ledgerRow;
+    expect(unprojectedLedger.reference).toBe('blk-9999');
+  });
+
+  it('accepts the projected value it produces', () => {
+    // The other half: the exclusion must not be so strict that the helper's
+    // own output fails to satisfy it, which would push callers to cast.
+    const descriptor: ExceptionDescriptor = toExceptionDescriptor(
+      DetectionException.parse(validException),
+    );
+    expect(descriptor.id).toBe(validException.id);
+  });
+});
+
+describe('toBlockedDetectionDescriptor', () => {
+  const ledgerRow: BlockedDetection = {
+    reference: 'blk-1234',
+    ruleId: 'aws-access-key-id',
+    category: 'secret',
+    valueFingerprint: 'a'.repeat(64),
+    keyVersion: 1,
+    maskedValue: 'AKIA****************',
+    sessionId: null,
+    repo: 'github.com/acme/api',
+    blockedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('omits exactly the keyed fingerprint and keeps everything else', () => {
+    const descriptor = toBlockedDetectionDescriptor(ledgerRow);
+    expect(Object.keys(descriptor).sort()).toEqual(
+      Object.keys(ledgerRow)
+        .filter((key) => key !== 'valueFingerprint')
+        .sort(),
+    );
+    expect(descriptor.reference).toBe(ledgerRow.reference);
+    expect(ledgerRow.valueFingerprint).toBe('a'.repeat(64));
   });
 });
 

@@ -1,5 +1,9 @@
-import type { DetectionException, FingerprintKeyState } from '@akasecurity/schema';
-import { isMatchableUnder } from '@akasecurity/schema';
+import type {
+  DetectionException,
+  ExceptionDescriptor,
+  FingerprintKeyState,
+} from '@akasecurity/schema';
+import { isMatchableUnder, toExceptionDescriptor } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,8 +16,11 @@ import {
 
 const NOW = Date.parse('2026-07-03T12:00:00.000Z');
 
-function exception(overrides: Partial<DetectionException>): DetectionException {
-  return {
+// Built as a full store row and projected, exactly as a server boundary does —
+// the helpers here take the fingerprint-free descriptor, which excludes the
+// field rather than merely omitting it.
+function exception(overrides: Partial<DetectionException>): ExceptionDescriptor {
+  return toExceptionDescriptor({
     id: '7d9f7a4e-1111-4222-8333-444455556666',
     ruleId: 'secrets/aws-access-key',
     category: 'secret',
@@ -36,7 +43,7 @@ function exception(overrides: Partial<DetectionException>): DetectionException {
     revokedBy: null,
     revokeReason: null,
     ...overrides,
-  };
+  });
 }
 
 describe('exceptionState', () => {

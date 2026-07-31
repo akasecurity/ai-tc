@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BlockedDetection } from '../../src/zod/exception.ts';
+import type { BlockedDetection, BlockedDetectionDescriptor } from '../../src/zod/exception.ts';
 import {
   DetectionException,
   ExceptionBundleEntry,
@@ -136,6 +136,45 @@ describe('ExceptionDescriptor / toExceptionDescriptor', () => {
   it('parses a full row by stripping the fingerprint (unknown keys drop)', () => {
     const parsed = ExceptionDescriptor.parse(validException);
     expect(Object.keys(parsed)).not.toContain('valueFingerprint');
+  });
+
+  it('refuses an unprojected row at the type level, not just a literal', () => {
+    // The point of the optional-never exclusion. A plain omit would accept
+    // this: every property the descriptor asks for is present on a full row,
+    // so a surface typed against it would keep compiling with the projection
+    // call in front of it deleted — which is exactly how the fingerprint gets
+    // back into the browser with nothing red. Pinned on a `declare`d row, not
+    // an object literal, because excess-property checking already rejects
+    // literals and would make this pass for the wrong reason.
+    const row = DetectionException.parse(validException);
+    // @ts-expect-error -- a full grant row is not an ExceptionDescriptor
+    const unprojected: ExceptionDescriptor = row;
+    // The runtime value is still the row; only the assignment is refused.
+    expect(unprojected.id).toBe(validException.id);
+
+    const ledgerRow: BlockedDetection = {
+      reference: 'blk-9999',
+      ruleId: 'aws-access-key-id',
+      category: 'secret',
+      valueFingerprint: 'b'.repeat(64),
+      keyVersion: 1,
+      maskedValue: 'AKIA****************',
+      sessionId: null,
+      repo: null,
+      blockedAt: '2026-01-01T00:00:00.000Z',
+    };
+    // @ts-expect-error -- a full ledger row is not a BlockedDetectionDescriptor
+    const unprojectedLedger: BlockedDetectionDescriptor = ledgerRow;
+    expect(unprojectedLedger.reference).toBe('blk-9999');
+  });
+
+  it('accepts the projected value it produces', () => {
+    // The other half: the exclusion must not be so strict that the helper's
+    // own output fails to satisfy it, which would push callers to cast.
+    const descriptor: ExceptionDescriptor = toExceptionDescriptor(
+      DetectionException.parse(validException),
+    );
+    expect(descriptor.id).toBe(validException.id);
   });
 });
 

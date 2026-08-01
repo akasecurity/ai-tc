@@ -54,7 +54,9 @@ export function FileDetailDrawer({
             meta={ACCESS}
             value={file.access}
             onChange={onChange}
-            accentOf={(a) => a.bar}
+            // `accent`, not `bar`: this fills the check circle under a
+            // `text-on-accent` glyph, so it needs the ink. `bar` is the hue.
+            accentOf={(a) => a.accent}
           />
         </Section>
 

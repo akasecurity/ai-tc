@@ -20,12 +20,28 @@ import type { IconName } from './icons.ts';
 type Tone = NonNullable<BadgeProps['variant']>;
 
 // ─── Access (per-file LLM access) ────────────────────────────────────────────
+/**
+ * `bar` and `accent` are the hue/ink split carried into this record, and they
+ * cannot be one field. `bar` paints AccessBar's stacked segments and the status
+ * dots beside them — non-text marks whose whole job is to stay tellable apart, so
+ * they take the HUE. `accent` fills the selected check circle in RadioCardList,
+ * which carries a glyph in `text-on-accent`, so it takes the INK: white on the `ok`
+ * hue is 2.81:1 and fails, on `ok-ink` it is 5.22:1.
+ *
+ * Collapsing them onto the ink is what the split exists to prevent — it drops
+ * AccessBar's adjacent-segment separation in light from 2.46/1.63/1.51 to
+ * 1.33/1.29/1.03, green against red at 1.03. `bar-and-accent.test.ts` pins both
+ * roles. TRUST below needs only the ink half, so it carries `iconBg` alone.
+ */
 export interface AccessMeta {
   label: string;
   icon: IconName;
   fg: string;
   bg: string;
+  /** Bar segments and status dots — non-text, so the hue. */
   bar: string;
+  /** Solid fill under a `text-on-accent` glyph — so the ink. */
+  accent: string;
   desc: string;
 }
 export const ACCESS: Record<AccessLevel, AccessMeta> = {
@@ -34,7 +50,8 @@ export const ACCESS: Record<AccessLevel, AccessMeta> = {
     icon: 'cloud',
     fg: 'text-ok-ink',
     bg: 'bg-ok-fill',
-    bar: 'bg-ok-ink',
+    bar: 'bg-ok',
+    accent: 'bg-ok-ink',
     desc: 'Allowed to any model — including public, consumer LLMs.',
   },
   approved: {
@@ -42,7 +59,11 @@ export const ACCESS: Record<AccessLevel, AccessMeta> = {
     icon: 'shield-check',
     fg: 'text-primary',
     bg: 'bg-primary-tint',
+    // primary is the inverted pair — the bare token IS the ink — so one value
+    // serves both roles here. In dark it lifts to a pale lavender, which reads as
+    // a bar segment against the dark surface and still carries the dark glyph.
     bar: 'bg-primary',
+    accent: 'bg-primary',
     desc: 'Allowed only to approved, governed models.',
   },
   blocked: {
@@ -50,7 +71,8 @@ export const ACCESS: Record<AccessLevel, AccessMeta> = {
     icon: 'slash-circle',
     fg: 'text-sev-critical-ink',
     bg: 'bg-sev-critical-fill',
-    bar: 'bg-sev-critical-ink',
+    bar: 'bg-sev-critical',
+    accent: 'bg-sev-critical-ink',
     desc: 'Never sent to any model. Blocked at the proxy.',
   },
 };

@@ -137,8 +137,13 @@ describe('aka vault show', () => {
     await expect(runVault(['show', forge(pointer), '--home', home], io)).rejects.toThrow(
       /could not be resolved/,
     );
-    // The raw value never reached the output.
-    expect(io.output()).not.toContain(RAW);
+    // The refusal prints NOTHING — the success case above is the only path in
+    // this command that writes the raw value, and it is reached only after
+    // detokenize returns one. Asserted as emptiness rather than as an absence
+    // within it: `not.toContain` over a capture that is always empty passes
+    // however the branch is worded, while this goes red on anything printed
+    // here at all, raw or not.
+    expect(io.output()).toBe('');
     // A token nobody can vouch for is unattributable: no audit row at all.
     expect(derefRows()).toEqual([]);
   });

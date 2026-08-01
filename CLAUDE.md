@@ -291,6 +291,18 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
    `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
 
+   **Naming a target is not enough if the same invocation hands it back.** An
+   `--ignore-pattern` cancels a target it matches, so `*.config.*` plus an ignore of
+   `vitest.config.ts` reads as covering that file and lints it not at all. Anything an
+   ignore flag excludes therefore counts as uncovered however the targets read, and the
+   fix is to drop the flag rather than the directory. `--ignore-path` counts as excluding
+   its whole invocation: flat-config ESLint rejects the flag outright, so that `eslint`
+   call lints nothing. No `lint` script carries either flag today, and
+   `packages/eslint-config/test/effective-config.test.js` is what would catch one that
+   took coverage back. It bounds the damage rather than banning the flag: an ignore
+   matching nothing the package ships stays green, which is what stops the guard
+   over-reporting.
+
    That covers files a **package** owns. Files at the **repo root**, owned by no
    package, are a separate case with its own pass: `pnpm lint:root` /
    `pnpm typecheck:root`, run outside Turbo (`pnpm lint`/`pnpm typecheck` are

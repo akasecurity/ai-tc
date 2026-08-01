@@ -28,11 +28,11 @@ export function NeedsReviewStripView({
         aria-expanded={open}
         className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-3 text-left"
       >
-        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-critical text-white">
+        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-critical-ink text-on-accent">
           <AlertIcon aria-hidden focusable={false} className="size-4" />
         </span>
         <span className="text-sm font-semibold text-text">Needs review</span>
-        <span className="rounded-full bg-sev-critical px-2 text-xs py-0.5 font-bold text-white">
+        <span className="rounded-full bg-sev-critical-ink px-2 text-xs py-0.5 font-bold text-on-accent">
           {items.length}
         </span>
         <span className="text-xs text-text-2">
@@ -64,7 +64,7 @@ export function NeedsReviewStripView({
                   </span>
                   <ClassTag cls={d.topDataClass} />
                 </div>
-                <div className="mt-1.5 flex items-center gap-1.5 text-label text-sev-critical">
+                <div className="mt-1.5 flex items-center gap-1.5 text-label text-sev-critical-ink">
                   <AlertIcon aria-hidden focusable={false} className="size-3" />
                   {flagReason(d.review.reasons)}
                 </div>

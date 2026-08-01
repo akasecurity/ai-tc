@@ -129,7 +129,7 @@ export function AddExceptionForm({ rules, onSubmit, busy, error }: AddExceptionF
         />
       </div>
 
-      {error && <p className="text-xs text-sev-critical">{error}</p>}
+      {error && <p className="text-xs text-sev-critical-ink">{error}</p>}
 
       <div>
         <Button

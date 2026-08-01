@@ -39,7 +39,7 @@ export function ExceptionDetailView({
 
       {exception.capability === 'reveal_to_model' && (
         <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
-          <SectionLabel className="text-sev-critical">Reveal to model</SectionLabel>
+          <SectionLabel className="text-sev-critical-ink">Reveal to model</SectionLabel>
           <p className="text-sm text-text-2">
             While this grant is active, the model can receive this value&apos;s raw form at tool
             boundaries. Every crossing is audited in the vault&apos;s de-reference trail.
@@ -82,7 +82,7 @@ export function ExceptionDetailView({
 
       {exception.revokedAt !== null && (
         <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
-          <SectionLabel className="text-sev-critical">Revoked</SectionLabel>
+          <SectionLabel className="text-sev-critical-ink">Revoked</SectionLabel>
           <p className="text-sm text-text-2">
             {relativeTime(exception.revokedAt)} by {exception.revokedBy ?? 'unknown'}
             {exception.revokeReason ? ` — ${exception.revokeReason}` : ''}
@@ -117,7 +117,7 @@ export function ExceptionDetailView({
               Revoke
             </Button>
           </div>
-          {error && <p className="mt-2 text-xs text-sev-critical">{error}</p>}
+          {error && <p className="mt-2 text-xs text-sev-critical-ink">{error}</p>}
         </div>
       )}
     </div>

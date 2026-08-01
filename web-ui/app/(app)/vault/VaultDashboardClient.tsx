@@ -118,7 +118,7 @@ export function VaultDashboardClient({
           title="Vaulted values"
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
         />
-        {actionError !== null && <p className="text-xs text-sev-critical">{actionError}</p>}
+        {actionError !== null && <p className="text-xs text-sev-critical-ink">{actionError}</p>}
         <VaultInventoryView entries={inventory} onReveal={onReveal} onRevoke={onRevoke} />
         {revealedEntries.length > 0 && (
           <div className="rounded-xl border border-border bg-surface p-4">
@@ -190,7 +190,7 @@ export function VaultDashboardClient({
             keep working — only the ciphertext changes.
           </p>
           {rotateResult?.ok === true && (
-            <p className="mb-3 text-xs text-ok">
+            <p className="mb-3 text-xs text-ok-ink">
               Key rotated to version {rotateResult.version} —{' '}
               {rotateResult.reEncrypted === 1
                 ? '1 entry re-encrypted'
@@ -199,7 +199,7 @@ export function VaultDashboardClient({
             </p>
           )}
           {rotateResult?.ok === false && (
-            <p className="mb-3 text-xs text-sev-critical">{rotateResult.error}</p>
+            <p className="mb-3 text-xs text-sev-critical-ink">{rotateResult.error}</p>
           )}
           <Button
             variant="outline"
@@ -213,7 +213,7 @@ export function VaultDashboardClient({
         </div>
 
         <div className="rounded-xl border border-sev-critical-fill bg-surface p-5">
-          <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-sev-critical">
+          <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-sev-critical-ink">
             Purge vault
           </div>
           <p className="mb-3 text-xs text-text-3">
@@ -231,7 +231,7 @@ export function VaultDashboardClient({
             </p>
           )}
           {purgeResult?.ok === false && (
-            <p className="mb-3 text-xs text-sev-critical">{purgeResult.error}</p>
+            <p className="mb-3 text-xs text-sev-critical-ink">{purgeResult.error}</p>
           )}
           <div className="flex items-center gap-2">
             <Input

@@ -34,13 +34,13 @@ const buttonVariants = cva(
       {
         variant: 'solid',
         tone: 'primary',
-        class: 'bg-primary text-text-inv hover:bg-primary-hover',
+        class: 'bg-primary-solid text-text-inv hover:bg-primary-hover',
       },
       { variant: 'solid', tone: 'neutral', class: 'bg-surface-3 text-text hover:bg-border-strong' },
       {
         variant: 'solid',
         tone: 'danger',
-        class: 'bg-sev-critical text-text-inv hover:bg-sev-critical-hover',
+        class: 'bg-sev-critical-ink text-on-accent hover:bg-sev-critical-hover',
       },
       // outline
       {
@@ -56,7 +56,7 @@ const buttonVariants = cva(
       {
         variant: 'outline',
         tone: 'danger',
-        class: 'border-sev-critical text-sev-critical hover:bg-sev-critical-fill',
+        class: 'border-sev-critical text-sev-critical-ink hover:bg-sev-critical-fill',
       },
       // ghost
       { variant: 'ghost', tone: 'primary', class: 'text-primary hover:bg-primary-tint' },
@@ -68,7 +68,7 @@ const buttonVariants = cva(
       {
         variant: 'ghost',
         tone: 'danger',
-        class: 'text-sev-critical hover:bg-sev-critical-fill',
+        class: 'text-sev-critical-ink hover:bg-sev-critical-fill',
       },
       // link — an inline text link; strips the button box (height/padding/gap) so it
       // sits within copy, and underlines on hover. Tone sets the text color.
@@ -83,7 +83,7 @@ const buttonVariants = cva(
         tone: 'neutral',
         class: 'text-text-2 hover:text-text hover:underline',
       },
-      { variant: 'link', tone: 'danger', class: 'text-sev-critical hover:underline' },
+      { variant: 'link', tone: 'danger', class: 'text-sev-critical-ink hover:underline' },
     ],
     defaultVariants: { variant: 'solid', tone: 'neutral', size: 'md' },
   },

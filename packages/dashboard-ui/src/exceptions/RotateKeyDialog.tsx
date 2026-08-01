@@ -100,7 +100,7 @@ export function RotateKeyDialog({
         <DialogBody>
           {activePermanent.length > 0 && (
             <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
-              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high-ink">
                 Active permanent grants that will stop applying
               </div>
               <ul className="flex flex-col gap-1">
@@ -115,7 +115,7 @@ export function RotateKeyDialog({
 
           {approvableBlocked > 0 ? (
             <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
-              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high-ink">
                 Blocked detections that will stop being approvable
               </div>
               <p className="text-xs text-text-2">{ledgerNote}</p>
@@ -140,7 +140,7 @@ export function RotateKeyDialog({
             />
           </div>
 
-          {error && <p className="text-xs text-sev-critical">{error}</p>}
+          {error && <p className="text-xs text-sev-critical-ink">{error}</p>}
         </DialogBody>
 
         <DialogFooter>

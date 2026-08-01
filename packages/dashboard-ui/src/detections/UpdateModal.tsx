@@ -53,7 +53,7 @@ export function UpdateModal({
             <DialogTitle className="sr-only">Update · {d.name}</DialogTitle>
             {/* header */}
             <div className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-4">
-              <span className="grid size-9.5 shrink-0 place-items-center rounded-lg bg-sev-high-fill text-sev-high">
+              <span className="grid size-9.5 shrink-0 place-items-center rounded-lg bg-sev-high-fill text-sev-high-ink">
                 <ArrowUpIcon aria-hidden focusable={false} className="size-5" />
               </span>
               <div className="min-w-0 flex-1">
@@ -84,7 +84,7 @@ export function UpdateModal({
                   {versionChanged ? `v${d.version}` : `${String(d.ruleCount)} rules`}
                 </span>
                 <ArrowRightIcon aria-hidden focusable={false} className="size-4 text-text-3" />
-                <span className="rounded-lg border border-sev-high bg-sev-high-fill px-3 py-1.5 font-mono text-sm font-bold text-sev-high">
+                <span className="rounded-lg border border-sev-high bg-sev-high-fill px-3 py-1.5 font-mono text-sm font-bold text-sev-high-ink">
                   {versionChanged
                     ? `v${latestVersion}`
                     : `${String(latestRuleCount ?? d.ruleCount)} rules`}
@@ -100,7 +100,7 @@ export function UpdateModal({
                 <CheckCircleIcon
                   aria-hidden
                   focusable={false}
-                  className="size-4 shrink-0 text-ok"
+                  className="size-4 shrink-0 text-ok-ink"
                 />
                 <div className="text-sm text-text-2">
                   Updates are never applied automatically — your enabled state and policy assignment

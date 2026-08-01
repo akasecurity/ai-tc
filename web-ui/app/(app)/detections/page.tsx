@@ -60,14 +60,14 @@ export default async function DetectionsPage({
         <StatTile
           icon={BracesIcon}
           iconBg="var(--color-violet-fill)"
-          iconColor="var(--color-violet)"
+          iconColor="var(--color-violet-ink)"
           label="Rules"
           value={String(stats.rules)}
         />
         <StatTile
           icon={ShieldCheckIcon}
           iconBg="var(--color-ok-fill)"
-          iconColor="var(--color-ok)"
+          iconColor="var(--color-ok-ink)"
           label="Active"
           value={`${String(stats.active)} / ${String(stats.detections)}`}
         />

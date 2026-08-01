@@ -67,7 +67,7 @@ export function SeverityCardView({
   return (
     <Card className="flex flex-col shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-sev-critical-fill text-sev-critical">
+        <CardIcon className="bg-sev-critical-fill text-sev-critical-ink">
           <AlertOctagonIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>

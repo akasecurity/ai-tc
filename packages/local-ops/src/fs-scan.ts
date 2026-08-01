@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, extname, join, relative, resolve } from 'node:path';
 
-import type { FileEgressHits } from '@akasecurity/detections';
+import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
 import {
   dropShieldedFindings,
   EGRESS_CODE_EXTENSIONS,
@@ -183,11 +183,22 @@ function* visit(
 }
 
 export interface ScanPathOptions {
-  // The ruleset to evaluate. The web-ui MUST pass this explicitly (the enabled
-  // rules from the installed_packs DB snapshot — the scan authority); when
-  // omitted, the engine's process-global registry is used (the CLI, after
-  // registerBundledPacks()).
+  // The ruleset to evaluate, run IN-PROCESS and therefore without an upper
+  // bound — so this is for a ruleset that already has one behind it: the
+  // compiled-in packs, which the CI adversarial battery measures on every
+  // commit. Omitted, the engine's process-global registry is used (the CLI,
+  // after registerBundledPacks()).
+  //
+  // A ruleset that carries pulled or custom packs must arrive through
+  // `scanText` instead — see createGuardedFileScanner. A regex from an
+  // unreviewed pack has no upper bound at all, and `scan()` cannot be
+  // interrupted mid-`exec` by anything on this thread.
   rules?: Rule[] | undefined;
+  // Runs the detection engine over one file's text under a hard wall-clock
+  // bound, on a thread that can be killed. Supplied by a caller whose ruleset
+  // includes pulled/custom packs — the dashboard's folder scan. Takes
+  // precedence over `rules`, which the guarded scanner already holds.
+  scanText?: ((text: string) => Promise<MatchResult[]>) | undefined;
   // Per-rule enforcement action from the installed snapshot (installedRuleset().
   // ruleActions), so at-rest findings carry the SAME per-pack Monitor/Warn/Redact/
   // Block decision the live capture path resolves — not the per-category default.
@@ -259,12 +270,18 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
 /**
  * Walk `target` and record one redacted event + masked findings per file with
  * matches. The caller owns the database handle (and closes it).
+ *
+ * Async because a bounded scan has to be: the only thing that can interrupt a
+ * regex that never returns is another thread, and reaching one is a message
+ * round trip. A caller running the compiled-in packs passes no `scanText` and
+ * pays nothing for that — the default matcher resolves without ever yielding.
  */
-export function scanPathIntoStore(
+export async function scanPathIntoStore(
   db: LocalDatabase,
   target: string,
   opts: ScanPathOptions = {},
-): ScanPathResult {
+): Promise<ScanPathResult> {
+  const matchText = opts.scanText ?? ((text: string) => Promise.resolve(scan(text, opts.rules)));
   let scanned = 0;
   let findingCount = 0;
   const files: ScannedFileFindings[] = [];
@@ -317,7 +334,7 @@ export function scanPathIntoStore(
     // original text, so redaction and stored spans below still line up — and
     // drop any finding that touches a shielded span.
     const shielded = shieldPointers(text);
-    const matches = dropShieldedFindings(scan(shielded.text, opts.rules), shielded.spans);
+    const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
     if (matches.length === 0) continue;
 
     const eventId = randomUUID();

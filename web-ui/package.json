@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "tsup && next dev",
+    "build": "tsup && next build",
     "start": "next start",
     "lint": "eslint app middleware.ts test *.config.*",
-    "test": "vitest run",
+    "test": "tsup && vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -35,6 +35,7 @@
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.0.0",
     "tailwindcss": "^4.3.3",
+    "tsup": "^8.0.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"

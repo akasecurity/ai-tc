@@ -218,8 +218,8 @@ function initRepo(root: string): void {
 
 // Walk `target` and record whatever egress the walk produced — the exact
 // two-call sequence the CLI and the web-ui Scan action perform.
-function scanAndRecord(db: LocalDatabase, target: string, base: string) {
-  const result = scanPathIntoStore(db, target, { rules: [] });
+async function scanAndRecord(db: LocalDatabase, target: string, base: string) {
+  const result = await scanPathIntoStore(db, target, { rules: [] });
   return recordProjectEgress(db, target, result.egress, base);
 }
 
@@ -271,7 +271,7 @@ afterEach(() => {
 
 describe('egress acceptance corpus — destination ledger', () => {
   it('records exactly the expected destinations across eight ecosystems', async () => {
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     expect(recorded).toEqual({
       project: 'settlement',
@@ -285,7 +285,7 @@ describe('egress acceptance corpus — destination ledger', () => {
   });
 
   it('groups the ledger provider → internal → external → ip', async () => {
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
 
     const { groups } = await db.shares.listDestinations({ groupBy: 'destination', review: false });
     // KIND_ORDER filters the grouped response, so a kind missing from it is
@@ -307,7 +307,7 @@ describe('egress acceptance corpus — destination ledger', () => {
   });
 
   it('records none of the planted look-alike hosts', async () => {
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
 
     const hosts = new Set((await readLedger(db)).map((d) => d.host));
     for (const [host, why] of Object.entries(EXPECTED_ABSENT)) {
@@ -318,7 +318,7 @@ describe('egress acceptance corpus — destination ledger', () => {
   });
 
   it('marks the vendored call site and relativizes every path to the repo root', async () => {
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
 
     const { groups } = await db.shares.listDestinations({ groupBy: 'destination', review: false });
     const sentry = groups.flatMap((g) => g.items).find((d) => d.host === 'sentry.io')?.id;
@@ -338,7 +338,7 @@ describe('egress acceptance corpus — destination ledger', () => {
 
 describe('egress acceptance corpus — review posture', () => {
   it('agrees between the review read port and the stats counters', async () => {
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
 
     // needsReview() runs the SQL review pre-filter AND the schema's
     // buildReviewInfo; stats() counts the same posture through independent raw
@@ -367,10 +367,10 @@ describe('egress acceptance corpus — review posture', () => {
 
 describe('egress acceptance corpus — reconciliation', () => {
   it('is idempotent across a re-run of the unchanged corpus', async () => {
-    const first = scanAndRecord(db, root, base);
+    const first = await scanAndRecord(db, root, base);
     const before = await readLedger(db);
 
-    const second = scanAndRecord(db, root, base);
+    const second = await scanAndRecord(db, root, base);
 
     expect(second).toEqual(first);
     expect(await readLedger(db)).toEqual(before);
@@ -378,11 +378,11 @@ describe('egress acceptance corpus — reconciliation', () => {
   });
 
   it('drops the partner destination when its only source file is deleted', async () => {
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     expect((await readLedger(db)).map((d) => d.host)).toContain('api.acme-partner.com');
 
     rmSync(join(root, 'src', 'partner.ts'));
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     const hosts = (await readLedger(db)).map((d) => d.host);
     expect(hosts).not.toContain('api.acme-partner.com');
@@ -413,7 +413,7 @@ describe('egress acceptance corpus — plaintext posture covers ws', () => {
         "export const FEED = 'ws://feed.acme-quotes-live.com/v1/ticks';\n",
       );
 
-      scanAndRecord(db, solo, base);
+      await scanAndRecord(db, solo, base);
 
       const ledger = await readLedger(db);
       expect(ledger.map((d) => [d.host, d.transports])).toEqual([

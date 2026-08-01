@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Badge, SegmentedControl, SegmentedControlItem } from '@akasecurity/ui-kit';
 
 import type { ExceptionState, ScopeAnswer } from './meta.ts';
@@ -16,7 +16,7 @@ export function StateTag({ state }: { state: ExceptionState }) {
   return <Badge variant={STATE_TONE[state]}>{state}</Badge>;
 }
 
-export function StateTagFor({ exception, now }: { exception: DetectionException; now?: number }) {
+export function StateTagFor({ exception, now }: { exception: ExceptionDescriptor; now?: number }) {
   return <StateTag state={exceptionState(exception, now)} />;
 }
 
@@ -27,7 +27,7 @@ export function StateTagFor({ exception, now }: { exception: DetectionException;
  * default) stays unlabelled: repeating "suppress" on every row would bury the
  * one capability that matters.
  */
-export function CapabilityTagFor({ exception }: { exception: DetectionException }) {
+export function CapabilityTagFor({ exception }: { exception: ExceptionDescriptor }) {
   if (exception.capability !== 'reveal_to_model') return null;
   return <Badge variant="critical">{CAPABILITY_LABEL.reveal_to_model}</Badge>;
 }

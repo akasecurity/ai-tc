@@ -1,5 +1,5 @@
 'use client';
-import type { BlockedDetection } from '@akasecurity/schema';
+import type { BlockedDetectionDescriptor } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
@@ -26,7 +26,7 @@ export interface ApproveSubmission {
 }
 
 export interface ApproveExceptionDialogProps {
-  entry: BlockedDetection | null;
+  entry: BlockedDetectionDescriptor | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (submission: ApproveSubmission) => void;

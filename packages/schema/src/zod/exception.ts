@@ -98,6 +98,35 @@ export const ExceptionBundleEntry = DetectionException.pick({
 });
 export type ExceptionBundleEntry = z.infer<typeof ExceptionBundleEntry>;
 
+// What a presentation surface may know about a grant. Carries no
+// valueFingerprint — the keyed HMAC is a correlation key and must never reach
+// a view layer or the browser, the same rule PointerDescriptor states for
+// vault pointers. keyVersion stays: it is a bare key epoch, not a correlation
+// key, and the views need it to say which grants a rotation invalidates.
+//
+// `valueFingerprint?: never` is what makes this an EXCLUSION rather than an
+// omission. A plain omit still accepts a full store row — every property it
+// asks for is present — so a surface typed against it would keep compiling if
+// the projection call in front of it were dropped, and the fingerprint would
+// be back in the browser with nothing red. The optional-never makes a row
+// carrying the field unassignable, so the projection is enforced by the type
+// rather than by whoever remembers to call it.
+export const ExceptionDescriptor = DetectionException.omit({ valueFingerprint: true });
+export type ExceptionDescriptor = z.infer<typeof ExceptionDescriptor> & {
+  valueFingerprint?: never;
+};
+
+// Strip the keyed fingerprint from a grant row before it crosses to a view.
+// Destructured rather than spread-and-deleted: with the exclusion above, a
+// spread copy still carries `valueFingerprint: string` at the type level, so
+// separating the key from the rest is what produces a value the return type
+// accepts.
+export function toExceptionDescriptor(exception: DetectionException): ExceptionDescriptor {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- binding the field is how it is dropped
+  const { valueFingerprint: _fingerprint, ...rest } = exception;
+  return rest;
+}
+
 // One "a detection was just blocked/redacted" record from the short-lived
 // (30-minute) blocked-detections ledger: everything the approve flows — CLI
 // and web-ui — need to create an exception without the user retyping the
@@ -118,6 +147,21 @@ export interface BlockedDetection {
 
 // Insert shape: the persistence repo stamps blocked_at at write time.
 export type BlockedDetectionInput = Omit<BlockedDetection, 'blockedAt'>;
+
+// The ledger row minus its keyed fingerprint — the same egress rule, and the
+// same optional-never exclusion, as ExceptionDescriptor. The approve flows
+// round-trip `reference` and the server re-reads the full row, so the
+// fingerprint never needs to leave it.
+export type BlockedDetectionDescriptor = Omit<BlockedDetection, 'valueFingerprint'> & {
+  valueFingerprint?: never;
+};
+
+/** Strip the keyed fingerprint from a ledger row before it crosses to a view. */
+export function toBlockedDetectionDescriptor(row: BlockedDetection): BlockedDetectionDescriptor {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- binding the field is how it is dropped
+  const { valueFingerprint: _fingerprint, ...rest } = row;
+  return rest;
+}
 
 /**
  * What the machine's fingerprint key file amounts to right now.

@@ -32,7 +32,7 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
-export type { GuardedScanner, GuardedScanPartition } from './guarded-scan.ts';
+export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
 export type { ResolveInventoryInput } from './inventory-resolver.ts';
 export { resolveInventoryContext } from './inventory-resolver.ts';

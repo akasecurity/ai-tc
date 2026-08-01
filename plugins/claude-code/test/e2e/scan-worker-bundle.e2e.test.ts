@@ -43,8 +43,11 @@ const WORKER_SCRIPT = 'scan-worker.js';
 // `createPluginRuntime`. Any emitted script carrying it therefore builds a
 // runtime, scans, and needs the worker beside it — which is what makes this a
 // derived list rather than one somebody has to remember to extend when a new
-// runtime-bearing hook is added.
-const RUNTIME_MARKER = 'isolated scanning is off for the rest of this process';
+// runtime-bearing hook is added. Cut short of the scope clause that follows it
+// ("the rest of this process" here, something else for a caller that builds a
+// scanner per unit of work), which is a parameter rather than part of the
+// marker.
+const RUNTIME_MARKER = 'isolated scanning is off for ';
 
 // The hooks that must be in the derived set. Not a substitute for deriving it:
 // this is the check that the marker itself has not been renamed away, which

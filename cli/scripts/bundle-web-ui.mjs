@@ -69,4 +69,27 @@ const server = join(dest, 'web-ui', 'server.js');
 if (!existsSync(server)) {
   throw new Error(`server.js missing after bundle at ${server}`);
 }
+
+// 4. Assert the Scan page's ReDoS-bounding worker came along with it.
+//
+// Nothing IMPORTS that worker — the folder scan starts it by path — so Next's
+// tracer only copies it because next.config.ts names it in
+// outputFileTracingIncludes. That is a config entry with no compiler behind it:
+// rename the file, retarget the tsup output, or drop the entry, and the build
+// still succeeds while the shipped dashboard loses its bound in the one way
+// that never shows up locally — silently, on someone else's machine, where the
+// scan just stops running the rules it cannot bound. So the packaging step is
+// where it gets checked, because packaging is the step that would ship it.
+//
+// The path is the one web-ui/app/lib/scan-worker.ts resolves against
+// `process.cwd()`, and the standalone server chdir's to its own directory —
+// so this is literally where the running dashboard will look.
+const scanWorker = join(dirname(server), 'dist', 'scan-worker.js');
+if (!existsSync(scanWorker)) {
+  throw new Error(
+    `scan-worker.js missing after bundle at ${scanWorker} — the dashboard's folder scan ` +
+      `would ship with no ReDoS bound. Check web-ui/tsup.config.ts (emits it) and ` +
+      `next.config.ts outputFileTracingIncludes (copies it into the standalone build).`,
+  );
+}
 log(`bundled standalone web-ui → ${server}`);

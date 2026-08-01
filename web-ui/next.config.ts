@@ -26,6 +26,15 @@ const nextConfig: NextConfig = {
   // — and the packaged @akasecurity/cli — can launch the web-ui without a full
   // node_modules. node:sqlite is traced in as a Node builtin.
   output: 'standalone',
+  // The scan page's ReDoS-bounding worker thread. Nothing IMPORTS it — it is
+  // started by path with `new Worker(…)` — so Next's tracer cannot discover it
+  // and the standalone build would ship without it, leaving the folder scan to
+  // drop every unreviewed rule it cannot bound. The path must stay in step with
+  // SCAN_WORKER_RELATIVE_PATH in app/lib/scan-worker.ts, which is what resolves
+  // it at runtime, and with tsup.config.ts, which emits it.
+  outputFileTracingIncludes: {
+    '/scan': ['./dist/scan-worker.js'],
+  },
   // Server Actions carry the dashboard's write surface. Next's built-in CSRF
   // check requires Origin == Host; this list only ever WIDENS that check (it is
   // consulted when the two differ), so it is pinned to loopback spellings of

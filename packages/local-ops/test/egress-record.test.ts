@@ -74,8 +74,8 @@ function storedSites(dir: string): StoredSite[] {
 
 // Walk `target` and record whatever egress the walk produced — the exact
 // two-call sequence the CLI and the web-ui Scan action perform.
-function scanAndRecord(db: LocalDatabase, target: string, base: string) {
-  const result = scanPathIntoStore(db, target, { rules: [] });
+async function scanAndRecord(db: LocalDatabase, target: string, base: string) {
+  const result = await scanPathIntoStore(db, target, { rules: [] });
   return recordProjectEgress(db, target, result.egress, base);
 }
 
@@ -99,7 +99,7 @@ afterEach(() => {
 });
 
 describe('recordProjectEgress — git project', () => {
-  it('keys on the remote identity and stores repo-relative posix paths', () => {
+  it('keys on the remote identity and stores repo-relative posix paths', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.stripe.com');
     writeFileSync(
@@ -107,7 +107,7 @@ describe('recordProjectEgress — git project', () => {
       `${JSON.stringify({ name: 'demo', dependencies: { stripe: '^14.0.0' } }, null, 2)}\n`,
     );
 
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     // Display name is the remote slug; the reconcile key is the prefixed
     // identity, never the bare one.
@@ -131,11 +131,11 @@ describe('recordProjectEgress — git project', () => {
     expect(sites.map((s) => s.method).sort()).toEqual(['POST', 'SDK']);
   });
 
-  it('records the same key and paths when a subdirectory is the scan target', () => {
+  it('records the same key and paths when a subdirectory is the scan target', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
 
-    scanAndRecord(db, join(root, 'src'), base);
+    await scanAndRecord(db, join(root, 'src'), base);
 
     const sites = storedSites(store);
     // Relativized against the worktree root, not the scan target: a subtree
@@ -144,12 +144,12 @@ describe('recordProjectEgress — git project', () => {
     expect(sites[0]?.projectKey).toBe(`git:${REMOTE_URL}`);
   });
 
-  it('is idempotent across repeated scans of an unchanged tree', () => {
+  it('is idempotent across repeated scans of an unchanged tree', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
 
-    const first = scanAndRecord(db, root, base);
-    const second = scanAndRecord(db, root, base);
+    const first = await scanAndRecord(db, root, base);
+    const second = await scanAndRecord(db, root, base);
 
     expect(second).toEqual(first);
     expect(storedSites(store)).toHaveLength(1);
@@ -163,14 +163,14 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
     writeCall(join(root, 'lib', 'old.ts'), 'api.beta-corp.com');
   }
 
-  it('replaces only the scanned subtree, leaving sibling directories intact', () => {
+  it('replaces only the scanned subtree, leaving sibling directories intact', async () => {
     twoDirCorpus();
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     expect(storedSites(store)).toHaveLength(2);
 
     // Re-point src/ at a different host, then scan ONLY src/.
     writeCall(join(root, 'src', 'pay.ts'), 'api.gamma-corp.com');
-    scanAndRecord(db, join(root, 'src'), base);
+    await scanAndRecord(db, join(root, 'src'), base);
 
     const sites = storedSites(store);
     // src/ was replaced in place; lib/ was never walked and survives.
@@ -180,16 +180,16 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
     ]);
   });
 
-  it('replaces exactly one file when the scan target is that file', () => {
+  it('replaces exactly one file when the scan target is that file', async () => {
     twoDirCorpus();
     writeCall(join(root, 'src', 'other.ts'), 'api.delta-corp.com');
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     expect(storedSites(store)).toHaveLength(3);
 
     // A single-file target must scope the replacement to that file's own path
     // — never to its directory, and never to the whole project.
     writeCall(join(root, 'src', 'pay.ts'), 'api.gamma-corp.com');
-    const recorded = scanAndRecord(db, join(root, 'src', 'pay.ts'), base);
+    const recorded = await scanAndRecord(db, join(root, 'src', 'pay.ts'), base);
 
     const sites = storedSites(store);
     expect(sites.map((s) => `${s.file}:${s.host}`)).toEqual([
@@ -201,16 +201,16 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
     expect(recorded?.callSites).toBe(3);
   });
 
-  it('does not let a single-file target delete a same-prefixed sibling', () => {
+  it('does not let a single-file target delete a same-prefixed sibling', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
     // Shares the 'src/pay.ts' string prefix; a prefix-only delete would take it.
     writeCall(join(root, 'src', 'pay.ts.bak.ts'), 'api.beta-corp.com');
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     expect(storedSites(store)).toHaveLength(2);
 
     writeCall(join(root, 'src', 'pay.ts'), 'api.gamma-corp.com');
-    scanAndRecord(db, join(root, 'src', 'pay.ts'), base);
+    await scanAndRecord(db, join(root, 'src', 'pay.ts'), base);
 
     expect(storedSites(store).map((s) => `${s.file}:${s.host}`)).toEqual([
       'src/pay.ts:api.gamma-corp.com',
@@ -218,24 +218,24 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
     ]);
   });
 
-  it('clears rows for a walked file whose egress is gone', () => {
+  it('clears rows for a walked file whose egress is gone', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     expect(storedSites(store)).toHaveLength(1);
 
     writeFileSync(join(root, 'src', 'pay.ts'), 'export const n = 1;\n');
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     expect(storedSites(store)).toEqual([]);
     expect(recorded).toMatchObject({ destinations: 0, endpoints: 0, callSites: 0 });
   });
 
-  it('marks vendored call sites from the stored repo-relative path', () => {
+  it('marks vendored call sites from the stored repo-relative path', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'vendor', 'lib', 'client.ts'), 'api.alpha-corp.com');
 
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
 
     const sites = storedSites(store);
     expect(sites[0]?.file).toBe('vendor/lib/client.ts');
@@ -244,10 +244,10 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
 });
 
 describe('recordProjectEgress — non-git target', () => {
-  it('keys on the realpath of the walked directory and records no project id', () => {
+  it('keys on the realpath of the walked directory and records no project id', async () => {
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
 
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     expect(recorded?.project).toBe(basename(root));
     const sites = storedSites(store);
@@ -256,14 +256,14 @@ describe('recordProjectEgress — non-git target', () => {
     expect(sites[0]?.file).toBe('src/pay.ts');
   });
 
-  it('gives two same-basename directories distinct keys', () => {
+  it('gives two same-basename directories distinct keys', async () => {
     const a = join(root, 'a', 'app');
     const b = join(root, 'b', 'app');
     writeCall(join(a, 'pay.ts'), 'api.alpha-corp.com');
     writeCall(join(b, 'pay.ts'), 'api.beta-corp.com');
 
-    scanAndRecord(db, a, base);
-    scanAndRecord(db, b, base);
+    await scanAndRecord(db, a, base);
+    await scanAndRecord(db, b, base);
 
     const sites = storedSites(store);
     expect(sites).toHaveLength(2);
@@ -277,10 +277,10 @@ describe('recordProjectEgress — non-git target', () => {
     );
   });
 
-  it('keys a single-file target on its containing directory', () => {
+  it('keys a single-file target on its containing directory', async () => {
     writeCall(join(root, 'pay.ts'), 'api.alpha-corp.com');
 
-    scanAndRecord(db, join(root, 'pay.ts'), base);
+    await scanAndRecord(db, join(root, 'pay.ts'), base);
 
     const sites = storedSites(store);
     expect(sites[0]?.projectKey).toBe(`path:${realpathSync(root)}`);
@@ -289,7 +289,7 @@ describe('recordProjectEgress — non-git target', () => {
 });
 
 describe('recordProjectEgress — non-git project boundary (subtree convergence)', () => {
-  it('keys a subtree scan and a root scan on one manifest-anchored project', () => {
+  it('keys a subtree scan and a root scan on one manifest-anchored project', async () => {
     // The finding: a non-git subtree scan minted a SECOND project key that no
     // scan could reconcile. With a package.json boundary, a root scan and a
     // src/ subtree scan must land on ONE key with matching relative paths.
@@ -304,14 +304,14 @@ describe('recordProjectEgress — non-git project boundary (subtree convergence)
     const expectedKey = `path:${realpathSync(root)}`;
     expect(resolveNonGitProject(root, manifestKindOf).projectKey).toBe(expectedKey);
 
-    scanAndRecord(db, root, base);
+    await scanAndRecord(db, root, base);
     let sites = storedSites(store);
     expect(new Set(sites.map((s) => s.projectKey))).toEqual(new Set([expectedKey]));
     expect(sites.some((s) => s.file === 'src/pay.ts')).toBe(true);
 
     // Subtree scan of the SAME project: it used to store `path:.../src` + a bare
     // `pay.ts`; now it reconciles onto the one key with `src/pay.ts`.
-    scanAndRecord(db, join(root, 'src'), base);
+    await scanAndRecord(db, join(root, 'src'), base);
     sites = storedSites(store);
     expect(new Set(sites.map((s) => s.projectKey))).toEqual(new Set([expectedKey]));
     expect(sites.some((s) => s.file === 'src/pay.ts')).toBe(true);
@@ -320,7 +320,7 @@ describe('recordProjectEgress — non-git project boundary (subtree convergence)
 });
 
 describe('recordProjectEgress — key collision safety', () => {
-  it('never aliases a remote-less repo onto the non-git key for the same path', () => {
+  it('never aliases a remote-less repo onto the non-git key for the same path', async () => {
     // A repo with no remote falls back to a PATH-shaped identity, which is
     // exactly the shape the non-git key is built from. The prefixes are what
     // keep the two universes apart. Built under root's OWN realpath (macOS
@@ -334,7 +334,7 @@ describe('recordProjectEgress — key collision safety', () => {
     initRepo(repo);
     writeCall(join(repo, 'pay.ts'), 'api.alpha-corp.com');
 
-    scanAndRecord(db, repo, base);
+    await scanAndRecord(db, repo, base);
 
     const key = storedSites(store)[0]?.projectKey;
     expect(key?.startsWith('git:')).toBe(true);
@@ -349,13 +349,13 @@ describe('recordProjectEgress — key collision safety', () => {
 });
 
 describe('recordProjectEgress — dot-path exclusion', () => {
-  it('does not store egress from a root-level dot-file', () => {
+  it('does not store egress from a root-level dot-file', async () => {
     initRepo(root, REMOTE_URL);
     // fs-scan's entry.isFile() branch has no dot check, so a root-level
     // dot-file like a real .releaserc.js IS walked and read.
     writeCall(join(root, '.releaserc.js'), 'api.acme-webhooks.com');
 
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     // The reconciler's walk-mode delete excludes dot-paths ('file NOT LIKE
     // '.%''), so a stored row here could never be cleared by a later scan.
@@ -364,7 +364,7 @@ describe('recordProjectEgress — dot-path exclusion', () => {
     expect(storedSites(store)).toEqual([]);
   });
 
-  it('does not store egress from a dot-directory reached via an .akaignore negation', () => {
+  it('does not store egress from a dot-directory reached via an .akaignore negation', async () => {
     initRepo(root, REMOTE_URL);
     // A bare '!' re-include beats the default dot-directory skip (fs-scan.ts),
     // so this nested file IS walked despite living under a dot-directory —
@@ -373,7 +373,7 @@ describe('recordProjectEgress — dot-path exclusion', () => {
     writeFileSync(join(root, '.akaignore'), '!.github/\n');
     writeCall(join(root, '.github', 'scripts', 'notify.js'), 'api.acme-webhooks.com');
 
-    const recorded = scanAndRecord(db, root, base);
+    const recorded = await scanAndRecord(db, root, base);
 
     expect(recorded).toMatchObject({ destinations: 0, endpoints: 0, callSites: 0 });
     expect(storedSites(store)).toEqual([]);
@@ -381,21 +381,21 @@ describe('recordProjectEgress — dot-path exclusion', () => {
 });
 
 describe('recordProjectEgress — fail-open', () => {
-  it('returns null and writes nothing when the kill-switch is off', () => {
+  it('returns null and writes nothing when the kill-switch is off', async () => {
     writeSettings(base, false);
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
 
-    expect(scanAndRecord(db, root, base)).toBeNull();
+    expect(await scanAndRecord(db, root, base)).toBeNull();
     expect(storedSites(store)).toEqual([]);
   });
 
-  it('records normally when the kill-switch is explicitly on', () => {
+  it('records normally when the kill-switch is explicitly on', async () => {
     writeSettings(base, true);
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
 
-    expect(scanAndRecord(db, root, base)).toMatchObject({ callSites: 1 });
+    expect(await scanAndRecord(db, root, base)).toMatchObject({ callSites: 1 });
   });
 
   it('returns null for a target that does not exist', () => {
@@ -404,10 +404,10 @@ describe('recordProjectEgress — fail-open', () => {
     expect(storedSites(store)).toEqual([]);
   });
 
-  it('returns null instead of throwing when the store is closed', () => {
+  it('returns null instead of throwing when the store is closed', async () => {
     initRepo(root, REMOTE_URL);
     writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
-    const result = scanPathIntoStore(db, root, { rules: [] });
+    const result = await scanPathIntoStore(db, root, { rules: [] });
     db.close();
 
     expect(() => recordProjectEgress(db, root, result.egress, base)).not.toThrow();

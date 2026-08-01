@@ -63,7 +63,7 @@ export function renderEgressLine(egress: EgressRecordResult): string {
   );
 }
 
-export function runScan(argv: string[]): void {
+export async function runScan(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     options: {
@@ -123,7 +123,19 @@ export function runScan(argv: string[]): void {
     // dataDir: same directory as the plugin's fingerprint key, so a file the
     // plugin already scanned and one `aka scan` re-scans reconcile onto the
     // same finding_key instead of duplicating (see scanPathIntoStore).
-    result = scanPathIntoStore(db, target, { ruleActions, sourceTool: 'cli', dataDir: storeDir });
+    // No `rules`: the CLI evaluates the process-global registry, which
+    // registerBundledPacks() above filled with the compiled-in packs and
+    // nothing else. That ruleset is measured against the adversarial battery
+    // on every commit, so it needs no worker — a scan here is the same
+    // in-process call it has always been. Passing an installed-pack snapshot
+    // instead would put an unreviewed regex on this unbounded path; the
+    // dashboard, which does read that snapshot, goes through
+    // createGuardedFileScanner for exactly that reason.
+    result = await scanPathIntoStore(db, target, {
+      ruleActions,
+      sourceTool: 'cli',
+      dataDir: storeDir,
+    });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
     inventory = recordProjectInventory(db, target);

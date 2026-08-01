@@ -158,7 +158,7 @@ describe('scanPathIntoStore', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: RULES, sourceTool: 'cli' });
+      const result = await scanPathIntoStore(db, root, { rules: RULES, sourceTool: 'cli' });
       expect(result.scanned).toBe(2);
       expect(result.findings).toBe(1);
       // Per-file detail (the --format json surface) carries only store-safe
@@ -180,11 +180,11 @@ describe('scanPathIntoStore', () => {
     }
   });
 
-  it('records nothing when no rules match', () => {
+  it('records nothing when no rules match', async () => {
     writeFileSync(join(root, 'clean.ts'), `const ok = true;\n`);
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: RULES });
+      const result = await scanPathIntoStore(db, root, { rules: RULES });
       expect(result).toEqual({ scanned: 1, findings: 0, files: [], egress: { files: [] } });
       expect(storedEvents(store)).toEqual([]);
     } finally {
@@ -197,7 +197,7 @@ describe('scanPathIntoStore', () => {
     const db = openLocalDatabase(store);
     try {
       // The secret rule's category default is 'block'; the pack policy is Monitor.
-      scanPathIntoStore(db, root, {
+      await scanPathIntoStore(db, root, {
         rules: RULES,
         ruleActions: new Map([['test/aws-key', 'log']]),
       });
@@ -213,7 +213,7 @@ describe('scanPathIntoStore', () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);
     try {
-      scanPathIntoStore(db, root, { rules: RULES, ruleActions: new Map() });
+      await scanPathIntoStore(db, root, { rules: RULES, ruleActions: new Map() });
       const findings = await db.findings.recentFindings({ limit: 10 });
       const recorded = findings.find((f) => f.ruleId === 'test/aws-key');
       // DEFAULT_ACTIONS.secret = 'warn'
@@ -223,7 +223,7 @@ describe('scanPathIntoStore', () => {
     }
   });
 
-  it('stamps gitignored provenance on the stored event and never ledgers .akaignore skips', () => {
+  it('stamps gitignored provenance on the stored event and never ledgers .akaignore skips', async () => {
     writeFileSync(join(root, '.gitignore'), 'scratch.env\n');
     writeFileSync(join(root, '.akaignore'), 'excluded.ts\n');
     writeFileSync(join(root, 'scratch.env'), `key=${SECRET}\n`);
@@ -231,7 +231,7 @@ describe('scanPathIntoStore', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: RULES });
+      const result = await scanPathIntoStore(db, root, { rules: RULES });
       expect(result.files).toHaveLength(1);
       expect(result.files[0]?.gitignored).toBe(true);
 
@@ -252,12 +252,12 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
   // The regression test for the bug this fix closes: without a finding_key,
   // ON CONFLICT (finding_key) never fires (SQLite never equates two NULLs in a
   // unique index), so every re-scan of an unchanged file minted a fresh row.
-  it('reconciles a re-scan of an unchanged file onto the same row instead of duplicating', () => {
+  it('reconciles a re-scan of an unchanged file onto the same row instead of duplicating', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);
     try {
-      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
-      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      await scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      await scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
 
       const rows = storedFindings(store);
       expect(rows).toHaveLength(1);
@@ -267,11 +267,11 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     }
   });
 
-  it('still produces a non-null finding_key with no fingerprint key available (no dataDir)', () => {
+  it('still produces a non-null finding_key with no fingerprint key available (no dataDir)', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);
     try {
-      scanPathIntoStore(db, root, { rules: RULES }); // no dataDir option passed
+      await scanPathIntoStore(db, root, { rules: RULES }); // no dataDir option passed
       const rows = storedFindings(store);
       expect(rows).toHaveLength(1);
       expect(rows[0]?.finding_key).toMatch(/^[0-9a-f]{64}$/);
@@ -280,11 +280,11 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     }
   });
 
-  it('derives finding_key via the shared computeFindingKey/fingerprintValue formula — parity with the plugin', () => {
+  it('derives finding_key via the shared computeFindingKey/fingerprintValue formula — parity with the plugin', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const db = openLocalDatabase(store);
     try {
-      scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
+      await scanPathIntoStore(db, root, { rules: RULES, dataDir: store });
       const rows = storedFindings(store);
 
       // Independently recompute the key from the same on-disk fingerprint key
@@ -304,7 +304,7 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     }
   });
 
-  it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', () => {
+  it('resolves a relative target so file_path/finding_key match an absolute-path recomputation', async () => {
     writeFileSync(join(root, 'app.ts'), `const key = '${SECRET}';\n`);
     const absFile = join(root, 'app.ts');
     // A relative directory target — the shape `aka scan src` / `aka scan .` pass
@@ -314,7 +314,7 @@ describe('scanPathIntoStore — finding_key (re-scan reconciliation)', () => {
     const relTarget = relative(process.cwd(), root);
     const db = openLocalDatabase(store);
     try {
-      scanPathIntoStore(db, relTarget, { rules: RULES, dataDir: store });
+      await scanPathIntoStore(db, relTarget, { rules: RULES, dataDir: store });
 
       // The stored event records the ABSOLUTE file path, not the relative target.
       const [event] = storedEvents(store);
@@ -359,7 +359,7 @@ describe('scanPathIntoStore — pointer shield', () => {
     },
   ];
 
-  it('reports a real secret beside a pointer (correct span) and nothing inside the pointer', () => {
+  it('reports a real secret beside a pointer (correct span) and nothing inside the pointer', async () => {
     const content = `token = ${POINTER}\nkey = '${SECRET}'\n`;
     writeFileSync(join(root, 'app.ts'), content);
     const pointerStart = content.indexOf(POINTER);
@@ -367,7 +367,7 @@ describe('scanPathIntoStore — pointer shield', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
+      const result = await scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
       expect(result.findings).toBe(1);
       const finding = result.files[0]?.findings[0];
       expect(finding).toBeDefined();
@@ -388,11 +388,11 @@ describe('scanPathIntoStore — pointer shield', () => {
     }
   });
 
-  it('yields nothing for an already-pointerized file (idempotence)', () => {
+  it('yields nothing for an already-pointerized file (idempotence)', async () => {
     writeFileSync(join(root, 'app.ts'), `token = ${POINTER}\n`);
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
+      const result = await scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
       expect(result.findings).toBe(0);
       expect(result.files).toEqual([]);
       expect(storedEvents(store)).toEqual([]);
@@ -443,14 +443,14 @@ describe('scanPathIntoStore — egress collection', () => {
     writeFileSync(join(root, 'blob.ts'), `${NUL}const u = 'https://api.stripe.com/v1/x';\n`);
   }
 
-  it('extracts from code files and manifests, skipping prose, lockfiles, and NUL-bearing files', () => {
+  it('extracts from code files and manifests, skipping prose, lockfiles, and NUL-bearing files', async () => {
     writeCorpus();
 
     const db = openLocalDatabase(store);
     try {
       // No rules at all, so every file takes the "no matches" path: a pass that
       // only ran after the finding early-out would collect nothing here.
-      const result = scanPathIntoStore(db, root, { rules: [] });
+      const result = await scanPathIntoStore(db, root, { rules: [] });
       expect(result.findings).toBe(0);
 
       const byFile = new Map(result.egress.files.map((f) => [f.file, f]));
@@ -478,7 +478,7 @@ describe('scanPathIntoStore — egress collection', () => {
     }
   });
 
-  it('collects egress for files that produce findings too', () => {
+  it('collects egress for files that produce findings too', async () => {
     writeFileSync(
       join(root, 'app.ts'),
       `const key = '${SECRET}';\nfetch('https://api.stripe.com/v1/charges', { method: 'POST' });\n`,
@@ -486,7 +486,7 @@ describe('scanPathIntoStore — egress collection', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: RULES });
+      const result = await scanPathIntoStore(db, root, { rules: RULES });
       expect(result.findings).toBe(1);
       expect(result.egress.files).toHaveLength(1);
       expect(result.egress.files[0]?.endpoints[0]?.host).toBe('api.stripe.com');
@@ -495,13 +495,13 @@ describe('scanPathIntoStore — egress collection', () => {
     }
   });
 
-  it('omits files whose extraction yields nothing', () => {
+  it('omits files whose extraction yields nothing', async () => {
     writeFileSync(join(root, 'plain.ts'), 'export const n = 1;\n');
     writeFileSync(join(root, 'notes.txt'), 'https://api.stripe.com/v1/charges\n');
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: [] });
+      const result = await scanPathIntoStore(db, root, { rules: [] });
       expect(result.scanned).toBe(2);
       expect(result.egress.files).toEqual([]);
     } finally {
@@ -509,7 +509,7 @@ describe('scanPathIntoStore — egress collection', () => {
     }
   });
 
-  it('marks vendored call sites from the walked path', () => {
+  it('marks vendored call sites from the walked path', async () => {
     mkdirSync(join(root, 'vendor', 'lib'), { recursive: true });
     writeFileSync(
       join(root, 'vendor', 'lib', 'client.ts'),
@@ -518,7 +518,7 @@ describe('scanPathIntoStore — egress collection', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: [] });
+      const result = await scanPathIntoStore(db, root, { rules: [] });
       expect(result.egress.files).toHaveLength(1);
       expect(result.egress.files[0]?.vendored).toBe(true);
     } finally {
@@ -526,7 +526,7 @@ describe('scanPathIntoStore — egress collection', () => {
     }
   });
 
-  it('leaves call sites outside a vendored tree unmarked', () => {
+  it('leaves call sites outside a vendored tree unmarked', async () => {
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(
       join(root, 'src', 'pay.ts'),
@@ -535,7 +535,7 @@ describe('scanPathIntoStore — egress collection', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = scanPathIntoStore(db, root, { rules: [] });
+      const result = await scanPathIntoStore(db, root, { rules: [] });
       expect(result.egress.files).toHaveLength(1);
       expect(result.egress.files[0]?.vendored).toBe(false);
     } finally {

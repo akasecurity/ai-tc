@@ -67,6 +67,13 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
             )}
           </div>
         )}
+        {/* Also outside the ok/error branches: a scan that finished with a
+            smaller ruleset than the Detections page lists has to say so, and a
+            scan that failed on pack state may still have dropped rules on top
+            of that. */}
+        {result?.droppedRules && (
+          <p className="mt-2 text-xs text-sev-medium">{result.droppedRules}</p>
+        )}
         {/* Outside the ok/error branches above: egress extraction does not read
             the ruleset, so destinations are recorded — and worth surfacing —
             even when the scan had no usable packs to run. */}

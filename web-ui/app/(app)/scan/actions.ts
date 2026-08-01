@@ -28,7 +28,6 @@ export interface ScanResult {
   error?: string;
 }
 
-// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function runScan(path: string): Promise<ScanResult> {
   const target = path.trim();
   if (target === '') return { ok: false, error: 'Enter a file or directory path.' };
@@ -54,7 +53,7 @@ export async function runScan(path: string): Promise<ScanResult> {
           : 'The installed rule snapshot is unusable — reinstall with `aka init`.'
       : undefined;
 
-  const result = scanPathIntoStore(db(), target, {
+  const result = await scanPathIntoStore(db(), target, {
     rules: ruleset.rules,
     // Per-pack policy actions from the same snapshot, so at-rest findings carry the
     // detection's assigned Monitor/Warn/Redact/Block (not the per-category default).

@@ -11,6 +11,7 @@ import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const CANONICAL_NUDGE =
   'AKA Security is installed but not calibrated — run /aka:setup to tune notifications to this machine (about a minute).';
@@ -194,7 +195,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       // Consent-off surfaces never touch the vault: no pointer, no vault talk.
       expect(run.stdout).not.toContain('[[aka:');
       // The never-leak assertion: the raw value appears nowhere on stdout.
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -213,7 +214,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.reason).toContain('[[aka:');
       expect(payload.reason).toContain('paste and resubmit');
       // The raw value appears nowhere in the pointerized output.
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -230,7 +231,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.reason).toMatch(/^AKA blocked this prompt — flagged /);
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
       expect(run.stdout).not.toContain('[[aka:');
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -246,7 +247,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
       expect(payload.decision).toBe('block');
       expect(payload.reason).toContain('[[aka:');
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

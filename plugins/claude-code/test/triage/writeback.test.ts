@@ -11,6 +11,7 @@ import {
   SCRUBBED_NOTES,
   TRIAGE_STATUSES as CONSUMER_STATUSES,
 } from '../../src/triage/writeback.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);
@@ -124,25 +125,25 @@ describe('parseTriageStream', () => {
     // A crash mid-write leaves a partial last line carrying raw context. JSON.parse
     // would echo it in a SyntaxError — assert the thrown message stays raw-free.
     const stream = `{"rawMatch":"${RAW}","context":"export KEY=${RAW}`; // truncated, no newline/sentinel
-    try {
-      parseTriageStream(stream);
-      throw new Error('expected parseTriageStream to throw');
-    } catch (err) {
-      expect((err as Error).message).not.toContain(RAW);
-    }
+    // Captured OUTSIDE a catch: a `throw` inside a `try` would be caught by
+    // that same `catch` and asserted against, so the case stayed green while
+    // parseTriageStream stopped throwing at all.
+    const err = errorFrom(() => parseTriageStream(stream));
+    // Positive control: the truncation refusal is the branch under test, not
+    // some earlier validation error that never held the raw.
+    expect(err?.message).toMatch(/truncat|sentinel/i);
+    expectNoEchoOf(err?.message, RAW);
   });
 
   it('never leaks the raw value when a hit line fails JSON/TriageHit validation', () => {
     const badHit = `{"ruleId":"x","rawMatch":"${RAW}","context":"${RAW}","severity":"NOT_A_SEVERITY"}`;
     const stream =
       badHit + '\n' + JSON.stringify({ done: true, count: 1, status: 'complete' }) + '\n';
-    try {
-      parseTriageStream(stream);
-      throw new Error('expected parseTriageStream to throw');
-    } catch (err) {
-      expect((err as Error).message).not.toContain(RAW);
-      expect((err as Error).message).toMatch(/hit line 0/);
-    }
+    const err = errorFrom(() => parseTriageStream(stream));
+    // Which line failed is the positive control — it names the validation
+    // branch, so the absence below describes that branch's own message.
+    expect(err?.message).toMatch(/hit line 0/);
+    expectNoEchoOf(err?.message, RAW);
   });
 });
 

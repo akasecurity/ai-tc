@@ -8,6 +8,7 @@ import {
 } from '../../src/triage/gate-display.ts';
 import type { JoinEntry } from '../../src/triage/join-file.ts';
 import type { ShowcaseCategory } from '../../src/triage/writeback.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const FP_A = 'ab'.repeat(32);
 const FP_B = 'cd'.repeat(32);
@@ -84,8 +85,12 @@ describe('renderSuppressionGate', () => {
     // The real raw value never enters this function; assert it never appears in output.
     const RAW = 'AKIAIOSFODNN7EXAMPLE';
     const out = renderSuppressionGate([entry()], [join()]);
-    expect(out).not.toContain(RAW);
-    expect(out).not.toContain('AKIAIOSFODNN7');
+    // Positive control: the gate really rendered, so an absence within it means
+    // something rather than describing an empty string.
+    expect(out.length).toBeGreaterThan(0);
+    // Run by run. This replaces a hardcoded 13-character prefix check, which
+    // covered one fixed offset and neither the tail nor the interior.
+    expectNoEchoOf(out, RAW);
   });
 
   it('returns a stable message for an empty suppression list', () => {

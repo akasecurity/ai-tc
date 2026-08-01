@@ -40,6 +40,7 @@ import {
   revokeException,
   rotateKey,
 } from '../../app/(app)/exceptions/actions.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
@@ -143,28 +144,13 @@ async function grants(): Promise<DetectionException[]> {
   }
 }
 
-// The shortest run of a raw value whose appearance in an error is still a leak.
-// `not.toContain(value)` alone only catches an error that echoes the value
-// WHOLE — it stays green if a branch ever interpolates a truncated one, and
-// "help the user spot their typo" is exactly the well-meaning change that would
-// do it. Eight characters of a 40-character token is a real disclosure, and for
-// the shorter values other bundled rules match it is most of the secret.
-// This applies to ERRORS only, where no part of the value has any business
-// appearing. The at-rest and grant-shape assertions stay whole-value
-// (`not.toContain`) because `maskMatch` deliberately keeps a fragment visible —
-// that fragment IS the masked preview, and it is stored on purpose.
-const ECHO_RUN = 8;
-
-// Assert an error carries no run of `value` at all, not merely not all of it.
-function expectNoEchoOf(error: string | undefined, value: string): void {
-  expect(error).toBeDefined();
-  const haystack = error ?? '';
-  for (let i = 0; i + ECHO_RUN <= value.length; i += 1) {
-    expect(haystack).not.toContain(value.slice(i, i + ECHO_RUN));
-  }
-  // Values shorter than the run length still must not appear at all.
-  if (value.length < ECHO_RUN) expect(haystack).not.toContain(value);
-}
+// expectNoEchoOf now lives in test/helpers/no-echo.ts with its own suite. It was
+// inline here, which meant its run length could be widened back with nothing
+// going red — every test in this file passed with ECHO_RUN set to 64. It applies
+// to ERRORS here, where no part of the value has any business appearing; the
+// at-rest and grant-shape assertions stay whole-value (`not.toContain`) because
+// `maskMatch` deliberately keeps a fragment visible, and that fragment IS the
+// masked preview, stored on purpose.
 
 function keyFile(): string {
   return join(dir, 'exception.key');

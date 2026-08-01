@@ -79,26 +79,44 @@ export interface GuardedFileScannerOptions {
   probeBudgetMs?: number | undefined;
   /** Test seam: how long the worker has to load before it is called unavailable. */
   startBudgetMs?: number | undefined;
+  /** Test seam: the whole pre-flight's budget, across every rule it measures. */
+  passBudgetMs?: number | undefined;
 }
 
-/** What the guard removed from a scan, and at which of the two gates. */
+/**
+ * What the guard removed from a scan, split by whether a VERDICT SURVIVED it.
+ *
+ * That split is the one a reader acts on, and it does not follow the gates. A
+ * rule the battery measured and failed leaves a `quarantined` row behind, so
+ * `aka detections` can name it and `aka detections unquarantine` can undo it. A
+ * rule that was never measured HERE leaves nothing — deliberately, since
+ * caching a verdict for a rule nobody timed would disable it forever on the
+ * strength of a missing worker or an unlucky pass budget. Both were "dropped
+ * before the walk", but only one of them has anywhere to send the user.
+ */
 export interface DroppedRules {
   /**
-   * Excluded before the walk: a rule that blew the adversarial battery, one the
-   * pre-flight's pass budget ran out on, and — when no worker was supplied —
-   * every regex rule that had nothing but an empirical verdict behind it. All
-   * three mean the same thing to a reader: it could not be run under a bound,
-   * so it was not run.
+   * Measured, failed, and cached: these are what `aka detections` lists. A
+   * cached verdict from an earlier scan — or from a hook — counts here too,
+   * because the row is what makes it visible, not who wrote it.
    */
-  preflight: number;
+  quarantined: number;
+  /**
+   * Never measured here, so nothing was cached: no worker to measure them on,
+   * or the pre-flight's pass budget ran out first. The rules are excluded from
+   * this scan and back on the next one.
+   */
+  unmeasured: number;
   /**
    * Excluded mid-walk, when a scan hit the hard bound and isolation retired.
    * Every rule that was running under the bound goes, not just the culprit —
    * continuing without isolation would put back the unbounded call it exists to
-   * prevent. A culprit that could be named is quarantined for good; collateral
-   * comes back on the next scan.
+   * prevent. A culprit that could be NAMED is quarantined for good; when none
+   * could be, nothing is cached and collateral comes back on the next scan.
    */
   bound: number;
+  /** Whether this scan had a worker at all — a build without one bounds nothing. */
+  isolated: boolean;
 }
 
 // Closures, not methods — `scanText` is handed straight to `scanPathIntoStore`
@@ -202,6 +220,7 @@ export async function createGuardedFileScanner(
   // exists to replace.
   let prober: IsolatedScanner | undefined;
   const gated = await filterUnsafeRules(needsGate, gateway, {
+    passBudgetMs: opts.passBudgetMs,
     prober: {
       probe: (rule) => {
         if (workerUrl === undefined) return Promise.resolve(NO_WORKER);
@@ -211,6 +230,31 @@ export async function createGuardedFileScanner(
     },
   });
   await prober?.close();
+
+  // Attribute each dropped rule to what it left behind, by reading the verdict
+  // cache — the same table `aka detections` reads. Only a rule that was
+  // MEASURED has a row there, so only that one can be pointed at; saying "see
+  // what is quarantined" about a rule nobody timed sends the user to an empty
+  // list. `filterUnsafeRules` hands back the rule objects it was given, so
+  // identity is what separates the survivors from the dropped.
+  const survived = new Set(gated);
+  let quarantined = 0;
+  let unmeasured = 0;
+  for (const rule of needsGate) {
+    if (survived.has(rule)) continue;
+    const key = ruleProbeKey(rule);
+    let verdict;
+    try {
+      verdict = key === undefined ? undefined : (await gateway.getRuleProbeVerdict(key))?.verdict;
+    } catch {
+      // A reporting read must never cost the caller its scan. Unknown counts as
+      // unmeasured: claiming a row exists that nobody could confirm is the one
+      // wrong answer here.
+      verdict = undefined;
+    }
+    if (verdict === 'quarantined') quarantined++;
+    else unmeasured++;
+  }
 
   // Only a REGEX matcher can run without an upper bound, so a pulled keyword
   // rule joins the verified set and a keyword-only custom pack starts no worker.
@@ -231,11 +275,18 @@ export async function createGuardedFileScanner(
     ...isolation,
     degradeScope: DEGRADE_SCOPE,
   });
-  const preflight = needsGate.length - gated.length + unboundable;
+  // A rule dropped for want of a worker was never measured either — its cached
+  // verdict is `safe`, which is exactly why it is not quarantined.
+  unmeasured += unboundable;
 
   return {
     scanText: (text) => scanner.scan(text),
-    dropped: () => ({ preflight, bound: scanner.degraded() ? unverified.length : 0 }),
+    dropped: () => ({
+      quarantined,
+      unmeasured,
+      bound: scanner.degraded() ? unverified.length : 0,
+      isolated: workerUrl !== undefined,
+    }),
     close: () => scanner.close(),
   };
 }

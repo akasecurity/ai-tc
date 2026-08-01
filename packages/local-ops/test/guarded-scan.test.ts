@@ -161,12 +161,17 @@ afterEach(() => {
 });
 
 // Walk `root` exactly as the dashboard's Scan action does.
-async function guardedScan(rules: Rule[], workerUrl: URL | undefined) {
+async function guardedScan(
+  rules: Rule[],
+  workerUrl: URL | undefined,
+  opts: { passBudgetMs?: number } = {},
+) {
   const guard = await createGuardedFileScanner(db, rules, {
     workerUrl,
     budgetMs: BUDGET_MS,
     probeBudgetMs: BUDGET_MS,
     startBudgetMs: START_MS,
+    passBudgetMs: opts.passBudgetMs,
   });
   try {
     const result = await scanPathIntoStore(db, root, { scanText: guard.scanText });
@@ -220,7 +225,7 @@ describe('a pulled rule that never returns', () => {
 
       // The request can also say what it cost: the guard dropped the isolated
       // rule rather than silently scanning without it.
-      expect(dropped).toEqual({ preflight: 0, bound: 1 });
+      expect(dropped).toEqual({ quarantined: 0, unmeasured: 0, bound: 1, isolated: true });
 
       // Convergence. The verdict is shared with the hooks, so the next scan —
       // and the next hook process — drops this rule before it reaches a scan at
@@ -246,7 +251,9 @@ describe('a pulled rule that hangs the timing battery itself', () => {
       expect(elapsedMs).toBeLessThan(ceilingMs(2, 1));
       expect(result.scanned).toBe(1);
       expect(await foundRuleIds()).toContain(CONTROL.rule.id);
-      expect(dropped).toEqual({ preflight: 1, bound: 0 });
+      // MEASURED, so it left a row behind — which is what makes `aka detections`
+      // able to name it, and what the Scan page's notice may point at.
+      expect(dropped).toEqual({ quarantined: 1, unmeasured: 0, bound: 0, isolated: true });
 
       // A measurement that had to be TERMINATED is the strongest unsafe verdict
       // there is, so unlike a rule the pass budget merely ran out on, this one
@@ -279,7 +286,10 @@ describe('a build that ships no scan worker', () => {
 
       expect(elapsedMs).toBeLessThan(ceilingMs(0, 1));
       expect(result.scanned).toBe(1);
-      expect(dropped).toEqual({ preflight: 1, bound: 0 });
+      // UNMEASURED, not quarantined: nothing was timed here, so nothing is
+      // cached and the notice must not send anyone to `aka detections`.
+      expect(dropped).toEqual({ quarantined: 0, unmeasured: 1, bound: 0, isolated: false });
+      expect(db.ruleProbeCache.countQuarantined()).toBe(0);
 
       // The two matchers that cannot backtrack still ran: a compiled-in rule,
       // and a pulled KEYWORD rule, whose fully-escaped literals are safe
@@ -313,11 +323,40 @@ describe('a ruleset with nothing to isolate', () => {
         CRASHING_WORKER,
       );
 
-      expect(dropped).toEqual({ preflight: 0, bound: 0 });
+      expect(dropped).toEqual({ quarantined: 0, unmeasured: 0, bound: 0, isolated: true });
       expect(result.scanned).toBe(1);
       const found = await foundRuleIds();
       expect(found).toContain(CONTROL.rule.id);
       expect(found).toContain(PULLED_KEYWORD.id);
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
+
+describe('a pre-flight that runs out of time before it reaches a rule', () => {
+  it(
+    'reports the rule as unmeasured and caches nothing for it',
+    async () => {
+      silenceStderr();
+      writeFileSync(join(root, 'app.ts'), `${CONTROL.text}\n`);
+      // A pass budget already spent, which is what a cold cache full of slow
+      // rules produces on a real machine. The rule is excluded WITHOUT a
+      // verdict — deliberately, since it was never timed — and that is what
+      // makes it different from one the battery measured and failed.
+      const { dropped } = await guardedScan([CONTROL.rule, BATTERY_BLIND], WORKER, {
+        passBudgetMs: 0,
+      });
+
+      expect(dropped).toEqual({ quarantined: 0, unmeasured: 1, bound: 0, isolated: true });
+      // The half a `preflight` count could not express, and the reason the Scan
+      // page must not offer `aka detections` here: that command prints its
+      // quarantine block only when this count is above zero.
+      expect(verdictOf(BATTERY_BLIND)).toBeUndefined();
+      expect(db.ruleProbeCache.countQuarantined()).toBe(0);
+
+      // …and a build WITH a worker is what makes this distinct from the
+      // missing-worker case, which wants a different message entirely.
+      expect(dropped.isolated).toBe(true);
     },
     CASE_TIMEOUT_MS,
   );

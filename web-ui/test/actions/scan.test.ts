@@ -186,6 +186,19 @@ describe('runScan — a pulled rule that never returns', () => {
       expect(result.droppedRules).toBeDefined();
       expect(result.droppedRules).toContain('1 rule');
       expect(result.droppedRules).toContain('time bound');
+
+      // The pointer is offered here BECAUSE the bound named its culprit and
+      // cached a verdict — so `aka detections` really does have something to
+      // print. The wiring is what this asserts: the action reads that count
+      // from the store rather than assuming it. (What the sentence does when
+      // the count is zero is pinned in test/actions/dropped-rules.test.ts.)
+      const store = openLocalDatabase(dataDir());
+      try {
+        expect(store.ruleProbeCache.countQuarantined()).toBeGreaterThan(0);
+      } finally {
+        store.close();
+      }
+      expect(result.droppedRules).toContain('aka detections');
     },
     CASE_TIMEOUT_MS,
   );

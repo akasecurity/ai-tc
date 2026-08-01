@@ -6,7 +6,6 @@ import { basename, dirname, join, sep } from 'node:path';
 
 import {
   createGuardedFileScanner,
-  type DroppedRules,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
@@ -17,6 +16,7 @@ import type { EgressWriteSummary } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
+import { describeDropped } from '../../lib/dropped-rules';
 import { scanWorkerUrl } from '../../lib/scan-worker';
 
 // The web twin of `aka scan [path]` — the shared pipeline walks the path and
@@ -45,36 +45,6 @@ export interface ScanResult {
   // replacing them — but it means the ruleset that ran was smaller than the one
   // the Detections page lists, which the user has to be told.
   droppedRules?: string;
-}
-
-// One sentence naming what the guard removed and why, or undefined when it
-// removed nothing. Both causes are worth distinguishing: rules dropped BEFORE
-// the walk were never run at all, while a bound that fired mid-walk means the
-// files already scanned saw a bigger ruleset than the ones after it.
-function describeDropped(dropped: DroppedRules): string | undefined {
-  const parts: string[] = [];
-  if (dropped.preflight > 0) {
-    parts.push(
-      `${String(dropped.preflight)} rule${dropped.preflight === 1 ? '' : 's'} could not be ` +
-        `verified as safe to run and ${dropped.preflight === 1 ? 'was' : 'were'} skipped`,
-    );
-  }
-  if (dropped.bound > 0) {
-    parts.push(
-      `${String(dropped.bound)} rule${dropped.bound === 1 ? '' : 's'} had to be dropped ` +
-        `part-way through after a scan overran its time bound`,
-    );
-  }
-  if (parts.length === 0) return undefined;
-  // "Everything else in your enabled packs still ran" is true by construction —
-  // the guard drops rules, never the scan. It deliberately does not claim the
-  // BUILT-IN packs still ran: a user who enabled only a custom pack has no
-  // built-ins to fall back on, and a reassurance that is false for them is
-  // worse than none.
-  return (
-    `${parts.join('; ')}. Everything else in your enabled packs still ran. ` +
-    'Run `aka detections` to see what is quarantined.'
-  );
 }
 
 export async function runScan(path: string): Promise<ScanResult> {
@@ -130,7 +100,11 @@ export async function runScan(path: string): Promise<ScanResult> {
   } finally {
     await guard.close();
   }
-  const droppedRules = describeDropped(guard.dropped());
+  // Read the quarantine count AFTER the walk, never before: the hard bound
+  // quarantines its culprit mid-scan, so a count taken earlier would miss the
+  // one row this scan itself produced. It is what `aka detections` prints from,
+  // so pointing there is only ever offered when it has something to show.
+  const droppedRules = describeDropped(guard.dropped(), db().ruleProbeCache.countQuarantined() > 0);
   // Keep the Inventory page's project + file tree fresh for the repo just
   // scanned (fail-open, no-op outside a git repo).
   recordProjectInventory(db(), target);

@@ -107,7 +107,9 @@ export async function quarantineRule(
 export async function filterUnsafeRules(
   rules: Rule[],
   gateway: RuleProbeGateway,
-  opts?: { passBudgetMs?: number; prober?: RuleProber | undefined },
+  // `| undefined` explicitly: under exactOptionalPropertyTypes a caller
+  // forwarding its own optional seam would otherwise have to strip the key.
+  opts?: { passBudgetMs?: number | undefined; prober?: RuleProber | undefined },
 ): Promise<Rule[]> {
   const passBudgetMs = opts?.passBudgetMs ?? PASS_BUDGET_MS;
   const prober = opts?.prober;

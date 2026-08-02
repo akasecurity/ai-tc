@@ -186,6 +186,55 @@ jobs:
   # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.
+  #
+  # @akasecurity/eslint-config is the one entry that ships nothing — it is
+  # `private: true` and no artifact bundles it. It runs here as the ENFORCEMENT
+  # HALF of the no-network guarantee (CLAUDE.md §4): its suites are what fail the
+  # workspace when a package drops its config, its `lint` script stops covering a
+  # directory, or a vitest config drops the runtime guard. The shipped surface is
+  # only guarded on Windows if the thing that does the guarding runs there too.
+  # What it specifically pins here is path handling that has no Linux or macOS
+  # equivalent, so nothing else in CI can exercise it: globSync yields native
+  # separators while `git ls-files` yields posix, and the two are compared
+  # against each other throughout (effective-config.test.js normalizes with
+  # `dir.split(sep).join('/')`, and matches globs through `path.posix.matchesGlob`
+  # rather than a literal-prefix reduction, so a backslash checkout answers
+  # identically). Those are the code paths that were unexercised until this
+  # filter existed — and the first Windows run of the package caught a real one:
+  # two cases declared with `it.each` (which passes no TestContext) threw instead
+  # of skipping, on the only platform that reaches the skip.
+  #
+  # It runs its whole `test` script — all four suites, 604 assertions — and
+  # depends on no workspace package, so turbo schedules nothing upstream of it.
+  #
+  # Cost, over three Windows runs (identical 604-test workload each time): the
+  # package's task 33s / 54s / 57s, effective-config.test.js 32s / 53s / 55s of
+  # that, against ~4.7s on a developer machine. Size a new case against the
+  # slower end — roughly a 10x factor, not the 3-5x the store suites see.
+  #
+  # It is NOT on the critical path, and that is the number to reason about
+  # rather than the job's wall clock. `@akasecurity/persistence` is the tail in
+  # every run observed, and the test step tracks it plus ~20s of scheduling:
+  #
+  #   run       eslint-config   persistence   test step
+  #   A                 54s          248s         274s
+  #   B                 33s          433s         451s
+  #   C                 57s          236s         262s
+  #
+  # Read B against C: this package's FASTEST run produced the SLOWEST step, and
+  # its slowest produced the fastest. It cannot be what moves the step — a
+  # 33-57s task runs inside persistence's shadow. What moves is runner
+  # throughput: between B and the others every I/O-bound suite shifted 1.7-2x
+  # (persistence 236-248s to 433s, web-ui 171-177s to 345s) while every
+  # CPU-bound one got FASTER, this package included. So do not read this
+  # package's cost off a before/after of the job; single-sample job timings on
+  # this runner attribute nothing.
+  #
+  # The slow work sits in `beforeAll` hooks and three fault-injection cases that
+  # all carry an explicit 120s budget; nothing else here runs long enough to
+  # approach vitest's 5s default. The bash-driven cases in
+  # no-network-runtime.test.js skip themselves on win32 (the CI script is the
+  # Linux job's mechanism) rather than passing vacuously — 9 skipped, 45 run.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
@@ -205,7 +254,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test shipped-surface packages
+      - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
         run: >
@@ -220,3 +269,4 @@ jobs:
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/web-ui
+          --filter=@akasecurity/eslint-config

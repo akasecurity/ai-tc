@@ -516,9 +516,19 @@ function targetCoversFile(target, file) {
  * `file` from an eslint run. Mirrors targetCoversFile — the pattern is matched
  * against the filename for real rather than reduced to a literal prefix, so
  * `*.config.*` excludes vitest.config.ts and leaves middleware.ts alone, and
- * through path.posix.matchesGlob for the same reason: this package sits outside
- * the Windows CI filter, so a matcher that answered differently there would be
- * unexercised until it mattered.
+ * through path.posix.matchesGlob for the same reason: every subject reaching it
+ * is posix (git's output is posix everywhere, and globSync's native output is
+ * normalized at the source above), so the posix matcher is the one that matches
+ * the data's actual shape and a Windows checkout answers identically.
+ *
+ * The bare `path.matchesGlob` would alias to win32 there, and the two disagree
+ * on exactly one input: a subject containing a backslash. They diverge in BOTH
+ * directions — win32 reads `src\a\b.ts` as covered by `src/**\/*.ts` where posix
+ * does not, and posix reads `cli\vitest.config.ts` as covered by `*.config.*`
+ * where win32 does not — so a native path leaking past the normalization would
+ * not merely be matched loosely, it would flip answers by pattern shape with the
+ * host. Pinning the matcher keeps that one bug (a missed normalization) from
+ * turning into two different verdicts.
  *
  * Gitignore-style negation (`!<glob>`, which RE-includes) is not modelled and
  * counts as excluding; so does a pattern the matcher rejects, and an empty one.

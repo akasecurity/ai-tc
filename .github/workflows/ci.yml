@@ -199,16 +199,28 @@ jobs:
   #
   # It runs its whole `test` script — all four suites, 604 assertions — and
   # depends on no workspace package, so turbo schedules nothing upstream of it.
-  # Measured here: the package's own task ~54s, of which effective-config.test.js
-  # is ~53s (against ~4.7s on a developer machine — call it a 10x factor when
-  # sizing anything against a timeout, not the 3-5x the store suites see). The
-  # JOB's wall clock is unchanged within run-to-run noise, because turbo overlaps
-  # it with the other nine: ~5m20s before, ~5m26s after. The slow work sits in
-  # `beforeAll` hooks and three fault-injection cases that all carry an explicit
-  # 120s budget; nothing else here runs long enough to approach vitest's 5s
-  # default. The bash-driven cases in no-network-runtime.test.js skip themselves
-  # on win32 (the CI script is the Linux job's mechanism) rather than passing
-  # vacuously — 9 skipped, 45 run.
+  #
+  # Cost, over the two Windows runs measured (identical 604-test workload both
+  # times): the package's task 33s and 54s, effective-config.test.js 32s and 53s
+  # of that, against ~4.7s on a developer machine. Size a new case against the
+  # slower end — roughly a 10x factor, not the 3-5x the store suites see.
+  #
+  # It is NOT on the critical path, and that is the number to reason about
+  # rather than the job's wall clock. `@akasecurity/persistence` is the tail in
+  # every run observed (248s and 433s here, 252s and 256s on main), and the test
+  # step tracks it plus ~20s of scheduling: 271-252, 273-256, 274-248, 451-433.
+  # A 33-54s task therefore runs inside persistence's shadow. Do not try to read
+  # this package's cost off a before/after of the job: Windows runner throughput
+  # varies enough between runs to swamp it — across the two runs above every
+  # I/O-bound suite moved 1.7-2x (persistence 248s to 433s, web-ui 177s to 345s)
+  # while every CPU-bound one got FASTER, this package included. Single-sample
+  # job timings here attribute nothing.
+  #
+  # The slow work sits in `beforeAll` hooks and three fault-injection cases that
+  # all carry an explicit 120s budget; nothing else here runs long enough to
+  # approach vitest's 5s default. The bash-driven cases in
+  # no-network-runtime.test.js skip themselves on win32 (the CI script is the
+  # Linux job's mechanism) rather than passing vacuously — 9 skipped, 45 run.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest

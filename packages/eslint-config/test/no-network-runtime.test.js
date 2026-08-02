@@ -244,12 +244,19 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     expect(turbo).toMatch(/"globalDependencies"\s*:\s*\[[^\]]*"test\/setup\/\*\*"/);
   });
 
-  it("turbo.json puts ci.yml and the CI script in this suite's task inputs", () => {
-    // Without these two entries the assertions below are self-defeating. They
-    // read files that live in no package, so deleting the No-network job leaves
-    // this task's hash untouched; turbo replays the cached pass from a prior
-    // commit and the assertion guarding the job never executes. The one job that
-    // would have re-run it from scratch is the job that was deleted.
+  it("turbo.json puts ci.yml, the CI script and the repo-root sources in this suite's task inputs", () => {
+    // Without these entries the assertions below are self-defeating. They read
+    // files that live in no package, so deleting the No-network job leaves this
+    // task's hash untouched; turbo replays the cached pass from a prior commit
+    // and the assertion guarding the job never executes. The one job that would
+    // have re-run it from scratch is the job that was deleted.
+    //
+    // The repo-root glob is the same hazard for ADDING rather than deleting.
+    // effective-config.test.js derives the lintable files that belong to no
+    // workspace package and fails when a lint pass covers none of them — but the
+    // per-package input globs there all require a directory segment, so a new
+    // file at the repo ROOT (the one place a file belongs to no package) leaves
+    // this hash untouched and that check never runs against it.
     const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
     const inputs =
       /"@akasecurity\/eslint-config#test"\s*:\s*\{[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
@@ -258,6 +265,7 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     expect(inputs).not.toBeNull();
     expect(inputs[1]).toContain('$TURBO_ROOT$/.github/workflows/ci.yml');
     expect(inputs[1]).toContain('$TURBO_ROOT$/tools/ci/**');
+    expect(inputs[1]).toContain('$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}');
   });
 
   it('ci.yml runs the suite through the egress-blocking script', () => {
@@ -267,10 +275,10 @@ describe('the guard cannot be cached or dropped out of CI', () => {
   });
 
   it('ci.yml runs the repo-root lint and typecheck passes', () => {
-    // `pnpm lint`/`pnpm typecheck` are turbo, which drives per-package scripts,
-    // and the repo root is not a package — so the guard, the probe, the repo-root
-    // configs and the enforcement suites are covered by these two steps and
-    // nothing else. Drop a target and those sources go back to being lint- or
+    // `turbo run lint`/`turbo run typecheck` drive per-package scripts, and the
+    // repo root is not a package — so the guard, the probe, the repo-root configs
+    // and the enforcement suites are covered by these two passes and nothing
+    // else. Drop a target and those sources go back to being lint- or
     // tsc-covered by nothing.
     const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain('pnpm lint:root');
@@ -278,16 +286,40 @@ describe('the guard cannot be cached or dropped out of CI', () => {
 
     const root = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
     const lintRoot = root.scripts['lint:root'];
-    // The scripts must actually reach every target, not just exist.
+    // The workspace-wide scripts CHAIN the root passes, so every caller of them —
+    // the pre-push hook, the two release workflows, a contributor before pushing —
+    // covers the repo root too rather than reading green while a file there is
+    // unlinted or unchecked. Those callers run ONLY these scripts; they never run
+    // the CI steps above.
+    //
+    // Matched as an unconditional `&&` chain rather than as a substring, because
+    // the substring is still there in every way of NOT running the pass: `||`
+    // runs it only once the workspace pass has already failed, `#` comments it
+    // out, and both leave a green run that has skipped the repo root entirely.
+    for (const [name, chained] of [
+      ['lint', 'lint:root'],
+      ['typecheck', 'typecheck:root'],
+    ]) {
+      expect(
+        root.scripts[name],
+        `\`pnpm ${name}\` must chain \`${chained}\` with &&, so the pre-push hook and the release ` +
+          'workflows cover the repo root',
+      ).toMatch(new RegExp(`&&\\s*(?:pnpm|npm)(?:\\s+run)?\\s+${chained}(?:\\s|$)`));
+    }
+    // The targets below are a readable statement of intent, not the gate. What
+    // actually decides whether a repo-root file is linted is the DERIVED
+    // non-package check in effective-config.test.js, which reads the same script
+    // and names any file no invocation covers. Rewording this script is fine as
+    // long as that check stays green — these lines then come along with it.
     expect(lintRoot).toContain('test/setup');
     expect(lintRoot).toContain('tools/ci');
     // The second pass is the ONLY thing that lints the enforcement suites — the
     // eslint-config package's own `lint` is a deliberate no-op — and it hangs off
     // a `&&` in a shell string, one careless edit from vanishing with the first
-    // pass still exit 0. The first pass names the repo-root `*.config.*`.
+    // pass still exit 0. Those suites sit INSIDE a package, so the derived
+    // non-package check cannot see them; this is their only structural guard.
     expect(lintRoot).toContain('packages/eslint-config/test');
     expect(lintRoot).toContain('eslint.root.guard.config.mjs');
-    expect(lintRoot).toMatch(/\*\.config\.\*/);
     expect(root.scripts['typecheck:root']).toContain('tsconfig.root.json');
 
     const rootTsconfig = readFileSync(join(REPO_ROOT, 'tsconfig.root.json'), 'utf8');

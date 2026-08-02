@@ -86,18 +86,21 @@ not a product path; nothing a user installs performs it.
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                             | Cannot see                                          |
-| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`   |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only   |
+| Gate                                          | Catches                                             | Cannot see                                                                     |
+| --------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------ |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`; a file no lint pass targets |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net`                            |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only                              |
 
-The middle one is a vitest `setupFiles` entry every package wires (see [Testing](#testing));
-the last runs the whole suite inside a loopback-only network namespace via
-`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked
-(`tools/ci/egress-probe.mjs` is that proof — it connects to its own loopback listener
-before trusting a failed connect, so a probe that cannot reach anything is never mistaken
-for an absent network).
+The first one is only as wide as the files something points ESLint at, which is why
+coverage is derived and guarded rather than remembered — every package's source dirs and
+root files, and every lintable file belonging to no package at all (see "Adding a new
+workspace package", step 5). The middle one is a vitest `setupFiles` entry every package
+wires (see [Testing](#testing)); the last runs the whole suite inside a loopback-only
+network namespace via `tools/ci/no-network-test.sh`, and fails if it cannot first prove
+egress really is blocked (`tools/ci/egress-probe.mjs` is that proof — it connects to its
+own loopback listener before trusting a failed connect, so a probe that cannot reach
+anything is never mistaken for an absent network).
 
 **What none of the three sees** is code no test runs. All of them observe either source
 text or an executed call, so an untested path can still reach out — which is why the
@@ -348,12 +351,27 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    matching nothing the package ships stays green, which is what stops the guard
    over-reporting.
 
-   That covers files a **package** owns. Files at the **repo root**, owned by no
-   package, are a separate case with its own pass: `pnpm lint:root` /
-   `pnpm typecheck:root`, run outside Turbo (`pnpm lint`/`pnpm typecheck` are
-   `turbo run …`, which drives per-package scripts and never sees the repo root), so
-   CI runs them as their own steps beside `format:check`. `lint:root` is two
-   invocations — the same full-ruleset + network-only split a package makes with
+   A `lint` script is a shell string, so **two ESLint calls are chained with `&&`
+   and nothing else**. Behind a `||` the second runs only once the first has
+   failed, so no green run ever lints what it targets; `|| true` is the mirror
+   image, running the call and discarding its exit code. The same guard drops a
+   segment carrying any operator but `&&` — reporting the package as covering
+   nothing, rather than crediting a call a green run skips.
+
+   That covers files a **package** owns. Files **outside every package** — at the
+   repo root or under a directory no package claims — are a separate case with its
+   own pass: `pnpm lint:root` / `pnpm typecheck:root`. Both run outside Turbo
+   (`turbo run …` drives per-package scripts, each with its package as the working
+   directory, and no package's `lint` script targets anything outside its own
+   tree), and CI runs them as their own steps beside `format:check`. `pnpm lint`
+   and `pnpm typecheck` additionally **chain** them with `&&`, so the pre-push
+   hook, the two release workflows and a contributor running them locally all
+   cover the repo root rather than reading green while a file there is unlinted or
+   unchecked — those callers run only the workspace-wide scripts and never the CI
+   steps. The chain has to be unconditional: behind a `||` the root pass runs only
+   once the workspace pass has already failed, which is every green run skipping
+   the repo root. `lint:root` is two invocations — the same full-ruleset +
+   network-only split a package makes with
    `eslint src test` and its `eslint.scripts.config.mjs`: `eslint.root.config.mjs`
    runs the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
    `*.config.*`; `eslint.root.guard.config.mjs` runs the network-only guard over the
@@ -361,14 +379,41 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    eslint-config package's no-op `lint` leaves behind every other pass.
    `typecheck:root` runs `tsc -p tsconfig.root.json`.
 
-   Anything new at the repo root belongs in those passes — and a **file** at the
-   root is named explicitly, not folded into a directory glob (the same rule step 5
-   draws inside a package). `*.config.*` is the standing lint target for root config
-   and now catches the two root ESLint configs themselves; any other root file is
-   named by hand. A root file carrying `// @ts-check` (as both root configs do) is
-   also named in `tsconfig.root.json`'s `include`, or the directive is decorative —
-   nothing runs `tsc` over it and a real type error surfaces nowhere. Miss the pass
-   and esbuild strips its types unchecked and nothing lints it.
+   Anything new outside every package belongs in those passes — and a **file** at
+   the root is named explicitly, not folded into a directory glob (the same rule
+   step 5 draws inside a package). `*.config.*` is the standing lint target for root
+   config and catches the two root ESLint configs and commitlint's; any other root
+   file is named by hand. A root file carrying `// @ts-check` (as both root configs
+   do) is also named in `tsconfig.root.json`'s `include`, or the directive is
+   decorative — nothing runs `tsc` over it and a real type error surfaces nowhere.
+   Miss the pass and esbuild strips its types unchecked and nothing lints it.
+
+   **Forgetting is caught rather than remembered.** `effective-config.test.js`
+   derives the set of git-tracked lintable files belonging to no workspace package
+   (`git ls-files` minus the `pnpm-workspace.yaml` globs — never a hardcoded list,
+   or a file added tomorrow would not be in it), and fails naming each one that no
+   eslint invocation lints. The coverage side is derived too, and from what is
+   actually **run**: the invocations are walked out of the root `package.json`
+   starting at `lint` and following the scripts it **unconditionally** chains, so
+   a pass sitting in a script no gate invokes — a `lint:fix`, say — covers
+   nothing, and neither does one the chain reaches only on failure. That rule
+   applies to the eslint calls inside a script as well as to the scripts it
+   chains: `eslint <a> || eslint <b>` reads as two passes and runs the second only
+   once the first has already failed, so a green run never lints `<b>`. A
+   fault-injection case then plants network code at each real path and requires
+   all four network
+   rules to fire with no fatal parse error, because a file outside every tsconfig
+   `include` reports a parse error and NO rule violations — structurally wired,
+   behaviorally correct, enforcing nothing. Adding such a file means adding a lint
+   target for it and listing it in `EXPECTED_NON_PACKAGE_FILES`.
+
+   It also means keeping the repo-root glob in `@akasecurity/eslint-config#test`'s
+   `turbo.json` `inputs`: the per-package input globs all require a directory
+   segment, so without it a new root-level file leaves that task's hash untouched
+   and turbo replays a cached green in which the check never ran. Those globs spell
+   their extensions by hand, so the same suite drives that list against the one it
+   enumerates by — a file whose extension it counts as lintable and the glob omits
+   is the same cached-green hole one extension wide.
 
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only

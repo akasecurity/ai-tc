@@ -87,16 +87,23 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # `pnpm lint`/`pnpm typecheck` are `turbo run …`, which drives per-package
-      # scripts — and the repo root is not a workspace package. So repo-root sources
-      # no package owns — the runtime-guarantee pair (test/setup/no-network.ts,
-      # tools/ci/egress-probe.mjs), the repo-root `*.config.*`, and the
-      # eslint-config enforcement suites (whose package `lint` is a no-op) — were
-      # reachable by no ESLint pass and no tsc invocation at all: esbuild strips
-      # their types without checking them, so a type error there surfaced nowhere.
-      # These two steps are their only coverage — lint:root runs a network-only
-      # second pass over the suites — and they run outside Turbo for the same
-      # reason format:check does.
+      # `turbo run …` drives per-package scripts — and the repo root is not a
+      # workspace package. So repo-root sources no package owns — the
+      # runtime-guarantee pair (test/setup/no-network.ts, tools/ci/egress-probe.mjs),
+      # the repo-root `*.config.*`, and the eslint-config enforcement suites (whose
+      # package `lint` is a no-op) — were reachable by no ESLint pass and no tsc
+      # invocation at all: esbuild strips their types without checking them, so a
+      # type error there surfaced nowhere. These passes are their only coverage —
+      # lint:root runs a network-only second pass over the suites — and they run
+      # outside Turbo for the same reason format:check does.
+      #
+      # `pnpm lint` and `pnpm typecheck` above already chain these, so on a red
+      # root file the step above fails first and this one never runs. They stay
+      # named steps anyway: they are what covers the root if that chaining is
+      # ever dropped, and they are the steps a reader looks for when asking what
+      # covers the repo root. The chain is what carries the same coverage to the
+      # pre-push hook and the two release workflows, which run only the
+      # workspace-wide scripts and never these steps.
       - name: Lint (repo root)
         run: pnpm lint:root
 

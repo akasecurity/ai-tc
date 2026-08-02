@@ -556,8 +556,26 @@ const prints = (text) => `#!/bin/sh\necho '${text}'\n`;
 
 const MARKER = 'the-suite-actually-ran';
 
-/** Skip where the harness cannot run at all rather than passing vacuously. */
+/**
+ * Skip where the harness cannot run at all rather than passing vacuously.
+ *
+ * The context check runs BEFORE the platform test, so a miswired case fails on
+ * every platform instead of only the one that reaches the skip. `it.each` does
+ * not hand its callback a TestContext — the second parameter is the next case
+ * value, or undefined for a flat array — while `it` and `it.for` both do. Wired
+ * through `it.each`, this function therefore dereferences undefined, and only
+ * where the skip is taken: green on every POSIX machine, `Cannot read properties
+ * of undefined (reading 'skip')` on Windows. Asserting the context up front is
+ * what turns that into one loud failure everywhere.
+ * @param {import('vitest').TestContext} ctx
+ */
 function requirePosixShell(ctx) {
+  if (typeof ctx?.skip !== 'function') {
+    throw new TypeError(
+      'requirePosixShell needs a vitest TestContext to skip with, and was given none. Declare the ' +
+        'case with `it` or `it.for`; `it.each` does not pass one.',
+    );
+  }
   if (process.platform === 'win32' || !existsSync(BASH)) {
     ctx.skip(`needs ${BASH}; the script is the Linux CI job's mechanism`);
   }
@@ -641,7 +659,9 @@ describe('the CI script refuses to run vacuously', () => {
     expect(run.stderr).toContain('usage:');
   });
 
-  it.each(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
+  // `it.for`, not `it.each`: only `for` passes the TestContext these cases skip
+  // through. See requirePosixShell.
+  it.for(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
     requirePosixShell(ctx);
     // A probe whose own tooling is absent reports "not blocked = false" and the
     // control passes having probed nothing. This is the exact vacuous pass the

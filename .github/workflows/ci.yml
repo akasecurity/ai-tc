@@ -179,6 +179,25 @@ jobs:
   # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.
+  #
+  # @akasecurity/eslint-config is the one entry that ships nothing — it is
+  # `private: true` and no artifact bundles it. It runs here as the ENFORCEMENT
+  # HALF of the no-network guarantee (CLAUDE.md §4): its suites are what fail the
+  # workspace when a package drops its config, its `lint` script stops covering a
+  # directory, or a vitest config drops the runtime guard. The shipped surface is
+  # only guarded on Windows if the thing that does the guarding runs there too.
+  # What it specifically pins here is path handling that has no Linux or macOS
+  # equivalent, so nothing else in CI can exercise it: globSync yields native
+  # separators while `git ls-files` yields posix, and the two are compared
+  # against each other throughout (effective-config.test.js normalizes with
+  # `dir.split(sep).join('/')`, and matches globs through `path.posix.matchesGlob`
+  # rather than a literal-prefix reduction, so a backslash checkout answers
+  # identically). Those are the code paths that were unexercised until this
+  # filter existed. It runs its whole `test` script — all four suites, ~600
+  # assertions — and depends on no workspace package, so turbo schedules nothing
+  # upstream of it and the leg costs seconds, not minutes. The bash-driven cases
+  # in no-network-runtime.test.js skip themselves on win32 (the CI script is the
+  # Linux job's mechanism) rather than passing vacuously.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
@@ -198,7 +217,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test shipped-surface packages
+      - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
         run: >
@@ -213,3 +232,4 @@ jobs:
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/web-ui
+          --filter=@akasecurity/eslint-config

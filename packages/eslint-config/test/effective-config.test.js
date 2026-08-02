@@ -610,6 +610,19 @@ const invocationsCoverFile = (invocations, file) =>
   coveringInvocation(invocations, file) !== undefined;
 
 /**
+ * Every eslint invocation a package's `lint` script actually runs on a green
+ * pass. One helper rather than a bare `eslintInvocations(lintScript)` at each
+ * call site, for the same reason `coveringInvocation` exists: the coverage check
+ * and the fault injection that reproduces it must read the script by ONE rule,
+ * or a script whose segments disagree could be blessed by one and reproduced
+ * from the other. `unconditionalSegments` is that rule — see it for why only
+ * `&&` counts.
+ * @param {string} lintScript
+ */
+const packageLintInvocations = (lintScript) =>
+  unconditionalSegments(lintScript).flatMap(eslintInvocations);
+
+/**
  * Split the guarded packages by how they fail the config requirement. Pure over
  * its input so the failure paths are testable with synthetic packages — a real,
  * healthy tree produces none by construction.
@@ -633,7 +646,7 @@ function configViolations(guarded) {
     // lints <b> however the targets read.
     lintNotWired: guarded
       .filter((p) => {
-        const invocations = unconditionalSegments(p.lintScript).flatMap(eslintInvocations);
+        const invocations = packageLintInvocations(p.lintScript);
         if (!invocations.some((i) => i.targets.length)) return true;
         return (p.codeDirs ?? []).some((d) => !invocationsCoverDir(invocations, d));
       })
@@ -647,7 +660,7 @@ function configViolations(guarded) {
     // Each offender names its uncovered files, because neither "add a target"
     // nor "drop an ignore" is actionable without knowing which ones are missing.
     rootFilesNotWired: guarded.flatMap((p) => {
-      const invocations = unconditionalSegments(p.lintScript).flatMap(eslintInvocations);
+      const invocations = packageLintInvocations(p.lintScript);
       const uncovered = (p.rootFiles ?? []).filter((f) => !invocationsCoverFile(invocations, f));
       return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
     }),
@@ -1438,6 +1451,26 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
         '@akasecurity/newpkg (packages/newpkg) → vitest.config.ts',
       ]);
     }
+  });
+
+  it('reads a package script by ONE rule, so coverage and fault injection cannot disagree', () => {
+    // configViolations blesses a package through packageLintInvocations, and the
+    // fault-injection describes below reproduce ONE of those invocations to plant
+    // a file against. Both must read the script the same way: if the injection
+    // parsed the raw string it could pick an invocation out of a segment a green
+    // run never executes, and then lint a probe through a pass that does not run.
+    // The two halves below are the control — the rules genuinely differ on this
+    // script, which is what makes routing the call sites load-bearing rather than
+    // cosmetic.
+    const script = 'eslint src || eslint *.config.*';
+    expect(
+      invocationsCoverFile(packageLintInvocations(script), 'vitest.config.ts'),
+      'the conditional segment must be dropped, so nothing can be injected through it',
+    ).toBe(false);
+    expect(
+      invocationsCoverFile(eslintInvocations(script), 'vitest.config.ts'),
+      'raw parsing must still credit it — otherwise this case proves nothing about which rule is used',
+    ).toBe(true);
   });
 
   it('clears a package whose two eslint calls are chained with &&', () => {
@@ -2464,7 +2497,9 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   it(
     'reports the planted file with every network rule',
     async () => {
-      const invocations = eslintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript);
+      const invocations = packageLintInvocations(
+        /** @type {{ lintScript: string }} */ (pkg).lintScript,
+      );
       const invocation = invocations.find((i) =>
         i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
       );
@@ -2541,7 +2576,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
     'lints the planted file, stops once an ignore flag is added, and is reported as uncovered',
     async () => {
       const lintScript = /** @type {{ lintScript: string }} */ (pkg).lintScript;
-      const invocation = eslintInvocations(lintScript).find((i) =>
+      const invocation = packageLintInvocations(lintScript).find((i) =>
         i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
       );
       expect(
@@ -2594,12 +2629,12 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         // The guard: the same script string must now read as NOT covering it,
         // and the violation list must NAME the file rather than the package.
         expect(
-          invocationsCoverFile(eslintInvocations(lintScript), PROBE_FILE),
+          invocationsCoverFile(packageLintInvocations(lintScript), PROBE_FILE),
           `the real script reads as not covering ${PROBE_FILE}, so the flagged read below would ` +
             'match it for the wrong reason',
         ).toBe(true);
         expect(
-          invocationsCoverFile(eslintInvocations(mutatedScript), PROBE_FILE),
+          invocationsCoverFile(packageLintInvocations(mutatedScript), PROBE_FILE),
           `${mutatedScript} still reads as covering ${PROBE_FILE}, which eslint just proved it ` +
             'does not lint',
         ).toBe(false);

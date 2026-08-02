@@ -41,12 +41,26 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 //     the ban would be structurally wired, behaviorally correct, and enforcing
 //     nothing. Only running the linter shows that.
 //
-// The three compose into a closed loop: (1) guarantees every package ships a
+//  4. NON-PACKAGE: the same three questions for the git-tracked lintable files
+//     that belong to NO workspace package. `turbo run lint` drives per-package
+//     scripts, each with its package as the working directory, and no package's
+//     `lint` script targets anything outside its own tree — a file outside every
+//     package is lintable only by a pass declared in the ROOT manifest. Without
+//     this leg the COUNT of such files is unobserved, so one added later is
+//     unlinted by construction with every assertion above still green. BOTH
+//     sides are derived, the same way everything else here is: the file set is
+//     every git-tracked lintable file minus everything under a workspace package
+//     directory, and the coverage set is the eslint invocations `pnpm lint`
+//     really reaches — walked from the script the gates run, so an invocation
+//     sitting in a script nothing executes covers nothing.
+//
+// The four compose into a closed loop: (1) guarantees every package ships a
 // config and points eslint at everything it ships, (2) is fed the same derived
 // list and proves each config enforces the ban, (3) proves the files the ban
-// covers actually parse and report. A new package that forgets its config fails
-// (1); one whose config fails to wire the ban fails (2); one whose root files
-// cannot be linted at all fails (3).
+// covers actually parse and report, (4) says the same of everything belonging to
+// no package at all. A new package that forgets its config fails (1); one whose
+// config fails to wire the ban fails (2); one whose root files cannot be linted
+// at all fails (3); a repo-root file no pass targets fails (4).
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -90,6 +104,9 @@ const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 //     it can never appear in childDirs, so widening the source-dir check can
 //     never reach it, and every package keeps its build and tooling config
 //     (tsup.config.ts, vitest.config.ts, eslint.config.mjs) exactly there.
+//   files — every lintable tracked path, flat. Both maps above are keyed by a
+//     package-relative parent, so neither can answer "which files belong to no
+//     package at all"; that question needs the whole list.
 const LINTABLE_TRACKED = (() => {
   let tracked;
   try {
@@ -109,8 +126,11 @@ const LINTABLE_TRACKED = (() => {
   const childDirs = new Map();
   /** @type {Map<string, Set<string>>} */
   const rootFiles = new Map();
+  /** @type {string[]} */
+  const files = [];
   for (const file of tracked) {
     if (!file || !LINTABLE_EXT.test(file)) continue;
+    files.push(file);
     const parts = file.split('/');
     const parent = parts.slice(0, -1).join('/');
     let siblings = rootFiles.get(parent);
@@ -123,7 +143,7 @@ const LINTABLE_TRACKED = (() => {
       children.add(/** @type {string} */ (parts[i]));
     }
   }
-  return { childDirs, rootFiles };
+  return { childDirs, rootFiles, files: files.sort() };
 })();
 
 /** The immediate subdirectories of `dir` that hold lintable tracked source. */
@@ -575,12 +595,32 @@ const invocationsCoverDir = (invocations, dir) =>
       !invocationExcludes(i, dir, ignoreExcludesDir),
   );
 
-const invocationsCoverFile = (invocations, file) =>
-  invocations.some(
+// The invocation that lints `file`, or undefined. Coverage is `!== undefined` on
+// this rather than a parallel `.some(...)`, so the fault-injection cases below —
+// which have to reproduce ONE invocation, with its own `-c` config — can never
+// pick a different invocation than the coverage check blessed.
+const coveringInvocation = (invocations, file) =>
+  invocations.find(
     (i) =>
       i.targets.some((t) => targetCoversFile(t, file)) &&
       !invocationExcludes(i, file, ignoreExcludesFile),
   );
+
+const invocationsCoverFile = (invocations, file) =>
+  coveringInvocation(invocations, file) !== undefined;
+
+/**
+ * Every eslint invocation a package's `lint` script actually runs on a green
+ * pass. One helper rather than a bare `eslintInvocations(lintScript)` at each
+ * call site, for the same reason `coveringInvocation` exists: the coverage check
+ * and the fault injection that reproduces it must read the script by ONE rule,
+ * or a script whose segments disagree could be blessed by one and reproduced
+ * from the other. `unconditionalSegments` is that rule — see it for why only
+ * `&&` counts.
+ * @param {string} lintScript
+ */
+const packageLintInvocations = (lintScript) =>
+  unconditionalSegments(lintScript).flatMap(eslintInvocations);
 
 /**
  * Split the guarded packages by how they fail the config requirement. Pure over
@@ -592,15 +632,21 @@ function configViolations(guarded) {
   return {
     missing: guarded.filter((p) => !p.hasConfig).map((p) => p.label),
     notExtending: guarded.filter((p) => p.hasConfig && !p.extendsShared).map((p) => p.label),
-    // A config eslint is never pointed at enforces nothing: `pnpm lint` is
-    // `turbo run lint`, and turbo SKIPS a package with no `lint` script (exit 0,
+    // A config eslint is never pointed at enforces nothing: the per-package half
+    // of `pnpm lint` is `turbo run lint`, and turbo SKIPS a package with no
+    // `lint` script (exit 0,
     // "No tasks were executed"). The script must also name every source dir the
     // package actually ships, or those files go unlinted by construction — and
     // must not hand one straight back with an ignore flag, which reads as
     // covered from the targets alone.
+    //
+    // Only the UNCONDITIONAL segments count, the same rule the repo-root walk
+    // applies: a lint script is a shell string, and `eslint <a> || eslint <b>`
+    // runs the second call only once the first has failed, so a green run never
+    // lints <b> however the targets read.
     lintNotWired: guarded
       .filter((p) => {
-        const invocations = eslintInvocations(p.lintScript);
+        const invocations = packageLintInvocations(p.lintScript);
         if (!invocations.some((i) => i.targets.length)) return true;
         return (p.codeDirs ?? []).some((d) => !invocationsCoverDir(invocations, d));
       })
@@ -614,7 +660,7 @@ function configViolations(guarded) {
     // Each offender names its uncovered files, because neither "add a target"
     // nor "drop an ignore" is actionable without knowing which ones are missing.
     rootFilesNotWired: guarded.flatMap((p) => {
-      const invocations = eslintInvocations(p.lintScript);
+      const invocations = packageLintInvocations(p.lintScript);
       const uncovered = (p.rootFiles ?? []).filter((f) => !invocationsCoverFile(invocations, f));
       return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
     }),
@@ -628,6 +674,154 @@ function configViolations(guarded) {
       .map((p) => p.label),
   };
 }
+
+// --- The files that belong to no workspace package ---------------------------
+//
+// Everything above is per PACKAGE, and that loop has no leg for a file belonging
+// to no package at all. `turbo run lint` runs each package's own `lint` script
+// with that package as the working directory, and no package's script targets
+// anything outside its own tree: a file outside every package is lintable only by
+// a pass declared in the ROOT manifest, which runs at the repo root — and only
+// when the script the gates actually invoke reaches that pass.
+//
+// Files INSIDE a package are the per-package leg's business even when a root
+// pass is what lints them — the enforcement suites next to this file are the one
+// case, covered by the root manifest's second, network-only invocation because
+// @akasecurity/eslint-config's own `lint` is the deliberate no-op recorded in
+// CONFIG_OPT_OUT.
+//
+// The set is DERIVED for the same reason codeDirs and rootFiles are: a hardcoded
+// list of the files that exist today would stay green the day a new one is
+// added, which is the only moment this check exists for.
+
+/** Every workspace package directory, as a posix path. */
+const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir.split(sep).join('/'));
+
+/** Every git-tracked lintable file that sits under no workspace package. */
+const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
+  (file) => !PACKAGE_DIRS.some((dir) => file.startsWith(`${dir}/`)),
+);
+
+// The exact set expected on disk, pinned (sorted) for the same reason
+// EXPECTED_WORKSPACE_PACKAGE_NAMES is: the coverage check below is a filter over
+// the derived list, so a derivation that silently DROPPED a file would leave it
+// missing from both sides and fail nothing. An exact set fails loudly on any
+// add, drop or rename — and a new package-less file is exactly the moment
+// somebody should be asked which lint pass covers it.
+const EXPECTED_NON_PACKAGE_FILES = [
+  'commitlint.config.mjs',
+  'eslint.root.config.mjs',
+  'eslint.root.guard.config.mjs',
+  'test/setup/no-network.ts',
+  'tools/ci/egress-probe.mjs',
+];
+
+// The root script the gates run: lefthook's pre-push hook, the CI lint step and
+// both release workflows all invoke `pnpm lint`. Coverage is walked FROM it, not
+// collected from every script in the manifest, because an invocation nothing runs
+// covers nothing: a conventional `"lint:fix": "eslint . --fix"` sitting in the
+// manifest would otherwise satisfy the check below however narrow the real pass
+// got, and the guard would go green while the ban stopped reaching these files.
+const ROOT_LINT_ENTRY_SCRIPT = 'lint';
+
+/**
+ * The commands a script body runs UNCONDITIONALLY, and whose failure fails the
+ * script. `a && b` is the only form that is both: b runs whenever a succeeded,
+ * and the script exits non-zero when b does. A segment carrying any other
+ * operator is dropped whole rather than read up to it, because the operator
+ * defangs the command on EITHER side of itself — `||` both withholds what follows
+ * (`a || b` runs b only when a FAILED) and discards what precedes it
+ * (`b || true` runs b and swallows its exit code) — while `;` lets an earlier
+ * failure be masked, `|` pipes, a bare `&` backgrounds, and `#` comments the rest
+ * out. A form this does not model is simply not read, so whatever it would have
+ * contributed goes uncredited: loud, and on the side that fails rather than the
+ * side that ships unlinted.
+ *
+ * Both halves of the root walk go through this — the scripts a script chains AND
+ * the eslint calls it makes directly. Reading the two by different rules is what
+ * lets `eslint <targets> || eslint <other targets>` read as covering both while
+ * the second only runs once the first has already failed, which is a file
+ * reported as linted that no green run ever lints.
+ * @param {string} script
+ * @returns {string[]} the segments that run unconditionally
+ */
+const unconditionalSegments = (script) =>
+  script.split('&&').filter((part) => !/\||;|&|#/.test(part));
+
+/**
+ * The other package scripts a script body runs unconditionally.
+ * @param {string} script
+ * @returns {string[]} the script names it runs
+ */
+function scriptReferences(script) {
+  const names = [];
+  for (const part of unconditionalSegments(script)) {
+    const tokens = part.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
+    const pm = tokens.findIndex((t) => /^(?:pnpm|npm|yarn)$/.test(unquote(t)));
+    if (pm === -1) continue;
+    // Skip the package manager's own flags, then the optional `run` verb. A flag
+    // that takes a SEPARATE value (`--filter <pkg>`) leaves that value as the
+    // candidate name; it will not be a script key, so nothing is followed —
+    // under-approximating again rather than crediting the wrong script.
+    let i = pm + 1;
+    while (i < tokens.length && unquote(tokens[i]).startsWith('-')) i++;
+    if (unquote(tokens[i] ?? '') === 'run') i++;
+    if (i < tokens.length) names.push(unquote(tokens[i]));
+  }
+  return names;
+}
+
+/**
+ * Every eslint invocation `pnpm <entry>` really runs, following the root scripts
+ * it chains. Read out of the script BODIES rather than by the name of the pass,
+ * so renaming `lint:root` cannot blind this — a rename has to update the caller,
+ * which this walk reads. Deleting the chain, or making it conditional, empties
+ * the list instead and every file below is reported as uncovered.
+ *
+ * Each unconditional segment is parsed on its own rather than handing the whole
+ * body to eslintInvocations, which splits on `||` and `;` too and so credits an
+ * eslint call that a green run never reaches. That parser is shared with the
+ * per-package check, where a lint script is the whole command; here the command
+ * is one segment of a chain and the operator between segments is the thing being
+ * measured.
+ * @param {Record<string, unknown> | undefined} scripts
+ * @param {string} entry the script the gates invoke
+ */
+function rootLintInvocations(scripts, entry = ROOT_LINT_ENTRY_SCRIPT) {
+  const all = scripts ?? {};
+  const invocations = [];
+  const seen = new Set();
+  /** @param {string} name */
+  const walk = (name) => {
+    // A script that calls itself (or a cycle through two) must not spin.
+    if (seen.has(name)) return;
+    seen.add(name);
+    const script = all[name];
+    if (typeof script !== 'string') return;
+    for (const segment of unconditionalSegments(script)) {
+      invocations.push(...eslintInvocations(segment));
+    }
+    for (const referenced of scriptReferences(script)) walk(referenced);
+  };
+  walk(entry);
+  return invocations;
+}
+
+const ROOT_MANIFEST = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+const ROOT_LINT_INVOCATIONS = rootLintInvocations(ROOT_MANIFEST.scripts);
+
+/**
+ * The files none of the given eslint invocations lints — either no target reaches
+ * them, or one does and an ignore flag on that same invocation takes them back
+ * out. Fed the invocations the ROOT pass really runs, so a file is reported when
+ * nothing reaches it AND when the pass that would have is no longer run. Pure
+ * over its inputs so the failure path is testable on synthetic input; a healthy
+ * tree produces none by construction.
+ * @param {string[]} files repo-relative posix paths
+ * @param {ReturnType<typeof eslintInvocations>} invocations
+ */
+const nonPackageFilesNotWired = (files, invocations) =>
+  files.filter((file) => !invocationsCoverFile(invocations, file));
 
 // --- Behavioral resolution helpers (shared by the composition suite) ---------
 
@@ -828,15 +1022,18 @@ describe('every workspace package ships a network-guarded eslint config', () => 
     expect(
       lintNotWired,
       lintNotWired.length
-        ? 'A config file only enforces the ban if eslint is pointed at the code. `pnpm lint` is ' +
-            '`turbo run lint`, which SKIPS a package with no `lint` script (exit 0, "No tasks were ' +
-            'executed"), and a script that lists only some directories leaves the rest unlinted. ' +
+        ? 'A config file only enforces the ban if eslint is pointed at the code. The per-package ' +
+            'half of `pnpm lint` is `turbo run lint`, which SKIPS a package with no `lint` script ' +
+            '(exit 0, "No tasks were executed"), and a script that lists only some directories ' +
+            'leaves the rest unlinted. ' +
             'Point the `lint` script at every directory the package ships code in (a bare `.` ' +
             'counts; naming individual files does not). An `--ignore-pattern` / `--ignore-path` ' +
             'that takes a directory back out counts as not covering it, however the targets read ' +
             '— drop the flag rather than the directory. An `--ignore-path` counts as excluding ' +
             'everything its invocation was pointed at: flat-config eslint rejects the flag ' +
-            `outright, so that invocation lints nothing at all:\n  ${lintNotWired.join('\n  ')}`
+            'outright, so that invocation lints nothing at all. Chain two eslint calls with `&&` ' +
+            'and nothing else: behind a `||` the second runs only once the first has failed, so a ' +
+            `green run never lints what it targets:\n  ${lintNotWired.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });
@@ -880,6 +1077,296 @@ describe('every workspace package ships a network-guarded eslint config', () => 
             `do not wire the shared network guard (spread ...networkGuard):\n  ${scriptsNotExtending.join('\n  ')}`
         : undefined,
     ).toEqual([]);
+  });
+});
+
+describe('every file outside every workspace package is linted by a repo-root pass', () => {
+  it('enumerates exactly the expected package-less files (drift guard)', () => {
+    // Both assertions below filter this list, so an empty or under-counted one
+    // passes them while checking nothing. The exact set is also the review
+    // moment: a new file here has to be pointed at a lint pass by hand.
+    expect(
+      [...NON_PACKAGE_FILES].sort(),
+      'The set of git-tracked lintable files belonging to no workspace package changed. If a file ' +
+        'was added, make sure a repo-root lint pass in the root package.json targets it (see ' +
+        'CLAUDE.md "Adding a new workspace package", step 5) and list it in ' +
+        'EXPECTED_NON_PACKAGE_FILES. If nothing was added, the derivation has regressed and files ' +
+        'are silently missing from the coverage check below.',
+    ).toEqual([...EXPECTED_NON_PACKAGE_FILES].sort());
+    expect(PACKAGE_DIRS.length, 'no workspace package directories were derived').toBeGreaterThan(0);
+  });
+
+  it('turbo hashes every extension this suite counts as lintable', () => {
+    // The check above only runs when turbo decides this task's hash moved, and
+    // that decision is made by a glob whose extension list is written out by
+    // hand. A file whose extension LINTABLE_EXT accepts but the glob omits is
+    // enumerated here and hashed nowhere: turbo replays a cached green and the
+    // guard never sees it. So drive the two against each other rather than
+    // trusting that both lists were edited together. The candidate alphabet is
+    // the ecosystem's real JS/TS extensions — an external, stable fact — not a
+    // restatement of anything in this repo.
+    const CANDIDATE_EXTENSIONS = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'];
+    const lintable = CANDIDATE_EXTENSIONS.filter((ext) => LINTABLE_EXT.test(`probe.${ext}`));
+    expect(lintable.length, 'LINTABLE_EXT accepts no known source extension').toBeGreaterThan(0);
+
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const braceGlobs = [...inputs[1].matchAll(/"([^"]*\{([^}]*)\}[^"]*)"/g)];
+    expect(
+      braceGlobs.length,
+      'no input glob carries an extension list, so nothing here hashes source by extension',
+    ).toBeGreaterThan(0);
+
+    const missing = braceGlobs.flatMap(([, glob, list]) => {
+      const hashed = new Set(list.split(',').map((e) => e.trim()));
+      return lintable.filter((ext) => !hashed.has(ext)).map((ext) => `${glob} omits .${ext}`);
+    });
+    expect(
+      missing,
+      'A file with one of these extensions is enumerated by this suite but left out of the turbo ' +
+        `input glob, so adding one replays a cached green:\n  ${missing.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('the script the gates run reaches at least one eslint invocation', () => {
+    // Without this, deleting the root lint pass — or leaving it in the manifest
+    // behind a `||`, where it runs only when the workspace lint already failed —
+    // would empty the invocation list and the check below would report every file
+    // at once: loud, but for a reason the message would not name.
+    expect(
+      ROOT_LINT_INVOCATIONS.length,
+      `\`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` reaches no eslint invocation, so nothing the pre-push ` +
+        'hook, the CI lint step or the release workflows run lints the files that belong to no ' +
+        'workspace package',
+    ).toBeGreaterThan(0);
+  });
+
+  it('no file outside every workspace package is left unlinted', () => {
+    const uncovered = nonPackageFilesNotWired(NON_PACKAGE_FILES, ROOT_LINT_INVOCATIONS);
+    expect(
+      uncovered,
+      uncovered.length
+        ? 'These git-tracked lintable files belong to no workspace package, and no eslint ' +
+            `invocation reachable from \`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` lints them — either no ` +
+            'target reaches them, a target does and an ignore flag on that same invocation takes ' +
+            'them back out, or the pass that would have covered them is no longer run ' +
+            'unconditionally. `turbo run lint` drives per-package scripts with each package as ' +
+            'the working directory, and no package script targets a file outside its own tree: ' +
+            'these are unlinted by construction and a `fetch()` in one of them ships (CLAUDE.md ' +
+            '"No network calls"). Add a target to the repo-root lint pass that covers them — a ' +
+            'directory covers what is under it, `*.config.*` covers the repo-root build and ' +
+            `tooling config, anything else is named explicitly:\n  ${uncovered.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+});
+
+describe('nonPackageFilesNotWired (the non-package bucket, tested on synthetic input)', () => {
+  // The real tree is healthy, so the failure path above never executes against
+  // it. Drive it directly to prove it fails LOUDLY and NAMES every file.
+  const notWired = (script, files) => nonPackageFilesNotWired(files, eslintInvocations(script));
+
+  it('names a file no root invocation targets', () => {
+    expect(notWired('eslint test/setup tools/ci', ['commitlint.config.mjs'])).toEqual([
+      'commitlint.config.mjs',
+    ]);
+  });
+
+  it('names a file a target reaches and an ignore flag takes back out', () => {
+    // Reads as covered from the targets alone, and eslint skips it.
+    expect(
+      notWired('eslint test/setup *.config.* --ignore-pattern commitlint.config.mjs', [
+        'commitlint.config.mjs',
+        'eslint.root.config.mjs',
+      ]),
+    ).toEqual(['commitlint.config.mjs']);
+  });
+
+  it('names every uncovered file rather than stopping at the first', () => {
+    expect(
+      notWired('eslint tools/ci', ['commitlint.config.mjs', 'test/setup/no-network.ts', 'a.mjs']),
+    ).toEqual(['commitlint.config.mjs', 'test/setup/no-network.ts', 'a.mjs']);
+  });
+
+  it('reports every file when no script invokes eslint at all', () => {
+    // The shape a deleted root pass leaves behind: turbo's own `lint` script
+    // mentions linting and reaches nothing outside a package.
+    expect(notWired('turbo run lint', ['commitlint.config.mjs'])).toEqual([
+      'commitlint.config.mjs',
+    ]);
+  });
+
+  it('clears files every target covers (the control)', () => {
+    // Without this, a predicate that reported EVERYTHING would satisfy each
+    // case above. Both target shapes the real pass uses are exercised: a
+    // directory prefix, and a root-anchored glob.
+    expect(
+      notWired('eslint test/setup tools/ci *.config.*', [
+        'commitlint.config.mjs',
+        'eslint.root.config.mjs',
+        'test/setup/no-network.ts',
+        'tools/ci/egress-probe.mjs',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not let a root-anchored glob vacuously cover a nested file', () => {
+    // `*.config.*` reaches the repo root and no deeper, so a file added under a
+    // new package-less directory is uncovered however the root config glob reads.
+    expect(notWired('eslint *.config.*', ['test/e2e/onboarding/vitest.config.ts'])).toEqual([
+      'test/e2e/onboarding/vitest.config.ts',
+    ]);
+  });
+});
+
+describe('rootLintInvocations (walking the root manifest from the script the gates run)', () => {
+  const ROOT_PASS =
+    'eslint --no-config-lookup -c eslint.root.config.mjs test/setup *.config.* && ' +
+    'eslint --no-config-lookup -c eslint.root.guard.config.mjs packages/eslint-config/test';
+  const targetsOf = (invocations) => invocations.map((i) => i.targets);
+
+  it('follows the chained pass and collects both of its invocations', () => {
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm lint:root',
+          'lint:root': ROOT_PASS,
+          test: 'turbo run test',
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+  });
+
+  it('keeps each invocation whole, config and ignore flags included', () => {
+    // The coverage predicate needs the ignore flags NEXT TO the targets they
+    // subtract from, and the fault injection needs the `-c` config, so a walk
+    // that flattened either would quietly weaken both.
+    expect(
+      rootLintInvocations({
+        lint: 'pnpm lint:root',
+        'lint:root': 'eslint -c eslint.root.config.mjs *.config.* --ignore-pattern commitlint.*',
+      }),
+    ).toEqual([
+      {
+        configName: 'eslint.root.config.mjs',
+        targets: ['*.config.*'],
+        ignorePatterns: ['commitlint.*'],
+        ignorePaths: [],
+      },
+    ]);
+  });
+
+  it('renaming the pass carries its invocations along', () => {
+    // The reason coverage is read out of the script BODIES: only the caller
+    // names the pass, and the walk reads the caller.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm run lint:repo',
+          'lint:repo': ROOT_PASS,
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+  });
+
+  it('does NOT credit a script the entry never runs', () => {
+    // The live hazard: a conventional `lint:fix` sitting in the manifest must not
+    // make the coverage check green while the pass the gates run covers nothing.
+    expect(rootLintInvocations({ lint: 'turbo run lint', 'lint:fix': 'eslint . --fix' })).toEqual(
+      [],
+    );
+  });
+
+  it('does NOT follow a reference the entry only conditionally runs, or cannot fail on', () => {
+    // Each of these runs the pass on some other condition than "the entry
+    // succeeded so far", not at all, or in a way that discards its exit code.
+    // `||` is the one a careless edit produces: it reads as chained and runs the
+    // root pass ONLY when the workspace lint has already failed, so every green
+    // run skips it. `|| true` is the other direction — the pass runs and cannot
+    // turn the script red, which is a gate that reports nothing.
+    for (const lint of [
+      'turbo run lint || pnpm lint:root',
+      'turbo run lint ; pnpm lint:root',
+      'turbo run lint | pnpm lint:root',
+      'turbo run lint & pnpm lint:root',
+      'turbo run lint # pnpm lint:root',
+      'turbo run lint && pnpm lint:root || true',
+    ]) {
+      expect(rootLintInvocations({ lint, 'lint:root': ROOT_PASS }), lint).toEqual([]);
+    }
+  });
+
+  it('does NOT credit an ESLINT CALL the pass only conditionally runs, or cannot fail on', () => {
+    // The same rule one level in, and the one a careless edit to lint:root
+    // reaches first. `eslint <a> || eslint <b>` reads as two passes and runs the
+    // second only once the first has FAILED, so on every green run <b> is never
+    // linted — a file the coverage check would report as covered while nothing
+    // lints it, which is the whole gap this bucket exists to close. Modelled by
+    // dropping the segment whole, so <a> goes uncredited too: the loud side.
+    for (const lintRoot of [
+      'eslint test/setup || eslint *.config.*',
+      'eslint test/setup ; eslint *.config.*',
+      'eslint *.config.* || true',
+      'eslint test/setup | eslint *.config.*',
+      'eslint test/setup & eslint *.config.*',
+      'eslint test/setup # eslint *.config.*',
+    ]) {
+      expect(
+        rootLintInvocations({ lint: 'turbo run lint && pnpm lint:root', 'lint:root': lintRoot }),
+        lintRoot,
+      ).toEqual([]);
+    }
+  });
+
+  it('still credits the invocations AFTER a defanged segment', () => {
+    // The control for the case above: dropping a segment must not drop the ones
+    // that follow it, or the rule would report the real two-pass script as
+    // covering nothing and the failure would name every file for the wrong
+    // reason.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm lint:root',
+          'lint:root': `eslint test/setup || true && ${ROOT_PASS}`,
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+  });
+
+  it('still follows a chain whose EARLIER segment carries an operator', () => {
+    // Skipping a segment must not skip the ones after it: `(a || b) && c` runs c
+    // whenever the script got that far, which is the property being modelled.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint || exit 1 && pnpm lint:root',
+          'lint:root': ROOT_PASS,
+        }),
+      ).length,
+    ).toBe(2);
+  });
+
+  it('collects an eslint call the entry makes directly', () => {
+    expect(targetsOf(rootLintInvocations({ lint: 'eslint test/setup tools/ci' }))).toEqual([
+      ['test/setup', 'tools/ci'],
+    ]);
+  });
+
+  it('terminates on a self-referential or cyclic script', () => {
+    expect(rootLintInvocations({ lint: 'pnpm lint' })).toEqual([]);
+    expect(
+      targetsOf(rootLintInvocations({ lint: 'pnpm a', a: 'pnpm b', b: 'pnpm a && eslint .' })),
+    ).toEqual([['.']]);
+  });
+
+  it('tolerates a manifest with no scripts, and a missing or non-string entry', () => {
+    expect(rootLintInvocations(undefined)).toEqual([]);
+    expect(rootLintInvocations({})).toEqual([]);
+    expect(rootLintInvocations({ test: 'turbo run test' })).toEqual([]);
+    expect(rootLintInvocations({ lint: null, other: 3 })).toEqual([]);
   });
 });
 
@@ -942,6 +1429,66 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
   it('names a package whose lint script does not invoke eslint', () => {
     const v = configViolations([pkg({ lintScript: "echo 'no self-lint'" })]);
     expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+  });
+
+  it('names a package whose lint script only conditionally invokes eslint', () => {
+    // A lint script is a shell string, so the operator between two eslint calls
+    // decides whether the second runs at all: `eslint <a> || eslint <b>` runs
+    // <b> only once <a> has FAILED, so a green run never lints <b>. Reading the
+    // targets alone would credit both and leave those dirs unlinted with the
+    // guard green — the same shape the repo-root walk rejects, applied here so
+    // one rule governs both. The whole segment is dropped rather than read up to
+    // the operator, so the package is named for its source dirs too: loud, and
+    // resolved by writing the chain with `&&`.
+    for (const lintScript of [
+      'eslint src || eslint test *.config.*',
+      'eslint src test *.config.* || true',
+      'eslint src ; eslint test *.config.*',
+    ]) {
+      const v = configViolations([pkg({ lintScript })]);
+      expect(v.lintNotWired, lintScript).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+      expect(v.rootFilesNotWired, lintScript).toEqual([
+        '@akasecurity/newpkg (packages/newpkg) → vitest.config.ts',
+      ]);
+    }
+  });
+
+  it('reads a package script by ONE rule, so coverage and fault injection cannot disagree', () => {
+    // configViolations blesses a package through packageLintInvocations, and the
+    // fault-injection describes below reproduce ONE of those invocations to plant
+    // a file against. Both must read the script the same way: if the injection
+    // parsed the raw string it could pick an invocation out of a segment a green
+    // run never executes, and then lint a probe through a pass that does not run.
+    // The two halves below are the control — the rules genuinely differ on this
+    // script, which is what makes routing the call sites load-bearing rather than
+    // cosmetic.
+    const script = 'eslint src || eslint *.config.*';
+    expect(
+      invocationsCoverFile(packageLintInvocations(script), 'vitest.config.ts'),
+      'the conditional segment must be dropped, so nothing can be injected through it',
+    ).toBe(false);
+    expect(
+      invocationsCoverFile(eslintInvocations(script), 'vitest.config.ts'),
+      'raw parsing must still credit it — otherwise this case proves nothing about which rule is used',
+    ).toBe(true);
+  });
+
+  it('clears a package whose two eslint calls are chained with &&', () => {
+    // The control for the case above: the real two-pass shape three packages
+    // ship must keep reading as covering everything, or the rule would report
+    // the healthy tree.
+    const v = configViolations([
+      pkg({
+        lintScript:
+          'eslint src test *.config.* && eslint --no-config-lookup -c s.config.mjs scripts',
+        codeDirs: ['src', 'test', 'scripts'],
+        hasScriptsDir: true,
+        hasScriptsConfig: true,
+        scriptsExtendsShared: true,
+      }),
+    ]);
+    expect(v.lintNotWired).toEqual([]);
+    expect(v.rootFilesNotWired).toEqual([]);
   });
 
   it('names a package whose lint script misses a top-level file, and the file', () => {
@@ -1821,6 +2368,107 @@ describe('a planted network call in a top-level file is reported', () => {
   );
 });
 
+describe('a planted network call in a file no workspace package owns is reported', () => {
+  // The same blind spot as the case above, one level out. A repo-root file sits
+  // outside tsconfig.root.json's `include` unless it is named there, so the
+  // type-aware parser rejects it with "was not found by the project service"
+  // unless the root config drops the type-aware rules for that path — and a file
+  // that fails to parse reports a fatal message and NO rule violations. The
+  // coverage check above would still be green: it reads a script string and
+  // never parses anything.
+
+  // Each file is linted through the config of the invocation that really covers
+  // it, so a pass that resolved a different config than the lint script uses
+  // cannot pass this by accident. `covered` is carried separately from
+  // `configName`: an invocation using ordinary config lookup carries no `-c` and
+  // still lints its files, so keying the failure on a missing config name would
+  // report a covered file as unlinted.
+  const NON_PACKAGE_CASES = NON_PACKAGE_FILES.map((file) => {
+    const invocation = coveringInvocation(ROOT_LINT_INVOCATIONS, file);
+    return { file, covered: invocation !== undefined, configName: invocation?.configName };
+  });
+
+  /** @type {Map<string, ESLint>} */
+  const eslintByConfig = new Map();
+  beforeAll(() => {
+    for (const { covered, configName } of NON_PACKAGE_CASES) {
+      const key = configName ?? '';
+      if (!covered || eslintByConfig.has(key)) continue;
+      eslintByConfig.set(
+        key,
+        new ESLint({
+          cwd: REPO_ROOT,
+          ...(configName ? { overrideConfigFile: join(REPO_ROOT, configName) } : {}),
+        }),
+      );
+    }
+  });
+
+  it('has a case for every file outside every workspace package', () => {
+    // A vacuous-pass guard: an empty case list makes every it.each below
+    // disappear and the suite reports green while linting nothing. Compared
+    // against the pinned set rather than against NON_PACKAGE_FILES, which this
+    // list is a `.map` of — that comparison holds by construction and could
+    // never go red.
+    expect(NON_PACKAGE_CASES.length).toBeGreaterThanOrEqual(EXPECTED_NON_PACKAGE_FILES.length);
+    expect(EXPECTED_NON_PACKAGE_FILES.length).toBeGreaterThan(0);
+  });
+
+  it.each(NON_PACKAGE_CASES)(
+    'reports every network form planted in $file',
+    async ({ file, covered, configName }) => {
+      expect(
+        covered,
+        `no eslint invocation reachable from the script the gates run lints ${file}, so there is ` +
+          'no lint pass to plant network code against',
+      ).toBe(true);
+      const eslint = /** @type {ESLint} */ (eslintByConfig.get(configName ?? ''));
+      const abs = join(REPO_ROOT, ...file.split('/'));
+      expect(await eslint.isPathIgnored(abs), `${file} is excluded by an eslint ignore`).toBe(
+        false,
+      );
+
+      // Half one, at the EXACT path: resolve the config the covering invocation
+      // produces for the real file and run the four rules against the snippet.
+      // calculateConfigForFile runs the whole cascade without parsing anything,
+      // so this half is sound at a path whose content it never substitutes.
+      const resolved = await eslint.calculateConfigForFile(abs);
+      expect(
+        resolved,
+        `eslint resolved no config block for ${file}, so the ban reaches it through nothing`,
+      ).toBeTruthy();
+      const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved));
+      for (const key of KEYS) {
+        expect(fired, `${file} :: ${key}`).toContain(key);
+      }
+
+      // Half two, the parse property this case exists for: lint the file's OWN
+      // bytes. A file outside every tsconfig `include` reports a fatal parse
+      // error and NO rule violations — structurally wired, behaviorally correct,
+      // enforcing nothing — so half one above would be describing a cascade that
+      // never gets to run.
+      //
+      // Neither half substitutes text or plants a file, and that is the point.
+      // Both alternatives make the outcome depend on timing rather than on the
+      // config: `lintText(code, { filePath })` hands ESLint one text while the
+      // type-aware parser's program still holds the file's own, so a rule can
+      // report a fix range from the on-disk source against the substituted text
+      // (`Index out of range … source text has length N`) depending on whether
+      // that path is already warm; and a planted sibling is in the program only
+      // if the watch picked the new file up, so it can report "not found by the
+      // project service" for a directory that is plainly in the include. Both
+      // were observed, at these exact paths, passing one CI job and failing
+      // another on one commit.
+      const [real] = await eslint.lintFiles([file]);
+      expect(
+        (real?.messages ?? []).filter((m) => m.fatal).map((m) => m.message),
+        `${file} did not parse, so no rule could run against it whatever the cascade resolves`,
+      ).toEqual([]);
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
 describe('end to end: eslint run the way the lint script runs it finds a planted root config file', () => {
   // The case above lints one path at a time, which proves the config bans the
   // network there but not that the `lint` script's own targets ENUMERATE it —
@@ -1849,7 +2497,9 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   it(
     'reports the planted file with every network rule',
     async () => {
-      const invocations = eslintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript);
+      const invocations = packageLintInvocations(
+        /** @type {{ lintScript: string }} */ (pkg).lintScript,
+      );
       const invocation = invocations.find((i) =>
         i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
       );
@@ -1926,7 +2576,7 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
     'lints the planted file, stops once an ignore flag is added, and is reported as uncovered',
     async () => {
       const lintScript = /** @type {{ lintScript: string }} */ (pkg).lintScript;
-      const invocation = eslintInvocations(lintScript).find((i) =>
+      const invocation = packageLintInvocations(lintScript).find((i) =>
         i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
       );
       expect(
@@ -1979,12 +2629,12 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         // The guard: the same script string must now read as NOT covering it,
         // and the violation list must NAME the file rather than the package.
         expect(
-          invocationsCoverFile(eslintInvocations(lintScript), PROBE_FILE),
+          invocationsCoverFile(packageLintInvocations(lintScript), PROBE_FILE),
           `the real script reads as not covering ${PROBE_FILE}, so the flagged read below would ` +
             'match it for the wrong reason',
         ).toBe(true);
         expect(
-          invocationsCoverFile(eslintInvocations(mutatedScript), PROBE_FILE),
+          invocationsCoverFile(packageLintInvocations(mutatedScript), PROBE_FILE),
           `${mutatedScript} still reads as covering ${PROBE_FILE}, which eslint just proved it ` +
             'does not lint',
         ).toBe(false);
@@ -1994,6 +2644,71 @@ describe('end to end: an ignore flag really does silence the run, and the guard 
         expect(violations.rootFilesNotWired).toEqual([
           `${/** @type {{ label: string }} */ (pkg).label} → ${PROBE_FILE}`,
         ]);
+      } finally {
+        rmSync(probeAbs, { force: true });
+      }
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
+describe('end to end: eslint run the way the root lint script runs it finds a planted repo-root file', () => {
+  // The per-file case above proves the root config BANS the network at each of
+  // those paths. It does not prove the root pass's targets ENUMERATE a file that
+  // was not there when the script was written — the half of the gap that let a
+  // `fetch()` in a repo-root config pass a lint run with exit 0. So plant a real
+  // file at the repo root and run eslint over the targets parsed out of the real
+  // root script, with that invocation's own `-c` config.
+  const PROBE_FILE = '__aka_root_network_probe__.config.mjs';
+  const probeAbs = join(REPO_ROOT, PROBE_FILE);
+
+  // Belt and braces with the finally below: an assertion that throws mid-test
+  // must never leave a file behind that turns the next lint run red for a reason
+  // nobody can trace back to here.
+  afterAll(() => {
+    rmSync(probeAbs, { force: true });
+  });
+
+  it(
+    'reports the planted file with every network rule',
+    async () => {
+      const invocation = coveringInvocation(ROOT_LINT_INVOCATIONS, PROBE_FILE);
+      expect(
+        invocation,
+        `no eslint invocation reachable from \`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` targets a new ` +
+          `${PROBE_FILE} at the repo root, so a file added there would ship unlinted`,
+      ).toBeDefined();
+      const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
+        invocation
+      );
+
+      writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
+      try {
+        const eslint = new ESLint({
+          cwd: REPO_ROOT,
+          ...(configName ? { overrideConfigFile: join(REPO_ROOT, configName) } : {}),
+        });
+        const results = await eslint.lintFiles(targets);
+        const probe = results.find((r) => r.filePath === probeAbs);
+        expect(
+          probe,
+          `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the root lint pass's targets ` +
+            'do not enumerate a new repo-root file, which is how a fetch() outside every ' +
+            'workspace package passes a lint run',
+        ).toBeDefined();
+        const messages = /** @type {ESLint.LintResult} */ (probe).messages;
+        expect(
+          messages.filter((m) => m.fatal).map((m) => m.message),
+          `${PROBE_FILE} did not parse, so no rule ran against it`,
+        ).toEqual([]);
+        const fired = new Set(messages.map((m) => m.ruleId));
+        for (const key of KEYS) {
+          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+        }
+        expect(
+          /** @type {ESLint.LintResult} */ (probe).errorCount,
+          'the planted file must fail the lint run, not merely warn',
+        ).toBeGreaterThan(0);
       } finally {
         rmSync(probeAbs, { force: true });
       }

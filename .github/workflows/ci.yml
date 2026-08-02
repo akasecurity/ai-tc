@@ -193,11 +193,22 @@ jobs:
   # `dir.split(sep).join('/')`, and matches globs through `path.posix.matchesGlob`
   # rather than a literal-prefix reduction, so a backslash checkout answers
   # identically). Those are the code paths that were unexercised until this
-  # filter existed. It runs its whole `test` script — all four suites, ~600
-  # assertions — and depends on no workspace package, so turbo schedules nothing
-  # upstream of it and the leg costs seconds, not minutes. The bash-driven cases
-  # in no-network-runtime.test.js skip themselves on win32 (the CI script is the
-  # Linux job's mechanism) rather than passing vacuously.
+  # filter existed — and the first Windows run of the package caught a real one:
+  # two cases declared with `it.each` (which passes no TestContext) threw instead
+  # of skipping, on the only platform that reaches the skip.
+  #
+  # It runs its whole `test` script — all four suites, 604 assertions — and
+  # depends on no workspace package, so turbo schedules nothing upstream of it.
+  # Measured here: the package's own task ~54s, of which effective-config.test.js
+  # is ~53s (against ~4.7s on a developer machine — call it a 10x factor when
+  # sizing anything against a timeout, not the 3-5x the store suites see). The
+  # JOB's wall clock is unchanged within run-to-run noise, because turbo overlaps
+  # it with the other nine: ~5m20s before, ~5m26s after. The slow work sits in
+  # `beforeAll` hooks and three fault-injection cases that all carry an explicit
+  # 120s budget; nothing else here runs long enough to approach vitest's 5s
+  # default. The bash-driven cases in no-network-runtime.test.js skip themselves
+  # on win32 (the CI script is the Linux job's mechanism) rather than passing
+  # vacuously — 9 skipped, 45 run.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest

@@ -2394,22 +2394,43 @@ describe('a planted network call in a file no workspace package owns is reported
       expect(await eslint.isPathIgnored(abs), `${file} is excluded by an eslint ignore`).toBe(
         false,
       );
-      const [result] = await eslint.lintText(NETWORK_SNIPPET, { filePath: abs, warnIgnored: true });
-      const messages = result?.messages ?? [];
-      // The failure mode this case exists for: no rule ran, so the assertions
-      // below would be reporting on an empty set.
+
+      // Half one, at the EXACT path: resolve the config the covering invocation
+      // produces for the real file and run the four rules against the snippet.
+      // calculateConfigForFile runs the whole cascade without parsing anything,
+      // so this half is sound at a path whose content it never substitutes.
+      const resolved = await eslint.calculateConfigForFile(abs);
       expect(
-        messages.filter((m) => m.fatal).map((m) => m.message),
-        `${file} did not parse, so no rule ran against it`,
-      ).toEqual([]);
-      const fired = new Set(messages.map((m) => m.ruleId));
+        resolved,
+        `eslint resolved no config block for ${file}, so the ban reaches it through nothing`,
+      ).toBeTruthy();
+      const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved));
       for (const key of KEYS) {
         expect(fired, `${file} :: ${key}`).toContain(key);
       }
+
+      // Half two, the parse property this case exists for: lint the file's OWN
+      // bytes. A file outside every tsconfig `include` reports a fatal parse
+      // error and NO rule violations — structurally wired, behaviorally correct,
+      // enforcing nothing — so half one above would be describing a cascade that
+      // never gets to run.
+      //
+      // Neither half substitutes text or plants a file, and that is the point.
+      // Both alternatives make the outcome depend on timing rather than on the
+      // config: `lintText(code, { filePath })` hands ESLint one text while the
+      // type-aware parser's program still holds the file's own, so a rule can
+      // report a fix range from the on-disk source against the substituted text
+      // (`Index out of range … source text has length N`) depending on whether
+      // that path is already warm; and a planted sibling is in the program only
+      // if the watch picked the new file up, so it can report "not found by the
+      // project service" for a directory that is plainly in the include. Both
+      // were observed, at these exact paths, passing one CI job and failing
+      // another on one commit.
+      const [real] = await eslint.lintFiles([file]);
       expect(
-        result?.errorCount ?? 0,
-        `${file} must FAIL the lint run on planted network code, not merely warn`,
-      ).toBeGreaterThan(0);
+        (real?.messages ?? []).filter((m) => m.fatal).map((m) => m.message),
+        `${file} did not parse, so no rule could run against it whatever the cascade resolves`,
+      ).toEqual([]);
     },
     RESOLVE_TIMEOUT_MS,
   );

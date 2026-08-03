@@ -1,9 +1,10 @@
-import { execFileSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { Linter } from 'eslint';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   base,
@@ -14,6 +15,14 @@ import {
   noNetworkProperties,
   noNetworkSyntax,
 } from '../src/index.js';
+import {
+  lintPassInvocations,
+  REPO_ROOT,
+  resolveInvocationConfig,
+  rootScripts,
+  trackedEslintConfigFiles,
+  workspaceLintScripts,
+} from './helpers/lint-invocations.js';
 
 // These tests lint snippets with the SHIPPED rule values (imported from the
 // config, not re-declared here), so a regression that weakens the ban — a
@@ -358,8 +367,6 @@ describe('noEnterpriseImports merge', () => {
   });
 });
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-
 // ---------------------------------------------------------------------------
 // The documented opt-out allowlist
 // ---------------------------------------------------------------------------
@@ -381,6 +388,20 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 //
 // The set is asserted EXACTLY, not as a superset: a guard that only forbids
 // removals would let a third site in.
+//
+// WHICH configs it inspects is derived the same way: from the eslint invocations
+// a green `pnpm lint` really runs — each one's `-c`/`--config` override, and for
+// an invocation carrying none, the config ordinary flat-config lookup finds from
+// the directory that invocation runs in. A filename glob was the earlier answer
+// and is a hole one rename wide: ESLint honours `-c eslint.extra.config.js`
+// exactly like the two conventional names, so a config under any other name was
+// referenced by a lint script, applied on every pass, and inspected by nobody —
+// while the suite's own count went UP, because the extra invocation generates
+// more probe targets elsewhere. The reverse drift is reported too: a config
+// sitting in the tree that no invocation runs enforces nothing while looking
+// exactly like the ones that do, and silently ignoring it reopens the same hole
+// from the other side.
+//
 // Budget for the one-off config load below. Deliberately generous: it bounds a
 // hang, it is not a performance assertion. The load measured ~4.7s on a CI
 // runner under full workspace parallelism against ~0.25s on a developer
@@ -421,26 +442,41 @@ function networkSpecifiersPermittedBy(rules) {
   return [...shipped].filter((name) => !banned.has(name));
 }
 
-describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
-  /** Every tracked ESLint flat config in the workspace. */
-  const configs = (() => {
-    try {
-      return execFileSync('git', ['ls-files', '*eslint*.config.mjs'], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-      })
-        .split('\n')
-        .filter(Boolean);
-    } catch (cause) {
-      throw new Error(
-        'Could not list tracked files with `git ls-files`. This guard audits the real workspace ' +
-          'configs, so it must run inside a git checkout.',
-        { cause },
-      );
-    }
-  })();
+/**
+ * Every config a green `pnpm lint` really points ESLint at, repo-relative posix
+ * and deduplicated, plus the ones a lint invocation names that are not on disk.
+ * @param {{ rootScripts?: Record<string, unknown>, packages: { dir: string, lintScript: string }[] }} manifests
+ * @param {string} repoRoot
+ */
+async function configsInPlay({ rootScripts: scripts, packages }, repoRoot = REPO_ROOT) {
+  const inPlay = [];
+  const missing = [];
+  const seen = new Set();
+  for (const entry of lintPassInvocations({ rootScripts: scripts, packages })) {
+    const file = await resolveInvocationConfig(entry, repoRoot);
+    if (file === undefined || seen.has(file)) continue;
+    seen.add(file);
+    // A `-c` naming a file that is not there means that invocation exits 2 and
+    // lints nothing. Reported on its own rather than folded into a load failure,
+    // which would name the same file for a much less obvious reason.
+    (existsSync(join(repoRoot, ...file.split('/'))) ? inPlay : missing).push(file);
+  }
+  return { inPlay: inPlay.sort(), missing: missing.sort() };
+}
 
-  /** Each tracked config's module, resolved once below. */
+describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
+  /** The configs a green `pnpm lint` runs — the set this suite audits. */
+  let configs = [];
+  /** Configs a lint invocation names that are not on disk. */
+  let missingConfigs = [];
+  /**
+   * Configs whose NAME reads as an ESLint flat config, whatever runs them. The
+   * discovery half, kept separate from the derivation above so the two can be
+   * differenced: what one finds and the other does not is the drift.
+   */
+  const trackedConfigs = trackedEslintConfigFiles();
+
+  /** Each audited config's module, resolved once below. */
   const configModules = new Map();
   /** Load failures, kept per file so a broken config names itself. */
   const loadFailures = new Map();
@@ -457,6 +493,10 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   // config should name itself instead of hiding the other 17 behind whichever
   // happened to reject first.
   beforeAll(async () => {
+    ({ inPlay: configs, missing: missingConfigs } = await configsInPlay({
+      rootScripts: rootScripts(),
+      packages: workspaceLintScripts(),
+    }));
     const results = await Promise.allSettled(
       configs.map((file) => import(pathToFileURL(join(REPO_ROOT, file)).href)),
     );
@@ -471,7 +511,11 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
   it('found the workspace ESLint configs to audit', () => {
     expect(configs.length).toBeGreaterThanOrEqual(Object.keys(DOCUMENTED_OPT_OUTS).length);
     for (const documented of Object.keys(DOCUMENTED_OPT_OUTS)) {
-      expect(configs).toContain(documented);
+      expect(
+        configs,
+        `${documented} carries a documented opt-out but no eslint invocation reachable from ` +
+          '`pnpm lint` runs it, so nothing here inspects it',
+      ).toContain(documented);
     }
     // A config that failed to load contributes nothing to `found`, so an
     // undocumented opt-out inside it would be invisible below — the same
@@ -479,6 +523,49 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     expect(
       [...loadFailures].map(([file, cause]) => `${file}: ${String(cause)}`),
       'workspace ESLint configs failed to load, so the audit below is partial',
+    ).toEqual([]);
+  });
+
+  it('every config a lint invocation names is on disk', () => {
+    expect(
+      missingConfigs,
+      missingConfigs.length
+        ? 'A `lint` script points eslint at these config files with -c/--config and they are not ' +
+            `there. That invocation exits 2 having linted nothing:\n  ${missingConfigs.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it('runs every ESLint config the tree ships — none is dead, none is unnamed', () => {
+    // Both directions of the same drift, asserted together because each is only
+    // half the property. A config the tree ships that no invocation runs
+    // enforces nothing while reading like a lint surface; a config an invocation
+    // runs whose name no convention matches enforces everything while being
+    // findable by nobody looking for configs. The first is caught by
+    // differencing the tracked set against the derived one, the second by the
+    // derived set being what the audit below actually inspects.
+    const dead = trackedConfigs.filter((file) => !configs.includes(file));
+    expect(
+      dead,
+      dead.length
+        ? 'These files are named like ESLint flat configs and no eslint invocation reachable from ' +
+            '`pnpm lint` runs any of them. A dead config enforces nothing while looking exactly ' +
+            'like the ones that do — point a `lint` script at it, or delete it:\n  ' +
+            dead.join('\n  ')
+        : undefined,
+    ).toEqual([]);
+    // The other side is not an error — a config may legitimately be named
+    // anything — but it is worth seeing, so it is asserted as the empty set the
+    // tree has today rather than left unobserved.
+    const unnamed = configs.filter((file) => !trackedConfigs.includes(file));
+    expect(
+      unnamed,
+      unnamed.length
+        ? 'These configs are run by a `lint` script under a name no filename convention matches. ' +
+            'They ARE audited (the derivation finds them through the invocation that names them), ' +
+            'but nothing looking for configs by name will find them — rename to `*eslint*.config.*` ' +
+            `or accept this list deliberately:\n  ${unnamed.join('\n  ')}`
+        : undefined,
     ).toEqual([]);
   });
 
@@ -526,5 +613,212 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
         ).toHaveLength(0);
       }
     }
+  });
+});
+
+describe('which configs the audit inspects (tested on synthetic manifests)', () => {
+  // The real tree is healthy, so the derivation above only ever sees the shape
+  // that works. Drive it directly on the shapes that broke it.
+  const invocationsOf = (packages, scripts) =>
+    lintPassInvocations({ rootScripts: scripts, packages });
+  const configsOf = (packages, scripts) =>
+    invocationsOf(packages, scripts).map((e) => [e.cwd, e.invocation.configName]);
+
+  it('reads a config named outside the two conventional names', () => {
+    // The hole this derivation closes. `eslint.extra.config.js` is referenced by
+    // the lint script and honoured by ESLint exactly like its two neighbours,
+    // and matches neither the name effective-config.test.js requires nor the
+    // `*eslint*.config.mjs` glob that used to decide what got audited.
+    expect(
+      configsOf([
+        {
+          dir: 'cli',
+          lintScript:
+            'eslint src test *.config.* && ' +
+            'eslint --no-config-lookup -c eslint.extra.config.js scripts',
+        },
+      ]),
+    ).toEqual([
+      ['cli', undefined],
+      ['cli', 'eslint.extra.config.js'],
+    ]);
+  });
+
+  it('reads the `--config=<file>` spelling as well as `-c <file>`', () => {
+    // Three spellings of one flag. An unread one does not cost a lint target —
+    // it costs the whole question of which rules that invocation enforced, and
+    // the config drops out of the audit while ESLint honours it.
+    for (const flag of ['-c x.config.js', '--config x.config.js', '--config=x.config.js']) {
+      expect(configsOf([{ dir: 'pkg', lintScript: `eslint ${flag} src` }]), flag).toEqual([
+        ['pkg', 'x.config.js'],
+      ]);
+    }
+    // The quoted `=` form tokenizes as the flag with a trailing `=` plus the
+    // quoted value, so it takes the next token.
+    expect(configsOf([{ dir: 'pkg', lintScript: "eslint --config='x.config.js' src" }])).toEqual([
+      ['pkg', 'x.config.js'],
+    ]);
+  });
+
+  it('records --no-config-lookup, so an invocation that runs under no config is not credited one', () => {
+    const [bare] = invocationsOf([{ dir: 'pkg', lintScript: 'eslint src' }]);
+    expect(bare.invocation.noConfigLookup).toBe(false);
+    const [suppressed] = invocationsOf([
+      { dir: 'pkg', lintScript: 'eslint --no-config-lookup src' },
+    ]);
+    expect(suppressed.invocation.noConfigLookup).toBe(true);
+  });
+
+  it('pairs each invocation with the directory it runs in', () => {
+    // `turbo run lint` runs each package's script with that package as the
+    // working directory, which is what decides where a bare `eslint src` looks
+    // for its config. The root pass runs at the repo root, spelled ''.
+    expect(
+      configsOf(
+        [
+          { dir: 'cli', lintScript: 'eslint src' },
+          { dir: 'packages/schema', lintScript: 'eslint -c eslint.scripts.config.mjs scripts' },
+        ],
+        {
+          lint: 'turbo run lint && pnpm lint:root',
+          'lint:root': 'eslint -c eslint.root.config.mjs .',
+        },
+      ),
+    ).toEqual([
+      ['', 'eslint.root.config.mjs'],
+      ['cli', undefined],
+      ['packages/schema', 'eslint.scripts.config.mjs'],
+    ]);
+  });
+
+  it('does NOT credit a config to an invocation a green run never reaches', () => {
+    // The same rule the coverage check applies, and for the same reason: behind
+    // a `||` the second call runs only once the first has failed, so a green
+    // pass never enforces whatever that config says. Auditing it would report a
+    // ruleset nothing runs; the loud direction is to leave it uncredited, where
+    // the dead-config check names it.
+    for (const lintScript of [
+      'eslint src || eslint -c eslint.extra.config.js scripts',
+      'eslint -c eslint.extra.config.js scripts || true',
+      'eslint src ; eslint -c eslint.extra.config.js scripts',
+    ]) {
+      expect(
+        configsOf([{ dir: 'pkg', lintScript }]).map(([, config]) => config),
+        lintScript,
+      ).not.toContain('eslint.extra.config.js');
+    }
+    // The control: chained with `&&`, the same call IS credited — otherwise
+    // every case above would pass on a derivation that had stopped reading
+    // config flags at all.
+    expect(
+      configsOf([
+        { dir: 'pkg', lintScript: 'eslint src && eslint -c eslint.extra.config.js scripts' },
+      ]),
+    ).toEqual([
+      ['pkg', undefined],
+      ['pkg', 'eslint.extra.config.js'],
+    ]);
+  });
+
+  it('finds nothing when no script invokes eslint', () => {
+    expect(configsOf([{ dir: 'pkg', lintScript: "echo 'no self-lint'" }], {})).toEqual([]);
+  });
+});
+
+describe('an odd-named config carrying an undocumented opt-out is audited (throwaway tree)', () => {
+  // The end of the chain, run against real ESLint in a tree of its own. The two
+  // suites either side of this one reason about strings; this one plants the
+  // exact shape the filename glob missed — a config the lint script references
+  // under a third name, carrying a network opt-out nothing documents — and
+  // asserts the derivation reaches it AND that the rule it replaced does not.
+  //
+  // Built outside the repo rather than in a package root: the tree's own
+  // derivations read `git ls-files`, and a planted sibling would race the suites
+  // that walk it.
+  let dir = '';
+  const SHARED = pathToFileURL(join(REPO_ROOT, 'packages/eslint-config/src/index.js')).href;
+  const config = (allow) =>
+    `import { networkGuard, noNetworkImports, noNetworkSyntax } from ${JSON.stringify(SHARED)};\n` +
+    'export default [\n' +
+    '  ...networkGuard,\n' +
+    '  {\n' +
+    "    files: ['**/*.mjs'],\n" +
+    '    rules: {\n' +
+    `      'no-restricted-imports': noNetworkImports({ allow: ${JSON.stringify(allow)} }),\n` +
+    `      'no-restricted-syntax': noNetworkSyntax({ allow: ${JSON.stringify(allow)} }),\n` +
+    '    },\n' +
+    '  },\n' +
+    '];\n';
+
+  const PACKAGES = [
+    {
+      dir: 'pkg',
+      lintScript:
+        'eslint src test *.config.* && eslint --no-config-lookup -c eslint.extra.config.js scripts',
+    },
+  ];
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-lint-config-audit-'));
+    const pkgDir = join(dir, 'pkg');
+    mkdirSync(pkgDir, { recursive: true });
+    // The two configs the package really runs: the conventional one ordinary
+    // lookup finds, and the odd-named one the lint script names with `-c`. Only
+    // the second carries an opt-out.
+    writeFileSync(join(pkgDir, 'eslint.config.mjs'), config([]));
+    writeFileSync(join(pkgDir, 'eslint.extra.config.js'), config(['undici']));
+  });
+
+  afterAll(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('finds exactly the two configs the lint script runs', async () => {
+    const { inPlay, missing } = await configsInPlay({ rootScripts: {}, packages: PACKAGES }, dir);
+    // Both branches of the derivation at once: the first invocation carries no
+    // `-c` and resolves through ordinary lookup, the second names a file no
+    // filename convention matches.
+    expect(inPlay).toEqual(['pkg/eslint.config.mjs', 'pkg/eslint.extra.config.js']);
+    expect(missing).toEqual([]);
+  });
+
+  it('reports its undocumented opt-out, where the filename glob reported nothing', async () => {
+    const { inPlay } = await configsInPlay({ rootScripts: {}, packages: PACKAGES }, dir);
+
+    /** The opt-out map the audit above builds, over an arbitrary file list. */
+    const optOutsOf = async (files) => {
+      /** @type {Record<string, string[]>} */
+      const found = {};
+      for (const file of files) {
+        const mod = await import(pathToFileURL(join(dir, ...file.split('/'))).href);
+        for (const entry of mod.default) {
+          const permitted = networkSpecifiersPermittedBy(entry.rules);
+          if (permitted.length) found[file] = permitted.sort();
+        }
+      }
+      return found;
+    };
+
+    expect(await optOutsOf(inPlay)).toEqual({ 'pkg/eslint.extra.config.js': ['undici'] });
+
+    // The control, and the whole point: the rule this derivation replaced —
+    // `git ls-files '*eslint*.config.mjs'` — matches the conventional config and
+    // not the one carrying the opt-out, so it reports an empty map and the
+    // suite goes green with a live, unreviewed exception in the tree. Without
+    // this half, the assertion above would also pass on a derivation that
+    // happened to inspect everything for some unrelated reason.
+    const byFilenameGlob = ['pkg/eslint.config.mjs', 'pkg/eslint.extra.config.js'].filter((f) =>
+      /(?:^|\/)[^/]*eslint[^/]*\.config\.mjs$/.test(f),
+    );
+    expect(byFilenameGlob).toEqual(['pkg/eslint.config.mjs']);
+    expect(await optOutsOf(byFilenameGlob)).toEqual({});
+
+    // …and ESLint really does honour the odd-named config, so the opt-out above
+    // is a live exception rather than a rule value nothing applies.
+    const found = await resolveInvocationConfig(
+      { cwd: 'pkg', invocation: { configName: 'eslint.extra.config.js', noConfigLookup: true } },
+      dir,
+    );
+    expect(found).toBe('pkg/eslint.extra.config.js');
   });
 });

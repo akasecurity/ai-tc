@@ -311,6 +311,47 @@ function targetCoversDir(target, dir) {
   return dir === base || dir.startsWith(`${base}/`);
 }
 
+// --- Case: the matcher must answer the way the shell does --------------------
+//
+// Node's glob folds case on macOS and Windows and offers no way to turn it off.
+// matchGlobPattern sets `nocase: isMacOS || isWindows` with `nocaseMagicOnly:
+// true`, so a LITERAL pattern stays case-sensitive while a MAGIC one does not:
+// `matchesGlob('a.Config.mjs', '*.config.*')` is true on macOS and false on
+// Linux, and `globSync('*.config.*')` returns the mis-cased file there too. The
+// shell that expands a lint script's targets is case-sensitive on every
+// platform, so the file eslint actually receives is only ever the lower-cased
+// one. Left folded, the guard credits coverage the shell will not give, and a
+// root file one capital letter away from the target glob reads as linted while
+// nothing lints it — with the drift guard's own message inviting the reader to
+// pin it as expected.
+//
+// There is no option to pass, so the fold is removed by re-asking the same
+// matcher in an alphabet it cannot fold: each ASCII letter maps to a distinct
+// Private Use Area code point, which has no case mapping and is not a glob
+// metacharacter. The map is one character to one character, so `?` arity, `/`
+// separators, `**` crossing, ranges and brace lists all keep their exact
+// semantics — `[a-z]` maps to a range of the same width, and an upper-case
+// subject lands outside it the way it should.
+//
+// The raw match is kept as a conjunct so this can only ever be STRICTER than
+// Node: an encoding bug costs a loud "uncovered" failure, never a silent pass.
+const CASELESS_ALPHABET_BASE = 0xe000;
+
+const encodeCase = (s) =>
+  s.replace(/[A-Za-z]/g, (c) => {
+    const code = c.charCodeAt(0);
+    return String.fromCharCode(CASELESS_ALPHABET_BASE + (code >= 97 ? code - 97 : code - 65 + 26));
+  });
+
+/**
+ * `path.posix.matchesGlob` minus the case folding Node applies on macOS and
+ * Windows, so every platform answers the way the shell does.
+ * @param {string} file package-relative posix path
+ * @param {string} pattern
+ */
+const caseSensitiveMatchesGlob = (file, pattern) =>
+  posix.matchesGlob(file, pattern) && posix.matchesGlob(encodeCase(file), encodeCase(pattern));
+
 /**
  * Whether an eslint path target lints the package-relative file `file`. A target
  * covers it when it IS the file, when it is `.` or a directory the file sits
@@ -322,9 +363,10 @@ function targetCoversDir(target, dir) {
  * file that is the wrong question — it would let `*.config.*` vacuously "cover"
  * middleware.ts, which is exactly the uncovered-root-file case this bucket
  * exists to catch. So the glob is matched against the filename for real, via
- * path.posix.matchesGlob so a Windows checkout answers identically. A pattern
- * the matcher rejects counts as NOT covering: the guard then names the file as
- * uncovered, which is the side to fail on.
+ * caseSensitiveMatchesGlob: posix so a Windows checkout answers identically on
+ * separators, case-sensitive so macOS and Windows answer identically on case. A
+ * pattern the matcher rejects counts as NOT covering: the guard then names the
+ * file as uncovered, which is the side to fail on.
  * @param {string} target
  * @param {string} file package-relative posix path
  */
@@ -334,7 +376,7 @@ function targetCoversFile(target, file) {
   if (normalized === file) return true;
   if (file.startsWith(`${normalized}/`)) return true;
   try {
-    return posix.matchesGlob(file, normalized);
+    return caseSensitiveMatchesGlob(file, normalized);
   } catch {
     return false;
   }
@@ -354,10 +396,13 @@ function targetCoversFile(target, file) {
  * `file` from an eslint run. Mirrors targetCoversFile — the pattern is matched
  * against the filename for real rather than reduced to a literal prefix, so
  * `*.config.*` excludes vitest.config.ts and leaves middleware.ts alone, and
- * through path.posix.matchesGlob for the same reason: every subject reaching it
- * is posix (git's output is posix everywhere, and globSync's native output is
+ * through caseSensitiveMatchesGlob for the same reason: every subject reaching
+ * it is posix (git's output is posix everywhere, and globSync's native output is
  * normalized at the source above), so the posix matcher is the one that matches
- * the data's actual shape and a Windows checkout answers identically.
+ * the data's actual shape and a Windows checkout answers identically. Case is
+ * pinned for the matching reason on the other axis — eslint matches an ignore
+ * pattern case-sensitively on every platform, so a folded match here would
+ * report a file as skipped that eslint in fact lints.
  *
  * The bare `path.matchesGlob` would alias to win32 there, and the two disagree
  * on exactly one input: a subject containing a backslash. They diverge in BOTH
@@ -379,7 +424,7 @@ function ignoreExcludesFile(pattern, file) {
   if (normalized === file) return true;
   if (file.startsWith(`${normalized}/`)) return true;
   try {
-    return posix.matchesGlob(file, normalized);
+    return caseSensitiveMatchesGlob(file, normalized);
   } catch {
     return true;
   }
@@ -1630,6 +1675,37 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     expect(targetCoversFile('*.config.*', 'src/a.config.ts')).toBe(false);
   });
 
+  it('matches case-sensitively, the way the shell that expands the target does', () => {
+    // A lint script's targets are expanded by the SHELL, which is case-sensitive
+    // on every platform, so `eslint *.config.*` only ever hands eslint the
+    // lower-cased file. A folded match credits coverage nothing gives: the file
+    // reads as linted and no pass lints it.
+    expect(targetCoversFile('*.config.*', 'a.Config.mjs')).toBe(false);
+    expect(targetCoversFile('*.config.*', 'A.CONFIG.MJS')).toBe(false);
+    expect(targetCoversFile('*.CONFIG.*', 'a.config.mjs')).toBe(false);
+    expect(targetCoversFile('**/*.TS', 'src/a.ts')).toBe(false);
+    // Positive control on the same patterns — without these the case above is
+    // satisfied by a predicate that stopped matching anything at all.
+    expect(targetCoversFile('*.config.*', 'a.config.mjs')).toBe(true);
+    expect(targetCoversFile('**/*.ts', 'src/a.ts')).toBe(true);
+    // A range maps to a range of the same width, so it narrows by case too.
+    expect(targetCoversFile('[a-z]*.ts', 'abc.ts')).toBe(true);
+    expect(targetCoversFile('[a-z]*.ts', 'Abc.ts')).toBe(false);
+    expect(targetCoversFile('[A-Z]*.ts', 'Abc.ts')).toBe(true);
+    expect(targetCoversFile('[A-Z]*.ts', 'abc.ts')).toBe(false);
+  });
+
+  it('does not inherit the raw matcher, which folds case on some hosts', () => {
+    // The positive control for the case above: on macOS and Windows the raw
+    // matcher answers the OPPOSITE, which is the defect targetCoversFile used to
+    // carry. Pinning the disagreement rather than a fixed value keeps this
+    // meaningful on both kinds of host, and turns a future Node that stops
+    // folding into a red test rather than a silently redundant workaround.
+    const rawFolds = posix.matchesGlob('a.Config.mjs', '*.config.*');
+    expect(rawFolds).toBe(process.platform === 'darwin' || process.platform === 'win32');
+    expect(targetCoversFile('*.config.*', 'a.Config.mjs')).toBe(false);
+  });
+
   it('accepts the real repo forms for top-level files', () => {
     // Targets only, as above — the ignore flags that subtract from them have
     // their own describe.
@@ -1711,6 +1787,16 @@ describe('ignore flags subtract from what an invocation covers', () => {
     // `*.config.*` does not reach middleware.ts, so it must stay covered — the
     // same asymmetry targetCoversFile draws, applied to the exclusion side.
     expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'middleware.ts')).toBe(true);
+  });
+
+  it('matches an ignore glob case-sensitively, as eslint does', () => {
+    // eslint matches an ignore pattern case-sensitively on every platform. A
+    // folded match here reports a file as skipped that eslint in fact lints —
+    // the guard would name a covered file as uncovered and send someone to
+    // widen a pass that was already reaching it.
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'a.Config.mjs')).toBe(true);
+    // Positive control: the same ignore on the correctly-cased file still bites.
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'a.config.mjs')).toBe(false);
   });
 
   it('excludes a whole source dir, so lintNotWired can see it', () => {

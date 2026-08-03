@@ -422,8 +422,11 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    the root is named explicitly, not folded into a directory glob (the same rule
    step 5 draws inside a package). `*.config.*` is the standing lint target for root
    config and catches the root ESLint config and commitlint's; any other root
-   file is named by hand. A root file carrying `// @ts-check` (as `eslint.root.config.mjs`
-   does) is also named in `tsconfig.root.json`'s `include`, or the directive is
+   file is named by hand — including one whose `.config.` segment is capitalized,
+   since a shell glob is case-sensitive on every platform and `*.config.*` reaches
+   `aka.config.mjs` but not `aka.Config.mjs`. A root file carrying `// @ts-check`
+   (as `eslint.root.config.mjs` does) is also named in `tsconfig.root.json`'s
+   `include`, or the directive is
    decorative — nothing runs `tsc` over it and a real type error surfaces nowhere.
    Miss the pass and esbuild strips its types unchecked and nothing lints it.
 

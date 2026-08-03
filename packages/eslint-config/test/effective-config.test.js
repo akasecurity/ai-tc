@@ -2403,6 +2403,98 @@ describe('a planted network call in a top-level file is reported', () => {
   );
 });
 
+describe('the ban reaches the source that defines it', () => {
+  // This package's src/ is the ban's own implementation, and it is also the only
+  // source dir in the workspace that ESLint RUNS rather than merely reads: every
+  // package's eslint.config.mjs imports @akasecurity/eslint-config, so resolving a
+  // config anywhere executes src/index.js first — and src/react.js too, for the
+  // packages that take the /react entry.
+  //
+  // Nothing above points at those files. The composition suite probes src/ at a
+  // SYNTHETIC path (`src/__network_ban_probe__.ts`), which proves the cascade bans
+  // the network for a hypothetical file there while naming no real one, and the
+  // top-level case covers only files sitting directly in the package root, which
+  // these are not. So the ban's own source was reasoned about by both and read by
+  // neither.
+  //
+  // This must NEVER become an on-disk plant, and that is the whole reason it is
+  // written as two halves that leave the file byte-for-byte alone. Appending a
+  // module-scope `fetch()` to src/index.js produces no lint error at all: ESLint
+  // imports the file to build the config, so the call RUNS, and the process dies
+  // with `TypeError: fetch failed` before a rule has been applied to anything. The
+  // run exits non-zero, which is what makes it dangerous — a check asserting only
+  // "the lint run failed" passes on that crash, and would go on passing with every
+  // network rule deleted. Half one resolves the cascade at the real path without
+  // parsing; half two parses the real bytes without substituting any.
+  const PKG_DIR = 'packages/eslint-config';
+  const BAN_SOURCE_FILES = LINTABLE_TRACKED.files.filter((f) => f.startsWith(`${PKG_DIR}/src/`));
+
+  // Derived from the package's own export map, not a hardcoded pair: these are
+  // exactly the specifiers another config can import, so a new entry point is
+  // covered without anyone remembering to widen a list. Conditional (object)
+  // targets are skipped rather than guessed at — there are none today, and one
+  // added later shows up as a missing case here rather than as a silent pass.
+  const ENTRY_POINTS = Object.values(
+    JSON.parse(readFileSync(join(REPO_ROOT, PKG_DIR, 'package.json'), 'utf8')).exports ?? {},
+  )
+    .filter((target) => typeof target === 'string')
+    .map((target) => `${PKG_DIR}/${target.replace(/^\.\//, '')}`)
+    .sort();
+
+  /** @type {ESLint} */
+  let eslint;
+  beforeAll(() => {
+    eslint = new ESLint({ cwd: join(REPO_ROOT, PKG_DIR) });
+  });
+
+  it('has a case for every entry point another config can import', () => {
+    // A vacuous-pass guard: an empty case list makes the it.each below disappear
+    // and the suite reports green having pointed at nothing at all.
+    expect(ENTRY_POINTS.length, 'the package exports no string target to lint').toBeGreaterThan(0);
+    for (const entry of ENTRY_POINTS) {
+      expect(BAN_SOURCE_FILES, `${entry} is exported but is not a tracked lintable file`).toContain(
+        entry,
+      );
+    }
+  });
+
+  it.each(BAN_SOURCE_FILES)(
+    'reports every network form at %s',
+    async (file) => {
+      const abs = join(REPO_ROOT, ...file.split('/'));
+      expect(await eslint.isPathIgnored(abs), `${file} is excluded by an eslint ignore`).toBe(
+        false,
+      );
+
+      // Half one, at the EXACT path: the cascade this package's own config
+      // produces for the real file has to carry all four bans.
+      const resolved = await eslint.calculateConfigForFile(abs);
+      expect(
+        resolved,
+        `eslint resolved no config block for ${file}, so the ban reaches its own source through ` +
+          'nothing',
+      ).toBeTruthy();
+      const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved));
+      for (const key of KEYS) {
+        expect(fired, `${file} :: ${key}`).toContain(key);
+      }
+
+      // Half two: the real bytes have to PARSE under that cascade. src/ is plain
+      // JS reached through the package tsconfig's `allowJs`, so the type-aware
+      // parser has a program for it — but a change to that tsconfig's `include`
+      // would leave the ban structurally wired over a file that reports a fatal
+      // error and NO rule violations, which is half one describing a cascade that
+      // never gets to run.
+      const [real] = await eslint.lintFiles([abs]);
+      expect(
+        (real?.messages ?? []).filter((m) => m.fatal).map((m) => m.message),
+        `${file} did not parse, so no rule could run against it whatever the cascade resolves`,
+      ).toEqual([]);
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
 describe('a planted network call in a file no workspace package owns is reported', () => {
   // The same blind spot as the case above, one level out. A repo-root file sits
   // outside tsconfig.root.json's `include` unless it is named there, so the

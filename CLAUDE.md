@@ -110,6 +110,17 @@ tarball and exercises it under a block. Note also that the three gates scope to 
 **product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
 runs in its own workflow rather than inside the `No-network` job's namespace.
 
+**Checking the first gate has one trap, and it is in the package that defines the ban.**
+Every package's `eslint.config.mjs` imports `@akasecurity/eslint-config`, so ESLint
+**executes** that package's `src/` to build any config at all. Append a `fetch()` there and
+no rule ever runs: the call fires during config resolution and the process dies with
+`TypeError: fetch failed`. It exits non-zero, which is exactly what makes it dangerous — a
+check asserting only that `pnpm lint` failed passes on that crash, and would go on passing
+with every network rule deleted. Verify this one by planting into a file ESLint does not
+load as config (`vitest.config.ts`, `test/`). The suite covers that `src/` without executing
+anything and must stay that way: it resolves the cascade at the real path and parses the
+real bytes, planting nothing on disk.
+
 The plugin — and the web dashboard's folder scan — also start a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
 
 ### 5. A scan that cannot be interrupted runs off the main thread

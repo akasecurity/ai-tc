@@ -457,25 +457,38 @@ export const rootScripts = () =>
   JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).scripts;
 
 /**
- * Every git-tracked file whose basename reads as an ESLint flat config, in
- * repo-relative posix form. Tracked-ness is what separates a real config from a
- * build artifact or a scratch file someone left behind.
+ * Every git-tracked file, in repo-relative posix form. Tracked-ness is what
+ * separates a real file from a build artifact or a scratch file someone left
+ * behind, so every audit that asks "does the tree really hold this?" starts
+ * here — and from ONE reader, for the same reason the invocation walk is one:
+ * two copies of this call would be free to disagree about what the tree holds.
  * @returns {string[]}
  */
-export function trackedEslintConfigFiles() {
-  let tracked;
+export function trackedFiles() {
   try {
-    tracked = execFileSync('git', ['ls-files'], {
+    return execFileSync('git', ['ls-files'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 64 << 20,
-    }).split('\n');
+    })
+      .split('\n')
+      .filter(Boolean);
   } catch (cause) {
     throw new Error(
       'Could not list tracked files with `git ls-files`. This guard audits the real workspace ' +
-        'configs, so it must run inside a git checkout.',
+        'layout, so it must run inside a git checkout.',
       { cause },
     );
   }
-  return tracked.filter((file) => file && ESLINT_CONFIG_BASENAME.test(posix.basename(file))).sort();
+}
+
+/**
+ * Every git-tracked file whose basename reads as an ESLint flat config, in
+ * repo-relative posix form.
+ * @returns {string[]}
+ */
+export function trackedEslintConfigFiles() {
+  return trackedFiles()
+    .filter((file) => ESLINT_CONFIG_BASENAME.test(posix.basename(file)))
+    .sort();
 }

@@ -36,7 +36,7 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
 | Site                                      | Mechanism                         | Why                                         |
 | ----------------------------------------- | --------------------------------- | ------------------------------------------- |
@@ -46,6 +46,8 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 | `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
+
+That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
 ### 4. No network calls
 
@@ -87,10 +89,15 @@ targets elsewhere. Two consequences for anyone adding a config:
   delete it.
 
 The reader itself — which invocations a green run makes, which config each runs under, and
-which paths each covers — is one shared module (`packages/eslint-config/test/helpers/`), used
-by both that audit and the per-package lint-coverage check in `effective-config.test.js`. Two
-readers of one shell string would be free to disagree about what runs, which is how a file
-ends up covered by one guard and audited by neither.
+which paths each covers — is one shared module
+(`packages/eslint-config/test/helpers/lint-invocations.js`), used by both that audit and the
+per-package lint-coverage check in `effective-config.test.js`. Two readers of one shell string
+would be free to disagree about what runs, which is how a file ends up covered by one guard
+and audited by neither. `trackedFiles()` sits there for the same reason and is the one
+`git ls-files` walk every audit in the package asks — including the ones below, which ask what
+the tree really holds rather than what a lint script says.
+
+`DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
 
 Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 

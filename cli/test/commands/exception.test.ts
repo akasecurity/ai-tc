@@ -15,6 +15,7 @@ import {
   registerBundledPacks,
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
+import type { DetectionException } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -790,6 +791,50 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         expect(io.output()).toBe('');
       });
     });
+  });
+});
+
+describe('aka exception show', () => {
+  it('prints the id, masked value, and key version — never a fingerprint fragment', async () => {
+    await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--for', '1h', '--reason', 'render'],
+      scriptedIo(`${VALUE}\n`),
+    );
+
+    const db = openLocalDatabase(dir);
+    let grant: DetectionException | undefined;
+    try {
+      grant = (await db.exceptions.list())[0];
+    } finally {
+      db.close();
+    }
+    if (!grant) throw new Error('grant missing');
+
+    const io = scriptedIo();
+    await runException(['show', grant.id.slice(0, 6), '--home', home], io);
+    const out = io.output();
+
+    // Positive control first: an empty capture would pass every absence
+    // assertion below vacuously.
+    expect(out).toContain(grant.id.slice(0, 6));
+    expect(out).toContain(grant.maskedValue);
+    expect(out).toContain(`key v${String(grant.keyVersion)}`);
+    expect(out).not.toContain(VALUE);
+
+    // The keyed fingerprint is a correlation key: no window of it may be
+    // echoed. Window by window rather than the whole digest — a truncated
+    // echo is still a stable correlation key. The shape guard keeps the loop
+    // from passing vacuously on a short or malformed digest.
+    expect(grant.valueFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    const WINDOW = 6;
+    for (let i = 0; i + WINDOW <= grant.valueFingerprint.length; i++) {
+      expect(out).not.toContain(grant.valueFingerprint.slice(i, i + WINDOW));
+    }
+    // The fragment shape this command used to print sits below the window
+    // size above (4-char prefix…4-char suffix); pin its absence directly.
+    expect(out).not.toContain(
+      `${grant.valueFingerprint.slice(0, 4)}…${grant.valueFingerprint.slice(-4)}`,
+    );
   });
 });
 

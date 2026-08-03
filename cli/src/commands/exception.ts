@@ -825,11 +825,15 @@ async function runShow(argv: string[], io: Prompter): Promise<void> {
     const ruleLine = rule
       ? `${ex.ruleId} (${ex.category} · ${rule.severity})`
       : `${ex.ruleId} (${ex.category})`;
-    const fp = `${ex.valueFingerprint.slice(0, 4)}…${ex.valueFingerprint.slice(-4)}`;
     const label = (name: string): string => `  ${name.padEnd(10)}`;
+    // The keyed fingerprint is a correlation key and is never printed, not
+    // even a fragment — the grant is identified by its id, the value by its
+    // masked preview. The key version stays: it says whether the grant is
+    // still matchable after a rotation.
     const lines = [
+      `${label('Id')}${shortId(ex.id)}`,
       `${label('Rule')}${ruleLine}`,
-      `${label('Value')}${ex.maskedValue}   fingerprint ${fp} (key v${String(ex.keyVersion)})`,
+      `${label('Value')}${ex.maskedValue} (fingerprint key v${String(ex.keyVersion)})`,
       `${label('Scope')}${scopeSummary(ex)}${ex.maxUses !== null ? ` · max ${String(ex.maxUses)} use${ex.maxUses === 1 ? '' : 's'}` : ''}`,
       `${label('Reason')}"${ex.justification}"`,
       `${label('Created')}${formatTimestamp(ex.createdAt)} by ${ex.createdBy} via ${viaLabel(ex.createdVia)}`,

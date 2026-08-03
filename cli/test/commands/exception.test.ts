@@ -1,10 +1,11 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { getLoadedRules, maskMatch } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
-import { openLocalDatabase } from '@akasecurity/persistence';
+import { BLOCKED_DETECTIONS_RETENTION_MS, openLocalDatabase } from '@akasecurity/persistence';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
@@ -16,7 +17,11 @@ import {
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionException } from '@akasecurity/schema';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import {
+  defaultWorkspaceSettings,
+  LEDGER_WINDOW_HOURS,
+  rotationBlockedLedgerNote,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runException } from '../../src/commands/exception.ts';
@@ -926,5 +931,227 @@ describe('aka exception list / revoke', () => {
     // The list is metadata-only even for reveal grants — masked, never raw.
     expectNoEchoOf(out, VALUE);
     expectNoEchoOf(out, OTHER_VALUE);
+  });
+});
+
+// Rotation is one-way, and the two stores holding GRANTABLE fingerprints are
+// the permanent grants and the blocked-detections ledger. This command listed
+// the first and said nothing about the second, while the dashboard's rotate
+// dialog disclosed both — two surfaces stating different costs for the same
+// irreversible action, and this is the one that runs unattended under `--yes`.
+//
+// The ledger half is the easy one to miss precisely because it degrades so
+// politely: those rows go on appearing under `aka exception approve`
+// afterwards, correctly refused, which is a worse place to learn it than in the
+// confirmation.
+describe('aka exception rotate-key — the cost it discloses before committing', () => {
+  // Seeds a ledger row under whatever key is current, the way the enforcement
+  // path writes one.
+  async function seedBlocked(reference: string): Promise<void> {
+    const key = loadOrCreateFingerprintKey(dir);
+    const db = openLocalDatabase(dir);
+    try {
+      await db.exceptions.recordBlocked({
+        reference,
+        ruleId: RULE_ID,
+        category: 'secret',
+        valueFingerprint: fingerprintValue(key, VALUE),
+        keyVersion: key.version,
+        maskedValue: maskMatch(VALUE),
+        sessionId: 'sess-rotate',
+        repo: null,
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  // `recordBlocked` stamps `blocked_at` with the wall clock, so ageing a row is
+  // the one thing the repository API cannot express. Written straight to the
+  // real store rather than by mocking a clock — the property under test is
+  // which WINDOW the command reads over, and a faked clock would move the
+  // command's cutoff along with the row and assert nothing.
+  function backdate(reference: string, ageMs: number): void {
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      const changes = raw
+        .prepare('UPDATE blocked_detections SET blocked_at = ? WHERE reference = ?')
+        .run(Date.now() - ageMs, reference).changes;
+      // An UPDATE matching nothing exits happily and would leave the row at
+      // `now`, where the assertion below passes for the wrong reason.
+      expect(Number(changes)).toBe(1);
+    } finally {
+      raw.close();
+    }
+  }
+
+  // Interactive prompter that also captures what had ALREADY been printed at
+  // the moment the confirm prompt was asked. `interactiveIo` above records the
+  // questions and the output separately, so it cannot tell a disclosure made
+  // before the decision from one made after it — which is the whole property
+  // here, not an incidental detail of layout.
+  function confirmIo(answer: string): Prompter & {
+    output: () => string;
+    printedBeforePrompt: () => string | null;
+  } {
+    const chunks: string[] = [];
+    let atPrompt: string | null = null;
+    return {
+      output: () => chunks.join(''),
+      printedBeforePrompt: () => atPrompt,
+      out: (text) => {
+        chunks.push(text);
+      },
+      err: (text) => {
+        chunks.push(text);
+      },
+      isInteractive: true,
+      ask: () => {
+        atPrompt = chunks.join('');
+        return Promise.resolve(answer);
+      },
+      askHidden: () => Promise.reject(new Error('no hidden prompt expected')),
+      readAllStdin: () => Promise.resolve(''),
+    };
+  }
+
+  function keyVersion(): number | undefined {
+    return readFingerprintKey(dir)?.version;
+  }
+
+  it('states the ledger cost under --yes, which skips the prompt but not the preamble', async () => {
+    await seedBlocked('a11ce5');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    expect(out).toContain('invalidates EVERY existing exception grant');
+    expect(out).toContain(rotationBlockedLedgerNote(1));
+    // The unattended path is the one that most needs the disclosure and the
+    // least likely to be read, so pin that it really rotated — a version still
+    // at 1 would mean this asserted the copy on a run that did nothing.
+    expect(keyVersion()).toBe(2);
+  });
+
+  it('states it before the confirm prompt, not after the decision', async () => {
+    await seedBlocked('b22dee');
+
+    const io = confirmIo('n');
+    await runException(['rotate-key', '--home', home], io);
+
+    // Printed by the time the user was asked — "tell them before, not after" is
+    // the entire point, and a note emitted after the answer is worth nothing.
+    expect(io.printedBeforePrompt()).toContain(rotationBlockedLedgerNote(1));
+    expect(io.output()).toContain('Aborted — key unchanged.');
+    expect(keyVersion()).toBe(1);
+  });
+
+  it('counts over the ledger retention window, not the approve picker default', async () => {
+    // Two hours old: outside `recentBlocked`'s 30-minute default — which is the
+    // `aka exception approve` picker's lookback, not a retention bound — and
+    // well inside the day the ledger is actually kept for. A count taken over
+    // the default would report nothing here and understate a one-way action by
+    // the better part of a day.
+    await seedBlocked('c33fff');
+    backdate('c33fff', 2 * 60 * 60_000);
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    expect(io.output()).toContain(rotationBlockedLedgerNote(1));
+  });
+
+  it('counts only the rows still matchable under the current key', async () => {
+    await seedBlocked('d44aaa');
+    const rotated = rotateFingerprintKey(dir);
+    expect(rotated.version).toBe(2);
+    // Recorded under the key that is now current — the positive control. Without
+    // it a zero would be indistinguishable from a reader that finds nothing.
+    await seedBlocked('e55bbb');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // Two rows in the ledger, one of them already unapprovable because it was
+    // blocked under v1. Counting both would overstate what THIS rotation costs.
+    expect(out).toContain(rotationBlockedLedgerNote(1));
+    expect(out).not.toContain(rotationBlockedLedgerNote(2));
+  });
+
+  it('states the caveat with nothing approvable, on both paths', async () => {
+    // The ledger refills within minutes of a rotation, so a note shown only
+    // when the count is non-zero reads as a caveat that only sometimes applies.
+    // Asserted on both paths because they print through different branches.
+    const zero = rotationBlockedLedgerNote(0);
+
+    const interactive = confirmIo('n');
+    await runException(['rotate-key', '--home', home], interactive);
+    expect(interactive.output()).toContain(zero);
+
+    const unattended = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], unattended);
+    expect(unattended.output()).toContain(zero);
+  });
+
+  it('lists the permanent grants and the ledger cost together, without the value', async () => {
+    // `--yes` stands in for the retype a permanent grant asks for on a
+    // terminal; this suite is non-interactive.
+    await runException(
+      [
+        'add',
+        '--home',
+        home,
+        '--rule',
+        RULE_ID,
+        '--stdin',
+        '--permanent',
+        '--reason',
+        'pinned',
+        '--yes',
+      ],
+      scriptedIo(`${VALUE}\n`),
+    );
+    await seedBlocked('f66ccc');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // Both halves of what rotation invalidates, in the order the dashboard
+    // dialog shows them: the grants that stop applying, then the ledger rows
+    // that stop being approvable.
+    const grants = out.indexOf('Active PERMANENT exceptions');
+    const ledger = out.indexOf(rotationBlockedLedgerNote(1));
+    expect(grants).toBeGreaterThanOrEqual(0);
+    expect(ledger).toBeGreaterThan(grants);
+    // Everything here is metadata and masked previews; the raw value has no
+    // business on a screen that is only naming what stops working.
+    expectNoEchoOf(out, VALUE);
+  });
+
+  it('prints the dashboard dialog’s own sentence rather than a second copy', async () => {
+    // `rotationBlockedLedgerNote` is exported from @akasecurity/schema and
+    // re-exported by @akasecurity/dashboard-ui, so this command and the rotate
+    // dialog cannot word the same disclosure differently. Asserted against the
+    // shared function itself — a literal here would be the duplicate the shared
+    // helper exists to prevent, and would go green while the two drifted apart.
+    await seedBlocked('077ddd');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    expect(io.output()).toContain(rotationBlockedLedgerNote(1));
+  });
+
+  it('names a window that matches the one the count is actually taken over', () => {
+    // The sentence hard-codes 24 hours; the read passes
+    // BLOCKED_DETECTIONS_RETENTION_MS. @akasecurity/schema cannot import the
+    // authority (persistence depends on schema, not the reverse), so the two
+    // are pinned here — at the consumer that holds both. Widen the retention
+    // and this goes red rather than the copy quietly describing a window the
+    // count no longer spans.
+    expect(LEDGER_WINDOW_HOURS * 60 * 60 * 1000).toBe(BLOCKED_DETECTIONS_RETENTION_MS);
   });
 });

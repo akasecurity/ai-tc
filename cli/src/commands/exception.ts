@@ -5,8 +5,10 @@ import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
 import type { BlockedDetection, LocalDatabase } from '@akasecurity/persistence';
 import type { CreateExceptionInput } from '@akasecurity/persistence';
 import {
+  BLOCKED_DETECTIONS_RETENTION_MS,
   createKeyProvider,
   keysDir,
+  keyStateOf,
   openLocalDatabase,
   readWorkspaceSettings,
   SecretVault,
@@ -21,12 +23,14 @@ import {
   registerBundledPacks,
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
-import type { DetectionException, ResolvedScope } from '@akasecurity/schema';
+import type { DetectionException, FingerprintKeyState, ResolvedScope } from '@akasecurity/schema';
 import {
   DetectionCategory,
+  isMatchableUnder,
   isVaultConsentValid,
   PointerToken,
   resolveScopeFlags,
+  rotationBlockedLedgerNote,
   scopeFromAnswer,
 } from '@akasecurity/schema';
 
@@ -904,6 +908,34 @@ async function runRevoke(argv: string[], io: Prompter): Promise<void> {
   }
 }
 
+/**
+ * Blocked-ledger rows a rotation would take something from: the ones still
+ * matchable under the CURRENT key.
+ *
+ * Two choices here are load-bearing and are what the rotate disclosure rests on.
+ * The window is the ledger's whole RETENTION (a day), not `recentBlocked`'s
+ * 30-minute default — the default is the `approve` picker's lookback, and
+ * counting a one-way action's cost over it would understate it by the better
+ * part of a day. And a row recorded under an older key (or under one that is
+ * now missing or unreadable) is already unapprovable, so counting it would
+ * overstate the loss; `isMatchableUnder` is the same predicate every approve
+ * surface refuses on, so the number and the rows a user can act on agree.
+ *
+ * An unreadable key is not a reason to fail the rotation — it yields zero,
+ * which is true: nothing can be matched right now either way.
+ */
+async function countApprovableBlocked(db: LocalDatabase, dir: string): Promise<number> {
+  const key = ((): FingerprintKeyState => {
+    try {
+      return keyStateOf(readFingerprintKey(dir));
+    } catch {
+      return { status: 'unreadable' };
+    }
+  })();
+  const rows = await db.exceptions.recentBlocked(BLOCKED_DETECTIONS_RETENTION_MS);
+  return rows.filter((row) => isMatchableUnder(row.keyVersion, key)).length;
+}
+
 async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
   const { values } = parseArgs({
     args: argv,
@@ -926,6 +958,16 @@ async function runRotateKey(argv: string[], io: Prompter): Promise<void> {
         io.out(`  ${shortId(ex.id)}  ${ex.ruleId}  ${ex.maskedValue}\n`);
       }
     }
+    // The grants above are only half of what rotation invalidates: the
+    // blocked-detections ledger holds keyed fingerprints too, is retained a day,
+    // and so routinely outlives a rotation. Stated UNCONDITIONALLY, count or no
+    // count — the ledger refills within minutes, so a caveat shown only
+    // sometimes reads as one that only sometimes applies. Same sentence the
+    // dashboard's rotate dialog shows, from the one copy in @akasecurity/schema.
+    // Its own paragraph, and left for the terminal to wrap: the dialog gives it
+    // a panel of its own, and run together with the grant list above it reads as
+    // a footnote to that list rather than the second thing rotation invalidates.
+    io.out(`\n${rotationBlockedLedgerNote(await countApprovableBlocked(db, dir))}\n\n`);
     if (values.yes !== true) {
       if (!io.isInteractive) {
         throw new Error('pass --yes to rotate non-interactively');

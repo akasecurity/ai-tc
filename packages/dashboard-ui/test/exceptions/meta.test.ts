@@ -3,7 +3,12 @@ import type {
   ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
-import { isMatchableUnder, toExceptionDescriptor } from '@akasecurity/schema';
+import {
+  isMatchableUnder,
+  LEDGER_WINDOW_HOURS as SCHEMA_LEDGER_WINDOW_HOURS,
+  rotationBlockedLedgerNote as schemaRotationBlockedLedgerNote,
+  toExceptionDescriptor,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -174,6 +179,20 @@ describe('rotationBlockedLedgerNote', () => {
   // it would not run at all. Keeping the sentence in meta.ts is what makes it
   // reachable — the dialog holds no copy of its own to drift from.
   const CASES = [0, 1, 2, 17];
+
+  // The sentence itself lives in @akasecurity/schema, beside the
+  // isMatchableUnder predicate its count is taken with, because TWO surfaces
+  // disclose this one-way action's cost — this dialog and
+  // `aka exception rotate-key` — and cli cannot import this package's view
+  // tree. What meta.ts exports has to stay that same function rather than a
+  // copy that happens to read alike today: identity is what a reintroduced
+  // local definition fails on, where an equal-output assertion would pass right
+  // up until someone edited one of the two. The window constant travels with
+  // it, since a forked note would fork the number it names.
+  it('re-exports the shared copy rather than restating it', () => {
+    expect(rotationBlockedLedgerNote).toBe(schemaRotationBlockedLedgerNote);
+    expect(LEDGER_WINDOW_HOURS).toBe(SCHEMA_LEDGER_WINDOW_HOURS);
+  });
 
   it.each(CASES)('names the blocked ledger and the way back, at %i approvable', (count) => {
     const note = rotationBlockedLedgerNote(count);

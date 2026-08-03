@@ -13,6 +13,7 @@ import type { WorkspaceSettings } from '@akasecurity/schema';
 import { dataDir, dbPath, ensureDataDirSync, settingsDir } from './data-dir.ts';
 import type { ResolvedProvider } from './provider.ts';
 import { resolveProvider } from './provider.ts';
+import type { ResolvedAntigravityProvider } from './provider-antigravity.ts';
 import type { ResolvedCodexProvider } from './provider-codex.ts';
 
 // The settings file readers and writer live in @akasecurity/persistence
@@ -37,7 +38,7 @@ export interface PluginConfig {
   // SessionStart can snapshot it onto the session-root as an immutable
   // per-session fact (it can't reach the reconciler, which runs detached
   // without the session's env).
-  provider: ResolvedProvider | ResolvedCodexProvider;
+  provider: ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider;
 }
 
 /**
@@ -47,15 +48,18 @@ export interface PluginConfig {
  * or corrupt settings.json yields unonboarded defaults rather than throwing.
  *
  * `resolveProviderFn` defaults to Claude Code's `resolveProvider` for
- * backward compatibility with every existing call site — the Codex plugin's
- * SessionStart hook is the one place that needs to pass `resolveCodexProvider`
- * explicitly (see plugins/codex/src/hooks/session-start.ts). Every other hook
- * loads config for its data dir / settings only and never reads `.provider`,
- * so the default is harmless there even though it's Claude-shaped.
+ * backward compatibility with every existing call site. Each non-Claude plugin
+ * passes its own resolver from the ONE hook that snapshots the provider onto
+ * the session root — `resolveCodexProvider` from
+ * plugins/codex/src/hooks/session-start.ts, `resolveAntigravityProvider` from
+ * plugins/antigravity/src/hooks/pre-invocation.ts. Every other hook loads
+ * config for its data dir / settings only and never reads `.provider`, so the
+ * default is harmless there even though it's Claude-shaped.
  */
 export function loadConfig(
   base: string = defaultDataDir(),
-  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider = resolveProvider,
+  resolveProviderFn: () =>
+    ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider = resolveProvider,
 ): PluginConfig {
   // Self-heal the store's at-rest modes on the plugin's entry path, so a
   // group/other-readable base or settings.json left by an older release (or the
@@ -87,16 +91,17 @@ export function loadConfig(
 }
 
 /**
- * Run the given resolver fail-safe. Both `resolveProvider` and
- * `resolveCodexProvider` are already lenient (they parse {} on a bad env),
- * but we wrap once more so a config load — on the fail-open hook path — can
- * never throw on an unexpected error; default to Anthropic-direct, matching
- * the module's original fail-open default (harmless for a Codex caller too,
- * since this branch is only reached on a genuinely unexpected resolver bug).
+ * Run the given resolver fail-safe. All three resolvers (`resolveProvider`,
+ * `resolveCodexProvider`, `resolveAntigravityProvider`) are already lenient
+ * (they parse {} on a bad env), but we wrap once more so a config load — on
+ * the fail-open hook path — can never throw on an unexpected error; default to
+ * Anthropic-direct, matching the module's original fail-open default (harmless
+ * for a Codex or Antigravity caller too, since this branch is only reached on a
+ * genuinely unexpected resolver bug).
  */
 function resolveProviderSafe(
-  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider,
-): ResolvedProvider | ResolvedCodexProvider {
+  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider,
+): ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider {
   try {
     return resolveProviderFn();
   } catch {

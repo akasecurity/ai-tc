@@ -25,6 +25,7 @@ export const Harness = z
     'cursor',
     'copilot',
     'codex',
+    'antigravity',
     'windsurf',
     'claudedesktop',
     'chatgpt',
@@ -44,6 +45,7 @@ export const TOOL_TO_HARNESS: Record<string, Harness & FindingProvider> = {
   cursor: 'cursor',
   chatgpt: 'chatgpt',
   codex: 'codex',
+  antigravity: 'antigravity',
   'claude-ai': 'claudeai',
 };
 

@@ -5,7 +5,8 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin, the Codex CLI plugin, the browser extension (ChatGPT + Claude.ai web chat, bridged
+plugin, the Codex CLI plugin, the Antigravity plugin, the browser extension (ChatGPT +
+Claude.ai web chat, bridged
 over Chrome native messaging — no port, no listener), and the `aka` CLI capture agent
 activity into a local SQLite
 store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
@@ -22,7 +23,7 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI plugins, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
@@ -63,6 +64,15 @@ control, without which a hook that stopped emitting would turn every absence ass
 the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
 the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
+**What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
+and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
+fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
+its timeout, or prints nothing blocks the tool call outright. On that host, failing open means
+_printing an explicit_ `{"decision":"allow"}` on every path — see
+`runHookFailOpen` in `plugins/antigravity/src/hooks/shared.ts`. Before writing a fail-open path
+for a new harness, check which convention it uses; assuming this one is what turns a crashing
+hook into a wedged session.
+
 ### 2. Contracts before code
 
 `@akasecurity/schema` is the spine. The Zod schemas in `src/zod/` define every data boundary. Add shapes there before implementing them anywhere else.
@@ -71,18 +81,20 @@ the fault rows prove silence, and only the enforcement rows can prove what the n
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Six places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eight places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                        | Mechanism                         | Why                                                        |
-| ------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
-| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
-| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                              |
-| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
-| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
-| `plugins/codex/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
+| Site                                              | Mechanism                         | Why                                                        |
+| ------------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
+| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
+| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                              |
+| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
+| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
+| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
+| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth  |
+| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation  |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a seventh site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a ninth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -337,6 +349,7 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
+plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
@@ -345,7 +358,8 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart — `provider.ts` for Claude Code,
-                     `provider-codex.ts` for Codex CLI, each its own file-scoped
+                     `provider-codex.ts` for Codex CLI, `provider-antigravity.ts`
+                     for Antigravity, each its own file-scoped
                      `n/no-process-env` opt-out), ignore (gitignore semantics for
                      the SessionStart project-file walk), node:worker_threads
                      (the isolated scan — see Architecture principles §5)
@@ -366,12 +380,32 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      harness plugins share this without forking it.)
 ```
 
-Both plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ only in
-their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook contract)
-plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
-resolution, tool-name → scannable-field tables). See `plugins/codex/skills/setup/SKILL.md`'s
-"Known limitation" note for the one real behavioral gap between the two: Codex does not yet
-fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls, only `Bash`.
+All three CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
+only in their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook
+contract) plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
+resolution, tool-name → scannable-field tables).
+
+**The hosts' hook contracts are NOT equivalent, and the differences are behavioral, not
+cosmetic.** Each plugin's `skills/setup/SKILL.md` carries a "Known limitations" section that
+is the authority on what its host can actually enforce; keep it accurate when the adapter
+changes. The gaps that exist today:
+
+- **Codex** does not yet fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls,
+  only `Bash`.
+- **Antigravity** is the most constrained and the most different. It has only five events —
+  no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
+  off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be
+  neither blocked nor redacted. `PreToolUse` has **no `updatedInput` equivalent**, so a
+  `redact` policy escalates to a deny for every field (not just executable ones, the way
+  Codex escalates), and a `warn` has no channel to print on. `PostToolUse` receives **no tool
+  result at all**, so there is no live response scanning and no `tool-response.ts` /
+  `scan-response.ts` counterpart in that package.
+- **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
+  hook that exits non-zero, is killed on timeout, or prints nothing is read as a `deny` on
+  every tool call. "Fail-open" there therefore means _always printing an explicit_
+  `{"decision":"allow"}`, which is what `runHookFailOpen` in
+  `plugins/antigravity/src/hooks/shared.ts` guarantees — including on a throw and on its own
+  watchdog. A silent exit is a bug that would block the user's every tool call.
 
 **Cross-cutting rules:**
 
@@ -468,6 +502,7 @@ cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
+plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm bundle)
 plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)
@@ -618,14 +653,15 @@ Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refac
 
 ## Releasing (CLI / plugin versioning)
 
-All three shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All four shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`** and **`plugins/codex`** each bundle `@akasecurity/plugin-runtime` +
-  `plugin-sdk` and everything they pull in — `@akasecurity/schema`, `persistence`,
-  `detections`. A change to any of those changes BOTH plugins' `scripts/*.js`.
+- **`plugins/claude-code`**, **`plugins/codex`** and **`plugins/antigravity`** each bundle
+  `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they pull in —
+  `@akasecurity/schema`, `persistence`, `detections`. A change to any of those changes ALL
+  THREE plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
@@ -636,13 +672,16 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
      and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **all three** of `cli`, `plugins/claude-code`, **and** `plugins/codex` (all bundle them).
-   - `setup-wizard` change → `plugins/claude-code` **and** `plugins/codex` (both bundle
-     it; the CLI does not).
-   - The CLI and both plugins normally move together on one shared version line.
+     change → **all four** of `cli`, `plugins/claude-code`, `plugins/codex` **and**
+     `plugins/antigravity` (all bundle them).
+   - `setup-wizard` change → `plugins/claude-code`, `plugins/codex` **and**
+     `plugins/antigravity` (all three bundle it; the CLI does not).
+   - The CLI and all three plugins normally move together on one shared version line.
 2. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
-   `plugins/claude-code/package.json`, and `plugins/codex/.codex-plugin/plugin.json` in sync
-   with `plugins/codex/package.json` (identical version within each pair) whenever that plugin
+   `plugins/claude-code/package.json`, `plugins/codex/.codex-plugin/plugin.json` in sync
+   with `plugins/codex/package.json`, and `plugins/antigravity/plugin.json` (Antigravity reads
+   its manifest from the plugin ROOT, not a dotted dir) in sync with
+   `plugins/antigravity/package.json` (identical version within each pair) whenever that plugin
    is bumped.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**

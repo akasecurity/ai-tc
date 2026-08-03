@@ -616,6 +616,7 @@ describe('scanCoverage', () => {
       'claudecode',
       'cursor',
       'codex',
+      'antigravity',
       'claudeai',
       'chatgpt',
       'copilot',
@@ -646,5 +647,25 @@ describe('scanCoverage', () => {
       coverage: 80,
       supported: true,
     });
+  });
+
+  it('pins the antigravity row BELOW codex: supported at partial (60) coverage', async () => {
+    // Antigravity's hook contract has no prompt-bearing event and no field for
+    // rewriting a tool argument or withholding a tool result, so prompts and
+    // responses are outside live coverage entirely and a redact can only
+    // escalate to a deny. Tool CALLS are covered across every tool in the CLI,
+    // which is why this is partial rather than unsupported — and why it must
+    // stay strictly below the Codex row rather than matching it.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'antigravity')).toEqual({
+      provider: 'antigravity',
+      coverage: 60,
+      supported: true,
+    });
+
+    const coverageOf = (p: string): number =>
+      res.providers.find((row) => row.provider === p)?.coverage ?? -1;
+    expect(coverageOf('antigravity')).toBeLessThan(coverageOf('codex'));
+    expect(coverageOf('codex')).toBeLessThan(coverageOf('claudecode'));
   });
 });

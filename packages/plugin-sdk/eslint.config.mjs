@@ -31,4 +31,14 @@ export default [
       'n/no-process-env': 'off',
     },
   },
+  {
+    // provider-antigravity.ts is the Antigravity counterpart: resolves the LLM
+    // provider from the host process env at the conversation's first
+    // invocation (GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_GEMINI_BASE_URL). Same
+    // file-scoped opt-out as the two above.
+    files: ['src/provider-antigravity.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
 ];

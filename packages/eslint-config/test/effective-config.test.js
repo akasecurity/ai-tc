@@ -255,6 +255,7 @@ const WORKSPACE_PACKAGES = discoverWorkspacePackages();
 const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-claude-code',
   '@akasecurity/ai-tc-codex',
+  '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
   '@akasecurity/dashboard-ui',

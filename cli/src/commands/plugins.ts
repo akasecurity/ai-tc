@@ -87,8 +87,10 @@ function installPlugin(argv: string[]): void {
   const cliBin = agent.cliBin;
   if (!ref || !cliBin) {
     process.stdout.write(
-      `${agent.name} has no automated install path yet — install it from the AKA ` +
-        `marketplace in ${agent.name}, then run \`aka init\`.\n`,
+      agent.installHint
+        ? `${agent.installHint}\n`
+        : `${agent.name} has no automated install path yet — install it from the AKA ` +
+            `marketplace in ${agent.name}, then run \`aka init\`.\n`,
     );
     return;
   }

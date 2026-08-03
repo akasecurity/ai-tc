@@ -170,6 +170,17 @@ Four properties are load-bearing and easy to break by accident:
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
 - **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
 
+The first two are **counted, not timed**. How many threads a path builds is the property —
+none on the fast path, one for the pre-flight, two for a hang that has to be recovered and then
+attributed — and `IsolatedScanOptions.onWorkerStart` reports each construction so
+`packages/plugin-sdk/test/{runtime-isolation,isolated-scan}.test.ts` can assert the number
+directly. Elapsed ceilings sit beside those counts and answer a different question: a ceiling
+loose enough to survive a cold start on a contended runner (the two-cycle case is granted 75s
+against a shipped worst case of ~14s) swallows a whole extra cycle without noticing, so it can
+only separate "this path got slower" from "this path stopped terminating" — which the per-test
+timeout cannot. Do not fold one into the other, and do not answer a flake here by widening a
+ceiling that was never measuring the property.
+
 A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it; the dashboard's folder scan writes the same line to the server's console and additionally returns a notice to the page, since nobody is reading a server log while they click Scan. Anything that adds a new way to quarantine must keep those surfaces true.
 
 The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.

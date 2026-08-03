@@ -21,6 +21,7 @@ import type { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createIsolatedScanner } from '../src/isolated-scan.ts';
+import { countWorkerStarts } from './helpers/worker-starts.ts';
 
 // The battery derives its probes from a pattern's own literal prefix and
 // character classes. `literalPrefix` stops at the first `(`, so this pattern
@@ -285,9 +286,10 @@ describe('createIsolatedScanner.scan', () => {
     // not scoped to its own worker settles the WRONG job — the next scan comes
     // back "the scan worker exited before answering" while a perfectly healthy
     // thread is running it.
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
-      { budgetMs: 1_500, minAttributionMs: 50 },
+      { budgetMs: 1_500, minAttributionMs: 50, onWorkerStart: starts.onWorkerStart },
     );
     try {
       expect((await scanner.scan(BATTERY_BLIND_TEXT)).status).toBe('timeout');
@@ -296,9 +298,77 @@ describe('createIsolatedScanner.scan', () => {
       expect(after.status).toBe('ok');
       if (after.status !== 'ok') return;
       expect(after.findings.map((f) => f.ruleId)).toEqual(['pulled/benign']);
+      // On a FRESH thread: the second scan is answered by a second worker, not
+      // by the one that was terminated. This is the positive half of the two
+      // "does not respawn" cases below — without it, their count of 1 would
+      // also be satisfied by a scanner that never replaced a worker at all.
+      expect(starts.count()).toBe(2);
     } finally {
       await scanner.close();
     }
+  });
+});
+
+describe('createIsolatedScanner.onWorkerStart', () => {
+  // Everything asserting a worker COUNT elsewhere leans on this seam reporting
+  // one thread per construction and nothing else. That claim is about a real
+  // thread, so it is checked against one here rather than against the helper
+  // that tallies the notifications.
+  it('reports one start per thread built, and none before the first job', async () => {
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [BENIGN], unverified: [] },
+      { onWorkerStart: starts.onWorkerStart },
+    );
+    try {
+      // Constructing a scanner starts nothing: a machine whose verdicts are all
+      // cached, and every caller that never reaches a scan, pays no thread.
+      expect(starts.count()).toBe(0);
+
+      expect((await scanner.scan('key AKIA0123456789ABCDEF here')).status).toBe('ok');
+      expect(starts.count()).toBe(1);
+      expect(starts.ids()).toHaveLength(1);
+
+      // Pooled — the second job reuses the thread rather than building one, and
+      // a probe is a job like any other.
+      expect((await scanner.scan('nothing here')).status).toBe('ok');
+      expect((await scanner.probe(BENIGN)).status).toBe('ok');
+      expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('reports a thread that never answers, because it cost one anyway', async () => {
+    // A worker that throws on load is constructed, scheduled and torn down, so
+    // the count has to include it — otherwise "starts no worker" would be
+    // satisfied by a path that starts one and loses it.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      { budgetMs: 10_000, workerUrl: CRASHING_WORKER, onWorkerStart: starts.onWorkerStart },
+    );
+    try {
+      expect((await scanner.scan('anything')).status).toBe('unavailable');
+      expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('reports nothing once closed, because nothing is built', async () => {
+    // The one unavailable outcome that constructs nothing at all: a closed
+    // scanner answers before it looks for a worker. A count of 1 here would
+    // mean the seam fires on an intent to start rather than on a start.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      { onWorkerStart: starts.onWorkerStart },
+    );
+    await scanner.close();
+    expect((await scanner.scan('anything')).status).toBe('unavailable');
+    expect((await scanner.probe(BENIGN)).status).toBe('unavailable');
+    expect(starts.count()).toBe(0);
   });
 });
 
@@ -361,9 +431,10 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('does not respawn a worker that already died on its own', async () => {
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { budgetMs: 10_000, workerUrl: CRASHING_WORKER },
+      { budgetMs: 10_000, workerUrl: CRASHING_WORKER, onWorkerStart: starts.onWorkerStart },
     );
     try {
       await scanner.scan('first');
@@ -371,6 +442,10 @@ describe('createIsolatedScanner failure reporting', () => {
       const outcome = await scanner.scan('second');
       // Same verdict, without paying to start a thread that dies the same way.
       expect(outcome.status).toBe('unavailable');
+      // ONE thread across both scans. The elapsed bound below only says the
+      // second answer was quick, and a thread that crashes on load is quick —
+      // so it would stay green while the parent rebuilt one per scan.
+      expect(starts.count()).toBe(1);
       expect(performance.now() - started).toBeLessThan(1_000);
     } finally {
       await scanner.close();
@@ -382,9 +457,10 @@ describe('createIsolatedScanner failure reporting', () => {
     // only an 'exit'. Without latching that, the pre-flight — which warns and
     // CONTINUES on an unavailable prober — respawns a thread per rule and burns
     // its whole 2s pass budget inside a pass that was already doomed.
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { budgetMs: 10_000, workerUrl: EXITING_WORKER },
+      { budgetMs: 10_000, workerUrl: EXITING_WORKER, onWorkerStart: starts.onWorkerStart },
     );
     try {
       const first = await scanner.scan('first');
@@ -397,19 +473,33 @@ describe('createIsolatedScanner failure reporting', () => {
       // difference between remembering and rebuilding the thread.
       expect(second.reason).toContain('crashed');
       expect(second.reason).toContain('exited before answering');
+      // …and the thread count is that same difference, said without relying on
+      // the wording. A pre-flight facing a pack of such rules spends its whole
+      // pass budget building threads that immediately exit; one start is what
+      // says it does not.
+      expect(starts.count()).toBe(1);
     } finally {
       await scanner.close();
     }
   });
 
   it('reports a missing worker script rather than scanning unbounded', async () => {
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { workerUrl: new URL('file:///aka-no-such-dir/scan-worker.js') },
+      {
+        workerUrl: new URL('file:///aka-no-such-dir/scan-worker.js'),
+        onWorkerStart: starts.onWorkerStart,
+      },
     );
     try {
       const outcome = await scanner.scan('anything');
       expect(outcome.status).toBe('unavailable');
+      // A path that resolves to nothing still costs a thread: `new Worker` does
+      // not throw on one, it constructs and delivers the ENOENT as an 'error'
+      // event. Only the URL being unresolvable BEFORE construction — no
+      // `workerUrl` and no script beside the bundle — costs nothing.
+      expect(starts.count()).toBe(1);
     } finally {
       await scanner.close();
     }

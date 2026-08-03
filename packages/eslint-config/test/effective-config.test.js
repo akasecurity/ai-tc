@@ -1,10 +1,21 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, posix, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import {
+  cardinalFor,
+  codeSpansOf,
+  CONVENTIONS_DOC,
+  countWordIn,
+  ordinalFor,
+  readConventions,
+  sectionOf,
+  tableOf,
+} from './helpers/claude-md.js';
 import {
   eslintInvocations,
   packageLintInvocations,
@@ -12,6 +23,8 @@ import {
   REPO_ROOT,
   ROOT_LINT_ENTRY_SCRIPT,
   rootLintInvocations,
+  trackedEslintConfigFiles,
+  trackedFiles,
   workspaceGlobs,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
@@ -124,20 +137,7 @@ const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 //     package-relative parent, so neither can answer "which files belong to no
 //     package at all"; that question needs the whole list.
 const LINTABLE_TRACKED = (() => {
-  let tracked;
-  try {
-    tracked = execFileSync('git', ['ls-files'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 64 << 20,
-    }).split('\n');
-  } catch (cause) {
-    throw new Error(
-      'Could not list tracked files with `git ls-files`. This suite audits the real workspace ' +
-        'layout, so it must run inside a git checkout.',
-      { cause },
-    );
-  }
+  const tracked = trackedFiles();
   /** @type {Map<string, Set<string>>} */
   const childDirs = new Map();
   /** @type {Map<string, Set<string>>} */
@@ -918,6 +918,26 @@ describe('every file outside every workspace package is linted by a repo-root pa
       'A file with one of these extensions is enumerated by this suite but left out of the turbo ' +
         `input glob, so adding one replays a cached green:\n  ${missing.join('\n  ')}`,
     ).toEqual([]);
+  });
+
+  it('turbo hashes the conventions doc this suite reads', () => {
+    // Same hazard as the extension check above, one file type over. Two describes
+    // in this package parse CLAUDE.md and assert its opt-out tables against the
+    // tree; none of the input globs reaches a .md, so without an entry of its own
+    // the document could be edited — or gutted — with this task's hash untouched,
+    // turbo replaying the cached pass and the guards never running on the change.
+    // A broader glob would do, but it has to be spelled here either way.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const globs = [...inputs[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+    expect(
+      globs,
+      `${CONVENTIONS_DOC} is parsed by this suite but hashed by none of its turbo inputs, so ` +
+        'editing it alone replays a cached green',
+    ).toContain(`$TURBO_ROOT$/${CONVENTIONS_DOC}`);
   });
 
   it('the script the gates run reaches at least one eslint invocation', () => {
@@ -2065,6 +2085,202 @@ describe('effective per-package config (composition / last-wins)', () => {
         'no-restricted-imports',
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The process.env opt-out table
+// ---------------------------------------------------------------------------
+
+// The check above holds the rule at `error` everywhere, which is the half a
+// severity assertion can see. §3's table makes three further claims it cannot:
+// WHICH files opt out, HOW each one does it, and that there are no others. All
+// three sat in prose no test read — the section could be deleted outright and
+// this package stayed green — and the table already carries a wrong `Why` for
+// one row, which is what an unread claim looks like after a while.
+//
+// So each column is driven against the thing it describes: the site against the
+// tree, the mechanism against the resolved config and the file's own text, and
+// the count against the row count. The `Why` column is prose about intent and
+// stays unguarded; nothing here should be read as covering it.
+const SECTION_3 = '### 3. `process.env` is off by default';
+const ENV_TABLE_HEADER = ['Site', 'Mechanism', 'Why'];
+/** "Four places in shipped source genuinely need the host environment…" */
+const ENV_COUNT_SENTENCE = /(\w+) places in shipped source genuinely need the host environment/g;
+/** "Adding a fifth site means updating this table." */
+const ENV_ADDING_SENTENCE = /Adding (?:an? )?(\w+)(?: opt-out)? site means updating this table/g;
+/** The two mechanisms the table distinguishes, spelled as it spells them. */
+const BY_CONFIG = 'file-scoped ESLint config';
+const BY_INLINE = 'inline `eslint-disable-next-line`';
+/** An actual disable DIRECTIVE for the rule — not a mention of it in prose. */
+const INLINE_DISABLE = /eslint-disable(?:-next-line|-line)?\b[^\n]*\bn\/no-process-env\b/;
+
+/**
+ * Test harnesses are deliberately out of the table's scope: several spawn the
+ * real hooks as child processes and need the host PATH, so they carry inline
+ * disables of their own. §3's sentence says "in shipped source" for exactly this
+ * reason, and this predicate is what that phrase has to mean for the sentence to
+ * be true. Widen one without the other and the count silently stops matching.
+ */
+const isTestPath = (file) => file.split('/').some((seg) => seg === 'test' || seg === '__tests__');
+
+/** Resolved configs report severity numerically; a config entry spells it. */
+const isOff = (severity) => severity === 0 || severity === 'off';
+
+/**
+ * The nearest ancestor of `file` that ships an `eslint.config.mjs` — the package
+ * whose config governs it, and the cwd its `lint` script runs in. Derived by
+ * walking up rather than by matching a `packages/`/`plugins/` prefix, which
+ * would silently pick the wrong directory for a repo-root package like `cli`.
+ */
+function owningConfigDir(file) {
+  for (let parts = file.split('/').slice(0, -1); parts.length; parts = parts.slice(0, -1)) {
+    const dir = parts.join('/');
+    if (existsSync(join(REPO_ROOT, dir, 'eslint.config.mjs'))) return dir;
+  }
+  throw new Error(`No ancestor of ${file} ships an eslint.config.mjs, so no config governs it.`);
+}
+
+describe(`the process.env opt-out table (${CONVENTIONS_DOC} §3)`, () => {
+  let section = '';
+  /** @type {{site: string, mechanism: string}[]} */
+  let rows = [];
+  /** @type {Error | undefined} */
+  let setupError;
+  /** Each tabled site's resolved `n/no-process-env` severity. */
+  const severityBySite = new Map();
+  /** Config entries that switch the rule off, as `<config>: <files pattern>`. */
+  const configOptOuts = [];
+
+  // Caught end to end, per the note on the hook above: an uncaught throw here
+  // SKIPS every test below instead of failing one, so a resolution that started
+  // erroring would read as a guard with nothing to say.
+  beforeAll(async () => {
+    try {
+      section = sectionOf(readConventions(), SECTION_3);
+      rows = tableOf(section, ENV_TABLE_HEADER).map(([site, mechanism], i) => {
+        const spans = codeSpansOf(site);
+        if (spans.length !== 1) {
+          throw new Error(`Row ${i + 1}: the Site cell must name exactly one file, got ${site}.`);
+        }
+        return { site: spans[0], mechanism };
+      });
+
+      for (const { site } of rows) {
+        const dir = owningConfigDir(site);
+        const config = await resolveConfig(join(REPO_ROOT, dir), site.slice(dir.length + 1));
+        severityBySite.set(site, severityOf(config, 'n/no-process-env'));
+      }
+
+      // Only configs that NAME the rule can be switching it off, so the module
+      // load is confined to those — one file today, rather than all eighteen.
+      // Enumerated through the shared reader, whose basename test accepts any
+      // extension ESLint honours: a `*.mjs` glob here would miss an opt-out in
+      // an `eslint.extra.config.js`, which ESLint applies exactly the same.
+      const candidates = trackedEslintConfigFiles().filter((f) =>
+        readFileSync(join(REPO_ROOT, f), 'utf8').includes('no-process-env'),
+      );
+      for (const file of candidates) {
+        const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
+        for (const entry of mod.default) {
+          if (!isOff(severityOf(entry, 'n/no-process-env'))) continue;
+          // §3 prefers a file-scoped opt-out precisely because a package-wide one
+          // is invisible to a reader auditing the configs. Recorded as a finding
+          // rather than skipped, so it cannot vanish from the count below.
+          for (const pattern of entry.files ?? ['<package-wide>']) {
+            configOptOuts.push(`${file}: ${pattern}`);
+          }
+        }
+      }
+    } catch (cause) {
+      setupError = /** @type {Error} */ (cause);
+    }
+  }, RESOLVE_TIMEOUT_MS);
+
+  const parsed = () => {
+    if (setupError) throw setupError;
+    return rows;
+  };
+
+  it('reads a non-empty opt-out table out of the document', () => {
+    expect(parsed().length).toBeGreaterThan(0);
+  });
+
+  it('names a tracked file that really reads the host environment in every row', () => {
+    const tracked = new Set(LINTABLE_TRACKED.files);
+    const wrong = parsed().flatMap(({ site }) => {
+      if (!tracked.has(site)) return [`${site}: tabled site is not a tracked lintable file`];
+      return readFileSync(join(REPO_ROOT, site), 'utf8').includes('process.env')
+        ? []
+        : [`${site}: tabled as an opt-out but reads no process.env`];
+    });
+    expect(wrong, `${CONVENTIONS_DOC} §3 rows that do not describe the tree`).toEqual([]);
+  });
+
+  it('describes each site with the mechanism that really exempts it', () => {
+    // The two mechanisms are distinguishable from the outside: a config opt-out
+    // resolves the rule to `off` for that path, an inline one leaves it at error
+    // and puts a disable directive in the file. Swap a row's mechanism and one of
+    // the two halves fails, whichever direction the swap went.
+    const wrong = parsed().flatMap(({ site, mechanism }) => {
+      const severity = severityBySite.get(site);
+      const inline = INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, site), 'utf8'));
+      if (mechanism === BY_CONFIG) {
+        return isOff(severity)
+          ? []
+          : [
+              `${site}: tabled as a config opt-out, but its config resolves the rule to ${severity}`,
+            ];
+      }
+      if (mechanism === BY_INLINE) {
+        return [
+          ...(inline
+            ? []
+            : [`${site}: tabled as an inline disable, but carries no such directive`]),
+          ...(isOff(severity)
+            ? [`${site}: tabled as an inline disable, but its config already exempts the file`]
+            : []),
+        ];
+      }
+      return [`${site}: unrecognised mechanism ${JSON.stringify(mechanism)}`];
+    });
+    expect(wrong, `${CONVENTIONS_DOC} §3's Mechanism column vs the real configs`).toEqual([]);
+  });
+
+  it('tables every opt-out shipped source actually carries', () => {
+    // The promise the section makes to the next author. Without this the count
+    // sentence is only arithmetic on the rows already there: a fifth site could
+    // land, be enforced, and never appear — which is the state the sentence
+    // exists to prevent.
+    const tabled = new Set(parsed().map((r) => r.site));
+    const undocumented = LINTABLE_TRACKED.files
+      .filter(
+        (f) => !isTestPath(f) && INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, f), 'utf8')),
+      )
+      .filter((f) => !tabled.has(f))
+      .map((f) => `${f}: disables n/no-process-env inline and is in no §3 row`);
+    expect(
+      undocumented,
+      `These files opt out of n/no-process-env and ${CONVENTIONS_DOC} §3 does not table them`,
+    ).toEqual([]);
+
+    // The config half, counted by `files:` pattern rather than by entry: adding a
+    // path to an existing block is the way a second site hides behind the first.
+    expect(
+      configOptOuts.length,
+      `config-level opt-outs found: ${JSON.stringify(configOptOuts)}`,
+    ).toBe(parsed().filter((r) => r.mechanism === BY_CONFIG).length);
+    expect(configOptOuts.filter((o) => o.endsWith('<package-wide>'))).toEqual([]);
+  });
+
+  it('states a count that follows from the table rather than from memory', () => {
+    const n = parsed().length;
+    expect(countWordIn(section, ENV_COUNT_SENTENCE, 'how many places opt out')).toBe(
+      cardinalFor(n),
+    );
+    expect(['another', ordinalFor(n + 1)]).toContain(
+      countWordIn(section, ENV_ADDING_SENTENCE, 'what the next author must update'),
+    );
   });
 });
 

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { Linter } from 'eslint';
+import { ESLint, Linter } from 'eslint';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -16,11 +16,22 @@ import {
   noNetworkSyntax,
 } from '../src/index.js';
 import {
+  cardinalFor,
+  codeSpansOf,
+  CONVENTIONS_DOC,
+  countWordIn,
+  ordinalFor,
+  readConventions,
+  sectionOf,
+  tableOf,
+} from './helpers/claude-md.js';
+import {
   lintPassInvocations,
   REPO_ROOT,
   resolveInvocationConfig,
   rootScripts,
   trackedEslintConfigFiles,
+  trackedFiles,
   workspaceLintScripts,
 } from './helpers/lint-invocations.js';
 
@@ -820,5 +831,178 @@ describe('an odd-named config carrying an undocumented opt-out is audited (throw
       dir,
     );
     expect(found).toBe('pkg/eslint.extra.config.js');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The table the allowlist above is documented in
+// ---------------------------------------------------------------------------
+
+// DOCUMENTED_OPT_OUTS is a hand-written MIRROR of §4's table, and the audit
+// above never opens the document: delete the table, the intro sentence and the
+// "adding another site" promise from CLAUDE.md, leave every ESLint config
+// untouched, and this whole package stays green. The direction that matters most
+// was already closed — a third opt-out cannot land silently, because the
+// contributor has to edit DOCUMENTED_OPT_OUTS to get green — but at the moment
+// they do, nothing then required them to edit the table, and the document a
+// reader opens first would name two sites while three existed.
+//
+// So the table is read, and asserted twice over. Once against the mirror, which
+// is what the ACs above are stated in terms of and what keeps the two from
+// drifting apart in either direction. And once against the CONFIGS THEMSELVES,
+// through the same linter the workspace runs: a mirror can only ever be as true
+// as the thing it mirrors, and the site column carries a claim — WHICH file the
+// exception is for — that the mirror does not hold at all and so cannot check.
+const SECTION_4 = '### 4. No network calls';
+const OPT_OUT_TABLE_HEADER = ['Site', 'Allowed specifier', 'Why'];
+/** "Five files carry a genuine local-only opt-out:" */
+const SITE_COUNT_SENTENCE = /(\w+) files carry a genuine local-only opt-out/g;
+/** "Adding another opt-out site means updating this table." */
+const ADDING_SENTENCE = /Adding (?:an? )?(\w+)(?: opt-out)? site means updating this table/g;
+
+describe(`the opt-out table itself (${CONVENTIONS_DOC} §4)`, () => {
+  /** The section's text, and one entry per table row. */
+  let section = '';
+  /** @type {{site: string, via: string, specifiers: string[], other: string[], cell: string}[]} */
+  let rows = [];
+  /** @type {Error | undefined} */
+  let setupError;
+  /** Specifiers each row's config really permits for that row's site. */
+  const permittedBySite = new Map();
+
+  // Resolving five configs through ESLint costs what the audit above costs, and
+  // for the same reason; it shares that budget rather than the per-test default.
+  //
+  // EVERYTHING here is caught, not just the parse. An uncaught throw aborts the
+  // hook, and vitest then SKIPS every test in this describe — zero failures, no
+  // name, and a guard that silently stopped running. Captured, it is reported by
+  // the first assertion each test makes.
+  beforeAll(async () => {
+    try {
+      section = sectionOf(readConventions(), SECTION_4);
+      const shipped = bannedNamesOf(noNetworkImports());
+      rows = tableOf(section, OPT_OUT_TABLE_HEADER).map(([site, allowed], i) => {
+        const spans = codeSpansOf(site);
+        if (spans.length !== 2) {
+          throw new Error(
+            `Row ${i + 1}: the Site cell must name the file and the config that scopes it, as ` +
+              `\`<site>\` (via \`<config>\`). Found ${spans.length} code span(s) in ${site}.`,
+          );
+        }
+        const spelled = codeSpansOf(allowed);
+        return {
+          site: spans[0],
+          via: spans[1],
+          specifiers: spelled.filter((s) => shipped.has(s)),
+          other: spelled.filter((s) => !shipped.has(s)),
+          cell: allowed,
+        };
+      });
+
+      for (const { site, via } of rows) {
+        // The config's own directory is its cwd, which is what `--no-config-lookup
+        // -c <config>` gives it in the lint script. calculateConfigForFile then runs
+        // the real flat-config cascade — so a `files:` glob is matched by ESLint's
+        // own matcher rather than by a re-implementation of it here.
+        const cwd = join(REPO_ROOT, dirname(via));
+        const eslint = new ESLint({ cwd, overrideConfigFile: join(REPO_ROOT, via) });
+        const config = await eslint.calculateConfigForFile(join(REPO_ROOT, site));
+        permittedBySite.set(site, networkSpecifiersPermittedBy(config?.rules).sort());
+      }
+    } catch (cause) {
+      setupError = /** @type {Error} */ (cause);
+    }
+  }, CONFIG_LOAD_TIMEOUT_MS);
+
+  /** The parsed rows, or a failure naming why the table could not be read. */
+  const parsed = () => {
+    if (setupError) throw setupError;
+    return rows;
+  };
+
+  it('reads a non-empty opt-out table out of the document', () => {
+    // Every assertion below walks `rows`, so an empty parse would pass all of
+    // them. The parser throws rather than yielding [] for a section, table or
+    // row set it could not find; this is where that throw is reported.
+    expect(parsed().length).toBeGreaterThan(0);
+  });
+
+  it('documents exactly the opt-out sites the audit asserts', () => {
+    /** @type {Record<string, string[]>} */
+    const tabled = {};
+    for (const { via, specifiers } of parsed()) {
+      tabled[via] = [...new Set([...(tabled[via] ?? []), ...specifiers])].sort();
+    }
+    expect(tabled).toEqual(DOCUMENTED_OPT_OUTS);
+  });
+
+  it('names a real file and a real config in every row, the file under the config', () => {
+    const tracked = new Set(trackedFiles());
+    const wrong = parsed().flatMap(({ site, via }) => [
+      ...(tracked.has(site) ? [] : [`${site}: tabled site is not a tracked file`]),
+      ...(tracked.has(via) ? [] : [`${via}: tabled config is not a tracked file`]),
+      // A config only ever lints its own tree, so a row pairing a site with a
+      // config that could not reach it is a claim about an exception nobody has.
+      ...(dirname(via) === '.' || site.startsWith(`${dirname(via)}/`)
+        ? []
+        : [`${site}: sits outside ${dirname(via)}/, so ${via} never applies to it`]),
+    ]);
+    expect(wrong, `${CONVENTIONS_DOC} §4 rows that do not describe the workspace`).toEqual([]);
+  });
+
+  it('gives each site the specifiers its config really permits it', () => {
+    // The true-claim half: resolved through ESLint against the config the row
+    // itself names, so the table cannot say `node:net` where the workspace grants
+    // `node:http`, nor keep a row for a file whose exception has been removed.
+    const wrong = parsed().flatMap(({ site, via, specifiers }) => {
+      const real = permittedBySite.get(site) ?? [];
+      const tabled = [...specifiers].sort();
+      return JSON.stringify(real) === JSON.stringify(tabled)
+        ? []
+        : [
+            `${site} (via ${via}): table says ${JSON.stringify(tabled)}, config grants ${JSON.stringify(real)}`,
+          ];
+    });
+    expect(wrong, `${CONVENTIONS_DOC} §4's Allowed specifier column vs the real configs`).toEqual(
+      [],
+    );
+  });
+
+  it('marks any entry the module audit cannot see as the inline global it is', () => {
+    // §4's fifth row lists `fetch` alongside three modules, and says in prose why
+    // it is different: it is an inline eslint-disable, not a config `allow`, so
+    // the audit above — which diffs `no-restricted-imports` paths — is
+    // structurally blind to it. Without this, ANY unrecognised token in that
+    // column would be silently dropped by the `shipped.has` filter above and the
+    // set comparison would still pass: a typo'd `node:nett` would read as a
+    // documented opt-out and be enforced by nothing.
+    const globals = new Set(
+      noNetworkGlobals()
+        .slice(1)
+        .map((g) => g.name),
+    );
+    const unexplained = parsed().flatMap(({ site, other, cell }) =>
+      other
+        .filter((token) => !(globals.has(token) && cell.includes(`\`${token}\` (inline)`)))
+        .map(
+          (token) =>
+            `${site}: \`${token}\` is neither a banned module nor a banned global marked ` +
+            '`(inline)`, so no guard here covers it',
+        ),
+    );
+    expect(unexplained).toEqual([]);
+  });
+
+  it('states a count that follows from the table rather than from memory', () => {
+    const n = parsed().length;
+    expect(countWordIn(section, SITE_COUNT_SENTENCE, 'how many files carry an opt-out')).toBe(
+      cardinalFor(n),
+    );
+    // The promise to the next author. It may stay countless ("another"), but it
+    // must not name a WRONG one — "adding a third site" while five are tabled is
+    // the drift this pins, and deleting the sentence fails countWordIn outright.
+    expect(['another', ordinalFor(n + 1)]).toContain(
+      countWordIn(section, ADDING_SENTENCE, 'what the next author must update'),
+    );
   });
 });

@@ -82,6 +82,14 @@
         "$TURBO_ROOT$/tsconfig.root.json",
         "$TURBO_ROOT$/eslint.root*.config.mjs",
         "$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        // CLAUDE.md is READ by this suite: §3's process.env table and §4's
+        // no-network opt-out table are each parsed and asserted against the tree
+        // they describe. Every other entry here is source; this one is prose,
+        // which is exactly why it is easy to leave out — and leaving it out is
+        // the whole hazard, because editing only the document would move no hash
+        // and turbo would replay a cached green at the one moment the guard
+        // exists to fire. No extension glob above reaches a .md.
+        "$TURBO_ROOT$/CLAUDE.md",
         "!$TURBO_ROOT$/**/node_modules/**",
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",

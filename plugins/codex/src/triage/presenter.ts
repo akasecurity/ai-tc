@@ -26,4 +26,7 @@ export const adapterPresenter: AdapterPresenter = {
   renderApplied: (categoriesTuned, dismissed) =>
     renderApplied(categoriesTuned, dismissed, readRegisteredSkills()),
   storeUnavailableNote: STORE_UNAVAILABLE_NOTE,
+  // The stale-plan refusal tells the user to restart the wizard by its Codex
+  // skill name — Codex has no slash commands, so this names the skill.
+  rerunHint: 'the aka-setup skill',
 };

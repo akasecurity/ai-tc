@@ -68,6 +68,30 @@ Five files carry a genuine local-only opt-out:
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
+**Which configs that audit reads is derived, not globbed.** An ESLint config enforces
+something exactly when a `lint` script points ESLint at it, so `no-network.test.js` walks the
+eslint invocations a green `pnpm lint` really runs — every `-c` / `--config` / `--config=`
+target, plus, for an invocation carrying none, the config ordinary flat-config lookup finds
+from the directory that invocation runs in (asked of ESLint's own `findConfigFile`, not
+modelled). A filename glob was the earlier answer and is a hole one rename wide: ESLint
+honours `-c eslint.extra.config.js` exactly like the two conventional names, so a third
+config was referenced by the lint script, applied on every pass, and inspected by nobody —
+while the suite's own test count went _up_, because the extra invocation generates more probe
+targets elsewhere. Two consequences for anyone adding a config:
+
+- **Name it anything and it is still audited** — but an opt-out in it must then appear in
+  `DOCUMENTED_OPT_OUTS` and in the table above, exactly as for the conventional names.
+- **A config no invocation runs is a failure, not a no-op.** Dead config enforces nothing
+  while reading like a lint surface, so the audit differences the tree's `*eslint*.config.*`
+  files against the derived set and names anything left over. Wire it into a `lint` script or
+  delete it.
+
+The reader itself — which invocations a green run makes, which config each runs under, and
+which paths each covers — is one shared module (`packages/eslint-config/test/helpers/`), used
+by both that audit and the per-package lint-coverage check in `effective-config.test.js`. Two
+readers of one shell string would be free to disagree about what runs, which is how a file
+ends up covered by one guard and audited by neither.
+
 Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.

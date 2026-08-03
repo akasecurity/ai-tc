@@ -1,10 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, globSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, posix, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, posix, sep } from 'node:path';
 
 import { ESLint, Linter } from 'eslint';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import {
+  eslintInvocations,
+  packageLintInvocations,
+  parseWorkspaceGlobs,
+  REPO_ROOT,
+  ROOT_LINT_ENTRY_SCRIPT,
+  rootLintInvocations,
+  workspaceGlobs,
+  workspacePackageDirs,
+} from './helpers/lint-invocations.js';
 
 // This file guards the per-package ESLint configs three ways.
 //
@@ -61,8 +71,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // no package at all. A new package that forgets its config fails (1); one whose
 // config fails to wire the ban fails (2); one whose root files cannot be linted
 // at all fails (3); a repo-root file no pass targets fails (4).
-
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+//
+// The reading of the `lint` scripts themselves — which invocations a green run
+// makes, and which config each one runs under — lives in ./helpers, shared with
+// no-network.test.js. That suite asks which CONFIGS the same scripts point ESLint
+// at; a second reader would be two models of one shell string, free to disagree
+// about what runs, and a file could then read as covered by one and audited by
+// neither. Its unit tests stay here, next to the coverage predicates they feed.
 
 // --- Workspace package enumeration (derived from pnpm-workspace.yaml) --------
 
@@ -183,62 +198,10 @@ const extendsSharedConfig = (abs) =>
   IMPORTS_SHARED_CONFIG.test(stripComments(readFileSync(abs, 'utf8')));
 
 /**
- * Parse the package globs declared under `packages:` in a pnpm-workspace.yaml
- * document, without a YAML dependency. Pure over its input string so the parse —
- * the most fragile part of this file — is unit-tested on synthetic YAML below
- * (CRLF, interspersed comments, quoting) rather than only against the one real
- * on-disk manifest. Walks line by line: enter the block at a bare `packages:`
- * line, collect each `- <scalar>` sequence entry (quoted or bare), tolerate
- * blank and comment lines inside the block, and stop at the next column-0 key.
- * Flow style (`packages: [ … ]`) is intentionally NOT parsed — it yields an
- * empty list, which the vacuous-pass guard turns into a loud failure rather than
- * a silent under-enumeration. An exclusion glob throws for the same reason:
- * globSync would treat `!pkg` as a literal pattern that matches nothing, leaving
- * the excluded directory in the enumeration under a misleading failure.
- * @param {string} rawYaml
- * @returns {string[]}
- */
-function parseWorkspaceGlobs(rawYaml) {
-  const globs = [];
-  let inBlock = false;
-  // Normalize CRLF → LF first so a Windows checkout (core.autocrlf) does not
-  // trail a `\r` into each glob (which would break globSync).
-  for (const rawLine of rawYaml.replace(/\r\n/g, '\n').split('\n')) {
-    // Strip comments up front (workspace globs never contain `#`), so an inline
-    // or whole-line comment neither terminates the block nor pollutes an entry.
-    const line = rawLine.replace(/#.*$/, '');
-    if (!inBlock) {
-      if (/^packages:[ \t]*$/.test(line)) inBlock = true;
-      continue;
-    }
-    if (/^\S/.test(line)) break; // a new column-0 key ends the packages block
-    const m = line.match(/^[ \t]+-[ \t]*['"]?([^'"\n]+?)['"]?[ \t]*$/);
-    if (!m) continue;
-    const glob = m[1].trim();
-    if (glob.startsWith('!')) {
-      throw new Error(
-        `pnpm-workspace.yaml declares the exclusion glob "${glob}", which this parser does not ` +
-          'model. Teach parseWorkspaceGlobs/discoverWorkspacePackages to honour negation before ' +
-          'relying on the enumeration.',
-      );
-    }
-    globs.push(glob);
-  }
-  return globs;
-}
-
-/**
- * The package globs from the repo's real pnpm-workspace.yaml.
- * @returns {string[]}
- */
-function workspaceGlobs() {
-  return parseWorkspaceGlobs(readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8'));
-}
-
-/**
- * Every workspace package on disk, resolved from pnpm-workspace.yaml: expand each
- * glob and keep the directories that hold a package.json. `label` is what every
- * failure message prints — a package.json may legally omit `name`, and a bare
+ * Every workspace package on disk, resolved from pnpm-workspace.yaml (the
+ * enumeration itself lives in ./helpers, shared with the opt-out audit, which
+ * has to walk the same packages' lint scripts). `label` is what every failure
+ * message prints — a package.json may legally omit `name`, and a bare
  * `undefined` in a violation list tells the reader nothing about which directory
  * to fix.
  * @returns {{
@@ -249,14 +212,7 @@ function workspaceGlobs() {
  * }[]}
  */
 function discoverWorkspacePackages() {
-  const dirs = [
-    ...new Set(
-      workspaceGlobs()
-        .flatMap((g) => globSync(g, { cwd: REPO_ROOT }))
-        .filter((rel) => existsSync(join(REPO_ROOT, rel, 'package.json'))),
-    ),
-  ].sort();
-  return dirs.map((dir) => {
+  return workspacePackageDirs().map((dir) => {
     // git reports posix paths on every platform; globSync yields native ones.
     const posixDir = dir.split(sep).join('/');
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
@@ -321,125 +277,6 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
 // The packages that MUST ship a network-guarded config (everything except the
 // opt-outs). Fed to both the structural guard and the behavioral suite.
 const GUARDED_PACKAGES = WORKSPACE_PACKAGES.filter((p) => !OPT_OUT_NAMES.has(p.name));
-
-// eslint flags that consume the NEXT argument, so its value is not mistaken for
-// a lint target (`-c eslint.scripts.config.mjs scripts` targets scripts, not the
-// config file). Boolean flags are skipped by the leading-dash test alone.
-const ESLINT_VALUE_FLAGS = new Set([
-  '-c',
-  '--config',
-  '--ext',
-  '--rulesdir',
-  '--plugin',
-  '--rule',
-  '--parser',
-  '--parser-options',
-  '--resolve-plugins-relative-to',
-  '--ignore-pattern',
-  '--ignore-path',
-  '--format',
-  '-f',
-  '--output-file',
-  '-o',
-  '--max-warnings',
-  '--global',
-  '--flag',
-  '--concurrency',
-]);
-
-// The two value flags that SUBTRACT from a run instead of adding to it, so their
-// values are kept per invocation rather than skipped with the rest. A target and
-// an ignore of the same path cancel out: `eslint *.config.* --ignore-pattern
-// vitest.config.ts` reads as covering vitest.config.ts if only the targets are
-// parsed, while eslint skips the file — leaving exactly the hole a script that
-// never named the file at all leaves, a fetch() there passing `pnpm lint` with
-// CI green. The flat-config spelling of the same exclusion (`{ ignores: [...] }`
-// in eslint.config.mjs) is caught by the isPathIgnored assertion in the
-// fault-injection suite below; these live in package.json, where ESLint's own
-// API never sees them.
-//
-// `--ignore-path` is listed for completeness rather than because it works: under
-// flat config the CLI rejects the flag outright ("Invalid option
-// '--ignore-path'", exit 2), so an invocation carrying one lints NOTHING. It is
-// modelled as excluding everything, which is what that run really covers.
-const IGNORE_VALUE_FLAGS = new Set(['--ignore-pattern', '--ignore-path']);
-
-const unquote = (token) => token.replace(/^['"]|['"]$/g, '');
-
-/**
- * Every eslint invocation in a `lint` script, in order — its `-c`/`--config`
- * override (undefined when the invocation uses ordinary config lookup), its
- * positional path targets, and the ignore flags that subtract from them. Kept as
- * invocations rather than one flat target list for two reasons. The
- * fault-injection run below has to reproduce ONE of them faithfully: cli lints
- * `src test *.config.*` under eslint.config.mjs and `scripts` under
- * eslint.scripts.config.mjs, so running the flattened target list under either
- * config lints half the package with the wrong ruleset. And an ignore flag binds
- * to the single eslint call it sits on, so flattening would let one invocation's
- * exclusion silently narrow another's targets.
- *
- * Only the `-c <file>` form is read for the config — the repo uses it
- * everywhere, and `--config=<file>` falls through as a plain flag, which costs
- * the config override but never a target. The ignore flags read **both**
- * spellings, because there the fallthrough costs the exclusion itself: an
- * unparsed `--ignore-pattern=<glob>` leaves the file reading as covered while
- * eslint skips it, which is the whole property this models.
- * @param {string} lintScript
- * @returns {{
- *   configName: string | undefined, targets: string[],
- *   ignorePatterns: string[], ignorePaths: string[],
- * }[]}
- */
-function eslintInvocations(lintScript) {
-  const invocations = [];
-  for (const command of lintScript.split(/&&|\|\||;/)) {
-    const tokens = command.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
-    const start = tokens.findIndex((t) => /(?:^|\/)eslint$/.test(unquote(t)));
-    if (start === -1) continue;
-    /**
-     * @type {{
-     *   configName: string | undefined, targets: string[],
-     *   ignorePatterns: string[], ignorePaths: string[],
-     * }}
-     */
-    const invocation = { configName: undefined, targets: [], ignorePatterns: [], ignorePaths: [] };
-    // Repeatable: every ignore flag on one invocation ADDS to its set, so
-    // reading only the last would drop the earlier exclusions. A flag left with
-    // no value records '', which the predicates below read as excluding
-    // everything — eslint itself refuses such a command, so a script that lints
-    // nothing must not parse as one that lints all of it.
-    const pushIgnore = (flag, value) =>
-      (flag === '--ignore-path' ? invocation.ignorePaths : invocation.ignorePatterns).push(value);
-    for (let i = start + 1; i < tokens.length; i++) {
-      const token = unquote(tokens[i]);
-      if (token.startsWith('-')) {
-        const eq = token.indexOf('=');
-        const name = eq === -1 ? token : token.slice(0, eq);
-        if (eq !== -1 && IGNORE_VALUE_FLAGS.has(name)) {
-          // The tokenizer splits `--ignore-pattern='<glob>'` into the flag with
-          // a trailing `=` plus the quoted glob, so an empty inline value takes
-          // the next token.
-          const inline = token.slice(eq + 1);
-          pushIgnore(name, inline === '' ? unquote(tokens[++i] ?? '') : inline);
-          continue;
-        }
-        if (ESLINT_VALUE_FLAGS.has(token)) {
-          const next = tokens[i + 1];
-          if (token === '-c' || token === '--config') {
-            if (next !== undefined) invocation.configName = unquote(next);
-          } else if (IGNORE_VALUE_FLAGS.has(token)) {
-            pushIgnore(token, next === undefined ? '' : unquote(next));
-          }
-          i++;
-        }
-        continue;
-      }
-      invocation.targets.push(token);
-    }
-    invocations.push(invocation);
-  }
-  return invocations;
-}
 
 /**
  * The positional path targets of every eslint invocation in a `lint` script.
@@ -621,19 +458,6 @@ const invocationsCoverFile = (invocations, file) =>
   coveringInvocation(invocations, file) !== undefined;
 
 /**
- * Every eslint invocation a package's `lint` script actually runs on a green
- * pass. One helper rather than a bare `eslintInvocations(lintScript)` at each
- * call site, for the same reason `coveringInvocation` exists: the coverage check
- * and the fault injection that reproduces it must read the script by ONE rule,
- * or a script whose segments disagree could be blessed by one and reproduced
- * from the other. `unconditionalSegments` is that rule — see it for why only
- * `&&` counts.
- * @param {string} lintScript
- */
-const packageLintInvocations = (lintScript) =>
-  unconditionalSegments(lintScript).flatMap(eslintInvocations);
-
-/**
  * Split the guarded packages by how they fail the config requirement. Pure over
  * its input so the failure paths are testable with synthetic packages — a real,
  * healthy tree produces none by construction.
@@ -726,97 +550,6 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/setup/no-network.ts',
   'tools/ci/egress-probe.mjs',
 ];
-
-// The root script the gates run: lefthook's pre-push hook, the CI lint step and
-// both release workflows all invoke `pnpm lint`. Coverage is walked FROM it, not
-// collected from every script in the manifest, because an invocation nothing runs
-// covers nothing: a conventional `"lint:fix": "eslint . --fix"` sitting in the
-// manifest would otherwise satisfy the check below however narrow the real pass
-// got, and the guard would go green while the ban stopped reaching these files.
-const ROOT_LINT_ENTRY_SCRIPT = 'lint';
-
-/**
- * The commands a script body runs UNCONDITIONALLY, and whose failure fails the
- * script. `a && b` is the only form that is both: b runs whenever a succeeded,
- * and the script exits non-zero when b does. A segment carrying any other
- * operator is dropped whole rather than read up to it, because the operator
- * defangs the command on EITHER side of itself — `||` both withholds what follows
- * (`a || b` runs b only when a FAILED) and discards what precedes it
- * (`b || true` runs b and swallows its exit code) — while `;` lets an earlier
- * failure be masked, `|` pipes, a bare `&` backgrounds, and `#` comments the rest
- * out. A form this does not model is simply not read, so whatever it would have
- * contributed goes uncredited: loud, and on the side that fails rather than the
- * side that ships unlinted.
- *
- * Both halves of the root walk go through this — the scripts a script chains AND
- * the eslint calls it makes directly. Reading the two by different rules is what
- * lets `eslint <targets> || eslint <other targets>` read as covering both while
- * the second only runs once the first has already failed, which is a file
- * reported as linted that no green run ever lints.
- * @param {string} script
- * @returns {string[]} the segments that run unconditionally
- */
-const unconditionalSegments = (script) =>
-  script.split('&&').filter((part) => !/\||;|&|#/.test(part));
-
-/**
- * The other package scripts a script body runs unconditionally.
- * @param {string} script
- * @returns {string[]} the script names it runs
- */
-function scriptReferences(script) {
-  const names = [];
-  for (const part of unconditionalSegments(script)) {
-    const tokens = part.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
-    const pm = tokens.findIndex((t) => /^(?:pnpm|npm|yarn)$/.test(unquote(t)));
-    if (pm === -1) continue;
-    // Skip the package manager's own flags, then the optional `run` verb. A flag
-    // that takes a SEPARATE value (`--filter <pkg>`) leaves that value as the
-    // candidate name; it will not be a script key, so nothing is followed —
-    // under-approximating again rather than crediting the wrong script.
-    let i = pm + 1;
-    while (i < tokens.length && unquote(tokens[i]).startsWith('-')) i++;
-    if (unquote(tokens[i] ?? '') === 'run') i++;
-    if (i < tokens.length) names.push(unquote(tokens[i]));
-  }
-  return names;
-}
-
-/**
- * Every eslint invocation `pnpm <entry>` really runs, following the root scripts
- * it chains. Read out of the script BODIES rather than by the name of the pass,
- * so renaming `lint:root` cannot blind this — a rename has to update the caller,
- * which this walk reads. Deleting the chain, or making it conditional, empties
- * the list instead and every file below is reported as uncovered.
- *
- * Each unconditional segment is parsed on its own rather than handing the whole
- * body to eslintInvocations, which splits on `||` and `;` too and so credits an
- * eslint call that a green run never reaches. That parser is shared with the
- * per-package check, where a lint script is the whole command; here the command
- * is one segment of a chain and the operator between segments is the thing being
- * measured.
- * @param {Record<string, unknown> | undefined} scripts
- * @param {string} entry the script the gates invoke
- */
-function rootLintInvocations(scripts, entry = ROOT_LINT_ENTRY_SCRIPT) {
-  const all = scripts ?? {};
-  const invocations = [];
-  const seen = new Set();
-  /** @param {string} name */
-  const walk = (name) => {
-    // A script that calls itself (or a cycle through two) must not spin.
-    if (seen.has(name)) return;
-    seen.add(name);
-    const script = all[name];
-    if (typeof script !== 'string') return;
-    for (const segment of unconditionalSegments(script)) {
-      invocations.push(...eslintInvocations(segment));
-    }
-    for (const referenced of scriptReferences(script)) walk(referenced);
-  };
-  walk(entry);
-  return invocations;
-}
 
 const ROOT_MANIFEST = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
 const ROOT_LINT_INVOCATIONS = rootLintInvocations(ROOT_MANIFEST.scripts);
@@ -1270,6 +1003,7 @@ describe('rootLintInvocations (walking the root manifest from the script the gat
     ).toEqual([
       {
         configName: 'eslint.root.config.mjs',
+        noConfigLookup: false,
         targets: ['*.config.*'],
         ignorePatterns: ['commitlint.*'],
         ignorePaths: [],
@@ -1708,12 +1442,14 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     ).toEqual([
       {
         configName: undefined,
+        noConfigLookup: false,
         targets: ['src', 'test', '*.config.*'],
         ignorePatterns: [],
         ignorePaths: [],
       },
       {
         configName: 'eslint.scripts.config.mjs',
+        noConfigLookup: true,
         targets: ['scripts'],
         ignorePatterns: [],
         ignorePaths: [],
@@ -1739,6 +1475,7 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     );
     expect(invocation).toEqual({
       configName: undefined,
+      noConfigLookup: false,
       targets: ['src', 'test', '*.config.*'],
       ignorePatterns: ['x.config.ts'],
       ignorePaths: [],
@@ -1753,9 +1490,9 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
   });
 
   it('reads the `=` spelling of an ignore flag, bare and quoted', () => {
-    // `--config=<file>` deliberately falls through as a plain flag; an ignore
-    // must not, because an unread exclusion reads as full coverage. The quoted
-    // form tokenizes as `--ignore-pattern=` plus the glob, so both are pinned.
+    // An unread exclusion reads as full coverage, so both spellings are parsed.
+    // The quoted form tokenizes as `--ignore-pattern=` plus the glob, so both
+    // are pinned.
     expect(
       eslintInvocations('eslint . --ignore-pattern=vitest.config.ts')[0].ignorePatterns,
     ).toEqual(['vitest.config.ts']);
@@ -1776,12 +1513,14 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     ).toEqual([
       {
         configName: undefined,
+        noConfigLookup: false,
         targets: ['src', 'test', '*.config.*'],
         ignorePatterns: ['vitest.config.ts'],
         ignorePaths: [],
       },
       {
         configName: 'eslint.scripts.config.mjs',
+        noConfigLookup: true,
         targets: ['scripts'],
         ignorePatterns: [],
         ignorePaths: [],
@@ -1793,6 +1532,26 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     expect(eslintTargets('eslint --no-error-on-unmatched-pattern --config=x.mjs src')).toEqual([
       'src',
     ]);
+  });
+
+  it('reads every spelling of the config flag, and records --no-config-lookup', () => {
+    // `-c <file>` is what the repo writes today; the other two are what a
+    // contributor or a generated script may write tomorrow. Which config an
+    // invocation runs under is read here and acted on by the §4 opt-out audit,
+    // so an unread spelling is a real ruleset the audit never inspects — not a
+    // cosmetic gap. `--no-config-lookup` is the third state: with it and no
+    // `-c`, the run uses NO config file rather than the one lookup would find.
+    for (const flag of ['-c x.config.js', '--config x.config.js', '--config=x.config.js']) {
+      expect(eslintInvocations(`eslint ${flag} src`)[0].configName, flag).toBe('x.config.js');
+      expect(eslintTargets(`eslint ${flag} src`), flag).toEqual(['src']);
+    }
+    expect(eslintInvocations("eslint --config='x.config.js' src")[0].configName).toBe(
+      'x.config.js',
+    );
+    expect(eslintInvocations('eslint src')[0].noConfigLookup).toBe(false);
+    expect(eslintInvocations('eslint --no-config-lookup src')[0].noConfigLookup).toBe(true);
+    // A repeated config flag: eslint keeps the last, so this does too.
+    expect(eslintInvocations('eslint -c a.mjs --config b.mjs src')[0].configName).toBe('b.mjs');
   });
 
   it('returns nothing when the script never invokes eslint', () => {

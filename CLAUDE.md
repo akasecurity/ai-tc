@@ -668,6 +668,33 @@ scans against the **DB snapshot**, not the engine's process-global registry.
 `@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
 is not a runtime package-wall crossing.
 
+### Testing a web-ui page
+
+An async Server Component is a plain async function that returns an element, so a route's
+own data work — which store reads it issues, and which one it hands to which consumer — is
+testable by **calling the page and reading the props it hands down**. No renderer, no DOM,
+no jsdom. `element.props` carries them; assert `element.type` alongside, so a page that
+starts returning a wrapper fails naming that rather than reading every prop as `undefined`.
+`web-ui/test/pages/exceptions-page.test.ts` is the worked example. The four steps above
+apply unchanged (a read-only page needs no `next/cache` mock).
+
+This is not the browser tier — nothing mounts, no event fires, no client component runs.
+It covers the seam between the store and the props, which is where a route's derivations
+live and where nothing else can see them.
+
+**The one thing that makes it work is a config line.** `web-ui/tsconfig.json` sets
+`"jsx": "preserve"` because Next's own compiler consumes untransformed JSX, and vitest
+inherits it — so the page's JSX survives into the output and the parser that reads it next
+rejects it. `oxc.jsx` in `web-ui/vitest.config.ts` overrides that for the test run only. It
+is already wired; a new suite needs no change, but a parse error on a `.tsx` import is what
+its absence looks like, and it names neither JSX nor the tsconfig.
+
+A route that issues **more than one read of the same table** is the case worth writing a
+page test for at all: a count derived from the wrong one of two windows is still a number,
+so it typechecks, lints, and satisfies every assertion aimed at the pieces. Make the fixture
+straddle the two windows and **pin the straddle itself** — with rows that all fall inside
+both, the assertions pass whichever read the page used, and the suite proves nothing.
+
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
 hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
 `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store — in that

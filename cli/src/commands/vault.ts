@@ -4,7 +4,6 @@ import {
   createKeyProvider,
   dataDir,
   keysDir,
-  loadOrCreateFingerprintKey,
   openLocalDatabase,
   readWorkspaceSettings,
   SecretVault,
@@ -73,7 +72,6 @@ async function runShow(argv: string[], io: Prompter): Promise<void> {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(readWorkspaceSettings(base).vaultKeyCustody, keysDir(base)),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       // Read live so a consent revocation applies to the very next call.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
     });

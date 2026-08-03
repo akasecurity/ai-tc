@@ -337,7 +337,6 @@ export async function grantRevealFromPointer(input: {
     const vault = new SecretVault({
       repo: db().secretVault,
       keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
-      fingerprintKey: loadOrCreateFingerprintKey(dataDir()),
       // Read live so a consent revocation applies to the very next call.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
     });
@@ -474,7 +473,6 @@ export async function rotateKey(confirmation: string): Promise<ActionResult> {
     const vault = new SecretVault({
       repo: db().secretVault,
       keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
-      fingerprintKey: next,
       isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
     });
     await vault.refreshFingerprints(next);

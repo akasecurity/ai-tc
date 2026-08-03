@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import {
   applyOnboarding,
   createKeyProvider,
   dataDir,
+  EXCEPTION_KEY_FILENAME,
   fingerprintValue,
   keysDir,
   loadOrCreateFingerprintKey,
@@ -85,14 +86,17 @@ async function seedPointer(): Promise<string> {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(readWorkspaceSettings(home).vaultKeyCustody, keysDir(home)),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(home).vaultConsent),
     });
-    const pointer = await vault.tokenize(RAW, {
-      ruleId: RULE_ID,
-      category: 'secret',
-      maskedMatch: MASKED,
-    });
+    const pointer = await vault.tokenize(
+      RAW,
+      {
+        ruleId: RULE_ID,
+        category: 'secret',
+        maskedMatch: MASKED,
+      },
+      () => loadOrCreateFingerprintKey(dir),
+    );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     return pointer;
   } finally {
@@ -325,6 +329,88 @@ describe('aka exception approve <pointer> --reveal', () => {
       } finally {
         db.close();
       }
+    });
+  });
+
+  // Approving a reveal reads: the grant's identity is the vault ROW's triple,
+  // which the row carries, so nothing here needs the key that is current now.
+  // The command must therefore leave the store's key footprint as it found it.
+  describe('fingerprint key footprint', () => {
+    const keyFile = (): string => join(dataDir(home), EXCEPTION_KEY_FILENAME);
+
+    it('mints nothing when approving a reveal on a store with no key', async () => {
+      const pointer = await seedPointer();
+      const rowKey = loadOrCreateFingerprintKey(dataDir(home));
+      // Seeding tokenized, which mints legitimately. Take the key away exactly
+      // as the CLI's own corrupt-key guidance tells an operator to.
+      rmSync(keyFile());
+
+      await runException(
+        approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'no key on this store'),
+        scriptedIo(),
+      );
+
+      // Positive control: the grant was really minted, from the row's own
+      // identity, with no key file in existence at any point above. Without
+      // this the absence below would also hold for a command that refused.
+      const grant = (await openAndList())[0];
+      if (!grant) throw new Error('grant row missing — the reveal approve was refused');
+      expect(grant.capability).toBe('reveal_to_model');
+      expect(grant.valueFingerprint).toBe(fingerprintValue(rowKey, RAW));
+      expect(grant.keyVersion).toBe(rowKey.version);
+
+      expect(existsSync(keyFile())).toBe(false);
+    });
+
+    // The diagnostic this protects. `keyAccessHint` tells an operator holding a
+    // corrupt key to delete it and start fresh. If a reveal in between put a
+    // key back, a later ledger approve would read a version that is merely
+    // NEWER than the row's and report a rotation — sending the operator after a
+    // rotation nobody performed. With nothing re-minting, the same state
+    // reports the truth: the key is gone.
+    it('leaves a later ledger approve reporting the key as missing, not rotated', async () => {
+      const rowKey = loadOrCreateFingerprintKey(dataDir(home));
+      const pointer = await seedPointer();
+      const db = openLocalDatabase(dataDir(home));
+      try {
+        await db.exceptions.recordBlocked({
+          reference: '9c4e17',
+          ruleId: RULE_ID,
+          category: 'secret',
+          valueFingerprint: fingerprintValue(rowKey, RAW),
+          keyVersion: rowKey.version,
+          maskedValue: MASKED,
+          sessionId: 'sess-1',
+          repo: null,
+        });
+      } finally {
+        db.close();
+      }
+
+      rmSync(keyFile());
+      // The reveal is the step that used to re-mint. Everything after it is the
+      // observation.
+      await runException(
+        approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'reveal before the approve'),
+        scriptedIo(),
+      );
+
+      const io = scriptedIo();
+      const err = await runException(approveArgs('9c4e17', '--once', '--reason', 'x'), io).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      // Captured outside its own catch: a command that stopped refusing arrives
+      // here as undefined rather than as a passing absence assertion.
+      expect(err).toBeDefined();
+      // Naming the branch is the point — the two refusals differ only in their
+      // explanation, so asserting merely that SOME error was raised would hold
+      // for the wrong one just as well.
+      expect(err?.message).toContain('the fingerprint key file is missing');
+      // The version-mismatch branch, spelled as it spells itself. A re-mint
+      // makes it fire with a version the row never saw.
+      expect(err?.message).not.toContain('and the key is now v');
+      expect(existsSync(keyFile())).toBe(false);
     });
   });
 });

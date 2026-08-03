@@ -70,14 +70,15 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // package name. Keep this list TINY — every entry is a hole in the no-network
 // enforcement and must be a deliberate, reviewed decision, so each carries its
 // reason. A package that ships lintable source belongs behind the ban, not here.
-const CONFIG_OPT_OUT = [
-  {
-    name: '@akasecurity/eslint-config',
-    reason:
-      'Defines the shared config. Its `lint` script is a deliberate no-op, so requiring a config ' +
-      'that eslint is never pointed at would assert nothing.',
-  },
-];
+//
+// It is EMPTY, and the empty state is the one worth defending. The single entry
+// it used to carry was @akasecurity/eslint-config itself — the package that
+// DEFINES the ban — on the reasoning that its `lint` was a deliberate no-op, so
+// requiring a config eslint is never pointed at would assert nothing. True, and
+// circular: a planted `fetch()` in its src/ or its vitest.config.ts passed
+// `pnpm lint` with CI green. It ships a real config and a real two-pass `lint`
+// script now, so every workspace package is guarded and nothing here is exempt.
+const CONFIG_OPT_OUT = [];
 const OPT_OUT_NAMES = new Set(CONFIG_OPT_OUT.map((o) => o.name));
 
 // The extensions ESLint actually lints here. This is what separates a code
@@ -694,11 +695,12 @@ function configViolations(guarded) {
 // a pass declared in the ROOT manifest, which runs at the repo root — and only
 // when the script the gates actually invoke reaches that pass.
 //
-// Files INSIDE a package are the per-package leg's business even when a root
-// pass is what lints them — the enforcement suites next to this file are the one
-// case, covered by the root manifest's second, network-only invocation because
-// @akasecurity/eslint-config's own `lint` is the deliberate no-op recorded in
-// CONFIG_OPT_OUT.
+// Files INSIDE a package are the per-package leg's business, including the
+// enforcement suites next to this file: they used to be the one exception,
+// covered by a second invocation in the ROOT manifest because
+// @akasecurity/eslint-config's own `lint` was a deliberate no-op. That package
+// lints itself now, so its `test/` is covered by the derived per-package check
+// like any other code dir, and there is no exception left.
 //
 // The set is DERIVED for the same reason codeDirs and rootFiles are: a hardcoded
 // list of the files that exist today would stay green the day a new one is
@@ -721,7 +723,6 @@ const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
 const EXPECTED_NON_PACKAGE_FILES = [
   'commitlint.config.mjs',
   'eslint.root.config.mjs',
-  'eslint.root.guard.config.mjs',
   'test/setup/no-network.ts',
   'tools/ci/egress-probe.mjs',
 ];
@@ -1233,9 +1234,16 @@ describe('nonPackageFilesNotWired (the non-package bucket, tested on synthetic i
 });
 
 describe('rootLintInvocations (walking the root manifest from the script the gates run)', () => {
+  // A SYNTHETIC two-invocation pass. The real `lint:root` is a single invocation
+  // today — its second one moved into @akasecurity/eslint-config's own `lint`
+  // when that package stopped opting out — but the walker still has to collect
+  // every invocation of a chained script, which is what every per-package
+  // two-pass `lint` script depends on. Keeping the fixture chained is what pins
+  // that; the walker never opens either config, so the names need only be
+  // distinct.
   const ROOT_PASS =
     'eslint --no-config-lookup -c eslint.root.config.mjs test/setup *.config.* && ' +
-    'eslint --no-config-lookup -c eslint.root.guard.config.mjs packages/eslint-config/test';
+    'eslint --no-config-lookup -c eslint.second.config.mjs tools/ci';
   const targetsOf = (invocations) => invocations.map((i) => i.targets);
 
   it('follows the chained pass and collects both of its invocations', () => {
@@ -1247,7 +1255,7 @@ describe('rootLintInvocations (walking the root manifest from the script the gat
           test: 'turbo run test',
         }),
       ),
-    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
   });
 
   it('keeps each invocation whole, config and ignore flags included', () => {
@@ -1279,7 +1287,7 @@ describe('rootLintInvocations (walking the root manifest from the script the gat
           'lint:repo': ROOT_PASS,
         }),
       ),
-    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
   });
 
   it('does NOT credit a script the entry never runs', () => {
@@ -1343,7 +1351,7 @@ describe('rootLintInvocations (walking the root manifest from the script the gat
           'lint:root': `eslint test/setup || true && ${ROOT_PASS}`,
         }),
       ),
-    ).toEqual([['test/setup', '*.config.*'], ['packages/eslint-config/test']]);
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
   });
 
   it('still follows a chain whose EARLIER segment carries an operator', () => {
@@ -1383,18 +1391,26 @@ describe('rootLintInvocations (walking the root manifest from the script the gat
 describe('CONFIG_OPT_OUT hygiene', () => {
   const names = new Set(WORKSPACE_PACKAGES.map((p) => p.name));
 
-  it.each(CONFIG_OPT_OUT)('$name is a real workspace package with a reason', ({ name, reason }) => {
-    expect(names).toContain(name);
-    // The reason is the whole point of the list — an entry without one is an
-    // undocumented hole in the no-network enforcement.
-    expect(reason?.trim(), `${name} has no reason`).toBeTruthy();
+  it('every entry is a real workspace package with a reason', () => {
+    // A loop rather than it.each, because the list is EMPTY and it.each over an
+    // empty array registers no test at all. Vacuous today by construction — the
+    // pin below is what keeps it that way, and this is what meets the first
+    // entry anybody adds.
+    for (const { name, reason } of CONFIG_OPT_OUT) {
+      expect(names, `${name} is not a workspace package`).toContain(name);
+      // The reason is the whole point of the list — an entry without one is an
+      // undocumented hole in the no-network enforcement.
+      expect(reason?.trim(), `${name} has no reason`).toBeTruthy();
+    }
   });
 
-  it('stays minimal — only @akasecurity/eslint-config is exempt today', () => {
+  it('is empty — every workspace package is guarded', () => {
     // Hard-coded so ANY addition to the opt-out is a reviewed change here rather
     // than a silent hole in the no-network enforcement (mirrors the ban-set
-    // drift guards in no-network.test.js).
-    expect(CONFIG_OPT_OUT.map((o) => o.name)).toEqual(['@akasecurity/eslint-config']);
+    // drift guards in no-network.test.js). The list held exactly one entry until
+    // @akasecurity/eslint-config started linting itself; going back to a
+    // non-empty list means arguing a package out of the ban in review.
+    expect(CONFIG_OPT_OUT.map((o) => o.name)).toEqual([]);
   });
 });
 
@@ -2041,6 +2057,15 @@ describe('ignore flags subtract from what an invocation covers', () => {
       [
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
         ['src', 'test', 'scripts'],
+      ],
+      // The same two-pass split, with `test` rather than `scripts` behind the
+      // network-only config: @akasecurity/eslint-config's own suites are plain JS
+      // full of untyped fixtures and banned-primitive strings, so the full
+      // ruleset covers src/ and the root configs while the second pass covers
+      // test/.
+      [
+        'eslint src *.config.* && eslint --no-config-lookup -c eslint.guard.config.mjs test',
+        ['src', 'test'],
       ],
     ];
     for (const [script, dirs] of REAL_SHAPES) {

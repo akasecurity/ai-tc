@@ -81,7 +81,8 @@ const CI_SCRIPT_ABS = join(REPO_ROOT, ...CI_SCRIPT_REL.split('/'));
 const PROBE_REL = 'tools/ci/egress-probe.mjs';
 const PROBE_ABS = join(REPO_ROOT, ...PROBE_REL.split('/'));
 // The two no-network enforcement suites, which live in HERE and reach no other
-// ESLint pass than lint:root's `eslint.root.guard.config.mjs` network-only pass.
+// ESLint pass than this package's own `eslint.guard.config.mjs` network-only
+// second pass.
 const NW_SUITE_ABS = join(HERE, 'no-network.test.js');
 const NW_RUNTIME_SUITE_ABS = join(HERE, 'no-network-runtime.test.js');
 
@@ -313,20 +314,31 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     // long as that check stays green — these lines then come along with it.
     expect(lintRoot).toContain('test/setup');
     expect(lintRoot).toContain('tools/ci');
-    // The second pass is the ONLY thing that lints the enforcement suites — the
-    // eslint-config package's own `lint` is a deliberate no-op — and it hangs off
-    // a `&&` in a shell string, one careless edit from vanishing with the first
-    // pass still exit 0. Those suites sit INSIDE a package, so the derived
-    // non-package check cannot see them; this is their only structural guard.
-    expect(lintRoot).toContain('packages/eslint-config/test');
-    expect(lintRoot).toContain('eslint.root.guard.config.mjs');
     expect(root.scripts['typecheck:root']).toContain('tsconfig.root.json');
 
     const rootTsconfig = readFileSync(join(REPO_ROOT, 'tsconfig.root.json'), 'utf8');
     expect(rootTsconfig).toContain('test/setup');
     expect(rootTsconfig).toContain('tools/ci');
     expect(rootTsconfig).toContain('eslint.root.config.mjs');
-    expect(rootTsconfig).toContain('eslint.root.guard.config.mjs');
+
+    // The enforcement suites next to this file are linted by a SECOND pass in
+    // this package's own `lint` script, chained off the first with `&&`. It used
+    // to be a second invocation of lint:root, because this package's `lint` was a
+    // deliberate no-op and a root pass was the only thing that could reach the
+    // suites; both halves of that are gone.
+    //
+    // Same standing as the two `lintRoot` targets above: a readable statement of
+    // intent, not the gate. The gate is the DERIVED per-package check in
+    // effective-config.test.js, which now sees `test/` as one of this package's
+    // code dirs — with CONFIG_OPT_OUT empty, no package is exempt — and names it
+    // if no invocation covers it. That check also reads the chain by the same
+    // rule the root walk uses, so demoting the `&&` to `||` fails there rather
+    // than passing here.
+    const selfLint = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).scripts
+      .lint;
+    expect(selfLint).toContain('src');
+    expect(selfLint).toContain('test');
+    expect(selfLint).toContain('eslint.guard.config.mjs');
   });
 
   it('the CI script is tracked as executable', () => {
@@ -905,8 +917,9 @@ describe('the egress probe trips exactly the ban it must', () => {
   });
 });
 
-// These two suites are the third opted-out site (via eslint.root.guard.config.mjs),
-// so they are held to the same raw-guard measure as the guard and probe above.
+// These two suites are the third opted-out site (via this package's own
+// eslint.guard.config.mjs), so they are held to the same raw-guard measure as the
+// guard and probe above.
 
 describe('the no-network unit suite trips no bans at all', () => {
   // no-network.test.js exercises every banned construct as a STRING fed to the

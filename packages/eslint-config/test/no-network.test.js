@@ -395,10 +395,10 @@ const DOCUMENTED_OPT_OUTS = {
   // three transports it patches) and the CI egress probe (node:net). Both are
   // file-scoped; see CLAUDE.md §4.
   'eslint.root.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
-  // The repo-root guard pass gives the eslint-config no-network suites network-only
-  // coverage; it opts out no-network-runtime.test.js, which imports the three
-  // transports it drives at runtime. File-scoped; see CLAUDE.md §4.
-  'eslint.root.guard.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
+  // The eslint-config package's own second `lint` pass gives its no-network suites
+  // network-only coverage; it opts out no-network-runtime.test.js, which imports
+  // the three transports it drives at runtime. File-scoped; see CLAUDE.md §4.
+  'packages/eslint-config/eslint.guard.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
 };
 
 /** The module names a resolved `no-restricted-imports` value bans, or null if absent. */

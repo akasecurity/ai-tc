@@ -484,22 +484,54 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('reports a missing worker script rather than scanning unbounded', async () => {
+    // An absent SIBLING of this file, not a hand-written absolute path. Both
+    // name a script that does not exist, but `file:///aka-no-such-dir/…` is a
+    // valid POSIX path and an invalid WINDOWS one — no drive letter — so
+    // `fileURLToPath` throws inside the Worker constructor there and this case
+    // silently tested URL validation on Windows and a missing file everywhere
+    // else. Both reach `unavailable`, which is why the split went unnoticed
+    // until the start count made the two paths distinguishable.
     const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
       {
-        workerUrl: new URL('file:///aka-no-such-dir/scan-worker.js'),
+        workerUrl: new URL('./helpers/absent-scan-worker.ts', import.meta.url),
         onWorkerStart: starts.onWorkerStart,
       },
     );
     try {
       const outcome = await scanner.scan('anything');
       expect(outcome.status).toBe('unavailable');
-      // A path that resolves to nothing still costs a thread: `new Worker` does
-      // not throw on one, it constructs and delivers the ENOENT as an 'error'
-      // event. Only the URL being unresolvable BEFORE construction — no
-      // `workerUrl` and no script beside the bundle — costs nothing.
+      // A script that is merely missing still costs a thread: `new Worker` does
+      // not throw on one, it constructs and delivers the failure as an 'error'
+      // event.
       expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('starts nothing when the worker URL cannot be loaded at all', async () => {
+    // The other half, and the branch that returns `{ error }` from
+    // `ensureWorker` before any thread exists: a URL the Worker constructor
+    // rejects outright. Windows used to reach this by accident, through the
+    // driveless path above; nothing reached it on POSIX. Deliberate here, and
+    // on every platform — the scheme is rejected before any path handling, so
+    // no OS decides the outcome.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      {
+        workerUrl: new URL('aka-not-a-worker:scan-worker.js'),
+        onWorkerStart: starts.onWorkerStart,
+      },
+    );
+    try {
+      const outcome = await scanner.scan('anything');
+      expect(outcome.status).toBe('unavailable');
+      if (outcome.status !== 'unavailable') return;
+      expect(outcome.reason).toContain('could not start the scan worker');
+      expect(starts.count()).toBe(0);
     } finally {
       await scanner.close();
     }

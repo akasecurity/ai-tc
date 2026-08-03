@@ -23,7 +23,9 @@
 import { assertRawFree, type ExceptionWriter, severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
+  CalibrationFrame,
   CalibrationPreview,
+  CalibrationResult,
   DetectionCategory,
   FalsePositivePatternGroup,
   MaskedSecretFinding,
@@ -69,20 +71,13 @@ const DEFAULT_PLAN_IO: PlanFileIO = {
   delete: deletePlanFile,
 };
 
-// A framed presentation block: the human copy plus the machine frame the
-// wizard emits alongside it. Structurally matches each plugin's own
-// calibration-frame result type without this package importing it.
-export interface FramedBlock {
-  copy: string;
-  frame: unknown;
-}
-
 // The host-facing presentation surface. Every member either carries
 // host-branded copy (the empty states, the calibrated-result card, the
 // store-unavailable note), names host commands (the applied card's Ready
-// line resolves against the installed command registry), or defines the
-// host's relay framing (show/fenced/frameJsonBlock) — so each plugin wires
-// its own and this core stays host-free.
+// line resolves against the installed command registry; rerunHint is how
+// the host restarts the wizard), or defines the host's relay framing
+// (show/fenced/frameJsonBlock) — so each plugin wires its own and this
+// core stays host-free.
 export interface AdapterPresenter {
   show(body: string): string;
   fenced(body: string): string;
@@ -90,16 +85,20 @@ export interface AdapterPresenter {
   frameEmptyState(
     cause: 'scan-clean' | 'no-history',
     posture: CalibrationPreview['posture'],
-  ): FramedBlock;
+  ): CalibrationResult;
   frameCalibration(
     preview: CalibrationPreview,
     maskedFindings: readonly MaskedSecretFinding[],
     falsePositivePatterns: readonly FalsePositivePatternGroup[],
-  ): FramedBlock;
+  ): CalibrationResult;
   renderRecommendedPosture(posture: CalibrationPreview['posture']): string;
   // The zero-count calibration frame emitted when the judge is skipped for
   // missing model-judge consent — counts are zero because nothing was JUDGED.
-  zeroCountFrame(posture: CalibrationPreview['posture']): unknown;
+  zeroCountFrame(posture: CalibrationPreview['posture']): CalibrationFrame;
+  // How the host tells the user to restart the wizard — a host command name
+  // (e.g. '/aka:setup'), spoken in the stale-plan refusal so the user always
+  // gets something to type.
+  rerunHint: string;
   // The host closes over its own command registry here — the shared core
   // never reads the registry itself.
   renderApplied(categoriesTuned: number, dismissed: number): string;
@@ -449,8 +448,8 @@ async function runConfirm(deps: AdapterDeps, planIO: PlanFileIO): Promise<number
       closeOnce();
       deps.stderr(
         `AKA apply-suppressions failed: the detection store changed since this plan was previewed ` +
-          `(${drifted.join(', ')}). Refusing to apply a stale plan — re-run the setup wizard to ` +
-          `review against the current store.\n`,
+          `(${drifted.join(', ')}). Refusing to apply a stale plan — re-run ` +
+          `${deps.present.rerunHint} to review against the current store.\n`,
       );
       return 1;
     }

@@ -727,6 +727,9 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     expect(code).toBe(1);
     expect(err.join('')).toMatch(/store changed/i);
     expect(err.join('')).toContain('secret');
+    // The refusal always leaves the user something to type: the real
+    // presenter's rerun hint is the wizard's Claude Code command name.
+    expect(err.join('')).toContain('re-run /aka:setup to review against the current store');
     // fail loud, NO write, handle closed exactly once
     expect(confirmDb.posture).toEqual({ secret: 'redact' });
     expect(confirmDb.created).toEqual([]);

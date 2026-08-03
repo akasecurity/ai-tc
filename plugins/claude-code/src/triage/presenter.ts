@@ -26,4 +26,7 @@ export const adapterPresenter: AdapterPresenter = {
   renderApplied: (categoriesTuned, dismissed) =>
     renderApplied(categoriesTuned, dismissed, readRegisteredCommands()),
   storeUnavailableNote: STORE_UNAVAILABLE_NOTE,
+  // The stale-plan refusal tells the user to restart the wizard by its
+  // Claude Code command name.
+  rerunHint: '/aka:setup',
 };

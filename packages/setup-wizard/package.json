@@ -12,7 +12,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@akasecurity/persistence": "workspace:*",
     "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "zod": "^4.0.0"

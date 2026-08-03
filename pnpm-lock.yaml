@@ -408,9 +408,6 @@ importers:
 
   packages/setup-wizard:
     dependencies:
-      '@akasecurity/persistence':
-        specifier: workspace:*
-        version: link:../persistence
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk

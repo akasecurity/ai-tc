@@ -1,9 +1,10 @@
 /**
  * The redaction/resolved-summary formatters: pure text layout over already-masked
  * findings (no raw key ever crosses here) and the rotation-checklist deliverable.
- * Harness-agnostic — nothing here names a host command, so every harness
- * plugin renders these identically. The one formatter that DOES name a
- * host command (the batched decision layout's chaining line) stays in each
+ * Harness-agnostic — nothing here names a harness command (the pointered note's
+ * `aka vault show` is the shared CLI, present on every install), so every
+ * harness plugin renders these identically. The one formatter that DOES name a
+ * harness command (the batched decision layout's chaining line) stays in each
  * plugin's own render module.
  */
 import type { MaskedSecretFinding, RotationChecklistEntry } from '@akasecurity/schema';

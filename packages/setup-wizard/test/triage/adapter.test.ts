@@ -1,4 +1,5 @@
 import type {
+  CalibrationFrame,
   CalibrationPreview,
   FalsePositivePatternGroup,
   MaskedSecretFinding,
@@ -14,6 +15,7 @@ import {
   type AdapterPresenter,
   runApply,
 } from '../../src/triage/adapter.ts';
+import { type PersistedPlan, PLAN_FILE_VERSION } from '../../src/triage/plan-file.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);
@@ -61,9 +63,12 @@ const verdict = (): TriageRecommendation => ({
 // suite exists to rule out. Frame payloads are unique object sentinels so the
 // pass-through into frameJsonBlock is provable by identity, not by shape.
 function sentinelPresenter() {
-  const emptyFrame = { sentinel: 'empty-frame' };
-  const zeroFrame = { sentinel: 'zero-count-frame' };
-  const calibrationFrame = { sentinel: 'calibration-frame' };
+  // Unique object sentinels asserted by IDENTITY (toBe) — the cast to the
+  // schema frame type is safe because no case reads frame fields, only that
+  // the exact object the presenter returned is the one relayed.
+  const emptyFrame = { sentinel: 'empty-frame' } as unknown as CalibrationFrame;
+  const zeroFrame = { sentinel: 'zero-count-frame' } as unknown as CalibrationFrame;
+  const calibrationFrame = { sentinel: 'calibration-frame' } as unknown as CalibrationFrame;
   const frameJsonBlockReceived: unknown[] = [];
   const frameEmptyStateCalls: {
     cause: 'scan-clean' | 'no-history';
@@ -98,6 +103,7 @@ function sentinelPresenter() {
     renderApplied: (categoriesTuned, dismissed) =>
       `<<APPLIED:${String(categoriesTuned)}:${String(dismissed)}>>`,
     storeUnavailableNote: '<<STORE-UNAVAILABLE>>',
+    rerunHint: '<<RERUN-HINT>>',
   };
   return {
     present,
@@ -273,6 +279,59 @@ describe('runApply — the calibration gate + frame ride the presenter seam', ()
     // All-suppressed run: nothing surfaced, one FP pattern group derived.
     expect(cal.maskedFindings).toEqual([]);
     expect(cal.falsePositivePatterns).toHaveLength(1);
+  });
+});
+
+describe('runApply — the confirm drift refusal rides the presenter seam', () => {
+  it("names the presenter's rerun hint in the stale-plan refusal and writes nothing", async () => {
+    const p = sentinelPresenter();
+    const out: string[] = [];
+    const err: string[] = [];
+    const upsertCategoryAction = vi.fn();
+    const db: AdapterDb = {
+      policies: { getCategoryAction: () => undefined, upsertCategoryAction },
+      exceptions: { create: () => Promise.resolve() },
+      close: vi.fn(),
+    };
+    // Previewed against `current: { secret: 'log' }`; the fake store now
+    // answers undefined for every category — the plan is stale, so confirm
+    // must refuse and route the user back to the wizard.
+    const plan: PersistedPlan = {
+      version: PLAN_FILE_VERSION,
+      posture: { secret: 'warn' },
+      entries: [],
+      showcase: [],
+      join: [],
+      notes: '',
+      current: { secret: 'log' },
+    };
+    const code = await runApply({
+      present: p.present,
+      argv: ['--confirmed', '--plan', PLAN_PATH],
+      readStream: (): never => {
+        throw new Error('confirm must not read the stream');
+      },
+      runJudge: (): never => {
+        throw new Error('confirm must not run the judge');
+      },
+      modelJudgeConsent: () => true,
+      openDb: () => db,
+      now: () => 0,
+      createdBy: () => 'tester',
+      stdout: (s) => out.push(s),
+      stderr: (s) => err.push(s),
+      planIO: { write: () => PLAN_PATH, read: () => plan, delete: vi.fn() },
+    });
+
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(upsertCategoryAction).not.toHaveBeenCalled();
+    // The refusal names the drifted category and tells the user what to type —
+    // via the presenter's hint, never a host command owned by the shared core.
+    const refusal = err.join('');
+    expect(refusal).toContain('(secret)');
+    expect(refusal).toContain('re-run <<RERUN-HINT>> to review against the current store');
+    expectHostFree(err);
   });
 });
 

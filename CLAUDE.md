@@ -36,7 +36,7 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
 | Site                                      | Mechanism                         | Why                                         |
 | ----------------------------------------- | --------------------------------- | ------------------------------------------- |
@@ -46,6 +46,8 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 | `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
+
+That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
 ### 4. No network calls
 
@@ -58,15 +60,44 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 
 Five files carry a genuine local-only opt-out:
 
-| Site                                                                                          | Allowed specifier                                      | Why                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                 | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                       | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                     | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                    | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
-| `packages/eslint-config/test/no-network-runtime.test.js` (via `eslint.root.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
+| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
+
+**Which configs that audit reads is derived, not globbed.** An ESLint config enforces
+something exactly when a `lint` script points ESLint at it, so `no-network.test.js` walks the
+eslint invocations a green `pnpm lint` really runs — every `-c` / `--config` / `--config=`
+target, plus, for an invocation carrying none, the config ordinary flat-config lookup finds
+from the directory that invocation runs in (asked of ESLint's own `findConfigFile`, not
+modelled). A filename glob was the earlier answer and is a hole one rename wide: ESLint
+honours `-c eslint.extra.config.js` exactly like the two conventional names, so a third
+config was referenced by the lint script, applied on every pass, and inspected by nobody —
+while the suite's own test count went _up_, because the extra invocation generates more probe
+targets elsewhere. Two consequences for anyone adding a config:
+
+- **Name it anything and it is still audited** — but an opt-out in it must then appear in
+  `DOCUMENTED_OPT_OUTS` and in the table above, exactly as for the conventional names.
+- **A config no invocation runs is a failure, not a no-op.** Dead config enforces nothing
+  while reading like a lint surface, so the audit differences the tree's `*eslint*.config.*`
+  files against the derived set and names anything left over. Wire it into a `lint` script or
+  delete it.
+
+The reader itself — which invocations a green run makes, which config each runs under, and
+which paths each covers — is one shared module
+(`packages/eslint-config/test/helpers/lint-invocations.js`), used by both that audit and the
+per-package lint-coverage check in `effective-config.test.js`. Two readers of one shell string
+would be free to disagree about what runs, which is how a file ends up covered by one guard
+and audited by neither. `trackedFiles()` sits there for the same reason and is the one
+`git ls-files` walk every audit in the package asks — including the ones below, which ask what
+the tree really holds rather than what a lint script says.
+
+`DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
 
 Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
 
@@ -109,6 +140,17 @@ packaged artifact is the other uncovered surface: nothing here installs the publ
 tarball and exercises it under a block. Note also that the three gates scope to the
 **product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
 runs in its own workflow rather than inside the `No-network` job's namespace.
+
+**Checking the first gate has one trap, and it is in the package that defines the ban.**
+Every package's `eslint.config.mjs` imports `@akasecurity/eslint-config`, so ESLint
+**executes** that package's `src/` to build any config at all. Append a `fetch()` there and
+no rule ever runs: the call fires during config resolution and the process dies with
+`TypeError: fetch failed`. It exits non-zero, which is exactly what makes it dangerous — a
+check asserting only that `pnpm lint` failed passes on that crash, and would go on passing
+with every network rule deleted. Verify this one by planting into a file ESLint does not
+load as config (`vitest.config.ts`, `test/`). The suite covers that `src/` without executing
+anything and must stay that way: it resolves the cascade at the real path and parses the
+real bytes, planting nothing on disk.
 
 The plugin — and the web dashboard's folder scan — also start a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
 
@@ -370,21 +412,28 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    unchecked — those callers run only the workspace-wide scripts and never the CI
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
-   the repo root. `lint:root` is two invocations — the same full-ruleset +
-   network-only split a package makes with
-   `eslint src test` and its `eslint.scripts.config.mjs`: `eslint.root.config.mjs`
-   runs the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`; `eslint.root.guard.config.mjs` runs the network-only guard over the
-   plain-JS enforcement suites in `packages/eslint-config/test/**`, which the
-   eslint-config package's no-op `lint` leaves behind every other pass.
-   `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
+   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
+   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+
+   It used to carry a second, network-only invocation over the plain-JS
+   enforcement suites in `packages/eslint-config/test/**`, because that package's
+   `lint` was a deliberate no-op and a root pass was the only thing that could
+   reach them. It lints itself now — `eslint src *.config.*` then
+   `eslint --no-config-lookup -c eslint.guard.config.mjs test`, the same
+   full-ruleset + network-only split every other two-pass package makes — so those
+   suites are covered by the ordinary per-package check and nothing about them is
+   special any more.
 
    Anything new outside every package belongs in those passes — and a **file** at
    the root is named explicitly, not folded into a directory glob (the same rule
    step 5 draws inside a package). `*.config.*` is the standing lint target for root
-   config and catches the two root ESLint configs and commitlint's; any other root
-   file is named by hand. A root file carrying `// @ts-check` (as both root configs
-   do) is also named in `tsconfig.root.json`'s `include`, or the directive is
+   config and catches the root ESLint config and commitlint's; any other root
+   file is named by hand — including one whose `.config.` segment is capitalized,
+   since a shell glob is case-sensitive on every platform and `*.config.*` reaches
+   `aka.config.mjs` but not `aka.Config.mjs`. A root file carrying `// @ts-check`
+   (as `eslint.root.config.mjs` does) is also named in `tsconfig.root.json`'s
+   `include`, or the directive is
    decorative — nothing runs `tsc` over it and a real type error surfaces nowhere.
    Miss the pass and esbuild strips its types unchecked and nothing lints it.
 
@@ -652,6 +701,33 @@ Seed whatever snapshot the action reads before calling it — anything scanning 
 scans against the **DB snapshot**, not the engine's process-global registry.
 `@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
 is not a runtime package-wall crossing.
+
+### Testing a web-ui page
+
+An async Server Component is a plain async function that returns an element, so a route's
+own data work — which store reads it issues, and which one it hands to which consumer — is
+testable by **calling the page and reading the props it hands down**. No renderer, no DOM,
+no jsdom. `element.props` carries them; assert `element.type` alongside, so a page that
+starts returning a wrapper fails naming that rather than reading every prop as `undefined`.
+`web-ui/test/pages/exceptions-page.test.ts` is the worked example. The four steps above
+apply unchanged (a read-only page needs no `next/cache` mock).
+
+This is not the browser tier — nothing mounts, no event fires, no client component runs.
+It covers the seam between the store and the props, which is where a route's derivations
+live and where nothing else can see them.
+
+**The one thing that makes it work is a config line.** `web-ui/tsconfig.json` sets
+`"jsx": "preserve"` because Next's own compiler consumes untransformed JSX, and vitest
+inherits it — so the page's JSX survives into the output and the parser that reads it next
+rejects it. `oxc.jsx` in `web-ui/vitest.config.ts` overrides that for the test run only. It
+is already wired; a new suite needs no change, but a parse error on a `.tsx` import is what
+its absence looks like, and it names neither JSX nor the tsconfig.
+
+A route that issues **more than one read of the same table** is the case worth writing a
+page test for at all: a count derived from the wrong one of two windows is still a number,
+so it typechecks, lints, and satisfies every assertion aimed at the pieces. Make the fixture
+straddle the two windows and **pin the straddle itself** — with rows that all fall inside
+both, the assertions pass whichever read the page used, and the suite proves nothing.
 
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
 hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an

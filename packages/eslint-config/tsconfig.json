@@ -2,9 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "allowJs": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "eslint.config.mjs", "eslint.guard.config.mjs"]
 }

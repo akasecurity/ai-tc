@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { POINTER_FORMAT_VERSION, PointerToken } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { FingerprintKey } from '../../src/fingerprint.ts';
 import {
   fingerprintValue,
   loadOrCreateFingerprintKey,
@@ -44,12 +45,16 @@ describe('SecretVault', () => {
   let repo: SqliteSecretVaultRepository;
   let vault: SecretVault;
   let consented: boolean;
+  // The epoch writes fingerprint under. A variable rather than a constructor
+  // dep because the vault no longer holds one — a rotation test moves this and
+  // the same vault instance writes under the new epoch.
+  let fingerprintKey: FingerprintKey;
+  const fpKey = (): FingerprintKey => fingerprintKey;
 
   const build = (): SecretVault =>
     new SecretVault({
       repo,
       keys: new FileKeyProvider(join(dir, 'keys')),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       isConsented: () => consented,
     });
 
@@ -62,15 +67,20 @@ describe('SecretVault', () => {
     db = store.openRaw();
     repo = new SqliteSecretVaultRepository(db);
     consented = true;
+    fingerprintKey = loadOrCreateFingerprintKey(dir);
     vault = build();
   });
 
   const tokenize = async (raw: string, category = 'secret'): Promise<string> => {
-    const result = await vault.tokenize(raw, {
-      ruleId: 'aws-access-key-id',
-      category: category as 'secret',
-      maskedMatch: 'A******E',
-    });
+    const result = await vault.tokenize(
+      raw,
+      {
+        ruleId: 'aws-access-key-id',
+        category: category as 'secret',
+        maskedMatch: 'A******E',
+      },
+      fpKey,
+    );
     if (typeof result !== 'string') throw new Error('expected a pointer');
     return result;
   };
@@ -136,7 +146,7 @@ describe('SecretVault', () => {
     it('does not vault anything without consent', async () => {
       consented = false;
       await expect(
-        vault.tokenize(SECRET, { ruleId: 'r', category: 'secret', maskedMatch: 'A***E' }),
+        vault.tokenize(SECRET, { ruleId: 'r', category: 'secret', maskedMatch: 'A***E' }, fpKey),
       ).resolves.toBe(CONSENT_ABSENT);
       expect(repo.countEntries()).toBe(0);
     });
@@ -344,7 +354,6 @@ describe('SecretVault', () => {
         new SecretVault({
           repo,
           keys: new FileKeyProvider(join(dir, 'keys')),
-          fingerprintKey: loadOrCreateFingerprintKey(dir),
           isConsented: () => consented,
           verifyGrant,
         });
@@ -508,13 +517,10 @@ describe('SecretVault', () => {
       ).resolves.toBe(SECRET);
 
       // Re-tokenizing under the new key must find the refreshed row, not mint a
-      // second one — otherwise the reuse count fragments.
-      vault = new SecretVault({
-        repo,
-        keys: new FileKeyProvider(join(dir, 'keys')),
-        fingerprintKey: next,
-        isConsented: () => consented,
-      });
+      // second one — otherwise the reuse count fragments. The SAME vault
+      // instance writes under the new epoch: the key reaches the write as a
+      // per-call argument, so moving it needs no reconstruction.
+      fingerprintKey = next;
       expect(await tokenize(SECRET)).toBe(token);
       expect(repo.countEntries()).toBe(1);
     });
@@ -573,7 +579,6 @@ describe('SecretVault', () => {
       const vaultOverLyingRepo = new SecretVault({
         repo: lying,
         keys: new FileKeyProvider(join(dir, 'keys')),
-        fingerprintKey: loadOrCreateFingerprintKey(dir),
         isConsented: () => consented,
       });
 

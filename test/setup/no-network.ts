@@ -31,11 +31,26 @@
  * hide one. It is deliberate, it is exported for the guard's own suite, and it
  * is the only opt-out that exists — there is no env switch and no config flag.
  *
+ * WHY A WORKER NEEDS ITS OWN COPY. A `worker_thread` gets a FRESH module
+ * registry, so none of the patches below exist there — a worker reaching out
+ * was, until this file grew the section at the bottom, both allowed and
+ * SILENT: nothing threw, and the parent recorded nothing for `afterEach` to
+ * fail on. This is not hypothetical, because the product itself starts a worker
+ * (`@akasecurity/plugin-sdk`'s isolated scan, CLAUDE.md §5) and tests drive it.
+ * So the guard re-installs itself into every worker spawned from a guarded
+ * thread, by wrapping the `Worker` constructor rather than by patching call
+ * sites — which is what reaches a worker PRODUCT code starts, not merely one a
+ * test wrote. A worker's refusal cannot land in the parent's array, so it is
+ * appended to a file the parent drains in the same `takeBlockedAttempts()`; a
+ * refusal swallowed inside a worker stays just as fatal as one swallowed here.
+ *
  * KNOWN RESIDUALS, stated rather than silently covered:
  *   - A CHILD PROCESS is a separate process with its own copy of these modules,
  *     so a shell-out (`npm view`, `claude -p`) is invisible here. That is the
  *     gap the `No-network` CI job closes by running the whole suite inside a
- *     loopback-only network namespace — see tools/ci/no-network-test.sh.
+ *     loopback-only network namespace — see tools/ci/no-network-test.sh. A
+ *     worker started BY such a child is out of reach for the same reason: the
+ *     wrapper below lives in this process, and the child never loaded it.
  *   - `dns.lookup` is NOT patched. It is the OS resolver `net.connect` itself
  *     calls, so guarding it would duplicate the connect guard while risking the
  *     internal `util.promisify` contract that `dns.promises` is built on. Be
@@ -58,10 +73,12 @@
  */
 import dgram from 'node:dgram';
 import dns from 'node:dns';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { Socket } from 'node:net';
-
-import { afterAll, afterEach } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import workerThreads from 'node:worker_threads';
 
 /** One refused outbound attempt, kept so a swallowed throw is still fatal. */
 export interface BlockedAttempt {
@@ -75,15 +92,105 @@ export interface BlockedAttempt {
   readonly stack: string;
 }
 
+// This module is loaded two ways, and the query string is what tells them
+// apart. As a vitest `setupFiles` entry it is loaded by plain path, and it owns
+// the array and the hooks. Re-loaded inside a worker via `--import` (see
+// `guardWorkerConstructor` at the bottom) it carries `?akaReport=<path>` and
+// records to that file instead, because its `attempts` array is a DIFFERENT
+// array the parent cannot read.
+//
+// The discriminator is deliberately the query rather than `isMainThread`: under
+// a vitest `pool: 'threads'` run the setup file itself executes off the main
+// thread, and keying on that would silently drop the backstop hooks for the
+// whole workspace.
+const SELF_URL = new URL(import.meta.url);
+const WORKER_REPORT = SELF_URL.searchParams.get('akaReport');
+const IN_INJECTED_WORKER = WORKER_REPORT !== null;
+
 const attempts: BlockedAttempt[] = [];
 
+// The parent's side of the worker channel, created on the first worker spawn
+// and not before — a run that starts no worker touches the filesystem never,
+// which is nearly every test file in the workspace.
+let reportPath: string | null = null;
+
+/** The file worker refusals are appended to, created on demand. */
+function ensureReportPath(): string {
+  if (reportPath === null) {
+    const dir = mkdtempSync(join(tmpdir(), 'aka-no-network-'));
+    reportPath = join(dir, 'worker-attempts.jsonl');
+    writeFileSync(reportPath, '');
+    process.on('exit', () => {
+      // Never let tidying up decide the exit code. On Windows a file another
+      // thread still holds open raises EBUSY/EPERM, which `force` does not
+      // cover — and a throw in an exit handler would fail a run that had
+      // otherwise passed.
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // a temp dir the OS will reclaim
+      }
+    });
+  }
+  return reportPath;
+}
+
 /**
- * Drain the recorded refusals. Called by the `afterEach`/`afterAll` backstops
- * below, and by the guard's own tests to consume an attempt they provoked on
- * purpose (an undrained attempt fails the test that made it).
+ * Read and clear whatever workers have recorded. A line that will not parse is
+ * surfaced as an attempt rather than skipped: two threads appending at once
+ * could in principle interleave, and losing a refusal is the one outcome this
+ * file may not produce.
+ */
+function drainWorkerAttempts(): BlockedAttempt[] {
+  if (reportPath === null) return [];
+  let raw: string;
+  try {
+    raw = readFileSync(reportPath, 'utf8');
+  } catch {
+    return [];
+  }
+  if (raw === '') return [];
+  writeFileSync(reportPath, '');
+  return raw
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      try {
+        return JSON.parse(line) as BlockedAttempt;
+      } catch {
+        return {
+          kind: 'unreadable record from a worker',
+          target: '(unknown)',
+          callSite: '(unknown)',
+          stack: line,
+        };
+      }
+    });
+}
+
+/**
+ * Record one refusal where the drain can find it. In a worker that is a file,
+ * because the parent's `afterEach` cannot see a worker's heap — and an
+ * unrecorded refusal in a worker is the same silent pass as an unrecorded one
+ * here.
+ */
+function record(attempt: BlockedAttempt): void {
+  if (IN_INJECTED_WORKER) {
+    appendFileSync(WORKER_REPORT, `${JSON.stringify(attempt)}\n`);
+    return;
+  }
+  attempts.push(attempt);
+}
+
+/**
+ * Drain the recorded refusals — this thread's, and any a worker appended.
+ * Called by the `afterEach`/`afterAll` backstops below, and by the guard's own
+ * tests to consume an attempt they provoked on purpose (an undrained attempt
+ * fails the test that made it).
  */
 export function takeBlockedAttempts(): BlockedAttempt[] {
-  return attempts.splice(0, attempts.length);
+  const own = attempts.splice(0, attempts.length);
+  return [...own, ...drainWorkerAttempts()];
 }
 
 // Node's own default when a connect omits the host (lib/net.js).
@@ -188,7 +295,7 @@ function refuse(kind: string, target: string, caller: (...args: never[]) => unkn
   // the empty message it was built with.
   error.stack = `${error.name}: ${error.message}\n${frames.join('\n')}`;
 
-  attempts.push({ kind, target, callSite, stack: error.stack });
+  record({ kind, target, callSite, stack: error.stack });
   throw error;
 }
 
@@ -352,6 +459,74 @@ guardDnsResolvers(dns.promises.Resolver.prototype as unknown as Record<string, u
 // prototypes, resolved at call time, so this does not affect them.
 syncBuiltinESMExports();
 
+// --- worker_threads (a fresh module registry, so a fresh copy of all of it) --
+
+// Everything above patches THIS thread. A worker gets none of it, so the
+// wrapper below re-runs this file inside every worker spawned from a guarded
+// thread — `--import` accepts a file URL and Node applies it before the
+// worker's own entry, which is why it reaches a worker started by product code
+// rather than only one a test wrote by hand.
+//
+// The whole ruleset for what counts as loopback therefore stays in one file
+// with one implementation. A second, worker-shaped copy of the classifiers is
+// exactly the drift this avoids.
+
+/** This module's own path, with any `?akaReport=` stripped back off. */
+const SELF_PREFIX = SELF_URL.href.split('?')[0] ?? SELF_URL.href;
+
+/**
+ * The `execArgv` a spawned worker should run with: whatever it would have
+ * inherited, plus this file.
+ *
+ * Any inherited `--import` of this same file is dropped first. A worker started
+ * from inside a worker would otherwise accumulate one per level of nesting,
+ * since `process.execArgv` in an injected worker already carries ours.
+ */
+function execArgvWithGuard(inherited: readonly string[], report: string): string[] {
+  const kept: string[] = [];
+  for (let i = 0; i < inherited.length; i++) {
+    const flag = inherited[i];
+    if (flag === '--import' && (inherited[i + 1] ?? '').startsWith(SELF_PREFIX)) {
+      i++; // skip the flag and its value
+      continue;
+    }
+    if (flag !== undefined) kept.push(flag);
+  }
+  const preload = new URL(SELF_PREFIX);
+  preload.searchParams.set('akaReport', report);
+  return [...kept, '--import', preload.href];
+}
+
+/**
+ * Wrap `Worker` so every worker re-loads this guard. Assigned onto the module
+ * object and re-synced for the same reason the dns patch above is: product code
+ * reaches `Worker` through a NAMED import (`isolated-scan.ts` does), which binds
+ * to the facade's snapshot rather than to the live property.
+ */
+function guardWorkerConstructor(): void {
+  const carrier = workerThreads as unknown as Record<string, unknown>;
+  const RealWorker = carrier.Worker as typeof workerThreads.Worker;
+  if (typeof RealWorker !== 'function') return;
+
+  class GuardedWorker extends RealWorker {
+    constructor(filename: string | URL, options: workerThreads.WorkerOptions = {}) {
+      // In an injected worker the parent already owns a report file; a nested
+      // worker reports to that same one, so its refusals surface in the drain
+      // that the top-level thread performs.
+      const report = IN_INJECTED_WORKER ? WORKER_REPORT : ensureReportPath();
+      super(filename, {
+        ...options,
+        execArgv: execArgvWithGuard(options.execArgv ?? process.execArgv, report),
+      });
+    }
+  }
+
+  carrier.Worker = GuardedWorker;
+  syncBuiltinESMExports();
+}
+
+guardWorkerConstructor();
+
 // --- backstops --------------------------------------------------------------
 
 /**
@@ -372,12 +547,22 @@ function reportUndrained(scope: string): void {
   );
 }
 
-afterEach(() => {
-  reportUndrained('this test');
-});
+// Only the `setupFiles` load registers hooks. The copy re-loaded inside a
+// worker has no suite to attach to — importing vitest there throws outright —
+// and its refusals reach the parent's hooks through the report file instead.
+// The import is dynamic for the same reason: a worker must not pay for
+// resolving vitest's module graph on every spawn.
+if (!IN_INJECTED_WORKER) {
+  const { afterAll, afterEach } = await import('vitest');
 
-// Catches what `afterEach` cannot: an attempt made while a test FILE is loading,
-// inside a `beforeAll`/`afterAll`, or from a timer that fired after the last test.
-afterAll(() => {
-  reportUndrained('this test file, outside any single test');
-});
+  afterEach(() => {
+    reportUndrained('this test');
+  });
+
+  // Catches what `afterEach` cannot: an attempt made while a test FILE is
+  // loading, inside a `beforeAll`/`afterAll`, or from a timer that fired after
+  // the last test.
+  afterAll(() => {
+    reportUndrained('this test file, outside any single test');
+  });
+}

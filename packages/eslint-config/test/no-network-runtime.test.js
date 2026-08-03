@@ -14,11 +14,13 @@ import { createConnection, createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
+import { spawnViaNamedImport, spawnViaNamespace } from './helpers/product-worker.js';
 import { networkGuard } from '../src/index.js';
 import {
   blockedTcpTarget,
@@ -834,7 +836,201 @@ describe('the egress probe', () => {
   });
 });
 
-// --- 5. Both opt-outs, measured rather than assumed --------------------------
+// --- 5. Workers: a fresh module registry, re-guarded -------------------------
+
+// A worker_thread gets its own module registry, so none of section 2's patches
+// exist in it. Until the guard learned to re-install itself there, a worker
+// reaching out was allowed AND SILENT — nothing threw, and the parent recorded
+// nothing for afterEach to fail on, which is a worse failure than a miss.
+//
+// Two halves are pinned here and both are load-bearing. THROWN, because the
+// worker's own code should see the refusal. RECORDED, because the product's
+// boundaries are fail-open by design (CLAUDE.md §1) and a worker that swallows
+// the throw must still fail the run — an unrecorded refusal in a worker is the
+// same silent pass, just moved one thread over.
+//
+// Every target below is 192.0.2.1 (RFC 5737 TEST-NET-1, reserved for
+// documentation and not routed). Section 2 can name real hosts because the
+// guard it drives is known-installed; here the whole question is whether the
+// guard arrived at all, so a REGRESSION in this section is the case that would
+// actually emit a packet. An unrouted literal also skips DNS entirely.
+
+const TEST_NET_1 = '192.0.2.1';
+
+const WORKER_PRELUDE = [
+  "import { Socket } from 'node:net';",
+  "import { parentPort } from 'node:worker_threads';",
+].join('\n');
+
+/**
+ * Run an ES module body in a worker and resolve its posted message.
+ * @param {string} body
+ * @param {(source: string) => import('node:worker_threads').Worker} [spawn]
+ */
+function inWorker(body, spawn) {
+  const source = `${WORKER_PRELUDE}\n${body}`;
+  return new Promise((done, fail) => {
+    const worker = spawn ? spawn(source) : new Worker(source, { eval: true });
+    worker.on('message', (message) => {
+      void worker.terminate();
+      done(message);
+    });
+    worker.on('error', fail);
+  });
+}
+
+describe('a worker thread is guarded too', () => {
+  it('refuses inside the worker and records it here, even when the worker swallows it', async () => {
+    const result = await inWorker(`
+      let threw = null;
+      try {
+        new Socket().connect(443, ${JSON.stringify(TEST_NET_1)});
+      } catch (error) {
+        threw = error.name; // a fail-open catch — what the product's boundaries do
+      }
+      parentPort.postMessage({ threw, patched: Socket.prototype.connect.name });
+    `);
+
+    // THROWN: the worker's own copy of the guard refused.
+    expect(result.patched).toBe('guardedConnect');
+    expect(result.threw).toBe('NoNetworkError');
+
+    // RECORDED: and the swallow did not hide it. takeBlockedAttempts() is the
+    // very drain reportUndrained() performs in afterEach, so an attempt visible
+    // here is one the backstop would have failed the run on. Leaving it
+    // undrained is how that is proven in the negative — this call is what stops
+    // this test failing.
+    const attempts = takeBlockedAttempts();
+    expect(attempts.map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+    expect(attempts[0].kind).toBe('TCP connection');
+    // The call site must name the worker's code, not the parent frame that
+    // spawned it — otherwise the record is real but points at the wrong file.
+    expect(attempts[0].stack).toContain('NoNetworkError');
+  });
+
+  // Both shapes real code reaches `Worker` through, from a module the test did
+  // not write inline. They are separate cases because the guard covers them by
+  // two separate mechanisms: assigning the module property reaches the
+  // namespace form, and `syncBuiltinESMExports()` reaches the named-import form
+  // that `isolated-scan.ts` uses. Driving one shape only would let the missing
+  // half ship green — dropping either mechanism fails exactly one of these.
+  it.each([
+    ['a named import, as isolated-scan.ts does', spawnViaNamedImport],
+    ['a namespace import read at call time', spawnViaNamespace],
+  ])('reaches a worker started through %s', async (_shape, spawn) => {
+    const result = await inWorker(
+      `
+      let threw = null;
+      try { new Socket().connect(443, ${JSON.stringify(TEST_NET_1)}); }
+      catch (error) { threw = error.name; }
+      parentPort.postMessage({ threw });
+    `,
+      spawn,
+    );
+
+    expect(result.threw).toBe('NoNetworkError');
+    expect(takeBlockedAttempts().map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+  });
+
+  it('guards UDP and DNS in the worker as well as TCP', async () => {
+    // The TCP patch and the dgram/dns patches are separate mechanisms in the
+    // guard, so covering only connect would leave two thirds of it unproven on
+    // the worker path.
+    const result = await inWorker(`
+      import { createSocket } from 'node:dgram';
+      import dns from 'node:dns';
+      const caught = [];
+      const socket = createSocket('udp4');
+      try { socket.send('probe', 53, ${JSON.stringify(TEST_NET_1)}); }
+      catch (error) { caught.push(error.name); }
+      socket.close();
+      try { dns.resolve4('example.com', () => undefined); }
+      catch (error) { caught.push(error.name); }
+      parentPort.postMessage({ caught });
+    `);
+
+    expect(result.caught).toEqual(['NoNetworkError', 'NoNetworkError']);
+    expect(
+      takeBlockedAttempts()
+        .map((a) => a.target)
+        .sort(),
+    ).toEqual([TEST_NET_1, 'example.com']);
+  });
+
+  it('still completes a loopback round trip inside a worker', async () => {
+    // The positive control. Every assertion above is a refusal, and all of them
+    // would pass just as well if the injected guard had broken networking in
+    // the worker outright — which would be a different bug wearing the same
+    // green.
+    const server = createServer((socket) => {
+      socket.end('pong');
+    });
+    try {
+      await new Promise((done) =>
+        server.listen(0, '127.0.0.1', () => {
+          done(undefined);
+        }),
+      );
+      const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
+
+      const result = await inWorker(`
+        const reply = await new Promise((done, fail) => {
+          const client = new Socket();
+          let received = '';
+          client.on('data', (chunk) => (received += String(chunk)));
+          client.on('end', () => { done(received); });
+          client.on('error', fail);
+          client.connect(${String(port)}, '127.0.0.1');
+        });
+        parentPort.postMessage({ reply });
+      `);
+
+      expect(result.reply).toBe('pong');
+    } finally {
+      await new Promise((done) =>
+        server.close(() => {
+          done(undefined);
+        }),
+      );
+    }
+    expect(takeBlockedAttempts()).toEqual([]);
+  });
+
+  it('guards a worker started BY a worker, without stacking preloads', async () => {
+    // Nesting is the case where execArgv can grow without bound: an injected
+    // worker's own process.execArgv already carries the preload, so a wrapper
+    // that only appended would add one more per level. It also has to keep
+    // reporting to the SAME file, or a nested refusal lands somewhere the
+    // top-level drain never reads.
+    const result = await inWorker(`
+      import { Worker } from 'node:worker_threads';
+      const inner = new Worker(\`
+        import { Socket } from 'node:net';
+        import { parentPort } from 'node:worker_threads';
+        let threw = null;
+        try { new Socket().connect(443, ${JSON.stringify(TEST_NET_1)}); }
+        catch (error) { threw = error.name; }
+        parentPort.postMessage({ threw, execArgv: process.execArgv });
+      \`, { eval: true });
+      const message = await new Promise((done, fail) => {
+        inner.on('message', (m) => { void inner.terminate(); done(m); });
+        inner.on('error', fail);
+      });
+      parentPort.postMessage(message);
+    `);
+
+    expect(result.threw).toBe('NoNetworkError');
+    const preloads = result.execArgv.filter(
+      (arg) => typeof arg === 'string' && arg.includes('no-network.ts'),
+    );
+    expect(preloads).toHaveLength(1);
+
+    // The nested refusal reached the top-level drain, two threads down.
+    expect(takeBlockedAttempts().map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+  });
+});
+
+// --- 6. Both opt-outs, measured rather than assumed --------------------------
 
 // Two files in this repo import banned network modules on purpose: the vitest
 // guard patches node:net/node:dgram/node:dns, and the CI probe opens a socket.

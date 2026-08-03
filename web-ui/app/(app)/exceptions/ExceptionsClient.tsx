@@ -13,11 +13,11 @@ import type {
   ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
-import { Button } from '@akasecurity/ui-kit';
+import { Button, cn } from '@akasecurity/ui-kit';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { approveBlocked, rotateKey } from './actions';
 
 export function ExceptionsClient({
@@ -37,7 +37,10 @@ export function ExceptionsClient({
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
 }) {
-  const router = useRouter();
+  // Navigation transition (the blocked-window filter and row navigation) —
+  // distinct from the write transition below, which tracks the approve/rotate
+  // Server Actions.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +55,7 @@ export function ExceptionsClient({
     const sp = new URLSearchParams();
     sp.set('window', next);
     if (includeTerminal) sp.set('all', '1');
-    router.push(`/exceptions?${sp.toString()}`);
+    pushUrl(`/exceptions?${sp.toString()}`);
   };
 
   const submitApprove = (submission: ApproveSubmission) => {
@@ -120,13 +123,18 @@ export function ExceptionsClient({
         keyState={keyState}
       />
 
-      <ExceptionsTableView
-        items={items}
-        includeTerminal={includeTerminal}
-        onSelect={(id) => {
-          router.push(`/exceptions/${id.slice(0, 8)}`);
-        }}
-      />
+      <div
+        aria-busy={navPending}
+        className={cn('transition-opacity duration-150', navPending && 'opacity-60')}
+      >
+        <ExceptionsTableView
+          items={items}
+          includeTerminal={includeTerminal}
+          onSelect={(id) => {
+            pushUrl(`/exceptions/${id.slice(0, 8)}`);
+          }}
+        />
+      </div>
 
       <ApproveExceptionDialog
         entry={approving}

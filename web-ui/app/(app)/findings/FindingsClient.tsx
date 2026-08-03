@@ -12,12 +12,13 @@ import {
   type Selection,
 } from '@akasecurity/dashboard-ui';
 import type { FindingGroup, ListGroupedFindingsResponse } from '@akasecurity/schema';
-import { Badge, Button, Sheet, SheetContent } from '@akasecurity/ui-kit';
+import { Badge, Button, cn, Sheet, SheetContent } from '@akasecurity/ui-kit';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useCallback, useState } from 'react';
 
 import { TerminalIcon, XIcon } from '../../components/icons';
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { buildFindingsParams } from './filters';
 
@@ -63,8 +64,8 @@ export function FindingsClient({
   selectedId: string;
   hasMore: boolean;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  const { isPending, push } = useNavigationTransition();
 
   const [selected, setSelected] = useState<Selection | null>(() =>
     findSelection(data.items, selectedId),
@@ -103,9 +104,9 @@ export function FindingsClient({
   const pushState = useCallback(
     (nextFilters: FindingsFilters, nextQuery: string, nextSession: string) => {
       onNavigate(nextQuery);
-      router.push(buildUrl(nextFilters, nextQuery, nextSession));
+      push(buildUrl(nextFilters, nextQuery, nextSession));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, push, buildUrl],
   );
 
   const visibleColumns = FINDINGS_COLUMNS.filter((c) => columnVisibility[c.id] !== false);
@@ -202,7 +203,13 @@ export function FindingsClient({
         </div>
       )}
 
-      <div className="mt-4 min-h-0 flex-1">
+      <div
+        aria-busy={isPending}
+        className={cn(
+          'mt-4 min-h-0 flex-1 transition-opacity duration-150',
+          isPending && 'opacity-60',
+        )}
+      >
         <FindingsTableView
           groups={data.items}
           columns={visibleColumns}

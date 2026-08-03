@@ -8,10 +8,11 @@ import {
   UpdateModal,
 } from '@akasecurity/dashboard-ui';
 import type { DetectionDetail, ListDetectionsResponse } from '@akasecurity/schema';
-import { Card } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import {
   pullDetectionUpdate,
@@ -53,8 +54,10 @@ export function DetectionsClient({
   query: string;
   selectedId: string;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  // Navigation transition (filter/search/selection pushes) — distinct from the
+  // write transitions below, which track Server Actions.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
 
   const [editRuleId, setEditRuleId] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -91,9 +94,9 @@ export function DetectionsClient({
   const push = useCallback(
     (opts: { filter: string; q: string; id?: string }) => {
       onNavigate(opts.q);
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   const editRule =
@@ -106,7 +109,13 @@ export function DetectionsClient({
 
   return (
     <>
-      <div className="mt-4 grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4">
+      <div
+        aria-busy={navPending}
+        className={cn(
+          'mt-4 grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4 transition-opacity duration-150',
+          navPending && 'opacity-60',
+        )}
+      >
         <DetectionsListView
           items={list.items}
           counts={list.counts}

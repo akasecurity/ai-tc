@@ -1,0 +1,112 @@
+import { cn, Skeleton } from '@akasecurity/ui-kit';
+
+// Page-shaped loading placeholders for the route-level loading.tsx files. These
+// are plain server-renderable markup over ui-kit's Skeleton: a loading.tsx
+// renders before any data exists, so it cannot use the dashboard-ui *View
+// components (they are client components taking required data props).
+//
+// Each loading.tsx composes these inside the same padding wrapper its page.tsx
+// uses, so the skeleton occupies the layout the real page will.
+
+/** Title + subtitle bar, with an optional right-aligned control block. */
+export function PageHeadSkeleton({ actions = false }: { actions?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-4 pb-5">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-7 w-44" />
+        <Skeleton className="h-4 w-72" />
+      </div>
+      {actions && <Skeleton className="h-8 w-32" />}
+    </div>
+  );
+}
+
+/** Search box + filter controls row. */
+export function ToolbarSkeleton() {
+  return (
+    <div className="flex items-center gap-2 pb-1">
+      <Skeleton className="h-8 w-64" />
+      <Skeleton className="h-8 w-24" />
+      <Skeleton className="h-8 w-24" />
+      <Skeleton className="h-8 w-24" />
+      <Skeleton className="ml-auto h-8 w-20" />
+    </div>
+  );
+}
+
+/** Header row plus `rows` body rows of four cells. */
+export function TableSkeleton({ rows = 8 }: { rows?: number }) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-lg border border-border">
+      <div className="flex items-center gap-4 border-b border-border bg-surface-2 px-4 py-2.5">
+        <Skeleton className="h-3.5 w-20" />
+        <Skeleton className="h-3.5 w-40" />
+        <Skeleton className="h-3.5 w-24" />
+        <Skeleton className="ml-auto h-3.5 w-16" />
+      </div>
+      {Array.from({ length: rows }, (_, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-4 border-b border-border px-4 py-3 last:border-b-0"
+        >
+          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-4 w-56" />
+          <Skeleton className="h-4 w-28" />
+          <Skeleton className="ml-auto h-4 w-14" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A row of stat tiles, as the activity/security summary strips render. */
+export function StatStripSkeleton({ tiles = 5 }: { tiles?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-5">
+      {Array.from({ length: tiles }, (_, i) => (
+        <Skeleton key={i} className="h-20" />
+      ))}
+    </div>
+  );
+}
+
+/** Grid of card-shaped blocks. */
+export function CardGridSkeleton({ cards = 3, className }: { cards?: number; className?: string }) {
+  return (
+    <div className={cn('grid grid-cols-1 gap-4 lg:grid-cols-3', className)}>
+      {Array.from({ length: cards }, (_, i) => (
+        <Skeleton key={i} className="h-56" />
+      ))}
+    </div>
+  );
+}
+
+/** A single full-width card block. */
+export function CardSkeleton({ className }: { className?: string }) {
+  return <Skeleton className={cn('h-64 w-full', className)} />;
+}
+
+/**
+ * Left list column + right detail pane, for the master/detail pages. Fills its
+ * parent, which the page's own wrapper constrains (`flex h-full min-h-0`).
+ */
+export function MasterDetailSkeleton() {
+  return (
+    <div className="mt-4 flex min-h-0 flex-1 gap-4">
+      <div className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3">
+        {Array.from({ length: 8 }, (_, i) => (
+          <Skeleton key={i} className="h-14" />
+        ))}
+      </div>
+      <div className="min-h-0 flex-1 rounded-lg border border-border p-4">
+        <Skeleton className="h-8 w-64" />
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {Array.from({ length: 6 }, (_, i) => (
+            <Skeleton key={i} className="h-10" />
+          ))}
+        </div>
+        <Skeleton className="mt-6 h-72 w-full" />
+      </div>
+    </div>
+  );
+}

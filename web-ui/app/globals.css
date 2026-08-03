@@ -6,3 +6,32 @@
    primitives and the dashboard-ui composites directly, so scan both. */
 @source '../../packages/ui-kit/src';
 @source '../../packages/dashboard-ui/src';
+
+@theme {
+  --animate-nav-progress: nav-progress 1s ease-out forwards;
+}
+
+/* The navigation progress bar. It stays invisible through the first 15% of its
+   1s run, so a navigation that resolves inside ~150ms never flashes a bar; past
+   that it grows toward — but never reaches — full width, since the render it
+   tracks has no measurable progress to report. */
+@keyframes nav-progress {
+  0% {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  15% {
+    opacity: 0;
+    transform: scaleX(0.08);
+  }
+  16% {
+    opacity: 1;
+  }
+  60% {
+    transform: scaleX(0.75);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleX(0.96);
+  }
+}

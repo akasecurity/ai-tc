@@ -8,9 +8,9 @@
  * asserts the property the battery cannot give — whatever the pattern, the work
  * ends:
  *
- *   - one the battery CLEARS in microseconds and that then never returns on
- *     text the battery has no way to construct, which is what the isolated
- *     `scan` exists for;
+ *   - one the battery CLEARS without ever reaching its nested quantifier, and
+ *     that then never returns on text the battery has no way to construct,
+ *     which is what the isolated `scan` exists for;
  *   - one that hangs the BATTERY ITSELF, which is what the isolated `probe`
  *     exists for. Measuring a rule means driving its own pattern into
  *     backtracking, so the measurement is an unbounded run of an untrusted
@@ -28,8 +28,9 @@ import { createIsolatedScanner } from '../src/isolated-scan.ts';
 // at the `zzq` literal before it ever reaches the nested quantifier. The rule
 // measures as safe and is admitted to the ruleset. Text that does carry the
 // literal then drives `(a+)+$` into exponential backtracking.
-const BATTERY_BLIND_PATTERN = String.raw`(?:zzq)(a+)+$`;
-const BATTERY_BLIND_TEXT = `zzq${'a'.repeat(34)}!`;
+const BATTERY_BLIND_LITERAL = 'zzq';
+const BATTERY_BLIND_PATTERN = String.raw`(?:${BATTERY_BLIND_LITERAL})(a+)+$`;
+const BATTERY_BLIND_TEXT = `${BATTERY_BLIND_LITERAL}${'a'.repeat(34)}!`;
 
 // The other half of the gap. This one has no literal prefix at all, so the
 // battery's own derived probe is `'a'.repeat(23) + '!'` — and four identical
@@ -87,7 +88,28 @@ describe('the residual risk the probe battery leaves open', () => {
     // than deleting the case: the gap is in the approach, not in one pattern.
     const verdict = checkRuleTiming(HOSTILE);
     expect(verdict.safe).toBe(true);
-    expect(verdict.worstMs).toBeLessThan(10);
+
+    // WHY it clears, stated structurally rather than as a millisecond ceiling.
+    // The battery's slowest probe never carries the literal this pattern
+    // requires, so the nested quantifier behind that literal is unreachable and
+    // nothing backtracks. Move the literal out of the group so `literalPrefix`
+    // can see it and both assertions flip together — the derived probes carry
+    // it, the battery spends hundreds of milliseconds, and the rule reports
+    // unsafe.
+    //
+    // A ceiling asserts the same property by proxy and measures the runner
+    // instead. The whole battery costs hundredths of a millisecond for this
+    // rule — V8 locates the required literal by substring search before running
+    // the regex, so even the 40KB polynomial probes are nearly free — which
+    // leaves a scheduler pause on a loaded machine orders of magnitude above the
+    // signal being measured. A ratio against a second rule's battery is no
+    // better here, because both numbers are that small.
+    //
+    // The length check is the positive control: `worstProbeMs` leaves `probe`
+    // empty if no probe ever measures above zero, and an empty string satisfies
+    // the absence check vacuously.
+    expect(verdict.probe.length).toBeGreaterThan(0);
+    expect(verdict.probe).not.toContain(BATTERY_BLIND_LITERAL);
   });
 });
 

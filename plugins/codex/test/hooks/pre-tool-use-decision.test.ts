@@ -23,6 +23,7 @@ import {
   denyPointerMessage,
   EXECUTABLE_REDACT_NOTE,
   SCANNABLE_FIELDS,
+  UNREDACTABLE_NOTE,
 } from '../../src/hooks/pre-tool-use-decision.ts';
 
 const IP = ['45', '79', '142', '6'].join('.');
@@ -106,6 +107,46 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
       decidePreToolUse('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result: blocked }]),
     );
     expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+  });
+});
+
+describe('decidePreToolUse — a redact carrying no text denies instead of allowing', () => {
+  // CaptureResult.text is `string | null`, so { action: 'redact', text: null }
+  // is protocol-legal. Allowing it emitted the ORIGINAL input back to Codex
+  // under the "AKA redacted sensitive content" systemMessage — the raw value
+  // sent, and the transcript claiming it was masked.
+  const PATCH = `*** Update File: notes.md\n+contact ${EMAIL}\n`;
+
+  const unredactable = (): CaptureResult => ({
+    action: 'redact',
+    text: null,
+    findings: [finding('core-pii/email-address', EMAIL, PATCH)],
+  });
+
+  it('denies the apply_patch call rather than passing the input through', () => {
+    const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+      { spec: APPLY_PATCH_INPUT, result: unredactable() },
+    ]);
+
+    const reason = denyReason(output);
+    expect(reason).toContain('AKA blocked this apply_patch call — flagged core-pii/email-address');
+    expect(reason).toContain(UNREDACTABLE_NOTE);
+    expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+
+    const emitted = JSON.stringify(output);
+    expect(emitted).not.toContain('updatedInput');
+    expect(emitted).not.toContain('AKA redacted');
+    expect(emitted).not.toContain(EMAIL);
+  });
+
+  it('keeps the executable note when the field also executes', () => {
+    const reason = denyReason(
+      decidePreToolUse('Bash', { command: PATCH }, [
+        { spec: BASH_COMMAND, result: unredactable() },
+      ]),
+    );
+    expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
+    expect(reason).not.toContain(UNREDACTABLE_NOTE);
   });
 });
 

@@ -52,6 +52,12 @@ export interface ScannedField {
 export const EXECUTABLE_REDACT_NOTE =
   'Masking inside an executable command would silently change what runs, so a redact policy blocks it instead.';
 
+// Woven into the deny message when a redact decision carried no redacted text
+// to put in place, so the block explains why the policy's redact could not be
+// applied rather than the call going out unmasked.
+export const UNREDACTABLE_NOTE =
+  'The redacted form of this input was unavailable, so the call is blocked rather than sent unmasked.';
+
 // The deny reason when a vault pointer appears in a field that EXECUTES. The
 // Codex plugin has no vault wiring, so it never substitutes a pointer back to
 // its raw value — but pointers minted elsewhere on the same machine (the
@@ -118,12 +124,22 @@ export function decidePreToolUse(
   const redactedRules = new Set<string>();
   const blockedReferences: BlockedDetectionRef[] = [];
   const redactedReferences: BlockedDetectionRef[] = [];
-  let escalated = false;
+  let escalatedExecutable = false;
+  let escalatedUnredactable = false;
   let updatedInput: Record<string, unknown> | null = null;
 
   for (const { spec, result } of scanned) {
-    const escalate = result.action === 'redact' && spec.executable;
-    if (escalate) escalated = true;
+    // A redact this hook cannot carry out denies rather than allowing and
+    // claiming success. Two ways it cannot: masking an executable field would
+    // silently change what runs, and a null `text` leaves no redacted form to
+    // substitute — emitting the untouched input under the "AKA redacted"
+    // systemMessage would send the raw value and report it as masked.
+    const unredactable = result.action === 'redact' && result.text === null;
+    const escalate = result.action === 'redact' && (spec.executable || unredactable);
+    if (escalate) {
+      if (spec.executable) escalatedExecutable = true;
+      else escalatedUnredactable = true;
+    }
     const action = escalate ? 'block' : result.action;
 
     if (action === 'block') {
@@ -133,6 +149,7 @@ export function decidePreToolUse(
       for (const finding of result.findings) redactedRules.add(finding.ruleId);
       if (result.blockedReferences) redactedReferences.push(...result.blockedReferences);
       updatedInput ??= { ...toolInput };
+      // Non-null here: a redact carrying no text escalated to block above.
       if (result.text !== null) updatedInput[spec.field] = result.text;
     } else if (action === 'warn') {
       for (const finding of result.findings) warnedRules.add(finding.ruleId);
@@ -148,7 +165,11 @@ export function decidePreToolUse(
           subject: `${toolName} call`,
           ruleIds: [...blockedRules].join(', '),
           blockedRef: blockedReferences[0],
-          note: escalated ? EXECUTABLE_REDACT_NOTE : undefined,
+          note: escalatedExecutable
+            ? EXECUTABLE_REDACT_NOTE
+            : escalatedUnredactable
+              ? UNREDACTABLE_NOTE
+              : undefined,
         }),
       },
     };

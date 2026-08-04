@@ -49,8 +49,8 @@ Two security workflows run alongside the main build:
   it only adds a comment when a **new** advisory id appears, so a known long-lived
   finding does not ping daily.
 - **CodeQL** (`.github/workflows/codeql.yml`) — static analysis of the TypeScript
-  workspace and the workflow files on every PR to `main` and weekly; findings appear
-  under the repository's **Security** tab.
+  workspace and the workflow files on every PR (including a PR stacked on another
+  branch) and weekly; findings appear under the repository's **Security** tab.
 
 When the workspace audit fails, fix first: upgrade the dependency, or raise its floor
 via `pnpm.overrides` in the root `package.json` (the existing entries there are exactly
@@ -95,10 +95,18 @@ from our dependency tree, add a waiver to `.github/audit-waivers.json`:
   (for example the registry matching a workspace importer name against an unrelated
   public package). Set `"class": "false-positive"`, say so plainly in `reason`, and a
   longer expiry is acceptable there.
-- Waivers are reviewed like any other code change.
-- `pnpm.auditConfig.ignoreCves` / `ignoreGhsas` is **not** an approved suppression
-  route: pnpm-native ignores carry no expiry, no reason, and no report row, so the gate
-  refuses to run while anything is muted.
+- **Anyone may open a waiver PR; only a maintainer may approve one.** A waiver is a
+  decision to ship a known advisory, so it needs the same approval as any other change
+  to `main` — which branch protection already requires. Say in the PR description what
+  you tried before reaching for it.
+- `auditConfig.ignoreCves` / `ignoreGhsas` is **not** an approved suppression route:
+  pnpm-native ignores carry no expiry, no reason, and no report row. The gate refuses
+  to run — exit 3, the same code as a malformed waiver file — when `auditConfig` is set
+  in **either** place pnpm reads it from: the root `package.json` (`pnpm.auditConfig`)
+  or `pnpm-workspace.yaml` (top-level `auditConfig`). It is read off disk rather than
+  detected in pnpm's output, because pnpm removes a muted advisory from `advisories`,
+  decrements the severity counts to match and leaves `muted` **empty** — so a muted run
+  is indistinguishable from a clean one by its result alone.
 
 ## Contributing detection rules
 
@@ -116,6 +124,33 @@ so we don't ship false positives.
 2. Keep PRs focused; write a clear description.
 3. Ensure `pnpm typecheck`, `pnpm lint`, `pnpm test`, and `pnpm format:check` pass.
 4. Be responsive to review feedback.
+
+### Checks that gate `main`
+
+Merging to `main` needs an approving review and these status checks. The names are the
+job names GitHub reports, and they are what branch protection matches on — **a renamed
+job silently stops being required**, because protection keeps waiting for a check name
+nothing produces any more. So renaming a job here means updating this table in the same
+PR; `packages/eslint-config/test/required-checks.test.js` reads this table and fails when
+a name in it no longer belongs to a real job.
+
+| Check                                     | Workflow     |
+| ----------------------------------------- | ------------ |
+| `Lint · Typecheck · Test · Build`         | `ci.yml`     |
+| `No-network · Full suite, egress blocked` | `ci.yml`     |
+| `Windows · Unit tests (shipped surface)`  | `ci.yml`     |
+| `Dependency audit`                        | `audit.yml`  |
+| `CodeQL (javascript-typescript)`          | `codeql.yml` |
+| `CodeQL (actions)`                        | `codeql.yml` |
+
+Whether each is _actually_ enforced lives in repository settings, not in this tree, so
+this table cannot assert it — but the state is readable without admin, which is worth
+knowing since the branch-protection REST endpoint 404s to non-admins and reads like
+"no protection at all":
+
+```bash
+gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequest(number:PR){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:50){nodes{... on CheckRun{name isRequired(pullRequestNumber:PR)}}}}}}}}}}'
+```
 
 By contributing you agree that your contributions are licensed under the
 repository's [LICENSE](LICENSE). Please also read our

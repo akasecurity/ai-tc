@@ -73,8 +73,11 @@ describe('emit', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    await expect(emit({ ok: true })).resolves.toBeUndefined();
-    expect(writeSpy).toHaveBeenCalledWith(JSON.stringify({ ok: true }), expect.any(Function));
+    await expect(emit({ systemMessage: 'ok' })).resolves.toBeUndefined();
+    expect(writeSpy).toHaveBeenCalledWith(
+      JSON.stringify({ systemMessage: 'ok' }),
+      expect.any(Function),
+    );
 
     writeSpy.mockRestore();
   });
@@ -85,7 +88,7 @@ describe('emit', () => {
       // A broken pipe (EPIPE) surfaces as an 'error' event, not a write callback.
       .mockImplementation(() => true);
 
-    const promise = emit({ ok: true });
+    const promise = emit({ systemMessage: 'ok' });
     process.stdout.emit('error', new Error('EPIPE'));
 
     await expect(promise).resolves.toBeUndefined();
@@ -102,7 +105,7 @@ describe('emit', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    await emit({ ok: true });
+    await emit({ systemMessage: 'ok' });
 
     // Deliberately NOT removed (see shared.ts) — one more listener than
     // before, guarding against any stdout error between resolving and exit.

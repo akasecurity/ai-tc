@@ -15,12 +15,21 @@
  *     exists for. Measuring a rule means driving its own pattern into
  *     backtracking, so the measurement is an unbounded run of an untrusted
  *     pattern too — and it runs first, before any scan.
+ *
+ * Both of those end at what the parent reports. The last block is about the
+ * kill that ends the work, and is the only part of this file that watches the
+ * thread rather than the answer.
  */
 import { checkRuleTiming } from '@akasecurity/detections';
-import type { Rule } from '@akasecurity/schema';
+import type { Rule, RuleProbeVerdict } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createIsolatedScanner } from '../src/isolated-scan.ts';
+import type { RuleProbeGateway } from '../src/rule-quarantine.ts';
+import { filterUnsafeRules } from '../src/rule-quarantine.ts';
+import { spinCounters } from './helpers/spin-counters.ts';
+import type { SpinningWorkerData } from './helpers/spinning-scan-worker.ts';
+import { countWorkerStarts } from './helpers/worker-starts.ts';
 
 // The battery derives its probes from a pattern's own literal prefix and
 // character classes. `literalPrefix` stops at the first `(`, so this pattern
@@ -79,6 +88,58 @@ const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta
 const NEVER_READY_WORKER = new URL('./helpers/never-ready-scan-worker.ts', import.meta.url);
 const EXITING_WORKER = new URL('./helpers/exiting-scan-worker.ts', import.meta.url);
 const LATE_PROGRESS_WORKER = new URL('./helpers/late-progress-scan-worker.ts', import.meta.url);
+const SPINNING_WORKER = new URL('./helpers/spinning-scan-worker.ts', import.meta.url);
+
+// How long the spinning fixture executes before it answers a job.
+const SPIN_MS = 1_500;
+
+// The deadline the kill cases run under. Short enough that it always lands
+// while the fixture is still spinning; long enough that a job posted the
+// instant the thread said `ready` is always delivered first, so a case that
+// counts threads counts every one of them.
+const KILL_BUDGET_MS = 600;
+
+// How long a kill is given to land before the first heartbeat reading. Only an
+// upper bound on the terminator: it reaches a tight loop at the next back-edge,
+// which is microseconds, and reading too early would be the one way these cases
+// could fail on a machine that is merely slow.
+const KILL_SETTLE_MS = 400;
+
+// How long the counters are watched afterwards.
+const KILL_OBSERVE_MS = 2_500;
+
+// The pre-flight's own pass budget must not be what ends the pass below. A rule
+// it skips for lack of time is never measured, so it starts no thread — and the
+// case would then assert its property over fewer threads than it meant to,
+// silently, and most easily on the slow runner where the property matters most.
+const PRE_FLIGHT_PASS_MS = Number.POSITIVE_INFINITY;
+
+// A kill case pays a worker START (granted START_MS above) per thread it kills,
+// the budget it kills on, and then the fixed observation window — three times
+// over for the pre-flight case. Sized above that sum so a case that runs long
+// fails on the assertion that names what went wrong, not on the package's 20s
+// default, which just says the test timed out.
+const KILL_CASE_TIMEOUT_MS = 120_000;
+
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+function fakeProbeCache(): RuleProbeGateway {
+  const store = new Map<string, { verdict: RuleProbeVerdict; worstProbeMs: number }>();
+  return {
+    getRuleProbeVerdict: (key) => Promise.resolve(store.get(key)),
+    setRuleProbeVerdict: (key, verdict, worstProbeMs) => {
+      store.set(key, { verdict, worstProbeMs });
+      return Promise.resolve();
+    },
+  };
+}
+
+function spinningWorkerData(counters: SharedArrayBuffer): SpinningWorkerData {
+  return { verified: [], unverified: [], counters, spinMs: SPIN_MS };
+}
 
 describe('the residual risk the probe battery leaves open', () => {
   it('clears the timing pre-flight and still never returns on the right text', () => {
@@ -86,30 +147,17 @@ describe('the residual risk the probe battery leaves open', () => {
     // catches this shape — good news, and this whole suite would then be
     // testing a rule that never reaches the runtime. Change the pattern rather
     // than deleting the case: the gap is in the approach, not in one pattern.
+    //
+    // `safe` is the whole property, and it already carries a bound: it IS
+    // `worstMs < BUDGET_MS`, the battery's own 100ms budget. A second, tighter
+    // assertion on the same number measures nothing extra — the rule and the
+    // battery are both fixed, so the only thing that moves this figure is a
+    // change to the probe derivation, and `safe` flipping is the loud signal
+    // for that. One was asserted here at 10ms and reddened unrelated PRs at
+    // 15.5ms on a loaded runner. Do not add another: a margin on a duration
+    // nobody can influence is noise with a threshold.
     const verdict = checkRuleTiming(HOSTILE);
     expect(verdict.safe).toBe(true);
-
-    // WHY it clears, stated structurally rather than as a millisecond ceiling.
-    // The battery's slowest probe never carries the literal this pattern
-    // requires, so the nested quantifier behind that literal is unreachable and
-    // nothing backtracks. Move the literal out of the group so `literalPrefix`
-    // can see it and both assertions flip together — the derived probes carry
-    // it, the battery spends hundreds of milliseconds, and the rule reports
-    // unsafe.
-    //
-    // A ceiling asserts the same property by proxy and measures the runner
-    // instead. The whole battery costs hundredths of a millisecond for this
-    // rule — V8 locates the required literal by substring search before running
-    // the regex, so even the 40KB polynomial probes are nearly free — which
-    // leaves a scheduler pause on a loaded machine orders of magnitude above the
-    // signal being measured. A ratio against a second rule's battery is no
-    // better here, because both numbers are that small.
-    //
-    // The length check is the positive control: `worstProbeMs` leaves `probe`
-    // empty if no probe ever measures above zero, and an empty string satisfies
-    // the absence check vacuously.
-    expect(verdict.probe.length).toBeGreaterThan(0);
-    expect(verdict.probe).not.toContain(BATTERY_BLIND_LITERAL);
   });
 });
 
@@ -307,9 +355,10 @@ describe('createIsolatedScanner.scan', () => {
     // not scoped to its own worker settles the WRONG job — the next scan comes
     // back "the scan worker exited before answering" while a perfectly healthy
     // thread is running it.
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN, HOSTILE] },
-      { budgetMs: 1_500, minAttributionMs: 50 },
+      { budgetMs: 1_500, minAttributionMs: 50, onWorkerStart: starts.onWorkerStart },
     );
     try {
       expect((await scanner.scan(BATTERY_BLIND_TEXT)).status).toBe('timeout');
@@ -318,10 +367,230 @@ describe('createIsolatedScanner.scan', () => {
       expect(after.status).toBe('ok');
       if (after.status !== 'ok') return;
       expect(after.findings.map((f) => f.ruleId)).toEqual(['pulled/benign']);
+      // On a FRESH thread: the second scan is answered by a second worker, not
+      // by the one that was terminated. This is the positive half of the two
+      // "does not respawn" cases below — without it, their count of 1 would
+      // also be satisfied by a scanner that never replaced a worker at all.
+      expect(starts.count()).toBe(2);
     } finally {
       await scanner.close();
     }
   });
+});
+
+describe('createIsolatedScanner.onWorkerStart', () => {
+  // Everything asserting a worker COUNT elsewhere leans on this seam reporting
+  // one thread per construction and nothing else. That claim is about a real
+  // thread, so it is checked against one here rather than against the helper
+  // that tallies the notifications.
+  it('reports one start per thread built, and none before the first job', async () => {
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [BENIGN], unverified: [] },
+      { onWorkerStart: starts.onWorkerStart },
+    );
+    try {
+      // Constructing a scanner starts nothing: a machine whose verdicts are all
+      // cached, and every caller that never reaches a scan, pays no thread.
+      expect(starts.count()).toBe(0);
+
+      expect((await scanner.scan('key AKIA0123456789ABCDEF here')).status).toBe('ok');
+      expect(starts.count()).toBe(1);
+      expect(starts.ids()).toHaveLength(1);
+
+      // Pooled — the second job reuses the thread rather than building one, and
+      // a probe is a job like any other.
+      expect((await scanner.scan('nothing here')).status).toBe('ok');
+      expect((await scanner.probe(BENIGN)).status).toBe('ok');
+      expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('reports a thread that never answers, because it cost one anyway', async () => {
+    // A worker that throws on load is constructed, scheduled and torn down, so
+    // the count has to include it — otherwise "starts no worker" would be
+    // satisfied by a path that starts one and loses it.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      { budgetMs: 10_000, workerUrl: CRASHING_WORKER, onWorkerStart: starts.onWorkerStart },
+    );
+    try {
+      expect((await scanner.scan('anything')).status).toBe('unavailable');
+      expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('reports nothing once closed, because nothing is built', async () => {
+    // The one unavailable outcome that constructs nothing at all: a closed
+    // scanner answers before it looks for a worker. A count of 1 here would
+    // mean the seam fires on an intent to start rather than on a start.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      { onWorkerStart: starts.onWorkerStart },
+    );
+    await scanner.close();
+    expect((await scanner.scan('anything')).status).toBe('unavailable');
+    expect((await scanner.probe(BENIGN)).status).toBe('unavailable');
+    expect(starts.count()).toBe(0);
+  });
+});
+
+/**
+ * Everything above asserts what the PARENT does when a deadline fires: the
+ * outcome it returns, the rule it names, the thread it starts next. None of
+ * that needs the worker to have actually stopped — replace `terminate()` in
+ * `kill()` with a no-op and every one of those cases still passes, because a
+ * rule that never returns reports nothing either way.
+ *
+ * `terminate()` is the whole reason a worker was the answer, though: it reaches
+ * V8's execution terminator and interrupts a spinning regex, which nothing on
+ * the calling thread can do. Without it the deadline is bookkeeping — the
+ * caller is told the scan ended while a thread keeps burning a core on the
+ * pattern that hung it.
+ *
+ * So these cases watch the thread instead of the answer. The fixture spins for
+ * a fixed stretch and then reports completion through shared memory, and a
+ * killed thread must show neither a heartbeat nor a completion after the fact.
+ *
+ * NOTHING HERE ASSERTS AN ELAPSED TIME. The two readings are exhaustive over a
+ * thread that was not stopped: at any instant it is either still executing (the
+ * heartbeat moves) or has finished (the completion count moves), so a runner
+ * slow enough to blunt one signal sharpens the other. The wall-clock constants
+ * are waits, and waiting longer only ever makes these cases safer.
+ */
+describe('the kill behind the deadline', () => {
+  it(
+    'lets the fixture finish when no deadline fires, so the counters mean something',
+    async () => {
+      // The control for both cases below. A `completed` count that can never
+      // reach 1 asserts nothing when it reads 0 — a mistyped slot index, a
+      // buffer that never crossed into the thread, or a fixture that answers
+      // without spinning would all look exactly like a successful kill.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        // Far above the spin: this case is about the fixture, not the bound.
+        budgetMs: SPIN_MS * 10,
+        workerUrl: SPINNING_WORKER,
+      });
+      try {
+        expect((await scanner.scan('anything')).status).toBe('ok');
+        expect(counters.entered()).toBe(1);
+        expect(counters.heartbeat()).toBeGreaterThan(0);
+        expect(counters.completed()).toBe(1);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'stops the scan thread, so the work it was doing never finishes',
+    async () => {
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        budgetMs: KILL_BUDGET_MS,
+        workerUrl: SPINNING_WORKER,
+      });
+      try {
+        expect((await scanner.scan('anything')).status).toBe('timeout');
+        // The thread reached the work — otherwise the readings below would be
+        // about a job that never started.
+        expect(counters.entered()).toBe(1);
+
+        await wait(KILL_SETTLE_MS);
+        const beat = counters.heartbeat();
+        await wait(KILL_OBSERVE_MS);
+
+        // It executed no further instruction…
+        expect(counters.heartbeat()).toBe(beat);
+        // …and so the work it was in the middle of never finished.
+        expect(counters.completed()).toBe(0);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'lets the pre-flight finish a measurement it did not have to kill',
+    async () => {
+      // The pre-flight's own control, and the pair to the case below: same
+      // driver, same fixture, same rule shape — only the budget differs. A
+      // measurement that comes back keeps the rule and completes the spin.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        probeBudgetMs: SPIN_MS * 10,
+        workerUrl: SPINNING_WORKER,
+      });
+      const rule = regexRule('pulled/measurable', 'AAAA[0-9]{4}');
+      try {
+        const kept = await filterUnsafeRules([rule], fakeProbeCache(), {
+          prober: scanner,
+          passBudgetMs: PRE_FLIGHT_PASS_MS,
+        });
+        expect(kept).toEqual([rule]);
+        expect(counters.completed()).toBe(1);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'stops every thread the pre-flight kills, not just the last one',
+    async () => {
+      // The scan path retires isolation after its first failure, so it can leak
+      // at most one thread per scanner. The pre-flight cannot: it warns and
+      // KEEPS ITERATING, so a pack whose rules each hang the battery gets a
+      // thread apiece, all of them inside one pass. That is the path where a
+      // missing kill costs more than one core, and it is reached before any
+      // scan runs.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        probeBudgetMs: KILL_BUDGET_MS,
+        workerUrl: SPINNING_WORKER,
+      });
+      const rules = [
+        regexRule('pulled/one', 'AAAA[0-9]{4}'),
+        regexRule('pulled/two', 'BBBB[0-9]{4}'),
+        regexRule('pulled/three', 'CCCC[0-9]{4}'),
+      ];
+      try {
+        const kept = await filterUnsafeRules(rules, fakeProbeCache(), {
+          prober: scanner,
+          passBudgetMs: PRE_FLIGHT_PASS_MS,
+        });
+
+        // Every rule was measured and every measurement had to be killed…
+        expect(kept).toEqual([]);
+        // …on a thread of its own, which is what makes this more than a repeat
+        // of the scan case: the count is what the pack decides, not what the
+        // scanner allows.
+        expect(counters.entered()).toBe(rules.length);
+
+        await wait(KILL_SETTLE_MS);
+        const beat = counters.heartbeat();
+        await wait(KILL_OBSERVE_MS);
+
+        expect(counters.heartbeat()).toBe(beat);
+        // Zero across all three, not "the last one stopped": a thread killed
+        // early in the pass has the rest of the pass to finish its spin in.
+        expect(counters.completed()).toBe(0);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('createIsolatedScanner failure reporting', () => {
@@ -383,9 +652,10 @@ describe('createIsolatedScanner failure reporting', () => {
   });
 
   it('does not respawn a worker that already died on its own', async () => {
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { budgetMs: 10_000, workerUrl: CRASHING_WORKER },
+      { budgetMs: 10_000, workerUrl: CRASHING_WORKER, onWorkerStart: starts.onWorkerStart },
     );
     try {
       await scanner.scan('first');
@@ -393,6 +663,10 @@ describe('createIsolatedScanner failure reporting', () => {
       const outcome = await scanner.scan('second');
       // Same verdict, without paying to start a thread that dies the same way.
       expect(outcome.status).toBe('unavailable');
+      // ONE thread across both scans. The elapsed bound below only says the
+      // second answer was quick, and a thread that crashes on load is quick —
+      // so it would stay green while the parent rebuilt one per scan.
+      expect(starts.count()).toBe(1);
       expect(performance.now() - started).toBeLessThan(1_000);
     } finally {
       await scanner.close();
@@ -404,9 +678,10 @@ describe('createIsolatedScanner failure reporting', () => {
     // only an 'exit'. Without latching that, the pre-flight — which warns and
     // CONTINUES on an unavailable prober — respawns a thread per rule and burns
     // its whole 2s pass budget inside a pass that was already doomed.
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { budgetMs: 10_000, workerUrl: EXITING_WORKER },
+      { budgetMs: 10_000, workerUrl: EXITING_WORKER, onWorkerStart: starts.onWorkerStart },
     );
     try {
       const first = await scanner.scan('first');
@@ -419,19 +694,65 @@ describe('createIsolatedScanner failure reporting', () => {
       // difference between remembering and rebuilding the thread.
       expect(second.reason).toContain('crashed');
       expect(second.reason).toContain('exited before answering');
+      // …and the thread count is that same difference, said without relying on
+      // the wording. A pre-flight facing a pack of such rules spends its whole
+      // pass budget building threads that immediately exit; one start is what
+      // says it does not.
+      expect(starts.count()).toBe(1);
     } finally {
       await scanner.close();
     }
   });
 
   it('reports a missing worker script rather than scanning unbounded', async () => {
+    // An absent SIBLING of this file, not a hand-written absolute path. Both
+    // name a script that does not exist, but `file:///aka-no-such-dir/…` is a
+    // valid POSIX path and an invalid WINDOWS one — no drive letter — so
+    // `fileURLToPath` throws inside the Worker constructor there and this case
+    // silently tested URL validation on Windows and a missing file everywhere
+    // else. Both reach `unavailable`, which is why the split went unnoticed
+    // until the start count made the two paths distinguishable.
+    const starts = countWorkerStarts();
     const scanner = isolated(
       { verified: [], unverified: [BENIGN] },
-      { workerUrl: new URL('file:///aka-no-such-dir/scan-worker.js') },
+      {
+        workerUrl: new URL('./helpers/absent-scan-worker.ts', import.meta.url),
+        onWorkerStart: starts.onWorkerStart,
+      },
     );
     try {
       const outcome = await scanner.scan('anything');
       expect(outcome.status).toBe('unavailable');
+      // A script that is merely missing still costs a thread: `new Worker` does
+      // not throw on one, it constructs and delivers the failure as an 'error'
+      // event.
+      expect(starts.count()).toBe(1);
+    } finally {
+      await scanner.close();
+    }
+  });
+
+  it('starts nothing when the worker URL cannot be loaded at all', async () => {
+    // The other half, and the branch that returns `{ error }` from
+    // `ensureWorker` before any thread exists: a URL the Worker constructor
+    // rejects outright. Windows used to reach this by accident, through the
+    // driveless path above; nothing reached it on POSIX. Deliberate here, and
+    // on every platform — the scheme is rejected before any path handling, so
+    // no OS decides the outcome.
+    const starts = countWorkerStarts();
+    const scanner = isolated(
+      { verified: [], unverified: [BENIGN] },
+      {
+        workerUrl: new URL('aka-not-a-worker:scan-worker.js'),
+        onWorkerStart: starts.onWorkerStart,
+      },
+    );
+    try {
+      const outcome = await scanner.scan('anything');
+      expect(outcome.status).toBe('unavailable');
+      if (outcome.status !== 'unavailable') return;
+      expect(outcome.reason).toContain('could not start the scan worker');
+      expect(starts.count()).toBe(0);
     } finally {
       await scanner.close();
     }

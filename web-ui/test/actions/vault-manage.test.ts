@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import {
   createKeyProvider,
   dataDir,
   dbPath,
+  EXCEPTION_KEY_FILENAME,
   keysDir,
   loadOrCreateFingerprintKey,
   type LocalDatabase,
@@ -79,7 +80,6 @@ function buildVault(db: LocalDatabase): SecretVault {
   return new SecretVault({
     repo: db.secretVault,
     keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
-    fingerprintKey: loadOrCreateFingerprintKey(dataDir()),
     isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
   });
 }
@@ -89,12 +89,16 @@ function buildVault(db: LocalDatabase): SecretVault {
 async function seedPointer(): Promise<string> {
   const db = openLocalDatabase(dataDir());
   try {
-    const pointer = await buildVault(db).tokenize(RAW, {
-      ruleId: 'secrets/test-rule',
-      category: 'secret',
-      provider: 'aws',
-      maskedMatch: 'vau…est',
-    });
+    const pointer = await buildVault(db).tokenize(
+      RAW,
+      {
+        ruleId: 'secrets/test-rule',
+        category: 'secret',
+        provider: 'aws',
+        maskedMatch: 'vau…est',
+      },
+      () => loadOrCreateFingerprintKey(dataDir()),
+    );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     return pointer;
   } finally {
@@ -225,6 +229,69 @@ describe('purgeVault', () => {
     // Every pointer is now permanently unresolvable.
     const after = await revealEntry({ pointerId });
     expect(after).toEqual({ ok: true, value: null });
+  });
+});
+
+// The exception fingerprint key is a WRITE dependency: it keys the ledger, and
+// none of these surfaces writes a fingerprint. A dashboard left open is a
+// long-lived process serving every one of them, so any of them re-minting a
+// deleted key would silently undo the fresh start the corrupt-key guidance
+// tells an operator to take — and leave the next approve reporting a rotation
+// that never happened.
+describe('fingerprint key footprint', () => {
+  const keyFile = (): string => join(dataDir(), EXCEPTION_KEY_FILENAME);
+
+  // Seed, then take the key away exactly as the corrupt-key guidance says to,
+  // so what each action does next is the only thing under test.
+  async function seedThenDropKey(): Promise<string> {
+    const pointer = await seedPointer();
+    rmSync(keyFile());
+    resetSingleton();
+    return pointer;
+  }
+
+  it('revealEntry mints nothing', async () => {
+    await seedThenDropKey();
+    const result = await revealEntry({ pointerId: seededPointerId() });
+
+    // Positive control on every case here: the action really ran. Without one,
+    // the absence would hold just as well for an action that failed early.
+    expect(result).toEqual({ ok: true, value: RAW });
+    expect(existsSync(keyFile())).toBe(false);
+  });
+
+  it('grantRevealFromPointer mints nothing', async () => {
+    const pointer = await seedThenDropKey();
+    const granted = await grantRevealFromPointer({
+      pointer,
+      scope: '1h',
+      justification: 'no key on this store',
+    });
+
+    expect(granted.ok).toBe(true);
+    // The grant really landed, keyed to the vault row's own epoch — which the
+    // row carries, so no current key was needed to write it.
+    expect(inventory()[0]?.revealGrantId).not.toBeNull();
+    expect(existsSync(keyFile())).toBe(false);
+  });
+
+  it('purgeVault mints nothing', async () => {
+    await seedThenDropKey();
+    const result = await purgeVault({ confirmation: 'purge' });
+
+    expect(result).toEqual({ ok: true, destroyed: 1 });
+    expect(entryCount()).toBe(0);
+    expect(existsSync(keyFile())).toBe(false);
+  });
+
+  it('rotateVaultKey mints nothing', async () => {
+    await seedThenDropKey();
+    const result = await rotateVaultKey();
+
+    // Rotating the VAULT key touches a different key entirely — the one under
+    // keys/, not exception.key.
+    expect(result).toMatchObject({ ok: true, reEncrypted: 1 });
+    expect(existsSync(keyFile())).toBe(false);
   });
 });
 

@@ -1,9 +1,9 @@
 // @ts-check
 import js from '@eslint/js';
+import prettier from 'eslint-config-prettier';
 import pluginN from 'eslint-plugin-n';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import tseslint from 'typescript-eslint';
-import prettier from 'eslint-config-prettier';
 
 // ai-tc is local-first: the OSS surface makes no network calls and talks to no
 // AKA service — all data lives in the local SQLite store under ~/.aka. Banning
@@ -270,12 +270,31 @@ export const tonalInkTokens = [
   },
 ];
 
+// A plain flat-config array, like `rootConfigFiles` and `networkGuard` below.
+// `tseslint.config()` used to wrap this; with no `extends` key anywhere in the
+// list that helper returned the same entries by identity and added no keys, so
+// it bought nothing, and it is now deprecated in favour of ESLint core's
+// `defineConfig()`. Spelling the array out drops the deprecated call without
+// taking on `defineConfig()`'s stricter `plugins` typing, which react.js cannot
+// satisfy — see the note there.
 /** @type {import('typescript-eslint').ConfigArray} */
-export const base = tseslint.config(
+export const base = [
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
+    linterOptions: {
+      // A disable directive that no longer suppresses anything is a failure, not
+      // a warning. ESLint's own default here is `warn`, which this workspace
+      // treats as off — and the thing it silences is specific: an inline disable
+      // is an exception someone argued for once, and a dead one is that argument
+      // outliving the code it was about. It then sits in the file reading like a
+      // live exemption, and the next line that needs it inherits it without
+      // anyone deciding. `inline-disables.test.js` inventories the directives
+      // that disable a network or process.env ban; this covers every OTHER rule's
+      // directives the same way, at lint time.
+      reportUnusedDisableDirectives: 'error',
+    },
     plugins: {
       n: pluginN,
       'simple-import-sort': simpleImportSort,
@@ -310,7 +329,7 @@ export const base = tseslint.config(
     },
   },
   prettier,
-);
+];
 
 // OSS/enterprise dependency wall (see CLAUDE.md "Package dependency rules"):
 // packages that ship in the public oss/ tree must never import enterprise-only
@@ -327,21 +346,23 @@ const ENTERPRISE_IMPORT_MESSAGE =
 // enterprise restrictions on their own would silently drop base's network bans
 // for exactly those packages.
 /** @type {import('typescript-eslint').ConfigArray} */
-export const noEnterpriseImports = tseslint.config({
-  rules: {
-    'no-restricted-imports': noNetworkImports({
-      paths: [
-        { name: '@akasecurity/client', message: ENTERPRISE_IMPORT_MESSAGE },
-        { name: 'drizzle-orm', message: ENTERPRISE_IMPORT_MESSAGE },
-        { name: '@akasecurity/schema-enterprise', message: ENTERPRISE_IMPORT_MESSAGE },
-      ],
-      patterns: [
-        { group: ['drizzle-orm/*'], message: ENTERPRISE_IMPORT_MESSAGE },
-        { group: ['@akasecurity/schema-enterprise/*'], message: ENTERPRISE_IMPORT_MESSAGE },
-      ],
-    }),
+export const noEnterpriseImports = [
+  {
+    rules: {
+      'no-restricted-imports': noNetworkImports({
+        paths: [
+          { name: '@akasecurity/client', message: ENTERPRISE_IMPORT_MESSAGE },
+          { name: 'drizzle-orm', message: ENTERPRISE_IMPORT_MESSAGE },
+          { name: '@akasecurity/schema-enterprise', message: ENTERPRISE_IMPORT_MESSAGE },
+        ],
+        patterns: [
+          { group: ['drizzle-orm/*'], message: ENTERPRISE_IMPORT_MESSAGE },
+          { group: ['@akasecurity/schema-enterprise/*'], message: ENTERPRISE_IMPORT_MESSAGE },
+        ],
+      }),
+    },
   },
-});
+];
 
 // Every package keeps its build and tooling config at its own root —
 // tsup.config.ts, vitest.config.ts, eslint.config.mjs, drizzle.config.local.ts.

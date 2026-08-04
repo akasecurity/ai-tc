@@ -1,16 +1,19 @@
 // @ts-check
-// Network-only guard for the no-network enforcement suites under
-// `packages/eslint-config/test`, which reach no other ESLint pass: the
-// eslint-config package's own `lint` is a deliberate no-op, and `pnpm lint`
-// (turbo) never sees the repo root. It enforces just the no-network bans — not
-// the source-only conventions or the type-aware rules — so these plain-JS suites,
-// full of untyped fixtures and banned-primitive strings, are not dragged into the
-// full ruleset (the same split the per-package `eslint.scripts.config.mjs` makes
-// for non-compiled JS). Driven by `pnpm lint:root`'s second pass; run with
-// `--no-config-lookup` so `eslint.root.config.mjs` (base) does not also apply.
+// Network-only guard for the no-network enforcement suites under `test/`. It
+// enforces just the no-network bans — not the source-only conventions or the
+// type-aware rules — so these plain-JS suites, full of untyped fixtures and
+// banned-primitive strings, are not dragged into the full ruleset (the same
+// split cli and the plugin make with their `eslint.scripts.config.mjs` for
+// non-compiled `scripts/`). Driven by the second pass of this package's `lint`
+// script; run with `--no-config-lookup` so the sibling `eslint.config.mjs`
+// (base) does not also apply.
 import { networkGuard, noNetworkImports, noNetworkSyntax } from '@akasecurity/eslint-config';
 
-export default [
+// Bound to an annotated const for the same reason as the sibling
+// eslint.config.mjs: this file is type-checked, and the inferred default-export
+// type is not portable.
+/** @type {import('eslint').Linter.Config[]} */
+const config = [
   ...networkGuard,
   {
     // no-network-runtime.test.js is the runtime half of the guarantee: it imports
@@ -26,3 +29,5 @@ export default [
     },
   },
 ];
+
+export default config;

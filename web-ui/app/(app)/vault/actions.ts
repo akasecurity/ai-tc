@@ -2,9 +2,7 @@
 
 import {
   createKeyProvider,
-  dataDir,
   keysDir,
-  loadOrCreateFingerprintKey,
   readWorkspaceSettings,
   SecretVault,
 } from '@akasecurity/persistence';
@@ -26,7 +24,6 @@ function buildVault(): SecretVault {
   return new SecretVault({
     repo: db().secretVault,
     keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
-    fingerprintKey: loadOrCreateFingerprintKey(dataDir()),
     isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
   });
 }

@@ -212,7 +212,7 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 // Order matches the dashboard display order (and SCAN_COVERAGE) so the generated
 // OpenAPI enum list reads the same as the returned `providers` array.
 export const Provider = z
-  .enum(['claudecode', 'cursor', 'codex', 'chatgpt', 'copilot', 'api'])
+  .enum(['claudecode', 'cursor', 'codex', 'claudeai', 'chatgpt', 'copilot', 'api'])
   .meta({ id: 'Provider' });
 export type Provider = z.infer<typeof Provider>;
 

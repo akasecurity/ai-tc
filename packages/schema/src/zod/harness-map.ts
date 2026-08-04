@@ -1,10 +1,18 @@
 // The canonical harness vocabulary and the single source of truth for mapping a
 // harness inventory *tool* id (the value the plugin hashes its harness identity
 // on, e.g. 'claude-code') onto the `Harness` / `FindingProvider` enum value the
-// read surfaces render ('claudecode'). One table, so consumers (`harnessFromTool`
-// on the capture writers, `toApiProvider` in findings-group-build.ts on the
-// findings read side) can never silently drift.
+// read surfaces render ('claudecode'). One table, so the *mapped* rows cannot
+// drift between consumers (`harnessFromTool` on the capture writers,
+// `toApiProvider` in findings-group-build.ts on the findings read side).
+//
+// The miss path is not shared, and the two consumers answer differently: an
+// unmapped tool id passes through `harnessFromTool` and the read side coalesces
+// an unrecognised value to 'claudecode', while `toApiProvider` falls back to
+// 'api'. One uninstrumented tool's events therefore read as Claude Code on the
+// Activity surfaces and as API on the findings surfaces.
 import { z } from 'zod';
+
+import type { FindingProvider } from './finding.ts';
 
 /**
  * Instrumented coding assistant. The open-ended harness vocabulary shared by
@@ -12,17 +20,31 @@ import { z } from 'zod';
  * `Harness` export; extend this one (single canonical registry).
  */
 export const Harness = z
-  .enum(['claudecode', 'cursor', 'copilot', 'codex', 'windsurf', 'claudedesktop', 'chatgpt', 'api'])
+  .enum([
+    'claudecode',
+    'cursor',
+    'copilot',
+    'codex',
+    'windsurf',
+    'claudedesktop',
+    'chatgpt',
+    'claudeai',
+    'api',
+  ])
   .meta({ id: 'Harness' });
 export type Harness = z.infer<typeof Harness>;
 
-export const TOOL_TO_HARNESS: Record<string, string> = {
+// Values are typed to the intersection of both consumer enums, so a row whose
+// target is a `Harness` but not a `FindingProvider` (e.g. 'windsurf') fails to
+// compile rather than reaching `toApiProvider` as an unchecked `undefined`.
+export const TOOL_TO_HARNESS: Record<string, Harness & FindingProvider> = {
   'claude-code': 'claudecode',
   'claude-desktop': 'claudedesktop',
   'github-copilot': 'copilot',
   cursor: 'cursor',
   chatgpt: 'chatgpt',
   codex: 'codex',
+  'claude-ai': 'claudeai',
 };
 
 // Map a harness inventory *tool* id — the value the plugin hashes its harness

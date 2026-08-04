@@ -89,13 +89,14 @@ export function toDbCategory(apiVal: FindingCategory): string {
  * distinct values and must never be merged).
  *   claude-code → claudecode · claude-desktop → claudedesktop ·
  *   github-copilot → copilot · cursor → cursor · chatgpt → chatgpt ·
- *   codex → codex · else → api
+ *   claude-ai → claudeai · codex → codex · else → api
  */
 export function toApiProvider(sourceTool: string): FindingProvider {
   // Shares the single TOOL_TO_HARNESS table (harness-map.ts) with
-  // `harnessFromTool`; every mapped value is a valid FindingProvider, and an
+  // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
+  // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return (TOOL_TO_HARNESS[sourceTool] as FindingProvider | undefined) ?? 'api';
+  return TOOL_TO_HARNESS[sourceTool] ?? 'api';
 }
 
 /**
@@ -110,6 +111,7 @@ export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
     copilot: ['github-copilot'],
     cursor: ['cursor'],
     chatgpt: ['chatgpt'],
+    claudeai: ['claude-ai'],
     codex: ['codex'],
     api: [], // 'api' catches unknown tools — applied in-memory (no single DB value)
   };

@@ -9,7 +9,7 @@ export interface SummaryStatItem {
   icon: IconComponent;
   value: string | number;
   label: string;
-  /** icon foreground token class, e.g. `text-ok`. */
+  /** icon foreground token class, e.g. `text-ok-ink`. */
   text: string;
   /** icon tile fill token class, e.g. `bg-ok-fill`. */
   fill: string;

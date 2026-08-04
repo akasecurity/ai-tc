@@ -3,7 +3,7 @@
    Ported from the Figma export (design/fig-tokens.css) and the
    semantic layer in the mockups (styles.css). These @theme tokens
    generate Tailwind utilities: bg-surface, text-text-2,
-   border-border, bg-sev-critical-fill, text-sev-critical, font-display…
+   border-border, bg-sev-critical-fill, text-sev-critical-ink, font-display…
    ============================================================ */
 @theme {
   /* surfaces */
@@ -14,14 +14,23 @@
   --color-border: #e3e5e8;
   --color-border-strong: #d6d8dc;
 
-  /* text */
+  /* text. The three tiers sit closer together than they look like they should: on a
+     light background everything at 4.5:1 or better is crowded into a narrow dark band,
+     so the tertiary tier cannot be as faint as the eye expects. It is set against
+     --color-primary-tint, the darkest surface it lands on. */
   --color-text: #252f3d;
   --color-text-2: #5d6572;
-  --color-text-3: #838995;
+  --color-text-3: #6a707d;
   --color-text-inv: #ffffff;
 
-  /* brand */
+  /* brand.
+     --color-primary is the accent as INK: text, icons, borders, focus rings, on a
+     neutral or tinted surface. --color-primary-solid is the accent as a FILL with
+     white on top (buttons, checked boxes). They are the same value here; in dark
+     they diverge, because a blue dark enough to carry white is too dark to read AS
+     text on a dark surface. */
   --color-primary: #2c3cf2;
+  --color-primary-solid: #2c3cf2;
   --color-primary-hover: #1d2de2;
   --color-primary-tint: #f3f7ff;
   --color-brand: #33e6c6;
@@ -31,33 +40,90 @@
   --color-ink: #11171f;
   --color-ink-deep: #1b2738;
 
-  /* accent hues (foreground + fill tint) — category icon tiles, chips, charts */
+  /* logo mark foreground. Its own token rather than --color-text, so the mark keeps
+     its exact brand value in light and still inverts in dark, and so nothing has to
+     borrow --color-ink (a surface) as a foreground. */
+  --color-mark-fg: #1b1f24;
+
+  /* switch knob — light in BOTH themes (it reads as a physical thumb on a colored
+     track), so it is not --color-text, which inverts. */
+  --color-switch-thumb: #ffffff;
+
+  /* lettermark tile edge. Vendor brand colors are fixed values, so one of them can
+     land exactly on the surface it sits on — Cursor's #252F3D is dark's
+     --color-surface — and the tile loses its shape entirely. Its own token rather
+     than an alpha over --color-text, because a single alpha cannot serve both
+     themes: 15% is a hairline on a light page and invisible on a dark one, while the
+     ~38% that dark needs is a heavy band over a saturated brand fill in light.
+     Here in light the ring is definition only — no brand value in PROVIDERS comes
+     near white, so nothing depends on it. Dark is where it is load-bearing, and the
+     dark value below is set to clear 3:1 against --color-surface. */
+  --color-mark-edge: rgb(17 23 31 / 0.18);
+
+  /* accent hues (hue + ink + fill tint).
+     Every tonal family carries two foregrounds because the two roles pull opposite
+     ways on a light background:
+       --color-X      the HUE — chart series, status dots, bar segments. Non-text, so
+                      what matters is staying distinguishable from its neighbours.
+       --color-X-ink  TEXT on the tint, and solid fills that carry text. Dark enough
+                      for 4.5:1.
+     Collapsing these into one token is what breaks charts: forcing every hue dark
+     enough to read as text on a pale tint crowds them all into the same narrow
+     luminance band, and red/orange/yellow become one brown. In dark the two are equal
+     — the 400-level hues already clear 4.5:1 on a dark tint.
+
+     So: a foreground ALWAYS spells the -ink form. Every family carries one, including
+     the two whose hue already clears 4.5:1 (violet here, all of them in dark), because
+     a family missing its -ink makes `text-X-ink` generate no CSS at all — an undefined
+     theme variable produces no utility and the element silently inherits its color.
+     `--color-primary` is the one exception and reads the other way round: it IS the
+     ink, and --color-primary-solid is its fill. no-restricted-syntax in
+     @akasecurity/eslint-config rejects a bare hue used as `text-*`, so the wrong half
+     of a pair cannot reach text by accident. */
   --color-violet: #7c3aed;
+  --color-violet-ink: #7c3aed;
   --color-violet-fill: #f1ecfd;
   --color-teal: #0d9488;
+  --color-teal-ink: #0b786f;
   --color-teal-fill: #d6f5ee;
 
-  /* success / ok (foreground + fill tint) */
+  /* success / ok (hue + ink + fill tint) */
   --color-ok: #0db15f;
+  --color-ok-ink: #097d43;
   --color-ok-fill: #e3f6ec;
 
   /* code / terminal panels — the rule-inspector editors render matcher source on
-     a dark ink panel with these syntax-style highlight colors. */
+     a dark ink panel with these syntax-style highlight colors. Theme-independent:
+     the panel is dark in both themes, so these are set against the LIGHTER of the
+     two ink values (#11171f) and clear 4.5:1 on either. */
   --color-code-fg: #cdd5e0;
-  --color-code-muted: #6b7686;
+  --color-code-muted: #768292;
   --color-code-hit: #9defc1;
   --color-code-ok: #4ade9a;
   --color-code-err: #ff8da2;
 
-  /* severity (foreground + fill tint) */
+  /* severity (hue + ink + fill tint) — same two-role split as the accents above.
+     The hues stay vivid so the four severities remain tellable apart at a glance in a
+     chart or a row of dots; the inks carry the badge text. Medium is why the split
+     exists: a vivid yellow cannot reach 4.5:1 on any light surface, so its ink lands
+     as a deep amber while the dot stays yellow. */
   --color-sev-critical: #e63448;
-  --color-sev-critical-hover: #cf2637; /* darker critical — solid danger button hover */
+  --color-sev-critical-ink: #d21a2e;
+  --color-sev-critical-hover: #a8101c; /* darker critical — solid danger button hover */
   --color-sev-critical-fill: #ffe8ed;
+  /* foreground on a SOLID tonal fill — the severity hues, ok, and the accent bar.
+     Separate from --color-text-inv because the two diverge in dark: those fills all
+     lift to light pastels that need dark text, while --color-primary-solid stays a
+     saturated blue that still needs white. */
+  --color-on-accent: #ffffff;
   --color-sev-high: #e97a0a;
+  --color-sev-high-ink: #a55707;
   --color-sev-high-fill: #ffecd9;
   --color-sev-medium: #f7bd00;
+  --color-sev-medium-ink: #8b6a00;
   --color-sev-medium-fill: #fdf5db;
   --color-sev-low: #0581d4;
+  --color-sev-low-ink: #046fb6;
   --color-sev-low-fill: #dff1fd;
 
   /* typefaces — '* Variable' names come from the self-hosted @fontsource-variable
@@ -76,6 +142,115 @@
   --text-ui--line-height: 1.4;
   --text-label: 0.6875rem;
   --text-label--line-height: 1.2;
+}
+
+/* Dark mode is class-activated: the host sets `dark` (or data-theme="dark") on an
+   element and everything beneath it re-themes. Following the system preference is
+   the host's job — it resolves the preference and applies the class — so this file
+   never reads `prefers-color-scheme` and there is only ever one source of truth. */
+@custom-variant dark (&:where(.dark, .dark *, [data-theme='dark'], [data-theme='dark'] *));
+
+/* The dark semantic layer: same token names as @theme above, dark values. Utilities
+   generated from @theme reference these by var(), so overriding the variable is what
+   re-colors `bg-surface`, `text-text-2`, `border-border` and the rest — no component
+   needs a `dark:` variant to change color.
+
+   This block is deliberately UNLAYERED. @theme emits into `@layer theme`, and an
+   unlayered rule outruns any layered one regardless of specificity, so these win
+   without a specificity fight. Keep it outside @layer.
+
+   Scoped `.dark` (rather than only `<html>`) is what lets two themes render on one
+   page — a settings preview, or a side-by-side comparison. */
+.dark,
+[data-theme='dark'] {
+  /* surfaces — the light ramp steps away from white; this one steps up from the
+     canvas, so a card reads as raised rather than recessed. */
+  --color-canvas: #11171f;
+  --color-surface: #252f3d;
+  --color-surface-2: #313c4b; /* row hover / subtle inset */
+  --color-surface-3: #3d4653; /* deeper inset, neutral solid fill */
+  --color-border: #3d4653;
+  --color-border-strong: #5d6572;
+
+  /* text */
+  --color-text: #ffffff;
+  --color-text-2: #d6d8dc;
+  /* lighter than the light theme's tertiary: the same gray-600 that clears 4.5:1 on
+     white only reaches 3.9:1 on the dark card, and this tier carries table headers,
+     timestamps and masked values at 11-12px. Set against --color-surface-2, the
+     lightest surface it lands on, so it clears 4.5:1 on every one of them. */
+  --color-text-3: #a2aab6;
+  /* stays white: this is the foreground on solid primary fills, not the inverse of
+     body text. See --color-on-accent for the fill that does need dark text. */
+  --color-text-inv: #ffffff;
+
+  /* brand — ink and fill split here. Blue carries very little luminance, so the
+     saturated brand blue that looks right behind white text only reaches ~2.3:1 as
+     text on the tint; the ink form lifts far enough to clear 4.5:1, and the fill
+     form stays saturated so white still reads on it. */
+  --color-primary: #a5b4ff;
+  --color-primary-solid: #4756ff;
+  --color-primary-hover: #5866ff;
+  --color-primary-tint: rgb(71 86 255 / 0.16);
+  --color-brand: #33e6c6;
+
+  /* ink — a SURFACE, so it does not invert. It goes deeper than the canvas instead,
+     which is what keeps code panels and modal scrims distinct once the page itself
+     is dark. */
+  --color-ink: #080b11;
+  --color-ink-deep: #131b28;
+
+  /* only the mark inverts; --color-ink above stays dark */
+  --color-mark-fg: #ffffff;
+
+  /* the case the ring exists for: a brand fill equal to --color-surface (#252f3d).
+     38% white over it composites to #787e87, which is 3.31:1 against that surface —
+     so the tile keeps an edge even when its fill has none. Below ~35% it drops under
+     3:1 and stops being a boundary you can see. */
+  --color-mark-edge: rgb(255 255 255 / 0.38);
+
+  /* stays light, one step off pure white so the knob is not the brightest thing
+     on the screen */
+  --color-switch-thumb: #f1f2f4;
+
+  /* accent hues — foreground lifts, fill becomes a translucent tint of the same hue
+     so it composites over whatever surface it lands on. Each foreground is set
+     against its OWN tint, which is the lightest backdrop it sits on. */
+  --color-violet: #b8a3fb;
+  --color-violet-ink: #b8a3fb;
+  --color-violet-fill: rgb(167 139 250 / 0.12);
+  --color-teal: #33e6c6;
+  --color-teal-ink: #33e6c6;
+  --color-teal-fill: rgb(51 230 198 / 0.12);
+
+  /* success / ok */
+  --color-ok: #4cd490;
+  --color-ok-ink: #4cd490;
+  --color-ok-fill: rgb(76 212 144 / 0.12);
+
+  /* severity — the 600-level hues are illegible on dark, so each drops to its
+     400 step. Yellow is the worst offender and the reason this ramp exists. */
+  --color-sev-critical: #ff8da2;
+  --color-sev-critical-ink: #ff8da2;
+  --color-sev-critical-hover: #ffa9ba;
+  --color-sev-critical-fill: rgb(255 141 162 / 0.12);
+  --color-on-accent: #11171f;
+  --color-sev-high: #fda349;
+  --color-sev-high-ink: #fda349;
+  --color-sev-high-fill: rgb(253 163 73 / 0.12);
+  --color-sev-medium: #f8d256;
+  --color-sev-medium-ink: #f8d256;
+  --color-sev-medium-fill: rgb(248 210 86 / 0.12);
+  --color-sev-low: #44aff7;
+  --color-sev-low-ink: #44aff7;
+  --color-sev-low-fill: rgb(68 175 247 / 0.12);
+
+  /* elevation — a shadow tuned for white has nothing to darken against here, so
+     depth comes from opacity rather than spread. */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.24), 0 1px 3px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.4), 0 2px 6px rgb(0 0 0 / 0.3);
+
+  color-scheme: dark;
 }
 
 @layer base {

@@ -16,7 +16,7 @@
 // sees LESS, never more.
 import type { MatchResult } from '@akasecurity/detections';
 import { getLoadedRules, maskMatch, scan } from '@akasecurity/detections';
-import type { ExceptionPolicyProvider } from '@akasecurity/persistence';
+import type { ExceptionPolicyProvider, FingerprintKey } from '@akasecurity/persistence';
 import {
   createKeyProvider,
   defaultDataDir,
@@ -505,10 +505,16 @@ export interface CreateVaultGlueOptions {
 }
 
 /**
- * Build the glue over a live vault. Opening the store, the key provider, or the
- * fingerprint key can all fail; when anything does, the returned glue is a
- * degraded one whose tokenize destroys values one-way and whose detokenize
- * resolves nothing — the two fail postures above, decided once at construction.
+ * Build the glue over a live vault. Opening the store or the key provider can
+ * fail; when either does, the returned glue is a degraded one whose tokenize
+ * destroys values one-way and whose detokenize resolves nothing — the two fail
+ * postures above, decided once at construction.
+ *
+ * The fingerprint key is NOT resolved here, so it cannot fail here: it is
+ * needed only to write, and is loaded on the first write instead. A fault
+ * there lands in `tokenizeValue`'s catch and degrades that value one-way,
+ * which is the same posture on a narrower blast radius — the reads this glue
+ * also serves keep working.
  */
 export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
   if (options?.vault) return new SecretVaultGlue(options.vault, options.revealResolver);
@@ -526,7 +532,6 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(settings.vaultKeyCustody, keysDir(base)),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       // Read live so a revocation applies to the very next call, not the next
       // process.
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(base).vaultConsent),
@@ -547,11 +552,20 @@ export function createVaultGlue(options?: CreateVaultGlueOptions): VaultGlue {
         return decision.allow;
       },
     });
+    // Resolved on the first WRITE that gets past the consent gate, never at
+    // construction: this glue also backs render and reveal, and a session that
+    // only reads must leave the store's key footprint alone. Memoized because
+    // one message can tokenize many findings, and the load re-reads the file
+    // and re-tightens its mode each time.
+    let fingerprintKey: FingerprintKey | undefined;
+    const fingerprintKeyForWrite = (): FingerprintKey =>
+      (fingerprintKey ??= loadOrCreateFingerprintKey(dir));
+
     // The vault core plus the sighting recorder: SecretVault owns crypto and
     // audit; where a pointer LANDED is repository bookkeeping, wired in here so
     // the glue's callers never touch the store directly.
     const vaultWithSightings: VaultCore = {
-      tokenize: (raw, meta) => vault.tokenize(raw, meta),
+      tokenize: (raw, meta) => vault.tokenize(raw, meta, fingerprintKeyForWrite),
       detokenize: (token, opts) => vault.detokenize(token, opts),
       describePointer: (token) => vault.describePointer(token),
       resolvePointerIdentity: (token) => vault.resolvePointerIdentity(token),

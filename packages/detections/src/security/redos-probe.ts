@@ -128,6 +128,18 @@ function probesFor(rule: Rule): string[] {
   return [...derived, ...EXPONENTIAL_PROBES, ...POLYNOMIAL_PROBES];
 }
 
+// Each probe is timed ONCE, and that single measurement is the verdict. Do not
+// re-run a probe and keep the lower sample — not to "confirm" a breach, not as
+// an average, not as a best-of-N. V8 executes a regex in the Irregexp bytecode
+// interpreter on its first execution and tiers up to native code afterwards,
+// caching the compiled form against source+flags, so rebuilding the matcher
+// does not reset it. For `^(a+)+bc` on this battery's first probe that is
+// ~120ms interpreted against ~15ms native, and the interpreted number is the
+// one production pays: a plugin hook is a fresh short-lived process that scans
+// each rule once. A second sample therefore measures the native tier, and
+// keeping the lower of the two admits an over-budget rule — permanently, since
+// the verdict is cached. A GC pause and the interpreted tier are
+// indistinguishable by re-measurement; only the first is noise.
 /** The slowest probe against `rule`, in ms; stops early once one blows the budget. */
 export function worstProbeMs(rule: Rule): { ms: number; probe: string } {
   let ms = 0;

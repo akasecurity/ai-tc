@@ -71,7 +71,7 @@ export function BranchBadge() {
 
 export function UpdateBadge({ version }: { version?: string | undefined }) {
   return (
-    <span className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full bg-sev-high-fill px-2 text-xs font-semibold text-sev-high">
+    <span className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-full bg-sev-high-fill px-2 text-xs font-semibold text-sev-high-ink">
       <ArrowUpIcon aria-hidden focusable={false} className="size-3" />
       {version ? 'Update · v' + version : 'Update'}
     </span>

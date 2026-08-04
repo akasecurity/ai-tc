@@ -21,8 +21,8 @@ import { ProviderTag } from './ProviderChips.tsx';
 /** Human-readable confidence band + score for an instance's 0–1 confidence. */
 export function formatConfidence(confidence: number): { label: string; tone: string } {
   const score = confidence.toFixed(2);
-  if (confidence >= 0.9) return { label: `High · ${score}`, tone: 'text-ok' };
-  if (confidence >= 0.7) return { label: `Medium · ${score}`, tone: 'text-sev-high' };
+  if (confidence >= 0.9) return { label: `High · ${score}`, tone: 'text-ok-ink' };
+  if (confidence >= 0.7) return { label: `Medium · ${score}`, tone: 'text-sev-high-ink' };
   return { label: `Low · ${score}`, tone: 'text-text-2' };
 }
 
@@ -174,7 +174,7 @@ function MatchedContent({ code, snippet, file }: { code: string; snippet: string
         <div className="text-code-muted wrap-break-word">{`// ${file}`}</div>
         <div>
           {code}
-          <span className="rounded bg-sev-critical/20 px-1 py-0.5 text-code-err">{`"${snippet}"`}</span>
+          <span className="rounded bg-sev-critical/20 px-1 py-0.5 text-code-err wrap-break-word">{`"${snippet}"`}</span>
           ;
         </div>
       </div>

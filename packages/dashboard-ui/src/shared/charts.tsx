@@ -180,7 +180,7 @@ export function Sparkline({
       {hover !== null && hoverValue !== undefined && hoverLabel !== undefined && (
         <>
           <span
-            className="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/80"
+            className="pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface/80"
             style={{
               left: `${String((xAt(hover) / viewW) * 100)}%`,
               top: yAt(hoverValue),

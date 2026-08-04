@@ -1,10 +1,35 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, globSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, posix, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, matchesGlob, posix, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import {
+  cardinalFor,
+  codeSpansOf,
+  CONVENTIONS_DOC,
+  countWordIn,
+  ordinalFor,
+  readConventions,
+  sectionOf,
+  tableOf,
+} from './helpers/claude-md.js';
+import {
+  eslintInvocations,
+  lintableTrackedFiles,
+  LINTABLE_EXT,
+  packageLintInvocations,
+  parseWorkspaceGlobs,
+  REPO_ROOT,
+  ROOT_LINT_ENTRY_SCRIPT,
+  rootLintInvocations,
+  trackedEslintConfigFiles,
+  trackedFiles,
+  workspaceGlobs,
+  workspacePackageDirs,
+} from './helpers/lint-invocations.js';
 
 // This file guards the per-package ESLint configs three ways.
 //
@@ -12,7 +37,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 //     not a hand-maintained glob — must ship an eslint.config.mjs that extends
 //     `@akasecurity/eslint-config`, must have a `lint` script that points eslint
 //     at every directory it ships code in AND at every lintable file sitting
-//     directly in its root, and must ship an eslint.scripts.config.mjs if it
+//     directly in its root — without handing one back via an ignore flag on the
+//     same invocation — and must ship an eslint.scripts.config.mjs if it
 //     ships a scripts/ dir. A package missing any of these is invisible to
 //     `pnpm lint` and to a glob that only ever matched existing config files, so
 //     it would ship UNGUARDED for network calls with CI green. The package set,
@@ -40,14 +66,33 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 //     the ban would be structurally wired, behaviorally correct, and enforcing
 //     nothing. Only running the linter shows that.
 //
-// The three compose into a closed loop: (1) guarantees every package ships a
+//  4. NON-PACKAGE: the same three questions for the git-tracked lintable files
+//     that belong to NO workspace package. `turbo run lint` drives per-package
+//     scripts, each with its package as the working directory, and no package's
+//     `lint` script targets anything outside its own tree — a file outside every
+//     package is lintable only by a pass declared in the ROOT manifest. Without
+//     this leg the COUNT of such files is unobserved, so one added later is
+//     unlinted by construction with every assertion above still green. BOTH
+//     sides are derived, the same way everything else here is: the file set is
+//     every git-tracked lintable file minus everything under a workspace package
+//     directory, and the coverage set is the eslint invocations `pnpm lint`
+//     really reaches — walked from the script the gates run, so an invocation
+//     sitting in a script nothing executes covers nothing.
+//
+// The four compose into a closed loop: (1) guarantees every package ships a
 // config and points eslint at everything it ships, (2) is fed the same derived
 // list and proves each config enforces the ban, (3) proves the files the ban
-// covers actually parse and report. A new package that forgets its config fails
-// (1); one whose config fails to wire the ban fails (2); one whose root files
-// cannot be linted at all fails (3).
-
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+// covers actually parse and report, (4) says the same of everything belonging to
+// no package at all. A new package that forgets its config fails (1); one whose
+// config fails to wire the ban fails (2); one whose root files cannot be linted
+// at all fails (3); a repo-root file no pass targets fails (4).
+//
+// The reading of the `lint` scripts themselves — which invocations a green run
+// makes, and which config each one runs under — lives in ./helpers, shared with
+// no-network.test.js. That suite asks which CONFIGS the same scripts point ESLint
+// at; a second reader would be two models of one shell string, free to disagree
+// about what runs, and a file could then read as covered by one and audited by
+// neither. Its unit tests stay here, next to the coverage predicates they feed.
 
 // --- Workspace package enumeration (derived from pnpm-workspace.yaml) --------
 
@@ -55,21 +100,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // package name. Keep this list TINY — every entry is a hole in the no-network
 // enforcement and must be a deliberate, reviewed decision, so each carries its
 // reason. A package that ships lintable source belongs behind the ban, not here.
-const CONFIG_OPT_OUT = [
-  {
-    name: '@akasecurity/eslint-config',
-    reason:
-      'Defines the shared config. Its `lint` script is a deliberate no-op, so requiring a config ' +
-      'that eslint is never pointed at would assert nothing.',
-  },
-];
+//
+// It is EMPTY, and the empty state is the one worth defending. The single entry
+// it used to carry was @akasecurity/eslint-config itself — the package that
+// DEFINES the ban — on the reasoning that its `lint` was a deliberate no-op, so
+// requiring a config eslint is never pointed at would assert nothing. True, and
+// circular: a planted `fetch()` in its src/ or its vitest.config.ts passed
+// `pnpm lint` with CI green. It ships a real config and a real two-pass `lint`
+// script now, so every workspace package is guarded and nothing here is exempt.
+const CONFIG_OPT_OUT = [];
 const OPT_OUT_NAMES = new Set(CONFIG_OPT_OUT.map((o) => o.name));
-
-// The extensions ESLint actually lints here. This is what separates a code
-// directory from a data one: packages/schema/drizzle holds only .sql/.json
-// migrations, so there is nothing there for the ban to guard, while
-// plugins/claude-code/eval ships a real .ts file and belongs behind it.
-const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 
 // Which directories hold code is DERIVED per package, never hardcoded. A fixed
 // ['src', 'app', 'test'] list would be the same hand-maintained hole this file
@@ -89,27 +129,20 @@ const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 //     it can never appear in childDirs, so widening the source-dir check can
 //     never reach it, and every package keeps its build and tooling config
 //     (tsup.config.ts, vitest.config.ts, eslint.config.mjs) exactly there.
+//   files — every lintable tracked path, flat. Both maps above are keyed by a
+//     package-relative parent, so neither can answer "which files belong to no
+//     package at all"; that question needs the whole list.
 const LINTABLE_TRACKED = (() => {
-  let tracked;
-  try {
-    tracked = execFileSync('git', ['ls-files'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 64 << 20,
-    }).split('\n');
-  } catch (cause) {
-    throw new Error(
-      'Could not list tracked files with `git ls-files`. This suite audits the real workspace ' +
-        'layout, so it must run inside a git checkout.',
-      { cause },
-    );
-  }
+  const tracked = trackedFiles();
   /** @type {Map<string, Set<string>>} */
   const childDirs = new Map();
   /** @type {Map<string, Set<string>>} */
   const rootFiles = new Map();
+  /** @type {string[]} */
+  const files = [];
   for (const file of tracked) {
     if (!file || !LINTABLE_EXT.test(file)) continue;
+    files.push(file);
     const parts = file.split('/');
     const parent = parts.slice(0, -1).join('/');
     let siblings = rootFiles.get(parent);
@@ -122,7 +155,7 @@ const LINTABLE_TRACKED = (() => {
       children.add(/** @type {string} */ (parts[i]));
     }
   }
-  return { childDirs, rootFiles };
+  return { childDirs, rootFiles, files: files.sort() };
 })();
 
 /** The immediate subdirectories of `dir` that hold lintable tracked source. */
@@ -161,62 +194,10 @@ const extendsSharedConfig = (abs) =>
   IMPORTS_SHARED_CONFIG.test(stripComments(readFileSync(abs, 'utf8')));
 
 /**
- * Parse the package globs declared under `packages:` in a pnpm-workspace.yaml
- * document, without a YAML dependency. Pure over its input string so the parse —
- * the most fragile part of this file — is unit-tested on synthetic YAML below
- * (CRLF, interspersed comments, quoting) rather than only against the one real
- * on-disk manifest. Walks line by line: enter the block at a bare `packages:`
- * line, collect each `- <scalar>` sequence entry (quoted or bare), tolerate
- * blank and comment lines inside the block, and stop at the next column-0 key.
- * Flow style (`packages: [ … ]`) is intentionally NOT parsed — it yields an
- * empty list, which the vacuous-pass guard turns into a loud failure rather than
- * a silent under-enumeration. An exclusion glob throws for the same reason:
- * globSync would treat `!pkg` as a literal pattern that matches nothing, leaving
- * the excluded directory in the enumeration under a misleading failure.
- * @param {string} rawYaml
- * @returns {string[]}
- */
-function parseWorkspaceGlobs(rawYaml) {
-  const globs = [];
-  let inBlock = false;
-  // Normalize CRLF → LF first so a Windows checkout (core.autocrlf) does not
-  // trail a `\r` into each glob (which would break globSync).
-  for (const rawLine of rawYaml.replace(/\r\n/g, '\n').split('\n')) {
-    // Strip comments up front (workspace globs never contain `#`), so an inline
-    // or whole-line comment neither terminates the block nor pollutes an entry.
-    const line = rawLine.replace(/#.*$/, '');
-    if (!inBlock) {
-      if (/^packages:[ \t]*$/.test(line)) inBlock = true;
-      continue;
-    }
-    if (/^\S/.test(line)) break; // a new column-0 key ends the packages block
-    const m = line.match(/^[ \t]+-[ \t]*['"]?([^'"\n]+?)['"]?[ \t]*$/);
-    if (!m) continue;
-    const glob = m[1].trim();
-    if (glob.startsWith('!')) {
-      throw new Error(
-        `pnpm-workspace.yaml declares the exclusion glob "${glob}", which this parser does not ` +
-          'model. Teach parseWorkspaceGlobs/discoverWorkspacePackages to honour negation before ' +
-          'relying on the enumeration.',
-      );
-    }
-    globs.push(glob);
-  }
-  return globs;
-}
-
-/**
- * The package globs from the repo's real pnpm-workspace.yaml.
- * @returns {string[]}
- */
-function workspaceGlobs() {
-  return parseWorkspaceGlobs(readFileSync(join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8'));
-}
-
-/**
- * Every workspace package on disk, resolved from pnpm-workspace.yaml: expand each
- * glob and keep the directories that hold a package.json. `label` is what every
- * failure message prints — a package.json may legally omit `name`, and a bare
+ * Every workspace package on disk, resolved from pnpm-workspace.yaml (the
+ * enumeration itself lives in ./helpers, shared with the opt-out audit, which
+ * has to walk the same packages' lint scripts). `label` is what every failure
+ * message prints — a package.json may legally omit `name`, and a bare
  * `undefined` in a violation list tells the reader nothing about which directory
  * to fix.
  * @returns {{
@@ -227,14 +208,7 @@ function workspaceGlobs() {
  * }[]}
  */
 function discoverWorkspacePackages() {
-  const dirs = [
-    ...new Set(
-      workspaceGlobs()
-        .flatMap((g) => globSync(g, { cwd: REPO_ROOT }))
-        .filter((rel) => existsSync(join(REPO_ROOT, rel, 'package.json'))),
-    ),
-  ].sort();
-  return dirs.map((dir) => {
+  return workspacePackageDirs().map((dir) => {
     // git reports posix paths on every platform; globSync yields native ones.
     const posixDir = dir.split(sep).join('/');
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
@@ -300,73 +274,6 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
 // opt-outs). Fed to both the structural guard and the behavioral suite.
 const GUARDED_PACKAGES = WORKSPACE_PACKAGES.filter((p) => !OPT_OUT_NAMES.has(p.name));
 
-// eslint flags that consume the NEXT argument, so its value is not mistaken for
-// a lint target (`-c eslint.scripts.config.mjs scripts` targets scripts, not the
-// config file). Boolean flags are skipped by the leading-dash test alone.
-const ESLINT_VALUE_FLAGS = new Set([
-  '-c',
-  '--config',
-  '--ext',
-  '--rulesdir',
-  '--plugin',
-  '--rule',
-  '--parser',
-  '--parser-options',
-  '--resolve-plugins-relative-to',
-  '--ignore-pattern',
-  '--ignore-path',
-  '--format',
-  '-f',
-  '--output-file',
-  '-o',
-  '--max-warnings',
-  '--global',
-  '--flag',
-  '--concurrency',
-]);
-
-const unquote = (token) => token.replace(/^['"]|['"]$/g, '');
-
-/**
- * Every eslint invocation in a `lint` script, in order — its `-c`/`--config`
- * override (undefined when the invocation uses ordinary config lookup) and its
- * positional path targets. Kept as invocations rather than one flat target list
- * because the fault-injection run below has to reproduce ONE of them faithfully:
- * cli lints `src test *.config.*` under eslint.config.mjs and `scripts` under
- * eslint.scripts.config.mjs, so running the flattened target list under either
- * config lints half the package with the wrong ruleset. Only the `-c <file>`
- * form is read — the repo uses it everywhere, and `--config=<file>` falls
- * through as a plain flag, which costs the config override but never a target.
- * @param {string} lintScript
- * @returns {{ configName: string | undefined, targets: string[] }[]}
- */
-function eslintInvocations(lintScript) {
-  const invocations = [];
-  for (const command of lintScript.split(/&&|\|\||;/)) {
-    const tokens = command.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
-    const start = tokens.findIndex((t) => /(?:^|\/)eslint$/.test(unquote(t)));
-    if (start === -1) continue;
-    /** @type {{ configName: string | undefined, targets: string[] }} */
-    const invocation = { configName: undefined, targets: [] };
-    for (let i = start + 1; i < tokens.length; i++) {
-      const token = unquote(tokens[i]);
-      if (token.startsWith('-')) {
-        if (ESLINT_VALUE_FLAGS.has(token)) {
-          const next = tokens[i + 1];
-          if ((token === '-c' || token === '--config') && next !== undefined) {
-            invocation.configName = unquote(next);
-          }
-          i++;
-        }
-        continue;
-      }
-      invocation.targets.push(token);
-    }
-    invocations.push(invocation);
-  }
-  return invocations;
-}
-
 /**
  * The positional path targets of every eslint invocation in a `lint` script.
  * Asserting on these rather than substring-matching the raw command string is
@@ -374,6 +281,10 @@ function eslintInvocations(lintScript) {
  * `eslint src test` (a substring match wrongly rejects it), while
  * `eslint src/index.ts` lints one file (a substring match wrongly accepts it as
  * covering src/).
+ *
+ * A flattened view for assertions only. Coverage is decided by
+ * invocationsCoverDir / invocationsCoverFile, which keep each invocation's
+ * ignore flags next to its own targets — flattening drops the exclusions.
  * @param {string} lintScript
  * @returns {string[]}
  */
@@ -396,6 +307,47 @@ function targetCoversDir(target, dir) {
   return dir === base || dir.startsWith(`${base}/`);
 }
 
+// --- Case: the matcher must answer the way the shell does --------------------
+//
+// Node's glob folds case on macOS and Windows and offers no way to turn it off.
+// matchGlobPattern sets `nocase: isMacOS || isWindows` with `nocaseMagicOnly:
+// true`, so a LITERAL pattern stays case-sensitive while a MAGIC one does not:
+// `matchesGlob('a.Config.mjs', '*.config.*')` is true on macOS and false on
+// Linux, and `globSync('*.config.*')` returns the mis-cased file there too. The
+// shell that expands a lint script's targets is case-sensitive on every
+// platform, so the file eslint actually receives is only ever the lower-cased
+// one. Left folded, the guard credits coverage the shell will not give, and a
+// root file one capital letter away from the target glob reads as linted while
+// nothing lints it — with the drift guard's own message inviting the reader to
+// pin it as expected.
+//
+// There is no option to pass, so the fold is removed by re-asking the same
+// matcher in an alphabet it cannot fold: each ASCII letter maps to a distinct
+// Private Use Area code point, which has no case mapping and is not a glob
+// metacharacter. The map is one character to one character, so `?` arity, `/`
+// separators, `**` crossing, ranges and brace lists all keep their exact
+// semantics — `[a-z]` maps to a range of the same width, and an upper-case
+// subject lands outside it the way it should.
+//
+// The raw match is kept as a conjunct so this can only ever be STRICTER than
+// Node: an encoding bug costs a loud "uncovered" failure, never a silent pass.
+const CASELESS_ALPHABET_BASE = 0xe000;
+
+const encodeCase = (s) =>
+  s.replace(/[A-Za-z]/g, (c) => {
+    const code = c.charCodeAt(0);
+    return String.fromCharCode(CASELESS_ALPHABET_BASE + (code >= 97 ? code - 97 : code - 65 + 26));
+  });
+
+/**
+ * `path.posix.matchesGlob` minus the case folding Node applies on macOS and
+ * Windows, so every platform answers the way the shell does.
+ * @param {string} file package-relative posix path
+ * @param {string} pattern
+ */
+const caseSensitiveMatchesGlob = (file, pattern) =>
+  posix.matchesGlob(file, pattern) && posix.matchesGlob(encodeCase(file), encodeCase(pattern));
+
 /**
  * Whether an eslint path target lints the package-relative file `file`. A target
  * covers it when it IS the file, when it is `.` or a directory the file sits
@@ -407,9 +359,10 @@ function targetCoversDir(target, dir) {
  * file that is the wrong question — it would let `*.config.*` vacuously "cover"
  * middleware.ts, which is exactly the uncovered-root-file case this bucket
  * exists to catch. So the glob is matched against the filename for real, via
- * path.posix.matchesGlob so a Windows checkout answers identically. A pattern
- * the matcher rejects counts as NOT covering: the guard then names the file as
- * uncovered, which is the side to fail on.
+ * caseSensitiveMatchesGlob: posix so a Windows checkout answers identically on
+ * separators, case-sensitive so macOS and Windows answer identically on case. A
+ * pattern the matcher rejects counts as NOT covering: the guard then names the
+ * file as uncovered, which is the side to fail on.
  * @param {string} target
  * @param {string} file package-relative posix path
  */
@@ -419,11 +372,131 @@ function targetCoversFile(target, file) {
   if (normalized === file) return true;
   if (file.startsWith(`${normalized}/`)) return true;
   try {
-    return posix.matchesGlob(file, normalized);
+    return caseSensitiveMatchesGlob(file, normalized);
   } catch {
     return false;
   }
 }
+
+// --- Exclusion: what an invocation's ignore flags take back out --------------
+//
+// Coverage and exclusion resolve their ambiguities in OPPOSITE directions, and
+// the reason is the same one either way: name the file as uncovered. A target
+// the matcher cannot read counts as not covering (above); an ignore it cannot
+// read counts as excluding (below). Both land on a loud failure naming the file.
+// The other default is the defect: a file read as covered while eslint skips it
+// is unlinted by construction, and nothing else in this suite would say so.
+
+/**
+ * Whether an `--ignore-pattern` glob excludes the package-relative posix path
+ * `file` from an eslint run. Mirrors targetCoversFile — the pattern is matched
+ * against the filename for real rather than reduced to a literal prefix, so
+ * `*.config.*` excludes vitest.config.ts and leaves middleware.ts alone, and
+ * through caseSensitiveMatchesGlob for the same reason: every subject reaching
+ * it is posix (git's output is posix everywhere, and globSync's native output is
+ * normalized at the source above), so the posix matcher is the one that matches
+ * the data's actual shape and a Windows checkout answers identically. Case is
+ * pinned for the matching reason on the other axis — eslint matches an ignore
+ * pattern case-sensitively on every platform, so a folded match here would
+ * report a file as skipped that eslint in fact lints.
+ *
+ * The bare `path.matchesGlob` would alias to win32 there, and the two disagree
+ * on exactly one input: a subject containing a backslash. They diverge in BOTH
+ * directions — win32 reads `src\a\b.ts` as covered by `src/**\/*.ts` where posix
+ * does not, and posix reads `cli\vitest.config.ts` as covered by `*.config.*`
+ * where win32 does not — so a native path leaking past the normalization would
+ * not merely be matched loosely, it would flip answers by pattern shape with the
+ * host. Pinning the matcher keeps that one bug (a missed normalization) from
+ * turning into two different verdicts.
+ *
+ * Gitignore-style negation (`!<glob>`, which RE-includes) is not modelled and
+ * counts as excluding; so does a pattern the matcher rejects, and an empty one.
+ * @param {string} pattern
+ * @param {string} file package-relative posix path
+ */
+function ignoreExcludesFile(pattern, file) {
+  const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (normalized === '' || normalized === '.' || normalized.startsWith('!')) return true;
+  if (normalized === file) return true;
+  if (file.startsWith(`${normalized}/`)) return true;
+  try {
+    return caseSensitiveMatchesGlob(file, normalized);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Whether an `--ignore-pattern` glob excludes directory `dir` from an eslint
+ * run. Reduced to its literal prefix the way targetCoversDir does, because a
+ * pattern whose glob opens before the directory name reaches everything under
+ * it — `src/**` empties src/ while matching the string "src" not at all.
+ *
+ * That over-approximates on purpose: `**\/*.generated.ts` removes some files
+ * from src/ rather than src/ itself, and is still reported as excluding it. The
+ * opposite error ships an unlinted directory, so a narrow exclusion costs a loud
+ * failure that names the package and is resolved by dropping the flag.
+ * @param {string} pattern
+ * @param {string} dir package-relative posix directory
+ */
+function ignoreExcludesDir(pattern, dir) {
+  const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+  if (normalized === '' || normalized === '.' || normalized.startsWith('!')) return true;
+  const globAt = normalized.search(/[*?[{]/);
+  const base = (globAt === -1 ? normalized : normalized.slice(0, globAt)).replace(/\/+$/, '');
+  if (base === '') return true;
+  return dir === base || dir.startsWith(`${base}/`);
+}
+
+/**
+ * Whether one invocation's ignore flags take `path` back out of its own run.
+ *
+ * An `--ignore-path` excludes everything on its invocation, for two reasons that
+ * agree: under flat config the ESLint CLI rejects the flag outright, so the run
+ * exits 2 having linted nothing; and were it accepted, what it excludes lives in
+ * the gitignore-format file it names, which this parser — reading a script
+ * string, not the filesystem — never sees. So the guard names the paths and the
+ * reader drops the flag, rather than the suite trusting a run it cannot account
+ * for.
+ *
+ * `--no-ignore` is deliberately NOT modelled. It cancels every ignore on its
+ * invocation, so honouring it would make this predicate report a NARROWER
+ * exclusion — the one direction that can leave a file reading as covered while
+ * eslint skips it. A script carrying both is reported as excluded: a false
+ * positive, which fails loudly and is fixed by dropping the pair.
+ * @param {{ ignorePatterns: string[], ignorePaths: string[] }} invocation
+ * @param {string} path
+ * @param {(pattern: string, path: string) => boolean} excludes
+ */
+function invocationExcludes(invocation, path, excludes) {
+  if (invocation.ignorePaths.length) return true;
+  return invocation.ignorePatterns.some((p) => excludes(p, path));
+}
+
+// A `lint` script covers a path when SOME invocation both targets it and does
+// not ignore it. Evaluated per invocation because the two are flags on one
+// eslint call: cli's scripts pass ignoring a path says nothing about whether the
+// source pass still lints it.
+const invocationsCoverDir = (invocations, dir) =>
+  invocations.some(
+    (i) =>
+      i.targets.some((t) => targetCoversDir(t, dir)) &&
+      !invocationExcludes(i, dir, ignoreExcludesDir),
+  );
+
+// The invocation that lints `file`, or undefined. Coverage is `!== undefined` on
+// this rather than a parallel `.some(...)`, so the fault-injection cases below —
+// which have to reproduce ONE invocation, with its own `-c` config — can never
+// pick a different invocation than the coverage check blessed.
+const coveringInvocation = (invocations, file) =>
+  invocations.find(
+    (i) =>
+      i.targets.some((t) => targetCoversFile(t, file)) &&
+      !invocationExcludes(i, file, ignoreExcludesFile),
+  );
+
+const invocationsCoverFile = (invocations, file) =>
+  coveringInvocation(invocations, file) !== undefined;
 
 /**
  * Split the guarded packages by how they fail the config requirement. Pure over
@@ -435,15 +508,23 @@ function configViolations(guarded) {
   return {
     missing: guarded.filter((p) => !p.hasConfig).map((p) => p.label),
     notExtending: guarded.filter((p) => p.hasConfig && !p.extendsShared).map((p) => p.label),
-    // A config eslint is never pointed at enforces nothing: `pnpm lint` is
-    // `turbo run lint`, and turbo SKIPS a package with no `lint` script (exit 0,
+    // A config eslint is never pointed at enforces nothing: the per-package half
+    // of `pnpm lint` is `turbo run lint`, and turbo SKIPS a package with no
+    // `lint` script (exit 0,
     // "No tasks were executed"). The script must also name every source dir the
-    // package actually ships, or those files go unlinted by construction.
+    // package actually ships, or those files go unlinted by construction — and
+    // must not hand one straight back with an ignore flag, which reads as
+    // covered from the targets alone.
+    //
+    // Only the UNCONDITIONAL segments count, the same rule the repo-root walk
+    // applies: a lint script is a shell string, and `eslint <a> || eslint <b>`
+    // runs the second call only once the first has failed, so a green run never
+    // lints <b> however the targets read.
     lintNotWired: guarded
       .filter((p) => {
-        const targets = eslintTargets(p.lintScript);
-        if (!targets.length) return true;
-        return (p.codeDirs ?? []).some((d) => !targets.some((t) => targetCoversDir(t, d)));
+        const invocations = packageLintInvocations(p.lintScript);
+        if (!invocations.some((i) => i.targets.length)) return true;
+        return (p.codeDirs ?? []).some((d) => !invocationsCoverDir(invocations, d));
       })
       .map((p) => p.label),
     // Top-level files are their own bucket, and the reason is structural rather
@@ -452,13 +533,11 @@ function configViolations(guarded) {
     // cannot see it however the source dirs are widened. Every package keeps its
     // build and tooling config there, which is shipped OSS source — a `fetch()`
     // in tsup.config.ts is exactly the thing the workspace ban exists to stop.
-    // Each offender names its uncovered files, because "add a target" is not
-    // actionable without knowing which ones are missing.
+    // Each offender names its uncovered files, because neither "add a target"
+    // nor "drop an ignore" is actionable without knowing which ones are missing.
     rootFilesNotWired: guarded.flatMap((p) => {
-      const targets = eslintTargets(p.lintScript);
-      const uncovered = (p.rootFiles ?? []).filter(
-        (f) => !targets.some((t) => targetCoversFile(t, f)),
-      );
+      const invocations = packageLintInvocations(p.lintScript);
+      const uncovered = (p.rootFiles ?? []).filter((f) => !invocationsCoverFile(invocations, f));
       return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
     }),
     // `eslint <src> <test>` never reaches scripts/, so a scripts/ dir needs its
@@ -471,6 +550,63 @@ function configViolations(guarded) {
       .map((p) => p.label),
   };
 }
+
+// --- The files that belong to no workspace package ---------------------------
+//
+// Everything above is per PACKAGE, and that loop has no leg for a file belonging
+// to no package at all. `turbo run lint` runs each package's own `lint` script
+// with that package as the working directory, and no package's script targets
+// anything outside its own tree: a file outside every package is lintable only by
+// a pass declared in the ROOT manifest, which runs at the repo root — and only
+// when the script the gates actually invoke reaches that pass.
+//
+// Files INSIDE a package are the per-package leg's business, including the
+// enforcement suites next to this file: they used to be the one exception,
+// covered by a second invocation in the ROOT manifest because
+// @akasecurity/eslint-config's own `lint` was a deliberate no-op. That package
+// lints itself now, so its `test/` is covered by the derived per-package check
+// like any other code dir, and there is no exception left.
+//
+// The set is DERIVED for the same reason codeDirs and rootFiles are: a hardcoded
+// list of the files that exist today would stay green the day a new one is
+// added, which is the only moment this check exists for.
+
+/** Every workspace package directory, as a posix path. */
+const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir.split(sep).join('/'));
+
+/** Every git-tracked lintable file that sits under no workspace package. */
+const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
+  (file) => !PACKAGE_DIRS.some((dir) => file.startsWith(`${dir}/`)),
+);
+
+// The exact set expected on disk, pinned (sorted) for the same reason
+// EXPECTED_WORKSPACE_PACKAGE_NAMES is: the coverage check below is a filter over
+// the derived list, so a derivation that silently DROPPED a file would leave it
+// missing from both sides and fail nothing. An exact set fails loudly on any
+// add, drop or rename — and a new package-less file is exactly the moment
+// somebody should be asked which lint pass covers it.
+const EXPECTED_NON_PACKAGE_FILES = [
+  'commitlint.config.mjs',
+  'eslint.root.config.mjs',
+  'test/setup/no-network.ts',
+  'tools/ci/egress-probe.mjs',
+];
+
+const ROOT_MANIFEST = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+const ROOT_LINT_INVOCATIONS = rootLintInvocations(ROOT_MANIFEST.scripts);
+
+/**
+ * The files none of the given eslint invocations lints — either no target reaches
+ * them, or one does and an ignore flag on that same invocation takes them back
+ * out. Fed the invocations the ROOT pass really runs, so a file is reported when
+ * nothing reaches it AND when the pass that would have is no longer run. Pure
+ * over its inputs so the failure path is testable on synthetic input; a healthy
+ * tree produces none by construction.
+ * @param {string[]} files repo-relative posix paths
+ * @param {ReturnType<typeof eslintInvocations>} invocations
+ */
+const nonPackageFilesNotWired = (files, invocations) =>
+  files.filter((file) => !invocationsCoverFile(invocations, file));
 
 // --- Behavioral resolution helpers (shared by the composition suite) ---------
 
@@ -671,11 +807,18 @@ describe('every workspace package ships a network-guarded eslint config', () => 
     expect(
       lintNotWired,
       lintNotWired.length
-        ? 'A config file only enforces the ban if eslint is pointed at the code. `pnpm lint` is ' +
-            '`turbo run lint`, which SKIPS a package with no `lint` script (exit 0, "No tasks were ' +
-            'executed"), and a script that lists only some directories leaves the rest unlinted. ' +
+        ? 'A config file only enforces the ban if eslint is pointed at the code. The per-package ' +
+            'half of `pnpm lint` is `turbo run lint`, which SKIPS a package with no `lint` script ' +
+            '(exit 0, "No tasks were executed"), and a script that lists only some directories ' +
+            'leaves the rest unlinted. ' +
             'Point the `lint` script at every directory the package ships code in (a bare `.` ' +
-            `counts; naming individual files does not):\n  ${lintNotWired.join('\n  ')}`
+            'counts; naming individual files does not). An `--ignore-pattern` / `--ignore-path` ' +
+            'that takes a directory back out counts as not covering it, however the targets read ' +
+            '— drop the flag rather than the directory. An `--ignore-path` counts as excluding ' +
+            'everything its invocation was pointed at: flat-config eslint rejects the flag ' +
+            'outright, so that invocation lints nothing at all. Chain two eslint calls with `&&` ' +
+            'and nothing else: behind a `||` the second runs only once the first has failed, so a ' +
+            `green run never lints what it targets:\n  ${lintNotWired.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });
@@ -686,11 +829,15 @@ describe('every workspace package ships a network-guarded eslint config', () => 
       rootFilesNotWired,
       rootFilesNotWired.length
         ? 'These packages ship a lintable file directly in their root that no eslint invocation in ' +
-            'their `lint` script targets. `eslint src test` can never reach one — a root file has no ' +
+            'their `lint` script lints — either no target reaches it, or a target does and an ' +
+            '`--ignore-pattern` / `--ignore-path` on that same invocation takes it back out. ' +
+            '`eslint src test` can never reach one — a root file has no ' +
             'directory segment — so it is unlinted by construction and a `fetch()` there passes ' +
             '`pnpm lint` (CLAUDE.md "No network calls"). Add a target that covers it: `*.config.*` ' +
             "covers the build and tooling config, anything else is named explicitly (see web-ui's " +
-            'middleware.ts). A root config file also sits outside the tsconfig `include`, so the ' +
+            'middleware.ts); and remove any ignore flag that excludes it again — an `--ignore-path` ' +
+            'excludes everything, because flat-config eslint rejects the flag and that invocation ' +
+            'lints nothing at all. A root config file also sits outside the tsconfig `include`, so the ' +
             'package eslint config must spread `...rootConfigFiles` after its projectService block ' +
             `or the type-aware parser rejects the file instead of linting it:\n  ${rootFilesNotWired.join('\n  ')}`
         : undefined,
@@ -718,21 +865,389 @@ describe('every workspace package ships a network-guarded eslint config', () => 
   });
 });
 
+describe('every file outside every workspace package is linted by a repo-root pass', () => {
+  it('enumerates exactly the expected package-less files (drift guard)', () => {
+    // Both assertions below filter this list, so an empty or under-counted one
+    // passes them while checking nothing. The exact set is also the review
+    // moment: a new file here has to be pointed at a lint pass by hand.
+    expect(
+      [...NON_PACKAGE_FILES].sort(),
+      'The set of git-tracked lintable files belonging to no workspace package changed. If a file ' +
+        'was added, make sure a repo-root lint pass in the root package.json targets it (see ' +
+        'CLAUDE.md "Adding a new workspace package", step 5) and list it in ' +
+        'EXPECTED_NON_PACKAGE_FILES. If nothing was added, the derivation has regressed and files ' +
+        'are silently missing from the coverage check below.',
+    ).toEqual([...EXPECTED_NON_PACKAGE_FILES].sort());
+    expect(PACKAGE_DIRS.length, 'no workspace package directories were derived').toBeGreaterThan(0);
+  });
+
+  it('turbo hashes every extension this suite counts as lintable', () => {
+    // The check above only runs when turbo decides this task's hash moved, and
+    // that decision is made by a glob whose extension list is written out by
+    // hand. A file whose extension LINTABLE_EXT accepts but the glob omits is
+    // enumerated here and hashed nowhere: turbo replays a cached green and the
+    // guard never sees it. So drive the two against each other rather than
+    // trusting that both lists were edited together. The candidate alphabet is
+    // the ecosystem's real JS/TS extensions — an external, stable fact — not a
+    // restatement of anything in this repo.
+    const CANDIDATE_EXTENSIONS = ['js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'];
+    const lintable = CANDIDATE_EXTENSIONS.filter((ext) => LINTABLE_EXT.test(`probe.${ext}`));
+    expect(lintable.length, 'LINTABLE_EXT accepts no known source extension').toBeGreaterThan(0);
+
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const braceGlobs = [...inputs[1].matchAll(/"([^"]*\{([^}]*)\}[^"]*)"/g)];
+    expect(
+      braceGlobs.length,
+      'no input glob carries an extension list, so nothing here hashes source by extension',
+    ).toBeGreaterThan(0);
+
+    const missing = braceGlobs.flatMap(([, glob, list]) => {
+      const hashed = new Set(list.split(',').map((e) => e.trim()));
+      return lintable.filter((ext) => !hashed.has(ext)).map((ext) => `${glob} omits .${ext}`);
+    });
+    expect(
+      missing,
+      'A file with one of these extensions is enumerated by this suite but left out of the turbo ' +
+        `input glob, so adding one replays a cached green:\n  ${missing.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('turbo hashes every tracked file this suite actually reads', () => {
+    // The extension check above asks whether the globs SPELL the right file
+    // types. This asks whether they REACH the files — a different question, and
+    // the one the repo-root entry exists for: `$TURBO_ROOT$/*/**/*.{…}` requires
+    // a directory segment, so a file at the root matches no per-package glob
+    // however its extension is spelled. Same hazard at the other end of the
+    // tree, where a `!` exclusion can take back a path the positive globs cover.
+    //
+    // inline-disables.test.js reads every one of these files, so a path outside
+    // the hash is a file someone can add a disable to while turbo replays a
+    // cached green and the inventory never runs.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const declared = [...inputs[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+    const rooted = (prefix) =>
+      declared.filter((g) => g.startsWith(prefix)).map((g) => g.slice(prefix.length));
+    const included = rooted('$TURBO_ROOT$/');
+    const excluded = rooted('!$TURBO_ROOT$/');
+
+    const files = lintableTrackedFiles();
+    expect(files.length, 'no tracked lintable files, so this asserts nothing').toBeGreaterThan(0);
+    expect(included.length, 'no repo-rooted input globs to match against').toBeGreaterThan(0);
+
+    // `path.matchesGlob` folds case on macOS and Windows. That can only make
+    // this MORE permissive, and every glob here is structural (`*`, `**`, an
+    // extension list) rather than a spelled path, so no verdict below turns on
+    // it — but a future entry naming a real path should not rely on the case.
+    const unhashed = files.filter(
+      (file) =>
+        !included.some((glob) => matchesGlob(file, glob)) ||
+        excluded.some((glob) => matchesGlob(file, glob)),
+    );
+    expect(
+      unhashed,
+      "These tracked files are read by this package's suites but hashed by none of the task's " +
+        `turbo inputs, so editing one alone replays a cached green:\n  ${unhashed.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('turbo hashes the conventions doc this suite reads', () => {
+    // Same hazard as the extension check above, one file type over. Two describes
+    // in this package parse CLAUDE.md and assert its opt-out tables against the
+    // tree; none of the input globs reaches a .md, so without an entry of its own
+    // the document could be edited — or gutted — with this task's hash untouched,
+    // turbo replaying the cached pass and the guards never running on the change.
+    // A broader glob would do, but it has to be spelled here either way.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const globs = [...inputs[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+    expect(
+      globs,
+      `${CONVENTIONS_DOC} is parsed by this suite but hashed by none of its turbo inputs, so ` +
+        'editing it alone replays a cached green',
+    ).toContain(`$TURBO_ROOT$/${CONVENTIONS_DOC}`);
+  });
+
+  it('the script the gates run reaches at least one eslint invocation', () => {
+    // Without this, deleting the root lint pass — or leaving it in the manifest
+    // behind a `||`, where it runs only when the workspace lint already failed —
+    // would empty the invocation list and the check below would report every file
+    // at once: loud, but for a reason the message would not name.
+    expect(
+      ROOT_LINT_INVOCATIONS.length,
+      `\`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` reaches no eslint invocation, so nothing the pre-push ` +
+        'hook, the CI lint step or the release workflows run lints the files that belong to no ' +
+        'workspace package',
+    ).toBeGreaterThan(0);
+  });
+
+  it('no file outside every workspace package is left unlinted', () => {
+    const uncovered = nonPackageFilesNotWired(NON_PACKAGE_FILES, ROOT_LINT_INVOCATIONS);
+    expect(
+      uncovered,
+      uncovered.length
+        ? 'These git-tracked lintable files belong to no workspace package, and no eslint ' +
+            `invocation reachable from \`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` lints them — either no ` +
+            'target reaches them, a target does and an ignore flag on that same invocation takes ' +
+            'them back out, or the pass that would have covered them is no longer run ' +
+            'unconditionally. `turbo run lint` drives per-package scripts with each package as ' +
+            'the working directory, and no package script targets a file outside its own tree: ' +
+            'these are unlinted by construction and a `fetch()` in one of them ships (CLAUDE.md ' +
+            '"No network calls"). Add a target to the repo-root lint pass that covers them — a ' +
+            'directory covers what is under it, `*.config.*` covers the repo-root build and ' +
+            `tooling config, anything else is named explicitly:\n  ${uncovered.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+});
+
+describe('nonPackageFilesNotWired (the non-package bucket, tested on synthetic input)', () => {
+  // The real tree is healthy, so the failure path above never executes against
+  // it. Drive it directly to prove it fails LOUDLY and NAMES every file.
+  const notWired = (script, files) => nonPackageFilesNotWired(files, eslintInvocations(script));
+
+  it('names a file no root invocation targets', () => {
+    expect(notWired('eslint test/setup tools/ci', ['commitlint.config.mjs'])).toEqual([
+      'commitlint.config.mjs',
+    ]);
+  });
+
+  it('names a file a target reaches and an ignore flag takes back out', () => {
+    // Reads as covered from the targets alone, and eslint skips it.
+    expect(
+      notWired('eslint test/setup *.config.* --ignore-pattern commitlint.config.mjs', [
+        'commitlint.config.mjs',
+        'eslint.root.config.mjs',
+      ]),
+    ).toEqual(['commitlint.config.mjs']);
+  });
+
+  it('names every uncovered file rather than stopping at the first', () => {
+    expect(
+      notWired('eslint tools/ci', ['commitlint.config.mjs', 'test/setup/no-network.ts', 'a.mjs']),
+    ).toEqual(['commitlint.config.mjs', 'test/setup/no-network.ts', 'a.mjs']);
+  });
+
+  it('reports every file when no script invokes eslint at all', () => {
+    // The shape a deleted root pass leaves behind: turbo's own `lint` script
+    // mentions linting and reaches nothing outside a package.
+    expect(notWired('turbo run lint', ['commitlint.config.mjs'])).toEqual([
+      'commitlint.config.mjs',
+    ]);
+  });
+
+  it('clears files every target covers (the control)', () => {
+    // Without this, a predicate that reported EVERYTHING would satisfy each
+    // case above. Both target shapes the real pass uses are exercised: a
+    // directory prefix, and a root-anchored glob.
+    expect(
+      notWired('eslint test/setup tools/ci *.config.*', [
+        'commitlint.config.mjs',
+        'eslint.root.config.mjs',
+        'test/setup/no-network.ts',
+        'tools/ci/egress-probe.mjs',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not let a root-anchored glob vacuously cover a nested file', () => {
+    // `*.config.*` reaches the repo root and no deeper, so a file added under a
+    // new package-less directory is uncovered however the root config glob reads.
+    expect(notWired('eslint *.config.*', ['test/e2e/onboarding/vitest.config.ts'])).toEqual([
+      'test/e2e/onboarding/vitest.config.ts',
+    ]);
+  });
+});
+
+describe('rootLintInvocations (walking the root manifest from the script the gates run)', () => {
+  // A SYNTHETIC two-invocation pass. The real `lint:root` is a single invocation
+  // today — its second one moved into @akasecurity/eslint-config's own `lint`
+  // when that package stopped opting out — but the walker still has to collect
+  // every invocation of a chained script, which is what every per-package
+  // two-pass `lint` script depends on. Keeping the fixture chained is what pins
+  // that; the walker never opens either config, so the names need only be
+  // distinct.
+  const ROOT_PASS =
+    'eslint --no-config-lookup -c eslint.root.config.mjs test/setup *.config.* && ' +
+    'eslint --no-config-lookup -c eslint.second.config.mjs tools/ci';
+  const targetsOf = (invocations) => invocations.map((i) => i.targets);
+
+  it('follows the chained pass and collects both of its invocations', () => {
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm lint:root',
+          'lint:root': ROOT_PASS,
+          test: 'turbo run test',
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
+  });
+
+  it('keeps each invocation whole, config and ignore flags included', () => {
+    // The coverage predicate needs the ignore flags NEXT TO the targets they
+    // subtract from, and the fault injection needs the `-c` config, so a walk
+    // that flattened either would quietly weaken both.
+    expect(
+      rootLintInvocations({
+        lint: 'pnpm lint:root',
+        'lint:root': 'eslint -c eslint.root.config.mjs *.config.* --ignore-pattern commitlint.*',
+      }),
+    ).toEqual([
+      {
+        configName: 'eslint.root.config.mjs',
+        noConfigLookup: false,
+        targets: ['*.config.*'],
+        ignorePatterns: ['commitlint.*'],
+        ignorePaths: [],
+      },
+    ]);
+  });
+
+  it('renaming the pass carries its invocations along', () => {
+    // The reason coverage is read out of the script BODIES: only the caller
+    // names the pass, and the walk reads the caller.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm run lint:repo',
+          'lint:repo': ROOT_PASS,
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
+  });
+
+  it('does NOT credit a script the entry never runs', () => {
+    // The live hazard: a conventional `lint:fix` sitting in the manifest must not
+    // make the coverage check green while the pass the gates run covers nothing.
+    expect(rootLintInvocations({ lint: 'turbo run lint', 'lint:fix': 'eslint . --fix' })).toEqual(
+      [],
+    );
+  });
+
+  it('does NOT follow a reference the entry only conditionally runs, or cannot fail on', () => {
+    // Each of these runs the pass on some other condition than "the entry
+    // succeeded so far", not at all, or in a way that discards its exit code.
+    // `||` is the one a careless edit produces: it reads as chained and runs the
+    // root pass ONLY when the workspace lint has already failed, so every green
+    // run skips it. `|| true` is the other direction — the pass runs and cannot
+    // turn the script red, which is a gate that reports nothing.
+    for (const lint of [
+      'turbo run lint || pnpm lint:root',
+      'turbo run lint ; pnpm lint:root',
+      'turbo run lint | pnpm lint:root',
+      'turbo run lint & pnpm lint:root',
+      'turbo run lint # pnpm lint:root',
+      'turbo run lint && pnpm lint:root || true',
+    ]) {
+      expect(rootLintInvocations({ lint, 'lint:root': ROOT_PASS }), lint).toEqual([]);
+    }
+  });
+
+  it('does NOT credit an ESLINT CALL the pass only conditionally runs, or cannot fail on', () => {
+    // The same rule one level in, and the one a careless edit to lint:root
+    // reaches first. `eslint <a> || eslint <b>` reads as two passes and runs the
+    // second only once the first has FAILED, so on every green run <b> is never
+    // linted — a file the coverage check would report as covered while nothing
+    // lints it, which is the whole gap this bucket exists to close. Modelled by
+    // dropping the segment whole, so <a> goes uncredited too: the loud side.
+    for (const lintRoot of [
+      'eslint test/setup || eslint *.config.*',
+      'eslint test/setup ; eslint *.config.*',
+      'eslint *.config.* || true',
+      'eslint test/setup | eslint *.config.*',
+      'eslint test/setup & eslint *.config.*',
+      'eslint test/setup # eslint *.config.*',
+    ]) {
+      expect(
+        rootLintInvocations({ lint: 'turbo run lint && pnpm lint:root', 'lint:root': lintRoot }),
+        lintRoot,
+      ).toEqual([]);
+    }
+  });
+
+  it('still credits the invocations AFTER a defanged segment', () => {
+    // The control for the case above: dropping a segment must not drop the ones
+    // that follow it, or the rule would report the real two-pass script as
+    // covering nothing and the failure would name every file for the wrong
+    // reason.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint && pnpm lint:root',
+          'lint:root': `eslint test/setup || true && ${ROOT_PASS}`,
+        }),
+      ),
+    ).toEqual([['test/setup', '*.config.*'], ['tools/ci']]);
+  });
+
+  it('still follows a chain whose EARLIER segment carries an operator', () => {
+    // Skipping a segment must not skip the ones after it: `(a || b) && c` runs c
+    // whenever the script got that far, which is the property being modelled.
+    expect(
+      targetsOf(
+        rootLintInvocations({
+          lint: 'turbo run lint || exit 1 && pnpm lint:root',
+          'lint:root': ROOT_PASS,
+        }),
+      ).length,
+    ).toBe(2);
+  });
+
+  it('collects an eslint call the entry makes directly', () => {
+    expect(targetsOf(rootLintInvocations({ lint: 'eslint test/setup tools/ci' }))).toEqual([
+      ['test/setup', 'tools/ci'],
+    ]);
+  });
+
+  it('terminates on a self-referential or cyclic script', () => {
+    expect(rootLintInvocations({ lint: 'pnpm lint' })).toEqual([]);
+    expect(
+      targetsOf(rootLintInvocations({ lint: 'pnpm a', a: 'pnpm b', b: 'pnpm a && eslint .' })),
+    ).toEqual([['.']]);
+  });
+
+  it('tolerates a manifest with no scripts, and a missing or non-string entry', () => {
+    expect(rootLintInvocations(undefined)).toEqual([]);
+    expect(rootLintInvocations({})).toEqual([]);
+    expect(rootLintInvocations({ test: 'turbo run test' })).toEqual([]);
+    expect(rootLintInvocations({ lint: null, other: 3 })).toEqual([]);
+  });
+});
+
 describe('CONFIG_OPT_OUT hygiene', () => {
   const names = new Set(WORKSPACE_PACKAGES.map((p) => p.name));
 
-  it.each(CONFIG_OPT_OUT)('$name is a real workspace package with a reason', ({ name, reason }) => {
-    expect(names).toContain(name);
-    // The reason is the whole point of the list — an entry without one is an
-    // undocumented hole in the no-network enforcement.
-    expect(reason?.trim(), `${name} has no reason`).toBeTruthy();
+  it('every entry is a real workspace package with a reason', () => {
+    // A loop rather than it.each, because the list is EMPTY and it.each over an
+    // empty array registers no test at all. Vacuous today by construction — the
+    // pin below is what keeps it that way, and this is what meets the first
+    // entry anybody adds.
+    for (const { name, reason } of CONFIG_OPT_OUT) {
+      expect(names, `${name} is not a workspace package`).toContain(name);
+      // The reason is the whole point of the list — an entry without one is an
+      // undocumented hole in the no-network enforcement.
+      expect(reason?.trim(), `${name} has no reason`).toBeTruthy();
+    }
   });
 
-  it('stays minimal — only @akasecurity/eslint-config is exempt today', () => {
+  it('is empty — every workspace package is guarded', () => {
     // Hard-coded so ANY addition to the opt-out is a reviewed change here rather
     // than a silent hole in the no-network enforcement (mirrors the ban-set
-    // drift guards in no-network.test.js).
-    expect(CONFIG_OPT_OUT.map((o) => o.name)).toEqual(['@akasecurity/eslint-config']);
+    // drift guards in no-network.test.js). The list held exactly one entry until
+    // @akasecurity/eslint-config started linting itself; going back to a
+    // non-empty list means arguing a package out of the ban in review.
+    expect(CONFIG_OPT_OUT.map((o) => o.name)).toEqual([]);
   });
 });
 
@@ -779,6 +1294,66 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
     expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
   });
 
+  it('names a package whose lint script only conditionally invokes eslint', () => {
+    // A lint script is a shell string, so the operator between two eslint calls
+    // decides whether the second runs at all: `eslint <a> || eslint <b>` runs
+    // <b> only once <a> has FAILED, so a green run never lints <b>. Reading the
+    // targets alone would credit both and leave those dirs unlinted with the
+    // guard green — the same shape the repo-root walk rejects, applied here so
+    // one rule governs both. The whole segment is dropped rather than read up to
+    // the operator, so the package is named for its source dirs too: loud, and
+    // resolved by writing the chain with `&&`.
+    for (const lintScript of [
+      'eslint src || eslint test *.config.*',
+      'eslint src test *.config.* || true',
+      'eslint src ; eslint test *.config.*',
+    ]) {
+      const v = configViolations([pkg({ lintScript })]);
+      expect(v.lintNotWired, lintScript).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+      expect(v.rootFilesNotWired, lintScript).toEqual([
+        '@akasecurity/newpkg (packages/newpkg) → vitest.config.ts',
+      ]);
+    }
+  });
+
+  it('reads a package script by ONE rule, so coverage and fault injection cannot disagree', () => {
+    // configViolations blesses a package through packageLintInvocations, and the
+    // fault-injection describes below reproduce ONE of those invocations to plant
+    // a file against. Both must read the script the same way: if the injection
+    // parsed the raw string it could pick an invocation out of a segment a green
+    // run never executes, and then lint a probe through a pass that does not run.
+    // The two halves below are the control — the rules genuinely differ on this
+    // script, which is what makes routing the call sites load-bearing rather than
+    // cosmetic.
+    const script = 'eslint src || eslint *.config.*';
+    expect(
+      invocationsCoverFile(packageLintInvocations(script), 'vitest.config.ts'),
+      'the conditional segment must be dropped, so nothing can be injected through it',
+    ).toBe(false);
+    expect(
+      invocationsCoverFile(eslintInvocations(script), 'vitest.config.ts'),
+      'raw parsing must still credit it — otherwise this case proves nothing about which rule is used',
+    ).toBe(true);
+  });
+
+  it('clears a package whose two eslint calls are chained with &&', () => {
+    // The control for the case above: the real two-pass shape three packages
+    // ship must keep reading as covering everything, or the rule would report
+    // the healthy tree.
+    const v = configViolations([
+      pkg({
+        lintScript:
+          'eslint src test *.config.* && eslint --no-config-lookup -c s.config.mjs scripts',
+        codeDirs: ['src', 'test', 'scripts'],
+        hasScriptsDir: true,
+        hasScriptsConfig: true,
+        scriptsExtendsShared: true,
+      }),
+    ]);
+    expect(v.lintNotWired).toEqual([]);
+    expect(v.rootFilesNotWired).toEqual([]);
+  });
+
   it('names a package whose lint script misses a top-level file, and the file', () => {
     const v = configViolations([
       pkg({ lintScript: 'eslint src test', rootFiles: ['tsup.config.ts', 'vitest.config.ts'] }),
@@ -811,6 +1386,72 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
       }),
     ]);
     expect(v.rootFilesNotWired).toEqual([]);
+  });
+
+  it('names a top-level file a target reaches and an ignore flag takes back out', () => {
+    // The shape that reads as covered from the targets alone: `*.config.*` names
+    // vitest.config.ts and `--ignore-pattern` removes it, so eslint skips the
+    // file and a fetch() in it passes `pnpm lint` with exit 0.
+    const v = configViolations([
+      pkg({
+        lintScript: 'eslint src test *.config.* --ignore-pattern vitest.config.ts',
+        rootFiles: ['tsup.config.ts', 'vitest.config.ts'],
+      }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([
+      '@akasecurity/newpkg (packages/newpkg) → vitest.config.ts',
+    ]);
+    // Only the excluded file — tsup.config.ts is still covered by the same glob,
+    // so an exclusion must narrow the report rather than condemn the package.
+    expect(v.lintNotWired).toEqual([]);
+  });
+
+  it('names every top-level file a repeated --ignore-pattern excludes', () => {
+    // The repeated flag has to survive the whole path into the report, not just
+    // the parse: keeping only the first or only the last would leave one of
+    // these two reading as covered. eslint.config.mjs is the control inside the
+    // case — the same `*.config.*` target still reaches it, so it must not be
+    // named however many ignores sit beside it.
+    const v = configViolations([
+      pkg({
+        lintScript:
+          'eslint src test *.config.* --ignore-pattern tsup.config.ts --ignore-pattern vitest.config.ts',
+        rootFiles: ['eslint.config.mjs', 'tsup.config.ts', 'vitest.config.ts'],
+      }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([
+      '@akasecurity/newpkg (packages/newpkg) → tsup.config.ts, vitest.config.ts',
+    ]);
+  });
+
+  it('names a top-level file excluded by an --ignore-path it cannot read', () => {
+    const v = configViolations([
+      pkg({ lintScript: 'eslint src test *.config.* --ignore-path .gitignore' }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([
+      '@akasecurity/newpkg (packages/newpkg) → vitest.config.ts',
+    ]);
+    // An --ignore-path empties the whole invocation, so the source dirs it
+    // targets go with it. Asserted here because the file bucket alone would
+    // pass on a rule that reached only rootFilesNotWired.
+    expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+  });
+
+  it('names a package whose source dir an ignore flag excludes', () => {
+    // The codeDirs half of the same gap: the target names test/, the flag takes
+    // it away, and lintNotWired must see that rather than the target alone.
+    const v = configViolations([pkg({ lintScript: 'eslint src test --ignore-pattern test' })]);
+    expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+  });
+
+  it('clears a package whose ignore flag matches nothing it ships', () => {
+    // The control for both buckets above: without it, a predicate that excluded
+    // everything would satisfy every ignore case here.
+    const v = configViolations([
+      pkg({ lintScript: 'eslint src test *.config.* --ignore-pattern dist' }),
+    ]);
+    expect(v.rootFilesNotWired).toEqual([]);
+    expect(v.lintNotWired).toEqual([]);
   });
 
   it('names a package with a scripts/ dir and no scripts config', () => {
@@ -902,8 +1543,20 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
       ),
     ).toEqual([
-      { configName: undefined, targets: ['src', 'test', '*.config.*'] },
-      { configName: 'eslint.scripts.config.mjs', targets: ['scripts'] },
+      {
+        configName: undefined,
+        noConfigLookup: false,
+        targets: ['src', 'test', '*.config.*'],
+        ignorePatterns: [],
+        ignorePaths: [],
+      },
+      {
+        configName: 'eslint.scripts.config.mjs',
+        noConfigLookup: true,
+        targets: ['scripts'],
+        ignorePatterns: [],
+        ignorePaths: [],
+      },
     ]);
   });
 
@@ -912,12 +1565,96 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     expect(eslintTargets('eslint -c other.config.mjs src')).toEqual(['src']);
     expect(eslintTargets('eslint --max-warnings 0 src')).toEqual(['src']);
     expect(eslintTargets('eslint --ext .ts,.tsx src')).toEqual(['src']);
+    // The ignore flags are read rather than skipped, but their values must not
+    // become targets either — a glob read as a target INFLATES coverage.
+    expect(eslintTargets('eslint --ignore-pattern vitest.config.ts src')).toEqual(['src']);
+    expect(eslintTargets('eslint --ignore-path .gitignore src')).toEqual(['src']);
+    expect(eslintTargets("eslint --ignore-pattern='*.config.*' src")).toEqual(['src']);
+  });
+
+  it('captures the ignore flags per invocation instead of discarding them', () => {
+    const [invocation] = eslintInvocations(
+      'eslint src test *.config.* --ignore-pattern x.config.ts',
+    );
+    expect(invocation).toEqual({
+      configName: undefined,
+      noConfigLookup: false,
+      targets: ['src', 'test', '*.config.*'],
+      ignorePatterns: ['x.config.ts'],
+      ignorePaths: [],
+    });
+  });
+
+  it('collects a repeated --ignore-pattern rather than keeping only the last', () => {
+    const [invocation] = eslintInvocations(
+      'eslint . --ignore-pattern a.config.ts --ignore-pattern b.config.ts',
+    );
+    expect(invocation.ignorePatterns).toEqual(['a.config.ts', 'b.config.ts']);
+  });
+
+  it('reads the `=` spelling of an ignore flag, bare and quoted', () => {
+    // An unread exclusion reads as full coverage, so both spellings are parsed.
+    // The quoted form tokenizes as `--ignore-pattern=` plus the glob, so both
+    // are pinned.
+    expect(
+      eslintInvocations('eslint . --ignore-pattern=vitest.config.ts')[0].ignorePatterns,
+    ).toEqual(['vitest.config.ts']);
+    expect(eslintInvocations("eslint . --ignore-pattern='*.config.*'")[0].ignorePatterns).toEqual([
+      '*.config.*',
+    ]);
+    expect(eslintInvocations('eslint . --ignore-path=.gitignore')[0].ignorePaths).toEqual([
+      '.gitignore',
+    ]);
+  });
+
+  it('keeps the ignore flags of one invocation out of the next', () => {
+    expect(
+      eslintInvocations(
+        'eslint src test *.config.* --ignore-pattern vitest.config.ts && ' +
+          'eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+      ),
+    ).toEqual([
+      {
+        configName: undefined,
+        noConfigLookup: false,
+        targets: ['src', 'test', '*.config.*'],
+        ignorePatterns: ['vitest.config.ts'],
+        ignorePaths: [],
+      },
+      {
+        configName: 'eslint.scripts.config.mjs',
+        noConfigLookup: true,
+        targets: ['scripts'],
+        ignorePatterns: [],
+        ignorePaths: [],
+      },
+    ]);
   });
 
   it('ignores boolean flags and the --flag=value form', () => {
     expect(eslintTargets('eslint --no-error-on-unmatched-pattern --config=x.mjs src')).toEqual([
       'src',
     ]);
+  });
+
+  it('reads every spelling of the config flag, and records --no-config-lookup', () => {
+    // `-c <file>` is what the repo writes today; the other two are what a
+    // contributor or a generated script may write tomorrow. Which config an
+    // invocation runs under is read here and acted on by the §4 opt-out audit,
+    // so an unread spelling is a real ruleset the audit never inspects — not a
+    // cosmetic gap. `--no-config-lookup` is the third state: with it and no
+    // `-c`, the run uses NO config file rather than the one lookup would find.
+    for (const flag of ['-c x.config.js', '--config x.config.js', '--config=x.config.js']) {
+      expect(eslintInvocations(`eslint ${flag} src`)[0].configName, flag).toBe('x.config.js');
+      expect(eslintTargets(`eslint ${flag} src`), flag).toEqual(['src']);
+    }
+    expect(eslintInvocations("eslint --config='x.config.js' src")[0].configName).toBe(
+      'x.config.js',
+    );
+    expect(eslintInvocations('eslint src')[0].noConfigLookup).toBe(false);
+    expect(eslintInvocations('eslint --no-config-lookup src')[0].noConfigLookup).toBe(true);
+    // A repeated config flag: eslint keeps the last, so this does too.
+    expect(eslintInvocations('eslint -c a.mjs --config b.mjs src')[0].configName).toBe('b.mjs');
   });
 
   it('returns nothing when the script never invokes eslint', () => {
@@ -944,23 +1681,25 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
   });
 
   it('accepts the real repo forms, and rejects a narrowed one', () => {
-    const covers = (script, dirs) => {
+    // Targets only — what an invocation NAMES, before any ignore flag subtracts
+    // from it. The coverage the guard acts on is invocationsCoverDir's, below.
+    const targetsCover = (script, dirs) => {
       const targets = eslintTargets(script);
       return dirs.every((d) => targets.some((t) => targetCoversDir(t, d)));
     };
-    expect(covers('eslint src test eval', ['src', 'test', 'eval'])).toBe(true);
+    expect(targetsCover('eslint src test eval', ['src', 'test', 'eval'])).toBe(true);
     expect(
-      covers('eslint app middleware.ts test next.config.ts postcss.config.mjs vitest.config.ts', [
-        'app',
-        'test',
-      ]),
+      targetsCover(
+        'eslint app middleware.ts test next.config.ts postcss.config.mjs vitest.config.ts',
+        ['app', 'test'],
+      ),
     ).toBe(true);
     // `eslint .` is broader than the dirs it must cover — must NOT be flagged.
-    expect(covers('eslint .', ['src', 'test'])).toBe(true);
+    expect(targetsCover('eslint .', ['src', 'test'])).toBe(true);
     // Naming files instead of the dir must be flagged.
-    expect(covers('eslint src/index.ts test/a.test.ts', ['src', 'test'])).toBe(false);
+    expect(targetsCover('eslint src/index.ts test/a.test.ts', ['src', 'test'])).toBe(false);
     // A dir the package ships but the script forgets must be flagged.
-    expect(covers('eslint src test', ['src', 'test', 'eval'])).toBe(false);
+    expect(targetsCover('eslint src test', ['src', 'test', 'eval'])).toBe(false);
   });
 
   it('treats an exact filename, `.`, and a matching glob as covering a top-level file', () => {
@@ -994,28 +1733,268 @@ describe('eslintTargets / targetCoversDir / targetCoversFile (the lint-coverage 
     expect(targetCoversFile('*.config.*', 'src/a.config.ts')).toBe(false);
   });
 
+  it('matches case-sensitively, the way the shell that expands the target does', () => {
+    // A lint script's targets are expanded by the SHELL, which is case-sensitive
+    // on every platform, so `eslint *.config.*` only ever hands eslint the
+    // lower-cased file. A folded match credits coverage nothing gives: the file
+    // reads as linted and no pass lints it.
+    expect(targetCoversFile('*.config.*', 'a.Config.mjs')).toBe(false);
+    expect(targetCoversFile('*.config.*', 'A.CONFIG.MJS')).toBe(false);
+    expect(targetCoversFile('*.CONFIG.*', 'a.config.mjs')).toBe(false);
+    expect(targetCoversFile('**/*.TS', 'src/a.ts')).toBe(false);
+    // Positive control on the same patterns — without these the case above is
+    // satisfied by a predicate that stopped matching anything at all.
+    expect(targetCoversFile('*.config.*', 'a.config.mjs')).toBe(true);
+    expect(targetCoversFile('**/*.ts', 'src/a.ts')).toBe(true);
+    // A range maps to a range of the same width, so it narrows by case too.
+    expect(targetCoversFile('[a-z]*.ts', 'abc.ts')).toBe(true);
+    expect(targetCoversFile('[a-z]*.ts', 'Abc.ts')).toBe(false);
+    expect(targetCoversFile('[A-Z]*.ts', 'Abc.ts')).toBe(true);
+    expect(targetCoversFile('[A-Z]*.ts', 'abc.ts')).toBe(false);
+  });
+
+  it('does not inherit the raw matcher, which folds case on some hosts', () => {
+    // The positive control for the case above: on macOS and Windows the raw
+    // matcher answers the OPPOSITE, which is the defect targetCoversFile used to
+    // carry. Pinning the disagreement rather than a fixed value keeps this
+    // meaningful on both kinds of host, and turns a future Node that stops
+    // folding into a red test rather than a silently redundant workaround.
+    const rawFolds = posix.matchesGlob('a.Config.mjs', '*.config.*');
+    expect(rawFolds).toBe(process.platform === 'darwin' || process.platform === 'win32');
+    expect(targetCoversFile('*.config.*', 'a.Config.mjs')).toBe(false);
+  });
+
   it('accepts the real repo forms for top-level files', () => {
-    const covers = (script, files) => {
+    // Targets only, as above — the ignore flags that subtract from them have
+    // their own describe.
+    const targetsCover = (script, files) => {
       const targets = eslintTargets(script);
       return files.every((f) => targets.some((t) => targetCoversFile(t, f)));
     };
     expect(
-      covers('eslint src test *.config.*', [
+      targetsCover('eslint src test *.config.*', [
         'eslint.config.mjs',
         'tsup.config.ts',
         'vitest.config.ts',
       ]),
     ).toBe(true);
     expect(
-      covers('eslint app middleware.ts test *.config.*', [
+      targetsCover('eslint app middleware.ts test *.config.*', [
         'middleware.ts',
         'next.config.ts',
         'postcss.config.mjs',
       ]),
     ).toBe(true);
-    expect(covers('eslint .', ['tsup.config.ts'])).toBe(true);
+    expect(targetsCover('eslint .', ['tsup.config.ts'])).toBe(true);
     // The pre-fix form: source dirs only, root files unreachable.
-    expect(covers('eslint src test', ['tsup.config.ts'])).toBe(false);
+    expect(targetsCover('eslint src test', ['tsup.config.ts'])).toBe(false);
+  });
+});
+
+describe('ignore flags subtract from what an invocation covers', () => {
+  // An ignore flag is the one thing that makes a target read broader than the
+  // run it describes. Parsing the targets alone reports `eslint *.config.*
+  // --ignore-pattern vitest.config.ts` as covering vitest.config.ts, while
+  // eslint skips the file — so a fetch() there passes `pnpm lint` with CI green.
+  const cover = { file: invocationsCoverFile, dir: invocationsCoverDir };
+  const covers = (kind, script, path) => cover[kind](eslintInvocations(script), path);
+
+  it('excludes a top-level file the same invocation targets', () => {
+    expect(covers('file', 'eslint src test *.config.*', 'vitest.config.ts')).toBe(true);
+    expect(
+      covers(
+        'file',
+        'eslint src test *.config.* --ignore-pattern vitest.config.ts',
+        'vitest.config.ts',
+      ),
+    ).toBe(false);
+  });
+
+  it('leaves a file the ignore does not match covered', () => {
+    // The other half: an exclusion must narrow the run, not blank it. Without
+    // this case the predicate could return false for everything and the
+    // exclusion cases above would still pass.
+    expect(
+      covers(
+        'file',
+        'eslint src test *.config.* --ignore-pattern tsup.config.ts',
+        'vitest.config.ts',
+      ),
+    ).toBe(true);
+    expect(
+      covers(
+        'file',
+        'eslint app middleware.ts *.config.* --ignore-pattern next.config.ts',
+        'middleware.ts',
+      ),
+    ).toBe(true);
+  });
+
+  it('honours every pattern when --ignore-pattern is repeated', () => {
+    const script = 'eslint . --ignore-pattern tsup.config.ts --ignore-pattern vitest.config.ts';
+    // Reading only the first or only the last would leave one of these covered.
+    expect(covers('file', script, 'tsup.config.ts')).toBe(false);
+    expect(covers('file', script, 'vitest.config.ts')).toBe(false);
+    expect(covers('file', script, 'eslint.config.mjs')).toBe(true);
+  });
+
+  it('matches an ignore glob against the filename for real', () => {
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'vitest.config.ts')).toBe(
+      false,
+    );
+    // `*.config.*` does not reach middleware.ts, so it must stay covered — the
+    // same asymmetry targetCoversFile draws, applied to the exclusion side.
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'middleware.ts')).toBe(true);
+  });
+
+  it('matches an ignore glob case-sensitively, as eslint does', () => {
+    // eslint matches an ignore pattern case-sensitively on every platform. A
+    // folded match here reports a file as skipped that eslint in fact lints —
+    // the guard would name a covered file as uncovered and send someone to
+    // widen a pass that was already reaching it.
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'a.Config.mjs')).toBe(true);
+    // Positive control: the same ignore on the correctly-cased file still bites.
+    expect(covers('file', 'eslint . --ignore-pattern "*.config.*"', 'a.config.mjs')).toBe(false);
+  });
+
+  it('excludes a whole source dir, so lintNotWired can see it', () => {
+    expect(covers('dir', 'eslint src test', 'test')).toBe(true);
+    expect(covers('dir', 'eslint src test --ignore-pattern test', 'test')).toBe(false);
+    // A glob that empties the directory without naming it: `src/**` matches
+    // nothing called "src", so the literal-prefix reduction is what catches it.
+    expect(covers('dir', 'eslint . --ignore-pattern "src/**"', 'src')).toBe(false);
+    // And a dir the pattern has nothing to do with stays covered.
+    expect(covers('dir', 'eslint . --ignore-pattern "src/**"', 'test')).toBe(true);
+    // The documented over-approximation, pinned rather than left in prose: a
+    // pattern whose glob opens first leaves no literal prefix to compare, so it
+    // reads as emptying every directory — wider than eslint really is, and the
+    // failure is loud. Narrowing this to "excludes nothing" is the change that
+    // would put an unlinted directory back behind a green suite.
+    expect(covers('dir', 'eslint . --ignore-pattern "**/*.generated.ts"', 'src')).toBe(false);
+  });
+
+  it('treats --ignore-path as excluding everything it was pointed at', () => {
+    // Two reasons agreeing: flat-config eslint rejects the flag, so the run
+    // lints nothing; and what it would exclude lives in the file it names,
+    // which this parser never reads. Either way the invocation covers nothing.
+    expect(covers('file', 'eslint . --ignore-path .gitignore', 'vitest.config.ts')).toBe(false);
+    expect(covers('dir', 'eslint src test --ignore-path .gitignore', 'src')).toBe(false);
+  });
+
+  it('is modelling flags eslint itself refuses, not ones it honours', () => {
+    // The two claims the comments above lean on, pinned so they cannot rot into
+    // prose that describes some other eslint. Flat config dropped ignore-path
+    // altogether — hence "excludes everything", since a run carrying it lints
+    // nothing — and an ignore with no value is refused outright, which is why
+    // '' resolves to excluded rather than to "no exclusion".
+    expect(() => new ESLint({ ignorePath: '.gitignore' })).toThrow(/ignorePath/);
+    expect(() => new ESLint({ ignorePatterns: [''] })).toThrow(/ignorePatterns/);
+    // The control: the spelling that DID survive still constructs, so the two
+    // throws above are about these options and not about ESLint refusing every
+    // option object this test hands it.
+    expect(() => new ESLint({ ignorePatterns: ['vitest.config.ts'] })).not.toThrow();
+  });
+
+  it('scopes an ignore to the invocation carrying it', () => {
+    // cli-shaped, and both directions matter: pooling every invocation's ignores
+    // into one set would let either pass silently narrow the other. Each case
+    // below is covered under per-invocation scoping and excluded under a pooled
+    // one, so a flattened implementation cannot pass them.
+    const ignoredInSource =
+      'eslint src test *.config.* --ignore-pattern scripts && ' +
+      'eslint --no-config-lookup -c eslint.scripts.config.mjs scripts';
+    expect(covers('dir', ignoredInSource, 'scripts')).toBe(true);
+
+    const ignoredInScripts =
+      'eslint src test *.config.* && ' +
+      'eslint --no-config-lookup -c eslint.scripts.config.mjs scripts --ignore-pattern "*.config.*"';
+    expect(covers('file', ignoredInScripts, 'vitest.config.ts')).toBe(true);
+    expect(covers('dir', ignoredInScripts, 'src')).toBe(true);
+
+    // And the exclusion still binds inside the invocation that declared it.
+    const ignoredForReal =
+      'eslint src test *.config.* --ignore-pattern vitest.config.ts && ' +
+      'eslint --no-config-lookup -c eslint.scripts.config.mjs scripts';
+    expect(covers('file', ignoredForReal, 'vitest.config.ts')).toBe(false);
+    expect(covers('file', ignoredForReal, 'tsup.config.ts')).toBe(true);
+  });
+
+  it('reads an ignore written in the `=` form', () => {
+    // The spelling that would otherwise fall through as a plain boolean flag,
+    // leaving the exclusion invisible and the file reading as covered.
+    expect(covers('file', 'eslint . --ignore-pattern=vitest.config.ts', 'vitest.config.ts')).toBe(
+      false,
+    );
+    expect(covers('file', "eslint . --ignore-pattern='*.config.*'", 'vitest.config.ts')).toBe(
+      false,
+    );
+    expect(covers('file', 'eslint . --ignore-path=.gitignore', 'vitest.config.ts')).toBe(false);
+  });
+
+  it('resolves an ignore it cannot model to excluded, not to covered', () => {
+    // Coverage and exclusion break ties in opposite directions, both landing on
+    // "name the file". A `!`-negation RE-includes and is not modelled; `.` is a
+    // no-op eslint excludes nothing for; an empty value comes from a trailing
+    // `--ignore-pattern` with nothing after it, which eslint refuses outright.
+    // All three read as excluding — wider than eslint, so the error is a loud
+    // false positive rather than a file that ships unlinted. Reading any of
+    // them as "no exclusion" is the defect this bucket exists to catch.
+    for (const pattern of ['!vitest.config.ts', '.', '']) {
+      expect(ignoreExcludesFile(pattern, 'vitest.config.ts'), pattern).toBe(true);
+      expect(ignoreExcludesDir(pattern, 'src'), pattern).toBe(true);
+    }
+    // And that malformed script really does reach the '' case above.
+    expect(covers('file', 'eslint . --ignore-pattern', 'vitest.config.ts')).toBe(false);
+  });
+
+  it('leaves a script with no ignore flag exactly as it was', () => {
+    // Every real lint script in the workspace is one of these shapes, so a
+    // regression here fails the whole tree rather than one package. Each is
+    // paired with the dirs it must still cover — an `||` over two candidates
+    // would pass on a predicate that had stopped seeing one of them.
+    const REAL_SHAPES = [
+      ['eslint src test *.config.*', ['src', 'test']],
+      ['eslint app middleware.ts test *.config.*', ['app', 'test']],
+      ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
+      ['eslint src *.config.*', ['src']],
+      [
+        'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+        ['src', 'test', 'scripts'],
+      ],
+      // The same two-pass split, with `test` rather than `scripts` behind the
+      // network-only config: @akasecurity/eslint-config's own suites are plain JS
+      // full of untyped fixtures and banned-primitive strings, so the full
+      // ruleset covers src/ and the root configs while the second pass covers
+      // test/.
+      [
+        'eslint src *.config.* && eslint --no-config-lookup -c eslint.guard.config.mjs test',
+        ['src', 'test'],
+      ],
+    ];
+    for (const [script, dirs] of REAL_SHAPES) {
+      for (const dir of dirs) expect(covers('dir', script, dir), `${script} :: ${dir}`).toBe(true);
+      expect(covers('file', script, 'vitest.config.ts'), script).toBe(true);
+    }
+    // …and the list really is the tree's. Everything else here is DERIVED from
+    // the workspace on purpose; a hand-written mirror of it is only worth its
+    // green while it still mirrors something, and a package rewording its lint
+    // script would otherwise leave this exercising a shape nothing ships, with
+    // the claim above quietly false and nothing red.
+    const pinned = new Set(REAL_SHAPES.map(([script]) => script));
+    const inTree = [
+      ...new Set(
+        GUARDED_PACKAGES.map((p) => p.lintScript).filter((s) => eslintInvocations(s).length),
+      ),
+    ].sort();
+    expect(
+      inTree.length,
+      'no workspace package has a lint script that invokes eslint',
+    ).toBeGreaterThan(0);
+    expect(
+      inTree.filter((s) => !pinned.has(s)),
+      'REAL_SHAPES no longer mirrors the workspace. Add the new lint-script shape — and the dirs ' +
+        'it must still cover — so this control keeps exercising what the tree actually ships.',
+    ).toEqual([]);
   });
 });
 
@@ -1144,6 +2123,202 @@ describe('effective per-package config (composition / last-wins)', () => {
         'no-restricted-imports',
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The process.env opt-out table
+// ---------------------------------------------------------------------------
+
+// The check above holds the rule at `error` everywhere, which is the half a
+// severity assertion can see. §3's table makes three further claims it cannot:
+// WHICH files opt out, HOW each one does it, and that there are no others. All
+// three sat in prose no test read — the section could be deleted outright and
+// this package stayed green — and the table already carries a wrong `Why` for
+// one row, which is what an unread claim looks like after a while.
+//
+// So each column is driven against the thing it describes: the site against the
+// tree, the mechanism against the resolved config and the file's own text, and
+// the count against the row count. The `Why` column is prose about intent and
+// stays unguarded; nothing here should be read as covering it.
+const SECTION_3 = '### 3. `process.env` is off by default';
+const ENV_TABLE_HEADER = ['Site', 'Mechanism', 'Why'];
+/** "Four places in shipped source genuinely need the host environment…" */
+const ENV_COUNT_SENTENCE = /(\w+) places in shipped source genuinely need the host environment/g;
+/** "Adding a fifth site means updating this table." */
+const ENV_ADDING_SENTENCE = /Adding (?:an? )?(\w+)(?: opt-out)? site means updating this table/g;
+/** The two mechanisms the table distinguishes, spelled as it spells them. */
+const BY_CONFIG = 'file-scoped ESLint config';
+const BY_INLINE = 'inline `eslint-disable-next-line`';
+/** An actual disable DIRECTIVE for the rule — not a mention of it in prose. */
+const INLINE_DISABLE = /eslint-disable(?:-next-line|-line)?\b[^\n]*\bn\/no-process-env\b/;
+
+/**
+ * Test harnesses are deliberately out of the table's scope: several spawn the
+ * real hooks as child processes and need the host PATH, so they carry inline
+ * disables of their own. §3's sentence says "in shipped source" for exactly this
+ * reason, and this predicate is what that phrase has to mean for the sentence to
+ * be true. Widen one without the other and the count silently stops matching.
+ */
+const isTestPath = (file) => file.split('/').some((seg) => seg === 'test' || seg === '__tests__');
+
+/** Resolved configs report severity numerically; a config entry spells it. */
+const isOff = (severity) => severity === 0 || severity === 'off';
+
+/**
+ * The nearest ancestor of `file` that ships an `eslint.config.mjs` — the package
+ * whose config governs it, and the cwd its `lint` script runs in. Derived by
+ * walking up rather than by matching a `packages/`/`plugins/` prefix, which
+ * would silently pick the wrong directory for a repo-root package like `cli`.
+ */
+function owningConfigDir(file) {
+  for (let parts = file.split('/').slice(0, -1); parts.length; parts = parts.slice(0, -1)) {
+    const dir = parts.join('/');
+    if (existsSync(join(REPO_ROOT, dir, 'eslint.config.mjs'))) return dir;
+  }
+  throw new Error(`No ancestor of ${file} ships an eslint.config.mjs, so no config governs it.`);
+}
+
+describe(`the process.env opt-out table (${CONVENTIONS_DOC} §3)`, () => {
+  let section = '';
+  /** @type {{site: string, mechanism: string}[]} */
+  let rows = [];
+  /** @type {Error | undefined} */
+  let setupError;
+  /** Each tabled site's resolved `n/no-process-env` severity. */
+  const severityBySite = new Map();
+  /** Config entries that switch the rule off, as `<config>: <files pattern>`. */
+  const configOptOuts = [];
+
+  // Caught end to end, per the note on the hook above: an uncaught throw here
+  // SKIPS every test below instead of failing one, so a resolution that started
+  // erroring would read as a guard with nothing to say.
+  beforeAll(async () => {
+    try {
+      section = sectionOf(readConventions(), SECTION_3);
+      rows = tableOf(section, ENV_TABLE_HEADER).map(([site, mechanism], i) => {
+        const spans = codeSpansOf(site);
+        if (spans.length !== 1) {
+          throw new Error(`Row ${i + 1}: the Site cell must name exactly one file, got ${site}.`);
+        }
+        return { site: spans[0], mechanism };
+      });
+
+      for (const { site } of rows) {
+        const dir = owningConfigDir(site);
+        const config = await resolveConfig(join(REPO_ROOT, dir), site.slice(dir.length + 1));
+        severityBySite.set(site, severityOf(config, 'n/no-process-env'));
+      }
+
+      // Only configs that NAME the rule can be switching it off, so the module
+      // load is confined to those — one file today, rather than all eighteen.
+      // Enumerated through the shared reader, whose basename test accepts any
+      // extension ESLint honours: a `*.mjs` glob here would miss an opt-out in
+      // an `eslint.extra.config.js`, which ESLint applies exactly the same.
+      const candidates = trackedEslintConfigFiles().filter((f) =>
+        readFileSync(join(REPO_ROOT, f), 'utf8').includes('no-process-env'),
+      );
+      for (const file of candidates) {
+        const mod = await import(pathToFileURL(join(REPO_ROOT, file)).href);
+        for (const entry of mod.default) {
+          if (!isOff(severityOf(entry, 'n/no-process-env'))) continue;
+          // §3 prefers a file-scoped opt-out precisely because a package-wide one
+          // is invisible to a reader auditing the configs. Recorded as a finding
+          // rather than skipped, so it cannot vanish from the count below.
+          for (const pattern of entry.files ?? ['<package-wide>']) {
+            configOptOuts.push(`${file}: ${pattern}`);
+          }
+        }
+      }
+    } catch (cause) {
+      setupError = /** @type {Error} */ (cause);
+    }
+  }, RESOLVE_TIMEOUT_MS);
+
+  const parsed = () => {
+    if (setupError) throw setupError;
+    return rows;
+  };
+
+  it('reads a non-empty opt-out table out of the document', () => {
+    expect(parsed().length).toBeGreaterThan(0);
+  });
+
+  it('names a tracked file that really reads the host environment in every row', () => {
+    const tracked = new Set(LINTABLE_TRACKED.files);
+    const wrong = parsed().flatMap(({ site }) => {
+      if (!tracked.has(site)) return [`${site}: tabled site is not a tracked lintable file`];
+      return readFileSync(join(REPO_ROOT, site), 'utf8').includes('process.env')
+        ? []
+        : [`${site}: tabled as an opt-out but reads no process.env`];
+    });
+    expect(wrong, `${CONVENTIONS_DOC} §3 rows that do not describe the tree`).toEqual([]);
+  });
+
+  it('describes each site with the mechanism that really exempts it', () => {
+    // The two mechanisms are distinguishable from the outside: a config opt-out
+    // resolves the rule to `off` for that path, an inline one leaves it at error
+    // and puts a disable directive in the file. Swap a row's mechanism and one of
+    // the two halves fails, whichever direction the swap went.
+    const wrong = parsed().flatMap(({ site, mechanism }) => {
+      const severity = severityBySite.get(site);
+      const inline = INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, site), 'utf8'));
+      if (mechanism === BY_CONFIG) {
+        return isOff(severity)
+          ? []
+          : [
+              `${site}: tabled as a config opt-out, but its config resolves the rule to ${severity}`,
+            ];
+      }
+      if (mechanism === BY_INLINE) {
+        return [
+          ...(inline
+            ? []
+            : [`${site}: tabled as an inline disable, but carries no such directive`]),
+          ...(isOff(severity)
+            ? [`${site}: tabled as an inline disable, but its config already exempts the file`]
+            : []),
+        ];
+      }
+      return [`${site}: unrecognised mechanism ${JSON.stringify(mechanism)}`];
+    });
+    expect(wrong, `${CONVENTIONS_DOC} §3's Mechanism column vs the real configs`).toEqual([]);
+  });
+
+  it('tables every opt-out shipped source actually carries', () => {
+    // The promise the section makes to the next author. Without this the count
+    // sentence is only arithmetic on the rows already there: a fifth site could
+    // land, be enforced, and never appear — which is the state the sentence
+    // exists to prevent.
+    const tabled = new Set(parsed().map((r) => r.site));
+    const undocumented = LINTABLE_TRACKED.files
+      .filter(
+        (f) => !isTestPath(f) && INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, f), 'utf8')),
+      )
+      .filter((f) => !tabled.has(f))
+      .map((f) => `${f}: disables n/no-process-env inline and is in no §3 row`);
+    expect(
+      undocumented,
+      `These files opt out of n/no-process-env and ${CONVENTIONS_DOC} §3 does not table them`,
+    ).toEqual([]);
+
+    // The config half, counted by `files:` pattern rather than by entry: adding a
+    // path to an existing block is the way a second site hides behind the first.
+    expect(
+      configOptOuts.length,
+      `config-level opt-outs found: ${JSON.stringify(configOptOuts)}`,
+    ).toBe(parsed().filter((r) => r.mechanism === BY_CONFIG).length);
+    expect(configOptOuts.filter((o) => o.endsWith('<package-wide>'))).toEqual([]);
+  });
+
+  it('states a count that follows from the table rather than from memory', () => {
+    const n = parsed().length;
+    expect(countWordIn(section, ENV_COUNT_SENTENCE, 'how many places opt out')).toBe(
+      cardinalFor(n),
+    );
+    expect(['another', ordinalFor(n + 1)]).toContain(
+      countWordIn(section, ENV_ADDING_SENTENCE, 'what the next author must update'),
+    );
   });
 });
 
@@ -1327,6 +2502,199 @@ describe('a planted network call in a top-level file is reported', () => {
   );
 });
 
+describe('the ban reaches the source that defines it', () => {
+  // This package's src/ is the ban's own implementation, and it is also the only
+  // source dir in the workspace that ESLint RUNS rather than merely reads: every
+  // package's eslint.config.mjs imports @akasecurity/eslint-config, so resolving a
+  // config anywhere executes src/index.js first — and src/react.js too, for the
+  // packages that take the /react entry.
+  //
+  // Nothing above points at those files. The composition suite probes src/ at a
+  // SYNTHETIC path (`src/__network_ban_probe__.ts`), which proves the cascade bans
+  // the network for a hypothetical file there while naming no real one, and the
+  // top-level case covers only files sitting directly in the package root, which
+  // these are not. So the ban's own source was reasoned about by both and read by
+  // neither.
+  //
+  // This must NEVER become an on-disk plant, and that is the whole reason it is
+  // written as two halves that leave the file byte-for-byte alone. Appending a
+  // module-scope `fetch()` to src/index.js produces no lint error at all: ESLint
+  // imports the file to build the config, so the call RUNS, and the process dies
+  // with `TypeError: fetch failed` before a rule has been applied to anything. The
+  // run exits non-zero, which is what makes it dangerous — a check asserting only
+  // "the lint run failed" passes on that crash, and would go on passing with every
+  // network rule deleted. Half one resolves the cascade at the real path without
+  // parsing; half two parses the real bytes without substituting any.
+  const PKG_DIR = 'packages/eslint-config';
+  const BAN_SOURCE_FILES = LINTABLE_TRACKED.files.filter((f) => f.startsWith(`${PKG_DIR}/src/`));
+
+  // Derived from the package's own export map, not a hardcoded pair: these are
+  // exactly the specifiers another config can import, so a new entry point is
+  // covered without anyone remembering to widen a list. Conditional (object)
+  // targets are skipped rather than guessed at — there are none today, and one
+  // added later shows up as a missing case here rather than as a silent pass.
+  const ENTRY_POINTS = Object.values(
+    JSON.parse(readFileSync(join(REPO_ROOT, PKG_DIR, 'package.json'), 'utf8')).exports ?? {},
+  )
+    .filter((target) => typeof target === 'string')
+    .map((target) => `${PKG_DIR}/${target.replace(/^\.\//, '')}`)
+    .sort();
+
+  /** @type {ESLint} */
+  let eslint;
+  beforeAll(() => {
+    eslint = new ESLint({ cwd: join(REPO_ROOT, PKG_DIR) });
+  });
+
+  it('has a case for every entry point another config can import', () => {
+    // A vacuous-pass guard: an empty case list makes the it.each below disappear
+    // and the suite reports green having pointed at nothing at all.
+    expect(ENTRY_POINTS.length, 'the package exports no string target to lint').toBeGreaterThan(0);
+    for (const entry of ENTRY_POINTS) {
+      expect(BAN_SOURCE_FILES, `${entry} is exported but is not a tracked lintable file`).toContain(
+        entry,
+      );
+    }
+  });
+
+  it.each(BAN_SOURCE_FILES)(
+    'reports every network form at %s',
+    async (file) => {
+      const abs = join(REPO_ROOT, ...file.split('/'));
+      expect(await eslint.isPathIgnored(abs), `${file} is excluded by an eslint ignore`).toBe(
+        false,
+      );
+
+      // Half one, at the EXACT path: the cascade this package's own config
+      // produces for the real file has to carry all four bans.
+      const resolved = await eslint.calculateConfigForFile(abs);
+      expect(
+        resolved,
+        `eslint resolved no config block for ${file}, so the ban reaches its own source through ` +
+          'nothing',
+      ).toBeTruthy();
+      const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved));
+      for (const key of KEYS) {
+        expect(fired, `${file} :: ${key}`).toContain(key);
+      }
+
+      // Half two: the real bytes have to PARSE under that cascade. src/ is plain
+      // JS reached through the package tsconfig's `allowJs`, so the type-aware
+      // parser has a program for it — but a change to that tsconfig's `include`
+      // would leave the ban structurally wired over a file that reports a fatal
+      // error and NO rule violations, which is half one describing a cascade that
+      // never gets to run.
+      const [real] = await eslint.lintFiles([abs]);
+      expect(
+        (real?.messages ?? []).filter((m) => m.fatal).map((m) => m.message),
+        `${file} did not parse, so no rule could run against it whatever the cascade resolves`,
+      ).toEqual([]);
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
+describe('a planted network call in a file no workspace package owns is reported', () => {
+  // The same blind spot as the case above, one level out. A repo-root file sits
+  // outside tsconfig.root.json's `include` unless it is named there, so the
+  // type-aware parser rejects it with "was not found by the project service"
+  // unless the root config drops the type-aware rules for that path — and a file
+  // that fails to parse reports a fatal message and NO rule violations. The
+  // coverage check above would still be green: it reads a script string and
+  // never parses anything.
+
+  // Each file is linted through the config of the invocation that really covers
+  // it, so a pass that resolved a different config than the lint script uses
+  // cannot pass this by accident. `covered` is carried separately from
+  // `configName`: an invocation using ordinary config lookup carries no `-c` and
+  // still lints its files, so keying the failure on a missing config name would
+  // report a covered file as unlinted.
+  const NON_PACKAGE_CASES = NON_PACKAGE_FILES.map((file) => {
+    const invocation = coveringInvocation(ROOT_LINT_INVOCATIONS, file);
+    return { file, covered: invocation !== undefined, configName: invocation?.configName };
+  });
+
+  /** @type {Map<string, ESLint>} */
+  const eslintByConfig = new Map();
+  beforeAll(() => {
+    for (const { covered, configName } of NON_PACKAGE_CASES) {
+      const key = configName ?? '';
+      if (!covered || eslintByConfig.has(key)) continue;
+      eslintByConfig.set(
+        key,
+        new ESLint({
+          cwd: REPO_ROOT,
+          ...(configName ? { overrideConfigFile: join(REPO_ROOT, configName) } : {}),
+        }),
+      );
+    }
+  });
+
+  it('has a case for every file outside every workspace package', () => {
+    // A vacuous-pass guard: an empty case list makes every it.each below
+    // disappear and the suite reports green while linting nothing. Compared
+    // against the pinned set rather than against NON_PACKAGE_FILES, which this
+    // list is a `.map` of — that comparison holds by construction and could
+    // never go red.
+    expect(NON_PACKAGE_CASES.length).toBeGreaterThanOrEqual(EXPECTED_NON_PACKAGE_FILES.length);
+    expect(EXPECTED_NON_PACKAGE_FILES.length).toBeGreaterThan(0);
+  });
+
+  it.each(NON_PACKAGE_CASES)(
+    'reports every network form planted in $file',
+    async ({ file, covered, configName }) => {
+      expect(
+        covered,
+        `no eslint invocation reachable from the script the gates run lints ${file}, so there is ` +
+          'no lint pass to plant network code against',
+      ).toBe(true);
+      const eslint = /** @type {ESLint} */ (eslintByConfig.get(configName ?? ''));
+      const abs = join(REPO_ROOT, ...file.split('/'));
+      expect(await eslint.isPathIgnored(abs), `${file} is excluded by an eslint ignore`).toBe(
+        false,
+      );
+
+      // Half one, at the EXACT path: resolve the config the covering invocation
+      // produces for the real file and run the four rules against the snippet.
+      // calculateConfigForFile runs the whole cascade without parsing anything,
+      // so this half is sound at a path whose content it never substitutes.
+      const resolved = await eslint.calculateConfigForFile(abs);
+      expect(
+        resolved,
+        `eslint resolved no config block for ${file}, so the ban reaches it through nothing`,
+      ).toBeTruthy();
+      const fired = firedRuleIds(NETWORK_SNIPPET, networkRulesOf(resolved));
+      for (const key of KEYS) {
+        expect(fired, `${file} :: ${key}`).toContain(key);
+      }
+
+      // Half two, the parse property this case exists for: lint the file's OWN
+      // bytes. A file outside every tsconfig `include` reports a fatal parse
+      // error and NO rule violations — structurally wired, behaviorally correct,
+      // enforcing nothing — so half one above would be describing a cascade that
+      // never gets to run.
+      //
+      // Neither half substitutes text or plants a file, and that is the point.
+      // Both alternatives make the outcome depend on timing rather than on the
+      // config: `lintText(code, { filePath })` hands ESLint one text while the
+      // type-aware parser's program still holds the file's own, so a rule can
+      // report a fix range from the on-disk source against the substituted text
+      // (`Index out of range … source text has length N`) depending on whether
+      // that path is already warm; and a planted sibling is in the program only
+      // if the watch picked the new file up, so it can report "not found by the
+      // project service" for a directory that is plainly in the include. Both
+      // were observed, at these exact paths, passing one CI job and failing
+      // another on one commit.
+      const [real] = await eslint.lintFiles([file]);
+      expect(
+        (real?.messages ?? []).filter((m) => m.fatal).map((m) => m.message),
+        `${file} did not parse, so no rule could run against it whatever the cascade resolves`,
+      ).toEqual([]);
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
 describe('end to end: eslint run the way the lint script runs it finds a planted root config file', () => {
   // The case above lints one path at a time, which proves the config bans the
   // network there but not that the `lint` script's own targets ENUMERATE it —
@@ -1355,7 +2723,9 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
   it(
     'reports the planted file with every network rule',
     async () => {
-      const invocations = eslintInvocations(/** @type {{ lintScript: string }} */ (pkg).lintScript);
+      const invocations = packageLintInvocations(
+        /** @type {{ lintScript: string }} */ (pkg).lintScript,
+      );
       const invocation = invocations.find((i) =>
         i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
       );
@@ -1380,6 +2750,177 @@ describe('end to end: eslint run the way the lint script runs it finds a planted
           `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the lint script's targets do ` +
             'not enumerate top-level files, which is exactly how a fetch() in tsup.config.ts passed ' +
             '`pnpm lint`',
+        ).toBeDefined();
+        const messages = /** @type {ESLint.LintResult} */ (probe).messages;
+        expect(
+          messages.filter((m) => m.fatal).map((m) => m.message),
+          `${PROBE_FILE} did not parse, so no rule ran against it`,
+        ).toEqual([]);
+        const fired = new Set(messages.map((m) => m.ruleId));
+        for (const key of KEYS) {
+          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+        }
+        expect(
+          /** @type {ESLint.LintResult} */ (probe).errorCount,
+          'the planted file must fail the lint run, not merely warn',
+        ).toBeGreaterThan(0);
+      } finally {
+        rmSync(probeAbs, { force: true });
+      }
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
+describe('end to end: an ignore flag really does silence the run, and the guard names the file', () => {
+  // The case above proves the lint script's targets ENUMERATE a root file. An
+  // ignore flag is the one thing that makes that enumeration untrue: the target
+  // still names the file and eslint still skips it, so the script reads as
+  // covering a file that ships unlinted. That is invisible to every other check
+  // here — the flags live in package.json, where ESLint's own API never sees
+  // them, unlike the flat-config `{ ignores: [...] }` spelling the per-root-file
+  // case catches through isPathIgnored.
+  //
+  // So run the real linter twice over the same real targets and the same planted
+  // file, once with the flag and once without. The run WITHOUT it is the
+  // positive control: without that half, "the flag silenced it" would also pass
+  // on a probe eslint never reached for some unrelated reason.
+  const PROBE_FILE = '__aka_ignored_probe__.config.ts';
+  const pkg = GUARDED_PACKAGES.find((p) => p.name === '@akasecurity/cli');
+  const pkgDir = pkg ? join(REPO_ROOT, pkg.dir) : '';
+  const probeAbs = pkgDir ? join(pkgDir, PROBE_FILE) : '';
+
+  afterAll(() => {
+    if (probeAbs) rmSync(probeAbs, { force: true });
+  });
+
+  it('is a real package (the enumeration still finds cli)', () => {
+    expect(pkg, '@akasecurity/cli is missing from the workspace enumeration').toBeDefined();
+  });
+
+  it(
+    'lints the planted file, stops once an ignore flag is added, and is reported as uncovered',
+    async () => {
+      const lintScript = /** @type {{ lintScript: string }} */ (pkg).lintScript;
+      const invocation = packageLintInvocations(lintScript).find((i) =>
+        i.targets.some((t) => targetCoversFile(t, PROBE_FILE)),
+      );
+      expect(
+        invocation,
+        `no eslint invocation in cli's lint script targets a new ${PROBE_FILE} in the package root`,
+      ).toBeDefined();
+      const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
+        invocation
+      );
+      const overrides = configName ? { overrideConfigFile: join(pkgDir, configName) } : {};
+      // Derived from the real script rather than hand-written, so the mutation
+      // stays the real invocation plus one flag however that script changes —
+      // the config override included, or the two would differ twice over if
+      // cli ever moved its root-file target behind a second pass.
+      const mutatedScript =
+        `eslint ${configName ? `-c ${configName} ` : ''}${targets.join(' ')} ` +
+        `--ignore-pattern ${PROBE_FILE}`;
+
+      writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
+      try {
+        const resultFor = async (options) => {
+          const results = await new ESLint({ cwd: pkgDir, ...overrides, ...options }).lintFiles(
+            targets,
+          );
+          return results.find((r) => r.filePath === probeAbs);
+        };
+
+        // Control: the unflagged run reaches the file and fails on it.
+        const linted = await resultFor({});
+        expect(
+          linted,
+          `eslint ${targets.join(' ')} never reached ${PROBE_FILE}, so the ignored run below ` +
+            'would prove nothing',
+        ).toBeDefined();
+        const fired = new Set(
+          /** @type {ESLint.LintResult} */ (linted).messages.map((m) => m.ruleId),
+        );
+        for (const key of KEYS) {
+          expect(fired, `${PROBE_FILE} :: ${key}`).toContain(key);
+        }
+
+        // The fault: one flag, and the same run stops failing on the same file.
+        const ignored = await resultFor({ ignorePatterns: [PROBE_FILE] });
+        expect(
+          ignored?.errorCount ?? 0,
+          `--ignore-pattern ${PROBE_FILE} did not change the run, so this case is not exercising ` +
+            'the exclusion it is named for',
+        ).toBe(0);
+
+        // The guard: the same script string must now read as NOT covering it,
+        // and the violation list must NAME the file rather than the package.
+        expect(
+          invocationsCoverFile(packageLintInvocations(lintScript), PROBE_FILE),
+          `the real script reads as not covering ${PROBE_FILE}, so the flagged read below would ` +
+            'match it for the wrong reason',
+        ).toBe(true);
+        expect(
+          invocationsCoverFile(packageLintInvocations(mutatedScript), PROBE_FILE),
+          `${mutatedScript} still reads as covering ${PROBE_FILE}, which eslint just proved it ` +
+            'does not lint',
+        ).toBe(false);
+        const violations = configViolations([
+          { .../** @type {object} */ (pkg), lintScript: mutatedScript, rootFiles: [PROBE_FILE] },
+        ]);
+        expect(violations.rootFilesNotWired).toEqual([
+          `${/** @type {{ label: string }} */ (pkg).label} → ${PROBE_FILE}`,
+        ]);
+      } finally {
+        rmSync(probeAbs, { force: true });
+      }
+    },
+    RESOLVE_TIMEOUT_MS,
+  );
+});
+
+describe('end to end: eslint run the way the root lint script runs it finds a planted repo-root file', () => {
+  // The per-file case above proves the root config BANS the network at each of
+  // those paths. It does not prove the root pass's targets ENUMERATE a file that
+  // was not there when the script was written — the half of the gap that let a
+  // `fetch()` in a repo-root config pass a lint run with exit 0. So plant a real
+  // file at the repo root and run eslint over the targets parsed out of the real
+  // root script, with that invocation's own `-c` config.
+  const PROBE_FILE = '__aka_root_network_probe__.config.mjs';
+  const probeAbs = join(REPO_ROOT, PROBE_FILE);
+
+  // Belt and braces with the finally below: an assertion that throws mid-test
+  // must never leave a file behind that turns the next lint run red for a reason
+  // nobody can trace back to here.
+  afterAll(() => {
+    rmSync(probeAbs, { force: true });
+  });
+
+  it(
+    'reports the planted file with every network rule',
+    async () => {
+      const invocation = coveringInvocation(ROOT_LINT_INVOCATIONS, PROBE_FILE);
+      expect(
+        invocation,
+        `no eslint invocation reachable from \`pnpm ${ROOT_LINT_ENTRY_SCRIPT}\` targets a new ` +
+          `${PROBE_FILE} at the repo root, so a file added there would ship unlinted`,
+      ).toBeDefined();
+      const { configName, targets } = /** @type {{configName?: string, targets: string[]}} */ (
+        invocation
+      );
+
+      writeFileSync(probeAbs, `${NETWORK_SNIPPET}\n`);
+      try {
+        const eslint = new ESLint({
+          cwd: REPO_ROOT,
+          ...(configName ? { overrideConfigFile: join(REPO_ROOT, configName) } : {}),
+        });
+        const results = await eslint.lintFiles(targets);
+        const probe = results.find((r) => r.filePath === probeAbs);
+        expect(
+          probe,
+          `eslint ${targets.join(' ')} never reached ${PROBE_FILE} — the root lint pass's targets ` +
+            'do not enumerate a new repo-root file, which is how a fetch() outside every ' +
+            'workspace package passes a lint run',
         ).toBeDefined();
         const messages = /** @type {ESLint.LintResult} */ (probe).messages;
         expect(

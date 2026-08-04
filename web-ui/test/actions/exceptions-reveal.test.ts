@@ -80,15 +80,18 @@ async function seedPointer(): Promise<string> {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
-      fingerprintKey: loadOrCreateFingerprintKey(dataDir()),
       isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
     });
-    const pointer = await vault.tokenize(RAW, {
-      ruleId: RULE_ID,
-      category: 'secret',
-      provider: 'aws',
-      maskedMatch: MASKED,
-    });
+    const pointer = await vault.tokenize(
+      RAW,
+      {
+        ruleId: RULE_ID,
+        category: 'secret',
+        provider: 'aws',
+        maskedMatch: MASKED,
+      },
+      () => loadOrCreateFingerprintKey(dataDir()),
+    );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     return pointer;
   } finally {

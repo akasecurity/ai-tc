@@ -11,6 +11,8 @@ Detection runs entirely on your machine. There's no account and no backend — n
 
 [^egress]: Live detection and enforcement run locally. The one exception is the **opt-in** `/aka:setup` calibration below: to rate what an initial history scan finds, its judge step sends those findings to the model API through the `claude` CLI — the same provider your Claude session already uses, reached with your own credentials. For each finding that means the raw (unmasked) value including any secret, roughly 120 characters of the surrounding transcript text on either side (re-scanned before it goes, so every secret the rules detect in that window is masked, including the finding's own value where it appears there), the finding's rule, category, severity, masked value and confidence, and a sequential counter the model echoes back so its verdict can be matched to the finding. The source file's path is not sent. It takes **two** separate opt-ins — one to read your history at all, and a second, distinct grant to send what was found — and without the second the judge does not run. It keeps those values out of your local Claude transcript, but a copy of them does leave the machine. Withdrawing either grant stops future scans; it cannot recall what was already sent.
 
+The local store keeps your prompts and tool calls verbatim apart from the spans a rule masks, and file permissions — not encryption — are all that protect it. See [Data at rest](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md#data-at-rest) for which files it spans and what holds on Windows.
+
 ## Install
 
 This package is distributed through the **Claude Code plugin marketplace**, not `npm install`. Add the marketplace and install the plugin from inside Claude Code:

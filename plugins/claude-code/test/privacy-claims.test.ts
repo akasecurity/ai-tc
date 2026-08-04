@@ -8,6 +8,10 @@
  * These guards keep the claim and the qualifier from drifting apart: an absolute
  * "nothing leaves" sentence must not stand on its own, and the footnote that
  * carries the correction must keep naming the whole payload.
+ *
+ * packages/persistence/test/at-rest-docs.test.ts is the other guard over these
+ * same READMEs; it covers the at-rest posture and the SECURITY.md link rather
+ * than egress. Editing a README can redden either suite.
  */
 import { readFileSync } from 'node:fs';
 

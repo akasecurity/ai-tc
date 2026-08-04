@@ -100,7 +100,7 @@ export function AssetDetail({
               type="button"
               className="flex w-full items-center gap-2.5 rounded-lg border border-border bg-sev-critical-fill px-3 py-2.5 text-left"
             >
-              <Ico name="alert" className="size-4 shrink-0 text-sev-critical" />
+              <Ico name="alert" className="size-4 shrink-0 text-sev-critical-ink" />
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-semibold text-text">{asset.finding.title}</div>
                 {asset.finding.note && (
@@ -146,7 +146,7 @@ function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }
         </span>
         <span className="text-xs font-semibold text-text-3">{tools.length}</span>
         {blocked && (
-          <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-critical">
+          <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sev-critical-ink">
             <Ico name="slash-circle" className="size-3" /> Calls blocked
           </span>
         )}
@@ -165,10 +165,10 @@ function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }
               className={cn(
                 'mt-px grid size-5.5 shrink-0 place-items-center rounded-md',
                 t.risk
-                  ? 'bg-sev-high text-white'
+                  ? 'bg-sev-high-ink text-on-accent'
                   : t.write
                     ? 'bg-surface-2 text-text-2'
-                    : 'bg-teal-fill text-teal',
+                    : 'bg-teal-fill text-teal-ink',
               )}
             >
               <Ico name={t.risk ? 'alert' : t.write ? 'edit' : 'eye'} className="size-3" />
@@ -185,7 +185,7 @@ function ToolsSection({ tools, blocked }: { tools: McpTool[]; blocked: boolean }
               </div>
               <div className="mt-0.5 text-xs leading-relaxed text-text-2">{t.description}</div>
               {t.risk && (
-                <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-sev-high">
+                <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-sev-high-ink">
                   <Ico name="alert" className="size-3" /> {t.risk}
                 </div>
               )}

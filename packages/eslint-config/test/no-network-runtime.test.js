@@ -14,11 +14,13 @@ import { createConnection, createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
+import { spawnViaNamedImport, spawnViaNamespace } from './helpers/product-worker.js';
 import { networkGuard } from '../src/index.js';
 import {
   blockedTcpTarget,
@@ -81,7 +83,8 @@ const CI_SCRIPT_ABS = join(REPO_ROOT, ...CI_SCRIPT_REL.split('/'));
 const PROBE_REL = 'tools/ci/egress-probe.mjs';
 const PROBE_ABS = join(REPO_ROOT, ...PROBE_REL.split('/'));
 // The two no-network enforcement suites, which live in HERE and reach no other
-// ESLint pass than lint:root's `eslint.root.guard.config.mjs` network-only pass.
+// ESLint pass than this package's own `eslint.guard.config.mjs` network-only
+// second pass.
 const NW_SUITE_ABS = join(HERE, 'no-network.test.js');
 const NW_RUNTIME_SUITE_ABS = join(HERE, 'no-network-runtime.test.js');
 
@@ -244,12 +247,19 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     expect(turbo).toMatch(/"globalDependencies"\s*:\s*\[[^\]]*"test\/setup\/\*\*"/);
   });
 
-  it("turbo.json puts ci.yml and the CI script in this suite's task inputs", () => {
-    // Without these two entries the assertions below are self-defeating. They
-    // read files that live in no package, so deleting the No-network job leaves
-    // this task's hash untouched; turbo replays the cached pass from a prior
-    // commit and the assertion guarding the job never executes. The one job that
-    // would have re-run it from scratch is the job that was deleted.
+  it("turbo.json puts ci.yml, the CI script and the repo-root sources in this suite's task inputs", () => {
+    // Without these entries the assertions below are self-defeating. They read
+    // files that live in no package, so deleting the No-network job leaves this
+    // task's hash untouched; turbo replays the cached pass from a prior commit
+    // and the assertion guarding the job never executes. The one job that would
+    // have re-run it from scratch is the job that was deleted.
+    //
+    // The repo-root glob is the same hazard for ADDING rather than deleting.
+    // effective-config.test.js derives the lintable files that belong to no
+    // workspace package and fails when a lint pass covers none of them — but the
+    // per-package input globs there all require a directory segment, so a new
+    // file at the repo ROOT (the one place a file belongs to no package) leaves
+    // this hash untouched and that check never runs against it.
     const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
     const inputs =
       /"@akasecurity\/eslint-config#test"\s*:\s*\{[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
@@ -258,6 +268,7 @@ describe('the guard cannot be cached or dropped out of CI', () => {
     expect(inputs).not.toBeNull();
     expect(inputs[1]).toContain('$TURBO_ROOT$/.github/workflows/ci.yml');
     expect(inputs[1]).toContain('$TURBO_ROOT$/tools/ci/**');
+    expect(inputs[1]).toContain('$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}');
   });
 
   it('ci.yml runs the suite through the egress-blocking script', () => {
@@ -267,10 +278,10 @@ describe('the guard cannot be cached or dropped out of CI', () => {
   });
 
   it('ci.yml runs the repo-root lint and typecheck passes', () => {
-    // `pnpm lint`/`pnpm typecheck` are turbo, which drives per-package scripts,
-    // and the repo root is not a package — so the guard, the probe, the repo-root
-    // configs and the enforcement suites are covered by these two steps and
-    // nothing else. Drop a target and those sources go back to being lint- or
+    // `turbo run lint`/`turbo run typecheck` drive per-package scripts, and the
+    // repo root is not a package — so the guard, the probe, the repo-root configs
+    // and the enforcement suites are covered by these two passes and nothing
+    // else. Drop a target and those sources go back to being lint- or
     // tsc-covered by nothing.
     const ci = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     expect(ci).toContain('pnpm lint:root');
@@ -278,23 +289,58 @@ describe('the guard cannot be cached or dropped out of CI', () => {
 
     const root = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
     const lintRoot = root.scripts['lint:root'];
-    // The scripts must actually reach every target, not just exist.
+    // The workspace-wide scripts CHAIN the root passes, so every caller of them —
+    // the pre-push hook, the two release workflows, a contributor before pushing —
+    // covers the repo root too rather than reading green while a file there is
+    // unlinted or unchecked. Those callers run ONLY these scripts; they never run
+    // the CI steps above.
+    //
+    // Matched as an unconditional `&&` chain rather than as a substring, because
+    // the substring is still there in every way of NOT running the pass: `||`
+    // runs it only once the workspace pass has already failed, `#` comments it
+    // out, and both leave a green run that has skipped the repo root entirely.
+    for (const [name, chained] of [
+      ['lint', 'lint:root'],
+      ['typecheck', 'typecheck:root'],
+    ]) {
+      expect(
+        root.scripts[name],
+        `\`pnpm ${name}\` must chain \`${chained}\` with &&, so the pre-push hook and the release ` +
+          'workflows cover the repo root',
+      ).toMatch(new RegExp(`&&\\s*(?:pnpm|npm)(?:\\s+run)?\\s+${chained}(?:\\s|$)`));
+    }
+    // The targets below are a readable statement of intent, not the gate. What
+    // actually decides whether a repo-root file is linted is the DERIVED
+    // non-package check in effective-config.test.js, which reads the same script
+    // and names any file no invocation covers. Rewording this script is fine as
+    // long as that check stays green — these lines then come along with it.
     expect(lintRoot).toContain('test/setup');
     expect(lintRoot).toContain('tools/ci');
-    // The second pass is the ONLY thing that lints the enforcement suites — the
-    // eslint-config package's own `lint` is a deliberate no-op — and it hangs off
-    // a `&&` in a shell string, one careless edit from vanishing with the first
-    // pass still exit 0. The first pass names the repo-root `*.config.*`.
-    expect(lintRoot).toContain('packages/eslint-config/test');
-    expect(lintRoot).toContain('eslint.root.guard.config.mjs');
-    expect(lintRoot).toMatch(/\*\.config\.\*/);
     expect(root.scripts['typecheck:root']).toContain('tsconfig.root.json');
 
     const rootTsconfig = readFileSync(join(REPO_ROOT, 'tsconfig.root.json'), 'utf8');
     expect(rootTsconfig).toContain('test/setup');
     expect(rootTsconfig).toContain('tools/ci');
     expect(rootTsconfig).toContain('eslint.root.config.mjs');
-    expect(rootTsconfig).toContain('eslint.root.guard.config.mjs');
+
+    // The enforcement suites next to this file are linted by a SECOND pass in
+    // this package's own `lint` script, chained off the first with `&&`. It used
+    // to be a second invocation of lint:root, because this package's `lint` was a
+    // deliberate no-op and a root pass was the only thing that could reach the
+    // suites; both halves of that are gone.
+    //
+    // Same standing as the two `lintRoot` targets above: a readable statement of
+    // intent, not the gate. The gate is the DERIVED per-package check in
+    // effective-config.test.js, which now sees `test/` as one of this package's
+    // code dirs — with CONFIG_OPT_OUT empty, no package is exempt — and names it
+    // if no invocation covers it. That check also reads the chain by the same
+    // rule the root walk uses, so demoting the `&&` to `||` fails there rather
+    // than passing here.
+    const selfLint = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).scripts
+      .lint;
+    expect(selfLint).toContain('src');
+    expect(selfLint).toContain('test');
+    expect(selfLint).toContain('eslint.guard.config.mjs');
   });
 
   it('the CI script is tracked as executable', () => {
@@ -556,8 +602,26 @@ const prints = (text) => `#!/bin/sh\necho '${text}'\n`;
 
 const MARKER = 'the-suite-actually-ran';
 
-/** Skip where the harness cannot run at all rather than passing vacuously. */
+/**
+ * Skip where the harness cannot run at all rather than passing vacuously.
+ *
+ * The context check runs BEFORE the platform test, so a miswired case fails on
+ * every platform instead of only the one that reaches the skip. `it.each` does
+ * not hand its callback a TestContext — the second parameter is the next case
+ * value, or undefined for a flat array — while `it` and `it.for` both do. Wired
+ * through `it.each`, this function therefore dereferences undefined, and only
+ * where the skip is taken: green on every POSIX machine, `Cannot read properties
+ * of undefined (reading 'skip')` on Windows. Asserting the context up front is
+ * what turns that into one loud failure everywhere.
+ * @param {import('vitest').TestContext} ctx
+ */
 function requirePosixShell(ctx) {
+  if (typeof ctx?.skip !== 'function') {
+    throw new TypeError(
+      'requirePosixShell needs a vitest TestContext to skip with, and was given none. Declare the ' +
+        'case with `it` or `it.for`; `it.each` does not pass one.',
+    );
+  }
   if (process.platform === 'win32' || !existsSync(BASH)) {
     ctx.skip(`needs ${BASH}; the script is the Linux CI job's mechanism`);
   }
@@ -641,7 +705,9 @@ describe('the CI script refuses to run vacuously', () => {
     expect(run.stderr).toContain('usage:');
   });
 
-  it.each(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
+  // `it.for`, not `it.each`: only `for` passes the TestContext these cases skip
+  // through. See requirePosixShell.
+  it.for(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
     requirePosixShell(ctx);
     // A probe whose own tooling is absent reports "not blocked = false" and the
     // control passes having probed nothing. This is the exact vacuous pass the
@@ -770,7 +836,201 @@ describe('the egress probe', () => {
   });
 });
 
-// --- 5. Both opt-outs, measured rather than assumed --------------------------
+// --- 5. Workers: a fresh module registry, re-guarded -------------------------
+
+// A worker_thread gets its own module registry, so none of section 2's patches
+// exist in it. Until the guard learned to re-install itself there, a worker
+// reaching out was allowed AND SILENT — nothing threw, and the parent recorded
+// nothing for afterEach to fail on, which is a worse failure than a miss.
+//
+// Two halves are pinned here and both are load-bearing. THROWN, because the
+// worker's own code should see the refusal. RECORDED, because the product's
+// boundaries are fail-open by design (CLAUDE.md §1) and a worker that swallows
+// the throw must still fail the run — an unrecorded refusal in a worker is the
+// same silent pass, just moved one thread over.
+//
+// Every target below is 192.0.2.1 (RFC 5737 TEST-NET-1, reserved for
+// documentation and not routed). Section 2 can name real hosts because the
+// guard it drives is known-installed; here the whole question is whether the
+// guard arrived at all, so a REGRESSION in this section is the case that would
+// actually emit a packet. An unrouted literal also skips DNS entirely.
+
+const TEST_NET_1 = '192.0.2.1';
+
+const WORKER_PRELUDE = [
+  "import { Socket } from 'node:net';",
+  "import { parentPort } from 'node:worker_threads';",
+].join('\n');
+
+/**
+ * Run an ES module body in a worker and resolve its posted message.
+ * @param {string} body
+ * @param {(source: string) => import('node:worker_threads').Worker} [spawn]
+ */
+function inWorker(body, spawn) {
+  const source = `${WORKER_PRELUDE}\n${body}`;
+  return new Promise((done, fail) => {
+    const worker = spawn ? spawn(source) : new Worker(source, { eval: true });
+    worker.on('message', (message) => {
+      void worker.terminate();
+      done(message);
+    });
+    worker.on('error', fail);
+  });
+}
+
+describe('a worker thread is guarded too', () => {
+  it('refuses inside the worker and records it here, even when the worker swallows it', async () => {
+    const result = await inWorker(`
+      let threw = null;
+      try {
+        new Socket().connect(443, ${JSON.stringify(TEST_NET_1)});
+      } catch (error) {
+        threw = error.name; // a fail-open catch — what the product's boundaries do
+      }
+      parentPort.postMessage({ threw, patched: Socket.prototype.connect.name });
+    `);
+
+    // THROWN: the worker's own copy of the guard refused.
+    expect(result.patched).toBe('guardedConnect');
+    expect(result.threw).toBe('NoNetworkError');
+
+    // RECORDED: and the swallow did not hide it. takeBlockedAttempts() is the
+    // very drain reportUndrained() performs in afterEach, so an attempt visible
+    // here is one the backstop would have failed the run on. Leaving it
+    // undrained is how that is proven in the negative — this call is what stops
+    // this test failing.
+    const attempts = takeBlockedAttempts();
+    expect(attempts.map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+    expect(attempts[0].kind).toBe('TCP connection');
+    // The call site must name the worker's code, not the parent frame that
+    // spawned it — otherwise the record is real but points at the wrong file.
+    expect(attempts[0].stack).toContain('NoNetworkError');
+  });
+
+  // Both shapes real code reaches `Worker` through, from a module the test did
+  // not write inline. They are separate cases because the guard covers them by
+  // two separate mechanisms: assigning the module property reaches the
+  // namespace form, and `syncBuiltinESMExports()` reaches the named-import form
+  // that `isolated-scan.ts` uses. Driving one shape only would let the missing
+  // half ship green — dropping either mechanism fails exactly one of these.
+  it.each([
+    ['a named import, as isolated-scan.ts does', spawnViaNamedImport],
+    ['a namespace import read at call time', spawnViaNamespace],
+  ])('reaches a worker started through %s', async (_shape, spawn) => {
+    const result = await inWorker(
+      `
+      let threw = null;
+      try { new Socket().connect(443, ${JSON.stringify(TEST_NET_1)}); }
+      catch (error) { threw = error.name; }
+      parentPort.postMessage({ threw });
+    `,
+      spawn,
+    );
+
+    expect(result.threw).toBe('NoNetworkError');
+    expect(takeBlockedAttempts().map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+  });
+
+  it('guards UDP and DNS in the worker as well as TCP', async () => {
+    // The TCP patch and the dgram/dns patches are separate mechanisms in the
+    // guard, so covering only connect would leave two thirds of it unproven on
+    // the worker path.
+    const result = await inWorker(`
+      import { createSocket } from 'node:dgram';
+      import dns from 'node:dns';
+      const caught = [];
+      const socket = createSocket('udp4');
+      try { socket.send('probe', 53, ${JSON.stringify(TEST_NET_1)}); }
+      catch (error) { caught.push(error.name); }
+      socket.close();
+      try { dns.resolve4('example.com', () => undefined); }
+      catch (error) { caught.push(error.name); }
+      parentPort.postMessage({ caught });
+    `);
+
+    expect(result.caught).toEqual(['NoNetworkError', 'NoNetworkError']);
+    expect(
+      takeBlockedAttempts()
+        .map((a) => a.target)
+        .sort(),
+    ).toEqual([TEST_NET_1, 'example.com']);
+  });
+
+  it('still completes a loopback round trip inside a worker', async () => {
+    // The positive control. Every assertion above is a refusal, and all of them
+    // would pass just as well if the injected guard had broken networking in
+    // the worker outright — which would be a different bug wearing the same
+    // green.
+    const server = createServer((socket) => {
+      socket.end('pong');
+    });
+    try {
+      await new Promise((done) =>
+        server.listen(0, '127.0.0.1', () => {
+          done(undefined);
+        }),
+      );
+      const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
+
+      const result = await inWorker(`
+        const reply = await new Promise((done, fail) => {
+          const client = new Socket();
+          let received = '';
+          client.on('data', (chunk) => (received += String(chunk)));
+          client.on('end', () => { done(received); });
+          client.on('error', fail);
+          client.connect(${String(port)}, '127.0.0.1');
+        });
+        parentPort.postMessage({ reply });
+      `);
+
+      expect(result.reply).toBe('pong');
+    } finally {
+      await new Promise((done) =>
+        server.close(() => {
+          done(undefined);
+        }),
+      );
+    }
+    expect(takeBlockedAttempts()).toEqual([]);
+  });
+
+  it('guards a worker started BY a worker, without stacking preloads', async () => {
+    // Nesting is the case where execArgv can grow without bound: an injected
+    // worker's own process.execArgv already carries the preload, so a wrapper
+    // that only appended would add one more per level. It also has to keep
+    // reporting to the SAME file, or a nested refusal lands somewhere the
+    // top-level drain never reads.
+    const result = await inWorker(`
+      import { Worker } from 'node:worker_threads';
+      const inner = new Worker(\`
+        import { Socket } from 'node:net';
+        import { parentPort } from 'node:worker_threads';
+        let threw = null;
+        try { new Socket().connect(443, ${JSON.stringify(TEST_NET_1)}); }
+        catch (error) { threw = error.name; }
+        parentPort.postMessage({ threw, execArgv: process.execArgv });
+      \`, { eval: true });
+      const message = await new Promise((done, fail) => {
+        inner.on('message', (m) => { void inner.terminate(); done(m); });
+        inner.on('error', fail);
+      });
+      parentPort.postMessage(message);
+    `);
+
+    expect(result.threw).toBe('NoNetworkError');
+    const preloads = result.execArgv.filter(
+      (arg) => typeof arg === 'string' && arg.includes('no-network.ts'),
+    );
+    expect(preloads).toHaveLength(1);
+
+    // The nested refusal reached the top-level drain, two threads down.
+    expect(takeBlockedAttempts().map((a) => a.target)).toEqual([`${TEST_NET_1}:443`]);
+  });
+});
+
+// --- 6. Both opt-outs, measured rather than assumed --------------------------
 
 // Two files in this repo import banned network modules on purpose: the vitest
 // guard patches node:net/node:dgram/node:dns, and the CI probe opens a socket.
@@ -853,8 +1113,9 @@ describe('the egress probe trips exactly the ban it must', () => {
   });
 });
 
-// These two suites are the third opted-out site (via eslint.root.guard.config.mjs),
-// so they are held to the same raw-guard measure as the guard and probe above.
+// These two suites are the third opted-out site (via this package's own
+// eslint.guard.config.mjs), so they are held to the same raw-guard measure as the
+// guard and probe above.
 
 describe('the no-network unit suite trips no bans at all', () => {
   // no-network.test.js exercises every banned construct as a STRING fed to the

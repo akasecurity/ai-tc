@@ -263,4 +263,30 @@ describe('createGuardedScanner', () => {
       await scanner.close();
     }
   });
+
+  it('says how long a degradation really lasts when the caller is not a hook', async () => {
+    const stderr = captureStderr();
+    // A scanner built per unit of work rather than per process — what the
+    // dashboard's folder scan does, because a long-running server must not lose
+    // its pulled rules until someone restarts it. The default sentence would
+    // claim exactly that, so the scope is the caller's to state.
+    const scanner = createGuardedScanner(
+      { verified: [VERIFIED_SECRET], unverified: [regexRule('pulled/would-match', 'TOKENX')] },
+      fakeGateway(),
+      {
+        workerUrl: CRASHING_WORKER,
+        startBudgetMs: START_MS,
+        degradeScope: 'the rest of this scan',
+      },
+    );
+    try {
+      await scanner.scan(`TOKENX next to ${AWS_KEY}`);
+      expect(stderr.lines()).toContain('isolated scanning is off for the rest of this scan');
+      // The claim it replaced, so a scope that is silently ignored fails here
+      // rather than reading as a passing test of a parameter nothing honours.
+      expect(stderr.lines()).not.toContain('the rest of this process');
+    } finally {
+      await scanner.close();
+    }
+  });
 });

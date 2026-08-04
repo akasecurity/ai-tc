@@ -128,8 +128,9 @@ export function flagReason(reasons: ReviewReason[]): string {
  * reclassification cannot silently drop them to the internal tint.
  */
 export function destMarkStyle(d: { kind: DestinationKind; trust: ShareTrustLevel }): string {
-  if (d.kind === 'ip') return 'bg-sev-critical-fill text-sev-critical';
-  if (d.kind === 'external' || d.trust === 'unverified') return 'bg-sev-high-fill text-sev-high';
+  if (d.kind === 'ip') return 'bg-sev-critical-fill text-sev-critical-ink';
+  if (d.kind === 'external' || d.trust === 'unverified')
+    return 'bg-sev-high-fill text-sev-high-ink';
   return 'bg-primary-tint text-primary';
 }
 

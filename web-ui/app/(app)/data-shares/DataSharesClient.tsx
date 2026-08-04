@@ -180,7 +180,7 @@ export function DataSharesClient({
               {decisionError && (
                 <div
                   role="alert"
-                  className="border-b border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical"
+                  className="border-b border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical-ink"
                 >
                   {decisionError}
                 </div>

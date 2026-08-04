@@ -1,9 +1,10 @@
 import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 
 // The shared SQLite store holds prompt/file content and masked findings, so the
-// directory is owner-only and the DB files are written 0600. These mirror the
-// modes the plugin SDK applies to ~/.aka; persistence owns its own copy so it
-// never depends on the SDK's layout module.
+// directory is owner-only and the DB files are written 0600. This module is the
+// single definition of the ~/.aka layout and its modes; the plugin SDK's
+// data-dir module re-exports them from here rather than keeping a second copy,
+// so every writer under ~/.aka applies the same modes.
 //
 // These POSIX modes are the ONLY at-rest control on the store (there is no
 // encryption). They are a no-op on platforms without POSIX modes (Windows),
@@ -15,12 +16,46 @@ export const DATA_FILE_MODE = 0o600;
 // data dir (e.g. ~/.aka/data computed by the SDK).
 export const DB_FILENAME = 'aka.db';
 
+// True when the path's FINAL component is a symlink. An lstat failure — most
+// often an absent target, e.g. a not-yet-created -wal sidecar — reports false,
+// so the caller's own absent-target handling still decides what happens.
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 // chmod `path` to `mode`, best-effort and silent: swallow every failure so a
 // permission glitch on a fail-open hot path (every plugin hook re-tightens the
 // base dir + settings.json) can neither throw nor spam stderr. A filesystem that
 // rejects chmod — some SMB/NFS/WSL mounts, a root-owned file — is surfaced once,
 // where it is actionable, by `aka init` (see looseStorePaths), not on every hook.
+//
+// Never chmods THROUGH a symlink. On the self-heal paths (loadConfig / aka init)
+// `path` is attacker-controllable in the loose-~/.aka state this repo exists to
+// repair, and chmod follows links, so a planted symlink would otherwise let a
+// tighten reach an arbitrary target: at a file that means an arbitrary chmod, and
+// at a store DIRECTORY it means locking a victim-owned shared directory to
+// owner-only with no diagnostic. Every legitimate store artifact — the base dir,
+// settings/, data/, keys/, settings.json, the key, the db and its sidecars — is a
+// real inode.
+//
+// Only the FINAL component is checked, deliberately: a real inode this code
+// created inside a symlinked home is still tightened, so a home a user chose to
+// symlink (a dotfiles manager, another volume) keeps the store's at-rest modes
+// instead of silently losing them.
+//
+// The check is an lstat, so it is NOT race-free: an attacker who swaps a real
+// path for a symlink between the lstat and the chmod still reaches the target.
+// Closing that needs openSync(O_NOFOLLOW) + fchmod, which cannot cover the
+// directory and file cases uniformly on every platform this ships to. The lstat
+// mirrors what tightenFile has always done and raises the bar without removing
+// the race — the precondition for winning it is write access to ~/.aka, which is
+// the loose state this repair exists to leave behind.
 function chmodBestEffort(path: string, mode: number): void {
+  if (isSymlink(path)) return;
   try {
     chmodSync(path, mode);
   } catch {
@@ -29,8 +64,9 @@ function chmodBestEffort(path: string, mode: number): void {
   }
 }
 
-// 0700 on a data directory. Best-effort (see chmodBestEffort) — the single place
-// the dir-mode policy lives, so the sync and async dir paths can't diverge.
+// 0700 on a data directory. Best-effort and never through a symlink (see
+// chmodBestEffort) — the single place the dir-mode policy lives, so the sync and
+// async dir paths can't diverge.
 export function tightenDir(dir: string): void {
   chmodBestEffort(dir, DATA_DIR_MODE);
 }
@@ -38,6 +74,14 @@ export function tightenDir(dir: string): void {
 // Create the data dir owner-only, tightening it even if it pre-existed with
 // looser permissions. chmod is best-effort (a no-op on platforms without POSIX
 // modes, e.g. Windows) and must never break the fail-open open path.
+//
+// mkdir does not follow the final symlink either: at a path that is already a
+// symlink to a directory it is a silent no-op, and at one resolving nowhere it
+// raises ENOENT rather than creating the target. Together with the tighten's own
+// guard, a symlinked store directory is therefore used as-is, under the target's
+// permissions — the store still opens (a hook must not break on a hostile or
+// unusual home), and `aka init` names the link and its target, since inheriting
+// those permissions silently is the part a user has to know about.
 export function ensureDataDirSync(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
   tightenDir(dir);
@@ -51,23 +95,17 @@ export function dbSidecars(file: string): string[] {
 }
 
 // 0600 on a single file — the DB alone, the exception key, a settings file, or a
-// store backup copy. Best-effort (see chmodBestEffort). Never chmods THROUGH a
-// symlink: on the self-heal paths (loadConfig / aka init) `file` is attacker-
-// controllable in the loose-~/.aka state this repo exists to repair, and chmod
-// follows links, so a planted symlink would otherwise let it tighten an arbitrary
-// target. A legitimate settings.json / key is always a real inode.
+// store backup copy. Best-effort and never through a symlink (see
+// chmodBestEffort).
 export function tightenFile(file: string): void {
-  try {
-    if (lstatSync(file).isSymbolicLink()) return;
-  } catch {
-    // absent → chmodBestEffort's own catch handles it as a no-op.
-  }
   chmodBestEffort(file, DATA_FILE_MODE);
 }
 
 // 0600 on the DB and its sidecars — they hold prompt/file content and masked
-// findings. Best-effort: a no-op where POSIX modes don't apply, and any given
-// sidecar may not exist (only the ones the active journal mode created do).
+// findings. Best-effort: a no-op where POSIX modes don't apply, never through a
+// symlink (a sidecar path is as plantable as settings.json in the loose-~/.aka
+// state), and any given sidecar may not exist (only the ones the active journal
+// mode created do).
 export function tightenPerms(file: string): void {
   for (const path of [file, ...dbSidecars(file)]) chmodBestEffort(path, DATA_FILE_MODE);
 }

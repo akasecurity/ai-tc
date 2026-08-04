@@ -34,6 +34,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertNoAuditConfigMutes,
   assertNothingMuted,
   type AuditMode,
   type AuditPayload,
@@ -52,6 +53,8 @@ import {
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WAIVERS_PATH = join(REPO_ROOT, '.github', 'audit-waivers.json');
 const CLI_MANIFEST_PATH = join(REPO_ROOT, 'cli', 'package.json');
+const ROOT_MANIFEST_PATH = join(REPO_ROOT, 'package.json');
+const WORKSPACE_YAML_PATH = join(REPO_ROOT, 'pnpm-workspace.yaml');
 const REPORT_PATHS: Record<AuditMode, string> = {
   workspace: join(REPO_ROOT, 'audit-report.md'),
   artifact: join(REPO_ROOT, 'artifact-audit-report.md'),
@@ -95,7 +98,23 @@ function withRetries<T>(attemptFn: () => T): T {
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+// Absent is not an error: only a file that exists is inspected, so a checkout
+// without a workspace manifest simply contributes nothing to look at.
+const readIfPresent = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
 function runWorkspaceAudit(): AuditPayload {
+  // Before spawning anything: a pnpm-side mute would leave the payload looking
+  // clean, so this has to be read off disk rather than detected in the result.
+  assertNoAuditConfigMutes({
+    manifest: readIfPresent(ROOT_MANIFEST_PATH),
+    workspaceYaml: readIfPresent(WORKSPACE_YAML_PATH),
+  });
   return withRetries(() => {
     const result = spawnSync('pnpm', ['audit', '--json'], { ...SPAWN_OPTIONS, cwd: REPO_ROOT });
     if (result.error) {

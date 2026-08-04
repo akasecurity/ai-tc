@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertNoAuditConfigMutes,
   assertNothingMuted,
   type AuditAdvisory,
   type AuditPayload,
   buildReport,
   classify,
+  findAuditConfigMutes,
   mdEscape,
   normalizeNpmAudit,
   type NpmAuditPayload,
@@ -218,13 +220,168 @@ describe('assertNothingMuted', () => {
     }).not.toThrow();
   });
 
-  it('fails closed when pnpm.auditConfig mutes an advisory', () => {
+  it('fails closed when a payload reports muted advisories', () => {
     expect(() => {
       assertNothingMuted(payload({ muted: [{ id: 1 }] }));
     }).toThrow(WaiverConfigError);
     expect(() => {
       assertNothingMuted(payload({ muted: [{ id: 1 }] }));
     }).toThrow(/audit-waivers\.json/);
+  });
+});
+
+// What pnpm 10.30.1 actually does with `auditConfig.ignoreGhsas` /
+// `ignoreCves`: the advisory leaves `advisories`, `muted` stays EMPTY, and the
+// severity counts are decremented to match. So the payload alone is
+// indistinguishable from a clean tree, and assertNothingMuted — which reads
+// only the payload — never fires. These cases drive the file-reading check
+// that covers it. The shapes below are the two real files, not invented ones.
+const MUTED_PNPM_PAYLOAD: AuditPayload = {
+  advisories: {},
+  muted: [],
+  metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0 } },
+};
+
+const manifestWith = (pnpmSection: Record<string, unknown>): string =>
+  JSON.stringify({ name: 'ai-tc', private: true, pnpm: pnpmSection });
+
+describe('findAuditConfigMutes', () => {
+  it('finds nothing when neither file configures auditConfig', () => {
+    expect(
+      findAuditConfigMutes({
+        manifest: manifestWith({ overrides: { 'left-pad': '^1.3.0' } }),
+        workspaceYaml: "packages:\n  - 'packages/*'\n\nonlyBuiltDependencies:\n  - esbuild\n",
+      }),
+    ).toEqual([]);
+  });
+
+  it('finds nothing when both files are absent', () => {
+    expect(findAuditConfigMutes({})).toEqual([]);
+  });
+
+  it('names the manifest channel and the keys it carries', () => {
+    const found = findAuditConfigMutes({
+      manifest: manifestWith({ auditConfig: { ignoreGhsas: ['GHSA-aaaa-bbbb-cccc'] } }),
+    });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toContain('package.json');
+    expect(found[0]).toContain('ignoreGhsas');
+  });
+
+  it('names ignoreCves too, and both keys when both are set', () => {
+    expect(
+      findAuditConfigMutes({
+        manifest: manifestWith({ auditConfig: { ignoreCves: ['CVE-1'] } }),
+      })[0],
+    ).toContain('ignoreCves');
+    const both = findAuditConfigMutes({
+      manifest: manifestWith({ auditConfig: { ignoreGhsas: ['G'], ignoreCves: ['C'] } }),
+    });
+    expect(both[0]).toContain('ignoreCves, ignoreGhsas');
+  });
+
+  // The gate refuses on presence, so a key pnpm adds later needs no code change.
+  it('catches an unrecognized auditConfig key', () => {
+    expect(
+      findAuditConfigMutes({
+        manifest: manifestWith({ auditConfig: { ignoreSomethingNew: ['x'] } }),
+      }),
+    ).toHaveLength(1);
+  });
+
+  // Both channels answer the same way about an empty `auditConfig`. It
+  // suppresses nothing either way, so this is about the rule being statable:
+  // the YAML half cannot tell empty from non-empty without a parser, so if the
+  // manifest half allowed it the two would disagree and "refuses on presence"
+  // would be true of only one of them.
+  it('refuses an empty auditConfig in either channel, and names no keys for it', () => {
+    const manifest = findAuditConfigMutes({ manifest: manifestWith({ auditConfig: {} }) });
+    expect(manifest).toEqual(['package.json "pnpm.auditConfig"']);
+    expect(manifest[0]).not.toContain('()');
+    expect(findAuditConfigMutes({ workspaceYaml: 'auditConfig:\n' })).toHaveLength(1);
+  });
+
+  // The second channel: pnpm 10 reads the same setting from the workspace file,
+  // where it works identically and `pnpm config get auditConfig` reports it
+  // (it does NOT report the manifest one, which is why both are read here).
+  it('names the workspace-file channel', () => {
+    const found = findAuditConfigMutes({
+      workspaceYaml:
+        "packages:\n  - 'packages/*'\n\nauditConfig:\n  ignoreGhsas:\n    - GHSA-aaaa-bbbb-cccc\n",
+    });
+    expect(found).toEqual(['pnpm-workspace.yaml "auditConfig"']);
+  });
+
+  it('reads the workspace key through a quoted spelling and CRLF line endings', () => {
+    expect(
+      findAuditConfigMutes({
+        workspaceYaml: "packages:\r\n  - 'a'\r\n'auditConfig':\r\n  ignoreCves: []\r\n",
+      }),
+    ).toHaveLength(1);
+  });
+
+  it('ignores a commented-out or nested key of the same name', () => {
+    expect(
+      findAuditConfigMutes({
+        workspaceYaml:
+          '# auditConfig:\n#   ignoreGhsas: []\nsomethingElse:\n  auditConfig:\n    a: b\n',
+      }),
+    ).toEqual([]);
+  });
+
+  it('reports both channels when both are set', () => {
+    expect(
+      findAuditConfigMutes({
+        manifest: manifestWith({ auditConfig: { ignoreCves: ['CVE-1'] } }),
+        workspaceYaml: 'auditConfig:\n  ignoreGhsas: []\n',
+      }),
+    ).toHaveLength(2);
+  });
+
+  it('refuses an unparseable manifest rather than reading it as unmuted', () => {
+    expect(() => findAuditConfigMutes({ manifest: '{"pnpm":' })).toThrow(WaiverConfigError);
+  });
+});
+
+describe('assertNoAuditConfigMutes', () => {
+  it('passes on the real repository shape', () => {
+    expect(() => {
+      assertNoAuditConfigMutes({
+        manifest: manifestWith({ overrides: {} }),
+        workspaceYaml: "packages:\n  - 'packages/*'\n",
+      });
+    }).not.toThrow();
+  });
+
+  it('fails closed and points at the file to edit', () => {
+    const sources = { manifest: manifestWith({ auditConfig: { ignoreGhsas: ['GHSA-a-b-c'] } }) };
+    expect(() => {
+      assertNoAuditConfigMutes(sources);
+    }).toThrow(WaiverConfigError);
+    expect(() => {
+      assertNoAuditConfigMutes(sources);
+    }).toThrow(/package\.json/);
+    expect(() => {
+      assertNoAuditConfigMutes(sources);
+    }).toThrow(/audit-waivers\.json/);
+  });
+
+  // The case that separates this check from the one it backs up. Under the
+  // payload-only guard this combination passed: pnpm had already dropped the
+  // advisory and reported nothing muted, so the gate saw a clean tree and
+  // exited 0. Deleting the file read makes this case — and only this case —
+  // go red.
+  it('catches the mute that the payload guard cannot see', () => {
+    expect(() => {
+      assertNothingMuted(MUTED_PNPM_PAYLOAD);
+    }).not.toThrow();
+    expect(classify(MUTED_PNPM_PAYLOAD, [], TODAY).blocking).toEqual([]);
+
+    expect(() => {
+      assertNoAuditConfigMutes({
+        manifest: manifestWith({ auditConfig: { ignoreGhsas: ['GHSA-aaaa-bbbb-cccc'] } }),
+      });
+    }).toThrow(WaiverConfigError);
   });
 });
 

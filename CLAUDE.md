@@ -35,14 +35,31 @@ _absence_ of output, not a payload.
 field that never crosses the wire; the internal fallback `handleCapture` returns when the runtime
 throws is `{ action: 'log' }`, and `'allow'` is only ever assigned to an **excepted** finding.
 Emitting a real opinion means writing one JSON object to stdout via `emit()`
-(`plugins/claude-code/src/hooks/shared.ts`), whose four shapes are `decision`, `systemMessage`,
-`hookSpecificOutput.permissionDecision` and `hookSpecificOutput.updatedToolOutput` — the write is
-awaited, because `process.exit` does not flush a pending pipe write and a truncated object reads
-as invalid JSON, passing the original payload through unscanned.
+(`plugins/claude-code/src/hooks/shared.ts`), which takes the `HookOutput` union rather than
+`unknown`, so a payload outside that union cannot reach the wire at all. Its six shapes are
+`decision` and `systemMessage` at the top level, plus one `hookSpecificOutput` per hook —
+`PreToolUse`'s `permissionDecision`, `PostToolUse`'s `updatedToolOutput`, `MessageDisplay`'s
+`displayContent` and `SessionStart`'s `additionalContext`. The write is awaited, because
+`process.exit` does not flush a pending pipe write and a truncated object reads as invalid JSON,
+passing the original payload through unscanned.
+
+That enumeration is derived rather than remembered, because this is the sentence that drifted last
+time — it claimed four shapes while six were reaching stdout, and the two it omitted belong to the
+two hooks nothing else in this file mentions. `plugins/claude-code/test/hook-output-shapes.test.ts`
+reads it and drives it against the union: the count word, the two top-level keys, and each
+`hookEventName` paired with the field that distinguishes it. A seventh variant added to
+`HookOutput` fails to compile until that test's map names it, and fails that test until this
+sentence does.
 
 `plugins/claude-code/test/e2e/fail-open.e2e.test.ts` is what holds this rather than review: it
 drives the built hooks against malformed, truncated, binary and oversized stdin, asserting exit 0
 and empty stdout, and its `expectNoActionKey` fails any emitted payload carrying an `action` key.
+That last check is worth **nothing** on the rows above it, which have already asserted the stdout
+is empty — `''` matches no pattern. So the file also drives a real finding through each enforcing
+hook at block, redact, warn and log, asserts the shape each cell is expected to emit (the positive
+control, without which a hook that stopped emitting would turn every absence assertion back into
+the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
+the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
 ### 2. Contracts before code
 
@@ -252,8 +269,29 @@ next's own pins), by bumping that package once upstream moves. Only when an advi
 has no fixed release reachable from the tree, add an **expiring** waiver to
 `.github/audit-waivers.json`, scoped to the audit it applies to — format and process
 in CONTRIBUTING.md ("Dependency advisories and waivers").
-`pnpm.auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route: the
-gate refuses to run while anything is muted there.
+`auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route, and the
+gate refuses to run (exit 3) when it is set. **It is detected by reading the two files
+pnpm takes the setting from — the root `package.json`'s `pnpm.auditConfig` and
+`pnpm-workspace.yaml`'s top-level `auditConfig` — not by inspecting what pnpm returns.**
+The payload cannot reveal it: pnpm removes a muted advisory from `advisories`, decrements
+the `metadata` severity counts to match, and leaves the top-level `muted` array **empty**,
+so a muted run is byte-for-byte the shape of a clean one. A guard reading `muted` is
+therefore correct in isolation and unreachable in practice — which is what it was, while
+both audits reported green. `assertNothingMuted` is kept as the payload-side half in case
+a later pnpm does populate the field; `assertNoAuditConfigMutes` is the half that fires.
+
+Both channels are real and were measured; `.npmrc` is not one, in either the flattened or
+the camelCase spelling. `findAuditConfigMutes` refuses on the **presence** of the
+`auditConfig` key — in **both** channels alike, and whether or not the ignore lists under
+it carry entries. So an empty one is refused too, and a third key added by a later pnpm is
+caught without a code change, because the key names are never enumerated. The two halves
+have to answer alike here or the rule stops being statable: the YAML half cannot tell an
+empty `auditConfig` from a populated one without a parser. A file that **exists but cannot
+be read** is refused rather than read as "no config here" — absence means `ENOENT` and
+nothing else, since a failed read that returned "nothing to see" would reach the exact
+outcome this check exists to prevent. Its tests pin the discriminating case directly: a
+payload reporting nothing muted **and** a manifest configuring `auditConfig` must still be
+refused — delete the file read and that case, alone, goes red.
 
 ## Package dependency rules
 

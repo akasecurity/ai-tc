@@ -111,7 +111,7 @@ jobs:
           cd plugins/codex
           for f in session-start user-prompt-submit pre-tool-use post-tool-use stop reconcile \
                    query dashboard onboard apply-suppressions intro firstrun backfill filescan \
-                   remediate start-light; do
+                   remediate start-light scan-worker; do
             test -f "scripts/$f.js" || { echo "::error::missing scripts/$f.js"; exit 1; }
           done
           # The hooks run on the user's machine with no node_modules; junk input

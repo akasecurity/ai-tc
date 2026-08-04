@@ -50,6 +50,10 @@ export default defineConfig({
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     'post-tool-use': 'src/hooks/post-tool-use.ts',
     stop: 'src/hooks/stop.ts',
+    // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
+    // by path from whichever hook script is running, so the emitted script has to
+    // land in this same directory. See src/scan-worker.ts.
+    'scan-worker': 'src/scan-worker.ts',
     // Detached token-usage reconcile worker, spawned by the Stop hook (off the hot path)
     reconcile: 'src/reconcile.ts',
     // Read surface (aka:health · aka:findings · aka:recommend · aka:audit) + onboarding (aka:setup)

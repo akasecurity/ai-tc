@@ -37,6 +37,10 @@ import { countWorkerStarts } from './helpers/worker-starts.ts';
 // at the `zzq` literal before it ever reaches the nested quantifier. The rule
 // measures as safe and is admitted to the ruleset. Text that does carry the
 // literal then drives `(a+)+$` into exponential backtracking.
+// Keep this free of regex metacharacters: it is interpolated into the pattern
+// below, and `String.raw` leaves interpolations untouched, so anything with a
+// meaning to the engine would change what the pattern matches rather than being
+// matched literally. It is also the plain text prefix the hostile input carries.
 const BATTERY_BLIND_LITERAL = 'zzq';
 const BATTERY_BLIND_PATTERN = String.raw`(?:${BATTERY_BLIND_LITERAL})(a+)+$`;
 const BATTERY_BLIND_TEXT = `${BATTERY_BLIND_LITERAL}${'a'.repeat(34)}!`;

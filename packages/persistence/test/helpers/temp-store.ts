@@ -116,6 +116,13 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
       // accessors, nothing `this`-bound, nothing lazily got. Turn that into a
       // class instance or add a getter and every handle handed out here goes
       // quietly wrong instead of failing.
+      //
+      // It also carries UNSAFE_TEST_ONLY_RAW_HANDLE, which spread copies because
+      // that property is an enumerable own symbol. A fault test capping the
+      // connection reads it off the wrapper handed back here, so a handle that
+      // lost it would leave the cap pointed at nothing and every fault
+      // assertion downstream passing vacuously. `raw-handle-seam.test.ts` pins
+      // the spread itself rather than leave that to this comment.
       let closed = false;
       const tracked: LocalDatabase = {
         ...db,

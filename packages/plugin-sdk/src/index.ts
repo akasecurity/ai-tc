@@ -62,6 +62,15 @@ export { resolveProjectFiles } from './project-files.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';
 export type {
+  AntigravityProvider,
+  AntigravityProviderOrUnknown,
+  ResolvedAntigravityProvider,
+} from './provider-antigravity.ts';
+export {
+  antigravityProviderFromModelId,
+  resolveAntigravityProvider,
+} from './provider-antigravity.ts';
+export type {
   CodexProvider,
   CodexProviderOrUnknown,
   ResolvedCodexProvider,

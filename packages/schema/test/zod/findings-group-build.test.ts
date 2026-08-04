@@ -62,6 +62,7 @@ describe('provider mappers', () => {
     expect(toApiProvider('chatgpt')).toBe('chatgpt');
     expect(toApiProvider('codex')).toBe('codex');
     expect(toApiProvider('claude-ai')).toBe('claudeai');
+    expect(toApiProvider('antigravity')).toBe('antigravity');
     expect(toApiProvider('mystery-tool')).toBe('api');
   });
   it('maps API provider → DB filter values', () => {
@@ -69,6 +70,7 @@ describe('provider mappers', () => {
     expect(toDbProviderFilter('claudedesktop')).toEqual(['claude-desktop']);
     expect(toDbProviderFilter('codex')).toEqual(['codex']);
     expect(toDbProviderFilter('claudeai')).toEqual(['claude-ai']);
+    expect(toDbProviderFilter('antigravity')).toEqual(['antigravity']);
     expect(toDbProviderFilter('api')).toEqual([]);
   });
 });

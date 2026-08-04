@@ -107,6 +107,7 @@ const HARNESS_LABELS: Record<HarnessId, string> = {
   claudecode: 'Claude Code',
   cursor: 'Cursor',
   codex: 'Codex',
+  antigravity: 'Antigravity',
 };
 
 // A harness (AI tool) is "live" only if its inventory row was seen within this
@@ -162,6 +163,7 @@ function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | nul
   if (t.includes('claudecode') || t === 'claude') return 'claudecode';
   if (t.includes('cursor')) return 'cursor';
   if (t.includes('codex')) return 'codex';
+  if (t.includes('antigravity')) return 'antigravity';
   return null;
 }
 

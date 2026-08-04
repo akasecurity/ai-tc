@@ -25,6 +25,10 @@ export interface AgentPlugin {
   // this agent's install/update coordinates. Only meaningful when the
   // coordinates above are present.
   cliBin?: 'claude' | 'codex';
+  // What to tell the user when there are no marketplace coordinates to drive.
+  // Without one the CLI can only say "install it from the AKA marketplace",
+  // which is wrong for a host that has no marketplace.
+  installHint?: string;
 }
 
 export const AGENT_PLUGINS: readonly AgentPlugin[] = [
@@ -58,6 +62,28 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     marketplace: 'ai-tc',
     marketplaceSource: 'akasecurity/ai-tc',
     cliBin: 'codex',
+  },
+  {
+    id: 'antigravity',
+    name: 'Antigravity',
+    sourceTool: 'antigravity',
+    description:
+      'Hooks Antigravity CLI sessions to detect sensitive data in shell commands and file writes.',
+    npmPackage: '@akasecurity/ai-tc-antigravity',
+    // NO pluginName/marketplace/cliBin, deliberately. Antigravity has no plugin
+    // marketplace: `agy plugin install` takes a LOCAL DIRECTORY PATH, not a
+    // `<plugin>@<marketplace>` ref, so the generic cli-plugin-manager binding
+    // the other two entries use would emit a command `agy` does not accept.
+    // Leaving the coordinates absent is the registry's documented "installed by
+    // other means" case — buildUpdateReport skips an entry with no ref, so this
+    // agent is listed and joined to its rows by `sourceTool` without claiming an
+    // update path that does not exist. Install is documented in
+    // plugins/antigravity/skills/setup/SKILL.md.
+    installHint:
+      'Antigravity installs plugins from a local directory rather than a marketplace:\n' +
+      '  npm pack @akasecurity/ai-tc-antigravity && tar -xzf akasecurity-ai-tc-antigravity-*.tgz\n' +
+      '  agy plugin install ./package\n' +
+      'Then run `aka init` to set up the local store.',
   },
 ];
 

@@ -89,7 +89,7 @@ export function toDbCategory(apiVal: FindingCategory): string {
  * distinct values and must never be merged).
  *   claude-code → claudecode · claude-desktop → claudedesktop ·
  *   github-copilot → copilot · cursor → cursor · chatgpt → chatgpt ·
- *   claude-ai → claudeai · codex → codex · else → api
+ *   claude-ai → claudeai · codex → codex · antigravity → antigravity · else → api
  */
 export function toApiProvider(sourceTool: string): FindingProvider {
   // Shares the single TOOL_TO_HARNESS table (harness-map.ts) with
@@ -113,6 +113,7 @@ export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
     chatgpt: ['chatgpt'],
     claudeai: ['claude-ai'],
     codex: ['codex'],
+    antigravity: ['antigravity'],
     api: [], // 'api' catches unknown tools — applied in-memory (no single DB value)
   };
   return map[apiProvider];

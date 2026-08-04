@@ -27,6 +27,7 @@ export const SourceTool = z
     'claude-ai',
     'github-copilot',
     'codex',
+    'antigravity',
     'cli',
     'unknown',
   ])

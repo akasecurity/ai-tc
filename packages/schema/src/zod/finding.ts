@@ -69,7 +69,17 @@ export type FindingAction = z.infer<typeof FindingAction>;
 // FindingProvider: API-facing provider enum. 'claudedesktop' is a new value
 // (maps from source_tool = 'claude-desktop'). Never merged with 'claudecode'.
 export const FindingProvider = z
-  .enum(['claudecode', 'claudedesktop', 'cursor', 'copilot', 'chatgpt', 'claudeai', 'codex', 'api'])
+  .enum([
+    'claudecode',
+    'claudedesktop',
+    'cursor',
+    'copilot',
+    'chatgpt',
+    'claudeai',
+    'codex',
+    'antigravity',
+    'api',
+  ])
   .meta({ id: 'FindingProvider' });
 export type FindingProvider = z.infer<typeof FindingProvider>;
 

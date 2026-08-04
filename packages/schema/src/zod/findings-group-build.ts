@@ -93,9 +93,10 @@ export function toDbCategory(apiVal: FindingCategory): string {
  */
 export function toApiProvider(sourceTool: string): FindingProvider {
   // Shares the single TOOL_TO_HARNESS table (harness-map.ts) with
-  // `harnessFromTool`; every mapped value is a valid FindingProvider, and an
+  // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
+  // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return (TOOL_TO_HARNESS[sourceTool] as FindingProvider | undefined) ?? 'api';
+  return TOOL_TO_HARNESS[sourceTool] ?? 'api';
 }
 
 /**

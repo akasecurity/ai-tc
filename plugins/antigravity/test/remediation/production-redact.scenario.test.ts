@@ -67,17 +67,27 @@ function findingFor(filePath: string, rawValue: string): MaskedSecretFinding {
   };
 }
 
-// The day-sharded rollout directory Antigravity writes under a given home
-// (`<home>/.antigravity/sessions/YYYY/MM/DD`), created on demand for the fixtures.
-function rolloutDayDir(home: string): string {
-  const dir = join(home, '.antigravity', 'sessions', '2026', '07', '01');
+// The per-conversation log directory Antigravity writes under a given home
+// (`<home>/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs`),
+// created on demand for the fixtures.
+function conversationLogDir(home: string): string {
+  const dir = join(
+    home,
+    '.gemini',
+    'antigravity-cli',
+    'brain',
+    'conv-2026-07-01-abc123',
+    '.system_generated',
+    'logs',
+  );
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 describe('redactSurfacedSecrets — the production redaction adapter', () => {
-  // A throwaway HOME (rollouts live at `<home>/.antigravity/sessions/...`, exactly
-  // what `transcriptsDir` derives) and a throwaway `~/.aka` base for the runtime's
+  // A throwaway HOME (transcripts live under
+  // `<home>/.gemini/antigravity-cli/brain/...`, exactly what `transcriptsDir`
+  // derives) and a throwaway `~/.aka` base for the runtime's
   // local store — so this suite never touches the developer's real machine state.
   let home: string;
   let dataDirBase: string;
@@ -103,7 +113,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
   });
 
   it('redacts genuine rollout and temp artifacts when a legitimate temp root is supplied', async () => {
-    const rolloutFile = join(rolloutDayDir(home), 'rollout-2026-07-01T10-00-00-abc123.jsonl');
+    const rolloutFile = join(conversationLogDir(home), 'transcript.jsonl');
     writeFileSync(rolloutFile, `{"content":"a key ${ROLLOUT_KEY} in a prompt"}`);
 
     const tempFile = join(legitTempRoot, 'agent-scratch.txt');
@@ -128,7 +138,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
   });
 
   it('rejects a project root offered as the temp scope — no project file is redacted, rollout artifacts still are, and the count reflects only real strikes', async () => {
-    const rolloutFile = join(rolloutDayDir(home), 'rollout-2026-07-01T10-00-00-abc123.jsonl');
+    const rolloutFile = join(conversationLogDir(home), 'transcript.jsonl');
     writeFileSync(rolloutFile, `{"content":"a key ${ROLLOUT_KEY} in a prompt"}`);
 
     // The "temp root" this call supplies is actually a project working tree
@@ -173,7 +183,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
     // The finding references a rollout path inside the enforced scope that was
     // never actually written — mirrors a vanished/unreadable artifact at
     // redact-time, distinct from an out-of-scope path.
-    const rolloutFile = join(rolloutDayDir(home), 'rollout-2026-07-01T10-00-00-abc123.jsonl');
+    const rolloutFile = join(conversationLogDir(home), 'transcript.jsonl');
     const vanishedFinding = findingFor(rolloutFile, ROLLOUT_KEY);
 
     const result = await redactSurfacedSecrets([vanishedFinding], { home, dataDirBase });
@@ -183,7 +193,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
   });
 
   it('reports a finding whose content changed since the calibration scan as unredacted, not silently dropped', async () => {
-    const rolloutFile = join(rolloutDayDir(home), 'rollout-2026-07-01T10-00-00-abc123.jsonl');
+    const rolloutFile = join(conversationLogDir(home), 'transcript.jsonl');
     // The artifact exists and is readable, but no longer contains the key the
     // finding references — the re-scan at redact-time finds no matching occurrence.
     writeFileSync(rolloutFile, 'this rollout no longer contains the leaked key');
@@ -196,7 +206,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
   });
 
   it('a runtime close() fault after targets were recovered does not drop them — the strike still lands and the count still reports it', async () => {
-    const rolloutFile = join(rolloutDayDir(home), 'rollout-2026-07-01T10-00-00-abc123.jsonl');
+    const rolloutFile = join(conversationLogDir(home), 'transcript.jsonl');
     writeFileSync(rolloutFile, `{"content":"a key ${ROLLOUT_KEY} in a prompt"}`);
     const finding = findingFor(rolloutFile, ROLLOUT_KEY);
 

@@ -26,7 +26,10 @@ function stripeFinding(): MaskedSecretFinding {
   return {
     provider: 'stripe',
     maskedToken: MASKED_STRIPE,
-    where: { filePath: '~/.gemini/sessions/2026/07/01/rollout-2026-07-01T10-00-00-abc123.jsonl' },
+    where: {
+      filePath:
+        '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+    },
     state: 'unknown',
   };
 }
@@ -55,7 +58,9 @@ describe('renderRemediationDecision — decision layout', () => {
     expect(out).toContain('sk_live_****');
     expect(out).toContain('AKIA****************');
     // where-found
-    expect(out).toContain('~/.gemini/sessions/2026/07/01/rollout-2026-07-01T10-00-00-abc123.jsonl');
+    expect(out).toContain(
+      '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+    );
     expect(out).toContain('/tmp/agent-dump.txt');
     // the honest per-finding state, rendered as human text — never an
     // unverifiable 'still valid' claim over an unknown-state finding

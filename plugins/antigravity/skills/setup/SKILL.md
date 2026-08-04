@@ -17,20 +17,34 @@ a fabricated or demo number. When there isn't enough history to judge, the wizar
 falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment needs the raw (unmasked) findings to rate
-them accurately, so it **sends them to the model API** through separate `antigravity`
-CLI subprocesses (a large history is judged in several batches). Two things
+them accurately, so it **sends them to the model API** through separate `agy -p`
+subprocesses (a large history is judged in several batches). Two things
 cross for each finding: its **raw value**, and about **120 characters of the
 surrounding transcript text** on either side of it — re-masked first, so any
-_other_ detectable secret in that window never leaves raw. The rollout file's
-path, the value's fingerprint, and the fingerprint key version are **dropped
-before egress**. Those subprocesses run the `antigravity` CLI ephemerally so the raw
-values are never written into `~/.gemini/sessions` — they do not enter this
-conversation or your scannable history — but ephemeral mode is a local-write
-guard, **not network isolation**: a copy of the value **does leave the
-machine**, sent to the model provider like any other Antigravity prompt. You act only
-on the raw-free plan the subprocesses print back. Reading history is granted in
-step 1; **sending findings to the model is a distinct consent, collected in
-step 3 before the judgment pipe runs** — the judge refuses to run without it.
+_other_ detectable secret in that window never leaves raw. The transcript
+file's path, the value's fingerprint, and the fingerprint key version are
+**dropped before egress**. A copy of the raw value **leaves the machine**, sent
+to the model provider like any other Antigravity prompt. You act only on the
+raw-free plan the subprocesses print back.
+
+Three limits of this host are worth knowing before you consent, because they
+are weaker than the Claude Code and Codex plugins' equivalents:
+
+- **The `agy` CLI documents no ephemeral mode.** Every run is written to your
+  conversation store under `~/.gemini/antigravity-cli/brain/`, raw values and
+  all — the same store this backfill scans. AKA therefore **deletes the judge's
+  own conversation itself** as soon as the run ends. That deletion is best
+  effort: if the process is killed between the write and the cleanup, the
+  conversation stays on disk until you remove it.
+- **The prompt travels on the command line**, because `agy` documents no way to
+  read a prompt from stdin. For the life of each run the raw values are visible
+  to anything that can list processes (`ps`) on this machine.
+- **Deleting the conversation is not network isolation.** It is a local-write
+  cleanup only; it cannot recall what was already sent.
+
+Reading history is granted in step 1; **sending findings to the model is a
+distinct consent, collected in step 3 before the judgment pipe runs** — the
+judge refuses to run without it.
 
 Follow the steps below **in order**. Nothing is written to the policy store
 until step 5 (or a floor fallback in step 3 if the calibration can't complete).
@@ -153,9 +167,11 @@ network egress to the model provider (the same one your
 Antigravity session already uses), not a purely local review. **A copy of each value
 leaves the machine.** The rollouts those values came from stay on disk
 untouched — nothing here removes them; that is the separate redaction step in
-step 6. The values are kept out of your local Antigravity session history — the judge
-subprocesses run ephemerally, so nothing lands in `~/.gemini/sessions` — but that
-is a local-write guard only, not network isolation. The findings are also
+step 6. The judge's own conversation IS written to your local Antigravity
+history under `~/.gemini/antigravity-cli/brain/` — this host has no ephemeral
+mode — and AKA deletes that conversation itself as soon as the run ends, best
+effort; a killed process can leave it behind. That cleanup is a local-write
+guard only, not network isolation. The findings are also
 recorded, masked, to the local store. The grant is revocable from the
 dashboard's **Settings → Historical access**, which stops future scans — it
 cannot recall anything already sent. Do not present the options until you have
@@ -306,13 +322,14 @@ adapter in **PREVIEW** mode (no `--confirmed`):
 node "${PLUGIN_ROOT}/scripts/backfill.js" --triage | node "${PLUGIN_ROOT}/scripts/apply-suppressions.js"
 ```
 
-The backfill sweeps prior Antigravity CLI session rollouts (last 30 days, all
-sessions) and streams one masked-plus-raw triage hit per line; masked findings
-are recorded to the local store as a side effect. The adapter runs the
-false-positive/severity **judgment in separate `antigravity` subprocesses that send
-each hit's raw value and masked context window — never its source path — to the
-model API** (a large history is split into several batches; each runs
-the CLI ephemerally so nothing lands in `~/.gemini/sessions`), then prints back a
+The backfill sweeps prior Antigravity CLI conversation transcripts (last 30
+days, all conversations) and streams one masked-plus-raw triage hit per line;
+masked findings are recorded to the local store as a side effect. The adapter
+runs the false-positive/severity **judgment in separate `agy -p` subprocesses
+that send each hit's raw value and masked context window — never its source
+path — to the model API** (a large history is split into several batches; each
+run persists a conversation under `~/.gemini/antigravity-cli/brain/`, which AKA
+then deletes best effort — this host has no ephemeral mode), then prints back a
 **raw-free plan** you can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),
 the per-category reasoning, the masked false positives it would suppress, any

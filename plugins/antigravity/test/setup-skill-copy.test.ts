@@ -22,12 +22,12 @@ describe('SKILL.md model-judge egress disclosure', () => {
 
   it('names what is dropped before egress: the file path and the fingerprint', () => {
     expect(skillMd).toMatch(
-      /rollout file's\s+path, the value's fingerprint, and the fingerprint key version are \*\*dropped\s+before egress\*\*/,
+      /transcript\s+file's path, the value's fingerprint, and the fingerprint key version are\s+\*\*dropped before egress\*\*/,
     );
   });
 
   it('states the disclosure before the model-judge consent question is asked', () => {
-    const disclosure = skillMd.indexOf('dropped\nbefore egress');
+    const disclosure = skillMd.indexOf('**dropped before egress**');
     const question = skillMd.indexOf('Send findings to the model to sort real leaks from noise?');
     expect(disclosure).toBeGreaterThan(-1);
     expect(question).toBeGreaterThan(disclosure);
@@ -35,6 +35,39 @@ describe('SKILL.md model-judge egress disclosure', () => {
     const restatement = skillMd.indexOf('restate plainly what leaves the');
     expect(restatement).toBeGreaterThan(-1);
     expect(question).toBeGreaterThan(restatement);
+  });
+
+  // This host is weaker than the other two plugins' judges in three specific,
+  // user-visible ways, and the consent copy is the only place a user learns it.
+  // Each is pinned here so a future edit cannot quietly drop the admission and
+  // leave the copy claiming the isolation Codex's --ephemeral actually provides.
+  it('admits there is no ephemeral mode and the judge conversation is persisted', () => {
+    expect(skillMd).toMatch(/no ephemeral mode/);
+    expect(skillMd).toContain('~/.gemini/antigravity-cli/brain/');
+  });
+
+  it('admits the cleanup is best effort and can leave the conversation behind', () => {
+    expect(skillMd).toMatch(/best\s+effort/);
+    expect(skillMd).toMatch(/killed|kills/);
+  });
+
+  it('admits the raw values ride the command line and are visible to ps', () => {
+    expect(skillMd).toMatch(/command line/);
+    expect(skillMd).toContain('ps');
+  });
+
+  it('never claims the deletion is network isolation', () => {
+    // The Codex copy's honesty rule, restated for the mechanism this host uses:
+    // deleting a local file cannot unsend a request.
+    expect(skillMd).toMatch(/not network isolation/);
+    expect(skillMd).toMatch(/cannot recall what was already sent/);
+  });
+
+  it('states the disclosure of this host’s limits before the consent question', () => {
+    const limits = skillMd.indexOf('no ephemeral mode');
+    const question = skillMd.indexOf('Send findings to the model to sort real leaks from noise?');
+    expect(limits).toBeGreaterThan(-1);
+    expect(question).toBeGreaterThan(limits);
   });
 
   it('records the grant with exactly the --model-judge-consent flag', () => {

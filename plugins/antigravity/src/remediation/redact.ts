@@ -49,9 +49,9 @@ export interface RedactionScope {
   artifactRoots: readonly string[];
 }
 
-// The platform default scope: prior Antigravity CLI rollouts under
-// `~/.gemini/sessions`. `transcriptsDir()` is the one place that knows the
-// rollout layout, so it is reused rather than re-derived here. The whole OS temp
+// The platform default scope: prior Antigravity CLI conversation transcripts
+// under `~/.gemini/antigravity-cli/brain`. `transcriptsDir()` is the one place
+// that knows that layout, so it is reused rather than re-derived here. The whole OS temp
 // tree is deliberately NOT a default root — a caller scanning a bounded temp
 // directory passes that directory explicitly, so redaction is never granted over
 // arbitrary files that merely happen to live under the OS temp dir. `home`

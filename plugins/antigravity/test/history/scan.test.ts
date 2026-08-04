@@ -185,7 +185,8 @@ describe('buildTriageHit', () => {
   });
 
   it('carries the source rollout path when one is supplied, so a surfaced finding can be located and struck', () => {
-    const path = '/Users/me/.antigravity/sessions/2026/06/20/rollout-session.jsonl';
+    const path =
+      '/Users/me/.gemini/antigravity-cli/brain/conv-session/.system_generated/logs/transcript.jsonl';
     const text = `padding ${BACKFILL_SECRET} padding`;
     const start = text.indexOf(BACKFILL_SECRET);
     const finding = {

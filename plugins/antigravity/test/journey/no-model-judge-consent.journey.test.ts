@@ -3,7 +3,7 @@
  * built script chain (the scripts/*.js the skill actually shells out to).
  *
  * The distinct model-judge consent (step 3 of skills/setup/SKILL.md) is what
- * authorizes the only egress in the product: apply-suppressions' `antigravity exec`
+ * authorizes the only egress in the product: apply-suppressions' `agy -p`
  * judge. The adapter's unit tests inject the gate as a plain boolean, so the
  * wiring that reads the real settings.json
  * (apply-suppressions.ts: `loadConfig().settings.modelJudgeConsent`) is never
@@ -19,7 +19,7 @@
  *            → apply-suppressions.js (preview, no consent)
  *
  * The load-bearing assertion is `judgeWasInvoked()`: the harness puts a stub
- * `antigravity` first on the child PATH which touches a sentinel when executed, so
+ * `agy` first on the child PATH which touches a sentinel when executed, so
  * this proves no judge subprocess ever ran — not merely that a mock went
  * uncalled. Nothing can reach the model API on this path.
  */
@@ -71,7 +71,7 @@ interface StepResult {
 // POSIX, so pointing HOME at a temp dir isolates the whole chain — no
 // script-level flag or process.env read is added to shipped code. The child env
 // is built from scratch (never the host env): PATH carries only the stub-judge
-// bin dir plus node's own dir, so the stub `antigravity` is the ONLY resolvable judge
+// bin dir plus node's own dir, so the stub `agy` is the ONLY resolvable judge
 // and the `#!/usr/bin/env node` shebang still finds node.
 class SetupJourney {
   readonly home: string;
@@ -91,7 +91,7 @@ class SetupJourney {
     rmSync(this.binDir, { recursive: true, force: true });
   }
 
-  // Whether the stub `antigravity` judge was actually executed. The stub touches a
+  // Whether the stub `agy` judge was actually executed. The stub touches a
   // sentinel on every invocation, so a consent-gate test can assert the egress
   // never happened at the process boundary — not merely that a mocked function
   // went uncalled.
@@ -103,14 +103,29 @@ class SetupJourney {
     return join(this.binDir, 'judge-invoked');
   }
 
-  // Seed a prior Antigravity CLI rollout under the temp home carrying the bundled
-  // rule's example key, timestamped inside the retention window but before the
-  // scan starts, so the backfill has real history to calibrate from. The line
-  // shape matches history/transcripts.ts's parser: a `response_item` user
-  // message whose content is an `input_text` block.
+  // Seed one scannable transcript under the real brain layout, carrying the
+  // bundled rule's example key and timestamped inside the retention window but
+  // before the scan starts, so the backfill has real history to calibrate from.
+  //
+  // The PATH here is verified against Antigravity's documentation. The RECORD
+  // SHAPE is NOT: it is the Codex rollout line this package's parser still
+  // decodes (see history/transcripts.ts's STATUS note), used here because this
+  // suite's subject is the CONSENT GATE — whether the judge subprocess is
+  // spawned at all — and that gate is indifferent to how the text was parsed
+  // out. Do not read a green run here as coverage of Antigravity's real
+  // transcript format; when the parser is ported against a live sample, this
+  // fixture moves with it.
   seedRollout(): string {
-    const dayDir = join(this.home, '.antigravity', 'sessions', '2026', '07', '27');
-    mkdirSync(dayDir, { recursive: true });
+    const logDir = join(
+      this.home,
+      '.gemini',
+      'antigravity-cli',
+      'brain',
+      'conv-2026-07-27-consent',
+      '.system_generated',
+      'logs',
+    );
+    mkdirSync(logDir, { recursive: true });
     const occurredAt = new Date(Date.now() - 3 * DAY_MS).toISOString();
     const line = JSON.stringify({
       timestamp: occurredAt,
@@ -121,7 +136,7 @@ class SetupJourney {
         content: [{ type: 'input_text', text: `please deploy with this key: ${SURFACED_KEY}` }],
       },
     });
-    const rolloutPath = join(dayDir, 'rollout-2026-07-27-consent.jsonl');
+    const rolloutPath = join(logDir, 'transcript.jsonl');
     writeFileSync(rolloutPath, `${line}\n`);
     return rolloutPath;
   }
@@ -154,7 +169,7 @@ class SetupJourney {
       HOME: this.home,
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
-      // Stub judge first on PATH so apply-suppressions' `antigravity exec` spawn hits
+      // Stub judge first on PATH so apply-suppressions' `agy` spawn hits
       // it, never a live model; node's own dir second so the stub's
       // `#!/usr/bin/env node` shebang resolves. Nothing else from the host
       // environment reaches the chain.
@@ -176,14 +191,13 @@ class SetupJourney {
     };
   }
 
-  // A controlled `antigravity` on PATH: apply-suppressions' judge spawns
-  // `antigravity exec --ephemeral … --output-last-message <file> -` with the prompt
-  // on STDIN (never argv — see triage/judge.ts's spawnCodex). This stub reads
-  // stdin, parses the hits out of the prompt's trailing fenced block, and
-  // writes a deterministic, raw-free TriageRecommendation to the
-  // --output-last-message file — the first hit per (category, rule) surfaced
-  // (genuine), the rest marked routine false positives. No live model is ever
-  // hit.
+  // A controlled `agy` on PATH: apply-suppressions' judge spawns
+  // `agy -p <prompt> --output-format json`, with the prompt in ARGV (this host
+  // documents no stdin input — see triage/judge.ts's spawnAgy). This stub reads
+  // the prompt off argv, parses the hits out of its trailing fenced block, and
+  // prints a deterministic, raw-free TriageRecommendation inside the JSON
+  // envelope on stdout — the first hit per (category, rule) surfaced (genuine),
+  // the rest marked routine false positives. No live model is ever hit.
   private writeFakeJudge(): void {
     const src = `#!/usr/bin/env node
 'use strict';
@@ -191,13 +205,11 @@ class SetupJourney {
 // stopped the egress at the process boundary (see judgeWasInvoked).
 require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, '');
 const args = process.argv.slice(2);
-const outIndex = args.indexOf('--output-last-message');
-const outFile = outIndex >= 0 ? args[outIndex + 1] : undefined;
-const prompt = require('node:fs').readFileSync(0, 'utf8');
-// Simulate antigravity exec's run logging on stderr, prompt content included. The
-// parent's spawnCodex must swallow this stream entirely: the parent command's
-// stderr flows into the wizard conversation, whose rollout files the backfill
-// later scans — exactly the store --ephemeral keeps raw content out of.
+const promptIndex = args.indexOf('-p');
+const prompt = promptIndex >= 0 ? args[promptIndex + 1] ?? '' : '';
+// Simulate agy's run logging on stderr, prompt content included. The parent's
+// spawnAgy must swallow this stream entirely: the parent command's stderr flows
+// into the wizard conversation, whose transcripts the backfill later scans.
 process.stderr.write('JUDGE-STDERR-RUN-LOGGING ' + prompt);
 const fences = [...String(prompt).matchAll(/\`\`\`[a-z]*\\n([\\s\\S]*?)\`\`\`/g)];
 const block = fences.length ? fences[fences.length - 1][1] : '';
@@ -233,11 +245,15 @@ for (const [category, byRule] of byCategory) {
   });
 }
 const verdict = { perCategory, notes: 'looks routine' };
-if (outFile) {
-  require('node:fs').writeFileSync(outFile, '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`');
-}
+// --output-format json: a single envelope on stdout carrying the final
+// assistant message, which is where the parent reads the verdict from.
+process.stdout.write(JSON.stringify({
+  conversation_id: 'conv-fake-judge',
+  status: 'ok',
+  response: '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`',
+}));
 `;
-    const path = join(this.binDir, 'antigravity');
+    const path = join(this.binDir, 'agy');
     writeFileSync(path, src);
     chmodSync(path, 0o755);
   }
@@ -347,7 +363,7 @@ describe('aka-setup journey — model-judge consent granted (control)', () => {
 
   it("swallows the judge subprocess's stderr — run logging never reaches the transcript", () => {
     // The stub antigravity writes its run logging (prompt included, so it carries the
-    // raw hit) to stderr. spawnCodex pipes and discards both child streams, so
+    // raw hit) to stderr. spawnAgy pipes and discards both child streams, so
     // none of it may surface on the parent apply command's stdout or stderr.
     expect(preview.stderr).not.toContain('JUDGE-STDERR-RUN-LOGGING');
     expect(preview.stderr).not.toContain(SURFACED_KEY);

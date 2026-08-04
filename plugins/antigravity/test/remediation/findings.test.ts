@@ -31,7 +31,9 @@ const preview: CalibrationPreview = {
 const stripeFinding: MaskedSecretFinding = {
   provider: 'stripe',
   maskedToken: 'sk_live_****',
-  where: { filePath: '~/.gemini/sessions/2026/07/01/rollout-2026-07-01T10-00-00-abc123.jsonl' },
+  where: {
+    filePath: '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+  },
   state: 'still-valid',
 };
 const awsFinding: MaskedSecretFinding = {

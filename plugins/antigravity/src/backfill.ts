@@ -1,7 +1,8 @@
 /**
  * Historical backfill entry — invoked by the aka-setup skill right after
  * onboarding when the user chose "Grant full review" (historicalAccess: full).
- * It sweeps prior Antigravity CLI rollout files (~/.gemini/sessions) for secrets that
+ * It sweeps prior Antigravity CLI conversation transcripts (under
+ * ~/.gemini/antigravity-cli/brain) for secrets that
  * leaked BEFORE AKA was installed and records them into the same local store
  * the read surfaces query.
  *

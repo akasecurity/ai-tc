@@ -21,6 +21,11 @@ export const adapterPresenter: AdapterPresenter = {
   frameCalibration,
   zeroCountFrame,
   renderRecommendedPosture,
+  // How this host restarts the wizard. Antigravity exposes the flow as a skill
+  // (`skills/setup/SKILL.md`, `name: aka-setup`) rather than a slash command,
+  // so the stale-plan refusal names the skill the way Codex's does — there is
+  // no `/aka:setup` to type here.
+  rerunHint: 'the aka-setup skill',
   // The applied card's Ready line resolves against the installed skill
   // registry — closed over here so the shared core never reads it.
   renderApplied: (categoriesTuned, dismissed) =>

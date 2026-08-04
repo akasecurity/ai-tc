@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -14,30 +14,62 @@ const VERDICT_FENCE = [
   '```',
 ].join('\n');
 
-// The path `antigravity exec` writes the final assistant message to — named on argv
-// right after --output-last-message.
-const outFileOf = (argv: readonly string[]): string => {
-  const i = argv.indexOf('--output-last-message');
-  const path = i >= 0 ? argv[i + 1] : undefined;
-  if (path === undefined) throw new Error('no --output-last-message path on argv');
-  return path;
+// The prompt `agy` is run with — argv position right after -p. On this host the
+// prompt rides argv rather than stdin, because the CLI documents no stdin input.
+const promptOf = (argv: readonly string[]): string => {
+  const i = argv.indexOf('-p');
+  const prompt = i >= 0 ? argv[i + 1] : undefined;
+  if (prompt === undefined) throw new Error('no -p prompt on argv');
+  return prompt;
 };
 
-// A fake spawn that plays the subprocess's one observable role: writing the
-// last-message file at the argv-named path.
+// A fake spawn that plays the subprocess's one observable role: printing the
+// `--output-format json` envelope on stdout. `conversationId` controls what the
+// run claims to have created, so cleanup can be driven from a test.
 const fakeSpawn =
   (
     lastMessage: string,
-    seen?: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; stdin?: string },
+    seen?: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; prompt?: string },
+    conversationId = 'conv-judge',
   ) =>
-  (argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): void => {
+  (argv: readonly string[], env: NodeJS.ProcessEnv): string => {
     if (seen) {
       seen.argv = argv;
       seen.env = env;
-      seen.stdin = stdin;
+      seen.prompt = promptOf(argv);
     }
-    writeFileSync(outFileOf(argv), lastMessage);
+    return JSON.stringify({
+      conversation_id: conversationId,
+      status: 'ok',
+      response: lastMessage,
+    });
   };
+
+// Capture the error OUTSIDE the catch. The `try { call(); throw new Error(...) }
+// catch (e) { assert on e }` shape asserts on the test's OWN guard error when
+// the call stops throwing, so a raw-absence check passes vacuously. Returning
+// undefined for a call that did not throw is what makes toBeDefined() catch it.
+const errorFrom = (fn: () => unknown): Error | undefined => {
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    return e as Error;
+  }
+};
+
+// Every runJudge call must be pointed at a throwaway home. The judge deletes
+// the conversation its own run created, and an unset `home` resolves to the
+// REAL ~/.gemini/antigravity-cli/brain on whatever machine runs this suite.
+const tempHome = (): string => mkdtempSync(join(tmpdir(), 'aka-judge-home-'));
+
+// Seed a conversation directory under a throwaway home's brain root.
+const seedConversation = (home: string, id: string): string => {
+  const dir = join(home, '.gemini', 'antigravity-cli', 'brain', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'transcript.jsonl'), '{"actor":"user"}\n');
+  return dir;
+};
 
 describe('parseVerdict', () => {
   it('parses the fenced verdict out of the last message', () => {
@@ -79,9 +111,11 @@ describe('parseVerdict', () => {
 });
 
 describe('judgeEnv', () => {
-  it('inherits the host environment (PATH survives so `antigravity` resolves)', () => {
-    // Session persistence is suppressed by --ephemeral on argv, not by any
-    // env var, so the env is a plain inherit — PATH must survive.
+  it('inherits the host environment (PATH survives so `agy` resolves)', () => {
+    // Nothing about session persistence is controlled by env on this host —
+    // the CLI documents no ephemeral mode at all, so the conversation is
+    // removed after the fact instead. The env is a plain inherit; PATH must
+    // survive so `agy` resolves and its auth is found.
     const env = judgeEnv();
     expect(env.PATH).toBeTruthy();
   });
@@ -98,40 +132,43 @@ describe('runJudge', () => {
     confidence: 0.9,
   };
 
-  it('spawns antigravity exec with --ephemeral + --skip-git-repo-check, the prompt on stdin, and the verdict from the last-message file', () => {
-    const seen: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; stdin?: string } = {};
+  it('runs `agy -p <prompt> --output-format json` and reads the verdict from the envelope', () => {
+    const seen: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; prompt?: string } = {};
     const rec = runJudge([hit], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC BODY',
+      home: mkdtempSync(join(tmpdir(), 'aka-judge-home-')),
     });
 
     const argv = seen.argv ?? [];
-    expect(argv[0]).toBe('exec');
-    // --ephemeral is the session-persistence guard: without it the judge
-    // session (prompt = rubric + raw hits) lands under ~/.gemini/sessions,
-    // where AKA's own backfill would re-ingest the raw findings.
-    expect(argv).toContain('--ephemeral');
-    expect(argv).toContain('--skip-git-repo-check');
-    expect(argv).toContain('--output-last-message');
-    // `-` = read the prompt from stdin, keeping raw off argv.
-    expect(argv.at(-1)).toBe('-');
+    // -p is the documented headless entrypoint; there is no `exec` subcommand
+    // on this host and no --ephemeral/--output-last-message to pass.
+    expect(argv[0]).toBe('-p');
+    expect(argv).toContain('--output-format');
+    expect(argv[argv.indexOf('--output-format') + 1]).toBe('json');
+    expect(argv).not.toContain('exec');
+    expect(argv).not.toContain('--ephemeral');
 
-    // rawMatch rides on stdin — the rubric judges the actual value;
-    // --ephemeral keeps it out of any persisted session, and stdin (unlike
-    // argv) keeps it off the process list and out of ARG_MAX. filePath is
-    // dropped and context is masked before it crosses (covered below), so
-    // rawMatch is the only raw field that leaves.
-    expect(seen.stdin).toContain('AKIAIOSFODNN7EXAMPLE');
-    expect(seen.stdin).toContain('RUBRIC BODY');
-    // The subprocess env is the inherited host env (PATH + GEMINI_HOME auth),
-    // untouched — exactly what judgeEnv() snapshots.
+    // rawMatch rides in the prompt — the rubric judges the actual value.
+    // filePath is dropped and context is masked before it crosses (covered
+    // below), so rawMatch is the only raw field that leaves.
+    expect(seen.prompt).toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(seen.prompt).toContain('RUBRIC BODY');
+    // The subprocess env is the inherited host env, untouched — exactly what
+    // judgeEnv() snapshots.
     expect(seen.env).toEqual(judgeEnv());
 
     expect(rec.perCategory[0]?.action).toBe('block');
   });
 
-  it('passes the prompt on stdin, never in argv, and cleans up the temp output dir', () => {
-    const seen: { argv?: readonly string[]; stdin?: string } = {};
+  it('carries the raw hits in ARGV — the documented regression this host forces', () => {
+    // The Codex/Claude judges keep raw off argv by feeding the prompt on stdin.
+    // `agy` documents no stdin input, so raw DOES ride argv here and is visible
+    // to `ps` for the life of the run. Pin it as a deliberate, disclosed
+    // property rather than letting it flip silently: if the host ever grows a
+    // stdin or prompt-file input, this test is what says the consent copy and
+    // the module header have to be revisited too.
+    const seen: { argv?: readonly string[]; prompt?: string } = {};
     const rec = runJudge(
       [
         {
@@ -150,14 +187,12 @@ describe('runJudge', () => {
       {
         spawn: fakeSpawn('```json\n{"perCategory":[],"notes":"ok"}\n```', seen),
         loadRubric: () => 'RUBRIC',
+        home: mkdtempSync(join(tmpdir(), 'aka-judge-home-')),
       },
     );
-    const argv = seen.argv ?? [];
-    expect(argv.join(' ')).not.toContain('AKIAREALKEY');
-    expect(seen.stdin).toContain('AKIAREALKEY'); // raw rides stdin, isolated subprocess only
+    expect((seen.argv ?? []).join(' ')).toContain('AKIAREALKEY');
+    expect(seen.prompt).toContain('AKIAREALKEY');
     expect(rec.notes).toBe('ok');
-    // The mkdtemp dir holding the last-message file is removed after the run.
-    expect(existsSync(dirname(outFileOf(argv)))).toBe(false);
   });
 
   // Every field on the TriageHit schema is either DISCLOSED (crosses to the model
@@ -187,18 +222,20 @@ describe('runJudge', () => {
     const full: TriageHit = {
       ...hit,
       id: '7',
-      filePath: '/Users/dev/.antigravity/sessions/2026/01/01/rollout-x.jsonl',
+      filePath:
+        '/Users/dev/.gemini/antigravity-cli/brain/conv-x/.system_generated/logs/transcript.jsonl',
       valueFingerprint: 'HMAC-of-the-secret',
       keyVersion: 1,
     };
-    const seen: { stdin?: string } = {};
+    const seen: { prompt?: string } = {};
     runJudge([full], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
+      home: tempHome(),
     });
 
     // The hits ride as JSONL inside the prompt's last fenced block.
-    const fenced = /```\n([\s\S]*?)\n```\n?$/.exec(seen.stdin ?? '');
+    const fenced = /```\n([\s\S]*?)\n```\n?$/.exec(seen.prompt ?? '');
     if (fenced?.[1] === undefined) throw new Error('no fenced hit block on stdin');
     const lines = fenced[1].split('\n').filter((l) => l !== '');
     expect(lines).toHaveLength(1);
@@ -217,39 +254,43 @@ describe('runJudge', () => {
     expect(sent.context).not.toContain(hit.rawMatch);
     expect(sent.context).toContain('export KEY=');
     // The dropped provenance/correlator fields never reach the model.
-    expect(seen.stdin).not.toContain('/Users/dev/.antigravity/sessions/2026/01/01/rollout-x.jsonl');
-    expect(seen.stdin).not.toContain('HMAC-of-the-secret');
-    expect(seen.stdin).not.toContain('filePath');
-    expect(seen.stdin).not.toContain('valueFingerprint');
+    expect(seen.prompt).not.toContain(
+      '/Users/dev/.gemini/antigravity-cli/brain/conv-x/.system_generated/logs/transcript.jsonl',
+    );
+    expect(seen.prompt).not.toContain('HMAC-of-the-secret');
+    expect(seen.prompt).not.toContain('filePath');
+    expect(seen.prompt).not.toContain('valueFingerprint');
   });
 
   it('drops filePath from the judge payload (it encodes the OS username and project dirs)', () => {
-    const seen: { stdin?: string } = {};
+    const seen: { prompt?: string } = {};
     runJudge([{ ...hit, filePath: '/Users/alicesecret/projects/topsecret/rollout.jsonl' }], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
+      home: tempHome(),
     });
-    expect(seen.stdin).not.toContain('alicesecret');
-    expect(seen.stdin).not.toContain('topsecret');
-    expect(seen.stdin).not.toContain('filePath');
+    expect(seen.prompt).not.toContain('alicesecret');
+    expect(seen.prompt).not.toContain('topsecret');
+    expect(seen.prompt).not.toContain('filePath');
   });
 
   it('masks a secret that appears only in the context window; rawMatch stays legible', () => {
     // A second, distinct AWS key living ONLY in the surrounding context — not the
     // finding's own value. It must not cross to the model.
     const contextOnlySecret = ['AKIA', 'ZYXWVUTSRQPONMLK'].join('');
-    const seen: { stdin?: string } = {};
+    const seen: { prompt?: string } = {};
     runJudge([{ ...hit, context: `aws_a=${hit.rawMatch} aws_b=${contextOnlySecret}` }], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
+      home: tempHome(),
     });
-    expect(seen.stdin).toContain(hit.rawMatch);
-    expect(seen.stdin).not.toContain(contextOnlySecret);
+    expect(seen.prompt).toContain(hit.rawMatch);
+    expect(seen.prompt).not.toContain(contextOnlySecret);
     // Positive check: masking stays SELECTIVE, not a blanket redaction. If
     // maskText fell back to its fail-secure `[REDACTED]` path, the two assertions
     // above would still hold while the window the judge relies on was gone — so
     // pin that the non-secret structure of the context survives.
-    expect(seen.stdin).toContain('aws_a=');
+    expect(seen.prompt).toContain('aws_a=');
   });
 
   it('does not mutate the source hit (dropped fields survive for the writeback path)', () => {
@@ -269,53 +310,142 @@ describe('runJudge', () => {
     expect(src.context).toBe(hit.context);
   });
 
-  it('fails loud (and raw-free) when the subprocess writes no last-message file', () => {
-    // A spawn that exits cleanly but never writes the file — the verdict is
+  it('fails loud (and raw-free) when the subprocess prints nothing', () => {
+    // A spawn that exits cleanly but prints no envelope — the verdict is
     // unreadable and must not pass silently.
-    try {
-      runJudge([hit], { spawn: () => undefined, loadRubric: () => 'RUBRIC' });
-      throw new Error('expected runJudge to throw');
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain('no last-message file');
-      expect(message).not.toContain(hit.rawMatch);
-    }
+    const err = errorFrom(() =>
+      runJudge([hit], { spawn: () => '', loadRubric: () => 'RUBRIC', home: tempHome() }),
+    );
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('produced no output');
+    expect(err?.message).not.toContain(hit.rawMatch);
   });
 
-  it('re-throws a spawn failure as raw-free metadata (execFileSync captures raw-bearing output)', () => {
-    // execFileSync throws an error whose captured .stdout/.stderr can carry raw
-    // content (`antigravity exec` logs the run, which can echo the prompt). Simulate
-    // that shape and assert the raw value never rides the re-thrown error out
-    // to the parent stderr.
-    const spawn = (): void => {
-      const err = new Error(`Command failed: antigravity exec`) as Error & {
-        status?: number;
-        stdout?: string;
-        stderr?: string;
-      };
+  it.each([
+    ['not JSON at all', 'was not valid JSON'],
+    ['[1,2,3]', 'was not a JSON object'],
+    ['{"conversation_id":"c"}', 'carried no response string'],
+  ])('fails loud (and raw-free) on a malformed envelope: %s', (stdout, expected) => {
+    const err = errorFrom(() =>
+      runJudge([hit], { spawn: () => stdout, loadRubric: () => 'RUBRIC', home: tempHome() }),
+    );
+    expect(err).toBeDefined();
+    expect(err?.message).toContain(expected);
+    expect(err?.message).not.toContain(hit.rawMatch);
+  });
+
+  it('re-throws a spawn failure as raw-free metadata (the error echoes raw-bearing argv)', () => {
+    // On this host the prompt rides ARGV, so execFileSync's own error message
+    // ("Command failed: agy -p <the whole prompt>") carries every raw hit
+    // outright — as can its captured .stdout/.stderr. Simulate that shape and
+    // assert none of it rides the re-thrown error out to the parent stderr.
+    const spawn = (): string => {
+      const err = new Error(
+        `Command failed: agy -p RUBRIC ... ${hit.rawMatch} ... --output-format json`,
+      ) as Error & { status?: number; stdout?: string; stderr?: string };
       err.status = 1;
       err.stdout = `partial output leaking ${hit.rawMatch}`;
       err.stderr = 'boom';
       throw err;
     };
-    try {
-      runJudge([hit], { spawn, loadRubric: () => 'RUBRIC' });
-      throw new Error('expected runJudge to throw');
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).not.toContain(hit.rawMatch);
-      expect(message).not.toContain('export KEY=');
-      // still useful: it names the failure + surfaces the raw-free exit status
-      expect(message).toContain('judge subprocess failed');
-      expect(message).toContain('exit 1');
-      // and the raw-bearing spawn error is NOT chained as `cause` — a future
-      // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
-      expect((err as Error).cause).toBeUndefined();
-    }
+    const err = errorFrom(() =>
+      runJudge([hit], { spawn, loadRubric: () => 'RUBRIC', home: tempHome() }),
+    );
+    expect(err).toBeDefined();
+    const message = err?.message ?? '';
+    expect(message).not.toContain(hit.rawMatch);
+    expect(message).not.toContain('export KEY=');
+    // still useful: it names the failure + surfaces the raw-free exit status
+    expect(message).toContain('judge subprocess failed');
+    expect(message).toContain('exit 1');
+    // and the raw-bearing spawn error is NOT chained as `cause` — a future
+    // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
+    expect(err?.cause).toBeUndefined();
+  });
+
+  describe('judge-conversation cleanup', () => {
+    it('removes the conversation the run reported', () => {
+      const home = tempHome();
+      const dir = seedConversation(home, 'conv-judge');
+      expect(existsSync(dir)).toBe(true);
+      runJudge([hit], {
+        spawn: fakeSpawn(VERDICT_FENCE, undefined, 'conv-judge'),
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(dir)).toBe(false);
+    });
+
+    it("leaves a user's other conversations untouched", () => {
+      const home = tempHome();
+      const mine = seedConversation(home, 'conv-judge');
+      const theirs = seedConversation(home, 'conv-user-work');
+      runJudge([hit], {
+        spawn: fakeSpawn(VERDICT_FENCE, undefined, 'conv-judge'),
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(mine)).toBe(false);
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('removes a single new conversation when the run reported no id', () => {
+      const home = tempHome();
+      seedConversation(home, 'conv-pre-existing');
+      let created = '';
+      runJudge([hit], {
+        // No conversation_id in the envelope, and the run creates its
+        // conversation as a real `agy` would — attribution falls back to the diff.
+        spawn: () => {
+          created = seedConversation(home, 'conv-new');
+          return JSON.stringify({ status: 'ok', response: VERDICT_FENCE });
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(created)).toBe(false);
+    });
+
+    it('leaves an AMBIGUOUS new conversation alone rather than risk deleting the user’s', () => {
+      // Two conversations appear during the run: the judge's and one the user
+      // started concurrently in another terminal. Nothing here can tell them
+      // apart, and deleting the wrong one is unrecoverable — so neither goes.
+      const home = tempHome();
+      let a = '';
+      let b = '';
+      runJudge([hit], {
+        spawn: () => {
+          a = seedConversation(home, 'conv-a');
+          b = seedConversation(home, 'conv-b');
+          return JSON.stringify({ status: 'ok', response: VERDICT_FENCE });
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(a)).toBe(true);
+      expect(existsSync(b)).toBe(true);
+    });
+
+    it('still removes the conversation when the verdict itself fails to parse', () => {
+      // The cleanup is in a finally: a run that errors after the transcript was
+      // written must not leave the raw-bearing conversation on disk.
+      const home = tempHome();
+      const dir = seedConversation(home, 'conv-judge');
+      const err = errorFrom(() =>
+        runJudge([hit], {
+          spawn: fakeSpawn('no fence in this message', undefined, 'conv-judge'),
+          loadRubric: () => 'RUBRIC',
+          home,
+        }),
+      );
+      expect(err).toBeDefined();
+      expect(err?.message).toContain('unparseable');
+      expect(existsSync(dir)).toBe(false);
+    });
   });
 
   it('does not fall back to the live spawn when deps.spawn is missing', () => {
-    // The seam is required, not defaulted. A future `deps.spawn ?? spawnCodex`
+    // The seam is required, not defaulted. A future `deps.spawn ?? spawnAgy`
     // would turn any caller that forgot to inject into a live egress. It fails
     // as the programming error it is — a TypeError before the rubric is read
     // or any raw hit is assembled into a prompt.
@@ -360,37 +490,38 @@ describe('runJudge', () => {
     chmodSync(probeLocked, 0o700);
     rmSync(scratch, { recursive: true, force: true });
 
-    let outDir = '';
-    let locked = '';
-    const threw = (() => {
-      try {
-        runJudge([hit], {
-          spawn: (argv) => {
-            outDir = dirname(outFileOf(argv));
-            locked = lock(outDir);
-            throw Object.assign(new Error(`Command failed: antigravity ${hit.rawMatch}`), {
-              status: 7,
-            });
-          },
-          loadRubric: () => 'RUBRIC',
-        });
-      } catch (e) {
-        return e as Error;
-      }
-      throw new Error('expected runJudge to throw');
-    })();
+    // A brain root the judge cannot unlink from: the conversation subdir
+    // survives the cleanup, so rmSync throws a real EACCES from a real syscall.
+    const home = tempHome();
+    seedConversation(home, 'conv-judge');
+    const brain = join(home, '.gemini', 'antigravity-cli', 'brain');
+    const conversation = join(brain, 'conv-judge');
+    chmodSync(brain, 0o500);
+
+    const threw = errorFrom(() =>
+      runJudge([hit], {
+        spawn: () => {
+          throw Object.assign(new Error(`Command failed: agy -p ... ${hit.rawMatch}`), {
+            status: 7,
+          });
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      }),
+    );
     try {
       // The fs error from the failed removal did NOT displace the raw-free one
       // the caller has to act on — apply-suppressions prints exactly this
       // message to the parent's stderr.
-      expect(threw.message).toBe('antigravity exec judge subprocess failed (exit 7)');
-      expect(threw.message).not.toContain(hit.rawMatch);
-      // The positive control: the dir survived, so the cleanup really did fail
-      // rather than this passing against a removal that quietly worked.
-      expect(existsSync(outDir)).toBe(true);
+      expect(threw).toBeDefined();
+      expect(threw?.message).toBe('agy judge subprocess failed (exit 7)');
+      expect(threw?.message).not.toContain(hit.rawMatch);
+      // The positive control: the conversation survived, so the cleanup really
+      // did fail rather than this passing against a removal that quietly worked.
+      expect(existsSync(conversation)).toBe(true);
     } finally {
-      if (locked !== '') chmodSync(locked, 0o700);
-      rmSync(outDir, { recursive: true, force: true });
+      chmodSync(brain, 0o700);
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

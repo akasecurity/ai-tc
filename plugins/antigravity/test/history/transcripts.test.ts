@@ -75,7 +75,8 @@ describe('parseTranscript — prompt/response text', () => {
   });
 
   it('stamps the source rollout path onto every message so a surfaced finding can be located', () => {
-    const path = '/Users/me/.antigravity/sessions/2026/07/14/rollout-session.jsonl';
+    const path =
+      '/Users/me/.gemini/antigravity-cli/brain/conv-session/.system_generated/logs/transcript.jsonl';
     const jsonl = [
       SESSION_META,
       line({

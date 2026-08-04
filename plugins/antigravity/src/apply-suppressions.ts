@@ -31,7 +31,7 @@ import { loadConfig } from '@akasecurity/plugin-sdk';
 import { runApply } from '@akasecurity/setup-wizard';
 
 import { isModelJudgeConsentValid } from './triage/consent.ts';
-import { runJudge, spawnCodex } from './triage/judge.ts';
+import { runJudge, spawnAgy } from './triage/judge.ts';
 import { adapterPresenter } from './triage/presenter.ts';
 
 function fail(message: string): never {
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     // Called only on the preview path — the confirm path never reads a stream.
     readStream: (streamPath) =>
       streamPath !== undefined ? readFileSync(streamPath, 'utf8') : readFileSync(0, 'utf8'),
-    runJudge: (hits) => runJudge(hits, { spawn: spawnCodex, loadRubric }),
+    runJudge: (hits) => runJudge(hits, { spawn: spawnAgy, loadRubric }),
     openDb: () => {
       const db = openLocalDatabase(loadConfig().dataDir);
       return {

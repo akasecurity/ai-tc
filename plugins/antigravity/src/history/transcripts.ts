@@ -1,26 +1,28 @@
-// Antigravity CLI transcript adapter: turn the host's `~/.gemini/sessions/YYYY/MM/DD/
-// rollout-*.jsonl` session logs into the text-bearing messages worth scanning
-// for already-leaked secrets. This is the ONE place that knows the Antigravity
-// rollout line shape; the scan orchestrator (./scan.ts) stays format-agnostic
-// and reuses the SDK detect→record path — mirrors
+// Antigravity CLI transcript adapter: turn the host's per-conversation JSONL
+// transcripts under `~/.gemini/antigravity-cli/brain/<conversationId>/
+// .system_generated/logs/` into the text-bearing messages worth scanning for
+// already-leaked secrets. This is the ONE place that knows the Antigravity
+// record shape; the scan orchestrator (./scan.ts) stays format-agnostic and
+// reuses the SDK detect→record path — mirrors
 // plugins/claude-code/src/history/transcripts.ts, which plays the same role
 // for `~/.claude/projects/*/*.jsonl`.
 //
-// Field names below are taken from openai/antigravity's own wire types
-// (antigravity-rs/protocol/src/protocol.rs — RolloutLine/RolloutItem/EventMsg;
-// antigravity-rs/protocol/src/models.rs — ResponseItem/ContentItem), read directly
-// from the `openai/antigravity` repo (main branch) rather than guessed. Still worth
-// spot-checking against a live `antigravity` session before relying on this in
-// production — Antigravity's rollout schema is actively evolving (see the repo's own
-// "compatibility-only field" comments).
+// STATUS: the directory layout below is verified against Google's Antigravity
+// documentation; the RECORD parsing is NOT. The line shape this file decodes
+// (`{timestamp, ordinal, type, payload}` with `session_meta` / `response_item` /
+// `event_msg` tags) is the Codex CLI rollout schema, carried over when this
+// package was templated from plugins/codex and never ported. Antigravity writes
+// a different, currently undocumented record shape — published descriptions
+// confirm only that each line identifies an actor (User / Model / Tool /
+// System) and carries text, tool calls and errors.
 //
-// Every rollout line has the shape:
-//   { "timestamp": "<ISO8601>", "ordinal"?: number, "type": "<tag>", "payload": {...} }
-// (`RolloutLine` flattens `RolloutItem`'s internally-tagged
-// `{type, payload}` onto itself.) We only care about three tags:
-//   - "session_meta"  → SessionMetaLine (session id, cwd, cli_version, once per file)
-//   - "response_item" → ResponseItem (message / function_call / tool output / …)
-//   - "event_msg"     → EventMsg (token_count, exec_command_begin/end, patch_apply_begin/end, …)
+// So `iterateHistory`/`iterateUsage` find the right FILES and then decode
+// almost nothing from them: a real Antigravity transcript matches none of the
+// tags below, so the parse yields no messages rather than wrong ones. That is
+// the intended failure direction — under-report, never mis-report — but it
+// means the historical backfill does not yet cover this host. Live hook capture
+// is unaffected; it never goes through this file. Porting the parser is blocked
+// on a real transcript sample to pin the field names against.
 import type { Dirent } from 'node:fs';
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -40,17 +42,29 @@ export interface ScannedMessage {
   filePath: string;
 }
 
-// Where Antigravity CLI writes its rollout files. Antigravity itself honors a GEMINI_HOME
-// override, but this reader intentionally does not — matches
+// Where the Antigravity CLI writes its per-conversation transcripts:
+//   ~/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs/*.jsonl
+// The walk below sweeps the `brain` root recursively, so it reaches the
+// `.system_generated/logs` leaf without hardcoding that tail. Antigravity honors a
+// GEMINI_HOME override, but this reader intentionally does not — matches
 // plugins/claude-code/src/history/transcripts.ts's transcriptsDir(), which
 // likewise reads no env override for ~/.claude (n/no-process-env stays on for
 // this package; GEMINI_HOME support can be added later behind its own
 // file-scoped opt-out if it turns out to be needed). `home` overrides the OS
 // home root; it is supplied only by tests/harnesses that need a throwaway
-// ~/.gemini in isolation — no production call site passes it, so every real run
+// home in isolation — no production call site passes it, so every real run
 // falls back to the OS home.
 export function transcriptsDir(home?: string): string {
-  return join(home ?? homedir(), '.antigravity', 'sessions');
+  return join(home ?? homedir(), '.gemini', 'antigravity-cli', 'brain');
+}
+
+// One conversation's subtree under the brain root. The judge uses this to
+// remove the conversation its own run created: this host documents no
+// ephemeral/no-persist mode, so a judge run — whose prompt carries every raw
+// hit — lands in the same store this file's walk scans, and would be
+// re-ingested as fresh findings on the next sweep if it were left in place.
+export function conversationDir(conversationId: string, home?: string): string {
+  return join(transcriptsDir(home), conversationId);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -504,14 +518,14 @@ export interface HistoryWalkOptions {
   beforeMs?: number; // setup-start upper bound: drop messages at/after this ms
 }
 
-// Recursively collect rollout file paths under the year/month/day-sharded
-// sessions root (`~/.gemini/sessions/YYYY/MM/DD/rollout-*.jsonl`), unlike
-// Claude Code's flat two-level `projects/<project>/*.jsonl` layout. Only
-// plain `.jsonl` files are read — `.jsonl.zst` (Antigravity's compressed archive
-// format for inactive sessions) is intentionally skipped for now rather than
-// guessed at: decompressing it needs a zstd dependency this self-contained
-// hook bundle doesn't carry. This means the backfill sweep under-covers
-// long-archived sessions; live hook capture is unaffected.
+// Recursively collect transcript file paths under the brain root
+// (`<brain>/<conversationId>/.system_generated/logs/*.jsonl`), unlike Claude
+// Code's flat two-level `projects/<project>/*.jsonl` layout. The recursion is
+// what keeps the `.system_generated/logs` tail out of the path helper, so a
+// layout change one level deep does not need a code change here. Only plain
+// `.jsonl` files are read; any compressed or rotated archive format this host
+// may use is skipped rather than guessed at, so the sweep under-covers
+// archived conversations. Live hook capture is unaffected.
 function* walkJsonlFiles(dir: string, depth = 0): Generator<string> {
   if (depth > 6) return; // guard against a pathological symlink loop
   let entries: Dirent[];

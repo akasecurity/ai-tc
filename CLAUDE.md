@@ -26,7 +26,23 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 
 ### 1. Fail-open everywhere in the plugin
 
-The plugin **must never break a user's Claude session**. Every hook handler wraps everything in try/catch and falls back to `{ action: 'allow' }`.
+The plugin **must never break a user's Claude session**. Every hook entry wraps `main()` in
+try/catch and then calls `process.exit(0)`, so a hook that fails writes **nothing to stdout and
+exits 0** — which the hook protocol reads as "no opinion", i.e. allow. Failing open is the
+_absence_ of output, not a payload.
+
+**No hook emits `{ action: 'allow' }`, and none should start.** `action` is a `CaptureResult`
+field that never crosses the wire; the internal fallback `handleCapture` returns when the runtime
+throws is `{ action: 'log' }`, and `'allow'` is only ever assigned to an **excepted** finding.
+Emitting a real opinion means writing one JSON object to stdout via `emit()`
+(`plugins/claude-code/src/hooks/shared.ts`), whose four shapes are `decision`, `systemMessage`,
+`hookSpecificOutput.permissionDecision` and `hookSpecificOutput.updatedToolOutput` — the write is
+awaited, because `process.exit` does not flush a pending pipe write and a truncated object reads
+as invalid JSON, passing the original payload through unscanned.
+
+`plugins/claude-code/test/e2e/fail-open.e2e.test.ts` is what holds this rather than review: it
+drives the built hooks against malformed, truncated, binary and oversized stdin, asserting exit 0
+and empty stdout, and its `expectNoActionKey` fails any emitted payload carrying an `action` key.
 
 ### 2. Contracts before code
 
@@ -38,16 +54,28 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                      | Mechanism                         | Why                                         |
-| ----------------------------------------- | --------------------------------- | ------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart     |
-| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server               |
-| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | resolving the transcript root               |
-| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
+| Site                                      | Mechanism                         | Why                                                    |
+| ----------------------------------------- | --------------------------------- | ------------------------------------------------------ |
+| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart                |
+| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server                          |
+| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips |
+| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth            |
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
+
+**Both mechanisms are inventoried, not just the config one.** An inline disable is invisible to
+anything that resolves configs, so the check above would never have seen one had it been the only
+check: `packages/eslint-config/test/inline-disables.test.js` reads the **directives** instead, over
+every tracked lintable file, and asserts the set that disables `n/no-process-env` **exactly** — a
+floor would let a new one in, which is the whole failure mode. Its expectation is wider than this
+table on purpose, because this table is scoped to shipped source: the test harnesses that spawn the
+real hooks carry inline disables of their own, and until that suite landed nothing inventoried
+them at all. Two forms this table's language does not reach are refused outright there rather than
+tabled — a bare `/* eslint-disable */`, which takes every rule with it, and an inline
+`/* eslint <rule>: … */`, which can empty a ban while leaving it at `error`. Both run to the end of
+the file, so both exempt code nobody has written yet.
 
 ### 4. No network calls
 
@@ -69,6 +97,17 @@ Five files carry a genuine local-only opt-out:
 | `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
+
+**Inline disables are inventoried too, and across the whole tree rather than four files.** Every
+audit named above resolves **configs**, so none of them can see an inline `eslint-disable` — and
+one line of it admits `node:https` into any package's shipped source with `pnpm lint` at exit 0.
+The raw-guard measure closes that for the four files it pins and only those.
+`packages/eslint-config/test/inline-disables.test.js` is the tree-wide half: it reads the
+directives in every tracked lintable file and asserts the set disabling any of the four network
+rules **exactly**. That set is one entry long — this section's `fetch` (inline) — and an exact set
+is the point, since a guard that only forbids removals lets the next one in. It also refuses the
+two forms this table has no language for: a bare `/* eslint-disable */`, which disables all four at
+once, and an inline `/* eslint <rule>: … */`, which can empty a ban while leaving it at `error`.
 
 **Which configs that audit reads is derived, not globbed.** An ESLint config enforces
 something exactly when a `lint` script points ESLint at it, so `no-network.test.js` walks the
@@ -117,11 +156,11 @@ not a product path; nothing a user installs performs it.
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                             | Cannot see                                                                     |
-| --------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------ |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`; a file no lint pass targets |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net`                            |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only                              |
+| Gate                                          | Catches                                             | Cannot see                                                                                                                                                                                                                  |
+| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net`                                                                                                                                                                         |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -272,7 +311,7 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 
 **Cross-cutting rules:**
 
-- No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (the plugin's provider resolution, the CLI spawning the dashboard).
+- No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
 - No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.

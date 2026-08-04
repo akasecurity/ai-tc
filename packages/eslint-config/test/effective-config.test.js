@@ -18,6 +18,7 @@ import {
 } from './helpers/claude-md.js';
 import {
   eslintInvocations,
+  LINTABLE_EXT,
   packageLintInvocations,
   parseWorkspaceGlobs,
   REPO_ROOT,
@@ -108,12 +109,6 @@ import {
 // script now, so every workspace package is guarded and nothing here is exempt.
 const CONFIG_OPT_OUT = [];
 const OPT_OUT_NAMES = new Set(CONFIG_OPT_OUT.map((o) => o.name));
-
-// The extensions ESLint actually lints here. This is what separates a code
-// directory from a data one: packages/schema/drizzle holds only .sql/.json
-// migrations, so there is nothing there for the ban to guard, while
-// plugins/claude-code/eval ships a real .ts file and belongs behind it.
-const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
 
 // Which directories hold code is DERIVED per package, never hardcoded. A fixed
 // ['src', 'app', 'test'] list would be the same hand-maintained hole this file

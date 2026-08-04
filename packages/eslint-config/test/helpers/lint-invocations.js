@@ -492,3 +492,21 @@ export function trackedEslintConfigFiles() {
     .filter((file) => ESLINT_CONFIG_BASENAME.test(posix.basename(file)))
     .sort();
 }
+
+// The extensions ESLint actually lints here. This is what separates a code
+// directory from a data one: packages/schema/drizzle holds only .sql/.json
+// migrations, so there is nothing there for the bans to guard, while
+// plugins/claude-code/eval ships a real .ts file and belongs behind them.
+//
+// It lives beside trackedFiles() for the same reason that walk does. Two audits
+// asking "which files does the workspace lint?" off two copies of this pattern
+// would be free to disagree, and the disagreement is silent in the worst
+// direction: a file one audit counts as source and the other does not is a file
+// covered by one guard and inventoried by neither.
+export const LINTABLE_EXT = /\.[cm]?[jt]sx?$/;
+
+/**
+ * Every git-tracked file ESLint would lint, in repo-relative posix form.
+ * @returns {string[]}
+ */
+export const lintableTrackedFiles = () => trackedFiles().filter((f) => LINTABLE_EXT.test(f));

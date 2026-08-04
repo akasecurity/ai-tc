@@ -39,9 +39,15 @@ import { lintableTrackedFiles, REPO_ROOT } from './helpers/lint-invocations.js';
 //
 // Two readings, because neither alone is enough:
 //
-//   SYNTACTIC — what directives exist. It sees a disable that suppresses nothing
-//     TODAY, which is the state a blanket disable sits in right up until someone
-//     adds a fetch() beneath it. A behavioural reading cannot see that at all.
+//   SYNTACTIC — what directives exist, whether or not they are suppressing
+//     anything today. A directive suppressing NOTHING is caught at lint time by
+//     `reportUnusedDisableDirectives`, so that is not the case this reading is
+//     for. The case it is for is a blanket disable held open by a rule OUTSIDE
+//     these five: the directive is in use, so lint is silent, and none of the
+//     five fires, so the behavioural diff is empty — while the file is exempt
+//     from all five for whatever gets written under it next. That configuration
+//     is pinned below, because it is the only measurement where the two
+//     readings disagree and therefore the whole reason there are two.
 //   BEHAVIOURAL — what ESLint really honours, from linting each file twice and
 //     diffing. It cannot be fooled by a directive spelling this file did not
 //     anticipate, which is what keeps the syntactic reader honest rather than
@@ -409,6 +415,49 @@ describe('the directive reader', () => {
       ];
     });
     expect(disagreements).toEqual([]);
+  });
+
+  it('is the only reading that sees a blanket disable held open by an unguarded rule', () => {
+    // The one measurement where the two readings disagree, and therefore the
+    // reason the suite takes two. Neither of the cheaper answers reaches this
+    // file: lint is silent because the directive IS in use, and the behavioural
+    // diff is empty because none of the five fires under it yet. The exemption
+    // is real all the same — every one of the five is off from that comment to
+    // the end of the file, for whatever is written there next.
+    //
+    // Drop the syntactic reading and the tree assertions stay green on exactly
+    // this shape, which is what makes it worth a case of its own rather than a
+    // line in a comment.
+    const source = `/* eslint-disable */\nconsole.log('x');\n`;
+
+    // Lint time: the blanket suppresses `no-console`, so it is a USED directive
+    // and `reportUnusedDisableDirectives` — which only fires on one suppressing
+    // nothing at all — has nothing to say.
+    const config = lintConfig(false);
+    const withUnguardedRule = {
+      ...config,
+      rules: { ...config.rules, 'no-console': 'error' },
+      linterOptions: base.find((entry) => entry.linterOptions)?.linterOptions,
+    };
+    // The positive control on that silence, and it is not optional: an empty
+    // message list is what a config with no linterOptions at all produces too,
+    // so without this the assertion below passes while proving nothing. Strip
+    // the line the blanket is covering and the SAME config reports the
+    // directive — so the silence is a fact about this shape, not about the
+    // linter being unwired.
+    const latent = new Linter().verify('/* eslint-disable */\n', withUnguardedRule);
+    expect(latent.map((m) => m.message)).toEqual([
+      'Unused eslint-disable directive (no problems were reported).',
+    ]);
+    expect(latent.every((m) => m.severity === 2)).toBe(true);
+
+    expect(new Linter().verify(source, withUnguardedRule)).toEqual([]);
+
+    // Behavioural: nothing of the five fires either way, so the diff is empty.
+    expect(eslintSuppresses(source)).toEqual([]);
+
+    // Syntactic: the exemption is there, and it covers all five.
+    expect(readerSays(source)).toEqual(GUARDED_RULES);
   });
 
   it('pre-filters on a prefix every disabling kind really starts with', () => {

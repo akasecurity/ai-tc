@@ -5,8 +5,8 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+plugin, the Codex CLI plugin, and the `aka` CLI capture agent activity into a local SQLite
+store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
 sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
@@ -20,7 +20,7 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code plugin, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
@@ -69,16 +69,18 @@ the fault rows prove silence, and only the enforcement rows can prove what the n
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Six places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                      | Mechanism                         | Why                                                    |
-| ----------------------------------------- | --------------------------------- | ------------------------------------------------------ |
-| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart                |
-| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server                          |
-| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips |
-| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth            |
+| Site                                        | Mechanism                         | Why                                                        |
+| ------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
+| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
+| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                              |
+| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
+| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
+| `plugins/codex/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a seventh site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -155,12 +157,13 @@ the tree really holds rather than what a lint script says.
 
 `DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
 
-Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
+Network access happens **only through child processes**. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked with `maskText`, which scans the **bundled** packs rather than the installed set — coverage is still complete because `buildTriageHit` has already redacted every other finding from the full-ruleset scan, and this hit's own value is masked here where it appears in the window; `rawMatch` is therefore the only raw value that crosses), `id` (a sequential counter the rubric requires the model to echo), and the non-sensitive scoring labels `ruleId`, `category`, `severity`, `maskedMatch` and `confidence`. `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. `historicalAccess` gates the READ only — a `full` grant authorizes no egress by itself, and no consent surface may imply that it does. Both grants are revocable under Settings, where **Historical access** and **Model-judge consent** are separate controls; revoking stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly; it must never be described as staying "inside an isolated subprocess." Four surfaces carry that copy and move together: `plugins/claude-code/commands/setup.md`, the `[^egress]` footnote in each of the two READMEs, and the Settings copy in `packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx`.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
+5. The Codex `aka-setup` wizard's judge subprocess (`plugins/codex/src/triage/judge.ts`), which spawns `codex exec` and sends the same minimized `toJudgePayload` projection to the model API as the Claude Code judge — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — chunked into several `codex exec` calls for a large history, under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit (revoking stops future scans but cannot recall what was already sent). The `--ephemeral` flag stops the judge session from being written under `~/.codex/sessions` (which AKA's own backfill scans — a persisted judge session would re-ingest the raw findings it carries), but that is session-persistence isolation, **not** network isolation. The same consent-copy honesty rules apply (`plugins/codex/skills/setup/SKILL.md`).
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -331,10 +334,13 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
-                     directly at SessionStart), ignore (gitignore semantics for
+                     directly at SessionStart — `provider.ts` for Claude Code,
+                     `provider-codex.ts` for Codex CLI, each its own file-scoped
+                     `n/no-process-env` opt-out), ignore (gitignore semantics for
                      the SessionStart project-file walk), node:worker_threads
                      (the isolated scan — see Architecture principles §5)
                      `src/scan-worker.ts` is the worker's own entry, exported as the
@@ -353,6 +359,13 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
                      those at its own I/O boundary, which is what lets multiple
                      harness plugins share this without forking it.)
 ```
+
+Both plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ only in
+their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook contract)
+plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
+resolution, tool-name → scannable-field tables). See `plugins/codex/skills/setup/SKILL.md`'s
+"Known limitation" note for the one real behavioral gap between the two: Codex does not yet
+fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls, only `Bash`.
 
 **Cross-cutting rules:**
 
@@ -448,6 +461,7 @@ replays frozen SQL from already-shipped binaries, which app-level guards cannot 
 cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui as a spawned Next server)
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
+plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
@@ -595,14 +609,14 @@ Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refac
 
 ## Releasing (CLI / plugin versioning)
 
-Both shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All three shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`** bundles `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they
-  pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to any of
-  those changes the plugin's `scripts/*.js`.
+- **`plugins/claude-code`** and **`plugins/codex`** each bundle `@akasecurity/plugin-runtime` +
+  `plugin-sdk` and everything they pull in — `@akasecurity/schema`, `persistence`,
+  `detections`. A change to any of those changes BOTH plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
@@ -611,14 +625,16 @@ When a change touches the web-ui or any bundled package and the user wants to pu
 
 1. **Bump every affected artifact**:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
-     and/or the web-ui it ships; the plugin bundles none of these).
+     and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
-   - `setup-wizard` change → `plugins/claude-code` only (the plugin bundles it;
-     the CLI does not).
-   - The CLI and plugin normally move together on one shared version line.
-2. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
-   `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
+     change → **all three** of `cli`, `plugins/claude-code`, **and** `plugins/codex` (all bundle them).
+   - `setup-wizard` change → `plugins/claude-code` **and** `plugins/codex` (both bundle
+     it; the CLI does not).
+   - The CLI and both plugins normally move together on one shared version line.
+2. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
+   `plugins/claude-code/package.json`, and `plugins/codex/.codex-plugin/plugin.json` in sync
+   with `plugins/codex/package.json` (identical version within each pair) whenever that plugin
+   is bumped.
 
 **The bump is not a decision to surface during feature work, because it is not made there.**
 Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
@@ -628,8 +644,9 @@ summary or PR description. The steps above are what a **release** does: which ar
 derivable from the bundling rules, and how far they move is settled at release time by whoever
 cuts it.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). The CLI and the plugin
-currently share the `0.9.x` line.
+Versions are bumped by hand in a `chore(release):` commit (no changesets). Every release is a
+bare `X.Y.Z` on the one shared version line — never a pre-release suffix. The CLI and both
+plugins currently share the `0.9.x` line.
 
 ### Binary (SEA) channel — `bin-v*`
 
@@ -910,7 +927,8 @@ Assert a raw value is absent from an **error** run by run, not whole. `not.toCon
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
-`plugins/claude-code/test/helpers/no-echo.ts` and `web-ui/test/helpers/no-echo.ts`. A plain
+`plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
+`web-ui/test/helpers/no-echo.ts` and `packages/setup-wizard/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -918,15 +936,18 @@ ones.
 **Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
 twenty whole-value raw-value assertions in files this convention has not reached —
 `history/`, `journey/`, `remediation/`, `render.test.ts`, `triage/plan-file.test.ts`,
-`hooks/pointer-substitution.test.ts` and `backfill.test.ts` among them. Do not read the rule
-above as a claim that the package is clean. Two shapes are genuinely **exempt** and stay
+`hooks/pointer-substitution.test.ts` and `backfill.test.ts` among them. `plugins/codex` carries
+the same backlog in its counterparts of those files — the helper reached its hook and
+remediation-render assertions, not `history/`, `triage/judge.test.ts` or
+`remediation/redact.test.ts`. Do not read the rule above as a claim that either package is
+clean. Two shapes are genuinely **exempt** and stay
 whole-value: an assertion on a masked preview (`writeback.test.ts` on `maskedValue`,
 `triage/surfaced-secrets.test.ts` on `maskedToken`), because that fragment is revealed on
 purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`, which exist
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All three packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All five packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -934,7 +955,7 @@ run length or emptying the loop cannot go unnoticed — widening `ECHO_RUN` leav
 **caller** green, so the helper's own suite is the only thing that goes red. `web-ui` is the
 worked example of that failure: its copy was inline with no suite, and all 86 of its action
 tests passed with `ECHO_RUN` set to 64. A package wall blocks the import, not the pattern, so a
-fourth package copies **both** files — including the `expect(value).toBeDefined()` guard,
+further package copies **both** files — including the `expect(value).toBeDefined()` guard,
 without which an `undefined` message satisfies the loop vacuously.
 
 **A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built

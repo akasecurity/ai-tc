@@ -33,6 +33,12 @@ export type FieldTokenizer = (
 export const EXECUTABLE_REDACT_NOTE =
   'Masking inside an executable command would silently change what runs, so a redact policy blocks it instead.';
 
+// Woven into the deny message when a redact decision carried no redacted text
+// to put in place, so the block explains why the policy's redact could not be
+// applied rather than the call going out unmasked.
+export const UNREDACTABLE_NOTE =
+  'The redacted form of this input was unavailable, so the call is blocked rather than sent unmasked.';
+
 export type PreToolUseOutput =
   | {
       hookSpecificOutput: {
@@ -87,6 +93,9 @@ export async function decidePreToolUse(
   // Whether the deny (if any) includes an escalated redact — that deny
   // carries EXECUTABLE_REDACT_NOTE so it explains itself.
   let escalated = false;
+  // Whether a redact was denied because no redacted text was available to put
+  // in place — that deny carries UNREDACTABLE_NOTE instead.
+  let escalatedUnredactable = false;
   let updatedInput: Record<string, unknown> | null = null;
   const realized: RealizedRewrite = { pointers: [], degraded: [] };
 
@@ -106,9 +115,6 @@ export async function decidePreToolUse(
       for (const finding of result.findings) blockedRules.add(finding.ruleId);
       if (result.blockedReferences) blockedReferences.push(...result.blockedReferences);
     } else if (action === 'redact') {
-      for (const finding of result.findings) redactedRules.add(finding.ruleId);
-      if (result.blockedReferences) redactedReferences.push(...result.blockedReferences);
-
       // The rewrite: reversible (pointers) when a tokenizer is supplied and
       // the enforced spans are known; otherwise the runtime's one-way text.
       // The tokenizer covers exactly the ENFORCED spans — warn-level findings
@@ -129,11 +135,23 @@ export async function decidePreToolUse(
         }
       }
 
-      // Rebuilt through the path so a nested leaf (MultiEdit's
-      // edits[i].new_string) lands in place with its siblings — and its array
-      // spine — intact. Each pass folds into the previous result, so two
-      // flagged fields of one payload both survive into the emitted input.
-      if (rewritten !== null) {
+      // Decided AFTER the rewrite attempt, because a null `result.text` can
+      // still yield redacted text through the tokenizer. With no redacted form
+      // in hand there is nothing to substitute, and emitting the original under
+      // the "AKA redacted" systemMessage would send the raw value and report it
+      // as masked — so this denies, like the executable-field escalation above.
+      if (rewritten === null) {
+        escalatedUnredactable = true;
+        for (const finding of result.findings) blockedRules.add(finding.ruleId);
+        if (result.blockedReferences) blockedReferences.push(...result.blockedReferences);
+      } else {
+        for (const finding of result.findings) redactedRules.add(finding.ruleId);
+        if (result.blockedReferences) redactedReferences.push(...result.blockedReferences);
+
+        // Rebuilt through the path so a nested leaf (MultiEdit's
+        // edits[i].new_string) lands in place with its siblings — and its array
+        // spine — intact. Each pass folds into the previous result, so two
+        // flagged fields of one payload both survive into the emitted input.
         updatedInput = replaceAtPath(updatedInput ?? toolInput, spec.path, rewritten) as Record<
           string,
           unknown
@@ -154,7 +172,11 @@ export async function decidePreToolUse(
             subject: `${toolName} call`,
             ruleIds: [...blockedRules].join(', '),
             blockedRef: blockedReferences[0],
-            note: escalated ? EXECUTABLE_REDACT_NOTE : undefined,
+            note: escalated
+              ? EXECUTABLE_REDACT_NOTE
+              : escalatedUnredactable
+                ? UNREDACTABLE_NOTE
+                : undefined,
           }),
         },
       },

@@ -4,7 +4,7 @@
     "name": "AKA Security",
     "url": "https://github.com/akasecurity/ai-tc"
   },
-  "description": "AI Traffic Control plugins for Claude Code",
+  "description": "AI Traffic Control plugins for Claude Code and Codex CLI",
   "plugins": [
     {
       "name": "aka",
@@ -17,6 +17,18 @@
         "name": "AKA Security"
       },
       "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/claude-code"
+    },
+    {
+      "name": "aka-codex",
+      "source": {
+        "source": "npm",
+        "package": "@akasecurity/ai-tc-codex"
+      },
+      "description": "AI Traffic Control — inspect and govern AI prompts in Codex CLI. Local detection with inline warn/redact/block policies; every event is recorded to a local SQLite store on your machine.",
+      "author": {
+        "name": "AKA Security"
+      },
+      "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/codex"
     }
   ]
 }

@@ -81,9 +81,10 @@ const GUARDED_RULES = [...NETWORK_RULES, ENV_RULE].sort();
  * are not listed.
  */
 const EXPECTED_INLINE_DISABLES = {
-  // CLAUDE.md §3's three inline rows. The fourth site in that table
-  // (packages/plugin-sdk/src/provider.ts) is a file-scoped CONFIG opt-out, so it
-  // carries no directive and correctly does not appear here — effective-config
+  // CLAUDE.md §3's three inline rows. The other three sites in that table
+  // (packages/plugin-sdk/src/provider.ts, packages/plugin-sdk/src/provider-codex.ts
+  // and plugins/codex/src/triage/judge.ts) are file-scoped CONFIG opt-outs, so they
+  // carry no directive and correctly do not appear here — effective-config
   // .test.js is what holds §3's table against the tree, including this split.
   'cli/src/commands/dashboard.ts': [ENV_RULE],
   'plugins/claude-code/src/backfill.ts': [ENV_RULE],
@@ -99,6 +100,8 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/claude-code/test/journey/harness.ts': [ENV_RULE],
   'plugins/claude-code/test/provenance.test.ts': [ENV_RULE],
   'plugins/claude-code/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
+  'plugins/codex/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
+  'plugins/codex/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
 
   // CLAUDE.md §4's one global opt-out, tabled there as `fetch` (inline): the
   // runtime suite's deliberate fetch(), which the guard must refuse for that

@@ -4,7 +4,7 @@ import {
   CLI_PACKAGE,
   cliVersion,
   gatherReport,
-  installedPluginVersions,
+  installedAgentPluginVersions,
   pluginRef,
   readCache,
 } from '@akasecurity/local-ops';
@@ -40,7 +40,7 @@ export default function UpdatesPage() {
       const agent = AGENT_PLUGINS.find((a) => a.npmPackage === pkg);
       return agent ? (latestOf.get(agent.id) ?? null) : null;
     },
-    installed: installedPluginVersions(),
+    installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(process.cwd()),
   });
 

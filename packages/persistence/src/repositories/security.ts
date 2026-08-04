@@ -41,14 +41,21 @@ const ACTION_TO_KIND: Partial<Record<string, EnforcementActionKind>> = {
 };
 const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacted', 'warned'];
 
-// Per-provider scan coverage. Initial release scans Claude Code only — a curated
-// business fact (constant across the range, not a measured per-window metric),
-// following the shared contract so read surfaces render identically. Order
-// is the dashboard display order.
+// Per-provider scan coverage — a curated business fact (constant across the
+// range, not a measured per-window metric), following the shared contract so
+// read surfaces render identically. Order is the dashboard display order.
+// Codex sits below 100 because the Codex CLI does not yet fire PreToolUse/
+// PostToolUse for apply_patch (file-write) calls. Covered: prompts, assistant
+// responses, Bash command text, worktree scans. NOT covered: file-write
+// content, in either direction — the history backfill does not close this gap,
+// because it scans conversation messages only and the tool-call reconciler
+// records a write's changed paths and byte sizes, never its bytes (see
+// plugins/codex/skills/setup/SKILL.md and
+// plugins/codex/src/history/transcripts.ts).
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
-  { provider: 'codex', coverage: 0, supported: false },
+  { provider: 'codex', coverage: 80, supported: true },
   { provider: 'chatgpt', coverage: 0, supported: false },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },

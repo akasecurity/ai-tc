@@ -22,6 +22,7 @@ export const TOOL_TO_HARNESS: Record<string, string> = {
   'github-copilot': 'copilot',
   cursor: 'cursor',
   chatgpt: 'chatgpt',
+  codex: 'codex',
 };
 
 // Map a harness inventory *tool* id — the value the plugin hashes its harness

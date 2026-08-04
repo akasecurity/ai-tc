@@ -573,10 +573,13 @@ When a change touches the web-ui or any bundled package and the user wants to pu
 2. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
    `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
 
-**The bump is routine mechanics, not a decision to surface.** It happens on every release as a
-matter of course, so do not ask which release type to use, and do not raise "this touches a
+**The bump is not a decision to surface during feature work, because it is not made there.**
+Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
+— not per change. So do not ask which release type to use, and do not raise "this touches a
 bundled package, so it needs a version bump" as an open question, a follow-up, or a caveat in a
-summary or PR description.
+summary or PR description. The steps above are what a **release** does: which artifacts move is
+derivable from the bundling rules, and how far they move is settled at release time by whoever
+cuts it.
 
 Versions are bumped by hand in a `chore(release):` commit (no changesets). The CLI and the plugin
 currently share the `0.9.x` line.

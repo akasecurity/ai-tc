@@ -7,7 +7,13 @@ import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
 import { base, networkGuard } from '../src/index.js';
-import { CONVENTIONS_DOC } from './helpers/claude-md.js';
+import {
+  cardinalFor,
+  CONVENTIONS_DOC,
+  countWordIn,
+  readConventions,
+  sectionOf,
+} from './helpers/claude-md.js';
 import { lintableTrackedFiles, REPO_ROOT } from './helpers/lint-invocations.js';
 
 // The third mechanism, and the one no other guard in this package can see.
@@ -574,6 +580,34 @@ describe(`inline disables of the guarded rules (${CONVENTIONS_DOC} §3 and §4)`
       "Unused eslint-disable directive (no problems were reported from 'n/no-process-env').",
     ]);
     expect(messages.every((m) => m.severity === 2)).toBe(true);
+  });
+
+  it(`states the size of the network half in ${CONVENTIONS_DOC} §4`, () => {
+    // The table in §4 is pinned to `DOCUMENTED_OPT_OUTS` by no-network.test.js,
+    // but the SENTENCE this suite added beside it — "that set is one entry
+    // long" — was pinned by nothing, and a hand-written mirror is exactly what
+    // a count sentence drifts away from. Measured: adding a second network
+    // inline disable and tabling it above leaves the whole package green while
+    // §4 goes on claiming one, which is the drift this file exists to stop, one
+    // level up from where it stops it.
+    //
+    // Derived from the expectation rather than restated, so the two cannot be
+    // edited apart: the doc is asserted against the same map the tree is.
+    const network = Object.entries(EXPECTED_INLINE_DISABLES).filter(([, rules]) =>
+      rules.some((rule) => NETWORK_RULES.includes(rule)),
+    );
+    const section = sectionOf(readConventions(), '### 4. No network calls');
+    const stated = countWordIn(
+      section,
+      /That set is (\w+) entr(?:y|ies) long/gu,
+      'the size of the inline-disable set for the network bans',
+    );
+    expect(stated).toBe(cardinalFor(network.length));
+    // And that the noun agrees, which the pattern above deliberately does not
+    // decide: a second entry makes the count word wrong AND "one entry" wrong,
+    // and a sentence half-corrected reads as true to everyone who skims it.
+    const noun = network.length === 1 ? 'entry' : 'entries';
+    expect(section).toContain(`That set is ${cardinalFor(network.length)} ${noun} long`);
   });
 
   it('finds each tabled disable really suppressing something', () => {

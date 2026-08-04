@@ -11,6 +11,7 @@ import { uniqueRuleIds } from '@akasecurity/plugin-sdk';
 import { withheldBanner, withheldToolText } from '../exception-guidance.ts';
 import type { RealizedRewrite } from '../protocol/notes.ts';
 import type { FieldTokenizer } from './pre-tool-use-decision.ts';
+import type { HookOutput } from './shared.ts';
 import type { ScannableResponseField } from './tool-response.ts';
 import { replaceResponseField } from './tool-response.ts';
 
@@ -112,7 +113,7 @@ export function responseEmitPayload(
   toolName: string,
   outcome: ResponseScanOutcome,
   notes?: { note?: string | null | undefined; disclosure?: string | null | undefined },
-): unknown {
+): HookOutput | undefined {
   const { withheldFindings, redactedFindings, warnedFindings } = outcome;
   if (withheldFindings.length > 0 || redactedFindings.length > 0) {
     const action = withheldFindings.length > 0 ? 'withheld' : 'redacted';

@@ -5,6 +5,8 @@
 import { resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
+import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
+
 // An 'error' event on an EventEmitter with no listener throws — and because it
 // fires asynchronously, that throw lands as an uncaughtException outside any
 // `try { await main() } catch {}` wrapper, turning a stalled/broken stdin into
@@ -60,6 +62,26 @@ export function getString(record: Record<string, unknown>, key: string): string 
   return typeof value === 'string' ? value : undefined;
 }
 
+// Every JSON object a hook may write to stdout, as one union. `emit` takes this
+// rather than `unknown`, so a new output shape cannot reach the wire without
+// being added here first — which is what makes the enumeration in CLAUDE.md §1
+// checkable instead of remembered. Two shapes sit at the top level; the rest are
+// one `hookSpecificOutput` per hook, discriminated by `hookEventName`.
+export type HookOutput =
+  | { decision: 'block'; reason: string }
+  | { systemMessage: string }
+  | PreToolUseOutput
+  | {
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse';
+        updatedToolOutput: unknown;
+        additionalContext?: string;
+      };
+      systemMessage: string;
+    }
+  | { hookSpecificOutput: { hookEventName: 'MessageDisplay'; displayContent: string } }
+  | { hookSpecificOutput: { hookEventName: 'SessionStart'; additionalContext: string } };
+
 // Hook output protocol: write one JSON object to stdout and exit 0.
 // Writing nothing and exiting 0 means "no opinion" (allow).
 //
@@ -67,7 +89,7 @@ export function getString(record: Record<string, unknown>, key: string): string 
 // main(), and exit does not wait for pending pipe writes — anything past the
 // ~64KB pipe buffer is dropped, Claude Code sees invalid JSON, and the
 // original (possibly secret-bearing) payload passes through untouched.
-export function emit(output: unknown): Promise<void> {
+export function emit(output: HookOutput): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (): void => {

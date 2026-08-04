@@ -11,8 +11,12 @@
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
+import { bundledDetections } from '@akasecurity/plugin-sdk';
+import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
 const SESSION_ID = 'fail-open-e2e-session';
@@ -104,12 +108,18 @@ const HOOKS: readonly HookCase[] = [
   },
 ];
 
-// CLAUDE.md: "no hook ever emits {action:'allow'}, and the internal fallback
-// is {action:'log'}" — `action` is a CaptureResult field that never crosses
-// the wire; the four real hook-output shapes (`decision`, `systemMessage`,
-// `hookSpecificOutput.permissionDecision`, `hookSpecificOutput.updatedToolOutput`)
-// never use that key. Pinning this guards against a future refactor that
-// starts serializing the internal decision object onto stdout.
+// CLAUDE.md §1: "no hook ever emits {action:'allow'}, and the internal fallback
+// is {action:'log'}" — `action` is a CaptureResult field that never crosses the
+// wire, and none of the shapes in the `HookOutput` union uses that key (which
+// shapes those are is pinned by test/hook-output-shapes.test.ts). This guards
+// against a refactor that starts serializing the internal decision object onto
+// stdout.
+//
+// It is worth nothing on an EMPTY stdout, which every `expectFailsOpen` row
+// below has already asserted — `''` matches no pattern, so the check there is a
+// statement of intent rather than a test. What gives it teeth is the enforcement
+// matrix at the bottom of this file: real findings, driven through the built
+// hooks at every action level, each producing a payload this then reads.
 function expectNoActionKey(stdout: string): void {
   expect(stdout).not.toMatch(/"action"\s*:/);
 }
@@ -234,6 +244,170 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
           }
         });
       });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The enforcement matrix: expectNoActionKey against real emitted payloads
+// ---------------------------------------------------------------------------
+
+// Every row above drives a hook that has NOTHING to say — malformed input, a
+// store it cannot open — so every one of them asserts an empty stdout, and
+// `expectNoActionKey` on `''` cannot fail. That left the wire-protocol pin
+// covering none of the paths that actually build a payload: the shape it guards
+// against is the internal decision object, and the internal decision object only
+// exists once something was found.
+//
+// So this drives a real finding through each enforcing hook at each action level
+// and reads what the built script really printed. The expected shape per cell is
+// asserted first and is the positive control — without it, a hook that silently
+// stopped emitting would turn every absence assertion below back into the
+// vacuous form this section exists to replace.
+
+// The value comes from a bundled rule's own `examples`, so no secret-shaped
+// literal lives in this file. The rule is one whose example matches no OTHER
+// bundled rule — two rules on overlapping spans degrade one-way and change the
+// emitted shape, which would make the matrix a statement about rule overlap
+// rather than about action levels.
+const ENFORCED_RULE_ID = 'secrets/twilio-key';
+
+function secretFixture(): { pack: ReturnType<typeof bundledDetections>[number]; example: string } {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === ENFORCED_RULE_ID));
+  const example = pack?.rules.find((r) => r.id === ENFORCED_RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(
+      `bundled rule ${ENFORCED_RULE_ID} is missing from the pack registry or has no example, so ` +
+        'this matrix would drive clean input through every cell and assert nothing',
+    );
+  }
+  return { pack, example };
+}
+
+const { pack: ENFORCED_PACK, example: SECRET } = secretFixture();
+
+// Install the bundled packs the way the gateway does on open, then give the
+// pack the policy under test — a per-pack policy is what the runtime's action
+// resolution prefers, so this pins the cell to an action rather than to
+// whatever DEFAULT_ACTIONS happens to say for the category.
+function seedPolicy(home: string, policy: BuiltinPolicyId): void {
+  const db = openLocalDatabase(join(home, '.aka', 'data'));
+  try {
+    db.installedPacks.recordInventory(bundledDetections());
+    db.installedPacks.setPolicy(ENFORCED_PACK.namespace, ENFORCED_PACK.packId, policy);
+  } finally {
+    db.close();
+  }
+}
+
+interface EnforcingHook {
+  readonly name: string;
+  /** A payload whose scanned field carries the secret. */
+  readonly payload: (home: string) => string;
+  /**
+   * The key the emitted JSON must carry per policy, or null where the hook
+   * emits nothing at all. `monitor` is null for the two tool hooks because log
+   * IS silence — CLAUDE.md §1's "allow is the absence of output", reached
+   * through a finding rather than through a fault.
+   */
+  readonly emits: Readonly<Record<BuiltinPolicyId, string | null>>;
+}
+
+const ENFORCING_HOOKS: readonly EnforcingHook[] = [
+  {
+    name: 'user-prompt-submit',
+    payload: (home) =>
+      JSON.stringify({
+        prompt: `deploy the service using ${SECRET}`,
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'UserPromptSubmit',
+      }),
+    // Redact reads as block here: this hook cannot rewrite prompt text, so a
+    // redact policy degrades to "remove it and resubmit" rather than tokenizing.
+    // Monitor emits the calibration nudge — a systemMessage that is not an
+    // enforcement opinion, and still a payload this pin has to read.
+    emits: {
+      block: '"decision":"block"',
+      redact: '"decision":"block"',
+      warn: '"systemMessage"',
+      monitor: '"systemMessage"',
+    },
+  },
+  {
+    name: 'pre-tool-use',
+    payload: (home) =>
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: `curl -H "authorization: ${SECRET}" https://example.invalid` },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PreToolUse',
+      }),
+    // Redact denies rather than tokenizing because this home has no vault
+    // consent: with the vault inert there is nowhere to put the value, and
+    // one-way destruction of a tool call's input is not something to do quietly.
+    emits: {
+      block: '"permissionDecision":"deny"',
+      redact: '"permissionDecision":"deny"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+  {
+    name: 'post-tool-use',
+    payload: (home) =>
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'cat .env' },
+        tool_response: { stdout: `TWILIO_KEY=${SECRET}\n`, stderr: '' },
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostToolUse',
+      }),
+    // Output is the model's to read, not the user's to resend, so both
+    // enforcing levels rewrite it in place rather than refusing.
+    emits: {
+      block: '"updatedToolOutput"',
+      redact: '"updatedToolOutput"',
+      warn: '"systemMessage"',
+      monitor: null,
+    },
+  },
+];
+
+const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'warn', 'monitor'];
+
+describe('the wire protocol never carries an action key, at any action level', () => {
+  for (const hook of ENFORCING_HOOKS) {
+    describe(hook.name, () => {
+      for (const policy of POLICIES) {
+        const expected = hook.emits[policy];
+        it(`${policy} policy → ${expected === null ? 'emits nothing' : 'emits ' + expected}`, () => {
+          withTempHome((home) => {
+            seedPolicy(home, policy);
+            const result = runHook(hook.name, hook.payload(home), { env: tempHomeEnv(home) });
+
+            // Fail-open first: whatever it decided, it decided it without
+            // breaking the session.
+            expect(result.status).toBe(0);
+
+            // The positive control. Everything after it is an absence, and an
+            // absence over an unexpected payload — or none — proves nothing.
+            if (expected === null) {
+              expect(result.stdout).toBe('');
+            } else {
+              expect(result.stdout).toContain(expected);
+            }
+
+            expectNoActionKey(result.stdout);
+            // The raw value never rides along on any of these shapes. Run by
+            // run rather than whole: a branch echoing a truncated value is
+            // still echoing a live credential's prefix.
+            expectNoEchoOf(result.stdout, SECRET);
+          });
+        });
+      }
     });
   }
 });

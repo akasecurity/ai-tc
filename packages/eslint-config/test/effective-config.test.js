@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix, sep } from 'node:path';
+import { join, matchesGlob, posix, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
@@ -18,6 +18,7 @@ import {
 } from './helpers/claude-md.js';
 import {
   eslintInvocations,
+  lintableTrackedFiles,
   LINTABLE_EXT,
   packageLintInvocations,
   parseWorkspaceGlobs,
@@ -912,6 +913,48 @@ describe('every file outside every workspace package is linted by a repo-root pa
       missing,
       'A file with one of these extensions is enumerated by this suite but left out of the turbo ' +
         `input glob, so adding one replays a cached green:\n  ${missing.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('turbo hashes every tracked file this suite actually reads', () => {
+    // The extension check above asks whether the globs SPELL the right file
+    // types. This asks whether they REACH the files — a different question, and
+    // the one the repo-root entry exists for: `$TURBO_ROOT$/*/**/*.{…}` requires
+    // a directory segment, so a file at the root matches no per-package glob
+    // however its extension is spelled. Same hazard at the other end of the
+    // tree, where a `!` exclusion can take back a path the positive globs cover.
+    //
+    // inline-disables.test.js reads every one of these files, so a path outside
+    // the hash is a file someone can add a disable to while turbo replays a
+    // cached green and the inventory never runs.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const inputs = /"@akasecurity\/eslint-config#test"[\s\S]*?"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(
+      turbo,
+    );
+    expect(inputs, '@akasecurity/eslint-config#test declares no `inputs`').not.toBeNull();
+    const declared = [...inputs[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+    const rooted = (prefix) =>
+      declared.filter((g) => g.startsWith(prefix)).map((g) => g.slice(prefix.length));
+    const included = rooted('$TURBO_ROOT$/');
+    const excluded = rooted('!$TURBO_ROOT$/');
+
+    const files = lintableTrackedFiles();
+    expect(files.length, 'no tracked lintable files, so this asserts nothing').toBeGreaterThan(0);
+    expect(included.length, 'no repo-rooted input globs to match against').toBeGreaterThan(0);
+
+    // `path.matchesGlob` folds case on macOS and Windows. That can only make
+    // this MORE permissive, and every glob here is structural (`*`, `**`, an
+    // extension list) rather than a spelled path, so no verdict below turns on
+    // it — but a future entry naming a real path should not rely on the case.
+    const unhashed = files.filter(
+      (file) =>
+        !included.some((glob) => matchesGlob(file, glob)) ||
+        excluded.some((glob) => matchesGlob(file, glob)),
+    );
+    expect(
+      unhashed,
+      "These tracked files are read by this package's suites but hashed by none of the task's " +
+        `turbo inputs, so editing one alone replays a cached green:\n  ${unhashed.join('\n  ')}`,
     ).toEqual([]);
   });
 

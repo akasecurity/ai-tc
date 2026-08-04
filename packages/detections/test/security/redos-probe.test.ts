@@ -94,39 +94,16 @@ describe('worstProbeMs attributes a probe to its interpreted tier', () => {
     // same probe now measures the native tier, so a correct gate reports
     // several times what this second sample costs; a gate that kept a second
     // sample reports the same thing twice, and the ratio collapses to ~1.
-    //
-    // The two sides are sampled differently ON PURPOSE, and the asymmetry is
-    // the point rather than an inconsistency. `result.ms` is probe #0 timed
-    // exactly once — that lone sample IS the property under test, so it must
-    // stay unreplicated. The denominator is the opposite case: it only has to
-    // name this probe's native-tier floor, and a single sample of a ~20ms scan
-    // is dominated by any scheduler preemption that lands inside it. Because
-    // contention can only push a sample above the floor, never below it, `min`
-    // recovers the tier while a lone sample tracks the noise. That is the same
-    // reason benignBaselineMs takes a min over several samples, and it is what
-    // makes this ratio scale-free in practice and not just in principle: a
-    // shared CI runner inflates the small denominator far more, in relative
-    // terms, than the ~7x larger numerator, so the noise does NOT cancel and a
-    // healthy gate can be reported as a bypassed one. Measured on a loaded
-    // 10-core box, one sample gave 4.07-10.11x against min-of-7's 10.2-26.8x,
-    // and CI observed 2.53x — under the threshold — while the same commit
-    // passed this test concurrently in another job.
-    let nativeMs = Infinity;
-    for (let i = 0; i < 7; i++) {
-      const start = performance.now();
-      scan(result.probe, [rule]);
-      nativeMs = Math.min(nativeMs, performance.now() - start);
-    }
+    const start = performance.now();
+    scan(result.probe, [rule]);
+    const nativeMs = performance.now() - start;
     const ratio = result.ms / nativeMs;
     expect(
       ratio,
-      `gate reported ${result.ms.toFixed(1)}ms interpreted against a min-of-7 native floor of ` +
-        `${nativeMs.toFixed(1)}ms (ratio ${ratio.toFixed(2)}x). Measured 7.8-12.9x idle and ` +
-        `10.2-26.8x on a deliberately loaded 10-core box, so a ratio near 1 means the interpreted ` +
-        `tier is no longer what the gate reports. Note an actual lower-of-two-samples bypass trips ` +
-        `the probe-length assertion above before reaching this one — discarding probe #0's ` +
-        `interpreted cost hands the title to the 25-char probe. This assertion is the backstop for ` +
-        `a bypass that leaves the length verdict intact, so read it as "which tier", not "which probe".`,
+      `gate reported ${result.ms.toFixed(1)}ms for a probe that re-scans in ${nativeMs.toFixed(1)}ms ` +
+        `(ratio ${ratio.toFixed(2)}x). Measured 6.9-7.7x when each probe is timed once and ` +
+        `0.95-1.16x with a lower-of-two-samples bypass in place, so a ratio near 1 means the ` +
+        `interpreted tier is no longer what the gate reports.`,
     ).toBeGreaterThan(3);
   });
 });

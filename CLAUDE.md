@@ -156,11 +156,11 @@ not a product path; nothing a user installs performs it.
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                             | Cannot see                                                                                                                                                                                                                  |
-| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net`                                                                                                                                                                         |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
+| Gate                                          | Catches                                                                                              | Cannot see                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                          | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                            |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                  | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -191,7 +191,7 @@ load as config (`vitest.config.ts`, `test/`). The suite covers that `src/` witho
 anything and must stay that way: it resolves the cascade at the real path and parses the
 real bytes, planting nothing on disk.
 
-The plugin — and the web dashboard's folder scan — also start a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
+The plugin — and the web dashboard's folder scan — also start a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process and opens nothing: it runs the same in-repo detection engine on a second thread of the same process, and today it reaches out nowhere. Say that as a description of what it **does**, never of what it **can** do — a worker has the full `node:net` surface, and its fresh module registry means an in-process patch does not reach it unless something puts one there. Two things do. The runtime guard re-installs itself into every worker spawned from a guarded thread (see [Testing](#testing)), which covers the suite; the Linux `No-network` job covers the shipped artifact, because a network namespace applies to every thread in the tree. The worker is listed here so an audit of "what else executes" finds it.
 
 ### 5. A scan that cannot be interrupted runs off the main thread
 
@@ -647,7 +647,7 @@ see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
 
-Four things about it are load-bearing:
+Five things about it are load-bearing:
 
 - **A refusal is recorded as well as thrown.** Almost every boundary here is
   deliberately fail-open, so a throw inside a `catch {}` would be swallowed and the
@@ -657,8 +657,26 @@ Four things about it are load-bearing:
 - **It imports `node:net`/`node:dgram`/`node:dns`, which the lint ban forbids.**
   That is the enforcement, not a violation. `packages/eslint-config/test/no-network-runtime.test.js`
   lints the file and fails if it trips a **fourth** ban.
+- **It re-installs itself into every worker it can reach.** A `worker_thread` gets a
+  fresh module registry, so a worker used to escape the guard **silently** — nothing
+  threw, and the parent recorded nothing for `afterEach` to fail on, which is worse
+  than a miss. The guard wraps the `Worker` constructor (both the module property and,
+  via `syncBuiltinESMExports`, the named-import binding `isolated-scan.ts` uses) and
+  appends `--import <itself>` to the worker's `execArgv`. Wrapping the CONSTRUCTOR
+  rather than the call sites is what reaches a worker **product code** starts, which
+  is the case that matters; a worker's refusal cannot land in the parent's array, so
+  it goes to a file `takeBlockedAttempts()` drains alongside it. Three consequences to
+  keep true: that file is written only when a worker actually **refuses**, so a run
+  that reaches for nothing touches the filesystem never and the drain reads a missing
+  file as "no refusals"; it is **appended to and never truncated**, because a
+  read-then-truncate drain destroys a refusal appended between the two; and a nested
+  worker reports to the same file rather than stacking another preload onto `execArgv`.
+  Any read failure that is not `ENOENT` fails the run — a channel that cannot be read
+  reports zero refusals, which looks exactly like a clean one.
 - **A child process is invisible to it**, which is the whole reason the `No-network`
-  CI job exists. Do not describe the guard as covering shell-outs.
+  CI job exists. Do not describe the guard as covering shell-outs — and note that a
+  worker started **by** such a child is out of reach for the same reason, since the
+  wrapper lives in this process and the child never loaded it.
 - **Every package must wire it**, at the right relative depth. The same suite fails
   the workspace if a package drops the entry, points it at a path that does not
   resolve to the guard, or is added without one. That last one holds for packages

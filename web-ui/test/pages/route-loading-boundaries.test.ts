@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -30,6 +30,16 @@ function routeDirs(dir: string): string[] {
 
 const ROUTES = routeDirs(APP_DIR);
 
+/**
+ * A route directory as its posix-style path relative to (app). `path.relative`
+ * yields the platform separator, so on Windows a nested route reads
+ * `exceptions\\new` and matches nothing in the list below — the route set is
+ * a URL vocabulary, not a filesystem detail, so it is normalised here.
+ */
+function routeName(dir: string): string {
+  return relative(APP_DIR, dir).split(sep).join('/');
+}
+
 // Every route under (app), pinned. The ACTUAL set is derived from the tree
 // above; this is the EXPECTED set, and the two are compared — the same
 // derived-vs-pinned pairing EXPECTED_WORKSPACE_PACKAGE_NAMES uses in
@@ -58,15 +68,12 @@ const EXPECTED_ROUTES = [
 
 describe('(app) route loading boundaries', () => {
   it('sees exactly the routes it expects', () => {
-    expect(ROUTES.map((r) => relative(APP_DIR, r)).sort()).toEqual(EXPECTED_ROUTES);
+    expect(ROUTES.map(routeName).sort()).toEqual(EXPECTED_ROUTES);
   });
 
-  it.each(ROUTES.map((r) => [relative(APP_DIR, r), r] as const))(
-    '%s has a loading.tsx',
-    (_label, dir) => {
-      expect(readdirSync(dir)).toContain('loading.tsx');
-    },
-  );
+  it.each(ROUTES.map((r) => [routeName(r), r] as const))('%s has a loading.tsx', (_label, dir) => {
+    expect(readdirSync(dir)).toContain('loading.tsx');
+  });
 });
 
 describe('(app) error boundary', () => {

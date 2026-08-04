@@ -191,6 +191,15 @@ export const FindingInstance = z
     // Lifecycle status (see FindingStatus). Optional so legacy callers/rows
     // that predate the resolution feature stay valid.
     status: FindingStatus.optional(),
+    // The audit event this finding was captured from. Optional so callers that
+    // do not project it stay valid. An at-rest finding is content-addressed by
+    // finding_key and its row is upserted on re-detection, so this names the
+    // MOST RECENT detection event, not the first.
+    eventId: z.string().optional(),
+    // The session that event belongs to, when it has one — the seam a
+    // per-instance "view session" link needs. Absent for events captured
+    // outside a session.
+    sessionId: z.string().optional(),
   })
   .meta({ id: 'FindingInstance' });
 export type FindingInstance = z.infer<typeof FindingInstance>;
@@ -251,6 +260,10 @@ export const FindingFacets = z
     // group (possible only for callers whose rows carry no statuses) is
     // counted under no value.
     status: z.array(FindingFacetItem),
+    // Host tool (attributes.tool_name). Present only on the instance-level
+    // reads, which can filter by it; the grouped read omits the dimension
+    // because a group spans tools.
+    tool: z.array(FindingFacetItem).optional(),
   })
   .meta({ id: 'FindingFacets' });
 export type FindingFacets = z.infer<typeof FindingFacets>;
@@ -286,6 +299,16 @@ export const ListGroupedFindingsQuery = z.object({
   // Scope to findings whose event carries this session id (the Activity page's
   // session → findings drilldown). Findings without a session never match.
   sessionId: z.string().optional(),
+  // Inclusive lower bound on the parent event's timestamp, so a caller arriving
+  // from a time-scoped page (Activity's range) can carry that scope. Absent
+  // means all time — this list has no default window.
+  from: z.iso.datetime().optional(),
+  // A group or instance id that must appear in the page even when the cursor
+  // has already advanced past its sort position. This is what keeps the
+  // Findings page's one-shot ?finding= deep link resolving once the list
+  // paginates: the target group is appended out of sort order rather than
+  // scanning forward for it. Never affects totals, facets or the cursor.
+  includeId: z.string().optional(),
   groupBy: z.literal('type').optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   cursor: z.string().optional(),
@@ -350,3 +373,125 @@ export const FindingInstanceDetail = FindingInstance.extend({
   policy: FindingPolicyRef,
 }).meta({ id: 'FindingInstanceDetail' });
 export type FindingInstanceDetail = z.infer<typeof FindingInstanceDetail>;
+
+// ─── Instance-level (flat) findings list ─────────────────────────────────────
+
+// The grouped list answers "which rules are firing"; this one answers "what
+// happened most recently", newest first, one row per finding. It is a separate
+// contract rather than a mode of the grouped query because the two differ in
+// more than shape: `status` here matches each INSTANCE's derived status, while
+// the grouped query matches the group's folded status, and this response
+// paginates by a real keyset cursor where the grouped one pages a sorted array.
+//
+// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery / api.ts
+// header). `limit` mirrors the legacy flat lists' 200 ceiling.
+export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
+
+export const ListFindingInstancesQuery = z.object({
+  severity: z.array(Severity).optional(),
+  // Rule ids, the same vocabulary the grouped list's `subtype` carries.
+  subtype: z.array(z.string()).optional(),
+  provider: z.array(FindingProvider).optional(),
+  action: z.array(FindingAction).optional(),
+  // Matches each instance's OWN derived status (deriveFindingStatus), unlike
+  // the grouped query's group-level fold.
+  status: z.array(FindingStatus).optional(),
+  // Exact host-tool names (attributes.tool_name, e.g. 'Bash'). A real filter,
+  // where the free-text `q` can only match the rendered "via Bash" label.
+  tool: z.array(z.string()).optional(),
+  // Exact repository / file-path matches, for the drill-down out of the
+  // locations view. A row whose event carries no repo/file matches neither.
+  repo: z.string().optional(),
+  file: z.string().optional(),
+  q: z.string().optional(),
+  sessionId: z.string().optional(),
+  from: z.iso.datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+});
+export type ListFindingInstancesQuery = z.infer<typeof ListFindingInstancesQuery>;
+
+export const ListFindingInstancesResponse = z
+  .object({
+    // Instances matching the filters across the whole scope, not just this
+    // page — cursor-independent, like the grouped list's totals.
+    totals: z.object({ findings: z.number().int().nonnegative() }),
+    // Counts in INSTANCES here, where the grouped response counts groups. Each
+    // dimension still excludes its own filter.
+    facets: FindingFacets,
+    items: z.array(FindingInstanceDetail),
+    nextCursor: z.string().nullable(),
+  })
+  .meta({ id: 'ListFindingInstancesResponse' });
+export type ListFindingInstancesResponse = z.infer<typeof ListFindingInstancesResponse>;
+
+// ─── Location-grouped findings list ──────────────────────────────────────────
+
+// Findings folded by where they live — repository, then file. The grouping keys
+// come from the capturing event's attributes (repo / file_path); there is no
+// finding↔inventory-asset relation in the local store to group by instead.
+
+export const FindingLocationFile = z
+  .object({
+    // Empty when the instances carried no file path (a prompt or a tool call
+    // with no file attribution).
+    file: z.string(),
+    instanceCount: z.number().int().nonnegative(),
+    maxSeverity: Severity,
+    latestDetectedAt: z.iso.datetime(),
+    // Folded from the instances' derived statuses with the same
+    // open-dominates precedence a group uses.
+    status: FindingStatus.optional(),
+    // Distinct rules seen at this location, capped — the row shows them as
+    // chips, and the count is what conveys scale.
+    ruleIds: z.array(z.string()),
+  })
+  .meta({ id: 'FindingLocationFile' });
+export type FindingLocationFile = z.infer<typeof FindingLocationFile>;
+
+export const FindingLocationRepo = z
+  .object({
+    /** Empty when the instances carried no repo attribute. */
+    repo: z.string(),
+    instanceCount: z.number().int().nonnegative(),
+    maxSeverity: Severity,
+    latestDetectedAt: z.iso.datetime(),
+    status: FindingStatus.optional(),
+    files: z.array(FindingLocationFile),
+  })
+  .meta({ id: 'FindingLocationRepo' });
+export type FindingLocationRepo = z.infer<typeof FindingLocationRepo>;
+
+// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery / api.ts
+// header). `limit` caps the REPO rows returned; a repo's files are not
+// separately paged.
+export const ListFindingLocationsQuery = z.object({
+  severity: z.array(Severity).optional(),
+  subtype: z.array(z.string()).optional(),
+  provider: z.array(FindingProvider).optional(),
+  action: z.array(FindingAction).optional(),
+  // Per-instance, as in ListFindingInstancesQuery: a location keeps the
+  // instances that match, and folds its status from those.
+  status: z.array(FindingStatus).optional(),
+  tool: z.array(z.string()).optional(),
+  q: z.string().optional(),
+  sessionId: z.string().optional(),
+  from: z.iso.datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+export type ListFindingLocationsQuery = z.infer<typeof ListFindingLocationsQuery>;
+
+export const ListFindingLocationsResponse = z
+  .object({
+    totals: z.object({
+      findings: z.number().int().nonnegative(),
+      repos: z.number().int().nonnegative(),
+      files: z.number().int().nonnegative(),
+    }),
+    /** Sorted by max severity, then most recent. */
+    items: z.array(FindingLocationRepo),
+    /** Whether `limit` truncated the repo list. */
+    hasMore: z.boolean(),
+  })
+  .meta({ id: 'ListFindingLocationsResponse' });
+export type ListFindingLocationsResponse = z.infer<typeof ListFindingLocationsResponse>;

@@ -150,6 +150,10 @@ export interface GroupableFindingRow {
   // see resolutions.ts). Optional/absent for legacy rows that predate the
   // resolution feature.
   status?: FindingStatus;
+  // The audit event the finding was captured from, and that event's session
+  // when it has one. Optional/absent for callers that do not project them.
+  eventId?: string;
+  sessionId?: string;
 }
 
 // Group-level status precedence: open dominates, then handled, then dismissed,
@@ -172,7 +176,7 @@ const STATUS_PRECEDENCE: readonly FindingStatus[] = ['open', 'handled', 'dismiss
  * are ignored; if NO instance carries a status, returns undefined (never
  * fabricates a status for legacy rows).
  */
-function foldGroupStatus(
+export function foldGroupStatus(
   instanceStatuses: (FindingStatus | undefined)[],
 ): FindingStatus | undefined {
   const statuses = new Set(instanceStatuses.filter((s): s is FindingStatus => s !== undefined));
@@ -324,6 +328,8 @@ export function buildFindingGroups(
         repo: r.repo,
         file: r.file,
         ...(r.toolName === undefined ? {} : { toolName: r.toolName }),
+        ...(r.eventId === undefined ? {} : { eventId: r.eventId }),
+        ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }),
         action: toApiAction(effectiveDbAction),
         detectedAt: r.occurredAt,
         confidence: r.confidence,
@@ -573,15 +579,34 @@ const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium:
 // -1) rather than a type-error-suppressed gap; keeps sort deterministic.
 const SEVERITY_RANK = SEVERITY_ORDER as Partial<Record<string, number>>;
 
+/**
+ * The findings list's sort order: severity rank, then most recent, then id.
+ *
+ * The id tie-break makes the order TOTAL. Two groups can legitimately share a
+ * severity and a latestDetectedAt, and without a third key their relative order
+ * is whatever the sort happened to produce — which a keyset cursor cannot
+ * resume from, because "everything after this group" is then ambiguous. Only
+ * groups tied on both other keys are affected.
+ *
+ * Takes the fields it compares rather than a whole FindingGroup so a cursor can
+ * be compared against the list without being inflated into one.
+ */
+export function compareFindingGroupOrder(
+  a: Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'>,
+  b: Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'>,
+): number {
+  const rankA = SEVERITY_RANK[a.severity] ?? -1;
+  const rankB = SEVERITY_RANK[b.severity] ?? -1;
+  const severityDiff = rankA - rankB;
+  if (severityDiff !== 0) return severityDiff;
+  // latestDetectedAt desc — ISO strings sort lexically.
+  const recencyDiff = b.latestDetectedAt.localeCompare(a.latestDetectedAt);
+  if (recencyDiff !== 0) return recencyDiff;
+  return a.id.localeCompare(b.id);
+}
+
 export function sortFindingGroups(groups: FindingGroup[]): FindingGroup[] {
-  return [...groups].sort((a, b) => {
-    const rankA = SEVERITY_RANK[a.severity] ?? -1;
-    const rankB = SEVERITY_RANK[b.severity] ?? -1;
-    const severityDiff = rankA - rankB;
-    if (severityDiff !== 0) return severityDiff;
-    // latestDetectedAt desc — ISO strings sort lexically.
-    return b.latestDetectedAt.localeCompare(a.latestDetectedAt);
-  });
+  return [...groups].sort(compareFindingGroupOrder);
 }
 
 // ─── Facets (per-filter-excluded counts) ─────────────────────────────────────

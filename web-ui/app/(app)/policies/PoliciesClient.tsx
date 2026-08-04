@@ -30,8 +30,8 @@ export function PoliciesClient({
     <div
       aria-busy={isPending}
       className={cn(
-        'grid min-h-128 flex-1 grid-cols-1 gap-4 transition-opacity duration-150 lg:grid-cols-[320px_1fr] lg:grid-rows-1',
-        isPending && 'opacity-60',
+        'grid min-h-128 flex-1 grid-cols-1 gap-4 transition-shadow duration-150 lg:grid-cols-[320px_1fr] lg:grid-rows-1',
+        isPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
       )}
     >
       <PolicyListView

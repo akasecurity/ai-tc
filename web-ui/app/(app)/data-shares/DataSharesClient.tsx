@@ -128,8 +128,8 @@ export function DataSharesClient({
       <div
         aria-busy={navPending}
         className={cn(
-          'flex min-h-0 flex-1 flex-col transition-opacity duration-150',
-          navPending && 'opacity-60',
+          'flex min-h-0 flex-1 flex-col transition-shadow duration-150',
+          navPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
         )}
       >
         {!ql && (

@@ -142,35 +142,43 @@ describe('(app) error boundary', () => {
 describe('exceptions page pending regions', () => {
   // The exceptions page drives TWO regions from two different params — ?window=
   // re-queries recentBlocked (the blocked ledger) and ?all= re-queries
-  // exceptions.list (the table). Wrapping only one of them dims a region whose
+  // exceptions.list (the table). Wrapping only one of them marks a region whose
   // data the change does not touch while leaving the other with no feedback,
   // which is exactly what shipped in the first draft of this change.
   const source = readFileSync(join(APP_DIR, 'exceptions', 'ExceptionsClient.tsx'), 'utf8');
   const code = source.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\/.*$/gm, '');
 
-  it('dims both regions', () => {
+  it('marks both regions', () => {
     // Match the pair as a unit, not `aria-busy` alone. The visible half of this
-    // is `className={dim}`, so counting only the ARIA attribute pins the half
-    // nobody can see and misses the half everyone can: drop one region's
-    // `className={dim}` and keep its `aria-busy` and the region silently stops
-    // dimming while the count still reads 2.
-    expect(code.match(/aria-busy=\{navPending\}\s+className=\{dim\}/g) ?? []).toHaveLength(2);
+    // is `className={pendingRegion}`, so counting only the ARIA attribute pins
+    // the half nobody can see and misses the half everyone can: drop one
+    // region's `className={pendingRegion}` and keep its `aria-busy` and the
+    // region silently stops marking while the count still reads 2.
+    expect(
+      code.match(/aria-busy=\{navPending\}\s+className=\{pendingRegion\}/g) ?? [],
+    ).toHaveLength(2);
   });
 
-  it('dims while pending rather than at rest', () => {
-    // The case above pins that both regions carry `className={dim}`; it says
-    // nothing about what `dim` resolves to, and that is one operator away from
-    // being exactly backwards. `cn` drops a boolean argument, so `&&` -> `||`
-    // makes the class list `opacity-60` at rest and bare while a navigation is
-    // pending: both regions sit permanently faded and brighten precisely when
-    // their data is being replaced. Both call sites stay byte-identical, so
-    // the pair count above still reads 2.
+  it('marks while pending rather than at rest', () => {
+    // The case above pins that both regions carry `className={pendingRegion}`;
+    // it says nothing about what `pendingRegion` resolves to, and that is one
+    // operator away from being exactly backwards. `cn` drops a boolean
+    // argument, so `&&` -> `||` leaves both regions permanently ringed and
+    // clears the ring precisely when their data is being replaced. Both call
+    // sites stay byte-identical, so the pair count above still reads 2.
     //
     // Pinning the definition covers the same line's other one-token failures —
-    // dropping the second `cn` argument, or `opacity-60` -> `opacity-100`,
-    // which is emitted, survives tailwind-merge, and means fully opaque.
+    // dropping the second `cn` argument, or `ring-2` -> `ring-0`, which is
+    // emitted, survives tailwind-merge, and draws nothing.
+    //
+    // The marker is a ring rather than a fade because opacity on this wrapper
+    // composites the region's text toward the canvas: `text-3` on `surface-2`
+    // measures 4.75:1 in light against WCAG 1.4.3's 4.5:1 floor, so every
+    // opacity below ~0.97 puts readable text under it while the region is still
+    // interactive. Pin the ring, not an opacity — a fade cannot come back here
+    // at any value that both reads as pending and clears the floor.
     expect(code).toMatch(
-      /const dim = cn\(\s*'transition-opacity duration-150',\s*navPending && 'opacity-60',?\s*\)/,
+      /const pendingRegion = cn\(\s*'transition-shadow duration-150',\s*navPending && 'rounded-lg ring-2 ring-primary\/40 ring-inset',?\s*\)/,
     );
   });
 

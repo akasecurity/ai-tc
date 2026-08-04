@@ -206,8 +206,8 @@ export function FindingsClient({
       <div
         aria-busy={isPending}
         className={cn(
-          'mt-4 min-h-0 flex-1 transition-opacity duration-150',
-          isPending && 'opacity-60',
+          'mt-4 min-h-0 flex-1 transition-shadow duration-150',
+          isPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
         )}
       >
         <FindingsTableView

@@ -41,10 +41,22 @@ export function ExceptionsClient({
   // navigation) — distinct from the write transition below, which tracks the
   // approve/rotate Server Actions.
   const { isPending: navPending, push: pushUrl } = useNavigationTransition();
-  // Dim wrapper for a region whose data a pending navigation is replacing. The
-  // page has two independently-driven regions, so it is applied per region
-  // rather than around the page.
-  const dim = cn('transition-opacity duration-150', navPending && 'opacity-60');
+  // Marks the region whose data a pending navigation is replacing. The page has
+  // two independently-driven regions, so it is applied per region rather than
+  // around the page.
+  //
+  // It rings the region rather than fading it. Opacity on a wrapper composites
+  // the whole subtree — text included — toward the canvas behind it, and these
+  // text tokens have no contrast headroom to spend: text-3 on surface-2 measures
+  // 4.75:1 in light against the 4.5:1 floor, so every opacity below ~0.97 puts
+  // readable text under it. The region stays interactive while pending, so that
+  // is text someone can be reading and clicking, not a transient frame. A ring
+  // is chrome the wrapper owns outright, so it carries the same "this region is
+  // being replaced" cue at no cost to the text underneath.
+  const pendingRegion = cn(
+    'transition-shadow duration-150',
+    navPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
+  );
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,7 +153,7 @@ export function ExceptionsClient({
       />
 
       {/* `?window=` re-queries recentBlocked, which is this region's data. */}
-      <div aria-busy={navPending} className={dim}>
+      <div aria-busy={navPending} className={pendingRegion}>
         <BlockedLedgerView
           items={blocked}
           onApprove={(reference) => {
@@ -155,7 +167,7 @@ export function ExceptionsClient({
       </div>
 
       {/* `?all=` re-queries exceptions.list, which is this region's data. */}
-      <div aria-busy={navPending} className={dim}>
+      <div aria-busy={navPending} className={pendingRegion}>
         <ExceptionsTableView
           items={items}
           includeTerminal={includeTerminal}

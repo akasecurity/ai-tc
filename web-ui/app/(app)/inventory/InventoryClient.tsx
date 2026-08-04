@@ -158,8 +158,8 @@ export function InventoryClient({
       <div
         aria-busy={navPending}
         className={cn(
-          'flex min-h-0 flex-1 gap-4 transition-opacity duration-150',
-          navPending && 'opacity-60',
+          'flex min-h-0 flex-1 gap-4 transition-shadow duration-150',
+          navPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
         )}
       >
         <InventoryNav

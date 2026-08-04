@@ -31,7 +31,7 @@ Three limits of this host are worth knowing before you consent, because they
 are weaker than the Claude Code and Codex plugins' equivalents:
 
 - **The `agy` CLI documents no ephemeral mode.** Every run is written to your
-  conversation store under `~/.gemini/antigravity-cli/brain/`, raw values and
+  conversation store under `~/.gemini/antigravity/brain/`, raw values and
   all — the same store this backfill scans. AKA therefore **deletes the judge's
   own conversation itself** as soon as the run ends. That deletion is best
   effort: if the process is killed between the write and the cleanup, the
@@ -168,7 +168,7 @@ Antigravity session already uses), not a purely local review. **A copy of each v
 leaves the machine.** The rollouts those values came from stay on disk
 untouched — nothing here removes them; that is the separate redaction step in
 step 6. The judge's own conversation IS written to your local Antigravity
-history under `~/.gemini/antigravity-cli/brain/` — this host has no ephemeral
+history under `~/.gemini/antigravity/brain/` — this host has no ephemeral
 mode — and AKA deletes that conversation itself as soon as the run ends, best
 effort; a killed process can leave it behind. That cleanup is a local-write
 guard only, not network isolation. The findings are also
@@ -328,7 +328,7 @@ masked findings are recorded to the local store as a side effect. The adapter
 runs the false-positive/severity **judgment in separate `agy -p` subprocesses
 that send each hit's raw value and masked context window — never its source
 path — to the model API** (a large history is split into several batches; each
-run persists a conversation under `~/.gemini/antigravity-cli/brain/`, which AKA
+run persists a conversation under `~/.gemini/antigravity/brain/`, which AKA
 then deletes best effort — this host has no ephemeral mode), then prints back a
 **raw-free plan** you can safely show the user:
 the calibrated-result card (the real-count headline and the recommended posture),
@@ -884,7 +884,7 @@ a container whose shape is not documented, so AKA does not guess at it. Single
 **If the plugin's hooks do not seem to fire at all**, the likely cause is the
 `${PLUGIN_ROOT}` variable in `hooks.json`. It is not documented for Antigravity,
 so each command falls back to the default CLI install location
-(`~/.gemini/antigravity-cli/plugins/aka-antigravity`). If the plugin was
+(`~/.gemini/config/plugins/aka-antigravity`). If the plugin was
 installed somewhere else, edit `hooks.json` and replace `${PLUGIN_ROOT:-…}` with
 the absolute path to the plugin directory.
 

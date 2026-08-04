@@ -1,19 +1,26 @@
-// Tests the Antigravity rollout-file parser against synthetic JSONL matching the
-// wire shape confirmed from openai/antigravity's own Rust types
-// (antigravity-rs/protocol/src/protocol.rs — RolloutLine/RolloutItem/EventMsg;
-// antigravity-rs/protocol/src/models.rs — ResponseItem/ContentItem). See the module
-// comment on transcripts.ts for the exact source pointers.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+// Tests the Antigravity transcript parser against synthetic JSONL matching the
+// record shape pinned from a real transcript — see the module comment on
+// transcripts.ts for the full shape. The fixtures here are hand-authored from
+// that shape (field names and enum values only); no captured conversation text
+// is checked into this repository.
+//
+// The parseTranscriptUsage / parseTranscriptToolCalls / peekSessionOriginator
+// suites below still drive CODEX-shaped input, because those three parsers are
+// still Codex-shaped and inert on this host. They pin the code as it stands;
+// they are not evidence about Antigravity's wire format.
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  iterateHistory,
   parseTranscript,
   parseTranscriptToolCalls,
   parseTranscriptUsage,
   peekSessionOriginator,
+  transcriptsDir,
 } from '../../src/history/transcripts.ts';
 
 function line(obj: unknown): string {
@@ -33,62 +40,124 @@ const SESSION_META = line({
   },
 });
 
+// One Antigravity record. Flat — no `payload` envelope, no `role`. Only the
+// fields a case actually exercises are set; every one of them is optional on
+// the wire except `source`, `type` and `created_at`.
+function agy(rec: {
+  source: string;
+  created_at: string;
+  type?: string;
+  content?: string;
+  thinking?: string;
+  tool_calls?: unknown;
+  status?: string;
+}): string {
+  return line({ status: 'DONE', step_index: 0, type: 'PLANNER_RESPONSE', ...rec });
+}
+
 describe('parseTranscript — prompt/response text', () => {
-  it('extracts a user message and an assistant reply from response_item lines', () => {
+  it('maps USER_EXPLICIT to a prompt and MODEL to a response', () => {
     const jsonl = [
-      SESSION_META,
-      line({
-        timestamp: '2026-07-14T10:00:01.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'here is my api key sk-abc123' }],
-        },
+      agy({
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        created_at: '2026-07-14T10:00:01Z',
+        content: 'deploy the staging box for me',
       }),
-      line({
-        timestamp: '2026-07-14T10:00:02.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: 'I will not echo that key back.' }],
-        },
+      agy({
+        source: 'MODEL',
+        created_at: '2026-07-14T10:00:02Z',
+        content: 'Starting the staging deploy now.',
       }),
     ].join('\n');
 
-    const messages = parseTranscript(jsonl);
-    expect(messages).toEqual([
+    expect(parseTranscript(jsonl)).toEqual([
       {
         kind: 'prompt',
-        text: 'here is my api key sk-abc123',
-        occurredAt: '2026-07-14T10:00:01.000Z',
+        text: 'deploy the staging box for me',
+        occurredAt: '2026-07-14T10:00:01Z',
         filePath: '',
       },
       {
         kind: 'response',
-        text: 'I will not echo that key back.',
-        occurredAt: '2026-07-14T10:00:02.000Z',
+        text: 'Starting the staging deploy now.',
+        occurredAt: '2026-07-14T10:00:02Z',
         filePath: '',
       },
     ]);
   });
 
-  it('stamps the source rollout path onto every message so a surfaced finding can be located', () => {
-    const path =
-      '/Users/me/.gemini/antigravity-cli/brain/conv-session/.system_generated/logs/transcript.jsonl';
+  // SYSTEM is host-injected text that neither the user nor the model authored.
+  // An unrecognised source is dropped by the same branch, which is what stops a
+  // future actor landing as a 'response' by default.
+  it('drops SYSTEM records and records whose source it does not recognise', () => {
     const jsonl = [
-      SESSION_META,
-      line({
-        timestamp: '2026-07-14T10:00:01.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'a prompt' }],
-        },
+      agy({
+        source: 'SYSTEM',
+        type: 'SYSTEM_MESSAGE',
+        created_at: '2026-07-14T10:00:01Z',
+        content: 'host preamble',
+      }),
+      agy({
+        source: 'SOME_FUTURE_ACTOR',
+        created_at: '2026-07-14T10:00:02Z',
+        content: 'from an actor this parser has never seen',
       }),
     ].join('\n');
+    expect(parseTranscript(jsonl)).toEqual([]);
+  });
+
+  // The case that makes dropping `thinking` a data-loss bug rather than a
+  // stylistic choice: this record shape (thinking + tool_calls, no content)
+  // occurs in a real transcript, and its reasoning text is all it carries.
+  it('keeps a record whose only text is thinking', () => {
+    const jsonl = agy({
+      source: 'MODEL',
+      created_at: '2026-07-14T10:00:03Z',
+      thinking: 'The user handed me a credential in the previous turn.',
+      tool_calls: [{ name: 'run_command', args: { CommandLine: 'ls' } }],
+    });
+    expect(parseTranscript(jsonl)).toEqual([
+      {
+        kind: 'response',
+        text: 'The user handed me a credential in the previous turn.',
+        occurredAt: '2026-07-14T10:00:03Z',
+        filePath: '',
+      },
+    ]);
+  });
+
+  it('joins content and thinking when a record carries both', () => {
+    const jsonl = agy({
+      source: 'MODEL',
+      created_at: '2026-07-14T10:00:04Z',
+      content: 'visible reply',
+      thinking: 'internal reasoning',
+    });
+    expect(parseTranscript(jsonl)[0]?.text).toBe('visible reply\ninternal reasoning');
+  });
+
+  // Tool arguments are not scan input today (see the file header). A record
+  // carrying only tool_calls therefore yields nothing rather than an empty
+  // message, so the scan never records a finding-less row.
+  it('skips a record whose only payload is tool_calls', () => {
+    const jsonl = agy({
+      source: 'MODEL',
+      type: 'RUN_COMMAND',
+      created_at: '2026-07-14T10:00:05Z',
+      tool_calls: [{ name: 'run_command', args: { CommandLine: 'echo hi' } }],
+    });
+    expect(parseTranscript(jsonl)).toEqual([]);
+  });
+
+  it('stamps the source transcript path onto every message so a finding can be located', () => {
+    const path =
+      '/Users/me/.gemini/antigravity/brain/conv-1/.system_generated/logs/transcript_full.jsonl';
+    const jsonl = agy({
+      source: 'USER_EXPLICIT',
+      created_at: '2026-07-14T10:00:01Z',
+      content: 'a prompt',
+    });
     const msgs = parseTranscript(jsonl, 0, Infinity, path);
     expect(msgs.length).toBeGreaterThan(0);
     for (const msg of msgs) expect(msg.filePath).toBe(path);
@@ -96,90 +165,43 @@ describe('parseTranscript — prompt/response text', () => {
 
   it('drops messages at/after the setup-start cutoff (beforeMs), keeps older ones', () => {
     const jsonl = [
-      line({
-        timestamp: '2026-07-14T10:00:01.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'pre-install leak' }],
-        },
+      agy({
+        source: 'USER_EXPLICIT',
+        created_at: '2026-07-14T10:00:01Z',
+        content: 'pre-install leak',
       }),
-      line({
-        timestamp: '2026-07-16T10:00:00.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: 'post-install wizard output' }],
-        },
+      agy({
+        source: 'USER_EXPLICIT',
+        created_at: '2026-07-16T10:00:00Z',
+        content: 'post-install wizard output',
       }),
     ].join('\n');
 
     const cutoff = Date.parse('2026-07-15T00:00:00.000Z'); // setup-start
-    const bounded = parseTranscript(jsonl, 0, cutoff).map((m) => m.text);
-    expect(bounded).toEqual(['pre-install leak']);
+    expect(parseTranscript(jsonl, 0, cutoff).map((m) => m.text)).toEqual(['pre-install leak']);
   });
 
-  it('joins multiple text content blocks and skips input_image blocks', () => {
-    const jsonl = line({
-      timestamp: '2026-07-14T10:00:01.000Z',
-      type: 'response_item',
-      payload: {
-        type: 'message',
-        role: 'user',
-        content: [
-          { type: 'input_text', text: 'first line' },
-          { type: 'input_image', image_url: 'data:image/png;base64,xyz' },
-          { type: 'input_text', text: 'second line' },
-        ],
-      },
+  it('applies the sinceMs window bound', () => {
+    const jsonl = agy({
+      source: 'USER_EXPLICIT',
+      created_at: '2026-01-01T00:00:00Z',
+      content: 'old',
     });
-    expect(parseTranscript(jsonl)).toEqual([
-      {
-        kind: 'prompt',
-        text: 'first line\nsecond line',
-        occurredAt: '2026-07-14T10:00:01.000Z',
-        filePath: '',
-      },
-    ]);
+    expect(parseTranscript(jsonl, Date.parse('2026-06-01T00:00:00.000Z'))).toEqual([]);
   });
 
-  it('skips non-message response_item payloads (function_call, reasoning, …)', () => {
+  it('skips a record with no created_at, and one whose timestamp will not parse', () => {
     const jsonl = [
-      line({
-        timestamp: '2026-07-14T10:00:01.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'function_call',
-          name: 'shell',
-          arguments: '{"command":"ls"}',
-          call_id: 'c1',
-        },
-      }),
-      line({
-        timestamp: '2026-07-14T10:00:02.000Z',
-        type: 'response_item',
-        payload: { type: 'reasoning', summary: [], content: [] },
-      }),
+      line({ source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'no timestamp' }),
+      agy({ source: 'USER_EXPLICIT', created_at: 'not-a-date', content: 'bad timestamp' }),
     ].join('\n');
     expect(parseTranscript(jsonl)).toEqual([]);
   });
 
   it('skips malformed JSON lines without throwing', () => {
-    const jsonl = ['not json at all', SESSION_META, '{"broken":'].join('\n');
+    const jsonl = ['not json at all', '{"broken":', 'null', '[]'].join('\n');
     expect(() => parseTranscript(jsonl)).not.toThrow();
     expect(parseTranscript(jsonl)).toEqual([]);
-  });
-
-  it('applies the sinceMs window bound', () => {
-    const jsonl = line({
-      timestamp: '2026-01-01T00:00:00.000Z',
-      type: 'response_item',
-      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'old' }] },
-    });
-    const sinceMs = Date.parse('2026-06-01T00:00:00.000Z');
-    expect(parseTranscript(jsonl, sinceMs)).toEqual([]);
   });
 });
 
@@ -555,5 +577,139 @@ describe('peekSessionOriginator — cheap live-hook header read', () => {
     writeFileSync(file, 'not json at all\n');
     expect(() => peekSessionOriginator(file)).not.toThrow();
     expect(peekSessionOriginator(file)).toBeUndefined();
+  });
+});
+
+describe('iterateHistory — which of a conversations two transcript files is read', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-agy-walk-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function seed(conversation: string, files: Record<string, string>): void {
+    const logs = join(root, conversation, '.system_generated', 'logs');
+    mkdirSync(logs, { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(logs, name), body);
+  }
+
+  const AT = '2026-07-14T10:00:01Z';
+  const NOW = Date.parse('2026-07-15T00:00:00.000Z');
+  const walk = (): string[] =>
+    [...iterateHistory({ dir: root, now: NOW, windowDays: 30 })].map((m) => m.text);
+
+  // The truncated file caps `content` and says so in `truncated_fields`. Both
+  // files carry the SAME records, so reading both scans every message twice and
+  // reports every finding twice.
+  it('reads the full file and skips its truncated sibling', () => {
+    seed('conv-a', {
+      'transcript.jsonl': line({
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        step_index: 0,
+        created_at: AT,
+        content: 'cut short here',
+        truncated_fields: ['content'],
+      }),
+      'transcript_full.jsonl': line({
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        step_index: 0,
+        created_at: AT,
+        content: 'cut short here and then the rest of it',
+      }),
+    });
+
+    expect(walk()).toEqual(['cut short here and then the rest of it']);
+  });
+
+  // The pair is resolved among ONE directory's entries. A conversation that has
+  // only the short file must still be read, or the skip above would silently
+  // drop whole conversations.
+  it('still reads a conversation that has only the truncated file', () => {
+    seed('conv-b', {
+      'transcript.jsonl': line({
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        step_index: 0,
+        created_at: AT,
+        content: 'only file present',
+      }),
+    });
+
+    expect(walk()).toEqual(['only file present']);
+  });
+
+  it('resolves the pair per conversation, not once across the whole walk', () => {
+    seed('conv-a', {
+      'transcript.jsonl': line({
+        source: 'USER_EXPLICIT',
+        status: 'DONE',
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: AT,
+        content: 'a-short',
+      }),
+      'transcript_full.jsonl': line({
+        source: 'USER_EXPLICIT',
+        status: 'DONE',
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: AT,
+        content: 'a-full',
+      }),
+    });
+    seed('conv-b', {
+      'transcript.jsonl': line({
+        source: 'USER_EXPLICIT',
+        status: 'DONE',
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: AT,
+        content: 'b-short',
+      }),
+    });
+
+    expect(walk().sort()).toEqual(['a-full', 'b-short']);
+  });
+});
+
+describe('transcriptsDir — the brain root', () => {
+  // This package shipped `~/.gemini/antigravity-cli/brain` twice: once carried
+  // over from the Codex template, once as a correction that was still wrong.
+  // Both times every unit test passed, because a test that spells the same
+  // literal as the implementation agrees with it whatever it says. So the
+  // assertion that can actually fail on a wrong constant is the one below that
+  // consults the filesystem — the two here only pin the known-wrong values out.
+  it('is under ~/.gemini and is not the editor store or the -cli path', () => {
+    const dir = transcriptsDir();
+    expect(dir.startsWith(join(homedir(), '.gemini'))).toBe(true);
+    expect(dir).not.toContain('antigravity-cli');
+    expect(dir).not.toContain('antigravity-ide');
+  });
+
+  it('honours the home override so no suite depends on the real home', () => {
+    expect(transcriptsDir('/tmp/fake-home')).toBe(
+      join('/tmp/fake-home', '.gemini', 'antigravity', 'brain'),
+    );
+  });
+
+  // The guard with teeth: where Antigravity is actually installed, the root
+  // this module names must be a directory that exists. Skips where it is not
+  // installed (CI, a contributor without it), so it never turns into a flake —
+  // but on any machine that has run the CLI it goes red the moment the path
+  // literal drifts from where the host really writes.
+  it('names a directory that exists wherever Antigravity is installed', (ctx) => {
+    if (!existsSync(join(homedir(), '.gemini'))) {
+      ctx.skip('Antigravity is not installed on this machine');
+      return;
+    }
+    expect(existsSync(transcriptsDir())).toBe(true);
   });
 });

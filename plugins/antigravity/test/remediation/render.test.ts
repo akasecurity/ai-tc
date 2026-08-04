@@ -27,8 +27,7 @@ function stripeFinding(): MaskedSecretFinding {
     provider: 'stripe',
     maskedToken: MASKED_STRIPE,
     where: {
-      filePath:
-        '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+      filePath: '~/.gemini/antigravity/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
     },
     state: 'unknown',
   };
@@ -59,7 +58,7 @@ describe('renderRemediationDecision — decision layout', () => {
     expect(out).toContain('AKIA****************');
     // where-found
     expect(out).toContain(
-      '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+      '~/.gemini/antigravity/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
     );
     expect(out).toContain('/tmp/agent-dump.txt');
     // the honest per-finding state, rendered as human text — never an

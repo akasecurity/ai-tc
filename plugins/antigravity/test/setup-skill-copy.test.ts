@@ -43,7 +43,7 @@ describe('SKILL.md model-judge egress disclosure', () => {
   // leave the copy claiming the isolation Codex's --ephemeral actually provides.
   it('admits there is no ephemeral mode and the judge conversation is persisted', () => {
     expect(skillMd).toMatch(/no ephemeral mode/);
-    expect(skillMd).toContain('~/.gemini/antigravity-cli/brain/');
+    expect(skillMd).toContain('~/.gemini/antigravity/brain/');
   });
 
   it('admits the cleanup is best effort and can leave the conversation behind', () => {

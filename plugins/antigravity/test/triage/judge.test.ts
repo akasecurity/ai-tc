@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
 import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const VERDICT_FENCE = [
   '```json',
@@ -45,27 +46,14 @@ const fakeSpawn =
     });
   };
 
-// Capture the error OUTSIDE the catch. The `try { call(); throw new Error(...) }
-// catch (e) { assert on e }` shape asserts on the test's OWN guard error when
-// the call stops throwing, so a raw-absence check passes vacuously. Returning
-// undefined for a call that did not throw is what makes toBeDefined() catch it.
-const errorFrom = (fn: () => unknown): Error | undefined => {
-  try {
-    fn();
-    return undefined;
-  } catch (e) {
-    return e as Error;
-  }
-};
-
 // Every runJudge call must be pointed at a throwaway home. The judge deletes
 // the conversation its own run created, and an unset `home` resolves to the
-// REAL ~/.gemini/antigravity-cli/brain on whatever machine runs this suite.
+// REAL ~/.gemini/antigravity/brain on whatever machine runs this suite.
 const tempHome = (): string => mkdtempSync(join(tmpdir(), 'aka-judge-home-'));
 
 // Seed a conversation directory under a throwaway home's brain root.
 const seedConversation = (home: string, id: string): string => {
-  const dir = join(home, '.gemini', 'antigravity-cli', 'brain', id);
+  const dir = join(home, '.gemini', 'antigravity', 'brain', id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'transcript.jsonl'), '{"actor":"user"}\n');
   return dir;
@@ -100,12 +88,17 @@ describe('parseVerdict', () => {
     // value. Neither thrown message may contain it.
     const cases = [`no fence here, just ${raw}`, '```json\nnot json ' + raw + '\n```'];
     for (const lastMessage of cases) {
-      try {
-        parseVerdict(lastMessage);
-        throw new Error('expected parseVerdict to throw');
-      } catch (err) {
-        expect((err as Error).message).not.toContain(raw);
-      }
+      // Captured OUTSIDE the catch. The `try { parseVerdict(…); throw new
+      // Error('expected …') } catch (err) { … }` shape this replaced caught the
+      // test's OWN guard error and asserted against a message that never held a
+      // secret — green while parseVerdict stopped throwing at all.
+      const err = errorFrom(() => parseVerdict(lastMessage));
+      // Name the refusal first: without it the case proves only that SOME error
+      // said nothing, not that the unparseable branch was the one reached.
+      expect(err?.message).toBe('agy judge returned an unparseable TriageRecommendation');
+      // Run-by-run, not whole: a branch echoing a truncated value still hands a
+      // live credential's prefix to the parent's stderr.
+      expectNoEchoOf(err?.message, raw);
     }
   });
 });
@@ -223,7 +216,7 @@ describe('runJudge', () => {
       ...hit,
       id: '7',
       filePath:
-        '/Users/dev/.gemini/antigravity-cli/brain/conv-x/.system_generated/logs/transcript.jsonl',
+        '/Users/dev/.gemini/antigravity/brain/conv-x/.system_generated/logs/transcript.jsonl',
       valueFingerprint: 'HMAC-of-the-secret',
       keyVersion: 1,
     };
@@ -251,11 +244,15 @@ describe('runJudge', () => {
     // value). context is re-masked: the raw secret no longer appears in the
     // window, but the non-secret scaffold survives (selective, not blanked).
     expect(sent.rawMatch).toBe(hit.rawMatch);
-    expect(sent.context).not.toContain(hit.rawMatch);
-    expect(sent.context).toContain('export KEY=');
+    const sentContext = sent.context;
+    if (typeof sentContext !== 'string') throw new Error('projected hit carried no context');
+    // The positive control comes first, on the SAME bytes: an absence assertion
+    // over an empty window would pass while proving nothing.
+    expect(sentContext).toContain('export KEY=');
+    expectNoEchoOf(sentContext, hit.rawMatch);
     // The dropped provenance/correlator fields never reach the model.
     expect(seen.prompt).not.toContain(
-      '/Users/dev/.gemini/antigravity-cli/brain/conv-x/.system_generated/logs/transcript.jsonl',
+      '/Users/dev/.gemini/antigravity/brain/conv-x/.system_generated/logs/transcript.jsonl',
     );
     expect(seen.prompt).not.toContain('HMAC-of-the-secret');
     expect(seen.prompt).not.toContain('filePath');
@@ -285,7 +282,7 @@ describe('runJudge', () => {
       home: tempHome(),
     });
     expect(seen.prompt).toContain(hit.rawMatch);
-    expect(seen.prompt).not.toContain(contextOnlySecret);
+    expectNoEchoOf(seen.prompt, contextOnlySecret);
     // Positive check: masking stays SELECTIVE, not a blanket redaction. If
     // maskText fell back to its fail-secure `[REDACTED]` path, the two assertions
     // above would still hold while the window the judge relies on was gone — so
@@ -318,7 +315,7 @@ describe('runJudge', () => {
     );
     expect(err).toBeDefined();
     expect(err?.message).toContain('produced no output');
-    expect(err?.message).not.toContain(hit.rawMatch);
+    expectNoEchoOf(err?.message, hit.rawMatch);
   });
 
   it.each([
@@ -331,7 +328,7 @@ describe('runJudge', () => {
     );
     expect(err).toBeDefined();
     expect(err?.message).toContain(expected);
-    expect(err?.message).not.toContain(hit.rawMatch);
+    expectNoEchoOf(err?.message, hit.rawMatch);
   });
 
   it('re-throws a spawn failure as raw-free metadata (the error echoes raw-bearing argv)', () => {
@@ -353,11 +350,15 @@ describe('runJudge', () => {
     );
     expect(err).toBeDefined();
     const message = err?.message ?? '';
-    expect(message).not.toContain(hit.rawMatch);
-    expect(message).not.toContain('export KEY=');
-    // still useful: it names the failure + surfaces the raw-free exit status
+    // still useful: it names the failure + surfaces the raw-free exit status.
+    // Asserted BEFORE the absences, which would otherwise be read off bytes
+    // nothing has shown to be live.
     expect(message).toContain('judge subprocess failed');
     expect(message).toContain('exit 1');
+    // The raw value and the surrounding transcript window both stay inside, run
+    // by run: a truncated echo is still a live credential's prefix.
+    expectNoEchoOf(message, hit.rawMatch);
+    expectNoEchoOf(message, hit.context);
     // and the raw-bearing spawn error is NOT chained as `cause` — a future
     // `{ cause: err }` would re-expose the prompt via util.inspect/loggers.
     expect(err?.cause).toBeUndefined();
@@ -459,7 +460,7 @@ describe('runJudge', () => {
     })();
     expect(err).toBeInstanceOf(TypeError);
     expect(err.message).toBe('runJudge requires deps.spawn — there is no live-spawn fallback');
-    expect(err.message).not.toContain(hit.rawMatch);
+    expectNoEchoOf(err.message, hit.rawMatch);
   });
 
   it('a cleanup fault never replaces the error the judge is throwing', (ctx) => {
@@ -494,7 +495,7 @@ describe('runJudge', () => {
     // survives the cleanup, so rmSync throws a real EACCES from a real syscall.
     const home = tempHome();
     seedConversation(home, 'conv-judge');
-    const brain = join(home, '.gemini', 'antigravity-cli', 'brain');
+    const brain = join(home, '.gemini', 'antigravity', 'brain');
     const conversation = join(brain, 'conv-judge');
     chmodSync(brain, 0o500);
 
@@ -515,7 +516,7 @@ describe('runJudge', () => {
       // message to the parent's stderr.
       expect(threw).toBeDefined();
       expect(threw?.message).toBe('agy judge subprocess failed (exit 7)');
-      expect(threw?.message).not.toContain(hit.rawMatch);
+      expectNoEchoOf(threw?.message, hit.rawMatch);
       // The positive control: the conversation survived, so the cleanup really
       // did fail rather than this passing against a removal that quietly worked.
       expect(existsSync(conversation)).toBe(true);

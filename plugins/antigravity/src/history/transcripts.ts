@@ -1,5 +1,5 @@
 // Antigravity CLI transcript adapter: turn the host's per-conversation JSONL
-// transcripts under `~/.gemini/antigravity-cli/brain/<conversationId>/
+// transcripts under `~/.gemini/antigravity/brain/<conversationId>/
 // .system_generated/logs/` into the text-bearing messages worth scanning for
 // already-leaked secrets. This is the ONE place that knows the Antigravity
 // record shape; the scan orchestrator (./scan.ts) stays format-agnostic and
@@ -7,22 +7,41 @@
 // plugins/claude-code/src/history/transcripts.ts, which plays the same role
 // for `~/.claude/projects/*/*.jsonl`.
 //
-// STATUS: the directory layout below is verified against Google's Antigravity
-// documentation; the RECORD parsing is NOT. The line shape this file decodes
-// (`{timestamp, ordinal, type, payload}` with `session_meta` / `response_item` /
-// `event_msg` tags) is the Codex CLI rollout schema, carried over when this
-// package was templated from plugins/codex and never ported. Antigravity writes
-// a different, currently undocumented record shape — published descriptions
-// confirm only that each line identifies an actor (User / Model / Tool /
-// System) and carries text, tool calls and errors.
+// The message parser and the directory layout below are pinned against a real
+// Antigravity transcript. A record is a FLAT object — there is no `payload`
+// envelope and no `role` field, so none of the Codex CLI rollout tags
+// (`session_meta` / `response_item` / `event_msg`) appear on this host:
 //
-// So `iterateHistory`/`iterateUsage` find the right FILES and then decode
-// almost nothing from them: a real Antigravity transcript matches none of the
-// tags below, so the parse yields no messages rather than wrong ones. That is
-// the intended failure direction — under-report, never mis-report — but it
-// means the historical backfill does not yet cover this host. Live hook capture
-// is unaffected; it never goes through this file. Porting the parser is blocked
-// on a real transcript sample to pin the field names against.
+//   { source:     'MODEL' | 'SYSTEM' | 'USER_EXPLICIT'   // the actor
+//     type:       'PLANNER_RESPONSE' | 'USER_INPUT' | 'RUN_COMMAND' | …
+//     created_at: ISO-8601 with a 'Z' suffix
+//     status:     'DONE' | 'RUNNING'
+//     step_index: number
+//     content?:   string          // absent on tool-only and checkpoint records
+//     thinking?:  string          // model reasoning; the ONLY text on some records
+//     tool_calls?: { name, args }[]
+//     exit_code?: number
+//     truncated_fields?: string[] } // names the fields this file cut short
+//
+// What this file does NOT yet cover, and why, so a reader does not mistake
+// silence for coverage:
+//
+//   - USAGE. The sample carries no token, model or cost field anywhere at any
+//     depth, so `parseTranscriptUsage` below — still shaped for Codex's
+//     `event_msg`/`token_count` lines — matches nothing here and yields no
+//     rows. Whether this host records usage elsewhere is unverified.
+//   - TOOL I/O. Tool calls ride INLINE on a record as `{name, args}` with no
+//     call id and no begin/end pair, so `parseTranscriptToolCalls`'s
+//     `exec_command_begin`/`exec_command_end` correlation matches nothing here
+//     either.
+//   - TOOL ARGUMENTS as scan input. `run_command` carries `CommandLine` and
+//     `write_to_file` carries `CodeContent`; a secret pasted into either is
+//     therefore NOT seen by the historical secret scan, which reads only the
+//     message text below. Live PreToolUse capture does see tool input.
+//
+// All three under-report rather than mis-report, which is the intended
+// direction, but none of them is a gap that reads as covered from the call
+// site.
 import type { Dirent } from 'node:fs';
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -43,7 +62,9 @@ export interface ScannedMessage {
 }
 
 // Where the Antigravity CLI writes its per-conversation transcripts:
-//   ~/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs/*.jsonl
+//   ~/.gemini/antigravity/brain/<conversationId>/.system_generated/logs/*.jsonl
+// The directory is `antigravity`, NOT `antigravity-cli` — the sibling
+// `~/.gemini/antigravity-ide` is the editor's own store and is not swept here.
 // The walk below sweeps the `brain` root recursively, so it reaches the
 // `.system_generated/logs` leaf without hardcoding that tail. Antigravity honors a
 // GEMINI_HOME override, but this reader intentionally does not — matches
@@ -55,7 +76,7 @@ export interface ScannedMessage {
 // home in isolation — no production call site passes it, so every real run
 // falls back to the OS home.
 export function transcriptsDir(home?: string): string {
-  return join(home ?? homedir(), '.gemini', 'antigravity-cli', 'brain');
+  return join(home ?? homedir(), '.gemini', 'antigravity', 'brain');
 }
 
 // One conversation's subtree under the brain root. The judge uses this to
@@ -75,21 +96,34 @@ function optString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-// A `message` ResponseItem's `content` is an array of ContentItem: `input_text`
-// / `output_text` (both carry `text`) or `input_image` (carries `image_url`,
-// never text). We keep only the text-bearing kinds — mirrors Claude Code's
-// parser dropping `thinking`/`tool_use`/`image` blocks.
-function extractContentText(content: unknown): string {
-  if (!Array.isArray(content)) return '';
+// The text-bearing fields of one record, joined. `content` is the visible turn
+// text; `thinking` is model reasoning and is kept rather than dropped because
+// it is the ONLY text on some records (a tool-call record carries `thinking` +
+// `tool_calls` and no `content` at all), so skipping it would drop those
+// records from the scan entirely. Claude Code's parser drops its own `thinking`
+// blocks, but there they sit inside an assistant message whose text is already
+// captured — here there is no such sibling.
+//
+// `tool_calls[].args` is deliberately NOT joined in: see the tool-arguments
+// note in the file header.
+function extractRecordText(rec: Record<string, unknown>): string {
   const parts: string[] = [];
-  for (const block of content) {
-    if (!isRecord(block)) continue;
-    if (block.type === 'input_text' || block.type === 'output_text') {
-      const text = optString(block.text);
-      if (text) parts.push(text);
-    }
-  }
+  const content = optString(rec.content);
+  if (content !== undefined && content !== '') parts.push(content);
+  const thinking = optString(rec.thinking);
+  if (thinking !== undefined && thinking !== '') parts.push(thinking);
   return parts.join('\n');
+}
+
+// Actor → the kind a finding is recorded under. `SYSTEM` is the host's own
+// injected text (never something the user or the model authored), so it is
+// dropped rather than mapped; an unrecognised source is dropped for the same
+// reason, which is what keeps a future actor from silently landing as a
+// 'response'.
+function kindForSource(source: string | undefined): EventKind | undefined {
+  if (source === 'USER_EXPLICIT') return 'prompt';
+  if (source === 'MODEL') return 'response';
+  return undefined;
 }
 
 // Parse one rollout file's contents (newline-delimited JSON) for prompt/response
@@ -115,8 +149,9 @@ export function parseTranscript(
       continue;
     }
     if (!isRecord(rec)) continue;
-    if (rec.type !== 'response_item') continue;
-    const occurredAt = optString(rec.timestamp) ?? '';
+    const kind = kindForSource(optString(rec.source));
+    if (kind === undefined) continue;
+    const occurredAt = optString(rec.created_at) ?? '';
     if (occurredAt === '') continue;
     const occurredMs = Date.parse(occurredAt);
     if (Number.isNaN(occurredMs)) continue;
@@ -126,31 +161,30 @@ export function parseTranscript(
     // output among them. Default Infinity keeps normal scans unbounded.
     if (occurredMs >= beforeMs) continue;
 
-    const payload = rec.payload;
-    if (!isRecord(payload) || payload.type !== 'message') continue;
-    const role = optString(payload.role);
-    if (role !== 'user' && role !== 'assistant') continue;
-    const text = extractContentText(payload.content);
+    const text = extractRecordText(rec);
     if (text.trim() === '') continue;
-    out.push({ kind: role === 'user' ? 'prompt' : 'response', text, occurredAt, filePath });
+    out.push({ kind, text, occurredAt, filePath });
   }
   return out;
 }
 
 // ───────────────────────────── usage (token) path ─────────────────────────────
 //
-// A SECOND, independent parse of the same rollout files, for the token-usage
-// reconciler. Antigravity reports usage per-turn via `event_msg`/`token_count`
-// (EventMsg::TokenCount → TokenCountEvent{ info: TokenUsageInfo, rate_limits }),
-// NOT per-assistant-message like Claude Code — there is no per-record
-// message.usage block to read. `TokenUsageInfo.last_token_usage` is the delta
-// since the PRIOR TokenCountEvent, so one TokenCountEvent already IS one
-// usage-bearing unit — no streaming-partial collapse needed (unlike Claude
-// Code's message.id collapse, which exists because Anthropic streams multiple
-// content-block records per API call).
+// A SECOND, independent parse of the same files, for the token-usage
+// reconciler.
 //
-// Antigravity also has no Claude-style linear uuid/parentUuid chain; `turn_id` is
-// the natural run_key equivalent, carried directly on most events.
+// NOT PORTED, AND CURRENTLY INERT ON THIS HOST. Everything below decodes the
+// Codex CLI's `event_msg`/`token_count` lines and is what this package was
+// templated from. A real Antigravity transcript carries no token, model or cost
+// field at any depth, so every line here fails the `rec.type !== 'event_msg'`
+// test and the parse yields nothing — no rows, rather than wrong rows.
+//
+// It is kept rather than deleted because the reconciler around it is wired and
+// tested, and an empty parse is the correct behaviour until there is a verified
+// usage source to decode. Whether this host records usage anywhere — a sibling
+// file, a separate store, or not at all — is unverified; the one sample this
+// was checked against had none. Do not read the field names below as evidence
+// about Antigravity: they describe Codex.
 
 // The usage bag this parser surfaces, shaped to match the fields
 // `buildAttributes` in usage.ts already knows how to promote (input_tokens /
@@ -189,15 +223,11 @@ export interface UsageEventRecord {
   occurredAt: string;
   cwd: string | undefined;
   version: string | undefined; // cli_version, from session_meta
-  // Which client wrote this rollout — session_meta.originator, e.g.
-  // 'codex_cli_rs' (terminal), 'antigravity-tui', 'codex_exec' (non-interactive),
-  // 'codex_desktop' (the Antigravity mode inside the ChatGPT desktop app), or
-  // 'codex_vscode'. Same engine, same hooks/plugin system regardless of
-  // originator — this rides as a descriptive harnessInterface fact (see
-  // usage.ts's reconcileSession) so the dashboard can tell them apart
-  // without forking the harness/sourceTool dimension. See
-  // antigravity-rs/otel/src/metrics/tags.rs's KNOWN_ORIGINATOR_TAG_VALUES in
-  // openai/antigravity for the full known set.
+  // Which client wrote the file, from the Codex `session_meta.originator` field
+  // this parser was templated against. Antigravity writes no such field, so
+  // this rides as `undefined` on every record produced here today. It stays on
+  // the shape because usage.ts's reconcileSession promotes it to a descriptive
+  // harnessInterface fact when one is present.
   originator: string | undefined;
 }
 
@@ -363,13 +393,20 @@ export function peekSessionOriginator(transcriptPath: string): string | undefine
 
 // ───────────────────────────── tool-I/O path ─────────────────────────────
 //
-// A THIRD independent parse of the same rollout files, for the tool-call
-// reconciler. Antigravity's PreToolUse/PostToolUse HOOKS only reliably fire for
-// `Bash`-equivalent (shell) calls today (see plugins/antigravity/hooks/hooks.json
-// and the upstream issue it cites — apply_patch calls don't fire hooks yet),
-// so this backfill-time parse of `exec_command_begin`/`exec_command_end` and
-// `patch_apply_begin`/`patch_apply_end` event pairs is currently the ONLY way
-// AKA observes a Antigravity file-write's content at all, live enforcement aside.
+// A THIRD independent parse of the same files, for the tool-call reconciler.
+//
+// NOT PORTED, AND CURRENTLY INERT ON THIS HOST, for the same reason as the
+// usage parser above: it correlates Codex's `exec_command_begin`/`_end` and
+// `patch_apply_begin`/`_end` event PAIRS by `call_id`. Antigravity has no such
+// pairs — a tool call rides inline on a single record as
+// `tool_calls: [{ name, args }]`, carries no call id, and reports completion
+// through that record's own `status` and `exit_code`. Observed names are
+// `view_file`, `run_command`, `list_dir`, `grep_search`, `write_to_file` and
+// `manage_task`; none of them is `apply_patch`, which is a Codex tool.
+//
+// So every line here fails the `payload` test and the parse yields nothing.
+// Porting it is a separate change from the message parser: `ToolCallRecord`
+// requires a `toolUseId`, and this host supplies no id to use as one.
 export interface ToolCallRecord {
   sessionId: string;
   toolUseId: string; // call_id
@@ -526,6 +563,18 @@ export interface HistoryWalkOptions {
 // `.jsonl` files are read; any compressed or rotated archive format this host
 // may use is skipped rather than guessed at, so the sweep under-covers
 // archived conversations. Live hook capture is unaffected.
+// A conversation's log dir holds the same transcript TWICE: `transcript.jsonl`
+// caps each `content` at ~4KB and names what it cut in `truncated_fields`,
+// while `transcript_full.jsonl` carries the untruncated text. Reading both
+// would scan every message twice and report each finding twice; reading only
+// the short one would silently miss whatever the cap removed — on the sample
+// this was measured against, the worst record kept 4116 of 10004 bytes. So the
+// full file wins and its truncated sibling is skipped, per directory: the pair
+// is decided among the entries of ONE directory, never across the walk, so a
+// conversation that has only the short file is still read.
+const TRUNCATED_TRANSCRIPT = 'transcript.jsonl';
+const FULL_TRANSCRIPT = 'transcript_full.jsonl';
+
 function* walkJsonlFiles(dir: string, depth = 0): Generator<string> {
   if (depth > 6) return; // guard against a pathological symlink loop
   let entries: Dirent[];
@@ -534,11 +583,13 @@ function* walkJsonlFiles(dir: string, depth = 0): Generator<string> {
   } catch {
     return;
   }
+  const hasFull = entries.some((e) => e.isFile() && e.name === FULL_TRANSCRIPT);
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       yield* walkJsonlFiles(full, depth + 1);
     } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      if (hasFull && entry.name === TRUNCATED_TRANSCRIPT) continue;
       yield full;
     }
   }

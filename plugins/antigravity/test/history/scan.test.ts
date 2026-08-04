@@ -42,43 +42,41 @@ function config(dataDir: string, historicalAccess: 'full' | 'session-only'): Plu
   };
 }
 
-// Build a rollout root with one session file containing a leaking prompt, a
-// benign assistant reply, and a function_call (which the scan must ignore —
-// only `message` response_items carry scannable prose).
+// Build a brain root holding one conversation: a leaking prompt, a benign model
+// reply, and a tool-call record. The last one is the case the scan must ignore
+// — tool arguments are not scan input today, so a secret echoed into a
+// `run_command` is NOT expected to be found here (see the tool-arguments note
+// in src/history/transcripts.ts).
 function seedRollout(root: string, secret: string): void {
-  const dayDir = join(root, '2026', '06', '20');
-  mkdirSync(dayDir, { recursive: true });
+  const logs = join(root, 'conv-2026-06-20', '.system_generated', 'logs');
+  mkdirSync(logs, { recursive: true });
   const lines = [
     JSON.stringify({
-      timestamp: LEAK_TS,
-      type: 'response_item',
-      payload: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: `here is a key ${secret}` }],
-      },
+      source: 'USER_EXPLICIT',
+      type: 'USER_INPUT',
+      status: 'DONE',
+      step_index: 0,
+      created_at: LEAK_TS,
+      content: `here is a key ${secret}`,
     }),
     JSON.stringify({
-      timestamp: '2026-06-20T12:00:05.000Z',
-      type: 'response_item',
-      payload: {
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'nothing sensitive here' }],
-      },
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      step_index: 1,
+      created_at: '2026-06-20T12:00:05.000Z',
+      content: 'nothing sensitive here',
     }),
     JSON.stringify({
-      timestamp: '2026-06-20T12:00:10.000Z',
-      type: 'response_item',
-      payload: {
-        type: 'function_call',
-        name: 'shell',
-        arguments: `{"command":"echo ${secret}"}`,
-        call_id: 'c1',
-      },
+      source: 'MODEL',
+      type: 'RUN_COMMAND',
+      status: 'DONE',
+      step_index: 2,
+      created_at: '2026-06-20T12:00:10.000Z',
+      tool_calls: [{ name: 'run_command', args: { CommandLine: `echo ${secret}` } }],
     }),
   ];
-  writeFileSync(join(dayDir, 'rollout-session.jsonl'), lines.join('\n'));
+  writeFileSync(join(logs, 'transcript_full.jsonl'), lines.join('\n'));
 }
 
 describe('scanHistory', () => {
@@ -186,7 +184,7 @@ describe('buildTriageHit', () => {
 
   it('carries the source rollout path when one is supplied, so a surfaced finding can be located and struck', () => {
     const path =
-      '/Users/me/.gemini/antigravity-cli/brain/conv-session/.system_generated/logs/transcript.jsonl';
+      '/Users/me/.gemini/antigravity/brain/conv-session/.system_generated/logs/transcript.jsonl';
     const text = `padding ${BACKFILL_SECRET} padding`;
     const start = text.indexOf(BACKFILL_SECRET);
     const finding = {
@@ -260,18 +258,17 @@ describe('scanHistory — onHit sink', () => {
     const otherSecret = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
     seedRollout(rollout, BACKFILL_SECRET);
 
-    const otherDayDir = join(rollout, '2026', '06', '21');
-    mkdirSync(otherDayDir, { recursive: true });
+    const otherLogs = join(rollout, 'conv-2026-06-21', '.system_generated', 'logs');
+    mkdirSync(otherLogs, { recursive: true });
     writeFileSync(
-      join(otherDayDir, 'rollout-other.jsonl'),
+      join(otherLogs, 'transcript_full.jsonl'),
       JSON.stringify({
-        timestamp: '2026-06-21T12:00:00.000Z',
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: `here is another key ${otherSecret}` }],
-        },
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        step_index: 0,
+        created_at: '2026-06-21T12:00:00.000Z',
+        content: `here is another key ${otherSecret}`,
       }),
     );
 
@@ -290,26 +287,27 @@ describe('scanHistory — onHit sink', () => {
     expect(otherHit?.context).not.toContain(BACKFILL_SECRET);
     // Each streamed hit carries the real rollout file it was found in, so the
     // remediation redact path can locate and strike the leaked key in place.
-    expect(backfillHit?.filePath).toBe(join(rollout, '2026', '06', '20', 'rollout-session.jsonl'));
-    expect(otherHit?.filePath).toBe(join(rollout, '2026', '06', '21', 'rollout-other.jsonl'));
+    expect(backfillHit?.filePath).toBe(
+      join(rollout, 'conv-2026-06-20', '.system_generated', 'logs', 'transcript_full.jsonl'),
+    );
+    expect(otherHit?.filePath).toBe(
+      join(rollout, 'conv-2026-06-21', '.system_generated', 'logs', 'transcript_full.jsonl'),
+    );
   });
 
   it('redacts a neighboring secret from context when two findings share one message', async () => {
     const otherSecret = ['AKIA', 'QZ7WXNTP4LMKD9VJ'].join('');
-    const dayDir = join(rollout, '2026', '06', '20');
-    mkdirSync(dayDir, { recursive: true });
+    const logs = join(rollout, 'conv-2026-06-20', '.system_generated', 'logs');
+    mkdirSync(logs, { recursive: true });
     writeFileSync(
-      join(dayDir, 'rollout-session.jsonl'),
+      join(logs, 'transcript_full.jsonl'),
       JSON.stringify({
-        timestamp: LEAK_TS,
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [
-            { type: 'input_text', text: `key one ${BACKFILL_SECRET} and key two ${otherSecret}` },
-          ],
-        },
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        step_index: 0,
+        created_at: LEAK_TS,
+        content: `key one ${BACKFILL_SECRET} and key two ${otherSecret}`,
       }),
     );
 

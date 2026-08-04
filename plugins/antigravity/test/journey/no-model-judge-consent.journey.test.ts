@@ -119,7 +119,7 @@ class SetupJourney {
     const logDir = join(
       this.home,
       '.gemini',
-      'antigravity-cli',
+      'antigravity',
       'brain',
       'conv-2026-07-27-consent',
       '.system_generated',
@@ -128,15 +128,15 @@ class SetupJourney {
     mkdirSync(logDir, { recursive: true });
     const occurredAt = new Date(Date.now() - 3 * DAY_MS).toISOString();
     const line = JSON.stringify({
-      timestamp: occurredAt,
-      type: 'response_item',
-      payload: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: `please deploy with this key: ${SURFACED_KEY}` }],
-      },
+      source: 'USER_EXPLICIT',
+      type: 'USER_INPUT',
+      status: 'DONE',
+      step_index: 0,
+      created_at: occurredAt,
+      content: `please deploy with this key: ${SURFACED_KEY}`,
     });
-    const rolloutPath = join(logDir, 'transcript.jsonl');
+    // The untruncated file — the one the walk prefers when both are present.
+    const rolloutPath = join(logDir, 'transcript_full.jsonl');
     writeFileSync(rolloutPath, `${line}\n`);
     return rolloutPath;
   }

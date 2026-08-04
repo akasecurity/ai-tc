@@ -18,7 +18,7 @@
  * papered over, because neither can be engineered away here:
  *
  *   1. The run PERSISTS. `agy` writes the judge conversation — raw hits and
- *      all — under ~/.gemini/antigravity-cli/brain/<conversationId>/, the same
+ *      all — under ~/.gemini/antigravity/brain/<conversationId>/, the same
  *      tree ../history/transcripts.ts sweeps, so a conversation left behind
  *      would be re-ingested as fresh findings on the next scan. This file
  *      therefore removes that conversation itself, in a finally. Removal is

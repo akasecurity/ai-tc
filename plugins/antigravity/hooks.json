@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/antigravity-cli/plugins/aka-antigravity}/scripts/pre-invocation.js\" \"${PLUGIN_ROOT:-$HOME/.gemini/antigravity-cli/plugins/aka-antigravity}/plugin.json\"",
+            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/config/plugins/aka-antigravity}/scripts/pre-invocation.js\" \"${PLUGIN_ROOT:-$HOME/.gemini/config/plugins/aka-antigravity}/plugin.json\"",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/antigravity-cli/plugins/aka-antigravity}/scripts/pre-tool-use.js\"",
+            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/config/plugins/aka-antigravity}/scripts/pre-tool-use.js\"",
             "timeout": 10
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/antigravity-cli/plugins/aka-antigravity}/scripts/post-tool-use.js\"",
+            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/config/plugins/aka-antigravity}/scripts/post-tool-use.js\"",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/antigravity-cli/plugins/aka-antigravity}/scripts/stop.js\"",
+            "command": "node \"${PLUGIN_ROOT:-$HOME/.gemini/config/plugins/aka-antigravity}/scripts/stop.js\"",
             "timeout": 10
           }
         ]

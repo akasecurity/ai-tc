@@ -155,8 +155,7 @@ describe('frameCalibration — additive masked per-finding summaries', () => {
       provider: 'stripe',
       maskedToken: 'sk_live_****',
       where: {
-        filePath:
-          '~/.gemini/antigravity-cli/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
+        filePath: '~/.gemini/antigravity/brain/conv-abc123/.system_generated/logs/transcript.jsonl',
       },
       state: 'still-valid',
     },

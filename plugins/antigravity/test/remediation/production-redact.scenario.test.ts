@@ -68,13 +68,13 @@ function findingFor(filePath: string, rawValue: string): MaskedSecretFinding {
 }
 
 // The per-conversation log directory Antigravity writes under a given home
-// (`<home>/.gemini/antigravity-cli/brain/<conversationId>/.system_generated/logs`),
+// (`<home>/.gemini/antigravity/brain/<conversationId>/.system_generated/logs`),
 // created on demand for the fixtures.
 function conversationLogDir(home: string): string {
   const dir = join(
     home,
     '.gemini',
-    'antigravity-cli',
+    'antigravity',
     'brain',
     'conv-2026-07-01-abc123',
     '.system_generated',
@@ -86,7 +86,7 @@ function conversationLogDir(home: string): string {
 
 describe('redactSurfacedSecrets — the production redaction adapter', () => {
   // A throwaway HOME (transcripts live under
-  // `<home>/.gemini/antigravity-cli/brain/...`, exactly what `transcriptsDir`
+  // `<home>/.gemini/antigravity/brain/...`, exactly what `transcriptsDir`
   // derives) and a throwaway `~/.aka` base for the runtime's
   // local store — so this suite never touches the developer's real machine state.
   let home: string;

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
 import { DATA_FILE_MODE, dbSidecars } from '../../src/paths.ts';
+import { errorFrom } from './errors.ts';
 import {
   corruptStore,
   fillStore,
@@ -353,11 +354,10 @@ describe('readOnlyStore', () => {
 
       const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
       if (!readOnly.effective) ctx.skip(MODES_IGNORED);
-      try {
-        openLocalDatabase(store.dataDir);
-      } catch {
-        // Refused, as this whole file expects — the point is what it left behind.
-      }
+      // Named rather than swallowed: a bare catch here would keep this green if
+      // the refusal ever moved to a different failure (tightenPerms ahead of
+      // applyMigrations, say), with the fix under test removed.
+      expect(primaryCode(errorFrom(() => openLocalDatabase(store.dataDir)))).toBe(SQLITE_READONLY);
       const minted = dbSidecars(store.dbFile).filter((path) => existsSync(path));
       // The positive control: without a sidecar to leave behind, everything
       // below passes vacuously.

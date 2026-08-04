@@ -31,7 +31,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 
-import { dbSidecars } from '../../src/paths.ts';
+import { DATA_FILE_MODE, dbSidecars } from '../../src/paths.ts';
 import type { TempStore } from './temp-store.ts';
 
 /**
@@ -324,19 +324,18 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
       // arrive at 0400 and the target list above has never heard of them.
       // Leaving them is not a cosmetic miss: the db reads writable again while
       // its -wal does not, so the next open gets past `PRAGMA journal_mode`
-      // and dies deep inside the migration applier instead, and on Windows a
-      // 0400 sidecar can block the very tree removal this restore exists to
-      // enable. Hand them the mode the db itself was holding, which is what
-      // the product holds its sidecars at.
-      const fileMode = original.get(file);
-      if (fileMode !== undefined) {
-        for (const sidecar of dbSidecars(file)) {
-          if (original.has(sidecar) || !existsSync(sidecar)) continue;
-          try {
-            chmodSync(sidecar, fileMode);
-          } catch {
-            // Vanished between the check and here, or a platform without modes.
-          }
+      // and dies deep inside the migration applier instead. Hand them the mode
+      // the product holds its sidecars at (`tightenPerms` → DATA_FILE_MODE),
+      // not the db's observed mode — those agree only while every fixture is
+      // 0600, and a 0640 db would otherwise mint sidecars at a mode
+      // `tightenPerms` can never produce while the self-test asserts the
+      // constant.
+      for (const sidecar of dbSidecars(file)) {
+        if (original.has(sidecar) || !existsSync(sidecar)) continue;
+        try {
+          chmodSync(sidecar, DATA_FILE_MODE);
+        } catch {
+          // Vanished between the check and here, or a platform without modes.
         }
       }
     },
@@ -499,12 +498,15 @@ export interface FilledStore {
  * store is unaffected, so this fills the store for the handle passed in and
  * that handle only. A genuinely full filesystem stays out of reach in CI.
  *
- * That connection scope is also the limit of this injector. It takes a raw
- * `DatabaseSync`, and `LocalDatabase` exposes none, so no disk-full fault can
- * be aimed at `recordCapture` or any other repository write today — this
- * injector currently reaches node:sqlite, not the package built on it. Closing
- * that gap needs either a raw-handle seam on `LocalDatabase` or repositories
- * driven over a raw handle, as `activity.test.ts` already does.
+ * That connection scope is what decides its reach. A repository constructed
+ * over a raw handle takes the cap (`SqliteAuditEventsRepository(raw)`, the
+ * `activity.test.ts` pattern), and so does `applyMigrations` — `test/faults/
+ * disk-full.test.ts` drives both. What stays out of reach is the four blanket
+ * fail-open sites in `database.ts` (`recordCapture`, `ensureInventory`,
+ * `recordConfigScan`, `recordProjectFiles`) and `reconcileWorktreeProjects`:
+ * all of them close over the connection `openLocalDatabase` opened, and
+ * `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault
+ * at those needs a raw-handle seam.
  */
 export function fillStore(db: DatabaseSync, opts: { headroomPages?: number } = {}): FilledStore {
   const readPragma = (name: string): number => {

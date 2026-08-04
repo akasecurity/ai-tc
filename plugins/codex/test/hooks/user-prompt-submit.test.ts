@@ -9,6 +9,8 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/hooks -> plugins/codex
 const PLUGIN_ROOT = join(HERE, '..', '..');
@@ -94,8 +96,10 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(payload.decision).toBe('block');
       expect(payload.reason).toContain('twilio-key');
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
-      // The never-leak assertion: the raw value appears nowhere on stdout.
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      // The never-leak assertion: no run of the raw value appears on stdout.
+      // Run by run rather than whole — a branch echoing a truncated value is
+      // still echoing a live credential's prefix.
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -111,7 +115,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(payload.decision).toBe('block');
       expect(payload.reason).toMatch(/^AKA blocked this prompt — flagged /);
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
-      expect(run.stdout).not.toContain(SECRET_EXAMPLE);
+      expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

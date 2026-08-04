@@ -927,7 +927,8 @@ Assert a raw value is absent from an **error** run by run, not whole. `not.toCon
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
-`plugins/claude-code/test/helpers/no-echo.ts` and `web-ui/test/helpers/no-echo.ts`. A plain
+`plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
+`web-ui/test/helpers/no-echo.ts` and `packages/setup-wizard/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -935,15 +936,18 @@ ones.
 **Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
 twenty whole-value raw-value assertions in files this convention has not reached —
 `history/`, `journey/`, `remediation/`, `render.test.ts`, `triage/plan-file.test.ts`,
-`hooks/pointer-substitution.test.ts` and `backfill.test.ts` among them. Do not read the rule
-above as a claim that the package is clean. Two shapes are genuinely **exempt** and stay
+`hooks/pointer-substitution.test.ts` and `backfill.test.ts` among them. `plugins/codex` carries
+the same backlog in its counterparts of those files — the helper reached its hook and
+remediation-render assertions, not `history/`, `triage/judge.test.ts` or
+`remediation/redact.test.ts`. Do not read the rule above as a claim that either package is
+clean. Two shapes are genuinely **exempt** and stay
 whole-value: an assertion on a masked preview (`writeback.test.ts` on `maskedValue`,
 `triage/surfaced-secrets.test.ts` on `maskedToken`), because that fragment is revealed on
 purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`, which exist
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All three packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All five packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -951,7 +955,7 @@ run length or emptying the loop cannot go unnoticed — widening `ECHO_RUN` leav
 **caller** green, so the helper's own suite is the only thing that goes red. `web-ui` is the
 worked example of that failure: its copy was inline with no suite, and all 86 of its action
 tests passed with `ECHO_RUN` set to 64. A package wall blocks the import, not the pattern, so a
-fourth package copies **both** files — including the `expect(value).toBeDefined()` guard,
+further package copies **both** files — including the `expect(value).toBeDefined()` guard,
 without which an `undefined` message satisfies the loop vacuously.
 
 **A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built

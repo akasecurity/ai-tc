@@ -4,6 +4,7 @@ import { renderChecklistMarkdown } from '@akasecurity/setup-wizard';
 import { describe, expect, it } from 'vitest';
 
 import { renderRemediationDecision } from '../../src/remediation/render.ts';
+import { ECHO_RUN, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // The RAW_* constants are what the underlying leak actually contains; each
 // fixture's `maskedToken` is the masked preview of the SAME raw value (raw prefix
@@ -82,14 +83,30 @@ describe('renderRemediationDecision — decision layout', () => {
     const out = renderRemediationDecision([stripeFinding(), awsFinding()], 0, REGISTRY_SCAN);
     // The masked preview is what surfaces; the raw value it derives from does not.
     // Guard the assertion against vacuity: the masked and raw forms must genuinely
-    // differ, so `not.toContain(RAW_*)` is a real check, not a tautology over a
-    // string the renderer was never given.
+    // differ, so the absence check is a real one, not a tautology over a string
+    // the renderer was never given.
     expect(MASKED_STRIPE).not.toEqual(RAW_STRIPE);
     expect(MASKED_AWS).not.toEqual(RAW_AWS);
     expect(out).toContain(MASKED_STRIPE);
     expect(out).toContain(MASKED_AWS);
     expect(out).not.toContain(RAW_STRIPE);
     expect(out).not.toContain(RAW_AWS);
+    // Then the run-by-run half, pointed at the secret MATERIAL rather than the
+    // whole raw value. The masked preview reveals the provider prefix on
+    // purpose (`sk_live_` is eight characters — exactly ECHO_RUN), so a run
+    // check against the whole raw would fire on the very fragment this table
+    // is supposed to print: the helper's limit 3. Everything past the revealed
+    // prefix is secret, and none of it may appear in any run — which a
+    // whole-value assertion alone would miss if the renderer ever truncated.
+    // The slice is derived from the mask, so revealing more adjusts it here.
+    const stripeSecret = RAW_STRIPE.slice(MASKED_STRIPE.indexOf('*'));
+    const awsSecret = RAW_AWS.slice(MASKED_AWS.indexOf('*'));
+    // Guard the slices: a tail shorter than ECHO_RUN would leave the sliding
+    // loop with nothing to run, and both assertions below would pass vacuously.
+    expect(stripeSecret.length).toBeGreaterThan(ECHO_RUN);
+    expect(awsSecret.length).toBeGreaterThan(ECHO_RUN);
+    expectNoEchoOf(out, stripeSecret);
+    expectNoEchoOf(out, awsSecret);
   });
 
   it('cannot be handed a raw value — the MaskedSecretFinding contract rejects it (.strict)', () => {

@@ -2,14 +2,12 @@ import type { ActionTaken, DetectionCategory, TriageHit } from '@akasecurity/sch
 import { severityFloorPosture } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { TRIAGE_STATUSES as PRODUCER_STATUSES } from '../../src/backfill.ts';
 import {
   parseTriageStream,
   performTriageWriteback,
   planTriageWriteback,
   recommendedPosture,
   SCRUBBED_NOTES,
-  TRIAGE_STATUSES as CONSUMER_STATUSES,
 } from '../../src/triage/writeback.ts';
 import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -93,11 +91,11 @@ describe('parseTriageStream', () => {
     expect(() => parseTriageStream(stream)).toThrow(/hits under a complete:no-history sentinel/i);
   });
 
-  it('keeps the producer and consumer status sets in lockstep', () => {
-    // Every value one side knows, the other must too — a status the producer emits
-    // and the consumer rejects (or vice versa) is a silent skew.
-    expect([...CONSUMER_STATUSES].sort()).toEqual([...PRODUCER_STATUSES].sort());
-  });
+  // A 'keeps the producer and consumer status sets in lockstep' test used to sit
+  // here. It is gone because the drift it guarded is now structurally impossible:
+  // the producer (plugins/claude-code/src/backfill.ts) re-exports TRIAGE_STATUSES
+  // from this package rather than declaring its own copy, so there is exactly one
+  // definition and the assertion would compare a value to itself.
 
   it('fails LOUD on an unrecognized sentinel status instead of silently skipping', () => {
     // A version-skewed / corrupted producer emits a status this consumer does not

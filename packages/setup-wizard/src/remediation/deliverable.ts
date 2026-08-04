@@ -1,6 +1,6 @@
 import type { MaskedSecretFinding } from '@akasecurity/schema';
 
-import { renderResolvedSummary } from './render.ts';
+import { renderResolvedSummary } from './redaction-summary.ts';
 import { buildChecklistEntries, generateRotationChecklist } from './rotation-checklist.ts';
 
 export function resolveRemediationDeliverable(input: {

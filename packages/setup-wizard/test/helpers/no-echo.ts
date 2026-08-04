@@ -14,10 +14,9 @@ export const ECHO_RUN = 8;
 /**
  * Assert `haystack` carries no run of `value` at all, not merely not all of it.
  *
- * Point this at a value that must not appear AT ALL — a raw hit in an error
- * that reaches the parent command's stderr, or in a message built for the user.
- * Three limits decide where it belongs, and each one is pinned by this file's
- * own suite:
+ * Point this at a value that must not appear AT ALL — a raw hit in a parser's
+ * thrown error, or in a line built for display. Three limits decide where it
+ * belongs, and each one is pinned by this file's own suite:
  *
  * 1. **It proves nothing over bytes that came back empty.** Every `not.toContain`
  *    passes on `''`, and the `toBeDefined()` guard below does not catch that —
@@ -32,8 +31,7 @@ export const ECHO_RUN = 8;
  * 3. **It is for a raw value, not a deliberately revealed fragment.** A masked
  *    preview is built and shown on purpose, so at-rest and grant-shape
  *    assertions stay whole-value — `triage/writeback.test.ts` on `maskedValue`
- *    and `triage/surfaced-secrets.test.ts` on `maskedToken`, both beside the
- *    `packages/setup-wizard` peer of this file.
+ *    and `triage/surfaced-secrets.test.ts` on `maskedToken` are the two here.
  *    A generic secret's preview reveals two characters and cannot fill the
  *    window, which is what lets a surface printing one be searched at all;
  *    `cli/test/helpers/no-echo.ts` carries the rest of that boundary, including
@@ -42,7 +40,7 @@ export const ECHO_RUN = 8;
  * Shared by this package's suites because they sit behind one package wall.
  * Across a wall it cannot be imported, so `cli/test/helpers/no-echo.ts`,
  * `web-ui/test/helpers/no-echo.ts`, and
- * `packages/setup-wizard/test/helpers/no-echo.ts` are peers of this file — each
+ * `plugins/claude-code/test/helpers/no-echo.ts` are peers of this file — each
  * a copy that takes the `toBeDefined()` guard and a `no-echo.test.ts` with it,
  * or the run length can be widened back with nothing going red.
  */

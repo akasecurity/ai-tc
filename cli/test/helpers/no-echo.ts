@@ -38,10 +38,11 @@ export const ECHO_RUN = 8;
  *    a surface that prints the preview of a pii/email value.
  *
  * Shared by the CLI suites because they sit in one package. Across a package
- * wall it cannot be imported, so `plugins/claude-code/test/helpers/no-echo.ts`
- * and `web-ui/test/helpers/no-echo.ts` are peers of this file — each a copy
- * that takes the `toBeDefined()` guard and a `no-echo.test.ts` with it, or the
- * run length can be widened back with nothing going red.
+ * wall it cannot be imported, so `plugins/claude-code/test/helpers/no-echo.ts`,
+ * `web-ui/test/helpers/no-echo.ts`, and
+ * `packages/setup-wizard/test/helpers/no-echo.ts` are peers of this file — each
+ * a copy that takes the `toBeDefined()` guard and a `no-echo.test.ts` with it,
+ * or the run length can be widened back with nothing going red.
  */
 export function expectNoEchoOf(haystack: string | undefined, value: string): void {
   // Catches a never-thrown error arriving as `undefined`, which would otherwise

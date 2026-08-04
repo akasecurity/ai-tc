@@ -193,6 +193,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/plugin-sdk',
   '@akasecurity/scanner',
   '@akasecurity/schema',
+  '@akasecurity/setup-wizard',
   '@akasecurity/web-ui',
 ];
 

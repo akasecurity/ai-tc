@@ -99,12 +99,20 @@ function withRetries<T>(attemptFn: () => T): T {
 }
 
 // Absent is not an error: only a file that exists is inspected, so a checkout
-// without a workspace manifest simply contributes nothing to look at.
+// without a workspace manifest simply contributes nothing to look at. Absent
+// means ENOENT and nothing else — a file that exists but cannot be read is
+// refused rather than reported as "no config here", which is how the JSON
+// parse failure in findAuditConfigMutes already behaves. Reading a mute as
+// absence is the one outcome this check exists to prevent, so it must not be
+// reachable through a failed read either.
 const readIfPresent = (path: string): string | undefined => {
   try {
     return readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new WaiverConfigError(
+      `${basename(path)} exists but could not be read (${errorMessage(error)}), so its pnpm config is unknown`,
+    );
   }
 };
 

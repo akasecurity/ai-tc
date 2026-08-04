@@ -289,8 +289,16 @@ describe('findAuditConfigMutes', () => {
     ).toHaveLength(1);
   });
 
-  it('allows an auditConfig that is present but empty — it suppresses nothing', () => {
-    expect(findAuditConfigMutes({ manifest: manifestWith({ auditConfig: {} }) })).toEqual([]);
+  // Both channels answer the same way about an empty `auditConfig`. It
+  // suppresses nothing either way, so this is about the rule being statable:
+  // the YAML half cannot tell empty from non-empty without a parser, so if the
+  // manifest half allowed it the two would disagree and "refuses on presence"
+  // would be true of only one of them.
+  it('refuses an empty auditConfig in either channel, and names no keys for it', () => {
+    const manifest = findAuditConfigMutes({ manifest: manifestWith({ auditConfig: {} }) });
+    expect(manifest).toEqual(['package.json "pnpm.auditConfig"']);
+    expect(manifest[0]).not.toContain('()');
+    expect(findAuditConfigMutes({ workspaceYaml: 'auditConfig:\n' })).toHaveLength(1);
   });
 
   // The second channel: pnpm 10 reads the same setting from the workspace file,

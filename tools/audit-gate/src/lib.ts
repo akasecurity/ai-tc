@@ -254,10 +254,13 @@ export interface AuditConfigSources {
 const WORKSPACE_AUDIT_CONFIG = /^["']?auditConfig["']?\s*:/m;
 
 // Names every place `auditConfig` is configured, so the refusal can point at
-// the file to edit. Presence is enough — the gate never needs to know which
-// advisories are named, and an unrecognized key added by a later pnpm is
-// caught for free. An `auditConfig` that is present but empty suppresses
-// nothing and is allowed through.
+// the file to edit. **Presence of the key is enough, in both channels** — the
+// gate never needs to know which advisories are named, so the key names are
+// never enumerated and one added by a later pnpm is caught for free. An
+// `auditConfig` that is present but empty suppresses nothing, and is refused
+// anyway: it is a stub with no other purpose, and the two channels cannot
+// answer differently without the rule becoming one nobody can state. The YAML
+// half could not tell empty from non-empty without a parser regardless.
 export function findAuditConfigMutes(sources: AuditConfigSources): string[] {
   const found: string[] = [];
 
@@ -272,10 +275,11 @@ export function findAuditConfigMutes(sources: AuditConfigSources): string[] {
     }
     const auditConfig = (parsed as { pnpm?: { auditConfig?: unknown } } | null)?.pnpm?.auditConfig;
     if (auditConfig !== null && typeof auditConfig === 'object') {
-      const keys = Object.keys(auditConfig);
-      if (keys.length > 0) {
-        found.push(`package.json "pnpm.auditConfig" (${keys.sort().join(', ')})`);
-      }
+      const keys = Object.keys(auditConfig).sort();
+      // An empty object has no keys to name, so the suffix is dropped rather
+      // than rendering as an empty pair of parentheses.
+      const detail = keys.length > 0 ? ` (${keys.join(', ')})` : '';
+      found.push(`package.json "pnpm.auditConfig"${detail}`);
     }
   }
 

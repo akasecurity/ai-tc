@@ -8,9 +8,9 @@
  * asserts the property the battery cannot give — whatever the pattern, the work
  * ends:
  *
- *   - one the battery CLEARS in microseconds and that then never returns on
- *     text the battery has no way to construct, which is what the isolated
- *     `scan` exists for;
+ *   - one the battery CLEARS without ever reaching its nested quantifier, and
+ *     that then never returns on text the battery has no way to construct,
+ *     which is what the isolated `scan` exists for;
  *   - one that hangs the BATTERY ITSELF, which is what the isolated `probe`
  *     exists for. Measuring a rule means driving its own pattern into
  *     backtracking, so the measurement is an unbounded run of an untrusted
@@ -37,8 +37,13 @@ import { countWorkerStarts } from './helpers/worker-starts.ts';
 // at the `zzq` literal before it ever reaches the nested quantifier. The rule
 // measures as safe and is admitted to the ruleset. Text that does carry the
 // literal then drives `(a+)+$` into exponential backtracking.
-const BATTERY_BLIND_PATTERN = String.raw`(?:zzq)(a+)+$`;
-const BATTERY_BLIND_TEXT = `zzq${'a'.repeat(34)}!`;
+// Keep this free of regex metacharacters: it is interpolated into the pattern
+// below, and `String.raw` leaves interpolations untouched, so anything with a
+// meaning to the engine would change what the pattern matches rather than being
+// matched literally. It is also the plain text prefix the hostile input carries.
+const BATTERY_BLIND_LITERAL = 'zzq';
+const BATTERY_BLIND_PATTERN = String.raw`(?:${BATTERY_BLIND_LITERAL})(a+)+$`;
+const BATTERY_BLIND_TEXT = `${BATTERY_BLIND_LITERAL}${'a'.repeat(34)}!`;
 
 // The other half of the gap. This one has no literal prefix at all, so the
 // battery's own derived probe is `'a'.repeat(23) + '!'` — and four identical

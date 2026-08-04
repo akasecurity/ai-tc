@@ -171,6 +171,18 @@ Five properties are load-bearing and easy to break by accident:
 - **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
 - **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
+The first two are **counted, not timed** — a different claim from the fifth, which forbids an
+elapsed assertion outright because its two readings are already exhaustive. How many threads a path builds is the property —
+none on the fast path, one for the pre-flight, two for a hang that has to be recovered and then
+attributed — and `IsolatedScanOptions.onWorkerStart` reports each construction so
+`packages/plugin-sdk/test/{runtime-isolation,isolated-scan}.test.ts` can assert the number
+directly. Elapsed ceilings sit beside those counts and answer a different question: a ceiling
+loose enough to survive a cold start on a contended runner (the two-cycle case is granted 75s
+against a shipped worst case of ~14s) swallows a whole extra cycle without noticing, so it can
+only separate "this path got slower" from "this path stopped terminating" — which the per-test
+timeout cannot. Do not fold one into the other, and do not answer a flake here by widening a
+ceiling that was never measuring the property.
+
 A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it; the dashboard's folder scan writes the same line to the server's console and additionally returns a notice to the page, since nobody is reading a server log while they click Scan. Anything that adds a new way to quarantine must keep those surfaces true.
 
 The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.

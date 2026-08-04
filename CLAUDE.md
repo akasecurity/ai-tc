@@ -35,14 +35,31 @@ _absence_ of output, not a payload.
 field that never crosses the wire; the internal fallback `handleCapture` returns when the runtime
 throws is `{ action: 'log' }`, and `'allow'` is only ever assigned to an **excepted** finding.
 Emitting a real opinion means writing one JSON object to stdout via `emit()`
-(`plugins/claude-code/src/hooks/shared.ts`), whose four shapes are `decision`, `systemMessage`,
-`hookSpecificOutput.permissionDecision` and `hookSpecificOutput.updatedToolOutput` — the write is
-awaited, because `process.exit` does not flush a pending pipe write and a truncated object reads
-as invalid JSON, passing the original payload through unscanned.
+(`plugins/claude-code/src/hooks/shared.ts`), which takes the `HookOutput` union rather than
+`unknown`, so a payload outside that union cannot reach the wire at all. Its six shapes are
+`decision` and `systemMessage` at the top level, plus one `hookSpecificOutput` per hook —
+`PreToolUse`'s `permissionDecision`, `PostToolUse`'s `updatedToolOutput`, `MessageDisplay`'s
+`displayContent` and `SessionStart`'s `additionalContext`. The write is awaited, because
+`process.exit` does not flush a pending pipe write and a truncated object reads as invalid JSON,
+passing the original payload through unscanned.
+
+That enumeration is derived rather than remembered, because this is the sentence that drifted last
+time — it claimed four shapes while six were reaching stdout, and the two it omitted belong to the
+two hooks nothing else in this file mentions. `plugins/claude-code/test/hook-output-shapes.test.ts`
+reads it and drives it against the union: the count word, the two top-level keys, and each
+`hookEventName` paired with the field that distinguishes it. A seventh variant added to
+`HookOutput` fails to compile until that test's map names it, and fails that test until this
+sentence does.
 
 `plugins/claude-code/test/e2e/fail-open.e2e.test.ts` is what holds this rather than review: it
 drives the built hooks against malformed, truncated, binary and oversized stdin, asserting exit 0
 and empty stdout, and its `expectNoActionKey` fails any emitted payload carrying an `action` key.
+That last check is worth **nothing** on the rows above it, which have already asserted the stdout
+is empty — `''` matches no pattern. So the file also drives a real finding through each enforcing
+hook at block, redact, warn and log, asserts the shape each cell is expected to emit (the positive
+control, without which a hook that stopped emitting would turn every absence assertion back into
+the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
+the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
 
 ### 2. Contracts before code
 

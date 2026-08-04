@@ -37,10 +37,14 @@ export function ExceptionsClient({
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
 }) {
-  // Navigation transition (the blocked-window filter and row navigation) —
-  // distinct from the write transition below, which tracks the approve/rotate
-  // Server Actions.
+  // Navigation transition (the blocked-window filter, the audit toggle and row
+  // navigation) — distinct from the write transition below, which tracks the
+  // approve/rotate Server Actions.
   const { isPending: navPending, push: pushUrl } = useNavigationTransition();
+  // Dim wrapper for a region whose data a pending navigation is replacing. The
+  // page has two independently-driven regions, so it is applied per region
+  // rather than around the page.
+  const dim = cn('transition-opacity duration-150', navPending && 'opacity-60');
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +54,8 @@ export function ExceptionsClient({
   // "absent" and "unreadable" both correctly read as unknown there. The strip
   // gets the full state, because for it the two mean different things.
   const keyVersion = keyState.status === 'present' ? keyState.version : null;
+
+  const auditHref = includeTerminal ? '/exceptions' : '/exceptions?all=1';
 
   const setBlockedWindow = (next: BlockedWindow) => {
     const sp = new URLSearchParams();
@@ -90,7 +96,29 @@ export function ExceptionsClient({
         actions={
           <>
             <Button asChild variant="ghost" tone="neutral" size="sm">
-              <Link href={includeTerminal ? '/exceptions' : '/exceptions?all=1'}>
+              {/* A same-route ?all= change, so no loading boundary re-shows for
+                  it — a plain left-click is routed through the shared
+                  transition instead, which is what dims the table below and
+                  raises the shell's progress bar. The href stays real and the
+                  modifier/secondary-button cases fall through to the browser,
+                  so open-in-new-tab and copy-link still behave as links. */}
+              <Link
+                href={auditHref}
+                onClick={(e) => {
+                  if (
+                    e.defaultPrevented ||
+                    e.button !== 0 ||
+                    e.metaKey ||
+                    e.ctrlKey ||
+                    e.shiftKey ||
+                    e.altKey
+                  ) {
+                    return;
+                  }
+                  e.preventDefault();
+                  pushUrl(auditHref);
+                }}
+              >
                 {includeTerminal ? 'Active only' : 'Show all (audit)'}
               </Link>
             </Button>
@@ -112,21 +140,22 @@ export function ExceptionsClient({
         }
       />
 
-      <BlockedLedgerView
-        items={blocked}
-        onApprove={(reference) => {
-          setError(null);
-          setApproving(blocked.find((b) => b.reference === reference) ?? null);
-        }}
-        blockedWindow={blockedWindow}
-        onBlockedWindowChange={setBlockedWindow}
-        keyState={keyState}
-      />
+      {/* `?window=` re-queries recentBlocked, which is this region's data. */}
+      <div aria-busy={navPending} className={dim}>
+        <BlockedLedgerView
+          items={blocked}
+          onApprove={(reference) => {
+            setError(null);
+            setApproving(blocked.find((b) => b.reference === reference) ?? null);
+          }}
+          blockedWindow={blockedWindow}
+          onBlockedWindowChange={setBlockedWindow}
+          keyState={keyState}
+        />
+      </div>
 
-      <div
-        aria-busy={navPending}
-        className={cn('transition-opacity duration-150', navPending && 'opacity-60')}
-      >
+      {/* `?all=` re-queries exceptions.list, which is this region's data. */}
+      <div aria-busy={navPending} className={dim}>
         <ExceptionsTableView
           items={items}
           includeTerminal={includeTerminal}

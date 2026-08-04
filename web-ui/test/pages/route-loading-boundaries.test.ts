@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -30,13 +30,38 @@ function routeDirs(dir: string): string[] {
 
 const ROUTES = routeDirs(APP_DIR);
 
+// Every route under (app), pinned. The ACTUAL set is derived from the tree
+// above; this is the EXPECTED set, and the two are compared — the same
+// derived-vs-pinned pairing EXPECTED_WORKSPACE_PACKAGE_NAMES uses in
+// packages/eslint-config/test/effective-config.test.js.
+//
+// A count floor is not enough. A traversal that stopped recursing would drop
+// the two nested routes and still clear any floor low enough to be safe,
+// leaving them unchecked while the suite stayed green with fewer cases. Adding
+// a route means adding it here, which is the point: a human has to notice.
+const EXPECTED_ROUTES = [
+  'activity',
+  'data-shares',
+  'detections',
+  'exceptions',
+  'exceptions/[id]',
+  'exceptions/new',
+  'findings',
+  'inventory',
+  'policies',
+  'scan',
+  'security',
+  'settings',
+  'updates',
+  'vault',
+];
+
 describe('(app) route loading boundaries', () => {
-  it('finds the routes to check', () => {
-    // A traversal that silently matched nothing would pass every case below.
-    expect(ROUTES.length).toBeGreaterThanOrEqual(12);
+  it('sees exactly the routes it expects', () => {
+    expect(ROUTES.map((r) => relative(APP_DIR, r)).sort()).toEqual(EXPECTED_ROUTES);
   });
 
-  it.each(ROUTES.map((r) => [r.slice(APP_DIR.length + 1), r] as const))(
+  it.each(ROUTES.map((r) => [relative(APP_DIR, r), r] as const))(
     '%s has a loading.tsx',
     (_label, dir) => {
       expect(readdirSync(dir)).toContain('loading.tsx');
@@ -61,7 +86,12 @@ describe('(app) error boundary', () => {
     // carry the value that tripped the failure. The digest identifies the same
     // error in the server log without putting store content on screen.
     expect(code).toContain('error.digest');
-    expect(code).not.toContain('error.message');
+    // Any read of `message`, not just the `error.message` spelling: a
+    // destructure (`const { message } = error`) or a computed access
+    // (`error['message']`) puts the same string on screen, so pinning one
+    // spelling would let the other through. This is a boundary file with no
+    // legitimate use of the word, so matching broadly costs nothing.
+    expect(code).not.toMatch(/\bmessage\b/);
   });
 
   it('would catch a message render (the stripper keeps code intact)', () => {
@@ -69,5 +99,33 @@ describe('(app) error boundary', () => {
     // assertion above pass vacuously.
     expect(code).toContain('AppError');
     expect(code.replace(/\s/g, '').length).toBeGreaterThan(200);
+  });
+});
+
+describe('exceptions page pending regions', () => {
+  // The exceptions page drives TWO regions from two different params — ?window=
+  // re-queries recentBlocked (the blocked ledger) and ?all= re-queries
+  // exceptions.list (the table). Wrapping only one of them dims a region whose
+  // data the change does not touch while leaving the other with no feedback,
+  // which is exactly what shipped in the first draft of this change.
+  const source = readFileSync(join(APP_DIR, 'exceptions', 'ExceptionsClient.tsx'), 'utf8');
+  const code = source.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\/.*$/gm, '');
+
+  it('dims both regions', () => {
+    expect(code.match(/aria-busy=\{navPending\}/g) ?? []).toHaveLength(2);
+  });
+
+  it('routes the same-route audit toggle through the shared transition', () => {
+    // A <Link> to ?all= is a same-route searchParams change, and no loading
+    // boundary re-shows for one — without going through the transition it gets
+    // no pending signal at all.
+    expect(code).toMatch(/pushUrl\(auditHref\)/);
+  });
+
+  it('keeps the audit toggle a real link', () => {
+    // The click interception must not cost open-in-new-tab or copy-link, so the
+    // href stays and the modifier/secondary-button cases fall through.
+    expect(code).toMatch(/href=\{auditHref\}/);
+    expect(code).toContain('metaKey');
   });
 });

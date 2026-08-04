@@ -42,7 +42,9 @@ export default function AppError({
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={reset}>Try again</Button>
+            <Button variant="solid" tone="primary" onClick={reset}>
+              Try again
+            </Button>
             <Button variant="outline" tone="neutral" asChild>
               <Link href="/security">Go to Security</Link>
             </Button>

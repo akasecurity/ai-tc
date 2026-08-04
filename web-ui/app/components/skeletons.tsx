@@ -7,11 +7,18 @@ import { cn, Skeleton } from '@akasecurity/ui-kit';
 //
 // Each loading.tsx composes these inside the same padding wrapper its page.tsx
 // uses, so the skeleton occupies the layout the real page will.
+//
+// They live in the app rather than @akasecurity/dashboard-ui, which is where a
+// shared presentational composite would normally go: what each one encodes is
+// the shape of a specific app ROUTE, so a second consumer would have to adopt
+// this app's page layout to reuse it. If a surface outside web-ui ever needs
+// them, that is the point to move them.
 
 /** Title + subtitle bar, with an optional right-aligned control block. */
 export function PageHeadSkeleton({ actions = false }: { actions?: boolean }) {
   return (
-    <div className="flex items-start justify-between gap-4 pb-5">
+    // pb-6 matches the real PageHead exactly, so nothing shifts on reveal.
+    <div className="flex items-start justify-between gap-4 pb-6">
       <div className="flex flex-col gap-2">
         <Skeleton className="h-7 w-44" />
         <Skeleton className="h-4 w-72" />

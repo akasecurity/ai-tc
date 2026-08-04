@@ -12,6 +12,11 @@ export function NewExceptionClient({ rules }: { rules: AddExceptionRuleOption[] 
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
 
+  // A bare router.push, deliberately NOT the shared navigation transition: this
+  // redirect is the tail of a write that already owns `busy` (which disables
+  // the form), and it leaves the route, so the destination's loading boundary
+  // is what covers it. Routing it through the shared transition would report a
+  // second pending state for the same one action.
   const submit = (submission: AddExceptionSubmission) => {
     startTransition(async () => {
       const result = await addException(submission);

@@ -61,7 +61,10 @@ export function DetectionsClient({
 
   const [editRuleId, setEditRuleId] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  // Named for what it tracks (the enable/policy WRITE), not just "pending":
+  // the guard below reads it to reject a repeat click, and confusing it with
+  // the navigation flag above would turn that guard into a no-op.
+  const [isToggling, startTransition] = useTransition();
   // The update apply gets its own transition: sharing one flag would render the
   // modal's confirm as "Updating…"/disabled while a mere enable-toggle or
   // policy change is in flight (and vice versa).
@@ -144,7 +147,7 @@ export function DetectionsClient({
                 // Ignore repeat clicks while a write is in flight: `detail.enabled`
                 // only updates after the action revalidates, so a second click would
                 // re-send the same (now stale) target instead of toggling back.
-                if (isPending) return;
+                if (isToggling) return;
                 // Pin this detection in the URL first. The action's revalidate re-runs
                 // buildDetectionsList (enabled-first sort), so a just-disabled row drops
                 // to the bottom; without a pinned ?id the implicit first-row selection

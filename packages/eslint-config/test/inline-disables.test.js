@@ -102,6 +102,7 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/claude-code/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
   'plugins/codex/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/codex/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
+  'plugins/antigravity/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/antigravity/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
 
   // CLAUDE.md §4's one global opt-out, tabled there as `fetch` (inline): the

@@ -126,6 +126,26 @@ export function launcherPath(manifestDir: string, platform: NodeJS.Platform): st
   );
 }
 
+// Both interpolated paths are attacker-free but not syntax-free: they come from
+// process.execPath and the install location, either of which can hold characters
+// the launcher's interpreter would act on. Wrapping in double quotes is not
+// enough on either platform.
+//
+// POSIX sh still expands $, `…` and \ inside double quotes. Single quotes
+// suppress all three, and the one character they cannot hold is escaped by
+// closing the quote, emitting \' and reopening ('\'').
+function posixQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+// cmd.exe expands %VAR% inside double quotes, and % is legal in a Windows path
+// (a directory literally named `100%`), so a quoted path can still be rewritten
+// before node ever sees it. `%%` is the batch-file escape for a literal %.
+// A Windows path cannot contain " at all, so that case needs no handling.
+function cmdQuote(value: string): string {
+  return `"${value.replaceAll('%', '%%')}"`;
+}
+
 function writeLauncher(
   manifestDir: string,
   hostScript: string,
@@ -135,9 +155,11 @@ function writeLauncher(
   const path = launcherPath(manifestDir, platform);
   const tmp = `${path}.tmp`;
   if (platform === 'win32') {
-    writeFileSync(tmp, `@echo off\r\n"${nodePath}" "${hostScript}" %*\r\n`);
+    writeFileSync(tmp, `@echo off\r\n${cmdQuote(nodePath)} ${cmdQuote(hostScript)} %*\r\n`);
   } else {
-    writeFileSync(tmp, `#!/bin/sh\nexec "${nodePath}" "${hostScript}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(tmp, `#!/bin/sh\nexec ${posixQuote(nodePath)} ${posixQuote(hostScript)} "$@"\n`, {
+      mode: 0o755,
+    });
   }
   renameSync(tmp, path);
   return path;

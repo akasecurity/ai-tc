@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -123,7 +124,7 @@ describe('runInstall / runStatus', () => {
     expect(launcherSrc).toContain('/fake/native-host/host.js');
     if (process.platform !== 'win32') {
       expect(launcherSrc.startsWith('#!/bin/sh\n')).toBe(true);
-      expect(launcherSrc).toContain(`exec "${process.execPath}"`);
+      expect(launcherSrc).toContain(`exec '${process.execPath}'`);
       expect(statSync(launcher).mode & 0o111).not.toBe(0);
     }
 
@@ -135,6 +136,37 @@ describe('runInstall / runStatus', () => {
     runStatus(manifestDir);
     expect(statusStdout.mock.calls.map((c) => String(c[0])).join('')).toContain('installed');
   });
+
+  // Runs the launcher for real rather than pattern-matching its source: the
+  // question is what /bin/sh does with those paths, which only sh can answer.
+  // The fake runtime prints the argument it was handed, so an expansion that
+  // rewrote the path shows up as a mismatch instead of passing unnoticed.
+  it.skipIf(process.platform === 'win32')(
+    'quotes the launcher paths so shell metacharacters in them survive to the host script',
+    () => {
+      const scratch = mkdtempSync(join(tmpdir(), 'aka-launcher-quoting-'));
+      try {
+        const fakeNode = join(scratch, 'fake-node.sh');
+        writeFileSync(fakeNode, '#!/bin/sh\nprintf %s "$1"\n', { mode: 0o755 });
+
+        // Every character sh still acts on inside DOUBLE quotes ($ and `),
+        // plus the single quote the new quoting has to escape by hand.
+        const trickyDir = join(scratch, "we$IRD `dir` 'q'");
+        mkdirSync(trickyDir, { recursive: true });
+        const hostScript = join(trickyDir, 'host.js');
+        writeFileSync(hostScript, '');
+
+        vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+        runInstall(manifestDir, hostScript, '/fake/extension', fakeNode);
+
+        const launcher = launcherPath(manifestDir, process.platform);
+        const handedToNode = execFileSync('/bin/sh', [launcher], { encoding: 'utf8' });
+        expect(handedToNode).toBe(hostScript);
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('declines to install when no Node runtime can be resolved for the launcher', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);

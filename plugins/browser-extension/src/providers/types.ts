@@ -30,9 +30,14 @@ export interface ProviderAdapter {
   // remounted by the SPA on navigation, so callers re-invoke this per mount.
   watchSubmit(composer: HTMLElement, onSubmit: (event: Event) => void): () => void;
   // Performs the actual send — used to resubmit once the decision has let the
-  // (possibly rewritten) text through. NOTE for implementers: a programmatic
-  // click here re-enters the watchSubmit listeners; the interceptor arms a
-  // one-shot bypass before calling this so the re-entrant event passes
-  // through instead of looping (see interceptor.ts).
-  submit(composer: HTMLElement): void;
+  // (possibly rewritten) text through. Returns whether the send gesture was
+  // actually dispatched. Reporting that matters because the interceptor has
+  // ALREADY preventDefault()ed the user's own send by this point: an adapter
+  // that quietly finds no send button (selector drift) leaves nothing to send
+  // the message and nothing to report it, so the text disappears with no
+  // banner. Return false instead and the interceptor tells the user.
+  // NOTE for implementers: a programmatic click here re-enters the watchSubmit
+  // listeners; the interceptor arms a one-shot bypass before calling this so
+  // the re-entrant event passes through instead of looping (see interceptor.ts).
+  submit(composer: HTMLElement): boolean;
 }

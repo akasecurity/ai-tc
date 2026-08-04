@@ -35,7 +35,9 @@ export function createSubmitInterceptor(opts: {
   // audit store — and both resolutions call passThrough, firing two sends.
   let inFlight = false;
 
-  function passThrough(composer: HTMLElement): void {
+  // Returns whether the message actually went out. Callers must not claim a
+  // send happened without checking.
+  function passThrough(composer: HTMLElement): boolean {
     bypassNextSubmit = true;
     // The bypass is meant to be consumed synchronously by the re-entrant
     // click. If submit() found no button to click (selector drift), nothing
@@ -44,7 +46,19 @@ export function createSubmitInterceptor(opts: {
     setTimeout(() => {
       bypassNextSubmit = false;
     }, 0);
-    adapter.submit(composer);
+    if (adapter.submit(composer)) return true;
+    // Selector drift: there was no send button to click. handleSubmit has
+    // already preventDefault()ed the user's own send, so nothing sent this
+    // message and nothing else is going to. Staying silent here is the worst
+    // outcome the extension can produce — the user watches their message
+    // vanish and reads it as sent. Clear the bypass immediately (nothing
+    // consumed it) rather than leaving it armed until the timer.
+    bypassNextSubmit = false;
+    showBanner(
+      'AKA could not send this message — the send button was not found, so the site may have changed. Your text is still in the composer and was NOT sent.',
+      'block',
+    );
+    return false;
   }
 
   async function decide(composer: HTMLElement, text: string): Promise<void> {
@@ -100,15 +114,24 @@ export function createSubmitInterceptor(opts: {
         );
         return;
       }
+      // Banner AFTER the send, and only if it happened: both of these name a
+      // completed send ("before sending", "sent unchanged"), so showing them
+      // first would state an outcome that passThrough may be about to fail to
+      // produce — the same false assurance the read-back above guards against.
+      if (!passThrough(composer)) return;
       showBanner(
         `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
         'redact',
       );
-    } else if (response.action === 'warn') {
+      return;
+    }
+    if (response.action === 'warn') {
+      if (!passThrough(composer)) return;
       showBanner(
         `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.`,
         'warn',
       );
+      return;
     }
     passThrough(composer);
   }

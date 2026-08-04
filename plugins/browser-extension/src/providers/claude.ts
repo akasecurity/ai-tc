@@ -40,6 +40,9 @@ export const claudeAdapter: ProviderAdapter = {
     };
   },
   submit() {
-    findSendButton()?.click();
+    const sendButton = findSendButton();
+    if (!sendButton) return false;
+    sendButton.click();
+    return true;
   },
 };

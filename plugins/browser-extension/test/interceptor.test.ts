@@ -12,8 +12,13 @@ import type { ProviderAdapter } from '../src/providers/types.ts';
 // must absorb that second invocation or every approved send loops forever.
 function harness(
   responses: Partial<BackgroundResponse>[],
-  // Lets a case model a composer whose framework reverts the redact write.
-  overrides: { setText?: (el: HTMLElement, text: string) => void } = {},
+  overrides: {
+    // Lets a case model a composer whose framework reverts the redact write.
+    setText?: (el: HTMLElement, text: string) => void;
+    // Models send-button selector drift: submit() finds nothing to click and
+    // reports the send did not happen.
+    sendButtonMissing?: boolean;
+  } = {},
 ) {
   const composer = document.createElement('div');
   composer.textContent = 'the composer text';
@@ -41,12 +46,14 @@ function harness(
     },
     watchSubmit: () => () => undefined,
     submit: () => {
+      if (overrides.sendButtonMissing) return false;
       submitCount += 1;
       // Mimic the capture-phase click listener firing on the programmatic
       // click: handleSubmit re-enters synchronously with a fresh event.
       const reentrant = new Event('click', { cancelable: true });
       interceptor.handleSubmit(reentrant, composer);
       if (reentrant.defaultPrevented) reentrantPrevented += 1;
+      return true;
     },
   };
 
@@ -209,6 +216,47 @@ describe('createSubmitInterceptor', () => {
 
     expect(event.defaultPrevented).toBe(false);
     expect(h.relayCalls).toHaveLength(0);
+  });
+
+  it('send-button drift: the message is not silently swallowed, and the next send is still scanned', async () => {
+    // The interceptor has already preventDefault()ed the user's real send by
+    // the time it calls submit(). If the send button selector has drifted,
+    // the click never happens — so without this the message is simply gone,
+    // with no banner, and the user reads the empty composer as "sent".
+    const h = harness([capture({ action: 'log' }), capture({ action: 'log' })], {
+      sendButtonMissing: true,
+    });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(0);
+    expect(h.composer.textContent).toBe('the composer text'); // text retained
+    expect(h.banners).toHaveLength(1);
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.message).toContain('was NOT sent');
+
+    // The bypass armed for a send that never happened must not be left over
+    // to wave the user's NEXT real send through unscanned.
+    const next = new Event('keydown', { cancelable: true });
+    h.interceptor.handleSubmit(next, h.composer);
+    expect(next.defaultPrevented).toBe(true);
+    await settle();
+    expect(h.relayCalls).toHaveLength(2);
+  });
+
+  it('send-button drift on a redact: never claims the redacted text was sent', async () => {
+    // The redact banner says "before sending". Showing it when the send then
+    // failed tells the user their masked message went out when nothing did.
+    const h = harness([capture({ action: 'redact', text: 'masked', ruleIds: ['r1'] })], {
+      sendButtonMissing: true,
+    });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(0);
+    const messages = h.banners.map((b) => b.message).join(' ');
+    expect(messages).not.toContain('before sending');
+    expect(messages).toContain('was NOT sent');
   });
 
   it('a stale bypass cannot leak: the send AFTER an approved one is scanned again', async () => {

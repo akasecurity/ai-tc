@@ -86,9 +86,17 @@ describe('the residual risk the probe battery leaves open', () => {
     // catches this shape — good news, and this whole suite would then be
     // testing a rule that never reaches the runtime. Change the pattern rather
     // than deleting the case: the gap is in the approach, not in one pattern.
+    //
+    // `safe` is the whole property, and it already carries a bound: it IS
+    // `worstMs < BUDGET_MS`, the battery's own 100ms budget. A second, tighter
+    // assertion on the same number measures nothing extra — the rule and the
+    // battery are both fixed, so the only thing that moves this figure is a
+    // change to the probe derivation, and `safe` flipping is the loud signal
+    // for that. One was asserted here at 10ms and reddened unrelated PRs at
+    // 15.5ms on a loaded runner. Do not add another: a margin on a duration
+    // nobody can influence is noise with a threshold.
     const verdict = checkRuleTiming(HOSTILE);
     expect(verdict.safe).toBe(true);
-    expect(verdict.worstMs).toBeLessThan(10);
   });
 });
 

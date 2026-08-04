@@ -27,9 +27,26 @@ export function captureEvent(overrides: Partial<IngestEvent> = {}): IngestEvent 
   };
 }
 
+/**
+ * `distinct` defaults to a fresh value per call, and that default is
+ * load-bearing rather than tidy.
+ *
+ * `maskedMatch` is half of the FINDING-level session dedup key —
+ * `recordCapture` skips a finding when `(ruleId, maskedMatch, sessionId)` has
+ * already been seen (`database.ts`, `isSessionDuplicate`). A shared constant
+ * would therefore make a second capture in the same session land as zero rows
+ * **by design**, which is indistinguishable from the write having been dropped:
+ * every "the event is gone" assertion in `test/faults/` would pass whether or
+ * not the fault did anything. That needs only a caller setting
+ * `metadata.sessionId` — one field — so the value varies here instead of
+ * relying on nobody adding it.
+ *
+ * Pass an explicit `distinct` to exercise the dedup on purpose.
+ */
 export function captureFinding(
   eventId: string,
   overrides: Partial<DetectedFinding> = {},
+  distinct: string = randomUUID().slice(0, 8),
 ): DetectedFinding {
   return {
     id: randomUUID(),
@@ -38,7 +55,7 @@ export function captureFinding(
     category: 'secret',
     severity: 'critical',
     span: { start: 0, end: 4 },
-    maskedMatch: 'A***E',
+    maskedMatch: `A***${distinct}`,
     actionTaken: 'block',
     confidence: 0.9,
     ...overrides,

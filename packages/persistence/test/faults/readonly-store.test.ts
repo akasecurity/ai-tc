@@ -27,19 +27,22 @@ describe('opening a read-only store', () => {
       return;
     }
 
-    // The open writes before it reads anything: `PRAGMA journal_mode = WAL` is
-    // the first statement, so a store this process cannot write is refused
-    // there — ahead of the migration applier, the repository constructors and
-    // the policy seed. Loudly is the right posture: `openLocalDatabase` is the
-    // one place a caller can still decide to tell the user, and every caller
-    // that swallows this instead is a session running with detection off.
+    // Where this lands is not where the fault's name suggests. `PRAGMA
+    // journal_mode = WAL` SUCCEEDS on an already-WAL store — it even mints the
+    // -wal/-shm sidecars, at the db's own 0400 — and the refusal comes later,
+    // out of `ensureWriteGateTrigger` inside `applyMigrations`, one of the
+    // `ensure*` passes that run on every open. So the applier does run here.
+    //
+    // What matters is only that it is loud: `openLocalDatabase` is the one
+    // place a caller can still decide to tell the user, and every caller that
+    // swallows this instead is a session running with detection off.
     const err = errorFrom(() => openLocalDatabase(store.dataDir));
 
     expect(err).toBeDefined();
     expect(primaryCode(err)).toBe(SQLITE_READONLY);
   });
 
-  it('keeps refusing across repeated attempts, without accumulating handles', (ctx) => {
+  it('keeps refusing across repeated attempts', (ctx) => {
     store.open().close();
     const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
     if (!readOnly.effective) {
@@ -48,10 +51,15 @@ describe('opening a read-only store', () => {
     }
 
     // The shape a user produces by retrying: the hook fires again on the next
-    // tool call, the dashboard request comes back. A handle kept per attempt
-    // holds the file open for the life of a long-lived reader, and on Windows
-    // the temp tree then refuses to be removed — which is what the teardown
-    // turns into the assertion.
+    // tool call, the dashboard request comes back. Each attempt must fail the
+    // same way rather than drifting to a different code as the earlier ones
+    // leave sidecars behind.
+    //
+    // Deliberately NOT a handle-leak assertion. `database.ts` does guard that
+    // (`closeQuietly` on both throw paths), but nothing here can observe it:
+    // POSIX lets an open handle be unlinked, and `temp-store.ts` SWALLOWS
+    // EPERM/EBUSY/EACCES/ENOTEMPTY on win32 by design — so a leak would leave
+    // this green on both platforms, and this case skips on Windows anyway.
     for (let i = 0; i < 5; i += 1) {
       expect(primaryCode(errorFrom(() => openLocalDatabase(store.dataDir)))).toBe(SQLITE_READONLY);
     }
@@ -105,12 +113,19 @@ describe('opening a read-only store', () => {
       return;
     }
     for (let i = 0; i < 3; i += 1)
-      expect(errorFrom(() => openLocalDatabase(store.dataDir))).toBeDefined();
+      expect(primaryCode(errorFrom(() => openLocalDatabase(store.dataDir)))).toBe(SQLITE_READONLY);
     readOnly.restore();
 
-    // The refusal lands on the first PRAGMA, so the migration applier never
-    // runs: a store that cannot be written cannot be half-migrated either.
+    // The applier DOES run on a read-only store — it reaches
+    // `ensureWriteGateTrigger` before anything refuses — so "the ledger is
+    // untouched" is a claim about a pass that really executed, not one that
+    // was skipped. It cannot record a tag it could not write.
     expect(tags()).toEqual(before);
+    // And the store is still usable once the mode is lifted: the refused opens
+    // left no half-applied schema for the next one to trip over.
+    const reopened = store.open();
+    expect(tags()).toEqual(before);
+    reopened.close();
   });
 });
 
@@ -164,8 +179,10 @@ describe('writing through a handle when the store turns read-only underneath it'
   });
 
   it('opens and writes again once the mode is restored', async (ctx) => {
-    // The positive control for every case above: the refusals were the mode
-    // and nothing permanent about this store or this temp tree.
+    // The positive control for every case above: the refusals were the mode,
+    // and lifting it is enough to undo them. Not quite "nothing changed" — a
+    // refused open mints -wal/-shm at the db's 0400, and this case passes only
+    // because `readOnlyStore.restore()` widens those too (see the helper).
     store.open().close();
     const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
     if (!readOnly.effective) {

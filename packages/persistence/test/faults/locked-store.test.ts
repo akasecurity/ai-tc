@@ -54,9 +54,14 @@ describe('a capture that loses the write lock', () => {
     db.recordCapture(seeded, [captureFinding(seeded.id)]);
 
     const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });
-    // WAL gives readers a snapshot that a held write lock does not block, so
-    // the dashboard and `aka stats` stay accurate about what the store already
-    // holds while captures are being dropped.
+    // The dropped write comes FIRST: reading while a lock is merely held
+    // proves nothing, because `BEGIN IMMEDIATE` takes RESERVED, which blocks
+    // no reader in any journal mode. What has to be shown is that a reader
+    // still answers on a connection that has just lost a write on this store —
+    // the dashboard and `aka stats` staying accurate about what is already
+    // there while captures are being dropped.
+    const lost = captureEvent();
+    db.recordCapture(lost, [captureFinding(lost.id)]);
     const health = await db.findings.healthSummary();
     lock.release();
 
@@ -110,9 +115,15 @@ describe('the SQLITE_BUSY fail-open branch', () => {
     lock.release();
 
     // Indistinguishable from a full disk, a read-only store, or a caller bug —
-    // all four arrive here as `false`, and the four sites in `database.ts` that
-    // call this discard it.
+    // all four arrive here as `false`, and the sites in `database.ts` that call
+    // this discard it.
     expect(committed).toBe(false);
+    // True by construction rather than by containment: `withTransaction` issues
+    // its BEGIN OUTSIDE the try, so a contended `BEGIN IMMEDIATE` throws before
+    // the ROLLBACK branch is reachable. The branch that unwinds a transaction
+    // that DID open is pinned in `readonly-store.test.ts` instead — it is the
+    // one fault whose failure lands inside `fn()`. Kept here because a
+    // transaction left open by any path would be worse than the fault.
     assertNoOpenTransaction(raw);
   });
 });

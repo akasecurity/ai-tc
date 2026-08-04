@@ -14,6 +14,7 @@ import {
   constants,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -38,12 +39,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // Widen before removing, innermost first: a directory without write
-  // permission cannot have its entries unlinked, and `force` only forgives
-  // ENOENT, not EACCES — so a tightened directory left behind by a failed case
-  // strands the whole temp tree rather than reporting the failure. Both levels
-  // are restored because cases here tighten either one.
-  for (const dir of [dataDir(home), home]) {
+  // Widen before removing, OUTERMOST first: chmod needs traverse on every
+  // parent, so a 0000 home makes the inner call fail before it can widen
+  // anything. (The unlink dependency runs the other way — a directory without
+  // write permission cannot have its entries removed, and `force` forgives
+  // ENOENT, not EACCES — which is why both levels have to come back at all.)
+  // Both are restored because cases here tighten either one.
+  for (const dir of [home, dataDir(home)]) {
     try {
       chmodSync(dir, 0o700);
     } catch {
@@ -99,13 +101,18 @@ describe('a permission-denied ~/.aka', () => {
     }
 
     // A hook fires per tool call and a dashboard request comes back on every
-    // reload, so the retry is the normal case, not the exception. Nothing here
-    // may be left half-created for the next attempt to trip over.
+    // reload, so the retry is the normal case, not the exception.
     for (let i = 0; i < 3; i += 1) {
       expect(
         (errorFrom(() => openLocalDatabase(dataDir(home))) as { code?: string } | undefined)?.code,
       ).toBe('EACCES');
     }
+
+    // And nothing was left half-created for the next attempt to trip over —
+    // read, not merely asserted about. Widening is what makes the directory
+    // walkable enough to check.
+    chmodSync(home, 0o700);
+    expect(readdirSync(home)).toEqual([]);
   });
 
   it('opens once the directory is readable again', (ctx) => {

@@ -15,9 +15,11 @@
  * `failOpenTransaction` path pinned below.
  */
 import { randomUUID } from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import type { AuditEventInput } from '@akasecurity/schema';
+import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { failOpenTransaction } from '../../src/internal/transactions.ts';
@@ -72,7 +74,7 @@ function writeUntilFull(auditEvents: SqliteAuditEventsRepository): Error | undef
 }
 
 describe('a repository write that runs the store out of room', () => {
-  it('raises SQLITE_FULL and rolls the whole batch back, leaving no partial rows', () => {
+  it('raises SQLITE_FULL and leaves no partial rows behind', () => {
     store.open().close();
     const raw = store.openRaw();
     const auditEvents = new SqliteAuditEventsRepository(raw);
@@ -201,56 +203,93 @@ describe('the SQLITE_FULL fail-open branch', () => {
 });
 
 describe('running out of room mid-migration', () => {
-  it('applies no migration at all rather than half of one', () => {
-    // The applier runs its DDL statement by statement and stamps a ledger tag
-    // per migration. A tag recorded for DDL that did not land is the worst
-    // outcome available here: every later open reads the tag, skips the
-    // migration, and meets a schema that never got built.
-    const raw = store.openRaw();
-    const filled = fillStore(raw);
+  /**
+   * Cap a fresh store so the applier commits some migrations and then runs out,
+   * leaving a genuinely half-migrated file.
+   *
+   * The cap is measured, not guessed. `fillStore`'s default headroom on an
+   * empty file caps at 2 pages, which the ledger's own `CREATE TABLE` exhausts
+   * — the applier's loop never runs at all, and every assertion about a partial
+   * migration then holds on a store with no tables in it. Half of what a
+   * complete migration actually needs lands partway instead, and it keeps
+   * doing so as the migration history grows.
+   */
+  function halfMigratedStore(): { db: DatabaseSync; file: string; err: Error | undefined } {
+    const seeded = store.open();
+    seeded.close();
+    const measured = store.openRaw();
+    const fullPages = (measured.prepare('PRAGMA page_count').get() as { page_count: number })
+      .page_count;
+    measured.close();
 
+    const file = join(store.dataDir, 'half-migrated.db');
+    const db = new DatabaseSync(file);
+    const filled = fillStore(db, { headroomPages: Math.floor(fullPages / 2) });
     const err = errorFrom(() => {
-      applyMigrations(raw, store.dbFile);
+      applyMigrations(db, file);
     });
     filled.restore();
+    return { db, file, err };
+  }
 
-    expect(primaryCode(err)).toBe(SQLITE_FULL);
-    assertNoOpenTransaction(raw);
-
-    const tags = raw
+  function ledgerTags(db: DatabaseSync): string[] {
+    const present = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_ledger'")
       .all() as { name: string }[];
-    const recorded =
-      tags.length === 0
-        ? []
-        : (raw.prepare('SELECT tag FROM migration_ledger').all() as { tag: string }[]);
-    expect(recorded).toEqual([]);
+    if (present.length === 0) return [];
+    return (db.prepare('SELECT tag FROM migration_ledger').all() as { tag: string }[]).map(
+      (row) => row.tag,
+    );
+  }
+
+  it('records a ledger tag only for a migration that actually landed', () => {
+    // The applier stamps a ledger tag per migration. A tag recorded for DDL
+    // that did not land is the worst outcome available here: every later open
+    // reads the tag, skips the migration, and meets a schema that was never
+    // built. The tag must therefore go in with the DDL, inside one transaction.
+    const { db, err } = halfMigratedStore();
+    try {
+      expect(primaryCode(err)).toBe(SQLITE_FULL);
+      assertNoOpenTransaction(db);
+
+      const recorded = ledgerTags(db);
+      // Positive control. With no tags recorded — which is what a 2-page cap
+      // produces — every claim below holds vacuously on an empty file, and the
+      // defect this case exists for is undetectable.
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.length).toBeLessThan(SQLITE_MIGRATIONS.length);
+
+      // What is recorded is an unbroken prefix of the history, never a tag
+      // from beyond the point the disk gave out.
+      const expected = SQLITE_MIGRATIONS.slice(0, recorded.length).map((m) => m.tag);
+      expect([...recorded].sort()).toEqual([...expected].sort());
+    } finally {
+      db.close();
+    }
   });
 
-  it('leaves a store the next open migrates cleanly', () => {
+  it('leaves a half-migrated store the next open finishes', () => {
     // "Next open retries" is the whole recovery story for an interrupted
-    // migration, and it is only true if the failed attempt left nothing behind
-    // that the retry would now skip.
-    const raw = store.openRaw();
-    const filled = fillStore(raw);
-    expect(
-      errorFrom(() => {
-        applyMigrations(raw, store.dbFile);
-      }),
-    ).toBeDefined();
-    filled.restore();
-    raw.close();
+    // migration, and it is only true of a store that really is partway: a tag
+    // recorded without its DDL makes the retry SKIP that migration, so the
+    // schema it should have built never appears and the open fails on it.
+    const { db, file } = halfMigratedStore();
+    const before = ledgerTags(db).length;
+    db.close();
+    expect(before).toBeGreaterThan(0);
+    expect(before).toBeLessThan(SQLITE_MIGRATIONS.length);
 
-    expect(
-      errorFrom(() => {
-        store.open().close();
-      }),
-    ).toBeUndefined();
-    const reader = store.openRaw();
+    const reopened = new DatabaseSync(file);
     try {
-      expect(integrityOf(reader)).toBe('ok');
+      expect(
+        errorFrom(() => {
+          applyMigrations(reopened, file);
+        }),
+      ).toBeUndefined();
+      expect(ledgerTags(reopened)).toHaveLength(SQLITE_MIGRATIONS.length);
+      expect(integrityOf(reopened)).toBe('ok');
     } finally {
-      reader.close();
+      reopened.close();
     }
   });
 });

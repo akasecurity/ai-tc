@@ -736,28 +736,47 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   `fillStore` is in the same file and reaches **most** of what the other three do, but not
   all of it: the page cap is connection-scoped, so it bounds only the handle it is given.
   A repository constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`,
-  the `activity.test.ts` pattern), and so does `applyMigrations`, which is why the
-  disk-full cases drive those. The four blanket fail-open sites in `database.ts`
-  (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`) stay out
-  of reach: they are closures over the connection `openLocalDatabase` opened, and
+  the `activity.test.ts` pattern), and so does `applyMigrations` — but only with a cap
+  sized against a real migration: the default headroom on an empty file stops the ledger's
+  own `CREATE TABLE`, so the applier's loop never runs and every claim about a partial
+  migration then holds vacuously. The blanket fail-open sites in `database.ts`
+  (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`, and
+  `reconcileWorktreeProjects`, which reaches `withTransaction` directly) stay out of
+  reach: they are closures over the connection `openLocalDatabase` opened, and
   `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault at those
   waits on a raw-handle seam.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+- `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
+  [Testing](#testing) on why the try/catch form asserts on the test's own guard).
+- `captureEvent()` / `captureFinding()` — the minimal `recordCapture` pair. Both vary
+  their identity per call, which is load-bearing: `contentHash` feeds the event's
+  content-addressed id and `maskedMatch` is half the finding-level session dedup key, so a
+  shared constant makes a second capture land as zero rows **by design** — and every "the
+  event is gone" assertion in `test/faults/` would then pass whether or not the fault did
+  anything.
 
 `packages/persistence/test/faults/` is where those injectors are pointed at product code —
 one file per fault (corrupt is covered in `database.test.ts`, which predates the
 directory). A fault case documents the **actual** behaviour rather than the desirable one:
-the store never inspects a SQLite result code beyond `SQLITE_CONSTRAINT_UNIQUE`, so
-contention, a full disk, a read-only file and a caller bug all arrive at the fail-open
-sites as the same discarded `false`, and a dropped event leaves no counter, marker or log
-line behind. Write that down and assert it; do not assert a signal the product does not
+no fail-open site inspects a SQLite result code, so contention, a full disk, a read-only
+file and a caller bug all arrive there as the same discarded `false`, and a dropped event
+leaves no counter, marker or log line behind. (Scoped to those sites deliberately: the
+package reads `errcode` in two places — `internal/sqlite-errors.ts` for
+`SQLITE_CONSTRAINT_UNIQUE`, and `fingerprint.ts`, which separates "no such table" from a
+damaged or locked store. Neither is a fail-open path.) Write that down and assert it; do not assert a signal the product does not
 emit. Two behaviours there are the opposite of what the fault's name suggests and are
 pinned so nobody "fixes" them: a store chmod'd read-only under a **live** handle keeps
 being written (a descriptor carries the permission it was opened with, so only the next
-open is refused), and a 0000 `~/.aka` is **repaired** rather than reported, because
-`ensureDataDirSync` chmods a directory the owner still owns back to 0700.
+open is refused), and a read-only store's refusal lands **inside the migration applier**
+rather than on the first `PRAGMA journal_mode = WAL`, which succeeds and mints the
+sidecars. A tightened directory the owner still owns is a third case, and the distinction
+is the point: `ensureDataDirSync` widens the **data dir** back to 0700, so a 0500 there
+never reaches SQLite — but a 0000 `~/.aka` is **reported**, as `EACCES` out of `mkdir`,
+long before any chmod runs. `aka init` repairs a 0000 home because it calls
+`ensureDataDirSync` on the home itself; `openLocalDatabase` does not, and the tests in
+this directory assert the refusal.
 
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:

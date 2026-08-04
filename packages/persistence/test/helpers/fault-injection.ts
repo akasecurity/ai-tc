@@ -319,6 +319,26 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
           // Already gone, or a platform that never applied the mode.
         }
       }
+      // Sidecars SQLite created WHILE the store was read-only have no original
+      // mode to put back — and they are born at the db file's mode, so they
+      // arrive at 0400 and the target list above has never heard of them.
+      // Leaving them is not a cosmetic miss: the db reads writable again while
+      // its -wal does not, so the next open gets past `PRAGMA journal_mode`
+      // and dies deep inside the migration applier instead, and on Windows a
+      // 0400 sidecar can block the very tree removal this restore exists to
+      // enable. Hand them the mode the db itself was holding, which is what
+      // the product holds its sidecars at.
+      const fileMode = original.get(file);
+      if (fileMode !== undefined) {
+        for (const sidecar of dbSidecars(file)) {
+          if (original.has(sidecar) || !existsSync(sidecar)) continue;
+          try {
+            chmodSync(sidecar, fileMode);
+          } catch {
+            // Vanished between the check and here, or a platform without modes.
+          }
+        }
+      }
     },
   };
   opts.onCleanup?.(() => {

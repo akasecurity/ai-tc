@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
-import { dbSidecars } from '../../src/paths.ts';
+import { DATA_FILE_MODE, dbSidecars } from '../../src/paths.ts';
 import {
   corruptStore,
   fillStore,
@@ -336,6 +336,45 @@ describe('readOnlyStore', () => {
       // `& 0o7777`, and restoring anything wider than the permission bits would
       // still let this write through.
       expect(statSync(store.dbFile).mode & 0o7777).toBe(before);
+    });
+  });
+
+  it('restore() also widens sidecars SQLite created while the store was read-only', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for the sidecars on Windows');
+    withTempStore((store) => {
+      seedStore(store);
+      // A closed store has no -wal/-shm, so the fault is applied to the db file
+      // alone and SQLite MINTS the sidecars during the refused open below —
+      // at the db's own mode, which is 0400 by then. They are therefore absent
+      // from the target list restore() walks, and nothing else will widen them.
+      for (const sidecar of dbSidecars(store.dbFile)) {
+        expect(existsSync(sidecar)).toBe(false);
+      }
+
+      const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
+      try {
+        openLocalDatabase(store.dataDir);
+      } catch {
+        // Refused, as this whole file expects — the point is what it left behind.
+      }
+      const minted = dbSidecars(store.dbFile).filter((path) => existsSync(path));
+      // The positive control: without a sidecar to leave behind, everything
+      // below passes vacuously.
+      expect(minted.length).toBeGreaterThan(0);
+
+      readOnly.restore();
+
+      // The store is usable again, not merely readable. Asserting only the db
+      // file's own mode would pass with every sidecar still at 0400, and the
+      // failure that leaves behind surfaces deep inside the migration applier
+      // on the NEXT open rather than here.
+      for (const sidecar of minted) {
+        expect(statSync(sidecar).mode & 0o777).toBe(DATA_FILE_MODE);
+      }
+      expect(() => {
+        openLocalDatabase(store.dataDir).close();
+      }).not.toThrow();
     });
   });
 });

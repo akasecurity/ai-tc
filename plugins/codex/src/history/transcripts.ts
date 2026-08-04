@@ -355,7 +355,10 @@ export function peekSessionOriginator(transcriptPath: string): string | undefine
 // and the upstream issue it cites — apply_patch calls don't fire hooks yet),
 // so this backfill-time parse of `exec_command_begin`/`exec_command_end` and
 // `patch_apply_begin`/`patch_apply_end` event pairs is currently the ONLY way
-// AKA observes a Codex file-write's content at all, live enforcement aside.
+// AKA observes a Codex file write at all, live enforcement aside. It observes
+// the write's changed paths and byte sizes — NOT its content. Nothing on Codex
+// scans file-write content: parseTranscript keeps `message` payloads only, so
+// the backfill scan never sees an apply_patch body either.
 export interface ToolCallRecord {
   sessionId: string;
   toolUseId: string; // call_id

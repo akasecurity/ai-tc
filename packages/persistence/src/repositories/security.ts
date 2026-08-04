@@ -45,9 +45,13 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // range, not a measured per-window metric), following the shared contract so
 // read surfaces render identically. Order is the dashboard display order.
 // Codex sits below 100 because the Codex CLI does not yet fire PreToolUse/
-// PostToolUse for apply_patch (file-write) calls — prompts, Bash commands,
-// worktree scans, and history backfill are covered; live file-write
-// interception is not (see plugins/codex/skills/setup/SKILL.md).
+// PostToolUse for apply_patch (file-write) calls. Covered: prompts, assistant
+// responses, Bash command text, worktree scans. NOT covered: file-write
+// content, in either direction — the history backfill does not close this gap,
+// because it scans conversation messages only and the tool-call reconciler
+// records a write's changed paths and byte sizes, never its bytes (see
+// plugins/codex/skills/setup/SKILL.md and
+// plugins/codex/src/history/transcripts.ts).
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },

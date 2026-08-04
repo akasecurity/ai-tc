@@ -809,12 +809,14 @@ relayed to the user. If you summarized one instead of pasting it, paste it now.
 
 Live PreToolUse/PostToolUse redaction currently covers `Bash` shell calls only —
 Codex does not yet fire these hooks for `apply_patch` (file-write) calls (an
-upstream Codex hook-coverage gap). File-write content is still covered by the
-prompt/response scan and by
-the consent-gated historical scan this wizard offers in steps 1/3, just not
-redacted before it is written. If the user asks why a secret in a file edit
-wasn't caught live, explain this gap honestly rather than implying full
-coverage.
+upstream Codex hook-coverage gap). File-write **content is not scanned at all**
+on Codex — not live, and not after the fact either. The consent-gated historical
+scan this wizard offers in steps 1/3 reads conversation messages only, and the
+tool-call reconciler records a write's changed paths and byte sizes, never the
+bytes themselves. So a secret written into a file through `apply_patch` is
+neither redacted before it lands nor reported afterwards; only the path is
+recorded. If the user asks why a secret in a file edit wasn't caught, say so
+plainly rather than implying it is picked up somewhere else.
 
 The reversible secret vault is not yet wired for Codex sessions, so this wizard
 does not offer the vault-consent step: everything AKA redacts here is one-way

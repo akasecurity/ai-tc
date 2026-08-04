@@ -301,6 +301,63 @@ Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'
 
 What remains uncovered is the packaged artifact: nothing installs the published CLI and drives its dashboard's folder scan under a hostile pack, so the chain above is proven link by link rather than end to end.
 
+### 6. Every writer of `settings.json` takes its lock
+
+`writeOwnerOnlyFileSync`'s tmp+rename makes each PUBLISH indivisible. It does not make a
+**read-modify-write** indivisible, and that is the shape every settings write has: read the file,
+merge answers over it, rename the result. The plugin, the CLI and the dashboard are three separate
+processes over one home, so two of them read the same bytes and the second rename discards the
+first one's answers — with both reporting success, because neither ever learns the other existed.
+
+`withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
+existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Four
+properties are load-bearing:
+
+- **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
+  ones that take it, so the guarantee is only as wide as the set of writers holding it. Two
+  writers hold it today: `applyOnboarding` (which the `/aka:setup` wizard and the dashboard's
+  Settings action both go through) and `aka init`'s create-if-absent. A third that writes
+  `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
+  `fingerprint.ts`'s key mint and `local-ops`' `update-cache.ts` are unlocked read-modify-writes
+  with the same shape, and each is its own outstanding fix. Do not read this section as a
+  property the store has; it is a property `settings.json` has.
+- **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
+  updater function for exactly this: a caller that reads first and passes a plain object has put
+  its read outside the lock and kept the lost update, one frame further out. The dashboard's
+  vault-consent carry-forward is the worked example — read outside, it writes a grant back over a
+  concurrent revoke.
+- **It fails loudly rather than writing unlocked.** The fields at stake include the vault and
+  model-judge consent grants, so the write that goes missing can be a REVOCATION. A refused save
+  the user retries beats a silent one they never learn about.
+- **A killed holder must not wedge the file, and a slow one must not be evicted.** Taking an
+  abandoned lock needs BOTH that its own recorded acquire clock is older than the stale window and
+  that the pid it names is gone. Age alone evicts a holder that is merely suspended or throttled,
+  which puts two writers in the section — the defect, reintroduced by its own recovery. The clock
+  is read from the lock BODY, never from mtime, which on a network home is the file server's clock
+  and drifts a fresh lock straight into staleness. `FileLockError.reason` separates `timeout`
+  (contention) from `unavailable` (a directory that will never hold a lock); `aka init` branches on
+  it, swallowing the first — another writer is already creating the file — and propagating the
+  second, which is the fault its pre-lock write raised too.
+- **A release must prove it still owns the lock.** Each acquisition writes a token and removes the
+  file only while that token is still there — an unreadable body counts as somebody else's, since
+  a lock exists for an instant between its exclusive create and its body write. Unlinking by path
+  alone means a holder that was stolen from deletes its successor's lock, and the section is
+  unguarded while that successor is mid-write, every writer reporting success.
+- **Recovering an abandoned lock is itself a critical section**, held by a second exclusive file.
+  Several waiters meet the same dead lock at once; unserialised they all judge it stale, one
+  removes it and takes a fresh lock, and the next one's removal lands on THAT. Neither a rename
+  nor a re-read closes it — every check is separated from its removal by a window another waiter
+  acts in, and a rename that has to be undone clobbers whatever took the path meanwhile. Measured
+  at 5 of 12 trials losing an update with eight waiters over one abandoned lock; zero once the
+  judging and the removal became one section.
+
+`packages/persistence/test/concurrency/settings-race.test.ts` is what holds this: real child
+processes, released together on a readiness handshake, asserting no answer is lost and no
+revocation is resurrected. It uses processes rather than worker threads deliberately — a worker
+shares `process.pid`, and the atomic write's tmp path is per-process, so two threads meet a
+collision two processes never can, which is the wrong axis.
+
 ## Dependency advisories
 
 CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`

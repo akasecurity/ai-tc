@@ -1,6 +1,6 @@
 'use server';
 
-import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence';
+import { applyOnboarding } from '@akasecurity/persistence';
 import {
   HistoricalAccess,
   isVaultConsentValid,
@@ -51,21 +51,13 @@ export async function saveSettings(input: {
   // verbatim; modelJudgeConsent needs no equivalent parse because only its
   // truthiness survives — the record written below is built entirely here.
   try {
-    // The vault grant is stamped HERE, never accepted from the client — the
-    // input is only the choice string, so a caller-supplied acknowledgedAt or
-    // version has no path in. 'on' records the current time at the current
-    // consent version; if a still-valid grant is already on file it is kept
-    // as-is so its acknowledgedAt survives unrelated edits. 'off' clears the
-    // field entirely: future vaulting stops, but entries already stored remain
-    // until the vault is purged.
-    const current = readWorkspaceSettings();
-    const vaultConsent =
-      vaultChoice === 'off'
-        ? undefined
-        : isVaultConsentValid(current.vaultConsent)
-          ? current.vaultConsent
-          : { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION };
-    applyOnboarding({
+    // Derived inside applyOnboarding's write lock, not before it: `current` is
+    // read back on the far side of the merge that is about to happen, so a
+    // grant this page keeps is one that is still on file. Reading it out here
+    // instead would carry a stale grant across a concurrent revoke — from the
+    // wizard, or from a second tab — and write it back, silently reinstating
+    // consent the user had just withdrawn.
+    applyOnboarding((current) => ({
       policy: policy.data,
       historicalAccess: historicalAccess.data,
       // Grant records fresh consent at the current payload version; revoke
@@ -73,9 +65,21 @@ export async function saveSettings(input: {
       modelJudgeConsent: input.modelJudgeConsent
         ? { acknowledgedAt: new Date().toISOString(), payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION }
         : undefined,
-      vaultConsent,
+      // The vault grant is stamped HERE, never accepted from the client — the
+      // input is only the choice string, so a caller-supplied acknowledgedAt or
+      // version has no path in. 'on' records the current time at the current
+      // consent version; if a still-valid grant is already on file it is kept
+      // as-is so its acknowledgedAt survives unrelated edits. 'off' clears the
+      // field entirely: future vaulting stops, but entries already stored remain
+      // until the vault is purged.
+      vaultConsent:
+        vaultChoice === 'off'
+          ? undefined
+          : isVaultConsentValid(current.vaultConsent)
+            ? current.vaultConsent
+            : { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
       vaultInlineReveal: inlineReveal.data,
-    });
+    }));
   } catch {
     return { ok: false, error: 'Could not write settings.json.' };
   }

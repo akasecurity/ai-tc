@@ -612,6 +612,16 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    suites are covered by the ordinary per-package check and nothing about them is
    special any more.
 
+   **Naming a target is not enough here either.** The rule the package paragraph
+   above draws applies to `lint:root` unchanged: an `--ignore-pattern` cancels a
+   target it matches, and an `--ignore-path` cancels the whole invocation, so the
+   script reads as covering a repo-root file that ESLint then skips. Either way the
+   file counts as **uncovered** and the failure names it, and the fix is to drop the
+   flag rather than the target. This is enforced rather than remembered — the
+   derived check below reads each invocation's ignore flags next to its own targets,
+   so an ignore that takes a root file back out fails exactly as a missing target
+   does.
+
    Anything new outside every package belongs in those passes — and a **file** at
    the root is named explicitly, not folded into a directory glob (the same rule
    step 5 draws inside a package). `*.config.*` is the standing lint target for root

@@ -27,7 +27,7 @@ function harness(
 
   const adapter: ProviderAdapter = {
     id: 'chatgpt',
-    matches: () => true,
+    hostnames: ['chatgpt.com'],
     findComposer: () => composer,
     findSendButton: () => null,
     extractText: (el) => el.textContent,

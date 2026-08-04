@@ -6,7 +6,11 @@ import type { WebSourceTool } from '../native-host/protocol.ts';
 // adapter gets wired in.
 export interface ProviderAdapter {
   readonly id: WebSourceTool;
-  matches(hostname: string): boolean;
+  // The hostnames this adapter drives. Enumerable rather than a matches()
+  // predicate so callers can READ the set: resolveAdapter tests membership,
+  // and manifest.test.ts derives the grants it checks from the registry
+  // instead of a hand-written list that a new adapter would leave stale.
+  readonly hostnames: readonly string[];
   // Finds the current prompt composer element, or null if it isn't mounted
   // yet (SPA still loading) or no longer matches after a re-render — callers
   // re-poll rather than caching the result across the composer's lifetime.

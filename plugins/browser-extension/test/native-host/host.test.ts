@@ -118,6 +118,11 @@ describe('handleRequest (native-messaging host)', () => {
     db.close();
 
     expect(row.source_tool).toBe('chatgpt');
+    // Positive control FIRST: not.toContain is satisfied by empty bytes, so a
+    // content that came back '' would pass the absence check vacuously. Pinning
+    // the unflagged text around the secret proves the row holds the real capture.
+    expect(row.content).toContain('here is');
+    expect(row.content).toContain('value');
     expect(row.content).not.toContain(AWS_EXAMPLE_KEY);
     expect(JSON.parse(row.metadata) as Record<string, unknown>).toMatchObject({
       sessionId: 'browser-s2',
@@ -239,6 +244,8 @@ describe('capture response text shaping (per-detection policy)', () => {
     expect(response.action).toBe('redact');
     expect(response.text).toBeTypeOf('string');
     expect(response.text).toContain('[REDACTED:SECRET]');
+    // Same positive control as the stored-row case above.
+    expect(response.text).toContain('deploy with');
     expect(response.text).not.toContain(SECRET_EXAMPLE);
     expect(response.ruleIds).toContain(RULE_ID);
   });

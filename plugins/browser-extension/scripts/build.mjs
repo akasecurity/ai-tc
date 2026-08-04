@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Orchestrates the TWO build outputs this package ships (see package.json's
-// "files"): a browser bundle (dist/ — background/content/popup + manifest +
+// Orchestrates the TWO build outputs this package ships (the package is
+// private and has no "files" field; cli/scripts/bundle-extension.mjs is what
+// copies them into the CLI): a browser bundle (dist/ — background/content/popup + manifest +
 // icons, esbuild) and a Node bundle (native-host/ — the native-messaging
 // host, tsup — see ../tsup.config.ts for why it needs its own tool, not
 // esbuild: the node:sqlite specifier fix and Node platform target).

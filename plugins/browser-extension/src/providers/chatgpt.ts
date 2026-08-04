@@ -28,9 +28,7 @@ function findSendButton(): HTMLElement | null {
 
 export const chatgptAdapter: ProviderAdapter = {
   id: 'chatgpt',
-  matches(hostname) {
-    return hostname === 'chatgpt.com' || hostname === 'chat.openai.com';
-  },
+  hostnames: ['chatgpt.com', 'chat.openai.com'],
   findComposer() {
     return firstMatch(COMPOSER_SELECTORS);
   },

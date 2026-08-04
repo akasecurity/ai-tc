@@ -23,9 +23,7 @@ function findSendButton(): HTMLElement | null {
 
 export const claudeAdapter: ProviderAdapter = {
   id: 'claude-ai',
-  matches(hostname) {
-    return hostname === 'claude.ai';
-  },
+  hostnames: ['claude.ai'],
   findComposer() {
     return firstMatch(COMPOSER_SELECTORS);
   },

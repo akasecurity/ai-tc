@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { NATIVE_HOST_NAME } from '../src/constants.ts';
-import { resolveAdapter } from '../src/providers/registry.ts';
+import { ADAPTER_HOSTNAMES, resolveAdapter } from '../src/providers/registry.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test -> plugins/browser-extension
@@ -23,18 +23,29 @@ const manifest = JSON.parse(
   readFileSync(join(PACKAGE_ROOT, 'manifest.json'), 'utf8'),
 ) as ExtensionManifest;
 
-// Every hostname the provider registry resolves — each must also be granted
-// in the manifest, or the content script never loads on that host and the
-// adapter is dead code.
-const ADAPTER_HOSTNAMES = ['chatgpt.com', 'chat.openai.com', 'claude.ai'];
+// Derived from the registry, NOT hand-written: a pinned list only fires when
+// the author who added an adapter also remembered to update it, which is the
+// same forgetting this guard exists to catch. Reading the adapters' own
+// hostnames means a new provider that misses the manifest fails here.
+const HOSTNAMES = [...ADAPTER_HOSTNAMES];
 
 describe('manifest.json stays in sync with the provider registry', () => {
-  it.each(ADAPTER_HOSTNAMES)('%s resolves to an adapter', (hostname) => {
+  it.each(HOSTNAMES)('%s resolves to an adapter', (hostname) => {
     expect(resolveAdapter(hostname)).not.toBeNull();
   });
 
-  it.each(ADAPTER_HOSTNAMES)('%s is granted in content_scripts matches', (hostname) => {
+  it.each(HOSTNAMES)('%s is granted in content_scripts matches', (hostname) => {
     expect(manifest.content_scripts[0]?.matches).toContain(`https://${hostname}/*`);
+  });
+
+  // The other direction: a granted origin with no adapter behind it injects
+  // this script into a site it cannot read, widening the extension's reach
+  // for nothing. Whole-set equality catches both drifts at once.
+  it('grants exactly the origins the registry drives, and no others', () => {
+    const granted = (manifest.content_scripts[0]?.matches ?? []).map((match) =>
+      match.replace(/^https:\/\//, '').replace(/\/\*$/, ''),
+    );
+    expect([...granted].sort()).toEqual([...HOSTNAMES].sort());
   });
 
   it('grants no host_permissions — content-script injection needs only matches', () => {

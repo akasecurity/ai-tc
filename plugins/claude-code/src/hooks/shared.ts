@@ -69,6 +69,11 @@ export function getString(record: Record<string, unknown>, key: string): string 
 // one `hookSpecificOutput` per hook, discriminated by `hookEventName`.
 export type HookOutput =
   | { decision: 'block'; reason: string }
+  // Spelled here even though `PreToolUseOutput` below ends in the same arm, so
+  // that a bare systemMessage — what UserPromptSubmit and the store-unavailable
+  // paths emit — does not depend on a type named for a different hook. The two
+  // are structurally identical, so deleting this line still compiles and no test
+  // can object: it is a silent downgrade rather than a cleanup.
   | { systemMessage: string }
   | PreToolUseOutput
   | {

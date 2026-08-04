@@ -727,12 +727,31 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
   any injector that has to be undone before the tree can be removed, and the store itself
   to any that needs no live connection.
-  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
-  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
-  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+  `fillStore` is in the same file and reaches **most** of what the other three do, but not
+  all of it: the page cap is connection-scoped, so it bounds only the handle it is given.
+  A repository constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`,
+  the `activity.test.ts` pattern), and so does `applyMigrations`, which is why the
+  disk-full cases drive those. The four blanket fail-open sites in `database.ts`
+  (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`) stay out
+  of reach: they are closures over the connection `openLocalDatabase` opened, and
+  `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault at those
+  waits on a raw-handle seam.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+
+`packages/persistence/test/faults/` is where those injectors are pointed at product code —
+one file per fault (corrupt is covered in `database.test.ts`, which predates the
+directory). A fault case documents the **actual** behaviour rather than the desirable one:
+the store never inspects a SQLite result code beyond `SQLITE_CONSTRAINT_UNIQUE`, so
+contention, a full disk, a read-only file and a caller bug all arrive at the fail-open
+sites as the same discarded `false`, and a dropped event leaves no counter, marker or log
+line behind. Write that down and assert it; do not assert a signal the product does not
+emit. Two behaviours there are the opposite of what the fault's name suggests and are
+pinned so nobody "fixes" them: a store chmod'd read-only under a **live** handle keeps
+being written (a descriptor carries the permission it was opened with, so only the next
+open is refused), and a 0000 `~/.aka` is **repaired** rather than reported, because
+`ensureDataDirSync` chmods a directory the owner still owns back to 0700.
 
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:

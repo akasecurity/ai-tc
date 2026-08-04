@@ -283,6 +283,18 @@ export const base = [
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
+    linterOptions: {
+      // A disable directive that no longer suppresses anything is a failure, not
+      // a warning. ESLint's own default here is `warn`, which this workspace
+      // treats as off — and the thing it silences is specific: an inline disable
+      // is an exception someone argued for once, and a dead one is that argument
+      // outliving the code it was about. It then sits in the file reading like a
+      // live exemption, and the next line that needs it inherits it without
+      // anyone deciding. `inline-disables.test.js` inventories the directives
+      // that disable a network or process.env ban; this covers every OTHER rule's
+      // directives the same way, at lint time.
+      reportUnusedDisableDirectives: 'error',
+    },
     plugins: {
       n: pluginN,
       'simple-import-sort': simpleImportSort,

@@ -122,6 +122,22 @@ export interface IsolatedScanOptions {
   minAttributionMs?: number | undefined;
   // Overridden by tests to point at a worker that misbehaves on purpose.
   workerUrl?: URL | undefined;
+  /**
+   * Called with the thread id of each worker this scanner constructs, as it is
+   * constructed.
+   *
+   * How many threads a path builds is the property the isolation suites are
+   * actually about — two to recover from a hang and then name it, one for the
+   * pre-flight, none at all when nothing needs bounding — and without this it is
+   * observable only as elapsed time. An elapsed ceiling loose enough to survive
+   * a cold worker start on a contended runner is loose enough to swallow a whole
+   * extra cycle, so the number that would catch a regression cannot be asserted
+   * that way.
+   *
+   * The id rather than a bare tick: ids are unique within a process and are
+   * never reused, so a caller counting them measures threads rather than calls.
+   */
+  onWorkerStart?: ((threadId: number) => void) | undefined;
 }
 
 export interface IsolatedScanner {
@@ -300,6 +316,11 @@ export function createIsolatedScanner(
     } catch (error) {
       return { error: `could not start the scan worker: ${messageOf(error)}` };
     }
+    // Reported beside the construction, and for a thread that never answers as
+    // much as for one that does — a worker that dies on load still cost a
+    // thread. `threadId` is assigned at construction and reads -1 once the
+    // thread is gone, so it is taken here rather than read back later.
+    opts.onWorkerStart?.(started.threadId);
     // Every handler below is scoped to the worker it was installed for. A
     // thread we terminated on a deadline delivers its 'exit' AFTER the parent
     // has already started a replacement, so an unscoped handler would settle

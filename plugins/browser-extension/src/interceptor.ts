@@ -30,6 +30,10 @@ export function createSubmitInterceptor(opts: {
 }): SubmitInterceptor {
   const { adapter, sessionId, relay, showBanner } = opts;
   let bypassNextSubmit = false;
+  // One decision at a time per composer. Without it, Enter pressed twice while
+  // a slow host is still deciding relays the same text twice — two rows in the
+  // audit store — and both resolutions call passThrough, firing two sends.
+  let inFlight = false;
 
   function passThrough(composer: HTMLElement): void {
     bypassNextSubmit = true;
@@ -70,8 +74,32 @@ export function createSubmitInterceptor(opts: {
       );
       return;
     }
-    if (response.action === 'redact' && typeof response.text === 'string') {
+    if (response.action === 'redact') {
+      // `text` is typed `string | null`, so { action: 'redact', text: null } is
+      // protocol-legal. It used to fail this branch's typeof guard AND the warn
+      // branch below, falling to passThrough with the composer still holding
+      // the secret — sent, and with no banner at all, so the user's read was
+      // "nothing was flagged". A redact the client cannot carry out blocks.
+      if (typeof response.text !== 'string') {
+        showBanner(
+          `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.`,
+          'block',
+        );
+        return;
+      }
       adapter.setText(composer, response.text);
+      // Read back rather than trusting the write. Both composers are framework
+      // -backed (Claude.ai's is ProseMirror) and the adapters warn their
+      // selectors are best-effort, so a reverted write or a stale node would
+      // otherwise still show "AKA redacted …" and then send the original — a
+      // false assurance about the one action the product exists to perform.
+      if (adapter.extractText(composer).trim() !== response.text.trim()) {
+        showBanner(
+          'AKA could not redact this message — remove the flagged content and resend.',
+          'block',
+        );
+        return;
+      }
       showBanner(
         `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
         'redact',
@@ -97,7 +125,11 @@ export function createSubmitInterceptor(opts: {
 
       event.preventDefault();
       event.stopImmediatePropagation();
-      void decide(composer, text);
+      if (inFlight) return;
+      inFlight = true;
+      void decide(composer, text).finally(() => {
+        inFlight = false;
+      });
     },
   };
 }

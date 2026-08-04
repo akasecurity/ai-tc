@@ -22,27 +22,19 @@ import type { ProviderAdapter } from './providers/types.ts';
 
 const adapter = resolveAdapter(location.hostname);
 if (adapter) {
-  void bootstrap(adapter);
+  bootstrap(adapter);
 }
 
-async function bootstrap(activeAdapter: ProviderAdapter): Promise<void> {
+// Synchronous: the watcher must be attached before anything can be sent, so
+// nothing here is allowed to await. session_start is fired and left to settle
+// on its own (see below).
+function bootstrap(activeAdapter: ProviderAdapter): void {
   const sessionId = crypto.randomUUID();
   const interceptor = createSubmitInterceptor({
     adapter: activeAdapter,
     sessionId,
     relay,
     showBanner,
-  });
-
-  await relay({
-    type: 'session_start',
-    sessionId,
-    tool: activeAdapter.id,
-    hostname: location.hostname,
-  }).catch(() => {
-    // Fail-open: no native host reachable yet (extension not installed via
-    // `aka extension install`) must never break the page — capture requests
-    // fail open independently the same way (see interceptor.ts).
   });
 
   let composer: HTMLElement | null = null;
@@ -62,7 +54,14 @@ async function bootstrap(activeAdapter: ProviderAdapter): Promise<void> {
     unwatch?.();
     composer = nextComposer;
     sendButton = nextButton;
-    if (composer) {
+    // BOTH halves must resolve before anything is intercepted. A composer with
+    // no send button leaves no way to complete a send the interceptor has
+    // already preventDefault()ed, so watching would eat every message rather
+    // than fail open — the opposite of what the adapters' own comments promise
+    // ("a miss here means … this adapter silently does nothing"). That holds
+    // when the composer is missing; without this it was false when only the
+    // button drifted. Unwatched, the site keeps working normally.
+    if (composer && sendButton) {
       const target = composer;
       unwatch = activeAdapter.watchSubmit(target, (event) => {
         interceptor.handleSubmit(event, target);
@@ -78,10 +77,27 @@ async function bootstrap(activeAdapter: ProviderAdapter): Promise<void> {
     requestAnimationFrame(reattach);
   }
 
+  // Watch FIRST, announce the session after. session_start cold-starts the MV3
+  // service worker and has Chrome spawn the native host process — hundreds of
+  // milliseconds during which nothing was listening, so a user who landed on
+  // the page and immediately pasted and sent got no interception at all. The
+  // session id is generated locally and decide() already tolerates a host that
+  // is not ready yet, so no ordering here depends on that round trip.
   scheduleReattach();
   new MutationObserver(scheduleReattach).observe(document.body, {
     childList: true,
     subtree: true,
+  });
+
+  void relay({
+    type: 'session_start',
+    sessionId,
+    tool: activeAdapter.id,
+    hostname: location.hostname,
+  }).catch(() => {
+    // Fail-open: no native host reachable yet (extension not installed via
+    // `aka extension install`) must never break the page — capture requests
+    // fail open independently the same way (see interceptor.ts).
   });
 }
 

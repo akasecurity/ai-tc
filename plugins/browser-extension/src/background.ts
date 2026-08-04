@@ -13,6 +13,17 @@
 import { NATIVE_HOST_NAME } from './constants.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 
+// How long a relayed request waits before it is answered with a synthetic
+// error. onDisconnect covers a host that DIED; it does not cover one that is
+// alive but wedged — blocked on store contention with a concurrent CLI or
+// dashboard writer, a slow loadConfig, a stuck handleCapture. That host never
+// replies and never disconnects, so without a deadline the pending entry is
+// never settled. The content script has already called preventDefault() by
+// then, so an unsettled relay reads to the user as their message vanishing:
+// no send, no banner, nothing. Bounded here so decide() reaches its existing
+// fail-open path instead. Sits well inside the plugin's 10s hook budget.
+const RELAY_TIMEOUT_MS = 3000;
+
 let port: chrome.runtime.Port | null = null;
 let nextRequestId = 0;
 const pending = new Map<string, (response: BackgroundResponse) => void>();
@@ -48,12 +59,29 @@ function connect(): chrome.runtime.Port {
 function send(request: BackgroundRequest): Promise<BackgroundResponse> {
   const requestId = `${Date.now().toString()}-${(nextRequestId++).toString()}`;
   return new Promise((resolve) => {
-    pending.set(requestId, resolve);
+    const timer = setTimeout(() => {
+      // Guarded on the delete so a reply landing in the same tick as the
+      // deadline settles once, whichever arrives first.
+      if (!pending.delete(requestId)) return;
+      resolve({
+        type: 'error',
+        requestId,
+        ok: false,
+        message: 'the AKA native host did not respond in time',
+      });
+    }, RELAY_TIMEOUT_MS);
+
+    const settle = (response: BackgroundResponse): void => {
+      clearTimeout(timer);
+      resolve(response);
+    };
+
+    pending.set(requestId, settle);
     try {
       (port ?? (port = connect())).postMessage({ ...request, requestId });
     } catch {
       pending.delete(requestId);
-      resolve({
+      settle({
         type: 'error',
         requestId,
         ok: false,

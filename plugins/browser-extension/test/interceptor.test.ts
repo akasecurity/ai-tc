@@ -10,7 +10,11 @@ import type { ProviderAdapter } from '../src/providers/types.ts';
 // exact re-entrancy a real programmatic send-button click produces (the
 // watchSubmit capture listener sees our own click). The interceptor's bypass
 // must absorb that second invocation or every approved send loops forever.
-function harness(responses: Partial<BackgroundResponse>[]) {
+function harness(
+  responses: Partial<BackgroundResponse>[],
+  // Lets a case model a composer whose framework reverts the redact write.
+  overrides: { setText?: (el: HTMLElement, text: string) => void } = {},
+) {
   const composer = document.createElement('div');
   composer.textContent = 'the composer text';
   document.body.append(composer);
@@ -28,8 +32,12 @@ function harness(responses: Partial<BackgroundResponse>[]) {
     findSendButton: () => null,
     extractText: (el) => el.textContent,
     setText: (el, text) => {
-      el.textContent = text;
       setTextCalls.push(text);
+      if (overrides.setText) {
+        overrides.setText(el, text);
+        return;
+      }
+      el.textContent = text;
     },
     watchSubmit: () => () => undefined,
     submit: () => {
@@ -139,13 +147,48 @@ describe('createSubmitInterceptor', () => {
     expect(h.relayCalls).toHaveLength(1);
   });
 
-  it('redact with no text field: the original text passes through unchanged, no rewrite', async () => {
+  it('redact with no text field: blocks rather than sending the original', async () => {
+    // `text` is `string | null` on the wire, so this shape is protocol-legal.
+    // It used to fall past both the redact and warn branches into passThrough,
+    // sending the unredacted composer contents with NO banner at all — the
+    // user reading that as "nothing was flagged". A redact the client cannot
+    // carry out has to block.
     const h = harness([capture({ action: 'redact', ruleIds: ['r1'] })]);
     h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
     await settle();
 
     expect(h.setTextCalls).toHaveLength(0);
     expect(h.composer.textContent).toBe('the composer text');
+    expect(h.submitted()).toBe(0);
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.message).toContain('could not redact');
+  });
+
+  it('redact that the composer silently reverts: blocks instead of claiming success', async () => {
+    // setText is a best-effort DOM write against a framework-backed composer
+    // (Claude.ai's is ProseMirror). If the framework reverts it, or the node
+    // was stale, the old code still showed "AKA redacted …" and sent the
+    // original — a false assurance about the one action the product performs.
+    const h = harness([capture({ action: 'redact', text: 'masked', ruleIds: ['r1'] })], {
+      setText: () => {
+        /* the framework reverts the write: composer keeps its original text */
+      },
+    });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(0);
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.message).toContain('could not redact');
+  });
+
+  it('a second Enter while a decision is in flight neither re-relays nor double-sends', async () => {
+    const h = harness([capture({ action: 'warn', ruleIds: ['r1'] })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.relayCalls).toHaveLength(1);
     expect(h.submitted()).toBe(1);
   });
 

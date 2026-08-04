@@ -1,5 +1,6 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, EventKind } from '@akasecurity/schema';
+import type { ActionTaken } from '@akasecurity/schema';
+import { EventKind } from '@akasecurity/schema';
 
 // The web chat UIs this native host serves. Kept as a local literal union
 // (not @akasecurity/schema's SourceTool) because it is the narrower set this
@@ -97,6 +98,19 @@ function isWebSourceTool(value: unknown): value is WebSourceTool {
   return value === 'chatgpt' || value === 'claude-ai';
 }
 
+// `kind` is handed to handleCapture and written straight through to the store's
+// event_type. EventKind is used as a TYPE on that whole path — events.ts and
+// types.ts both `import type` it, and there is no parse before the insert — so
+// nothing downstream re-checks it. A bare typeof-string test therefore let any
+// string land as an orphan row: written, then invisible to every capture-kind
+// read, since those constrain to the four real kinds. This is the only runtime
+// validator standing on that boundary, so it reads the enum itself. Type-only
+// importers (messaging.ts, providers/types.ts) keep this out of the content
+// -script bundle.
+function isEventKind(value: unknown): value is EventKind {
+  return typeof value === 'string' && (EventKind.options as readonly string[]).includes(value);
+}
+
 // Runtime narrowing for whatever background.ts sends over the wire — mirrors
 // the parseJson/getString style the CLI-hook packages already use for their
 // own stdin payloads (plugins/codex/src/hooks/shared.ts) rather than pulling
@@ -114,7 +128,7 @@ export function isHostRequest(value: unknown): value is HostRequest {
       return (
         typeof v.sessionId === 'string' &&
         isWebSourceTool(v.tool) &&
-        typeof v.kind === 'string' &&
+        isEventKind(v.kind) &&
         typeof v.text === 'string'
       );
     case 'ping':

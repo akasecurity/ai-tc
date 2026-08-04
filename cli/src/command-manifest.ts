@@ -38,6 +38,11 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
   { name: 'dashboard', summary: 'Launch the local web dashboard and open it in the browser' },
   {
+    name: 'extension',
+    summary: 'Install/check the native-messaging host for the browser extension (Chrome)',
+    args: ['install', 'status'],
+  },
+  {
     name: 'exception',
     summary: 'Manage detection exceptions (approve, add, list, show, revoke, rotate-key)',
     args: ['approve', 'add', 'list', 'show', 'revoke', 'rotate-key'],

@@ -5,7 +5,9 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin, the Codex CLI plugin, and the `aka` CLI capture agent activity into a local SQLite
+plugin, the Codex CLI plugin, the browser extension (ChatGPT + Claude.ai web chat, bridged
+over Chrome native messaging — no port, no listener), and the `aka` CLI capture agent
+activity into a local SQLite
 store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
@@ -335,6 +337,10 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
+plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
+                     host only — Node side); the browser-side content script bundles just
+                     `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
+                     must never import anything Node-only
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
@@ -462,6 +468,9 @@ cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
+plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
+                      content scripts + a native-messaging host; private — bundled into
+                      the CLI by `bundle:extension`, installed via `aka extension install`)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)

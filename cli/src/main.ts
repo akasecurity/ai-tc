@@ -6,6 +6,7 @@ import { runCompletion } from './commands/completion.ts';
 import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
 import { runDetections } from './commands/detections.ts';
 import { runException } from './commands/exception.ts';
+import { runExtension } from './commands/extension.ts';
 import { runInit } from './commands/init.ts';
 import { runPlugins } from './commands/plugins.ts';
 import { runScan } from './commands/scan.ts';
@@ -30,6 +31,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   detections: runDetections,
   plugins: runPlugins,
   dashboard: runDashboard,
+  extension: runExtension,
   exception: (argv) => runException(argv),
   vault: (argv) => runVault(argv),
   tui: runTui,

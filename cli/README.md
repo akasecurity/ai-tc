@@ -47,6 +47,7 @@ aka dashboard    # open the local web dashboard over your store
 | `aka exception`  | Manage exact-value exceptions that let a specific match through. |
 | `aka stats`      | Show detection activity and token/cost summaries from the store. |
 | `aka plugins`    | Optional hub to install agent plugins (e.g. Claude Code).        |
+| `aka extension`  | Install the browser-extension bridge (`install` / `status`).     |
 
 Run `aka --help` for the full command list.
 
@@ -63,6 +64,21 @@ aka plugins install claude-code
 ```
 
 This drives Claude Code to add the plugin for you (or prints the `/plugin` commands to run). See the [installation guide](https://akasecurity.github.io/ai-tc-docs/getting-started/installation/) for both components.
+
+## The browser extension (ChatGPT + Claude.ai web chat)
+
+The CLI also ships a Chrome extension that scans messages in ChatGPT and
+Claude.ai web chat before they are sent, recording into the same local store
+over Chrome's native messaging (no server, no open port). Set it up with:
+
+```bash
+aka extension install   # registers the native-messaging host with Chrome
+aka extension status    # verify the wiring
+```
+
+Then load the extension in Chrome: open `chrome://extensions`, enable
+Developer mode, click "Load unpacked", and select the directory the install
+command prints. The native host needs a Node.js runtime on the machine.
 
 ## Docs
 

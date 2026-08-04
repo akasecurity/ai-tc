@@ -10,9 +10,11 @@ import {
   pluginRef,
 } from '@akasecurity/local-ops';
 import {
+  FileLockError,
   keysDir,
   openLocalDatabase,
   tightenFile,
+  withFileLock,
   writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
 import {
@@ -281,15 +283,41 @@ export async function runInit(argv: string[]): Promise<void> {
   // Don't clobber an existing settings.json — a re-run must preserve the user's
   // onboarding choices (runMode/policy/historicalAccess). Only write defaults on
   // first init.
-  const settingsCreated = !existsSync(settingsFile);
-  if (settingsCreated) {
-    // Owner-only atomic write (tmp + rename), matching every other writer under
-    // ~/.aka — a crash mid-write must never leave a truncated or group-readable
-    // settings.json, and a pre-existing loose `.tmp` isn't carried through.
-    writeOwnerOnlyFileSync(
-      settingsFile,
-      `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
-    );
+  //
+  // Under the same lock the wizard and the dashboard take, and the existence
+  // check is re-run INSIDE it: this is the third writer of one file, and an
+  // unlocked check-then-write can see no file, have the wizard's answers land
+  // while it decides, and then replace them with defaults.
+  //
+  // The lock is taken only when there is a write to make. A settings.json that
+  // is already there needs neither the lock nor the write, and taking one anyway
+  // would make `aka init` fail on a store whose settings dir refuses new files —
+  // the broken state this command exists to repair, and one it used to walk
+  // through untouched.
+  //
+  // A `timeout` is swallowed because the only writer that can hold this lock is
+  // one writing this same file: it is creating what init would have created, so
+  // there is nothing left to do. An `unavailable` directory is a real fault and
+  // propagates, exactly as the failed write did before there was a lock.
+  let settingsCreated = false;
+  if (!existsSync(settingsFile)) {
+    try {
+      settingsCreated = withFileLock(settingsFile, () => {
+        // Re-checked INSIDE the lock: the wizard's answers can land between the
+        // check above and this one, and defaults must never replace them.
+        if (existsSync(settingsFile)) return false;
+        // Owner-only atomic write (tmp + rename), matching every other writer under
+        // ~/.aka — a crash mid-write must never leave a truncated or group-readable
+        // settings.json, and a pre-existing loose `.tmp` isn't carried through.
+        writeOwnerOnlyFileSync(
+          settingsFile,
+          `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
+        );
+        return true;
+      });
+    } catch (err) {
+      if (!(err instanceof FileLockError) || err.reason !== 'timeout') throw err;
+    }
   }
   // Re-tighten whether or not we just wrote it: a re-run of `aka init` over a
   // settings.json a prior release left loose (the leftover-`.tmp` bug) must
@@ -319,7 +347,12 @@ export async function runInit(argv: string[]): Promise<void> {
   const symlinked = symlinkedStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
-      `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
+      // "kept existing" is a claim about a file that is there. The one path that
+      // reaches here with nothing on disk is a write skipped because another
+      // process held the lock, and saying "kept existing" about a file that does
+      // not exist would make the case where init did not do its job read exactly
+      // like the case where it had nothing to do.
+      `  settings: ${settingsFile}${settingsCreated ? '' : existsSync(settingsFile) ? ' (kept existing)' : ' (not written — another process was writing it)'}\n` +
       `  database: ${dbPath(home)}\n` +
       `  seeded ${String(policyCount)} default policies, ${String(packCount)} detection pack(s)\n` +
       (updatesAvailable > 0

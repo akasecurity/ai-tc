@@ -16,6 +16,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'DuplicateActiveExceptionError',
   'EXCEPTION_KEY_FILENAME',
   'FileKeyProvider',
+  'FileLockError',
   'KeychainKeyProvider',
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
   'SETTINGS_FILENAME',
@@ -90,6 +91,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'tightenPerms',
   'toolCallId',
   'verifyPointerTag',
+  'withFileLock',
   'writeOwnerOnlyFileSync',
 ];
 

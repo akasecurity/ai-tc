@@ -7,6 +7,7 @@ import {
   WorkspaceSettings as WorkspaceSettingsSchema,
 } from '@akasecurity/schema';
 
+import { withFileLock } from './file-lock.ts';
 import { parseJsonObject } from './internal/json.ts';
 import { defaultDataDir, settingsDir } from './local-layout.ts';
 import { ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
@@ -41,6 +42,17 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
 }
 
 /**
+ * The answers to apply, either directly or derived from what is already on
+ * disk. The function form is the one to reach for whenever an answer depends on
+ * a current value — it runs INSIDE the write lock, so the settings it is handed
+ * are the ones the merge is about to be applied to. Reading first and passing a
+ * plain object puts that read outside the lock, which is the lost update this
+ * writer exists to prevent, one caller further out.
+ */
+export type OnboardingAnswers =
+  Partial<WorkspaceSettings> | ((current: WorkspaceSettings) => Partial<WorkspaceSettings>);
+
+/**
  * Persist onboarding answers to settings.json (the /aka:setup writer, and the
  * web-ui settings page). Merges over the existing file so each edit is
  * additive, re-validates through the versioned schema, and stamps onboardedAt
@@ -48,23 +60,42 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
  * rename), so a settings.json (or a leftover `.tmp` from an earlier crash) that
  * pre-existed with looser permissions ends 0600 rather than carrying its mode
  * through the rename — see writeOwnerOnlyFileSync.
+ *
+ * The read, the merge and the write are ONE critical section, held against
+ * every other process on the machine (see withFileLock). tmp+rename alone makes
+ * each publish indivisible but leaves the pair of them interleavable: the
+ * wizard and the dashboard's Settings page are separate processes over one
+ * file, and without the lock both read the same bytes and the second rename
+ * discards the first one's answers with nothing raised at either end. The
+ * fields at stake include the vault and model-judge consent grants, where the
+ * lost write can be a REVOCATION — silently reinstating an egress the user
+ * just withdrew.
+ *
+ * Throws rather than writing unlocked if the lock cannot be taken (see
+ * FileLockError). Both callers surface that: the wizard exits non-zero with the
+ * message, and the Settings action renders a save failure.
  */
 export function applyOnboarding(
-  answers: Partial<WorkspaceSettings>,
+  answers: OnboardingAnswers,
   base: string = defaultDataDir(),
 ): WorkspaceSettings {
   const dir = settingsDir(base);
-  const current = readWorkspaceSettings(base);
-  const merged = WorkspaceSettingsSchema.parse({
-    ...current,
-    ...answers,
-    // First setup stamps the time; later edits keep the original completion mark.
-    onboardedAt: answers.onboardedAt ?? current.onboardedAt ?? new Date().toISOString(),
-  });
+  // Ahead of the lock, not inside it: the lock file is a sibling of
+  // settings.json, so the directory has to exist before one can be taken.
   ensureDataDirSync(dir);
   const file = join(dir, SETTINGS_FILENAME);
-  writeOwnerOnlyFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
-  return merged;
+  return withFileLock(file, () => {
+    const current = readWorkspaceSettings(base);
+    const applied = typeof answers === 'function' ? answers(current) : answers;
+    const merged = WorkspaceSettingsSchema.parse({
+      ...current,
+      ...applied,
+      // First setup stamps the time; later edits keep the original completion mark.
+      onboardedAt: applied.onboardedAt ?? current.onboardedAt ?? new Date().toISOString(),
+    });
+    writeOwnerOnlyFileSync(file, `${JSON.stringify(merged, null, 2)}\n`);
+    return merged;
+  });
 }
 
 function readJson(file: string): Record<string, unknown> | null {

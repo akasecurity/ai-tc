@@ -14,10 +14,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
 import { cachePath, writeCache } from '@akasecurity/local-ops';
+import { keysDir } from '@akasecurity/persistence';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -757,8 +758,10 @@ describe('runInit on a ~/.aka it cannot create', () => {
       expect(err?.message).toContain('move that file aside');
       // The raw failure this replaces read as "already done" rather than
       // "something else is there", which is the whole reason for the guard.
+      // Only EEXIST is asserted: `recursive: true` fails at the occupied
+      // component itself, so runInit never produces ENOTDIR here and an
+      // absence check for it would be green whatever the guard did.
       expect(err?.message).not.toContain('EEXIST');
-      expect(err?.message).not.toContain('ENOTDIR');
     });
   }
 
@@ -817,15 +820,57 @@ describe('runInit on a ~/.aka it cannot create', () => {
     vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     const home = join(dir, 'filehome-cleared');
     writeFileSync(home, 'someone else owns this path\n');
-    await runInit(['--home', home]).then(
+    const refused = await runInit(['--home', home]).then(
       () => undefined,
-      () => undefined,
+      (e: unknown) => e as Error,
     );
+    // Named, not discarded. Swallowing this error makes the case survive
+    // deleting the guard entirely — it would then be asserting only that
+    // `aka init` works on an empty directory.
+    expect(refused?.message).toContain('exists but is not a directory');
 
     rmSync(home, { force: true });
     await runInit(['--home', home]);
 
     expect(existsSync(dbPath(home))).toBe(true);
+  });
+
+  it('refuses when keys/ is occupied, rather than blaming the filesystem', async () => {
+    // keys/ is minted lazily by the vault, so it is absent on a normal init and
+    // the guard used to skip it. A file there let init SUCCEED and print a
+    // permissions warning about a path that was merely occupied — sending the
+    // user to chmod something that was never a mode problem — while the next
+    // `aka vault` died on a bare EEXIST from the key provider.
+    const home = join(dir, 'keyshome');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(keysDir(home), 'someone else owns this path\n');
+
+    const err = await runInit(['--home', home]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain(keysDir(home));
+    expect(err?.message).toContain('exists but is not a directory');
+  });
+
+  it('is not bypassed by a trailing separator on --home', async () => {
+    // `statSync('<a regular file>/')` raises ENOTDIR rather than describing the
+    // file, so the guard's "is this a non-directory?" question came back "no"
+    // and the path went through — producing the bare mkdir failure the guard
+    // exists to replace. homeBase resolves the path, which drops the separator.
+    const home = join(dir, 'slashhome');
+    writeFileSync(home, 'someone else owns this path\n');
+
+    const err = await runInit(['--home', home + sep]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('exists but is not a directory');
+    expect(err?.message).not.toContain('ENOTDIR');
   });
 
   it('self-heals a ~/.aka the owner has locked themselves out of', async (ctx) => {

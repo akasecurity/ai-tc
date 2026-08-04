@@ -263,10 +263,10 @@ function isBrokenLink(path: string): boolean {
 // A store directory that already exists as a FILE cannot be created either, and
 // the raw failure is actively misleading: `mkdir` raises EEXIST, whose message
 // ("file already exists") reads as "this is already done" rather than "something
-// else is sitting where the store goes". Deeper paths are worse — creating
-// through a file yields ENOTDIR naming `<home>/data`, which points at the one
-// component that is NOT the problem. Refuse here instead, naming the path that
-// is occupied and what to do about it.
+// else is sitting where the store goes". Every occupied path reports that way,
+// at any depth — `ensureDataDirSync` passes `recursive: true`, so it fails at
+// the occupied component itself and never creates *through* a file. Refuse here
+// instead, naming the path that is occupied and what to do about it.
 //
 // Checked for the same three directories as the broken-link guard, and after
 // it, so a broken link keeps its own more specific diagnosis. `statSync`
@@ -279,7 +279,13 @@ function isBrokenLink(path: string): boolean {
 // therefore reported as a link, naming what it resolves to, the way
 // assertStoreLinksResolve reports its own.
 function assertStorePathsAreDirectories(home: string): void {
-  for (const dir of [home, settingsDir(home), dataDir(home)]) {
+  // keys/ is included even though `aka init` does not create it: the vault
+  // mints it lazily on first use, so a regular file there lets init SUCCEED
+  // and then blames the filesystem — "could not enforce owner-only permissions
+  // on …/keys" — for a path that is simply occupied, while `aka vault` later
+  // dies on a bare EEXIST. An absent path is not a finding, so adding it costs
+  // the common case nothing.
+  for (const dir of [home, settingsDir(home), dataDir(home), keysDir(home)]) {
     if (!existsAsNonDirectory(dir)) continue;
     const occupant = isSymlink(dir)
       ? `is a symlink to ${linkTarget(dir)}, which is not a directory — remove the link`

@@ -613,10 +613,14 @@ Five things about it are load-bearing:
   appends `--import <itself>` to the worker's `execArgv`. Wrapping the CONSTRUCTOR
   rather than the call sites is what reaches a worker **product code** starts, which
   is the case that matters; a worker's refusal cannot land in the parent's array, so
-  it goes to a file `takeBlockedAttempts()` drains alongside it. Two consequences to
-  keep true: the report file is created on the **first worker spawn and not before**,
-  so a run that starts no worker touches the filesystem never, and a nested worker
-  reports to the same file rather than stacking another preload onto `execArgv`.
+  it goes to a file `takeBlockedAttempts()` drains alongside it. Three consequences to
+  keep true: that file is written only when a worker actually **refuses**, so a run
+  that reaches for nothing touches the filesystem never and the drain reads a missing
+  file as "no refusals"; it is **appended to and never truncated**, because a
+  read-then-truncate drain destroys a refusal appended between the two; and a nested
+  worker reports to the same file rather than stacking another preload onto `execArgv`.
+  Any read failure that is not `ENOENT` fails the run — a channel that cannot be read
+  reports zero refusals, which looks exactly like a clean one.
 - **A child process is invisible to it**, which is the whole reason the `No-network`
   CI job exists. Do not describe the guard as covering shell-outs — and note that a
   worker started **by** such a child is out of reach for the same reason, since the

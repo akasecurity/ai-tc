@@ -71,9 +71,10 @@
  *     fails, which is the point; the recorded stack is what identifies the real
  *     culprit, so read that rather than the test the failure is attached to.
  */
+import { randomUUID } from 'node:crypto';
 import dgram from 'node:dgram';
 import dns from 'node:dns';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -109,49 +110,68 @@ const IN_INJECTED_WORKER = WORKER_REPORT !== null;
 
 const attempts: BlockedAttempt[] = [];
 
-// The parent's side of the worker channel, created on the first worker spawn
-// and not before — a run that starts no worker touches the filesystem never,
-// which is nearly every test file in the workspace.
+// The parent's side of the worker channel. Named on the first worker spawn and
+// not before, so a run that starts no worker names nothing.
 let reportPath: string | null = null;
 
-/** The file worker refusals are appended to, created on demand. */
+// How much of the report has already been drained, as an offset into the file's
+// decoded text.
+let drainedChars = 0;
+
+/**
+ * The path worker refusals are appended to.
+ *
+ * Only the PATH is decided here. The file itself is created by the first
+ * `appendFileSync` a REFUSING worker makes, so a run in which nothing reaches
+ * the network writes nothing at all — and the drain below reads its absence as
+ * "no refusals" rather than as an error. The name carries a uuid rather than a
+ * pid because a pid is recycled: a stale file from an earlier run would
+ * otherwise be drained as if it belonged to this one.
+ */
 function ensureReportPath(): string {
-  if (reportPath === null) {
-    const dir = mkdtempSync(join(tmpdir(), 'aka-no-network-'));
-    reportPath = join(dir, 'worker-attempts.jsonl');
-    writeFileSync(reportPath, '');
-    process.on('exit', () => {
-      // Never let tidying up decide the exit code. On Windows a file another
-      // thread still holds open raises EBUSY/EPERM, which `force` does not
-      // cover — and a throw in an exit handler would fail a run that had
-      // otherwise passed.
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // a temp dir the OS will reclaim
-      }
-    });
-  }
+  reportPath ??= join(tmpdir(), `aka-no-network-${randomUUID()}.jsonl`);
   return reportPath;
 }
 
 /**
- * Read and clear whatever workers have recorded. A line that will not parse is
- * surfaced as an attempt rather than skipped: two threads appending at once
- * could in principle interleave, and losing a refusal is the one outcome this
- * file may not produce.
+ * Read whatever workers have recorded since the last drain. A line that will
+ * not parse is surfaced as an attempt rather than skipped: two threads
+ * appending at once could in principle interleave, and losing a refusal is the
+ * one outcome this file may not produce.
+ *
+ * The file is APPENDED to and never truncated, and that is the whole reason for
+ * the offset. Reading and then truncating races a worker that is still
+ * refusing: a refusal appended between the two is destroyed unread, which
+ * measured at 49 lost out of 400 against a worker refusing in a loop. An offset
+ * has no destructive step for an append to race, so a drain can only decline to
+ * advance — never lose.
  */
 function drainWorkerAttempts(): BlockedAttempt[] {
   if (reportPath === null) return [];
   let raw: string;
   try {
     raw = readFileSync(reportPath, 'utf8');
-  } catch {
-    return [];
+  } catch (cause) {
+    // A file that does not exist yet is the one tolerable failure, and it is
+    // the ordinary case: no worker has refused. Anything else — a permission
+    // denial, a Windows sharing violation — must fail the run. Reporting zero
+    // refusals because the channel could not be READ is exactly the silent pass
+    // this file exists to prevent, and it would look identical to a clean run.
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error(
+      `no-network: could not read the worker refusal report at ${reportPath}. Whatever a ` +
+        'worker recorded there cannot be accounted for, so this run is not evidence that ' +
+        'nothing reached the network.',
+      { cause },
+    );
   }
-  if (raw === '') return [];
-  writeFileSync(reportPath, '');
-  return raw
+  // Stop at the last complete line: a worker may be mid-append, and advancing
+  // past a partial line would turn a real refusal into an unreadable one.
+  const complete = raw.lastIndexOf('\n') + 1;
+  if (complete <= drainedChars) return [];
+  const pending = raw.slice(drainedChars, complete);
+  drainedChars = complete;
+  return pending
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => {

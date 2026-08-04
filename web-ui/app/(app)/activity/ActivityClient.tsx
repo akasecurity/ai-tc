@@ -124,7 +124,7 @@ export function ActivityClient({
       aria-busy={isPending}
       className={cn(
         'flex min-h-0 flex-1 gap-4 transition-shadow duration-150',
-        isPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
+        isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
       )}
     >
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">

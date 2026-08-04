@@ -277,7 +277,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         aria-busy={isPending}
         className={cn(
           'mt-4 min-h-0 flex-1 transition-shadow duration-150',
-          isPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
+          isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
         )}
       >
         {props.view === 'grouped' && (

@@ -129,7 +129,7 @@ export function DataSharesClient({
         aria-busy={navPending}
         className={cn(
           'flex min-h-0 flex-1 flex-col transition-shadow duration-150',
-          navPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
+          navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
         )}
       >
         {!ql && (

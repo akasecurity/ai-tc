@@ -24,7 +24,7 @@ export function RangeSelect({ value }: { value: TimeRange }) {
     <span
       className={cn(
         'inline-block rounded-md transition-shadow duration-150',
-        isPending && 'ring-2 ring-primary/40',
+        isPending && 'ring-2 ring-primary/70',
       )}
     >
       <TimeRangeSelect

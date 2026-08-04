@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -177,8 +177,15 @@ describe('exceptions page pending regions', () => {
     // opacity below ~0.97 puts readable text under it while the region is still
     // interactive. Pin the ring, not an opacity — a fade cannot come back here
     // at any value that both reads as pending and clears the floor.
+    //
+    // The alpha is `/70` rather than the `/40` the shared focus rings use: this
+    // ring carries a STATE, so WCAG 1.4.11 asks 3:1 against the surface behind
+    // it, and `/40` measures 2.00-2.49:1 across the six theme/surface pairs.
+    // The arithmetic is not restated here — 'pending ring contrast' below
+    // derives it from the tokens, so this line pins the spelling and that block
+    // pins the number.
     expect(code).toMatch(
-      /const pendingRegion = cn\(\s*'transition-shadow duration-150',\s*navPending && 'rounded-lg ring-2 ring-primary\/40 ring-inset',?\s*\)/,
+      /const pendingRegion = cn\(\s*'transition-shadow duration-150',\s*navPending && 'rounded-lg ring-2 ring-primary\/70 ring-inset',?\s*\)/,
     );
   });
 
@@ -221,5 +228,179 @@ describe('exceptions page pending regions', () => {
       'if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)' +
         '{return;}e.preventDefault();pushUrl(auditHref);',
     );
+  });
+});
+
+// ─── Pending ring contrast ───────────────────────────────────────────────────
+//
+// The pending ring is a non-text indicator of a state ("this region is being
+// replaced"), so WCAG 1.4.11 asks for 3:1 against the surface it sits on. That
+// number lives here rather than in a comment because the last two attempts at
+// this cue BOTH failed a contrast floor while looking fine in review: the
+// original `opacity-60` fade missed the 4.5:1 text floor, and the ring that
+// replaced it was given `/40` to match the shared focus rings, which measures
+// 2.00-2.49:1 — worse, against a lower bar, than the fade it replaced.
+//
+// A literal-string assertion cannot catch the next one, because every value is
+// equally plausible-looking as a string. So this derives the ratio from the
+// tokens: change the alpha, or change what `--color-primary` or a surface
+// resolves to, and the arithmetic moves with it.
+
+const THEME_CSS = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'packages',
+  'ui-kit',
+  'src',
+  'styles',
+  'theme.css',
+);
+
+/** Every .tsx under web-ui/app, so the ring sites are found rather than listed. */
+function sourceFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...sourceFiles(child));
+    else if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) found.push(child);
+  }
+  return found;
+}
+
+const APP_SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'app');
+
+type Rgb = readonly [number, number, number];
+
+/** The three surfaces a pending region can sit on. */
+const SURFACES = ['canvas', 'surface', 'surface-2'] as const;
+type ThemeTokens = Record<(typeof SURFACES)[number] | 'primary', Rgb>;
+
+function srgbToLinear(channel: number): number {
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance([r, g, b]: Rgb): number {
+  return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
+}
+
+function contrast(a: Rgb, b: Rgb): number {
+  const [la, lb] = [relativeLuminance(a), relativeLuminance(b)];
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/** The ring is a translucent primary over the surface; that composite is what is seen. */
+function composite(fg: Rgb, bg: Rgb, alpha: number): Rgb {
+  return [
+    fg[0] * alpha + bg[0] * (1 - alpha),
+    fg[1] * alpha + bg[1] * (1 - alpha),
+    fg[2] * alpha + bg[2] * (1 - alpha),
+  ];
+}
+
+function parseHex(hex: string): Rgb {
+  return [
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255,
+  ];
+}
+
+/**
+ * One token out of one theme block. Throws rather than returning a default: a
+ * token that silently resolved to black would make every ratio below pass on
+ * arithmetic nobody performed.
+ */
+function token(text: string, name: string, theme: string): Rgb {
+  // Anchored to the colon so `--color-surface` cannot match `--color-surface-2`.
+  const value = new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`).exec(text)?.[1];
+  if (value === undefined) throw new Error(`--color-${name} missing from the ${theme} theme block`);
+  return parseHex(value);
+}
+
+/**
+ * The four tokens the ring can land on, per theme. theme.css declares light in
+ * `@theme` and dark in the `.dark, [data-theme='dark']` block below it, so the
+ * dark selector is the split point.
+ */
+function readThemeTokens(): Record<'light' | 'dark', ThemeTokens> {
+  const css = readFileSync(THEME_CSS, 'utf8');
+  const splitAt = css.search(/^\.dark,/m);
+  // A rename of that selector would leave both halves reading the light block,
+  // and every dark row below would then silently re-assert the light one.
+  if (splitAt <= 0) throw new Error('theme.css: no .dark selector to split the themes on');
+
+  const build = (text: string, theme: string): ThemeTokens => ({
+    primary: token(text, 'primary', theme),
+    canvas: token(text, 'canvas', theme),
+    surface: token(text, 'surface', theme),
+    'surface-2': token(text, 'surface-2', theme),
+  });
+  return {
+    light: build(css.slice(0, splitAt), 'light'),
+    dark: build(css.slice(splitAt), 'dark'),
+  };
+}
+
+describe('pending ring contrast', () => {
+  const tokens = readThemeTokens();
+
+  // Derived, never listed: a client added tomorrow with a pending ring is
+  // covered without touching this file. Every `ring-primary` web-ui draws is
+  // swept in, not just the pending ones — a ring is a non-text indicator
+  // whichever state it marks, so 3:1 is the bar for all of them. The shared
+  // focus rings in ui-kit sit outside this tree and are a separate, pre-existing
+  // question.
+  const ringSites = sourceFiles(APP_SRC).flatMap((file) =>
+    [...readFileSync(file, 'utf8').matchAll(/ring-primary\/(\d+)/g)].flatMap((m) => {
+      const raw = m[1];
+      return raw === undefined
+        ? []
+        : [{ file: relative(APP_SRC, file).split(sep).join('/'), alpha: Number(raw) / 100 }];
+    }),
+  );
+
+  it('finds the ring sites at all', () => {
+    // Without this the whole block passes on an empty list — the exact way a
+    // moved file or a renamed utility would turn this guard off silently.
+    expect(ringSites.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('reads both themes from the real token file', () => {
+    // `token()` throws on a missing token; this is the positive control that it
+    // returned real, DISTINCT values rather than parsing one block twice.
+    expect(tokens.light.primary).not.toEqual(tokens.dark.primary);
+    expect(tokens.light.surface).not.toEqual(tokens.dark.surface);
+  });
+
+  it.each(['light', 'dark'] as const)('clears 3:1 on every %s surface', (theme) => {
+    const t = tokens[theme];
+    for (const site of ringSites) {
+      for (const name of SURFACES) {
+        const bg = t[name];
+        const ratio = contrast(composite(t.primary, bg, site.alpha), bg);
+        expect(
+          ratio,
+          `${site.file} ring-primary/${String(site.alpha * 100)} on ${theme} ${name}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  it('agrees with a hand-computed value', () => {
+    // The arithmetic above is only trustworthy if it reproduces a number
+    // computed independently. `/70` primary over light `surface` is 3.77:1;
+    // `/40` over the same surface is 2.02:1, which is what shipped and what
+    // this block exists to have caught.
+    const { primary, surface } = tokens.light;
+    expect(contrast(composite(primary, surface, 0.7), surface)).toBeCloseTo(3.77, 1);
+    expect(contrast(composite(primary, surface, 0.4), surface)).toBeCloseTo(2.02, 1);
+  });
+
+  it('reads a theme file that is actually there', () => {
+    // readFileSync would throw on a moved theme.css, but a future refactor that
+    // caught and defaulted would leave every ratio above computed from zeros.
+    expect(statSync(THEME_CSS).size).toBeGreaterThan(1000);
   });
 });

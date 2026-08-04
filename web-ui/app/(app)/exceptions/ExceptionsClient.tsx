@@ -55,7 +55,7 @@ export function ExceptionsClient({
   // being replaced" cue at no cost to the text underneath.
   const pendingRegion = cn(
     'transition-shadow duration-150',
-    navPending && 'rounded-lg ring-2 ring-primary/40 ring-inset',
+    navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
   );
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);

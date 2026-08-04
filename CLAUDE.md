@@ -771,18 +771,37 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
   any injector that has to be undone before the tree can be removed, and the store itself
   to any that needs no live connection.
-  `fillStore` is in the same file and reaches **most** of what the other three do, but not
-  all of it: the page cap is connection-scoped, so it bounds only the handle it is given.
-  A repository constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`,
-  the `activity.test.ts` pattern), and so does `applyMigrations` — but only with a cap
-  sized against a real migration: the default headroom on an empty file stops the ledger's
-  own `CREATE TABLE`, so the applier's loop never runs and every claim about a partial
+  `fillStore` is in the same file and its page cap is connection-scoped, so it bounds only
+  the handle it is given — which is what decides where it can be aimed. A repository
+  constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`, the
+  `activity.test.ts` pattern), and so does `applyMigrations` — but only with a cap sized
+  against a real migration: the default headroom on an empty file stops the ledger's own
+  `CREATE TABLE`, so the applier's loop never runs and every claim about a partial
   migration then holds vacuously. The blanket fail-open sites in `database.ts`
   (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`, and
-  `reconcileWorktreeProjects`, which reaches `withTransaction` directly) stay out of
-  reach: they are closures over the connection `openLocalDatabase` opened, and
-  `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault at those
-  waits on a raw-handle seam.
+  `reconcileWorktreeProjects`, which reaches `withTransaction` directly) are closures over
+  the connection `openLocalDatabase` opened, so they are reached by capping **that**
+  connection — `db[UNSAFE_TEST_ONLY_RAW_HANDLE]`, below. Handing `fillStore` a second
+  handle on the same file instead is the mistake to avoid: it carries none of the cap, the
+  facade writes on undisturbed, and every "the write was dropped" assertion then passes
+  because nothing was ever refused.
+- **`UNSAFE_TEST_ONLY_RAW_HANDLE`** — not a helper but the seam a connection-scoped
+  injector aims at, so it is listed here: the `DatabaseSync` a `LocalDatabase` writes
+  through, exported from `src/database.ts`, and the only test-only seam in shipped
+  source. It is
+  symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
+  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
+  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
+  enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
+  the **real** connection, so `close()` reaches it.
+  `packages/eslint-config/test/test-only-seam.test.js` is what keeps "test-only" true: it
+  walks the tracked tree and fails if any file naming the seam is neither its one definition
+  site nor a test. That is a derived rule, not a list — a new fault test needs no edit there,
+  a product caller anywhere in the workspace fails CI. It lives in that package rather than
+  in `persistence` because only that task's turbo `inputs` hash the whole workspace; the
+  same check inside `persistence` would replay a cached green while a caller appeared in
+  `cli/src`.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.

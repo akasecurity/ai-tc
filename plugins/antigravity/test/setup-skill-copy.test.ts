@@ -115,11 +115,31 @@ describe('SKILL.md known-limitation disclosure', () => {
     expect(skillMd).toMatch(/Tool results are not scanned live/i);
   });
 
-  it('discloses that transcript-derived capture records nothing yet', () => {
-    // The strongest claim to keep honest: the reconcile worker is wired and
-    // triggered, so a reader could reasonably assume prompts are being
-    // recorded. They are not, until the transcript record shapes are verified.
-    expect(skillMd).toMatch(/Transcript-derived capture is not yet active/i);
-    expect(skillMd).toMatch(/Do not tell the user their prompts are being recorded/i);
+  it('discloses that history is scanned but token usage still is not', () => {
+    // This disclosure moved rather than went away. The historical scan reads
+    // Antigravity's real record shape now, so the old blanket "records nothing"
+    // would UNDER-state what runs — but usage reporting genuinely still
+    // produces nothing, and that is the half a reader would otherwise assume
+    // works because the reconcile worker is wired and triggered.
+    expect(skillMd).toMatch(/History is scanned; token usage is not/i);
+    expect(skillMd).toMatch(/Do not tell the user\s+their token spend is being tracked/i);
+  });
+
+  it('discloses that the historical scan does not read tool-call arguments', () => {
+    expect(skillMd).toMatch(/Tool-call arguments are not scan input/i);
+    // …and says which side of the live/historical line the gap falls on, so the
+    // reader does not conclude that PreToolUse misses them too.
+    expect(skillMd).toMatch(/live PreToolUse hook does scan those/i);
+  });
+
+  it('discloses that a blocked hook surfaces as a deny the user cannot attribute', () => {
+    // The fail-CLOSED consequence. A user seeing "Tool call denied by <hook>"
+    // with no reason attached has no way to tell an AKA policy decision from a
+    // hook that never got to print, so the copy has to name the second case.
+    expect(skillMd).toMatch(/A hook that gets stuck denies the tool call/i);
+    expect(skillMd).toMatch(/cannot interrupt work that blocks the\s+thread/i);
+    // And must not sell the guarantee as absolute — the exact overstatement the
+    // wrapper's own docs were corrected for.
+    expect(skillMd).toMatch(/Do not\s+describe AKA's fail-open guarantee to a user as absolute/i);
   });
 });

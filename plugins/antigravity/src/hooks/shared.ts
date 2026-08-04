@@ -11,8 +11,11 @@
 //     rejects surfaces as "Tool call denied by <hook>" (invalid_args). A hook
 //     that merely crashes therefore BLOCKS EVERY TOOL CALL — the exact opposite
 //     of this repo's fail-open rule. So every entry here runs through
-//     `runHookFailOpen`, which always writes an explicit host-shaped allow
-//     payload before exiting 0, on every path including a throw.
+//     `runHookFailOpen`, which writes an explicit host-shaped allow payload
+//     before exiting 0 on every path that yields — a throw, an undecided body,
+//     and a body that outruns the watchdog. It cannot cover a body that blocks
+//     this thread; see `runHookFailOpen` for that limit and why closing it
+//     needs a worker rather than a longer timer.
 //
 //  2. THE PAYLOAD IS camelCase AND NESTS THE TOOL CALL. Antigravity sends
 //     `{ toolCall: { name, args }, conversationId, workspacePaths, … }` where
@@ -141,19 +144,49 @@ export function emit(output: unknown): Promise<void> {
 }
 
 /**
- * Run a hook body and guarantee the host sees a valid, permissive payload.
+ * Run a hook body so the host is left with a VALID payload rather than silence.
  *
- * This is the fail-open rule (Architecture principles §1) expressed for a host
- * that fails CLOSED. `failOpen` is the event's own "carry on unchanged" payload
- * — `{ decision: 'allow' }` for PreToolUse, `{}` for the rest. It is written
- * when the body throws, when the body declines to decide (returns undefined),
- * and when the body outruns the watchdog.
+ * Not necessarily a permissive one: a body that reaches a decision has it
+ * forwarded verbatim, which is how PreToolUse denies. `failOpen` is the event's
+ * own "carry on unchanged" payload — `{ decision: 'allow' }` for PreToolUse,
+ * `{}` for the rest — and is written on the three paths where no decision was
+ * reached: the body throws, the body declines to decide (returns undefined), or
+ * the body outruns the watchdog. This is the fail-open rule (Architecture
+ * principles §1) expressed for a host that fails CLOSED.
  *
- * Never rejects; never returns — it exits the process.
+ * THE BOUND IS WHAT YIELDS, and it is not a detail — a path it does not cover
+ * is a denied tool call. The watchdog is a `setTimeout`, so it fires only when
+ * the event loop gets a turn, and a body that blocks this thread cannot be
+ * preempted from this thread. (`main()` is the first element of the race, so it
+ * is even invoked before the timer is armed: a body that blocks before its
+ * first `await` runs with no timer pending at all.) A block that clears inside
+ * the host's own 10s (`hooks.json`) still emits and still exits 0 — the denial
+ * needs the block to outlast the HOST, not merely the watchdog.
+ *
+ * Two blocking stretches sit on the capture path and compose. `openLocalDatabase`
+ * is synchronous `node:sqlite`, and its `PRAGMA busy_timeout = 2000` is charged
+ * PER contended statement rather than once per open — the migration probe, the
+ * repository prepares and every later write each pay it, and the PreToolUse
+ * body loops a capture per scannable field, so the reachable total is a
+ * multiple of 2s, not 2s. (Three processes share one `aka.db` by design.) §5's
+ * fast-path `scan()` is the other: in-process and synchronous whenever the
+ * effective ruleset carries no pulled or custom regex rule.
+ *
+ * `emit` is outside the race as well, so a full or stalled pipe has no deadline
+ * at all — and on that one path the closing `process.exit(0)` is never reached
+ * either, since `emit` settles only on stdout's completion callback or its
+ * error event. Bounding any of this needs the work moved off the thread — §5's
+ * own argument — not a longer timer here.
+ *
+ * `watchdogMs` is a parameter so those timing properties can be driven in
+ * milliseconds rather than seconds; every shipped hook takes the default.
+ *
+ * Never rejects, and never returns to its caller.
  */
 export async function runHookFailOpen(
   main: () => Promise<unknown>,
   failOpen: unknown,
+  watchdogMs: number = WATCHDOG_MS,
 ): Promise<never> {
   let output: unknown = failOpen;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -163,7 +196,7 @@ export async function runHookFailOpen(
       new Promise<undefined>((resolve) => {
         watchdog = setTimeout(() => {
           resolve(undefined);
-        }, WATCHDOG_MS);
+        }, watchdogMs);
       }),
     ]);
     if (decided !== undefined) output = decided;

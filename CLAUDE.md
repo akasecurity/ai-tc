@@ -73,6 +73,35 @@ _printing an explicit_ `{"decision":"allow"}` on every path — see
 for a new harness, check which convention it uses; assuming this one is what turns a crashing
 hook into a wedged session.
 
+**That guarantee reaches exactly as far as the event loop does, and the gap is not academic.**
+`runHookFailOpen` races the body against a `setTimeout`, so it covers a throw, an undecided
+body, and a body that outruns the watchdog — everything that _yields_. It cannot preempt a body
+that blocks the thread, because nothing on the calling thread can. A block that clears inside
+the host's own 10s still emits and exits 0 — the denial needs the block to outlast the HOST,
+not merely the watchdog. Two blocking stretches sit on the capture path and compose:
+`openLocalDatabase` is synchronous `node:sqlite` whose `PRAGMA busy_timeout = 2000` is charged
+per contended **statement** rather than once per open (so the reachable total is a multiple of
+2s), and §5's fast-path `scan()` is synchronous and in-process whenever the ruleset carries no
+pulled or custom regex rule. `emit` sits outside the race as well, so a stalled pipe has no
+deadline at all — and on that path the closing `process.exit(0)` is never reached either. This is §5's argument arriving at a second boundary — the fix for an unbounded stretch is
+to move it off the thread, never to lengthen the timer — and the consequence here is harsher
+than a missed scan: the condition that blocks (a contended store, a held lock) persists, so the
+denial does too. Do not describe the explicit-allow as unconditional; it is unconditional over
+what yields.
+
+Both halves are covered, and by different suites because they fail differently.
+`plugins/antigravity/test/hooks/fail-open-wrapper.test.ts` drives `runHookFailOpen` itself —
+the throw, the undecided body, the watchdog win, a late rejection that must not surface as an
+unhandled rejection (which would exit non-zero, i.e. deny, by a route the wrapper never writes
+to), and the synchronous-block limit pinned as behaviour rather than prose. It also asserts one
+JSON object, not merely a non-empty stdout: two concatenated objects do not parse, so a second
+write is a deny exactly like silence.
+`plugins/antigravity/test/e2e/fail-open.e2e.test.ts` is the Claude Code sibling's mirror image
+and drives all four built hooks against empty, malformed, truncated, scalar, binary and
+oversized stdin plus an unopenable store. Every assertion there is a **presence** check —
+absence checks are the right shape on a fail-open host and the wrong one here, where `''` is
+the failure being guarded against.
+
 ### 2. Contracts before code
 
 `@akasecurity/schema` is the spine. The Zod schemas in `src/zod/` define every data boundary. Add shapes there before implementing them anywhere else.
@@ -407,7 +436,9 @@ changes. The gaps that exist today:
   every tool call. "Fail-open" there therefore means _always printing an explicit_
   `{"decision":"allow"}`, which is what `runHookFailOpen` in
   `plugins/antigravity/src/hooks/shared.ts` guarantees — including on a throw and on its own
-  watchdog. A silent exit is a bug that would block the user's every tool call.
+  watchdog. A silent exit is a bug that would block the user's every tool call. The guarantee
+  holds over everything that **yields** and cannot reach a body that blocks the thread; §1
+  states that limit and names the two suites that cover each half.
 
 **Cross-cutting rules:**
 

@@ -865,21 +865,49 @@ step index and an optional error. There is no way for a hook to read, rewrite,
 or withhold a tool result on this host. Secrets that appear in command output
 are therefore caught after the fact, not before the model sees them.
 
-**Transcript-derived capture is not yet active.** Because of the two gaps above,
-the only place prompts and tool results exist for AKA to read is the session
-transcript. The background reconcile worker is wired and triggered, but it
-currently recognizes only the record vocabulary of a different harness's
-transcript format — Antigravity's `transcript.jsonl` record shapes are not
-documented, and they have not been verified against a live install. The worker
-degrades safely (it recognizes nothing and records nothing, rather than
-misreading), but until those shapes are confirmed, **prompt capture, tool-result
-capture, and token-usage reporting produce nothing for Antigravity sessions.**
-Do not tell the user their prompts are being recorded.
+**History is scanned; token usage is not.** Because of the two gaps above, the
+only place prompts and tool results exist for AKA to read is the session
+transcript — and the historical scan reads Antigravity's real record shape, so
+secrets in past prompts and model messages **are** found by this wizard's
+calibration and by the backfill. Three things in that same file are still not
+read, and each under-reports rather than mis-reports:
+
+- **Token usage and cost produce nothing.** The transcript carries no token,
+  model or cost field at any depth, so the reconcile worker recognizes nothing
+  and usage reporting stays empty for Antigravity sessions. Do not tell the user
+  their token spend is being tracked here.
+- **Tool-call arguments are not scan input.** A secret sitting in a
+  `run_command` command line or a `write_to_file` body is not found by the
+  _historical_ scan. The live PreToolUse hook does scan those, so this gap is
+  about past sessions, not current ones.
+- **The truncated transcript copy is skipped.** Each conversation stores a
+  complete file and a truncated one; AKA reads the complete file, so nothing is
+  double-counted. A conversation that has only the truncated copy is still
+  scanned, but its longer records were already capped on disk and whatever was
+  cut is not recoverable.
+
+Live prompt capture remains impossible for the reason given above — no event on
+this host hands a hook the prompt text — so what the historical scan finds is
+what had already been written to disk.
 
 **`multi_replace_file_content` is not scanned.** Its arguments nest the edits in
 a container whose shape is not documented, so AKA does not guess at it. Single
 -edit writes (`write_to_file`, `replace_file_content`) and shell commands
 (`run_command`) are scanned.
+
+**A hook that gets stuck denies the tool call, and it will not look like AKA.**
+This host treats a hook that prints nothing as a `deny`, so AKA's hooks always
+print an explicit allow — on a crash, on bad input, and on their own 8-second
+watchdog. That watchdog is a timer, so it cannot interrupt work that blocks the
+thread: if the local store is heavily contended (several AKA processes writing
+at once), a hook can be killed by Antigravity's own 10-second timeout before it
+prints anything, and the user sees "Tool call denied by <hook>". If a user
+reports a denial with no AKA reason attached, that is the likely cause — it is
+not a policy decision and there is nothing wrong with their command. Retrying
+usually succeeds, since the contention that caused it is transient. Do not
+describe AKA's fail-open guarantee to a user as absolute; it covers every hook
+that gets a turn on the event loop, which is everything except a thread that is
+already blocked.
 
 **If the plugin's hooks do not seem to fire at all**, the likely cause is the
 `${PLUGIN_ROOT}` variable in `hooks.json`. It is not documented for Antigravity,

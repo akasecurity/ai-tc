@@ -6,10 +6,9 @@ AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names 
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
 plugin, the Codex CLI plugin, the Antigravity plugin, the browser extension (ChatGPT +
-Claude.ai web chat, bridged
-over Chrome native messaging — no port, no listener), and the `aka` CLI capture agent
-activity into a local SQLite
-store at `~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+Claude.ai web chat, bridged over Chrome native messaging — no port, no listener), and the
+`aka` CLI capture agent activity into a local SQLite store at `~/.aka/data/aka.db`, and the
+web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
 sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
@@ -1009,7 +1008,8 @@ stays green if a branch echoes a _truncated_ value, which is still a live creden
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
-`web-ui/test/helpers/no-echo.ts` and `packages/setup-wizard/test/helpers/no-echo.ts`. A plain
+`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts` and
+`packages/setup-wizard/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -1028,7 +1028,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All five packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All six packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the

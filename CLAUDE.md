@@ -71,13 +71,13 @@ the fault rows prove silence, and only the enforcement rows can prove what the n
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Six places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                        | Mechanism                         | Why                                                       |
-| ------------------------------------------- | --------------------------------- | --------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                   |
-| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart             |
-| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                             |
-| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips    |
-| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth               |
+| Site                                        | Mechanism                         | Why                                                        |
+| ------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`       | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
+| `packages/plugin-sdk/src/provider-codex.ts` | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
+| `cli/src/commands/dashboard.ts`             | inline `eslint-disable-next-line` | spawning the dashboard server                              |
+| `plugins/claude-code/src/backfill.ts`       | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
+| `plugins/claude-code/src/triage/judge.ts`   | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
 | `plugins/codex/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a seventh site means updating this table.

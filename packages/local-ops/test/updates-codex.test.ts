@@ -65,6 +65,22 @@ describe('installedCodexPluginVersions', () => {
       new Map([['aka-codex@ai-tc', '0.1.0']]),
     );
   });
+
+  it('ignores a non-semver version directory rather than reporting it', () => {
+    // compareSemver returns 0 for anything it cannot parse, so a stray
+    // directory reaching the reduce's accumulator could never be displaced —
+    // it was reported as the installed version, and because isNewer against it
+    // is also 0, the update stopped being offered at all.
+    makeCacheDir('ai-tc', 'aka-codex', '0.1.0', '0.9.4', '.tmp-download');
+    expect(installedCodexPluginVersions(codexHome)).toEqual(
+      new Map([['aka-codex@ai-tc', '0.9.4']]),
+    );
+  });
+
+  it('reports nothing when every version directory is unparseable', () => {
+    makeCacheDir('ai-tc', 'aka-codex', '.tmp-download', 'backup');
+    expect(installedCodexPluginVersions(codexHome)).toEqual(new Map());
+  });
 });
 
 describe('installedAgentPluginVersions', () => {

@@ -7,7 +7,7 @@ import type { AvailablePlugin, ComponentStatus, UpdateReport } from '@akasecurit
 
 import { runCapture } from './exec.ts';
 import { AGENT_PLUGINS, pluginRef } from './registry.ts';
-import { compareSemver, isNewer } from './semver.ts';
+import { compareSemver, isNewer, isSemver } from './semver.ts';
 
 // Pure update-report gathering: version discovery over npm + the local Claude Code
 // ledger, with no @akasecurity/plugin-sdk dependency (so the report logic stays unit-
@@ -125,7 +125,14 @@ function activeCodexPluginVersion(dir: string): string | null {
   }
   if (entries.length === 0) return null;
   if (entries.includes('local')) return 'local';
-  return entries.reduce((best, candidate) =>
+  // Only orderable names may enter the reduce. compareSemver returns 0 for
+  // input it cannot parse, so a stray sibling (a partial download, an editor
+  // scratch dir) that reaches the accumulator can never be displaced: it would
+  // be reported as the installed version, and isNewer(latest, junk) is 0 too,
+  // so the update silently stops being offered.
+  const versions = entries.filter(isSemver);
+  if (versions.length === 0) return null;
+  return versions.reduce((best, candidate) =>
     compareSemver(candidate, best) > 0 ? candidate : best,
   );
 }

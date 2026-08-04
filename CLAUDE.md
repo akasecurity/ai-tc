@@ -564,19 +564,22 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
-1. **Ask the user the release type first** — major, minor, patch, or pre-release — before touching
-   any version.
-2. **Bump every affected artifact** accordingly:
+1. **Bump every affected artifact**:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
      and/or the web-ui it ships; the plugin bundles none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
      change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
    - The CLI and plugin normally move together on one shared version line.
-3. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
+2. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
    `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). The current pre-release
-line is `0.0.2-alpha.N` — a pre-release bump increments `N`.
+**The bump is routine mechanics, not a decision to surface.** It happens on every release as a
+matter of course, so do not ask which release type to use, and do not raise "this touches a
+bundled package, so it needs a version bump" as an open question, a follow-up, or a caveat in a
+summary or PR description.
+
+Versions are bumped by hand in a `chore(release):` commit (no changesets). The CLI and the plugin
+currently share the `0.9.x` line.
 
 ### Binary (SEA) channel — `bin-v*`
 

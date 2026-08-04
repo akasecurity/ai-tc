@@ -12,6 +12,9 @@ const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', i
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
+    // Builds dist/ and native-host/ once, in the main process, before any
+    // worker starts — the scan-worker bundle suite drives the built artifacts.
+    globalSetup: ['./test/global-setup.ts'],
     environment: 'node',
   },
 });

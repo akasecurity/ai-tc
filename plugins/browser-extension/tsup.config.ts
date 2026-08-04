@@ -39,6 +39,10 @@ function normalizeSqliteSpecifier(outDir: string): void {
 export default defineConfig({
   entry: {
     host: 'src/native-host/host.ts',
+    // The isolated scan's worker thread. Chrome never launches it — plugin-sdk
+    // starts it by path as a sibling of the running script, so it has to land
+    // in this same outDir beside host.js. See src/native-host/scan-worker.ts.
+    'scan-worker': 'src/native-host/scan-worker.ts',
   },
   format: ['esm'],
   platform: 'node',

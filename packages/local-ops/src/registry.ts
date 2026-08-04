@@ -10,16 +10,25 @@ export interface AgentPlugin {
   name: string;
   sourceTool: SourceTool;
   description: string;
-  // Install/update coordinates — present for agents distributed through the Claude
-  // Code plugin marketplace. `npmPackage` is the registry package the marketplace
-  // resolves (used for `npm view <pkg> version` to learn the latest version);
-  // `pluginName`@`marketplace` is the ref `claude plugin install|update` expects; and
-  // `marketplaceSource` is the GitHub repo to `claude plugin marketplace add` if the
-  // marketplace isn't registered yet. Absent for agents installed by other means.
+  // Install/update coordinates — present for agents distributed through a host
+  // CLI's own plugin marketplace. `npmPackage` is the registry package the
+  // marketplace resolves (used for `npm view <pkg> version` to learn the latest
+  // version); `pluginName`@`marketplace` is the ref `<cliBin> plugin install|
+  // update` expects; and `marketplaceSource` is the GitHub repo to `<cliBin>
+  // plugin marketplace add` if the marketplace isn't registered yet. Absent for
+  // agents installed by other means.
   npmPackage?: string;
   pluginName?: string;
   marketplace?: string;
   marketplaceSource?: string;
+  // Which host CLI binary's plugin manager `apply.ts` should shell out to for
+  // this agent's install/update coordinates. Only meaningful when the
+  // coordinates above are present.
+  cliBin?: 'claude' | 'codex';
+  // What to tell the user when there are no marketplace coordinates to drive.
+  // Without one the CLI can only say "install it from the AKA marketplace",
+  // which is wrong for a host that has no marketplace.
+  installHint?: string;
 }
 
 export const AGENT_PLUGINS: readonly AgentPlugin[] = [
@@ -33,6 +42,48 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
     pluginName: 'ai-tc',
     marketplace: 'akasecurity',
     marketplaceSource: 'akasecurity/marketplace',
+    cliBin: 'claude',
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    sourceTool: 'codex',
+    description:
+      'Hooks Codex CLI sessions to detect + redact sensitive data in prompts, responses, and Bash tool calls.',
+    npmPackage: '@akasecurity/ai-tc-codex',
+    // Distinct from Claude Code's `pluginName: 'ai-tc'` — ids from the two
+    // registry entries flow into ONE ref-keyed `installed` lookup map
+    // (see updates.ts/installedPluginVersions and apply.ts/resolveRef); an
+    // identical ref for both would make either plugin's install ledger
+    // entry satisfy the other's "is it installed" check.
+    pluginName: 'aka-codex',
+    // Codex CLI installs from this repo's own marketplace file; the canonical
+    // akasecurity/marketplace repo currently carries Claude Code only.
+    marketplace: 'ai-tc',
+    marketplaceSource: 'akasecurity/ai-tc',
+    cliBin: 'codex',
+  },
+  {
+    id: 'antigravity',
+    name: 'Antigravity',
+    sourceTool: 'antigravity',
+    description:
+      'Hooks Antigravity CLI sessions to detect sensitive data in shell commands and file writes.',
+    npmPackage: '@akasecurity/ai-tc-antigravity',
+    // NO pluginName/marketplace/cliBin, deliberately. Antigravity has no plugin
+    // marketplace: `agy plugin install` takes a LOCAL DIRECTORY PATH, not a
+    // `<plugin>@<marketplace>` ref, so the generic cli-plugin-manager binding
+    // the other two entries use would emit a command `agy` does not accept.
+    // Leaving the coordinates absent is the registry's documented "installed by
+    // other means" case — buildUpdateReport skips an entry with no ref, so this
+    // agent is listed and joined to its rows by `sourceTool` without claiming an
+    // update path that does not exist. Install is documented in
+    // plugins/antigravity/skills/setup/SKILL.md.
+    installHint:
+      'Antigravity installs plugins from a local directory rather than a marketplace:\n' +
+      '  npm pack @akasecurity/ai-tc-antigravity && tar -xzf akasecurity-ai-tc-antigravity-*.tgz\n' +
+      '  agy plugin install ./package\n' +
+      'Then run `aka init` to set up the local store.',
   },
 ];
 

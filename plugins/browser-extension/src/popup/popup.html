@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AI Traffic Control</title>
+    <style>
+      body {
+        width: 280px;
+        margin: 0;
+        padding: 16px;
+        font:
+          13px/1.4 system-ui,
+          sans-serif;
+        color: #1f2937;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 12px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #9ca3af;
+        flex: none;
+      }
+      .dot.ok {
+        background: #16a34a;
+      }
+      .dot.error {
+        background: #dc2626;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: white;
+        cursor: pointer;
+        font: inherit;
+      }
+      button:hover {
+        background: #f3f4f6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AI Traffic Control</h1>
+    <div class="row">
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text">Checking native host…</span>
+    </div>
+    <div id="findings-row" class="row muted" hidden>
+      <span id="findings-text"></span>
+    </div>
+    <button id="open-dashboard">Open dashboard</button>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -39,6 +39,7 @@ export {
 } from './dropdown-menu.tsx';
 export { Input } from './input.tsx';
 export { cn } from './lib/cn.ts';
+export { LoadMore, LoadMoreButton, LoadMoreStatus } from './load-more.tsx';
 export { Meter, type MeterProps } from './meter.tsx';
 export {
   Popover,

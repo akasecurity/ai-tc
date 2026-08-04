@@ -9,6 +9,7 @@ function views(map: Record<string, string | null>): (pkg: string) => string | nu
 
 const CLI = '@akasecurity/cli';
 const PLUGIN = '@akasecurity/ai-tc-claude-code';
+const CODEX_PLUGIN = '@akasecurity/ai-tc-codex';
 const REF = 'ai-tc@akasecurity';
 
 describe('gatherReport', () => {
@@ -29,7 +30,10 @@ describe('gatherReport', () => {
       installed: new Map([[REF, '0.0.2']]),
       cliInstalled: '0.0.2',
     });
-    expect(report.availablePlugins).toHaveLength(0);
+    // Codex CLI is a separate, uninstalled registry entry (a distinct ref —
+    // see registry.ts's pluginName comment) so it still surfaces as available;
+    // only claude-code, which IS in `installed`, must be excluded.
+    expect(report.availablePlugins.map((p) => p.id)).toEqual(['codex']);
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
     expect(plugin?.installed).toBe('0.0.2');
     expect(plugin?.updateAvailable).toBe(true);
@@ -37,13 +41,16 @@ describe('gatherReport', () => {
 
   it('surfaces an available plugin the user has not installed', () => {
     const report = gatherReport({
-      viewVersion: views({ [CLI]: '0.0.2', [PLUGIN]: '0.0.3' }),
+      viewVersion: views({ [CLI]: '0.0.2', [PLUGIN]: '0.0.3', [CODEX_PLUGIN]: '0.1.0' }),
       installed: new Map(), // nothing installed
       cliInstalled: '0.0.2',
     });
     expect(report.statuses.map((s) => s.id)).toEqual(['cli']);
+    // Every registered agent with no installed version surfaces here — both
+    // Claude Code and Codex CLI (see registry.ts's AGENT_PLUGINS).
     expect(report.availablePlugins).toEqual([
       { id: 'claude-code', name: 'Claude Code', latest: '0.0.3' },
+      { id: 'codex', name: 'Codex CLI', latest: '0.1.0' },
     ]);
   });
 

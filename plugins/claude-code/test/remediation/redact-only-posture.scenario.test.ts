@@ -16,9 +16,9 @@ import { readFileSync } from 'node:fs';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { type BuiltinPolicyId, CalibrationFrame } from '@akasecurity/schema';
+import { renderRedactionConfirmation } from '@akasecurity/setup-wizard';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { renderRedactionConfirmation } from '../../src/remediation/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { planPathFromPreview, SetupJourney, SURFACED_KEY } from '../journey/harness.ts';
 

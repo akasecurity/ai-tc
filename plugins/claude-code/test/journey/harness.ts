@@ -46,11 +46,11 @@ import type {
   RemediationEntryContext,
   RemediationOption,
 } from '@akasecurity/schema';
+import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 
 import { frameCalibration } from '../../src/calibration.ts';
 import { readRegisteredCommands } from '../../src/command-registry.ts';
 import { transcriptsDir } from '../../src/history/transcripts.ts';
-import { presentBatchedRemediation } from '../../src/remediation/chain.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { renderRemediationDecision } from '../../src/remediation/render.ts';
 import { frameJsonBlock } from '../../src/setup-frame-json.ts';

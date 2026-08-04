@@ -1,0 +1,194 @@
+/**
+ * Onboarding writer invoked by the aka-setup skill — the only entry that
+ * mutates settings.json and the policies store. The wizard (skills/setup/SKILL.md)
+ * collects the answers conversationally, then runs:
+ *
+ *   node scripts/onboard.js --policy <redact|warn> --historical <full|session-only> \
+ *     --posture <json> --floor
+ *
+ * Each flag is optional and additive: omit one and its current value (or the
+ * default) is kept, so a later wizard step is one more flag with no rewrite.
+ * Validation lives in @akasecurity/schema (SimpleDetectionPolicy/HistoricalAccess);
+ * persistence + the onboardedAt stamp live in the SDK's applyOnboarding. Pure
+ * adapter glue.
+ *
+ * `--posture <json>` writes the wizard's per-category model calibration
+ * (validated by @akasecurity/setup-wizard's parsePosture); `--floor` writes the
+ * severity-floor fallback instead (`severityFloorPosture()`) when the backfill
+ * was too thin to calibrate from. Both go straight to the policies store via
+ * applyCategoryPosture, separate from the settings.json answers above.
+ * `--posture` overwrites existing category rows (confirmed calibration) while
+ * `--floor` only fills gaps; `--recalibrate` forces an overwrite on the floor
+ * write. `--floor` and `--posture` are mutually exclusive.
+ */
+import { capWarnEraEnforcementOnce, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  applyCategoryPosture,
+  applyOnboarding,
+  loadConfig,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
+import type { WorkspaceSettings } from '@akasecurity/schema';
+import {
+  HistoricalAccess,
+  MODEL_JUDGE_PAYLOAD_VERSION,
+  SimpleDetectionPolicy,
+} from '@akasecurity/schema';
+import { parsePosture } from '@akasecurity/setup-wizard';
+
+import { show } from './present.ts';
+import { renderCategoriesTuned } from './render.ts';
+
+// Pull `--flag value` and `--flag=value` pairs out of argv. Unknown flags and
+// positionals are ignored — the wizard only ever passes the ones it knows.
+function parseFlags(argv: string[]): Map<string, string> {
+  const flags = new Map<string, string>();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!arg?.startsWith('--')) continue;
+    const eq = arg.indexOf('=');
+    if (eq !== -1) {
+      flags.set(arg.slice(2, eq), arg.slice(eq + 1));
+    } else {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags.set(arg.slice(2), next);
+        i++;
+      }
+    }
+  }
+  return flags;
+}
+
+function fail(message: string): never {
+  process.stdout.write(`AKA setup failed: ${message}\n`);
+  process.exit(1);
+}
+
+const flags = parseFlags(process.argv.slice(2));
+const answers: Partial<WorkspaceSettings> = {};
+
+const rawPolicy = flags.get('policy');
+if (rawPolicy !== undefined) {
+  const parsed = SimpleDetectionPolicy.safeParse(rawPolicy);
+  if (!parsed.success) fail(`invalid --policy "${rawPolicy}" (expected redact or warn)`);
+  else answers.policy = parsed.data;
+}
+
+const rawHistorical = flags.get('historical');
+if (rawHistorical !== undefined) {
+  const parsed = HistoricalAccess.safeParse(rawHistorical);
+  if (!parsed.success)
+    fail(`invalid --historical "${rawHistorical}" (expected full or session-only)`);
+  else answers.historicalAccess = parsed.data;
+}
+
+// The distinct consent for sending findings to the model API (separate from
+// --historical, which only governs reading rollouts). A boolean flag: its
+// presence records consent against the current payload-shape version.
+if (process.argv.includes('--model-judge-consent')) {
+  answers.modelJudgeConsent = {
+    acknowledgedAt: new Date().toISOString(),
+    payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+  };
+}
+
+const rawPosture = flags.get('posture');
+const useFloor = process.argv.includes('--floor');
+const recalibrate = process.argv.includes('--recalibrate');
+
+// --floor (the severity-floor fallback) and --posture (a confirmed calibration)
+// are two different writes for the same store — passing both is ambiguous, so
+// reject it before touching anything.
+if (useFloor && rawPosture !== undefined) fail('--floor and --posture are mutually exclusive');
+
+if (Object.keys(answers).length === 0 && rawPosture === undefined && !useFloor) {
+  fail(
+    'nothing to save — pass --policy, --historical, --model-judge-consent, --posture and/or --floor',
+  );
+}
+
+// Recording the model-judge consent is not an onboarding-posture answer: it
+// grants an egress, and on the wizard's Yes path this write's confirmation is
+// the only signal the grant registered. So it gets its own line rather than the
+// historical-scan one, and a consent-only write does not run the posture pass
+// below — acknowledging an egress must never be able to change enforcement.
+const wroteConsent = answers.modelJudgeConsent !== undefined;
+const wrotePosture = answers.policy !== undefined || answers.historicalAccess !== undefined;
+
+if (Object.keys(answers).length > 0) {
+  try {
+    const settings = applyOnboarding(answers);
+    if (wrotePosture) {
+      process.stdout.write(
+        show("Got it — I'll look over Antigravity's recent work to tune things."),
+      );
+    }
+    if (wroteConsent) {
+      process.stdout.write(
+        show("Noted — I'll send findings to the model to rate them. You can revoke that anytime."),
+      );
+    }
+    // Caps any existing block/redact category rows to warn once when this
+    // store's chosen handling is 'warn'. Failure here does not fail the
+    // settings write above.
+    try {
+      const dataDir = loadConfig().dataDir;
+      const db = openLocalDatabase(dataDir);
+      try {
+        const { capped } = capWarnEraEnforcementOnce(db, settings.policy, dataDir);
+        if (capped > 0) {
+          process.stdout.write(
+            show(
+              `I eased ${String(capped)} detection level${capped === 1 ? '' : 's'} back to ` +
+                `"warn" to match the new defaults — you can raise any of them again in this setup.`,
+            ),
+          );
+        }
+      } finally {
+        db.close();
+      }
+    } catch {
+      // Best-effort: see comment above.
+    }
+  } catch (err) {
+    fail(err instanceof Error ? err.message : 'could not save your settings');
+  }
+}
+
+// The wizard's per-category posture (its model calibration, or the
+// severity-floor fallback on a too-thin backfill) — written straight to the
+// policies store, separate from the settings.json answers above.
+if (rawPosture !== undefined || useFloor) {
+  try {
+    let posture;
+    if (useFloor) posture = severityFloorPosture();
+    else if (rawPosture !== undefined) posture = parsePosture(rawPosture);
+    else fail('--posture requires a JSON value');
+    // --posture is a user-confirmed calibration, so it overwrites any existing
+    // category rows; --floor is the fallback and only fills gaps (never
+    // downgrades a calibrated posture) unless --recalibrate forces an overwrite.
+    const mode = rawPosture !== undefined || recalibrate ? 'overwrite' : 'fill-gaps';
+    const db = openLocalDatabase(loadConfig().dataDir);
+    try {
+      applyCategoryPosture(posture, db.policies, mode);
+      // The applying confirmation — the "tuned" segment reports the
+      // categories the applied posture covers (the 8-pack matrix, or the
+      // severity-floor fallback), never a literal.
+      const categoryCount = Object.keys(posture).length;
+      process.stdout.write(
+        show(renderCategoriesTuned(categoryCount) + (useFloor ? ' — safe defaults' : '')),
+      );
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    fail(err instanceof Error ? err.message : 'could not save per-category posture');
+  }
+}
+
+// Explicit success exit, matching the other adapter entry scripts (query.js,
+// the hooks) which hard-exit so node:sqlite handles can't keep the process
+// alive. Reaching here means the write above succeeded — every failure path
+// goes through fail() → exit(1).
+process.exit(0);

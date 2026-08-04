@@ -2,6 +2,8 @@ export type { InventoryContext, LocalDatabase, ResolvedInventory } from './datab
 export { openLocalDatabase } from './database.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
+export type { FileLockFailure, FileLockOptions } from './file-lock.ts';
+export { FileLockError, withFileLock } from './file-lock.ts';
 export type { FindingKeyInput } from './finding-key.ts';
 export { computeFindingKey } from './finding-key.ts';
 export type { FingerprintKey } from './fingerprint.ts';
@@ -103,6 +105,7 @@ export {
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
+export type { OnboardingAnswers } from './settings.ts';
 export { applyOnboarding, readWorkspaceSettings, SETTINGS_FILENAME } from './settings.ts';
 export {
   base32Decode,

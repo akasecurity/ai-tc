@@ -43,9 +43,9 @@ import {
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, MaskedSecretFinding } from '@akasecurity/schema';
 import { isVaultConsentValid } from '@akasecurity/schema';
+import { deriveProvider } from '@akasecurity/setup-wizard';
 
 import { transcriptsDir } from '../history/transcripts.ts';
-import { deriveProvider } from '../triage/surfaced-secrets.ts';
 import {
   realPathOrNull,
   type RedactionScope,

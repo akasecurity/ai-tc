@@ -41,14 +41,29 @@ const ACTION_TO_KIND: Partial<Record<string, EnforcementActionKind>> = {
 };
 const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacted', 'warned'];
 
-// Per-provider scan coverage. Initial release scans Claude Code only — a curated
-// business fact (constant across the range, not a measured per-window metric),
-// following the shared contract so read surfaces render identically. Order
-// is the dashboard display order.
+// Per-provider scan coverage — a curated business fact (constant across the
+// range, not a measured per-window metric), following the shared contract so
+// read surfaces render identically. Order is the dashboard display order.
+// Codex sits below 100 because the Codex CLI does not yet fire PreToolUse/
+// PostToolUse for apply_patch (file-write) calls. Covered: prompts, assistant
+// responses, Bash command text, worktree scans. NOT covered: file-write
+// content, in either direction — the history backfill does not close this gap,
+// because it scans conversation messages only and the tool-call reconciler
+// records a write's changed paths and byte sizes, never its bytes (see
+// plugins/codex/skills/setup/SKILL.md and
+// plugins/codex/src/history/transcripts.ts).
+// Antigravity sits lower still: its hook contract has no prompt-bearing event
+// (PreInvocation carries no prompt text) and no field for rewriting tool args
+// or withholding a tool result, so a redact policy can only escalate to a deny
+// and PostToolUse is record-only. Tool calls are covered across every tool in
+// the CLI; the IDE fires no hooks at all (see
+// plugins/antigravity/skills/setup/SKILL.md).
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
-  { provider: 'codex', coverage: 0, supported: false },
+  { provider: 'codex', coverage: 80, supported: true },
+  { provider: 'antigravity', coverage: 60, supported: true },
+  { provider: 'claudeai', coverage: 0, supported: false },
   { provider: 'chatgpt', coverage: 0, supported: false },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },

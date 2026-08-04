@@ -8,6 +8,7 @@ import {
   type MaskedSecretFinding,
   severityFloorPosture,
 } from '@akasecurity/schema';
+import { validateTightenOnly } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -24,7 +25,6 @@ import {
   type RepoFactFixture,
 } from '../../eval/prompt-contract.ts';
 import { frameCalibration } from '../../src/calibration.ts';
-import { validateTightenOnly } from '../../src/posture-reasoning.ts';
 import { frameJsonBlock } from '../../src/setup-frame-json.ts';
 
 // A calibration frame built through the real composition seam (frameCalibration),

@@ -71,6 +71,8 @@ export function ActivityClient({
   const linkHref = useCallback<BuildActivityLinkHref>(
     (link, targetId) => {
       if (link === 'detections') {
+        // The session scope is exact, so it stands alone — no range or harness
+        // carry, which would only narrow a list already pinned to one session.
         const params = new URLSearchParams();
         if (sessionId) params.set('session', sessionId);
         if (targetId) params.set('finding', targetId);
@@ -157,10 +159,20 @@ export function ActivityClient({
           linkHref={linkHref}
           isLoading={false}
           error={null}
-          // Tool chips deep-link to the findings page scoped to that tool —
-          // `q` matches the instance location label ("via Bash") of findings
-          // captured from that tool's input/output.
-          toolHref={(toolName) => `/findings?q=${encodeURIComponent(`via ${toolName}`)}`}
+          // Tool chips deep-link to the flat findings view filtered to that
+          // tool. `?tool=` is a real filter on the capturing event's recorded
+          // tool name, where the previous `?q=via Bash` was a text match
+          // against a rendered label — it matched any finding whose search
+          // text happened to contain the phrase, and missed nothing only by
+          // luck. The session scope rides along so the link stays about this
+          // session.
+          toolHref={(toolName) => {
+            const params = new URLSearchParams();
+            params.set('view', 'flat');
+            if (sessionId) params.set('session', sessionId);
+            params.append('tool', toolName);
+            return `/findings?${params.toString()}`;
+          }}
         />
       </Card>
     </div>

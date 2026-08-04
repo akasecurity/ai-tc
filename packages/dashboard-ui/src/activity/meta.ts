@@ -28,9 +28,13 @@ export const HARNESS_KIND: Record<Harness, string> = {
   cursor: 'IDE',
   copilot: 'IDE',
   codex: 'CLI agent',
+  // Ships as both the `agy` CLI and an IDE; the CLI is the surface this
+  // repo's plugin instruments (the IDE fires no plugin hooks).
+  antigravity: 'CLI agent',
   windsurf: 'IDE',
   claudedesktop: 'Desktop app',
   chatgpt: 'Web app',
+  claudeai: 'Web app',
   api: 'API',
 };
 
@@ -40,9 +44,11 @@ export const HARNESS_IDS: Harness[] = [
   'cursor',
   'copilot',
   'codex',
+  'antigravity',
   'windsurf',
   'claudedesktop',
   'chatgpt',
+  'claudeai',
   'api',
 ];
 

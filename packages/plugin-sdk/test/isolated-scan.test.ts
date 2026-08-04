@@ -15,12 +15,20 @@
  *     exists for. Measuring a rule means driving its own pattern into
  *     backtracking, so the measurement is an unbounded run of an untrusted
  *     pattern too — and it runs first, before any scan.
+ *
+ * Both of those end at what the parent reports. The last block is about the
+ * kill that ends the work, and is the only part of this file that watches the
+ * thread rather than the answer.
  */
 import { checkRuleTiming } from '@akasecurity/detections';
-import type { Rule } from '@akasecurity/schema';
+import type { Rule, RuleProbeVerdict } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createIsolatedScanner } from '../src/isolated-scan.ts';
+import type { RuleProbeGateway } from '../src/rule-quarantine.ts';
+import { filterUnsafeRules } from '../src/rule-quarantine.ts';
+import { spinCounters } from './helpers/spin-counters.ts';
+import type { SpinningWorkerData } from './helpers/spinning-scan-worker.ts';
 import { countWorkerStarts } from './helpers/worker-starts.ts';
 
 // The battery derives its probes from a pattern's own literal prefix and
@@ -79,6 +87,58 @@ const CRASHING_WORKER = new URL('./helpers/crashing-scan-worker.ts', import.meta
 const NEVER_READY_WORKER = new URL('./helpers/never-ready-scan-worker.ts', import.meta.url);
 const EXITING_WORKER = new URL('./helpers/exiting-scan-worker.ts', import.meta.url);
 const LATE_PROGRESS_WORKER = new URL('./helpers/late-progress-scan-worker.ts', import.meta.url);
+const SPINNING_WORKER = new URL('./helpers/spinning-scan-worker.ts', import.meta.url);
+
+// How long the spinning fixture executes before it answers a job.
+const SPIN_MS = 1_500;
+
+// The deadline the kill cases run under. Short enough that it always lands
+// while the fixture is still spinning; long enough that a job posted the
+// instant the thread said `ready` is always delivered first, so a case that
+// counts threads counts every one of them.
+const KILL_BUDGET_MS = 600;
+
+// How long a kill is given to land before the first heartbeat reading. Only an
+// upper bound on the terminator: it reaches a tight loop at the next back-edge,
+// which is microseconds, and reading too early would be the one way these cases
+// could fail on a machine that is merely slow.
+const KILL_SETTLE_MS = 400;
+
+// How long the counters are watched afterwards.
+const KILL_OBSERVE_MS = 2_500;
+
+// The pre-flight's own pass budget must not be what ends the pass below. A rule
+// it skips for lack of time is never measured, so it starts no thread — and the
+// case would then assert its property over fewer threads than it meant to,
+// silently, and most easily on the slow runner where the property matters most.
+const PRE_FLIGHT_PASS_MS = Number.POSITIVE_INFINITY;
+
+// A kill case pays a worker START (granted START_MS above) per thread it kills,
+// the budget it kills on, and then the fixed observation window — three times
+// over for the pre-flight case. Sized above that sum so a case that runs long
+// fails on the assertion that names what went wrong, not on the package's 20s
+// default, which just says the test timed out.
+const KILL_CASE_TIMEOUT_MS = 120_000;
+
+const wait = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+function fakeProbeCache(): RuleProbeGateway {
+  const store = new Map<string, { verdict: RuleProbeVerdict; worstProbeMs: number }>();
+  return {
+    getRuleProbeVerdict: (key) => Promise.resolve(store.get(key)),
+    setRuleProbeVerdict: (key, verdict, worstProbeMs) => {
+      store.set(key, { verdict, worstProbeMs });
+      return Promise.resolve();
+    },
+  };
+}
+
+function spinningWorkerData(counters: SharedArrayBuffer): SpinningWorkerData {
+  return { verified: [], unverified: [], counters, spinMs: SPIN_MS };
+}
 
 describe('the residual risk the probe battery leaves open', () => {
   it('clears the timing pre-flight and still never returns on the right text', () => {
@@ -378,6 +438,158 @@ describe('createIsolatedScanner.onWorkerStart', () => {
     expect((await scanner.probe(BENIGN)).status).toBe('unavailable');
     expect(starts.count()).toBe(0);
   });
+});
+
+/**
+ * Everything above asserts what the PARENT does when a deadline fires: the
+ * outcome it returns, the rule it names, the thread it starts next. None of
+ * that needs the worker to have actually stopped — replace `terminate()` in
+ * `kill()` with a no-op and every one of those cases still passes, because a
+ * rule that never returns reports nothing either way.
+ *
+ * `terminate()` is the whole reason a worker was the answer, though: it reaches
+ * V8's execution terminator and interrupts a spinning regex, which nothing on
+ * the calling thread can do. Without it the deadline is bookkeeping — the
+ * caller is told the scan ended while a thread keeps burning a core on the
+ * pattern that hung it.
+ *
+ * So these cases watch the thread instead of the answer. The fixture spins for
+ * a fixed stretch and then reports completion through shared memory, and a
+ * killed thread must show neither a heartbeat nor a completion after the fact.
+ *
+ * NOTHING HERE ASSERTS AN ELAPSED TIME. The two readings are exhaustive over a
+ * thread that was not stopped: at any instant it is either still executing (the
+ * heartbeat moves) or has finished (the completion count moves), so a runner
+ * slow enough to blunt one signal sharpens the other. The wall-clock constants
+ * are waits, and waiting longer only ever makes these cases safer.
+ */
+describe('the kill behind the deadline', () => {
+  it(
+    'lets the fixture finish when no deadline fires, so the counters mean something',
+    async () => {
+      // The control for both cases below. A `completed` count that can never
+      // reach 1 asserts nothing when it reads 0 — a mistyped slot index, a
+      // buffer that never crossed into the thread, or a fixture that answers
+      // without spinning would all look exactly like a successful kill.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        // Far above the spin: this case is about the fixture, not the bound.
+        budgetMs: SPIN_MS * 10,
+        workerUrl: SPINNING_WORKER,
+      });
+      try {
+        expect((await scanner.scan('anything')).status).toBe('ok');
+        expect(counters.entered()).toBe(1);
+        expect(counters.heartbeat()).toBeGreaterThan(0);
+        expect(counters.completed()).toBe(1);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'stops the scan thread, so the work it was doing never finishes',
+    async () => {
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        budgetMs: KILL_BUDGET_MS,
+        workerUrl: SPINNING_WORKER,
+      });
+      try {
+        expect((await scanner.scan('anything')).status).toBe('timeout');
+        // The thread reached the work — otherwise the readings below would be
+        // about a job that never started.
+        expect(counters.entered()).toBe(1);
+
+        await wait(KILL_SETTLE_MS);
+        const beat = counters.heartbeat();
+        await wait(KILL_OBSERVE_MS);
+
+        // It executed no further instruction…
+        expect(counters.heartbeat()).toBe(beat);
+        // …and so the work it was in the middle of never finished.
+        expect(counters.completed()).toBe(0);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'lets the pre-flight finish a measurement it did not have to kill',
+    async () => {
+      // The pre-flight's own control, and the pair to the case below: same
+      // driver, same fixture, same rule shape — only the budget differs. A
+      // measurement that comes back keeps the rule and completes the spin.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        probeBudgetMs: SPIN_MS * 10,
+        workerUrl: SPINNING_WORKER,
+      });
+      const rule = regexRule('pulled/measurable', 'AAAA[0-9]{4}');
+      try {
+        const kept = await filterUnsafeRules([rule], fakeProbeCache(), {
+          prober: scanner,
+          passBudgetMs: PRE_FLIGHT_PASS_MS,
+        });
+        expect(kept).toEqual([rule]);
+        expect(counters.completed()).toBe(1);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'stops every thread the pre-flight kills, not just the last one',
+    async () => {
+      // The scan path retires isolation after its first failure, so it can leak
+      // at most one thread per scanner. The pre-flight cannot: it warns and
+      // KEEPS ITERATING, so a pack whose rules each hang the battery gets a
+      // thread apiece, all of them inside one pass. That is the path where a
+      // missing kill costs more than one core, and it is reached before any
+      // scan runs.
+      const counters = spinCounters();
+      const scanner = isolated(spinningWorkerData(counters.buffer), {
+        probeBudgetMs: KILL_BUDGET_MS,
+        workerUrl: SPINNING_WORKER,
+      });
+      const rules = [
+        regexRule('pulled/one', 'AAAA[0-9]{4}'),
+        regexRule('pulled/two', 'BBBB[0-9]{4}'),
+        regexRule('pulled/three', 'CCCC[0-9]{4}'),
+      ];
+      try {
+        const kept = await filterUnsafeRules(rules, fakeProbeCache(), {
+          prober: scanner,
+          passBudgetMs: PRE_FLIGHT_PASS_MS,
+        });
+
+        // Every rule was measured and every measurement had to be killed…
+        expect(kept).toEqual([]);
+        // …on a thread of its own, which is what makes this more than a repeat
+        // of the scan case: the count is what the pack decides, not what the
+        // scanner allows.
+        expect(counters.entered()).toBe(rules.length);
+
+        await wait(KILL_SETTLE_MS);
+        const beat = counters.heartbeat();
+        await wait(KILL_OBSERVE_MS);
+
+        expect(counters.heartbeat()).toBe(beat);
+        // Zero across all three, not "the last one stopped": a thread killed
+        // early in the pass has the rest of the pass to finish its spin in.
+        expect(counters.completed()).toBe(0);
+      } finally {
+        await scanner.close();
+      }
+    },
+    KILL_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('createIsolatedScanner failure reporting', () => {

@@ -602,19 +602,25 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
-1. **Ask the user the release type first** — major, minor, patch, or pre-release — before touching
-   any version.
-2. **Bump every affected artifact** accordingly:
+1. **Bump every affected artifact**:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
      and/or the web-ui it ships; the plugin bundles none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
      change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
    - The CLI and plugin normally move together on one shared version line.
-3. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
+2. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
    `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). The current pre-release
-line is `0.0.2-alpha.N` — a pre-release bump increments `N`.
+**The bump is not a decision to surface during feature work, because it is not made there.**
+Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
+— not per change. So do not ask which release type to use, and do not raise "this touches a
+bundled package, so it needs a version bump" as an open question, a follow-up, or a caveat in a
+summary or PR description. The steps above are what a **release** does: which artifacts move is
+derivable from the bundling rules, and how far they move is settled at release time by whoever
+cuts it.
+
+Versions are bumped by hand in a `chore(release):` commit (no changesets). The CLI and the plugin
+currently share the `0.9.x` line.
 
 ### Binary (SEA) channel — `bin-v*`
 
@@ -765,12 +771,50 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
   any injector that has to be undone before the tree can be removed, and the store itself
   to any that needs no live connection.
-  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
-  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
-  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+  `fillStore` is in the same file and reaches **most** of what the other three do, but not
+  all of it: the page cap is connection-scoped, so it bounds only the handle it is given.
+  A repository constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`,
+  the `activity.test.ts` pattern), and so does `applyMigrations` — but only with a cap
+  sized against a real migration: the default headroom on an empty file stops the ledger's
+  own `CREATE TABLE`, so the applier's loop never runs and every claim about a partial
+  migration then holds vacuously. The blanket fail-open sites in `database.ts`
+  (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`, and
+  `reconcileWorktreeProjects`, which reaches `withTransaction` directly) stay out of
+  reach: they are closures over the connection `openLocalDatabase` opened, and
+  `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault at those
+  waits on a raw-handle seam.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+- `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
+  [Testing](#testing) on why the try/catch form asserts on the test's own guard).
+- `captureEvent()` / `captureFinding()` — the minimal `recordCapture` pair. Both vary
+  their identity per call, which is load-bearing: `contentHash` feeds the event's
+  content-addressed id and `maskedMatch` is half the finding-level session dedup key, so a
+  shared constant makes a second capture land as zero rows **by design** — and every "the
+  event is gone" assertion in `test/faults/` would then pass whether or not the fault did
+  anything.
+
+`packages/persistence/test/faults/` is where those injectors are pointed at product code —
+one file per fault (corrupt is covered in `database.test.ts`, which predates the
+directory). A fault case documents the **actual** behaviour rather than the desirable one:
+no fail-open site inspects a SQLite result code, so contention, a full disk, a read-only
+file and a caller bug all arrive there as the same discarded `false`, and a dropped event
+leaves no counter, marker or log line behind. (Scoped to those sites deliberately: the
+package reads `errcode` in two places — `internal/sqlite-errors.ts` for
+`SQLITE_CONSTRAINT_UNIQUE`, and `fingerprint.ts`, which separates "no such table" from a
+damaged or locked store. Neither is a fail-open path.) Write that down and assert it; do not assert a signal the product does not
+emit. Two behaviours there are the opposite of what the fault's name suggests and are
+pinned so nobody "fixes" them: a store chmod'd read-only under a **live** handle keeps
+being written (a descriptor carries the permission it was opened with, so only the next
+open is refused), and a read-only store's refusal lands **inside the migration applier**
+rather than on the first `PRAGMA journal_mode = WAL`, which succeeds and mints the
+sidecars. A tightened directory the owner still owns is a third case, and the distinction
+is the point: `ensureDataDirSync` widens the **data dir** back to 0700, so a 0500 there
+never reaches SQLite — but a 0000 `~/.aka` is **reported**, as `EACCES` out of `mkdir`,
+long before any chmod runs. `aka init` repairs a 0000 home because it calls
+`ensureDataDirSync` on the home itself; `openLocalDatabase` does not, and the tests in
+this directory assert the refusal.
 
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:

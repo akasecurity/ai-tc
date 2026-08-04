@@ -14,10 +14,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
 import { cachePath, writeCache } from '@akasecurity/local-ops';
+import { keysDir } from '@akasecurity/persistence';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -721,5 +722,175 @@ describe('runInit on a symlinked home', () => {
     expect(existsSync(join(victim, 'data', 'aka.db'))).toBe(true);
     expect(statSync(join(victim, 'data')).mode & 0o777).toBe(0o700);
     expect(statSync(join(victim, 'settings', 'settings.json')).mode & 0o777).toBe(0o600);
+  });
+});
+
+// `~/.aka` is not always a directory this process can create. A user can have a
+// file sitting at that path, or a home tightened so `aka init` cannot write into
+// it at all. Neither is exotic — both are what a hostile or merely unusual home
+// looks like — and `aka init` is the one surface that has to say something a
+// user can act on, because unlike a hook it is not allowed to fail open and
+// carry on silently.
+describe('runInit on a ~/.aka it cannot create', () => {
+  // The three directories init creates through, each occupied by a regular
+  // file. Driven per path rather than only at the base: `mkdir` reports EEXIST
+  // at the base but ENOTDIR deeper down, naming the component that is NOT the
+  // problem, so the deeper paths are where a raw error misleads most.
+  for (const at of ['base', 'settings', 'data'] as const) {
+    it(`refuses with an actionable error when ${at} is a regular file`, async () => {
+      const home = join(dir, 'filehome');
+      const occupied = at === 'base' ? home : at === 'settings' ? settingsDir(home) : dataDir(home);
+      if (at !== 'base') mkdirSync(home, { recursive: true });
+      writeFileSync(occupied, 'someone else owns this path\n');
+
+      const err = await runInit(['--home', home]).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+
+      // Named before the absence check below, so this is the refusal that was
+      // reached and not merely some error.
+      expect(err).toBeDefined();
+      expect(err?.message).toContain(occupied);
+      expect(err?.message).toContain('exists but is not a directory');
+      // What to do about it. A message that only reports the state leaves a
+      // user to guess whether AKA will fix it on the next run.
+      expect(err?.message).toContain('move that file aside');
+      // The raw failure this replaces read as "already done" rather than
+      // "something else is there", which is the whole reason for the guard.
+      // Only EEXIST is asserted: `recursive: true` fails at the occupied
+      // component itself, so runInit never produces ENOTDIR here and an
+      // absence check for it would be green whatever the guard did.
+      expect(err?.message).not.toContain('EEXIST');
+    });
+  }
+
+  it('leaves the occupying file untouched, so moving it aside is safe advice', async () => {
+    const home = join(dir, 'filehome-intact');
+    const original = 'someone else owns this path\n';
+    writeFileSync(home, original);
+
+    const err = await runInit(['--home', home]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    // Named, so the untouched file below is evidence about THIS refusal. The
+    // raw mkdir failure this guard replaces also leaves the file alone, so
+    // without naming which error was reached the case passes identically with
+    // the guard deleted and proves nothing about it.
+    expect(err?.message).toContain('exists but is not a directory');
+    expect(readFileSync(home, 'utf8')).toBe(original);
+  });
+
+  it('names the link and its target when a store path is a symlink to a file', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    // The guard stats THROUGH a link on purpose, so this is the case that
+    // decision creates. Telling the user to "move that file aside" of a symlink
+    // points them at the target — someone else's real file — and deleting it is
+    // both the wrong repair and irreversible. The link is what has to go.
+    const target = join(dir, 'someone-elses-file');
+    writeFileSync(target, 'not ours\n');
+    const home = join(dir, 'linked-to-a-file');
+    symlinkSync(target, home);
+
+    const err = await runInit(['--home', home]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain(home);
+    expect(err?.message).toContain('is a symlink to');
+    expect(err?.message).toContain(target);
+    expect(err?.message).toContain('remove the link');
+    // Calling a symlink a file is the specific wording this case exists to
+    // keep out.
+    expect(err?.message).not.toContain('move that file aside');
+    // And the target is still there to be pointed at.
+    expect(readFileSync(target, 'utf8')).toBe('not ours\n');
+  });
+
+  it('initializes once the file is moved aside', async () => {
+    // The positive control: the refusal is the occupied path and nothing
+    // permanent about this home.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const home = join(dir, 'filehome-cleared');
+    writeFileSync(home, 'someone else owns this path\n');
+    const refused = await runInit(['--home', home]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    // Named, not discarded. Swallowing this error makes the case survive
+    // deleting the guard entirely — it would then be asserting only that
+    // `aka init` works on an empty directory.
+    expect(refused?.message).toContain('exists but is not a directory');
+
+    rmSync(home, { force: true });
+    await runInit(['--home', home]);
+
+    expect(existsSync(dbPath(home))).toBe(true);
+  });
+
+  it('refuses when keys/ is occupied, rather than blaming the filesystem', async () => {
+    // keys/ is minted lazily by the vault, so it is absent on a normal init and
+    // the guard used to skip it. A file there let init SUCCEED and print a
+    // permissions warning about a path that was merely occupied — sending the
+    // user to chmod something that was never a mode problem — while the next
+    // `aka vault` died on a bare EEXIST from the key provider.
+    const home = join(dir, 'keyshome');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(keysDir(home), 'someone else owns this path\n');
+
+    const err = await runInit(['--home', home]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain(keysDir(home));
+    expect(err?.message).toContain('exists but is not a directory');
+  });
+
+  it('is not bypassed by a trailing separator on --home', async () => {
+    // `statSync('<a regular file>/')` raises ENOTDIR rather than describing the
+    // file, so the guard's "is this a non-directory?" question came back "no"
+    // and the path went through — producing the bare mkdir failure the guard
+    // exists to replace. homeBase resolves the path, which drops the separator.
+    const home = join(dir, 'slashhome');
+    writeFileSync(home, 'someone else owns this path\n');
+
+    const err = await runInit(['--home', home + sep]).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('exists but is not a directory');
+    expect(err?.message).not.toContain('ENOTDIR');
+  });
+
+  it('self-heals a ~/.aka the owner has locked themselves out of', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('chmod does not deny a directory on Windows');
+      return;
+    }
+    // Documented because it is the opposite of what the mode suggests, and it
+    // is why the file case above is the one that needs a guard. A 0000 home is
+    // still the owner's to widen, and `ensureDataDirSync` chmods it back to
+    // 0700 on the way in — so `aka init` repairs this fault rather than
+    // reporting it, and ends with the documented modes like any other run.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const home = join(dir, 'lockedhome');
+    mkdirSync(home, { recursive: true });
+    chmodSync(home, 0o000);
+
+    await runInit(['--home', home]);
+
+    expect(existsSync(dbPath(home))).toBe(true);
+    expect(statSync(home).mode & 0o777).toBe(0o700);
   });
 });

@@ -39,10 +39,11 @@ import {
   SheetContent,
 } from '@akasecurity/ui-kit';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useCallback, useState, useTransition } from 'react';
 
 import { TerminalIcon, XIcon } from '../../components/icons';
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { loadMoreFindingInstances, loadMoreGroupedFindings } from './actions';
 import { buildFindingsParams, toGroupedQuery, toInstancesQuery } from './filters';
@@ -111,8 +112,8 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     repo,
     file,
   } = props;
-  const router = useRouter();
   const pathname = usePathname();
+  const { isPending, push } = useNavigationTransition();
   const view = props.view;
 
   const [columnVisibility, setColumnVisibility] = useState<ColumnVisibility>({});
@@ -162,9 +163,9 @@ export function FindingsClient(props: CommonProps & ViewProps) {
       },
     ) => {
       onNavigate(nextQuery);
-      router.push(buildUrl(nextFilters, nextQuery, nextSession, overrides));
+      push(buildUrl(nextFilters, nextQuery, nextSession, overrides));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, push, buildUrl],
   );
 
   // Distinguish an empty local store (first run — nothing captured yet) from a
@@ -272,7 +273,13 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         }
       />
 
-      <div className="mt-4 min-h-0 flex-1">
+      <div
+        aria-busy={isPending}
+        className={cn(
+          'mt-4 min-h-0 flex-1 transition-shadow duration-150',
+          isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+        )}
+      >
         {props.view === 'grouped' && (
           <GroupedView
             data={props.data}

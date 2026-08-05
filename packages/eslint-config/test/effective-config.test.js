@@ -18,6 +18,7 @@ import {
 } from './helpers/claude-md.js';
 import {
   eslintInvocations,
+  IGNORE_VALUE_FLAGS,
   lintableTrackedFiles,
   LINTABLE_EXT,
   packageLintInvocations,
@@ -254,6 +255,8 @@ const WORKSPACE_PACKAGES = discoverWorkspacePackages();
 // drop / rename.
 const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-claude-code',
+  '@akasecurity/ai-tc-codex',
+  '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
   '@akasecurity/dashboard-ui',
@@ -262,10 +265,12 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/extract',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
+  '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/scanner',
   '@akasecurity/schema',
+  '@akasecurity/setup-wizard',
   '@akasecurity/ui-kit',
   '@akasecurity/web-ui',
 ];
@@ -1008,6 +1013,98 @@ describe('every file outside every workspace package is linted by a repo-root pa
             `tooling config, anything else is named explicitly:\n  ${uncovered.join('\n  ')}`
         : undefined,
     ).toEqual([]);
+  });
+});
+
+describe(`the root pass states the ignore-flag rule (${CONVENTIONS_DOC} step 5)`, () => {
+  // The ignore rule is enforced for the ROOT pass by nonPackageFilesNotWired, and
+  // stated for a PACKAGE by the paragraph earlier in step 5. Prose sitting beside
+  // an enforced property inherits none of its guard, so a reader who takes the
+  // package paragraph as the general rule has nothing telling them it also binds
+  // `lint:root` — and a reader who does not is one flag away from a repo-root file
+  // that reads as covered and is never linted.
+  //
+  // Anchored on the boundary between the two halves rather than on the claim
+  // itself. An anchor that IS the claim disappears with it, and a slice that
+  // cannot find its anchor reports a missing anchor rather than a missing rule —
+  // the deletion this guard exists to catch would read as a broken guard.
+  const ROOT_HALF_ANCHOR = 'Files **outside every package**';
+  const STEP_5_SECTION = '## Adding a new workspace package';
+
+  /** Step 5's text from the repo-root half onward. Throws rather than returning ''. */
+  function rootHalf() {
+    const section = sectionOf(readConventions(), STEP_5_SECTION);
+    const at = section.indexOf(ROOT_HALF_ANCHOR);
+    if (at === -1) {
+      throw new Error(
+        `${CONVENTIONS_DOC} ${STEP_5_SECTION}: no ${JSON.stringify(ROOT_HALF_ANCHOR)} — the guard ` +
+          'cannot tell where the repo-root half begins, so it would assert against the package ' +
+          'paragraph and pass on prose that says nothing about `lint:root`.',
+      );
+    }
+    if (section.indexOf(ROOT_HALF_ANCHOR, at + 1) !== -1) {
+      throw new Error(
+        `${CONVENTIONS_DOC}: ${JSON.stringify(ROOT_HALF_ANCHOR)} occurs more than once, so this ` +
+          'slice starts at whichever came first rather than at the root half.',
+      );
+    }
+    return section.slice(at);
+  }
+
+  // A flag named in prose, normalized: `--ignore-pattern=<glob>` is the same flag
+  // as `--ignore-pattern`, and comparing the spellings rather than the flags would
+  // fail on a rewording that changed nothing.
+  const ignoreFlagsNamedIn = (text) =>
+    [
+      ...new Set(
+        codeSpansOf(text)
+          .map((span) => span.split('=')[0].trim())
+          .filter((span) => span.startsWith('--ignore')),
+      ),
+    ].sort();
+
+  it('names every ignore flag the coverage check models, and no other', () => {
+    // Both directions. A doc that drops one leaves contributors told about half
+    // the rule; a doc that names one the parser does not model promises an
+    // enforcement that is not there. Compared against the modelled set rather
+    // than a literal pair, so adding a third flag to IGNORE_VALUE_FLAGS fails
+    // here until the prose catches up.
+    expect(
+      ignoreFlagsNamedIn(rootHalf()),
+      `${CONVENTIONS_DOC} step 5's repo-root half must state the ignore-flag rule for ` +
+        '`lint:root`, naming each flag the coverage check subtracts by. The package paragraph ' +
+        'above it states the same rule; a reader has no way to know it also binds the root pass ' +
+        'unless this half says so.',
+    ).toEqual([...IGNORE_VALUE_FLAGS].sort());
+  });
+
+  it('states a rule the root walk really applies (each flag, with the control)', () => {
+    // The prose assertion above is only worth its green while the behaviour it
+    // describes is real. Drive the ROOT walk — not the per-package one — with each
+    // flag the doc names, through the same rootLintInvocations the live check uses.
+    const FILE = 'commitlint.config.mjs';
+    const targets = 'eslint -c eslint.root.config.mjs *.config.*';
+    const walk = (lintRoot) =>
+      nonPackageFilesNotWired(
+        [FILE],
+        rootLintInvocations({ lint: 'pnpm lint:root', 'lint:root': lintRoot }),
+      );
+
+    // The control, in the same case: without a flag the root pass reaches the
+    // file. Without this half, a predicate that reported EVERYTHING would satisfy
+    // every expectation below and the rule would look enforced while nothing was.
+    expect(
+      walk(targets),
+      `${targets} does not reach ${FILE}, so the flagged runs prove nothing`,
+    ).toEqual([]);
+
+    for (const flag of IGNORE_VALUE_FLAGS) {
+      expect(
+        walk(`${targets} ${flag} ${FILE}`),
+        `${flag} does not take ${FILE} back out of the root pass, so ${CONVENTIONS_DOC}'s claim ` +
+          'that it counts as uncovered is false',
+      ).toEqual([FILE]);
+    }
   });
 });
 

@@ -85,9 +85,14 @@ export default defineConfig({
   onSuccess: async () => {
     normalizeSqliteSpecifier('scripts');
     // Ship the locked triage rubric next to apply-suppressions.js. runJudge's
-    // default path (eval/prompt.md) is not in the package `files`, so the adapter
-    // reads scripts/triage-rubric.md at runtime — copied here from the single source.
-    copyFileSync('eval/prompt.md', join('scripts', 'triage-rubric.md'));
+    // default path is not in the package `files`, so the adapter reads
+    // scripts/triage-rubric.md at runtime — copied here from the single source,
+    // the harness-agnostic rubric owned by @akasecurity/setup-wizard (each
+    // harness plugin's build copies the same asset).
+    copyFileSync(
+      '../../packages/setup-wizard/assets/triage-rubric.md',
+      join('scripts', 'triage-rubric.md'),
+    );
     // Mark the emitted scripts as ESM. The plugin ships to the Claude Code plugin
     // cache as scripts/ without the plugin's own package.json, so Node has no
     // "type" field nearby and walks the directory tree to infer the module type —

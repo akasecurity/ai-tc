@@ -48,11 +48,11 @@ import {
   CalibrationFrame,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
+import { presentStandingSecretPosture } from '@akasecurity/setup-wizard';
+import { renderRedactionConfirmation } from '@akasecurity/setup-wizard';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
-import { presentStandingSecretPosture } from '../../src/remediation/posture.ts';
-import { renderRedactionConfirmation } from '../../src/remediation/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { planPathFromPreview, PLUGIN_ROOT, SetupJourney, SURFACED_KEY } from './harness.ts';
 

@@ -6,6 +6,14 @@ export {
   installClaudePlugin,
   updateClaudePlugin,
 } from './claude-plugin.ts';
+export type { CliPluginManager } from './cli-plugin-manager.ts';
+export { createCliPluginManager } from './cli-plugin-manager.ts';
+export {
+  codexAvailable,
+  ensureCodexMarketplace,
+  installCodexPlugin,
+  updateCodexPlugin,
+} from './codex-plugin.ts';
 export type { EgressRecordResult } from './egress-record.ts';
 export { recordProjectEgress } from './egress-record.ts';
 export type { RunResult } from './exec.ts';
@@ -48,6 +56,8 @@ export {
   cliVersion,
   gatherReport,
   gatherReportLive,
+  installedAgentPluginVersions,
+  installedCodexPluginVersions,
   installedPluginVersions,
   npmViewVersion,
 } from './updates.ts';

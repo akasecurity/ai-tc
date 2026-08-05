@@ -498,15 +498,19 @@ export interface FilledStore {
  * store is unaffected, so this fills the store for the handle passed in and
  * that handle only. A genuinely full filesystem stays out of reach in CI.
  *
- * That connection scope is what decides its reach. A repository constructed
- * over a raw handle takes the cap (`SqliteAuditEventsRepository(raw)`, the
- * `activity.test.ts` pattern), and so does `applyMigrations` — `test/faults/
- * disk-full.test.ts` drives both. What stays out of reach is the four blanket
- * fail-open sites in `database.ts` (`recordCapture`, `ensureInventory`,
- * `recordConfigScan`, `recordProjectFiles`) and `reconcileWorktreeProjects`:
- * all of them close over the connection `openLocalDatabase` opened, and
- * `LocalDatabase` exposes no accessor for it. Aiming a connection-scoped fault
- * at those needs a raw-handle seam.
+ * That connection scope is what decides its reach, and every product write path
+ * is now inside it. A repository constructed over a raw handle takes the cap
+ * (`SqliteAuditEventsRepository(raw)`, the `activity.test.ts` pattern), and so
+ * does `applyMigrations`. The blanket fail-open closures in `database.ts`
+ * (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`,
+ * `reconcileWorktreeProjects`) close over the connection `openLocalDatabase`
+ * opened, so they are reached by capping THAT connection —
+ * `db[UNSAFE_TEST_ONLY_RAW_HANDLE]`, the test-only seam on `LocalDatabase`.
+ * `test/faults/disk-full.test.ts` drives all three shapes.
+ *
+ * Passing a second handle on the same file instead is the mistake to avoid: it
+ * carries none of the cap, so the facade writes on undisturbed and every
+ * "the write was dropped" assertion holds because nothing was ever refused.
  */
 export function fillStore(db: DatabaseSync, opts: { headroomPages?: number } = {}): FilledStore {
   const readPragma = (name: string): number => {

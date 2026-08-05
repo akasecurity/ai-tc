@@ -52,6 +52,8 @@ The plugin installs Claude Code hooks that run locally with no `node_modules`, a
 
 It also adds slash commands for reports and setup (`/aka:health`, `/aka:findings`, `/aka:dashboard`, and more).
 
+The plugin works standalone, and governs what a session carries: rule packs, findings, policy, and an audit trail. To harden the harness itself — safe-default permissions, structural command guards, and credential deny rules — pair it with [claude-tools](https://github.com/akasecurity/claude-tools). They compose: claude-tools hardens the harness, `ai-tc` governs the traffic.
+
 ## Docs
 
 Full documentation and the built-in detection catalog live at **[akasecurity.github.io/ai-tc-docs](https://akasecurity.github.io/ai-tc-docs/)**.

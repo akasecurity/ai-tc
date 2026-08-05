@@ -160,7 +160,9 @@ jobs:
 
   # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
-  # processes — gets exercised on windows-latest. web-ui is included because it
+  # processes — gets exercised on windows-latest. setup-wizard is included for
+  # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
+  # the plugin bundle. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
   # script — EVERY suite, not just the middleware gate:
   #   - test/middleware.test.ts — the sole DNS-rebinding gate; pure string work
@@ -266,6 +268,7 @@ jobs:
           --filter=@akasecurity/persistence
           --filter=@akasecurity/plugin-sdk
           --filter=@akasecurity/plugin-runtime
+          --filter=@akasecurity/setup-wizard
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/web-ui

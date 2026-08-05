@@ -32,6 +32,10 @@ import type {
   ListAssetsResponse,
   ListDetectionsQuery,
   ListDetectionsResponse,
+  ListFindingInstancesQuery,
+  ListFindingInstancesResponse,
+  ListFindingLocationsQuery,
+  ListFindingLocationsResponse,
   ListGroupedFindingsQuery,
   ListGroupedFindingsResponse,
   ListHarnessesResponse,
@@ -80,6 +84,20 @@ export interface GroupedFindingsView {
   /** How many live-enforced findings belong to this session — a bare COUNT, so
    * a caller labeling a link never pays the grouped pipeline. */
   sessionFindingsCount(sessionId: string): Promise<number>;
+}
+
+/**
+ * Instance-level findings reads: the flat newest-first list, and the same
+ * findings folded by location (repo → file).
+ *
+ * Separate from GroupedFindingsView because the unit differs — these page and
+ * count FINDINGS where the grouped view pages and counts RULES — and because
+ * their status filter matches each instance's own derived status rather than
+ * its group's fold. Both are served by the same store as the grouped view.
+ */
+export interface FindingInstancesView {
+  listFindingInstances(query: ListFindingInstancesQuery): Promise<ListFindingInstancesResponse>;
+  listFindingLocations(query: ListFindingLocationsQuery): Promise<ListFindingLocationsResponse>;
 }
 
 /** Aggregated dashboard reads — independent of the findings row shape. */

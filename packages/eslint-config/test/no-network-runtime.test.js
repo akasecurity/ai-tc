@@ -181,6 +181,8 @@ const VITEST_PACKAGES = TEST_PACKAGES.filter((p) => p.runsVitest);
 // argued out of it in review.
 const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/ai-tc-claude-code',
+  '@akasecurity/ai-tc-codex',
+  '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
   '@akasecurity/dashboard-ui',
@@ -189,10 +191,12 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/extract',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
+  '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/scanner',
   '@akasecurity/schema',
+  '@akasecurity/setup-wizard',
   '@akasecurity/web-ui',
 ];
 

@@ -13,11 +13,11 @@ import type {
   ExceptionDescriptor,
   FingerprintKeyState,
 } from '@akasecurity/schema';
-import { Button } from '@akasecurity/ui-kit';
+import { Button, cn } from '@akasecurity/ui-kit';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { approveBlocked, rotateKey } from './actions';
 
 export function ExceptionsClient({
@@ -37,7 +37,26 @@ export function ExceptionsClient({
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
 }) {
-  const router = useRouter();
+  // Navigation transition (the blocked-window filter, the audit toggle and row
+  // navigation) — distinct from the write transition below, which tracks the
+  // approve/rotate Server Actions.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
+  // Marks the region whose data a pending navigation is replacing. The page has
+  // two independently-driven regions, so it is applied per region rather than
+  // around the page.
+  //
+  // It rings the region rather than fading it. Opacity on a wrapper composites
+  // the whole subtree — text included — toward the canvas behind it, and these
+  // text tokens have no contrast headroom to spend: text-3 on surface-2 measures
+  // 4.75:1 in light against the 4.5:1 floor, so every opacity below ~0.97 puts
+  // readable text under it. The region stays interactive while pending, so that
+  // is text someone can be reading and clicking, not a transient frame. A ring
+  // is chrome the wrapper owns outright, so it carries the same "this region is
+  // being replaced" cue at no cost to the text underneath.
+  const pendingRegion = cn(
+    'transition-shadow duration-150',
+    navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+  );
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,11 +67,13 @@ export function ExceptionsClient({
   // gets the full state, because for it the two mean different things.
   const keyVersion = keyState.status === 'present' ? keyState.version : null;
 
+  const auditHref = includeTerminal ? '/exceptions' : '/exceptions?all=1';
+
   const setBlockedWindow = (next: BlockedWindow) => {
     const sp = new URLSearchParams();
     sp.set('window', next);
     if (includeTerminal) sp.set('all', '1');
-    router.push(`/exceptions?${sp.toString()}`);
+    pushUrl(`/exceptions?${sp.toString()}`);
   };
 
   const submitApprove = (submission: ApproveSubmission) => {
@@ -87,7 +108,29 @@ export function ExceptionsClient({
         actions={
           <>
             <Button asChild variant="ghost" tone="neutral" size="sm">
-              <Link href={includeTerminal ? '/exceptions' : '/exceptions?all=1'}>
+              {/* A same-route ?all= change, so no loading boundary re-shows for
+                  it — a plain left-click is routed through the shared
+                  transition instead, which is what dims the table below and
+                  raises the shell's progress bar. The href stays real and the
+                  modifier/secondary-button cases fall through to the browser,
+                  so open-in-new-tab and copy-link still behave as links. */}
+              <Link
+                href={auditHref}
+                onClick={(e) => {
+                  if (
+                    e.defaultPrevented ||
+                    e.button !== 0 ||
+                    e.metaKey ||
+                    e.ctrlKey ||
+                    e.shiftKey ||
+                    e.altKey
+                  ) {
+                    return;
+                  }
+                  e.preventDefault();
+                  pushUrl(auditHref);
+                }}
+              >
                 {includeTerminal ? 'Active only' : 'Show all (audit)'}
               </Link>
             </Button>
@@ -109,24 +152,30 @@ export function ExceptionsClient({
         }
       />
 
-      <BlockedLedgerView
-        items={blocked}
-        onApprove={(reference) => {
-          setError(null);
-          setApproving(blocked.find((b) => b.reference === reference) ?? null);
-        }}
-        blockedWindow={blockedWindow}
-        onBlockedWindowChange={setBlockedWindow}
-        keyState={keyState}
-      />
+      {/* `?window=` re-queries recentBlocked, which is this region's data. */}
+      <div aria-busy={navPending} className={pendingRegion}>
+        <BlockedLedgerView
+          items={blocked}
+          onApprove={(reference) => {
+            setError(null);
+            setApproving(blocked.find((b) => b.reference === reference) ?? null);
+          }}
+          blockedWindow={blockedWindow}
+          onBlockedWindowChange={setBlockedWindow}
+          keyState={keyState}
+        />
+      </div>
 
-      <ExceptionsTableView
-        items={items}
-        includeTerminal={includeTerminal}
-        onSelect={(id) => {
-          router.push(`/exceptions/${id.slice(0, 8)}`);
-        }}
-      />
+      {/* `?all=` re-queries exceptions.list, which is this region's data. */}
+      <div aria-busy={navPending} className={pendingRegion}>
+        <ExceptionsTableView
+          items={items}
+          includeTerminal={includeTerminal}
+          onSelect={(id) => {
+            pushUrl(`/exceptions/${id.slice(0, 8)}`);
+          }}
+        />
+      </div>
 
       <ApproveExceptionDialog
         entry={approving}

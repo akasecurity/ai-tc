@@ -1,0 +1,14 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "aka-antigravity",
+  "version": "0.9.4",
+  "description": "AI Traffic Control — inspect and govern AI prompts in Antigravity. Detection runs locally; events are recorded to a local SQLite store on your machine.",
+  "hooks": "./hooks.json",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "AKA Security",
+    "shortDescription": "Local secret detection for the Antigravity CLI.",
+    "developerName": "AKA Security",
+    "websiteUrl": "https://github.com/akasecurity/ai-tc"
+  }
+}

@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -20,6 +21,7 @@ import type * as LocalOps from '@akasecurity/local-ops';
 import { cachePath, writeCache } from '@akasecurity/local-ops';
 import { keysDir } from '@akasecurity/persistence';
 import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
+import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -238,6 +240,48 @@ describe('runInit contract', () => {
 
     // A re-run re-applies no migration and must not overwrite the user's answers.
     expect(readFileSync(file, 'utf8')).toBe(first);
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('(kept existing)');
+  });
+
+  it('preserves answers another writer publishes while init waits for the lock', async () => {
+    // init is the THIRD writer of settings.json, behind the wizard and the
+    // dashboard. Checking for the file outside the write lock lets it find none,
+    // have the wizard's answers land while it decides, and then replace them
+    // with defaults — the same silent loss the lock exists to remove, from the
+    // one writer whose payload is "no answers at all".
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    mkdirSync(settingsDir(dir), { recursive: true });
+    const file = join(settingsDir(dir), 'settings.json');
+    const answers = `${JSON.stringify({ ...defaultWorkspaceSettings(), policy: 'warn' }, null, 2)}\n`;
+
+    const holder = spawn(
+      process.execPath,
+      [join(import.meta.dirname, '..', 'helpers', 'settings-lock-holder.ts'), file, answers, '600'],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    // Bound to the event BEFORE anything is awaited. `close` fires once, so a
+    // listener attached in the `finally` waits for a second emission that never
+    // comes — the test would hang to its own timeout whenever init outlasts the
+    // hold, which is the ordinary case.
+    const holderClosed = once(holder, 'close');
+    try {
+      // Start init only once the lock is really held, so this is not a race that
+      // happens to resolve one way. From here the ordering is the lock's to
+      // enforce: the holder writes the file before releasing, and a live holder
+      // is never stolen from, so an init that waits for the section always
+      // finds it.
+      await once(holder.stdout, 'data');
+      await runInit(['--home', dir]);
+    } finally {
+      await holderClosed;
+    }
+
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ policy: 'warn' });
+    // The observable difference. Unlocked, init writes its defaults before the
+    // holder ever publishes — the answers still end up on disk (the holder
+    // renames last), but init reports having CREATED the file, which is only
+    // true if it clobbered somebody.
     const out = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(out).toContain('(kept existing)');
   });

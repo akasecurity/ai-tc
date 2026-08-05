@@ -15,6 +15,51 @@ function regexRule(pattern: string): Rule {
   });
 }
 
+// A fixed CPU-bound workload used only to ask whether this machine ran at the
+// same speed either side of a measurement. It touches no Rule and calls no
+// scan(): running the rule under test even once before `worstProbeMs` would tier
+// its pattern up, and the interpreted reading — the property the ratio case
+// exists to check — only exists on the first run.
+//
+// `sink` escapes the loop so the whole thing cannot be optimised away.
+//
+// The ITERATION COUNT and the sample count are both load-bearing, and getting
+// them wrong fails silently in the dangerous direction. This reading is a proxy
+// for what contention does to the native loop below, so it has to be about as
+// susceptible to contention AS that loop — same order of duration, same min-of-N
+// shape. Sized at ~4ms against a ~18ms scan it is strictly HARDER to disturb,
+// because `min` finds a quiet slot inside a short workload far more easily than
+// inside a long one: driven with load arriving on the native loop, a 4ms probe
+// moved 1.44x while the thing it was standing in for moved 5.3x, so the guard
+// sat under its budget and the false failure went through anyway. Keep this
+// it near the native scan's own duration, and re-check it if either moves.
+let sink = 0;
+function calibrationMs(samples = 5): number {
+  let ms = Infinity;
+  for (let i = 0; i < samples; i++) {
+    const start = performance.now();
+    let acc = 0;
+    for (let j = 0; j < 9_000_000; j++) acc = (acc + j) % 9973;
+    sink = (sink + acc) % 2_147_483_647;
+    ms = Math.min(ms, performance.now() - start);
+  }
+  // Reading `sink` is what makes the accumulation above observable. Written and
+  // never read, the whole loop is dead code — free for V8 to drop and for the
+  // unused-var rule to flag — and a calibration that measures an empty loop
+  // reports a machine that is never busy, so the guard below would never fire.
+  if (!Number.isFinite(sink)) throw new Error('calibration workload collapsed');
+  return ms;
+}
+
+// How far the two calibration readings may diverge before the ratio below is
+// treated as unmeasurable rather than failed. Contention that is present for the
+// WHOLE test is the safe direction and does not trip this: it inflates the
+// ~135ms numerator and the ~18ms denominator alike, and the ratio rises. What
+// this catches is contention that differs ACROSS the two windows — the numerator
+// is timed inside `worstProbeMs`, the denominator ~135ms later — because that is
+// the only thing that can inflate the denominator alone.
+const MAX_CALIBRATION_DRIFT = 1.5;
+
 describe('checkRuleTiming', () => {
   it('flags a catastrophic pattern as unsafe', () => {
     const result = checkRuleTiming(regexRule('^(a+)+$'));
@@ -72,7 +117,10 @@ describe('worstProbeMs attributes a probe to its interpreted tier', () => {
   // measured on the machine running them, so hardware speed and CPU contention
   // move them together and cancel — the same reason `backtrackRatio` and
   // CATASTROPHIC_RATIO exist rather than a fixed ms bound.
-  it('reports the first probe at its interpreted cost, not its native cost', () => {
+  it('reports the first probe at its interpreted cost, not its native cost', (ctx) => {
+    // Read the machine's speed before anything is measured against it, and again
+    // after. Neither reading touches `rule`.
+    const calibrationBefore = calibrationMs();
     const rule = regexRule('^(a+)+bd');
     const result = worstProbeMs(rule);
 
@@ -94,16 +142,82 @@ describe('worstProbeMs attributes a probe to its interpreted tier', () => {
     // same probe now measures the native tier, so a correct gate reports
     // several times what this second sample costs; a gate that kept a second
     // sample reports the same thing twice, and the ratio collapses to ~1.
-    const start = performance.now();
-    scan(result.probe, [rule]);
-    const nativeMs = performance.now() - start;
+    //
+    // The two sides are sampled differently ON PURPOSE, and the asymmetry is
+    // the point rather than an inconsistency. `result.ms` is probe #0 timed
+    // exactly once — that lone sample IS the property under test, so it must
+    // stay unreplicated. The denominator is the opposite case: it only has to
+    // name this probe's native-tier floor, and a single sample of a ~18ms scan
+    // is dominated by any scheduler preemption that lands inside it. Because
+    // contention can only push a sample above the floor, never below it, `min`
+    // recovers the tier while a lone sample tracks the noise — the same reason
+    // benignBaselineMs takes a min over several samples.
+    //
+    // Be precise about what that does and does not buy, because the obvious
+    // reading of it is wrong. Contention present for the WHOLE test does not
+    // collapse this ratio; it RAISES it, and uniformly more load is uniformly
+    // safer. Measured on a 10-core box: 7.05-8.15x idle, 9.69-19.79x at 2x
+    // oversubscription, 6.97-17.83x at 8x. The reason is that the numerator is
+    // one sample of a ~135ms scan and absorbs the contention in full, while the
+    // denominator is a min over seven ~18ms scans and recovers whenever any one
+    // of the seven catches a quiet slot.
+    //
+    // So `min` widens the margin against the common case, and the single sample
+    // it replaced was the weaker estimator there (4.21x worst against min-of-7's
+    // 6.97x, at 8x oversubscription). What neither form survives is load that
+    // differs ACROSS the two windows: the numerator is timed inside
+    // `worstProbeMs`, the denominator ~135ms later, so a burst arriving in that
+    // gap inflates the denominator alone and nothing cancels. Driven that way
+    // this ratio reaches 0.84x with the gate working perfectly. `min` cannot fix
+    // that — it needs a quiet slot to find, and there is none — which is why the
+    // drift guard below exists rather than a wider threshold.
+    let nativeMs = Infinity;
+    for (let i = 0; i < 7; i++) {
+      const start = performance.now();
+      scan(result.probe, [rule]);
+      nativeMs = Math.min(nativeMs, performance.now() - start);
+    }
     const ratio = result.ms / nativeMs;
+
+    // `min` bounds noise only where a quiet slot exists to be found. Sustained
+    // load arriving between the two windows leaves all seven samples inflated,
+    // and then the ratio reports the machine rather than the tier — measured
+    // down to 0.84x that way, on a gate that was working perfectly. That is
+    // unmeasurable, not failed, so abstain rather than reporting either verdict.
+    // `ctx.skip` and not an early return, which reports as a pass.
+    //
+    // This is what lets the threshold below stay a regression detector and stop
+    // doubling as the flake tolerance: the two duties now sit in different
+    // places, and neither has to be loosened to buy room for the other.
+    //
+    // The probe-length assertion above has already run, and it is the robust
+    // half — scale-free because it compares probes against each other inside one
+    // process, so contention hits every candidate alike and cancels exactly. It
+    // held across every load condition measured. Skipping here therefore gives
+    // up the backstop, never the primary detector.
+    const calibrationAfter = calibrationMs();
+    const drift =
+      Math.max(calibrationBefore, calibrationAfter) / Math.min(calibrationBefore, calibrationAfter);
+    if (drift > MAX_CALIBRATION_DRIFT) {
+      ctx.skip(
+        `machine speed moved ${drift.toFixed(2)}x across the measurement ` +
+          `(${calibrationBefore.toFixed(1)}ms before, ${calibrationAfter.toFixed(1)}ms after, ` +
+          `budget ${String(MAX_CALIBRATION_DRIFT)}x), so the ${ratio.toFixed(2)}x ratio times the ` +
+          `runner rather than the tier. The probe-length verdict above still ran.`,
+      );
+    }
+
     expect(
       ratio,
-      `gate reported ${result.ms.toFixed(1)}ms for a probe that re-scans in ${nativeMs.toFixed(1)}ms ` +
-        `(ratio ${ratio.toFixed(2)}x). Measured 6.9-7.7x when each probe is timed once and ` +
-        `0.95-1.16x with a lower-of-two-samples bypass in place, so a ratio near 1 means the ` +
-        `interpreted tier is no longer what the gate reports.`,
+      `gate reported ${result.ms.toFixed(1)}ms interpreted against a min-of-7 native floor of ` +
+        `${nativeMs.toFixed(1)}ms (ratio ${ratio.toFixed(2)}x), with machine speed steady to ` +
+        `${drift.toFixed(2)}x across the measurement. Measured 7.05-8.15x idle, 9.69-19.79x at 2x ` +
+        `CPU oversubscription and 6.97-17.83x at 8x — uniform load RAISES this ratio, so a low one ` +
+        `is not a busy runner. A ratio near 1 means the interpreted tier is no longer what the gate ` +
+        `reports. Note an actual lower-of-two-samples bypass trips the probe-length assertion above ` +
+        `before reaching this one — discarding probe #0's interpreted cost hands the title to the ` +
+        `25-char probe. This assertion is the backstop for a bypass that leaves the length verdict ` +
+        `intact, so read it as "which tier", not "which probe".`,
     ).toBeGreaterThan(3);
   });
 });

@@ -108,6 +108,48 @@ describe('handleSessionStart (standalone)', () => {
     db.close();
   });
 
+  it('snapshots harnessInterface onto the session root, durably per-session', async () => {
+    // Two sessions of the SAME harness ('codex') but different entry points —
+    // e.g. a terminal invocation vs Codex running inside the ChatGPT desktop
+    // app. Both share ONE harness inventory row (keyed only on `tool`), so if
+    // the interface were read back off THAT shared row instead of snapshotted
+    // per-session, the second session's ensureInventory() upsert would
+    // silently overwrite what the first session's fact should keep showing.
+    await handleSessionStart(
+      start('s-cli', { tool: 'codex', harnessInterface: 'codex_cli_rs' }),
+      config(dir),
+    );
+    await handleSessionStart(
+      start('s-desktop', { tool: 'codex', harnessInterface: 'codex_desktop' }),
+      config(dir),
+    );
+
+    const db = open();
+    const attrsFor = (sessionId: string): Record<string, unknown> => {
+      const row = db
+        .prepare("SELECT attributes FROM audit_events WHERE event_type = 'session' AND id = :id")
+        .get({ id: sessionId }) as { attributes: string };
+      return JSON.parse(row.attributes) as Record<string, unknown>;
+    };
+    expect(attrsFor('s-cli').harness_interface).toBe('codex_cli_rs');
+    // The second session's fact is unaffected by the first — no cross-session
+    // overwrite via the shared harness inventory row.
+    expect(attrsFor('s-desktop').harness_interface).toBe('codex_desktop');
+    db.close();
+  });
+
+  it('omits harness_interface when the harness exposes no discriminator (Claude Code today)', async () => {
+    await handleSessionStart(start('s1'), config(dir));
+
+    const db = open();
+    const session = db
+      .prepare("SELECT * FROM audit_events WHERE event_type = 'session'")
+      .get() as Record<string, unknown>;
+    const attrs = JSON.parse(session.attributes as string) as Record<string, unknown>;
+    expect(attrs).not.toHaveProperty('harness_interface');
+    db.close();
+  });
+
   it('snapshots a gateway provider + host onto the session root', async () => {
     await handleSessionStart(start('sg'), {
       ...config(dir),

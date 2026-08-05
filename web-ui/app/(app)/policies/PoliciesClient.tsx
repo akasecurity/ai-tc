@@ -2,8 +2,10 @@
 
 import { PolicyDetailView, PolicyListView } from '@akasecurity/dashboard-ui';
 import type { PolicyDetail, PolicyListItem } from '@akasecurity/schema';
-import { Card } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
+
+import { useNavigationTransition } from '../../components/NavigationTransition';
 
 /**
  * Client shell for the OSS Policies page. The catalog list + selected detail come
@@ -21,16 +23,22 @@ export function PoliciesClient({
   detail: PolicyDetail | null;
   selectedId: string;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  const { isPending, push } = useNavigationTransition();
 
   return (
-    <div className="grid min-h-128 flex-1 grid-cols-1 gap-4 lg:grid-cols-[320px_1fr] lg:grid-rows-1">
+    <div
+      aria-busy={isPending}
+      className={cn(
+        'grid min-h-128 flex-1 grid-cols-1 gap-4 transition-shadow duration-150 lg:grid-cols-[320px_1fr] lg:grid-rows-1',
+        isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+      )}
+    >
       <PolicyListView
         items={items}
         activeId={selectedId}
         onSelect={(id) => {
-          router.push(`${pathname}?id=${encodeURIComponent(id)}`);
+          push(`${pathname}?id=${encodeURIComponent(id)}`);
         }}
       />
 

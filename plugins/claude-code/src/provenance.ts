@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 // plugin must bind to. An attestation missing either, or bound to any other
 // value, is a failed check.
 export const EXPECTED_REPOSITORY = 'https://github.com/akasecurity/ai-tc';
-export const EXPECTED_WORKFLOW_PATH = '.github/workflows/release-plugin.yml';
+export const EXPECTED_WORKFLOW_PATH = '.github/workflows/release-plugin-claude.yml';
 
 // The SLSA provenance predicate type carried by an npm build-provenance
 // attestation; its buildDefinition names the GitHub Actions workflow identity.

@@ -1,4 +1,4 @@
-import { claudeAvailable, ensureMarketplace } from './claude-plugin.ts';
+import { createCliPluginManager } from './cli-plugin-manager.ts';
 import { runCapture, runInherit } from './exec.ts';
 import { findAgent, pluginRef } from './registry.ts';
 import { CLI_PACKAGE } from './updates.ts';
@@ -41,38 +41,47 @@ export function applyCliUpdate(mode: ApplyMode = 'capture'): ApplyResult {
   return run('npm', ['install', '-g', `${CLI_PACKAGE}@latest`], mode);
 }
 
-// Resolve an agent id to its `<plugin>@<marketplace>` ref, failing closed on
-// anything the static registry doesn't know or can't automate.
+// Resolve an agent id to its `<plugin>@<marketplace>` ref plus its bound
+// cli-plugin-manager, failing closed on anything the static registry doesn't
+// know or can't automate.
 function resolveRef(
   agentId: string,
-): { ref: string; marketplaceSource?: string | undefined } | ApplyResult {
+): { ref: string; cliBin: string; marketplaceSource?: string | undefined } | ApplyResult {
   const agent = findAgent(agentId);
   if (!agent) return { ok: false, output: `unknown agent '${agentId}'` };
   const ref = pluginRef(agent);
-  if (!ref) return { ok: false, output: `${agent.name} has no automated install path yet.` };
-  if (!claudeAvailable()) {
+  const cliBin = agent.cliBin;
+  if (!ref || !cliBin) {
+    return { ok: false, output: `${agent.name} has no automated install path yet.` };
+  }
+  const manager = createCliPluginManager(cliBin);
+  if (!manager.available()) {
     return {
       ok: false,
       output:
-        `the \`claude\` CLI isn't on your PATH — install Claude Code, then run ` +
-        `\`claude plugin install ${ref}\` (or update with \`claude plugin update ${ref}\`).`,
+        `the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, then run ` +
+        `\`${cliBin} plugin install ${ref}\` (or update with \`${cliBin} plugin update ${ref}\`).`,
     };
   }
-  return { ref, marketplaceSource: agent.marketplaceSource };
+  return { ref, cliBin, marketplaceSource: agent.marketplaceSource };
 }
 
-/** Update an installed agent plugin via `claude plugin update <ref>`. */
+/** Update an installed agent plugin via `<cliBin> plugin update <ref>`. */
 export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
-  if (resolved.marketplaceSource) ensureMarketplace(resolved.marketplaceSource);
-  return run('claude', ['plugin', 'update', resolved.ref], mode);
+  if (resolved.marketplaceSource) {
+    createCliPluginManager(resolved.cliBin).ensureMarketplace(resolved.marketplaceSource);
+  }
+  return run(resolved.cliBin, ['plugin', 'update', resolved.ref], mode);
 }
 
-/** Install an agent plugin via `claude plugin install <ref>` (marketplace ensured first). */
+/** Install an agent plugin via `<cliBin> plugin install <ref>` (marketplace ensured first). */
 export function installAgentPlugin(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
-  if (resolved.marketplaceSource) ensureMarketplace(resolved.marketplaceSource);
-  return run('claude', ['plugin', 'install', resolved.ref], mode);
+  if (resolved.marketplaceSource) {
+    createCliPluginManager(resolved.cliBin).ensureMarketplace(resolved.marketplaceSource);
+  }
+  return run(resolved.cliBin, ['plugin', 'install', resolved.ref], mode);
 }

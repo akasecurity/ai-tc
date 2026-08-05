@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { errorFrom } from './errors.ts';
 import { createTempStore, useTempStore, withTempStore } from './temp-store.ts';
 
 // The helper's own gate: every store test that adopts it inherits these
@@ -79,9 +80,9 @@ describe('withTempStore', () => {
     } catch (err) {
       caught = err as Error;
     }
-    // removeTree only ever swallows on Windows, which is already skipped above,
-    // so past this point a surviving tree means the rm threw and destroy() with
-    // it. A root process writes through the mode, leaving nothing to assert.
+    // removeTree never swallows, so past this point a surviving tree means the
+    // rm threw and destroy() with it. A root process writes through the mode,
+    // leaving nothing to assert.
     const teardownFailed = existsSync(home);
     if (teardownFailed) {
       chmodSync(home, 0o700);
@@ -92,6 +93,43 @@ describe('withTempStore', () => {
     expect(caught?.message).toBe('THE-REAL-FAILURE');
     // The teardown failure is not dropped either — it travels as the cause.
     expect(caught?.cause).toBeDefined();
+  });
+
+  // The tolerance this replaces existed for a bug that is fixed: the open path
+  // used to strand its handle on a throw, so on Windows the tree could not be
+  // removed through no fault of the test. Now an undeletable tree is reported on
+  // every platform — which is what makes teardown the Windows-side regression
+  // signal for that fix, rather than a warning nobody sees.
+  it('reports an undeletable tree instead of leaving it to the OS sweeper', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for directories on Windows');
+    const store = createTempStore();
+    mkdirSync(join(store.home, 'locked'));
+    chmodSync(store.home, 0o500);
+
+    const err = errorFrom(() => {
+      store.destroy();
+    });
+
+    // Restore before asserting, so a failed expectation still leaves a tree the
+    // runner can clean up.
+    chmodSync(store.home, 0o700);
+    rmSync(store.home, { recursive: true, force: true });
+
+    // A root process writes through the mode, leaving nothing to assert.
+    if (err === undefined) ctx.skip(MODES_IGNORED);
+
+    // Say what it IS before saying what it omits: an AggregateError that named
+    // some other failure would satisfy a bare "it threw" check.
+    expect(err).toBeInstanceOf(AggregateError);
+    const [first] = (err as AggregateError).errors as (Error | undefined)[];
+    expect(first).toBeDefined();
+    expect(first?.message).toContain(store.home);
+    // Naming the tree does NOT discriminate on its own — an unwrapped errno from
+    // `rmSync` reads `EACCES: permission denied, rmdir '<home>'` and contains it
+    // too. These two are what separate the wrapper from the bare throw: the
+    // explanation a reader can act on, and the errno still travelling under it.
+    expect(first?.message).toMatch(/still holds a file/);
+    expect((first?.cause as { code?: string } | undefined)?.code).toBeTruthy();
   });
 
   it('opens a usable store under data/', () => {

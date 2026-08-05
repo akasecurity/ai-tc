@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
+import { descriptorProbe } from './helpers/descriptors.ts';
 import { corruptStore } from './helpers/fault-injection.ts';
 
 let dir: string;
@@ -489,11 +490,28 @@ describe('a failed open leaves no handle behind', () => {
   // on Windows, and the dashboard server memoizes its handle only on success, so
   // a corrupt store would leak one more on every attempt.
   //
-  // The proof is platform-split and deliberately so: on Windows the removal in
-  // `afterEach` FAILS with EPERM while a handle is open, which is what makes
-  // this a real regression guard there. On POSIX an open handle does not block
-  // unlink, so the same test only pins that the open fails loudly rather than
-  // half-succeeding — the CI Windows leg is where the leak itself is caught.
+  // The proof is in two parts, and neither is platform-split any more.
+  //
+  // On POSIX the leak is COUNTED: `descriptorProbe` reads this process's
+  // descriptor table around a synchronous window, so an escaped handle is a
+  // number here rather than an inference. That is what stops the guard being
+  // Windows-only — an unlink on POSIX succeeds whether or not a handle is open,
+  // so the removal below proves nothing on this leg and never did.
+  //
+  // On Windows the removal in `afterEach` is still the assertion: it FAILS with
+  // EPERM while a handle is open, and there is no `/dev/fd` to count instead, so
+  // the probe reports itself unusable and the counting cases skip with a reason.
+  //
+  // Each fault below reaches a DIFFERENT guard, and they are kept apart on
+  // purpose: a corrupt store fails at the first PRAGMA, inside `openWithPragmas`
+  // and its own catch, while a dropped table fails later in a repository
+  // constructor and is caught only by the one try around the whole sequence.
+  // Measured by removing each guard in turn: with the pragma guard gone the
+  // corrupt case leaks 5 and the dropped-table case leaks 0; with the sequence
+  // guard gone those numbers swap to 0 and 11. One fixture would have pinned one
+  // guard and left the other free to regress.
+  const ATTEMPTS = 5;
+
   function corruptTheStore(): string {
     const file = join(dir, 'aka.db');
     openLocalDatabase(dir).close(); // a real store first, so this is damage not absence
@@ -502,6 +520,20 @@ describe('a failed open leaves no handle behind', () => {
     }
     writeFileSync(file, 'this is not a SQLite database at all\n');
     return file;
+  }
+
+  // Several repositories `db.prepare(...)` in their constructor, which runs after
+  // migrations have reported success. Dropping a table from an already-migrated
+  // store reproduces that: the ledger still says applied, so the next open skips
+  // the applier and goes straight to the constructors.
+  function dropAMigratedTable(): void {
+    openLocalDatabase(dir).close();
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      raw.exec('DROP TABLE installed_packs');
+    } finally {
+      raw.close();
+    }
   }
 
   it('throws rather than returning a half-open store', () => {
@@ -514,36 +546,67 @@ describe('a failed open leaves no handle behind', () => {
     // the user retries, and each retry opens again. Any handle kept here is one
     // per attempt.
     corruptTheStore();
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < ATTEMPTS; i += 1) {
       expect(() => openLocalDatabase(dir)).toThrow();
     }
     // afterEach removes the tree — on Windows that is the assertion.
   });
 
-  it('closes the handle when a REPOSITORY CONSTRUCTOR throws, not just the open', () => {
-    // Several repositories `db.prepare(...)` in their constructor, which runs
-    // after migrations have reported success. A store whose schema does not
-    // match what this build expects — one written by a newer binary leaves
-    // `user_version` ahead, so the applier skips and the prepares meet columns
-    // that are not there — throws from there rather than from the open.
-    //
-    // Dropping tables from a migrated store reproduces that exactly: the
-    // migration ledger still says applied, so the reopen goes straight to the
-    // constructors. This region sat outside the guard until the whole sequence
-    // was brought under one try.
-    openLocalDatabase(dir).close();
-    const raw = new DatabaseSync(join(dir, 'aka.db'));
-    try {
-      raw.exec('DROP TABLE installed_packs');
-    } finally {
-      raw.close();
-    }
+  it('leaks no descriptor when the first PRAGMA throws', (ctx) => {
+    const probe = descriptorProbe();
+    if (!probe.observable) ctx.skip(probe.reason ?? 'descriptor counting unavailable');
+    corruptTheStore();
 
-    for (let i = 0; i < 5; i += 1) {
+    // Counted inside the window and asserted outside it, so the window holds
+    // nothing but the opens — and so a run where nothing threw cannot pass as
+    // a run that leaked nothing.
+    let threw = 0;
+    const leaked = probe.leakedBy(() => {
+      for (let i = 0; i < ATTEMPTS; i += 1) {
+        try {
+          openLocalDatabase(dir);
+        } catch {
+          threw += 1;
+        }
+      }
+    });
+
+    expect(threw).toBe(ATTEMPTS);
+    expect(leaked).toBe(0);
+  });
+
+  it('closes the handle when a REPOSITORY CONSTRUCTOR throws, not just the open', () => {
+    // The real-world shape this stands in for: a store written by a NEWER binary
+    // leaves `user_version` ahead, so the applier skips and the constructors'
+    // prepares meet columns that are not there. This region sat outside the
+    // guard until the whole sequence was brought under one try.
+    dropAMigratedTable();
+
+    for (let i = 0; i < ATTEMPTS; i += 1) {
       expect(() => openLocalDatabase(dir)).toThrow(/no such table/);
     }
     // Measured on macOS while this was unguarded: five attempts leaked twelve
     // descriptors. afterEach is what catches it on Windows.
+  });
+
+  it('leaks no descriptor when a repository constructor throws', (ctx) => {
+    const probe = descriptorProbe();
+    if (!probe.observable) ctx.skip(probe.reason ?? 'descriptor counting unavailable');
+    dropAMigratedTable();
+
+    let threw = 0;
+    const leaked = probe.leakedBy(() => {
+      for (let i = 0; i < ATTEMPTS; i += 1) {
+        try {
+          openLocalDatabase(dir);
+        } catch {
+          threw += 1;
+        }
+      }
+    });
+
+    expect(threw).toBe(ATTEMPTS);
+    expect(leaked).toBe(0);
   });
 });
 

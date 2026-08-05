@@ -29,7 +29,11 @@ import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput } from '../../src/hooks/pre-tool-use-decision.ts';
-import { decidePreToolUse, EXECUTABLE_REDACT_NOTE } from '../../src/hooks/pre-tool-use-decision.ts';
+import {
+  decidePreToolUse,
+  EXECUTABLE_REDACT_NOTE,
+  UNREDACTABLE_NOTE,
+} from '../../src/hooks/pre-tool-use-decision.ts';
 import type { ScannableField } from '../../src/hooks/pre-tool-use-fields.ts';
 
 const IP = ['45', '79', '142', '6'].join('.');
@@ -148,6 +152,37 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
       await decide('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result: blocked }]),
     );
     expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+  });
+});
+
+describe('decidePreToolUse — a redact with no redacted text denies', () => {
+  // CaptureResult.text is `string | null`, so { action: 'redact', text: null }
+  // is protocol-legal. Allowing it emitted the ORIGINAL toolInput under the
+  // "AKA redacted sensitive content" systemMessage — raw value sent, transcript
+  // claiming it was masked. Checked after the tokenizer runs, since a null
+  // `text` can still yield redacted text through it.
+  it('Write content: denies rather than allowing the original through', async () => {
+    const content = `support = ${EMAIL}`;
+    const output = await decide('Write', { content, file_path: '/tmp/a.ts' }, [
+      {
+        spec: WRITE_CONTENT,
+        result: {
+          action: 'redact',
+          text: null,
+          findings: [finding('core-pii/email', EMAIL, content)],
+        },
+        text: content,
+      },
+    ]);
+
+    const reason = denyReason(output);
+    expect(reason).toContain(UNREDACTABLE_NOTE);
+    expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+
+    const emitted = JSON.stringify(output);
+    expect(emitted).not.toContain('updatedInput');
+    expect(emitted).not.toContain('AKA redacted');
+    expect(emitted).not.toContain(EMAIL);
   });
 });
 

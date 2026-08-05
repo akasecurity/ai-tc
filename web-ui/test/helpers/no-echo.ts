@@ -35,10 +35,11 @@ export const ECHO_RUN = 8;
  *    an email's own preview fills the window legitimately.
  *
  * Shared by this package's suites because they sit behind one package wall.
- * Across a wall it cannot be imported, so `cli/test/helpers/no-echo.ts` and
- * `plugins/claude-code/test/helpers/no-echo.ts` carry their own — a copy takes
- * the `toBeDefined()` guard and this file's suite with it, or the run length can
- * be widened back with nothing going red.
+ * Across a wall it cannot be imported, so `cli/test/helpers/no-echo.ts`,
+ * `plugins/claude-code/test/helpers/no-echo.ts`, and
+ * `packages/setup-wizard/test/helpers/no-echo.ts` carry their own — a copy
+ * takes the `toBeDefined()` guard and this file's suite with it, or the run
+ * length can be widened back with nothing going red.
  */
 export function expectNoEchoOf(haystack: string | undefined, value: string): void {
   // Catches an action that returned no error, which would otherwise satisfy the

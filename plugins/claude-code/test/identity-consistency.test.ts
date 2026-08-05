@@ -53,8 +53,10 @@ describe('identity/description consistency guard', () => {
     expect(setupMd).not.toContain('AKA Control Plane');
   });
 
-  it('eval/prompt.md prose carries no phased-out product descriptor', () => {
-    expect(read('../eval/prompt.md')).not.toContain('AKA Control Plane');
+  it('the shared triage rubric carries no phased-out product descriptor', () => {
+    expect(read('../../../packages/setup-wizard/assets/triage-rubric.md')).not.toContain(
+      'AKA Control Plane',
+    );
   });
 
   it.each(READMES)('%s prose carries the canonical name and tagline', (_label, relative) => {

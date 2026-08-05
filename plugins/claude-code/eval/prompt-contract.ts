@@ -41,8 +41,8 @@ import {
   CalibrationFrame as CalibrationFrameSchema,
   severityFloorPosture,
 } from '@akasecurity/schema';
+import { PostureLooseningError, validateTightenOnly } from '@akasecurity/setup-wizard';
 
-import { PostureLooseningError, validateTightenOnly } from '../src/posture-reasoning.ts';
 import { readFrameJsonBlock } from '../src/setup-frame-json.ts';
 
 export type ContractCheckResult =

@@ -8,9 +8,22 @@
   // green for the guarantee it exists to enforce.
   "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
   "tasks": {
+    // `native-host/**` is plugins/browser-extension's tsup outDir. An output a
+    // package writes but does not declare is not restored on a cache hit, so a
+    // fresh checkout leaves it missing and an existing checkout keeps whatever
+    // stale copy is on disk — which bundle-extension.mjs would then ship into
+    // the npm tarball and the SEA binary. Declared for the same reason
+    // `scripts/**` is (plugins/claude-code's generated hooks).
     "build": {
       "dependsOn": ["^build", "^typecheck"],
-      "outputs": ["dist/**", "public/**", "scripts/**", ".next/**", "!.next/cache/**"]
+      "outputs": [
+        "dist/**",
+        "public/**",
+        "scripts/**",
+        "native-host/**",
+        ".next/**",
+        "!.next/cache/**"
+      ]
     },
     "dev": {
       "dependsOn": ["^build"],
@@ -71,19 +84,37 @@
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/pnpm-workspace.yaml",
         "$TURBO_ROOT$/*/package.json",
-        "$TURBO_ROOT$/*/eslint.config.mjs",
-        "$TURBO_ROOT$/*/eslint.scripts.config.mjs",
+        "$TURBO_ROOT$/*/eslint*.config.mjs",
         "$TURBO_ROOT$/*/*/package.json",
-        "$TURBO_ROOT$/*/*/eslint.config.mjs",
-        "$TURBO_ROOT$/*/*/eslint.scripts.config.mjs",
+        "$TURBO_ROOT$/*/*/eslint*.config.mjs",
         "$TURBO_ROOT$/*/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
         "$TURBO_ROOT$/*/*/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        // ci.yml, audit.yml and codeql.yml are all READ by this suite — the
+        // first for the repo-root lint/typecheck passes and the egress script,
+        // the other two by required-checks.test.js, which drives every job name
+        // and PR trigger behind a required check. A glob would be wrong here:
+        // an unread workflow in the same directory would then bust this hash on
+        // every edit.
         "$TURBO_ROOT$/.github/workflows/ci.yml",
+        "$TURBO_ROOT$/.github/workflows/audit.yml",
+        "$TURBO_ROOT$/.github/workflows/codeql.yml",
         "$TURBO_ROOT$/tools/ci/**",
         "$TURBO_ROOT$/package.json",
         "$TURBO_ROOT$/tsconfig.root.json",
         "$TURBO_ROOT$/eslint.root*.config.mjs",
         "$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        // CLAUDE.md is READ by this suite: §3's process.env table and §4's
+        // no-network opt-out table are each parsed and asserted against the tree
+        // they describe. Every other entry here is source; this one is prose,
+        // which is exactly why it is easy to leave out — and leaving it out is
+        // the whole hazard, because editing only the document would move no hash
+        // and turbo would replay a cached green at the one moment the guard
+        // exists to fire. No extension glob above reaches a .md.
+        "$TURBO_ROOT$/CLAUDE.md",
+        // CONTRIBUTING.md the same way: required-checks.test.js parses its
+        // "Checks that gate `main`" table and drives every row against the
+        // workflows.
+        "$TURBO_ROOT$/CONTRIBUTING.md",
         "!$TURBO_ROOT$/**/node_modules/**",
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",
@@ -93,7 +124,15 @@
         "!$TURBO_ROOT$/web-ui/out/**",
         "!$TURBO_ROOT$/web-ui/next-env.d.ts",
         "!$TURBO_ROOT$/cli/web-ui/**",
-        "!$TURBO_ROOT$/plugins/claude-code/scripts/**"
+        "!$TURBO_ROOT$/plugins/claude-code/scripts/**",
+        // plugins/browser-extension's tsup outDir, and the copies of it that
+        // cli/scripts/bundle-extension.mjs stages into the CLI package. All
+        // three are generated and gitignored, and none is named `dist`, so the
+        // blanket dist exclusion above does not reach them — without these the
+        // .js they emit lands in this hash and every extension build perturbs it.
+        "!$TURBO_ROOT$/plugins/browser-extension/native-host/**",
+        "!$TURBO_ROOT$/cli/extension/**",
+        "!$TURBO_ROOT$/cli/native-host/**"
       ]
     },
     "clean": {

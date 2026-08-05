@@ -61,6 +61,21 @@ export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from
 export { resolveProjectFiles } from './project-files.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';
+export type {
+  AntigravityProvider,
+  AntigravityProviderOrUnknown,
+  ResolvedAntigravityProvider,
+} from './provider-antigravity.ts';
+export {
+  antigravityProviderFromModelId,
+  resolveAntigravityProvider,
+} from './provider-antigravity.ts';
+export type {
+  CodexProvider,
+  CodexProviderOrUnknown,
+  ResolvedCodexProvider,
+} from './provider-codex.ts';
+export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
 export type { EgressHit } from './raw-egress.ts';
 export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
 export {

@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./scan-worker": "./src/scan-worker.ts"
+    "./scan-worker": "./src/scan-worker.ts",
+    "./browser": "./src/mask.ts"
   },
   "scripts": {
     "gen:bundled-packs": "node scripts/gen-bundled-packs.mjs",

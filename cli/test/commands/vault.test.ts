@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,7 @@ import {
   createKeyProvider,
   dataDir,
   dbPath,
+  EXCEPTION_KEY_FILENAME,
   keysDir,
   loadOrCreateFingerprintKey,
   openLocalDatabase,
@@ -75,14 +76,17 @@ async function seedPointer(): Promise<string> {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(readWorkspaceSettings(home).vaultKeyCustody, keysDir(home)),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(home).vaultConsent),
     });
-    const pointer = await vault.tokenize(RAW, {
-      ruleId: 'secrets/test-rule',
-      category: 'secret',
-      maskedMatch: 'vau…est',
-    });
+    const pointer = await vault.tokenize(
+      RAW,
+      {
+        ruleId: 'secrets/test-rule',
+        category: 'secret',
+        maskedMatch: 'vau…est',
+      },
+      () => loadOrCreateFingerprintKey(dir),
+    );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     return pointer;
   } finally {
@@ -160,5 +164,26 @@ describe('aka vault show', () => {
     const io = scriptedIo();
     await runVault([], io);
     expect(io.output()).toContain('aka vault show');
+  });
+
+  // A reveal reads. The fingerprint key is a different key from the vault's —
+  // it keys the exception ledger, and opening a stored value never consults it
+  // — so a reveal on a store without one must resolve normally and leave the
+  // store's key footprint exactly as it found it.
+  it('mints no fingerprint key', async () => {
+    const pointer = await seedPointer();
+    // Seeding tokenized, which mints legitimately. Remove the key exactly as
+    // the CLI's own corrupt-key guidance tells an operator to, so what the
+    // reveal does next is the only thing under test.
+    const keyFile = join(dataDir(home), EXCEPTION_KEY_FILENAME);
+    rmSync(keyFile);
+
+    const io = scriptedIo();
+    await runVault(['show', pointer, '--home', home], io);
+
+    // Positive control: the reveal really ran. Without it the absence below
+    // would also hold for a command that failed before reaching the vault.
+    expect(io.output().startsWith(`${RAW}\n`)).toBe(true);
+    expect(existsSync(keyFile)).toBe(false);
   });
 });

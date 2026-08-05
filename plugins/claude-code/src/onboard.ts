@@ -13,7 +13,7 @@
  * adapter glue.
  *
  * `--posture <json>` writes the wizard's per-category model calibration
- * (validated by ./onboard-posture.ts); `--floor` writes the severity-floor
+ * (validated by @akasecurity/setup-wizard's onboard-posture); `--floor` writes the severity-floor
  * fallback instead (`severityFloorPosture()`) when the backfill was too thin to
  * calibrate from. Both go straight to the policies store via applyCategoryPosture,
  * separate from the settings.json answers above. `--posture` overwrites existing
@@ -35,8 +35,8 @@ import {
   SimpleDetectionPolicy,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
+import { parsePosture } from '@akasecurity/setup-wizard';
 
-import { parsePosture } from './onboard-posture.ts';
 import { show } from './present.ts';
 import { renderCategoriesTuned } from './render.ts';
 

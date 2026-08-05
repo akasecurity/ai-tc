@@ -129,7 +129,12 @@ export function RotateKeyDialog({
 
           <div>
             <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-              Type “{ROTATE_CONFIRMATION}” to confirm
+              Type{' '}
+              {/* normal-case is load-bearing: the label is uppercased for style but the
+                  match below is case-sensitive, so the token has to render in the case
+                  the user must actually type. */}
+              <span className="font-mono normal-case tracking-normal">“{ROTATE_CONFIRMATION}”</span>{' '}
+              to confirm
             </div>
             <Input
               value={typed}
@@ -137,6 +142,7 @@ export function RotateKeyDialog({
                 setTyped(e.target.value);
               }}
               autoComplete="off"
+              className="font-mono"
             />
           </div>
 

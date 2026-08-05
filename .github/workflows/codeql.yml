@@ -1,15 +1,22 @@
 name: CodeQL
 
 # Static analysis via GitHub CodeQL over the TypeScript/JavaScript workspace
-# and the Actions workflow files themselves. Runs on every PR to main, on main
-# pushes, and weekly so newly released queries sweep the unchanged tree.
-# Findings land in the repository's Security tab.
+# and the Actions workflow files themselves. Runs on every PR, on main pushes,
+# and weekly so newly released queries sweep the unchanged tree. Findings land
+# in the repository's Security tab.
 
 on:
   push:
     branches: [main]
+  # No `branches:` filter, so a stacked PR (one based on another feature branch
+  # rather than on main) is analysed too. That is also what keeps the default
+  # event types sufficient here: `ci.yml` has to listen for `edited` because
+  # retargeting a PR's BASE fires only that event, and its `branches: [main]`
+  # filter means a stacked PR matches no event until it is retargeted. With no
+  # filter the run already happened when the PR was opened, so a retarget has
+  # nothing to re-trigger — and this check cannot end up permanently absent on
+  # a PR that is required to have it.
   pull_request:
-    branches: [main]
   schedule:
     - cron: '30 6 * * 1'
   workflow_dispatch:

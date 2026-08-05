@@ -376,6 +376,11 @@ export const auditEvents = sqliteTable(
     // a start/end window (e.g. the Activity timeline, token rollups by day)
     // without a full-table scan.
     index('idx_audit_type_t').on(t.eventType, t.startedAt),
+    // Serves the newest-first reads that span every event_type — the flat
+    // findings list walks (started_at DESC, id DESC) in keyset batches, which
+    // the composite indexes above cannot serve because none of them leads with
+    // started_at. Without it each batch sorts the whole remaining scope.
+    index('idx_audit_started_at').on(t.startedAt),
   ],
 );
 

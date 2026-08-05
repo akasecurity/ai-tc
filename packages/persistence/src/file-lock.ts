@@ -187,6 +187,34 @@ function holderIsAlive(pid: number): boolean {
   }
 }
 
+// Whether the lock's own directory will accept a create at all.
+//
+// Asked only when a retryable errno arrived and the lock path looks absent —
+// the one case where "contention" and "this directory can never hold a lock"
+// are otherwise indistinguishable. A unique name, so it can never collide with
+// the lock, another waiter's probe, or a delete-pending entry of its own.
+//
+// Answers `false` when it cannot tell, which is the safe direction here: a
+// wrong `false` raises a loud FileLockError the caller surfaces, where a wrong
+// `true` spends the whole timeout to report contention that never existed.
+function directoryAcceptsCreates(lock: string): boolean {
+  const probe = `${lock}.probe-${randomUUID()}`;
+  try {
+    closeSync(openSync(probe, 'wx', DATA_FILE_MODE));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    // `force` so the failure path — where nothing was created — is not an error
+    // of its own. A probe left behind would be swept by nothing.
+    try {
+      rmSync(probe, { force: true });
+    } catch {
+      // Best effort; a stray probe blocks no lock, since the name is unique.
+    }
+  }
+}
+
 // Take the lock, returning the token that proves this call owns it, or null if
 // somebody else holds it.
 //
@@ -195,9 +223,10 @@ function holderIsAlive(pid: number): boolean {
 // through — the same property the tmp write in paths.ts relies on.
 //
 // A create that fails for a retryable reason is contention only if a lock is
-// actually there. With no file at the path the fault is the directory's, and no
-// amount of waiting fixes a read-only or immutable one, so it is raised at once
-// rather than spending the whole timeout to report contention that never was.
+// actually there, OR if the directory would still take one. With neither, the
+// fault is the directory's, and no amount of waiting fixes a read-only or
+// immutable one, so it is raised at once rather than spending the whole timeout
+// to report contention that never was.
 function tryAcquire(lock: string, file: string): string | null {
   const token = randomUUID();
   let fd: number;
@@ -211,10 +240,20 @@ function tryAcquire(lock: string, file: string): string | null {
     // released lock reported as a directory that will never hold one, with an
     // EEXIST message attached. That fires on an ordinary two-writer handoff.
     if (code === 'EEXIST') return null;
-    // The rest arrive from Windows for both reasons, so the path itself decides:
-    // a lock that is there is contention, and one that is not means the
-    // directory refused the create.
-    if (RETRYABLE_CREATE_ERRNOS.has(code) && existsSync(lock)) return null;
+    // The rest arrive from Windows for both reasons, so something has to decide
+    // which. `existsSync` alone cannot: an unlinked name stays DELETE-PENDING
+    // until every handle on it closes, and in that window a create answers
+    // ERROR_ACCESS_DENIED (EPERM/EACCES) while `existsSync` already reports
+    // false — an ordinary handoff, reported as a directory that will never hold
+    // a lock. That is the same mistake the EEXIST note above refuses to make,
+    // and it is what `applyOnboarding` surfaced as a hard save failure.
+    //
+    // So the visible lock is the fast answer and the directory is the fallback:
+    // if it still takes a create, the lock path is transient and this is
+    // contention; if it does not, the directory really is the fault.
+    if (RETRYABLE_CREATE_ERRNOS.has(code) && (existsSync(lock) || directoryAcceptsCreates(lock))) {
+      return null;
+    }
     throw new FileLockError(
       'unavailable',
       file,

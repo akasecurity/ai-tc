@@ -154,6 +154,13 @@ describe('withFileLock', () => {
     // full timeout to announce one as the other sends a reader looking for a
     // process that does not exist. It also blocks `aka init`, whose whole job is
     // repairing a store in exactly this state.
+    //
+    // The generous timeout is the assertion, not a cushion: this refusal has to
+    // be IMMEDIATE. A retryable errno now falls back to probing the directory
+    // when the lock path looks absent, so a probe that wrongly answered "this
+    // directory takes creates" would turn this case into a 30s wait ending in
+    // `timeout` — which `aka init` swallows, silently declining to write the
+    // settings file it exists to create.
     const frozen = join(dir, 'frozen');
     mkdirSync(frozen);
     const target = join(frozen, 'settings.json');
@@ -169,6 +176,19 @@ describe('withFileLock', () => {
       chmodSync(frozen, 0o700);
     }
   });
+
+  // No case here drives the directory probe, and that is a statement rather
+  // than an omission. The probe runs only where a retryable errno meets a lock
+  // path that looks absent — Windows' delete-pending window — and POSIX has no
+  // way to produce that combination: every route to EACCES/EPERM on the lock
+  // also denies the probe and the `unavailable` case above already covers it,
+  // while a dangling symlink answers EEXIST and never reaches the branch. A
+  // case constructed here would create no probe at all and assert its absence
+  // vacuously.
+  //
+  // What proves the fix is `test/concurrency/settings-race.test.ts` on the
+  // Windows CI leg — the suite that caught the bug, where a concurrent handoff
+  // was reported as a permanently unavailable directory.
 
   it('takes a lock whose holder is gone and whose window has passed', () => {
     plantHeldLock({ pid: DEAD_PID, ageMs: 5_000 });

@@ -8,6 +8,8 @@ import './globals.css';
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
+import { THEME_INIT_SCRIPT } from './lib/theme.ts';
+
 export const metadata: Metadata = {
   title: {
     // Per-page titles fill %s; pages without their own title fall back to `default`.
@@ -19,8 +21,15 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  // suppressHydrationWarning: the init script sets the `dark` class on <html> before
+  // React hydrates, so the client's class attribute intentionally differs from the
+  // server-rendered one. It is scoped to <html> itself and does not reach children.
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Runs before first paint so a dark-mode load never flashes light. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );

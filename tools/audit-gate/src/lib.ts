@@ -218,16 +218,84 @@ export function normalizeNpmAudit(payload: NpmAuditPayload): AuditPayload {
   return { advisories, metadata: { vulnerabilities: counts } };
 }
 
-// pnpm's own suppression channel (`pnpm.auditConfig.ignoreCves`/`ignoreGhsas`)
-// filters advisories out of the payload and into `muted` — with no expiry, no
-// reason, and no report row. The gate refuses to run while anything is muted
-// so audit-waivers.json stays the only suppression route.
+// pnpm's own suppression channel (`auditConfig.ignoreCves`/`ignoreGhsas`) drops
+// an advisory with no expiry, no reason and no report row. The gate refuses to
+// run while it is configured, so audit-waivers.json stays the only suppression
+// route.
+//
+// The payload cannot reveal it. pnpm 10 does carry a top-level `muted` array,
+// but a muted advisory is filtered out of `advisories` and `muted` stays EMPTY
+// — and the severity counts in `metadata` are decremented to match, so nothing
+// in the output is inconsistent with a clean tree. The setting is therefore
+// read from the files pnpm takes it from, not inferred from what pnpm returns.
 export function assertNothingMuted(payload: AuditPayload): void {
   const muted = payload.muted ?? [];
   if (muted.length > 0) {
     throw new WaiverConfigError(
-      `pnpm.auditConfig mutes ${String(muted.length)} advisor${muted.length === 1 ? 'y' : 'ies'}; ` +
+      `pnpm auditConfig mutes ${String(muted.length)} advisor${muted.length === 1 ? 'y' : 'ies'}; ` +
         'muted advisories carry no expiry or review trail — use .github/audit-waivers.json instead',
+    );
+  }
+}
+
+// The two files pnpm reads `auditConfig` from. `.npmrc` is not one of them —
+// neither the flattened nor the camelCase spelling has any effect there — so
+// these two are the whole surface. Each is optional: a caller passes undefined
+// for a file that does not exist, which `exactOptionalPropertyTypes` makes a
+// distinct thing from omitting the property — so both spellings are allowed.
+export interface AuditConfigSources {
+  manifest?: string | undefined;
+  workspaceYaml?: string | undefined;
+}
+
+// A top-level `auditConfig:` mapping key, quoted or not. Anchored with no
+// leading whitespace on purpose: a nested key of the same name belongs to
+// something else and is not pnpm's setting.
+const WORKSPACE_AUDIT_CONFIG = /^["']?auditConfig["']?\s*:/m;
+
+// Names every place `auditConfig` is configured, so the refusal can point at
+// the file to edit. **Presence of the key is enough, in both channels** — the
+// gate never needs to know which advisories are named, so the key names are
+// never enumerated and one added by a later pnpm is caught for free. An
+// `auditConfig` that is present but empty suppresses nothing, and is refused
+// anyway: it is a stub with no other purpose, and the two channels cannot
+// answer differently without the rule becoming one nobody can state. The YAML
+// half could not tell empty from non-empty without a parser regardless.
+export function findAuditConfigMutes(sources: AuditConfigSources): string[] {
+  const found: string[] = [];
+
+  if (sources.manifest !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sources.manifest);
+    } catch {
+      throw new WaiverConfigError(
+        'package.json is not valid JSON, so its pnpm config is unreadable',
+      );
+    }
+    const auditConfig = (parsed as { pnpm?: { auditConfig?: unknown } } | null)?.pnpm?.auditConfig;
+    if (auditConfig !== null && typeof auditConfig === 'object') {
+      const keys = Object.keys(auditConfig).sort();
+      // An empty object has no keys to name, so the suffix is dropped rather
+      // than rendering as an empty pair of parentheses.
+      const detail = keys.length > 0 ? ` (${keys.join(', ')})` : '';
+      found.push(`package.json "pnpm.auditConfig"${detail}`);
+    }
+  }
+
+  if (sources.workspaceYaml !== undefined && WORKSPACE_AUDIT_CONFIG.test(sources.workspaceYaml)) {
+    found.push('pnpm-workspace.yaml "auditConfig"');
+  }
+
+  return found;
+}
+
+export function assertNoAuditConfigMutes(sources: AuditConfigSources): void {
+  const found = findAuditConfigMutes(sources);
+  if (found.length > 0) {
+    throw new WaiverConfigError(
+      `pnpm auditConfig is set in ${found.join(' and ')}; it suppresses advisories with no expiry, ` +
+        'no reason and no report row — remove it and use .github/audit-waivers.json instead',
     );
   }
 }

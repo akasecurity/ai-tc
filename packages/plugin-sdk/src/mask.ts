@@ -1,3 +1,11 @@
+// This module's own import chain (@akasecurity/detections, @akasecurity/schema,
+// ./rule-packs.ts, ./bundled-packs.generated.ts) is entirely free of Node APIs,
+// so it is also exposed as the package's `./browser` subpath export — the ONE
+// piece of plugin-sdk safe to bundle into plugins/browser-extension's content
+// script. Keep it that way: importing anything Node-only here (fs, sqlite,
+// crypto, …) would break that bundle. The rest of plugin-sdk (config, gateway,
+// fingerprint, …) stays Node-only and is consumed only by the CLI-hook plugins
+// and the native-messaging host, never by the content script directly.
 import { getLoadedRules, maskMatch, redact, scan } from '@akasecurity/detections';
 import type { DetectionCategory, Severity, Span } from '@akasecurity/schema';
 

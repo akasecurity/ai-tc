@@ -133,10 +133,10 @@ export function DetectionsListView({
                   'inline-flex h-7 items-center gap-1.5 cursor-pointer rounded-full border px-2.5 text-xs font-semibold ' +
                   (on
                     ? amber
-                      ? 'border-sev-high bg-sev-high-fill text-sev-high'
+                      ? 'border-sev-high bg-sev-high-fill text-sev-high-ink'
                       : 'border-primary bg-primary-tint text-primary'
                     : amber
-                      ? 'border-border text-sev-high'
+                      ? 'border-border text-sev-high-ink'
                       : 'border-border bg-surface text-text-2')
                 }
               >
@@ -154,7 +154,7 @@ export function DetectionsListView({
             Loading detections…
           </div>
         ) : error ? (
-          <div className="grid flex-1 place-items-center p-6 text-center text-xs text-sev-critical">
+          <div className="grid flex-1 place-items-center p-6 text-center text-xs text-sev-critical-ink">
             {error}
           </div>
         ) : items.length === 0 ? (

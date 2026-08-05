@@ -1,10 +1,14 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { MatchResult } from '@akasecurity/detections';
-import { applyOnboarding, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  EXCEPTION_KEY_FILENAME,
+  openLocalDatabase,
+} from '@akasecurity/persistence';
 import { PointerToken, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -191,6 +195,85 @@ describe('vault glue', () => {
         expect(db.secretVault.countEntries()).toBe(0);
         db.close();
         ungranted.close();
+      } finally {
+        removeTree(bare);
+      }
+    });
+  });
+
+  // The exception fingerprint key is a WRITE dependency: it keys the ledger a
+  // vaulted value can later be approved from, and nothing the glue does on the
+  // read side consults it. This glue is built once per process and serves both
+  // sides, so a session that only renders or reveals must leave the key
+  // footprint it found — otherwise a store whose key was deleted (which the
+  // CLI's own corrupt-key guidance tells operators to do) silently gets a
+  // fresh one back, and the next approve reports a rotation that never
+  // happened instead of the missing key.
+  describe('fingerprint key footprint', () => {
+    const keyFile = (b: string): string => join(dataDir(b), EXCEPTION_KEY_FILENAME);
+
+    it('mints on a write', async () => {
+      const fresh = createVaultGlue({ base });
+      try {
+        const token = await fresh.tokenizeValue(SECRET, {
+          ruleId: 'aws-access-key',
+          category: 'secret',
+          maskedMatch: 'A******E',
+        });
+        // Positive control: the write really stored something. A degraded
+        // tokenize returns the one-way placeholder and would mint nothing.
+        expect(PointerToken.safeParse(token).success).toBe(true);
+        expect(existsSync(keyFile(base))).toBe(true);
+      } finally {
+        fresh.close();
+      }
+    });
+
+    it('mints nothing on the read side', async () => {
+      // Seed through the shared glue so there is a real pointer to read back,
+      // then take the key away — the reads below must not put one back.
+      const token = await glue.tokenizeValue(SECRET, {
+        ruleId: 'aws-access-key',
+        category: 'secret',
+        maskedMatch: 'A******E',
+      });
+      rmSync(keyFile(base));
+
+      const reader = createVaultGlue({ base });
+      try {
+        const back = await reader.detokenizeText(`v=${token}`, {
+          target: 'human',
+          reason: 'explicit-reveal',
+        });
+        // Positive control: the read side really worked without the key, so
+        // the absence below is about minting rather than about a broken glue.
+        expect(back.text).toBe(`v=${SECRET}`);
+        expect(existsSync(keyFile(base))).toBe(false);
+      } finally {
+        reader.close();
+      }
+    });
+
+    // A refused write is not a write. A user who never granted vault consent
+    // keeps a zero key footprint, exactly as one who never trips enforcement
+    // does.
+    it('mints nothing on a write refused for want of consent', async () => {
+      const bare = mkdtempSync(join(tmpdir(), 'aka-glue-nokey-'));
+      try {
+        const ungranted = createVaultGlue({ base: bare });
+        try {
+          // Positive control: this is the refusal path, not a passthrough.
+          await expect(
+            ungranted.tokenizeValue(SECRET, {
+              ruleId: 'aws-access-key',
+              category: 'secret',
+              maskedMatch: 'A******E',
+            }),
+          ).resolves.toBe('[REDACTED:SECRET]');
+          expect(existsSync(keyFile(bare))).toBe(false);
+        } finally {
+          ungranted.close();
+        }
       } finally {
         removeTree(bare);
       }

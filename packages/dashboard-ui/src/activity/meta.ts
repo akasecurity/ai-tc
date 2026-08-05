@@ -28,9 +28,13 @@ export const HARNESS_KIND: Record<Harness, string> = {
   cursor: 'IDE',
   copilot: 'IDE',
   codex: 'CLI agent',
+  // Ships as both the `agy` CLI and an IDE; the CLI is the surface this
+  // repo's plugin instruments (the IDE fires no plugin hooks).
+  antigravity: 'CLI agent',
   windsurf: 'IDE',
   claudedesktop: 'Desktop app',
   chatgpt: 'Web app',
+  claudeai: 'Web app',
   api: 'API',
 };
 
@@ -40,9 +44,11 @@ export const HARNESS_IDS: Harness[] = [
   'cursor',
   'copilot',
   'codex',
+  'antigravity',
   'windsurf',
   'claudedesktop',
   'chatgpt',
+  'claudeai',
   'api',
 ];
 
@@ -59,27 +65,32 @@ interface EventMeta {
 export const EVENT_META: Record<AuditEventKind, EventMeta> = {
   session: { label: 'Session', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
   prompt: { label: 'Prompt', icon: UserIcon, text: 'text-primary', fill: 'bg-primary-tint' },
-  response: { label: 'Response', icon: SparklesIcon, text: 'text-violet', fill: 'bg-violet-fill' },
+  response: {
+    label: 'Response',
+    icon: SparklesIcon,
+    text: 'text-violet-ink',
+    fill: 'bg-violet-fill',
+  },
   tool: { label: 'Tool', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
-  hook: { label: 'Hook', icon: RouteIcon, text: 'text-sev-low', fill: 'bg-sev-low-fill' },
+  hook: { label: 'Hook', icon: RouteIcon, text: 'text-sev-low-ink', fill: 'bg-sev-low-fill' },
   detection: {
     label: 'Detection',
     icon: ShieldCheckIcon,
-    text: 'text-sev-critical',
+    text: 'text-sev-critical-ink',
     fill: 'bg-sev-critical-fill',
   },
-  share: { label: 'Egress', icon: ExternalShareIcon, text: 'text-teal', fill: 'bg-teal-fill' },
+  share: { label: 'Egress', icon: ExternalShareIcon, text: 'text-teal-ink', fill: 'bg-teal-fill' },
   permission: {
     label: 'Permission',
     icon: LockIcon,
-    text: 'text-sev-high',
+    text: 'text-sev-high-ink',
     fill: 'bg-sev-high-fill',
   },
   commit: { label: 'Commit', icon: BranchIcon, text: 'text-text-2', fill: 'bg-surface-3' },
   error: {
     label: 'Error',
     icon: AlertIcon,
-    text: 'text-sev-critical',
+    text: 'text-sev-critical-ink',
     fill: 'bg-sev-critical-fill',
   },
   active: { label: 'In progress', icon: BoltIcon, text: 'text-primary', fill: 'bg-primary-tint' },

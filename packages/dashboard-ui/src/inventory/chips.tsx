@@ -174,7 +174,7 @@ export function RadioCardList<T extends string, M extends RadioCardMeta>({
             <span
               className={cn(
                 'grid size-4.5 shrink-0 place-items-center rounded-full border-[1.5px]',
-                on ? cn('border-current text-white', accentOf(m)) : 'border-border-strong',
+                on ? cn('border-current text-on-accent', accentOf(m)) : 'border-border-strong',
               )}
             >
               {on && <Ico name="check" className="size-3" />}
@@ -243,7 +243,7 @@ export function FlagChips({ flags, mini }: { flags: Flag[]; mini?: boolean | und
   if (flags.length === 0) {
     if (mini) return null;
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ok">
+      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-ok-ink">
         <Ico name="check-circle" className="size-3.5" /> OK
       </span>
     );

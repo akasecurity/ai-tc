@@ -147,7 +147,7 @@ export function InventoryClient({
       {writeError && (
         <div
           role="alert"
-          className="mb-3 shrink-0 rounded-lg border border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical"
+          className="mb-3 shrink-0 rounded-lg border border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical-ink"
         >
           {writeError}
         </div>

@@ -18,12 +18,12 @@ import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } f
  * rather than verbs — see HttpMethod in @akasecurity/schema.
  */
 const METHOD_TONE: Record<HttpMethod, string> = {
-  GET: 'bg-sev-low-fill text-sev-low',
-  POST: 'bg-ok-fill text-ok',
-  PUT: 'bg-sev-high-fill text-sev-high',
-  DELETE: 'bg-sev-critical-fill text-sev-critical',
-  SDK: 'bg-ok-fill text-ok',
-  REF: 'bg-sev-medium-fill text-sev-medium',
+  GET: 'bg-sev-low-fill text-sev-low-ink',
+  POST: 'bg-ok-fill text-ok-ink',
+  PUT: 'bg-sev-high-fill text-sev-high-ink',
+  DELETE: 'bg-sev-critical-fill text-sev-critical-ink',
+  SDK: 'bg-ok-fill text-ok-ink',
+  REF: 'bg-sev-medium-fill text-sev-medium-ink',
 };
 export function MethodTag({ method }: { method: HttpMethod }) {
   return (
@@ -50,7 +50,7 @@ export function TransportTag({ transport, plain }: { transport: Transport; plain
       <span
         className={cn(
           'inline-flex items-center gap-1.5 text-xs font-semibold',
-          m.secure ? 'text-text-2' : 'text-sev-critical',
+          m.secure ? 'text-text-2' : 'text-sev-critical-ink',
         )}
       >
         <Icon aria-hidden focusable={false} className="size-3" />
@@ -112,9 +112,13 @@ export function DestMark({
 }) {
   if (kind === 'provider') {
     const { short, color } = providerMark(name, host);
+    // Same construction as Provider in shared/Provider.tsx — white lettermark on a
+    // fixed hex — so it carries the same per-theme inset ring. This palette has no
+    // value sitting on a surface color today; the ring is here so the two tiles
+    // cannot drift the next time either list gains a color.
     return (
       <span
-        className="inline-flex shrink-0 items-center justify-center rounded-lg font-display font-semibold text-white"
+        className="inline-flex shrink-0 items-center justify-center rounded-lg font-display font-semibold text-white ring-1 ring-inset ring-mark-edge"
         style={{ width: size, height: size, background: color, fontSize: size * 0.34 }}
       >
         {short}

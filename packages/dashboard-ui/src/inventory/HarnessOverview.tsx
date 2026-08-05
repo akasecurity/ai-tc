@@ -91,7 +91,7 @@ export function HarnessOverview({
           </div>
           {items.length === 0 ? (
             <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-border-strong px-3 py-3.5 text-text-3">
-              <Ico name="check-circle" className="size-4 text-ok" />
+              <Ico name="check-circle" className="size-4 text-ok-ink" />
               <span className="text-xs">No blocks, redactions or warnings from this harness</span>
             </div>
           ) : (
@@ -138,7 +138,7 @@ export function HarnessOverview({
         {/* attention / trust banner */}
         {(harness.flagCount > 0 || unapproved > 0) && (
           <div className="flex items-center gap-2.5 rounded-lg border border-border bg-sev-high-fill px-3 py-2.5">
-            <Ico name="flag" className="size-4 shrink-0 text-sev-high" />
+            <Ico name="flag" className="size-4 shrink-0 text-sev-high-ink" />
             <div className="text-xs font-medium text-text">
               {harness.flagCount > 0 &&
                 `${String(harness.flagCount)} item${harness.flagCount === 1 ? '' : 's'} need review`}
@@ -219,7 +219,9 @@ function ProjectMini({ p, onSelect }: { p: ProjectSummary; onSelect: (id: string
       </div>
       <AccessBar counts={counts} />
       {counts.blocked > 0 && (
-        <span className="text-xs font-semibold text-sev-critical">{counts.blocked} blocked</span>
+        <span className="text-xs font-semibold text-sev-critical-ink">
+          {counts.blocked} blocked
+        </span>
       )}
       {p.findingsCount > 0 && <FlagChips flags={['findings']} mini />}
       <Ico name="chevron-right" className="size-4 shrink-0 text-text-3" />

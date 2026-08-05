@@ -11,12 +11,12 @@ import type {
   SetupHandoffOffer,
 } from '@akasecurity/schema';
 import { SetupHandoffOffer as SetupHandoffOfferSchema } from '@akasecurity/schema';
+import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { frameCalibration } from '../../src/calibration.ts';
 import { runFirstRun } from '../../src/firstrun-core.ts';
 import { readPostureBlock } from '../../src/posture.ts';
-import { presentBatchedRemediation } from '../../src/remediation/chain.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { frameJsonBlock, readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 

@@ -18,10 +18,10 @@ export const SEVERITY_META: Record<Severity, { label: string; color: string }> =
 
 // Tailwind classes for a severity-tinted icon tile (fill + foreground).
 export const SEVERITY_TILE: Record<Severity, string> = {
-  critical: 'bg-sev-critical-fill text-sev-critical',
-  high: 'bg-sev-high-fill text-sev-high',
-  medium: 'bg-sev-medium-fill text-sev-medium',
-  low: 'bg-sev-low-fill text-sev-low',
+  critical: 'bg-sev-critical-fill text-sev-critical-ink',
+  high: 'bg-sev-high-fill text-sev-high-ink',
+  medium: 'bg-sev-medium-fill text-sev-medium-ink',
+  low: 'bg-sev-low-fill text-sev-low-ink',
 };
 
 // `icon` is a concrete component (resolved here, not a string name), so the view

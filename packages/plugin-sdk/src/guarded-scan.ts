@@ -45,9 +45,11 @@ export interface GuardedScanner {
   scan(text: string, context?: ScanContext): Promise<MatchResult[]>;
   /**
    * True once isolation has been retired, which means every pulled/custom-pack
-   * regex rule has been dropped for the rest of this process. A caller that
-   * records "this input was scanned" must not record it against the full
-   * ruleset after this flips.
+   * regex rule has been dropped for the rest of THIS scanner's life — the rest
+   * of the process for a caller that builds one and exits, the rest of one unit
+   * of work for a caller that builds one per unit (see `degradeScope`). A
+   * caller that records "this input was scanned" must not record it against the
+   * full ruleset after this flips.
    */
   degraded(): boolean;
   close(): Promise<void>;
@@ -58,9 +60,24 @@ export interface GuardedScanPartition {
   unverified: Rule[];
 }
 
-function warnDegraded(dropped: number, detail: string): void {
+export interface GuardedScanOptions extends IsolatedScanOptions {
+  /**
+   * How long a degradation lasts, in the words the stderr warning uses. The
+   * default fits a process that builds ONE scanner and exits — every hook — so
+   * "the rest of this process" and "the rest of this scanner" are the same
+   * span. A caller that builds a scanner per unit of work says so here: the
+   * dashboard's folder scan builds one per request precisely so a single hang
+   * does not cost a long-running server its pulled rules until it is
+   * restarted, and the default sentence would claim exactly that.
+   */
+  degradeScope?: string | undefined;
+}
+
+const DEFAULT_DEGRADE_SCOPE = 'the rest of this process';
+
+function warnDegraded(scope: string, dropped: number, detail: string): void {
   process.stderr.write(
-    `[aka] isolated scanning is off for the rest of this process: ${detail}. ` +
+    `[aka] isolated scanning is off for ${scope}: ${detail}. ` +
       `${String(dropped)} pulled/custom-pack rule(s) are excluded; the built-in packs still run.\n`,
   );
 }
@@ -68,8 +85,9 @@ function warnDegraded(dropped: number, detail: string): void {
 export function createGuardedScanner(
   partition: GuardedScanPartition,
   gateway: Pick<RuleProbeGateway, 'setRuleProbeVerdict'>,
-  opts?: IsolatedScanOptions,
+  opts?: GuardedScanOptions,
 ): GuardedScanner {
+  const degradeScope = opts?.degradeScope ?? DEFAULT_DEGRADE_SCOPE;
   const verified = partition.verified;
   let unverified = partition.unverified;
   let isolated: IsolatedScanner | undefined =
@@ -80,15 +98,16 @@ export function createGuardedScanner(
     return scan(text, verified, context);
   }
 
-  // One hang costs one bounded recovery per process, not one per field. A
+  // One hang costs one bounded recovery per scanner, not one per field. A
   // PreToolUse hook can scan up to MCP_MAX_LEAF_COUNT fields; paying the
   // deadline on each would run the hook past the harness timeout, and a
   // timed-out hook fails open and lets the whole tool call through unscanned —
   // the exact bypass this guards. So the first failure retires isolation, and
-  // with it every unverified rule, for the remainder of the process. The next
-  // process starts clean: an attributed culprit is quarantined in the shared
+  // with it every unverified rule, for the remaining life of this scanner. The
+  // next one starts clean: an attributed culprit is quarantined in the shared
   // cache and never loads again, and any rule dropped only as collateral is
-  // back.
+  // back. How long that costs is the caller's choice of scanner lifetime — a
+  // hook builds one and exits, the dashboard builds one per folder scan.
   async function retire(): Promise<void> {
     const live = isolated;
     isolated = undefined;
@@ -148,7 +167,11 @@ export function createGuardedScanner(
       // isolation still retires: a machine that stalls once stalls again, and
       // paying two budgets per field is the harness timeout this exists to
       // avoid. These findings are real — hand them back.
-      warnDegraded(dropped, 'a scan overran its bound once and no rule could be held responsible');
+      warnDegraded(
+        degradeScope,
+        dropped,
+        'a scan overran its bound once and no rule could be held responsible',
+      );
       const findings = outcome.findings;
       await degrade();
       return findings;
@@ -167,6 +190,7 @@ export function createGuardedScanner(
         );
       }
       warnDegraded(
+        degradeScope,
         dropped,
         culprit
           ? `rule "${culprit.id}" had to be terminated mid-scan`
@@ -175,7 +199,7 @@ export function createGuardedScanner(
               `will try these rules again`,
       );
     } else {
-      warnDegraded(dropped, outcome.reason);
+      warnDegraded(degradeScope, dropped, outcome.reason);
     }
 
     await degrade();

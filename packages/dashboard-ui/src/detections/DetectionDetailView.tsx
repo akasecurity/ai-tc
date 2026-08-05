@@ -113,7 +113,9 @@ export function DetectionDetailView({
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className={'text-ui font-semibold ' + (d.enabled ? 'text-ok' : 'text-text-3')}>
+              <span
+                className={'text-ui font-semibold ' + (d.enabled ? 'text-ok-ink' : 'text-text-3')}
+              >
                 {d.enabled ? 'Enabled' : 'Disabled'}
               </span>
               {onToggleEnabled && (

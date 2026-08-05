@@ -103,4 +103,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0018_serious_tana_nile',
     sql: 'ALTER TABLE `secret_vault` ADD `format_version` integer DEFAULT 2 NOT NULL;',
   },
+  {
+    tag: '0019_audit_started_at_index',
+    sql: 'CREATE INDEX `idx_audit_started_at` ON `audit_events` (`started_at`);',
+  },
 ];

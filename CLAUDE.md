@@ -5,8 +5,10 @@ Read this before generating any code in this repository. These conventions are e
 AI Traffic Control (`ai-tc`, by AKA Security — the `aka` CLI and plugin names come from
 the company) is a **local-first** security control plane for AI coding agents. The whole surface
 runs on one machine with **no server, no Docker, and no database engine**: the Claude Code
-plugin and the `aka` CLI capture agent activity into a local SQLite store at
-`~/.aka/data/aka.db`, and the web dashboard reads that same store directly. There is no
+plugin, the Codex CLI plugin, the Antigravity plugin, the browser extension (ChatGPT +
+Claude.ai web chat, bridged over Chrome native messaging — no port, no listener), and the
+`aka` CLI capture agent activity into a local SQLite store at `~/.aka/data/aka.db`, and the
+web dashboard reads that same store directly. There is no
 account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
 paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
 sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
@@ -20,13 +22,84 @@ sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
 - **Validation:** Zod schemas in `@akasecurity/schema` — the single source of truth
 - **Web dashboard:** Next.js 15 + React 19 (Server Components read the store; Server Actions mutate it)
 - **Testing:** Vitest
-- **Packaging:** the `aka` CLI and the Claude Code plugin, published to npm as self-contained bundles
+- **Packaging:** the `aka` CLI and the Claude Code / Codex CLI / Antigravity plugins, published to npm as self-contained bundles
 
 ## Architecture principles
 
 ### 1. Fail-open everywhere in the plugin
 
-The plugin **must never break a user's Claude session**. Every hook handler wraps everything in try/catch and falls back to `{ action: 'allow' }`.
+The plugin **must never break a user's Claude session**. Every hook entry wraps `main()` in
+try/catch and then calls `process.exit(0)`, so a hook that fails writes **nothing to stdout and
+exits 0** — which the hook protocol reads as "no opinion", i.e. allow. Failing open is the
+_absence_ of output, not a payload.
+
+**No hook emits `{ action: 'allow' }`, and none should start.** `action` is a `CaptureResult`
+field that never crosses the wire; the internal fallback `handleCapture` returns when the runtime
+throws is `{ action: 'log' }`, and `'allow'` is only ever assigned to an **excepted** finding.
+Emitting a real opinion means writing one JSON object to stdout via `emit()`
+(`plugins/claude-code/src/hooks/shared.ts`), which takes the `HookOutput` union rather than
+`unknown`, so a payload outside that union cannot reach the wire at all. Its six shapes are
+`decision` and `systemMessage` at the top level, plus one `hookSpecificOutput` per hook —
+`PreToolUse`'s `permissionDecision`, `PostToolUse`'s `updatedToolOutput`, `MessageDisplay`'s
+`displayContent` and `SessionStart`'s `additionalContext`. The write is awaited, because
+`process.exit` does not flush a pending pipe write and a truncated object reads as invalid JSON,
+passing the original payload through unscanned.
+
+That enumeration is derived rather than remembered, because this is the sentence that drifted last
+time — it claimed four shapes while six were reaching stdout, and the two it omitted belong to the
+two hooks nothing else in this file mentions. `plugins/claude-code/test/hook-output-shapes.test.ts`
+reads it and drives it against the union: the count word, the two top-level keys, and each
+`hookEventName` paired with the field that distinguishes it. A seventh variant added to
+`HookOutput` fails to compile until that test's map names it, and fails that test until this
+sentence does.
+
+`plugins/claude-code/test/e2e/fail-open.e2e.test.ts` is what holds this rather than review: it
+drives the built hooks against malformed, truncated, binary and oversized stdin, asserting exit 0
+and empty stdout, and its `expectNoActionKey` fails any emitted payload carrying an `action` key.
+That last check is worth **nothing** on the rows above it, which have already asserted the stdout
+is empty — `''` matches no pattern. So the file also drives a real finding through each enforcing
+hook at block, redact, warn and log, asserts the shape each cell is expected to emit (the positive
+control, without which a hook that stopped emitting would turn every absence assertion back into
+the vacuous form), and reads `expectNoActionKey` over the payload that produced. Keep both halves:
+the fault rows prove silence, and only the enforcement rows can prove what the noise looks like.
+
+**What "fall back to allow" means is the HOST's convention, not a fixed payload.** Claude Code
+and Codex read "exited 0, said nothing" as "no opinion" — so a silent `catch` is genuinely
+fail-open there. **Antigravity reads it as a `deny`**: a hook that exits non-zero, is killed on
+its timeout, or prints nothing blocks the tool call outright. On that host, failing open means
+_printing an explicit_ `{"decision":"allow"}` on every path — see
+`runHookFailOpen` in `plugins/antigravity/src/hooks/shared.ts`. Before writing a fail-open path
+for a new harness, check which convention it uses; assuming this one is what turns a crashing
+hook into a wedged session.
+
+**That guarantee reaches exactly as far as the event loop does, and the gap is not academic.**
+`runHookFailOpen` races the body against a `setTimeout`, so it covers a throw, an undecided
+body, and a body that outruns the watchdog — everything that _yields_. It cannot preempt a body
+that blocks the thread, because nothing on the calling thread can. A block that clears inside
+the host's own 10s still emits and exits 0 — the denial needs the block to outlast the HOST,
+not merely the watchdog. Two blocking stretches sit on the capture path and compose:
+`openLocalDatabase` is synchronous `node:sqlite` whose `PRAGMA busy_timeout = 2000` is charged
+per contended **statement** rather than once per open (so the reachable total is a multiple of
+2s), and §5's fast-path `scan()` is synchronous and in-process whenever the ruleset carries no
+pulled or custom regex rule. `emit` sits outside the race as well, so a stalled pipe has no
+deadline at all — and on that path the closing `process.exit(0)` is never reached either. This is §5's argument arriving at a second boundary — the fix for an unbounded stretch is
+to move it off the thread, never to lengthen the timer — and the consequence here is harsher
+than a missed scan: the condition that blocks (a contended store, a held lock) persists, so the
+denial does too. Do not describe the explicit-allow as unconditional; it is unconditional over
+what yields.
+
+Both halves are covered, and by different suites because they fail differently.
+`plugins/antigravity/test/hooks/fail-open-wrapper.test.ts` drives `runHookFailOpen` itself —
+the throw, the undecided body, the watchdog win, a late rejection that must not surface as an
+unhandled rejection (which would exit non-zero, i.e. deny, by a route the wrapper never writes
+to), and the synchronous-block limit pinned as behaviour rather than prose. It also asserts one
+JSON object, not merely a non-empty stdout: two concatenated objects do not parse, so a second
+write is a deny exactly like silence.
+`plugins/antigravity/test/e2e/fail-open.e2e.test.ts` is the Claude Code sibling's mirror image
+and drives all four built hooks against empty, malformed, truncated, scalar, binary and
+oversized stdin plus an unopenable store. Every assertion there is a **presence** check —
+absence checks are the right shape on a fail-open host and the wrong one here, where `''` is
+the failure being guarded against.
 
 ### 2. Contracts before code
 
@@ -36,16 +109,34 @@ The plugin **must never break a user's Claude session**. Every hook handler wrap
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Four places genuinely need the host environment and opt out:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eight places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                      | Mechanism                         | Why                                         |
-| ----------------------------------------- | --------------------------------- | ------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`     | file-scoped ESLint config         | LLM-provider resolution at SessionStart     |
-| `cli/src/commands/dashboard.ts`           | inline `eslint-disable-next-line` | spawning the dashboard server               |
-| `plugins/claude-code/src/backfill.ts`     | inline `eslint-disable-next-line` | resolving the transcript root               |
-| `plugins/claude-code/src/triage/judge.ts` | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth |
+| Site                                              | Mechanism                         | Why                                                        |
+| ------------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
+| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
+| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                              |
+| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
+| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
+| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
+| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth  |
+| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation  |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a fifth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a ninth site means updating this table.
+
+That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
+
+**Both mechanisms are inventoried, not just the config one.** An inline disable is invisible to
+anything that resolves configs, so the check above would never have seen one had it been the only
+check: `packages/eslint-config/test/inline-disables.test.js` reads the **directives** instead, over
+every tracked lintable file, and asserts the set that disables `n/no-process-env` **exactly** — a
+floor would let a new one in, which is the whole failure mode. Its expectation is wider than this
+table on purpose, because this table is scoped to shipped source: the test harnesses that spawn the
+real hooks carry inline disables of their own, and until that suite landed nothing inventoried
+them at all. Two forms this table's language does not reach are refused outright there rather than
+tabled — a bare `/* eslint-disable */`, which takes every rule with it, and an inline
+`/* eslint <rule>: … */`, which can empty a ban while leaving it at `error`. Both run to the end of
+the file, so both exempt code nobody has written yet.
 
 ### 4. No network calls
 
@@ -58,22 +149,65 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 
 Five files carry a genuine local-only opt-out:
 
-| Site                                                                                          | Allowed specifier                                      | Why                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                 | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                       | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                     | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                    | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
-| `packages/eslint-config/test/no-network-runtime.test.js` (via `eslint.root.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
+| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
-Network access happens **only through child processes**. In the first three, this repo chooses the program and its arguments; in the fourth it chooses neither:
+**Inline disables are inventoried too, and across the whole tree rather than four files.** Every
+audit named above resolves **configs**, so none of them can see an inline `eslint-disable` — and
+one line of it admits `node:https` into any package's shipped source with `pnpm lint` at exit 0.
+The raw-guard measure closes that for the four files it pins and only those.
+`packages/eslint-config/test/inline-disables.test.js` is the tree-wide half: it reads the
+directives in every tracked lintable file and asserts the set disabling any of the four network
+rules **exactly**. That set is one entry long — this section's `fetch` (inline) — and an exact set
+is the point, since a guard that only forbids removals lets the next one in. It also refuses the
+two forms this table has no language for: a bare `/* eslint-disable */`, which disables all four at
+once, and an inline `/* eslint <rule>: … */`, which can empty a ban while leaving it at `error`.
+
+**Which configs that audit reads is derived, not globbed.** An ESLint config enforces
+something exactly when a `lint` script points ESLint at it, so `no-network.test.js` walks the
+eslint invocations a green `pnpm lint` really runs — every `-c` / `--config` / `--config=`
+target, plus, for an invocation carrying none, the config ordinary flat-config lookup finds
+from the directory that invocation runs in (asked of ESLint's own `findConfigFile`, not
+modelled). A filename glob was the earlier answer and is a hole one rename wide: ESLint
+honours `-c eslint.extra.config.js` exactly like the two conventional names, so a third
+config was referenced by the lint script, applied on every pass, and inspected by nobody —
+while the suite's own test count went _up_, because the extra invocation generates more probe
+targets elsewhere. Two consequences for anyone adding a config:
+
+- **Name it anything and it is still audited** — but an opt-out in it must then appear in
+  `DOCUMENTED_OPT_OUTS` and in the table above, exactly as for the conventional names.
+- **A config no invocation runs is a failure, not a no-op.** Dead config enforces nothing
+  while reading like a lint surface, so the audit differences the tree's `*eslint*.config.*`
+  files against the derived set and names anything left over. Wire it into a `lint` script or
+  delete it.
+
+The reader itself — which invocations a green run makes, which config each runs under, and
+which paths each covers — is one shared module
+(`packages/eslint-config/test/helpers/lint-invocations.js`), used by both that audit and the
+per-package lint-coverage check in `effective-config.test.js`. Two readers of one shell string
+would be free to disagree about what runs, which is how a file ends up covered by one guard
+and audited by neither. `trackedFiles()` sits there for the same reason and is the one
+`git ls-files` walk every audit in the package asks — including the ones below, which ask what
+the tree really holds rather than what a lint script says.
+
+`DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
+
+Network access happens **only through child processes**. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`) for update-and-apply.
 2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked with `maskText`, which scans the **bundled** packs rather than the installed set — coverage is still complete because `buildTriageHit` has already redacted every other finding from the full-ruleset scan, and this hit's own value is masked here where it appears in the window; `rawMatch` is therefore the only raw value that crosses), `id` (a sequential counter the rubric requires the model to echo), and the non-sensitive scoring labels `ruleId`, `category`, `severity`, `maskedMatch` and `confidence`. `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. `historicalAccess` gates the READ only — a `full` grant authorizes no egress by itself, and no consent surface may imply that it does. Both grants are revocable under Settings, where **Historical access** and **Model-judge consent** are separate controls; revoking stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly; it must never be described as staying "inside an isolated subprocess." Four surfaces carry that copy and move together: `plugins/claude-code/commands/setup.md`, the `[^egress]` footnote in each of the two READMEs, and the Settings copy in `packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx`.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
+5. The Codex `aka-setup` wizard's judge subprocess (`plugins/codex/src/triage/judge.ts`), which spawns `codex exec` and sends the same minimized `toJudgePayload` projection to the model API as the Claude Code judge — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — chunked into several `codex exec` calls for a large history, under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit (revoking stops future scans but cannot recall what was already sent). The `--ephemeral` flag stops the judge session from being written under `~/.codex/sessions` (which AKA's own backfill scans — a persisted judge session would re-ingest the raw findings it carries), but that is session-persistence isolation, **not** network isolation. The same consent-copy honesty rules apply (`plugins/codex/skills/setup/SKILL.md`).
+
+6. The Antigravity `aka-setup` wizard's judge subprocess (`plugins/antigravity/src/triage/judge.ts`), which sends the same minimized `toJudgePayload` projection to the model API as the other two judges — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit. **This host is materially weaker than the other two, and the consent copy must say so.** Its CLI documents no `exec` subcommand and no ephemeral mode: the headless entrypoint is `agy -p "<prompt>" --output-format json`, so (a) every judge run **persists** a conversation under `~/.gemini/antigravity/brain/<conversationId>/` — the same store AKA's own backfill sweeps — which this module then deletes itself in a `finally`, best effort only (a killed process leaves it), and (b) the prompt rides **argv** rather than stdin, so the raw values are visible to `ps` for the life of the run and sit under the OS's `ARG_MAX` (the caller's chunking is what keeps them under it). Deletion is a local-write cleanup, **not** network isolation. Attribution for that deletion is deliberately conservative — the reported `conversation_id`, else a newly-appeared conversation only when exactly one appeared — because deleting a conversation the user started is unrecoverable while leaving a judge conversation merely re-surfaces their own known secrets. The same consent-copy honesty rules apply (`plugins/antigravity/skills/setup/SKILL.md`).
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -86,18 +220,21 @@ not a product path; nothing a user installs performs it.
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                             | Cannot see                                          |
-| --------------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source         | A transitive dependency, a non-literal `import()`   |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time      | A child process — it has its own copy of `node:net` |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included | A path the suite never executes; it is Linux-only   |
+| Gate                                          | Catches                                                                                              | Cannot see                                                                                                                                                                                                                  |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                          | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                            |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                  | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
 
-The middle one is a vitest `setupFiles` entry every package wires (see [Testing](#testing));
-the last runs the whole suite inside a loopback-only network namespace via
-`tools/ci/no-network-test.sh`, and fails if it cannot first prove egress really is blocked
-(`tools/ci/egress-probe.mjs` is that proof — it connects to its own loopback listener
-before trusting a failed connect, so a probe that cannot reach anything is never mistaken
-for an absent network).
+The first one is only as wide as the files something points ESLint at, which is why
+coverage is derived and guarded rather than remembered — every package's source dirs and
+root files, and every lintable file belonging to no package at all (see "Adding a new
+workspace package", step 5). The middle one is a vitest `setupFiles` entry every package
+wires (see [Testing](#testing)); the last runs the whole suite inside a loopback-only
+network namespace via `tools/ci/no-network-test.sh`, and fails if it cannot first prove
+egress really is blocked (`tools/ci/egress-probe.mjs` is that proof — it connects to its
+own loopback listener before trusting a failed connect, so a probe that cannot reach
+anything is never mistaken for an absent network).
 
 **What none of the three sees** is code no test runs. All of them observe either source
 text or an executed call, so an untested path can still reach out — which is why the
@@ -107,7 +244,18 @@ tarball and exercises it under a block. Note also that the three gates scope to 
 **product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
 runs in its own workflow rather than inside the `No-network` job's namespace.
 
-The plugin also starts a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process, opens nothing, and gets no network of its own — it runs the same in-repo detection engine on a second thread of the same process. It is listed here only so an audit of "what else executes" finds it.
+**Checking the first gate has one trap, and it is in the package that defines the ban.**
+Every package's `eslint.config.mjs` imports `@akasecurity/eslint-config`, so ESLint
+**executes** that package's `src/` to build any config at all. Append a `fetch()` there and
+no rule ever runs: the call fires during config resolution and the process dies with
+`TypeError: fetch failed`. It exits non-zero, which is exactly what makes it dangerous — a
+check asserting only that `pnpm lint` failed passes on that crash, and would go on passing
+with every network rule deleted. Verify this one by planting into a file ESLint does not
+load as config (`vitest.config.ts`, `test/`). The suite covers that `src/` without executing
+anything and must stay that way: it resolves the cascade at the real path and parses the
+real bytes, planting nothing on disk.
+
+The plugin — and the web dashboard's folder scan — also start a **worker thread** (`@akasecurity/plugin-sdk`'s isolated scan, below). A worker is not a child process and opens nothing: it runs the same in-repo detection engine on a second thread of the same process, and today it reaches out nowhere. Say that as a description of what it **does**, never of what it **can** do — a worker has the full `node:net` surface, and its fresh module registry means an in-process patch does not reach it unless something puts one there. Two things do. The runtime guard re-installs itself into every worker spawned from a guarded thread (see [Testing](#testing)), which covers the suite; the Linux `No-network` job covers the shipped artifact, because a network namespace applies to every thread in the tree. The worker is listed here so an audit of "what else executes" finds it.
 
 ### 5. A scan that cannot be interrupted runs off the main thread
 
@@ -118,18 +266,97 @@ Two gates sit in front of that, and **both run on a worker thread**, because bot
 - **The timing pre-flight** (`packages/plugin-sdk/src/rule-quarantine.ts`) measures every pulled/custom-pack regex rule against the adversarial probe battery once, caches the verdict locally, and excludes a rule that blows the budget. This is **empirical** — it proves a pattern did not backtrack on the inputs the battery constructs, not that it cannot. And the battery decides by _driving the pattern into backtracking_, so measuring a rule is itself a way to hang on one: `(a|a|a|a)+$` passes `Rule.safeParse` and never returns on the battery's own derived probe. So `filterUnsafeRules` takes a **prober** and the plugin runtime always supplies one — the measurement runs where it can be killed. Without a prober it falls back to the calling thread, which is for callers that already control the rules they pass (tests, tooling), never a pulled pack.
 - **The isolated scan** (`packages/plugin-sdk/src/guarded-scan.ts` + `isolated-scan.ts` + `scan-worker.ts`) is the bound on the scan itself. Whenever the effective ruleset contains a regex rule that only the pre-flight stands behind, the whole scan runs in a `worker_thread` under a wall-clock deadline; `worker.terminate()` reaches V8's execution terminator, which interrupts a spinning regex. The terminated rule is quarantined through the pre-flight's own cache, so the next process never loads it, and the built-in packs keep detecting meanwhile.
 
-Four properties are load-bearing and easy to break by accident:
+Five properties are load-bearing and easy to break by accident:
 
 - **The fast path must stay free.** A machine with no pulled or custom regex rule — the overwhelming majority — starts no worker and pays nothing. Nor does a machine whose verdicts are all cached, which is the steady state: the prober is built on first use. Do not widen the isolation to every scan; the permanent per-call tax is exactly why this was deferred once.
-- **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, once per process; move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
+- **An ordinary scan is one `scan()` call.** Naming the rule that hung needs a pass that walks the unverified rules one at a time, and that pass is a **retry** of a scan that already timed out — never a tax on the scans that succeed. Worst case for a hang is therefore two deadlines, paid once per scanner (per process for a hook, per request for the dashboard); move that pass onto the happy path and the isolated cost stops scaling like the in-process cost.
 - **The whole ruleset goes into the worker, never half of it.** Splitting the scan across two `scan()` calls breaks `requiresNearby` corroboration between the halves and silently drops findings.
 - **Worker startup is charged to no deadline.** The worker posts `ready` before the parent starts the clock. Fold startup into the job budget and a cold or contended machine looks exactly like a catastrophic rule — and that misreading gets a legitimate rule quarantined forever.
+- **The kill leaves no trace in anything the deadline returns.** The `timeout` outcome, the named culprit, the replacement thread — every one of those comes from the timer, and a rule that never returns reports nothing either way, so replacing `terminate()` with a no-op keeps the whole suite green while each hang leaks a thread that goes on burning a core. What pins it is a fixture that spins for a bounded stretch and reports through shared memory (`plugin-sdk/test/helpers/spinning-scan-worker.ts` + `spin-counters.ts`), because only work that WOULD have finished can show that it did not: a killed thread must post neither a further heartbeat nor a completion. The **pre-flight** is the case to keep — it warns and keeps iterating, so one pass leaks a thread per hostile rule where a scan leaks at most one. Those cases assert no elapsed time and must not grow one: a thread that was not stopped is at every instant either still executing or already finished, so the two readings are exhaustive between them and a slow runner blunts one only by sharpening the other.
 
-A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it. Anything that adds a new way to quarantine must keep both surfaces true.
+The first two are **counted, not timed** — a different claim from the fifth, which forbids an
+elapsed assertion outright because its two readings are already exhaustive. How many threads a path builds is the property —
+none on the fast path, one for the pre-flight, two for a hang that has to be recovered and then
+attributed — and `IsolatedScanOptions.onWorkerStart` reports each construction so
+`packages/plugin-sdk/test/{runtime-isolation,isolated-scan}.test.ts` can assert the number
+directly. Elapsed ceilings sit beside those counts and answer a different question: a ceiling
+loose enough to survive a cold start on a contended runner (the two-cycle case is granted 75s
+against a shipped worst case of ~14s) swallows a whole extra cycle without noticing, so it can
+only separate "this path got slower" from "this path stopped terminating" — which the per-test
+timeout cannot. Do not fold one into the other, and do not answer a flake here by widening a
+ceiling that was never measuring the property.
+
+A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it; the dashboard's folder scan writes the same line to the server's console and additionally returns a notice to the page, since nobody is reading a server log while they click Scan. Anything that adds a new way to quarantine must keep those surfaces true.
 
 The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.
 
-**What this bound does NOT cover.** It is the plugin capture path only — `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The other two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. The web dashboard's `/scan` Server Action is the real hole — `web-ui/app/(app)/scan/actions.ts` → `packages/local-ops/src/fs-scan.ts` passes the installed-pack ruleset, pulled and custom packs included, straight to a synchronous in-process `scan()` with neither the pre-flight nor the deadline, and a Server Action has no harness timeout to be killed by. (`aka scan` passes no ruleset and falls back to the bundled registry, so the CLI is not exposed.) Closing it means giving `local-ops` a worker of its own, which is a separate change; until it lands, do not describe the ReDoS bound as covering the whole product.
+**Where else the bound applies, and where it does not.** The capture path is `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The dashboard's folder scan is the second caller and reaches the same two gates through `packages/local-ops/src/guarded-scan.ts` — `web-ui/app/(app)/scan/actions.ts` builds a `createGuardedFileScanner` over the installed-pack snapshot and hands `scanPathIntoStore` its `scanText` seam, never the raw `rules`, which is the in-process path. Three things differ there and each is load-bearing:
+
+- **The scanner is per REQUEST, not per process.** The first hang retires isolation for the scanner's whole life; the dashboard server outlives every scan it runs, so a process-wide scanner would cost it its pulled rules until someone restarted it. That is also why `createGuardedScanner` takes a `degradeScope` — the stderr warning must not claim a lifetime it does not have.
+- **The worker location is a caller input** (`GuardedFileScannerOptions.workerUrl`), never the SDK's sibling lookup. A Next build replaces `import.meta.url` with the BUILD MACHINE's absolute source path, so that lookup resolves where the build ran and nowhere else — silently costing an installed dashboard its bound. `web-ui/tsup.config.ts` emits the worker to `web-ui/dist/scan-worker.js`, `next.config.ts` traces it into the standalone build, and `web-ui/app/lib/scan-worker.ts` resolves it against `process.cwd()` (the app dir: Next's standalone `server.js` chdirs to its own directory, and every other launch runs from the package). Those three move together, `web-ui/test/e2e/scan-worker-bundle.e2e.test.ts` pins the first and third, and `cli/scripts/bundle-web-ui.mjs` throws at pack time if the second stopped working.
+- **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
+- **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never timed here (no worker, or the pre-flight's pass budget spent) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
+
+Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
+
+What remains uncovered is the packaged artifact: nothing installs the published CLI and drives its dashboard's folder scan under a hostile pack, so the chain above is proven link by link rather than end to end.
+
+### 6. Every writer of `settings.json` takes its lock
+
+`writeOwnerOnlyFileSync`'s tmp+rename makes each PUBLISH indivisible. It does not make a
+**read-modify-write** indivisible, and that is the shape every settings write has: read the file,
+merge answers over it, rename the result. The plugin, the CLI and the dashboard are three separate
+processes over one home, so two of them read the same bytes and the second rename discards the
+first one's answers — with both reporting success, because neither ever learns the other existed.
+
+`withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
+existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Four
+properties are load-bearing:
+
+- **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
+  ones that take it, so the guarantee is only as wide as the set of writers holding it. Two
+  writers hold it today: `applyOnboarding` (which the `/aka:setup` wizard and the dashboard's
+  Settings action both go through) and `aka init`'s create-if-absent. A third that writes
+  `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
+  `fingerprint.ts`'s key mint and `local-ops`' `update-cache.ts` are unlocked read-modify-writes
+  with the same shape, and each is its own outstanding fix. Do not read this section as a
+  property the store has; it is a property `settings.json` has.
+- **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
+  updater function for exactly this: a caller that reads first and passes a plain object has put
+  its read outside the lock and kept the lost update, one frame further out. The dashboard's
+  vault-consent carry-forward is the worked example — read outside, it writes a grant back over a
+  concurrent revoke.
+- **It fails loudly rather than writing unlocked.** The fields at stake include the vault and
+  model-judge consent grants, so the write that goes missing can be a REVOCATION. A refused save
+  the user retries beats a silent one they never learn about.
+- **A killed holder must not wedge the file, and a slow one must not be evicted.** Taking an
+  abandoned lock needs BOTH that its own recorded acquire clock is older than the stale window and
+  that the pid it names is gone. Age alone evicts a holder that is merely suspended or throttled,
+  which puts two writers in the section — the defect, reintroduced by its own recovery. The clock
+  is read from the lock BODY, never from mtime, which on a network home is the file server's clock
+  and drifts a fresh lock straight into staleness. `FileLockError.reason` separates `timeout`
+  (contention) from `unavailable` (a directory that will never hold a lock); `aka init` branches on
+  it, swallowing the first — another writer is already creating the file — and propagating the
+  second, which is the fault its pre-lock write raised too.
+- **A release must prove it still owns the lock.** Each acquisition writes a token and removes the
+  file only while that token is still there — an unreadable body counts as somebody else's, since
+  a lock exists for an instant between its exclusive create and its body write. Unlinking by path
+  alone means a holder that was stolen from deletes its successor's lock, and the section is
+  unguarded while that successor is mid-write, every writer reporting success.
+- **Recovering an abandoned lock is itself a critical section**, held by a second exclusive file.
+  Several waiters meet the same dead lock at once; unserialised they all judge it stale, one
+  removes it and takes a fresh lock, and the next one's removal lands on THAT. Neither a rename
+  nor a re-read closes it — every check is separated from its removal by a window another waiter
+  acts in, and a rename that has to be undone clobbers whatever took the path meanwhile. Measured
+  at 5 of 12 trials losing an update with eight waiters over one abandoned lock; zero once the
+  judging and the removal became one section.
+
+`packages/persistence/test/concurrency/settings-race.test.ts` is what holds this: real child
+processes, released together on a readiness handshake, asserting no answer is lost and no
+revocation is resurrected. It uses processes rather than worker threads deliberately — a worker
+shares `process.pid`, and the atomic write's tmp path is per-process, so two threads meet a
+collision two processes never can, which is the wrong axis.
 
 ## Dependency advisories
 
@@ -146,8 +373,29 @@ next's own pins), by bumping that package once upstream moves. Only when an advi
 has no fixed release reachable from the tree, add an **expiring** waiver to
 `.github/audit-waivers.json`, scoped to the audit it applies to — format and process
 in CONTRIBUTING.md ("Dependency advisories and waivers").
-`pnpm.auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route: the
-gate refuses to run while anything is muted there.
+`auditConfig.ignoreCves`/`ignoreGhsas` is not an approved suppression route, and the
+gate refuses to run (exit 3) when it is set. **It is detected by reading the two files
+pnpm takes the setting from — the root `package.json`'s `pnpm.auditConfig` and
+`pnpm-workspace.yaml`'s top-level `auditConfig` — not by inspecting what pnpm returns.**
+The payload cannot reveal it: pnpm removes a muted advisory from `advisories`, decrements
+the `metadata` severity counts to match, and leaves the top-level `muted` array **empty**,
+so a muted run is byte-for-byte the shape of a clean one. A guard reading `muted` is
+therefore correct in isolation and unreachable in practice — which is what it was, while
+both audits reported green. `assertNothingMuted` is kept as the payload-side half in case
+a later pnpm does populate the field; `assertNoAuditConfigMutes` is the half that fires.
+
+Both channels are real and were measured; `.npmrc` is not one, in either the flattened or
+the camelCase spelling. `findAuditConfigMutes` refuses on the **presence** of the
+`auditConfig` key — in **both** channels alike, and whether or not the ignore lists under
+it carry entries. So an empty one is refused too, and a third key added by a later pnpm is
+caught without a code change, because the key names are never enumerated. The two halves
+have to answer alike here or the rule stops being statable: the YAML half cannot tell an
+empty `auditConfig` from a populated one without a parser. A file that **exists but cannot
+be read** is refused rather than read as "no config here" — absence means `ENOENT` and
+nothing else, since a failed read that returned "nothing to see" would reach the exact
+outcome this check exists to prevent. Its tests pin the discriminating case directly: a
+payload reporting nothing muted **and** a manifest configuring `auditConfig` must still be
+refused — delete the file read and that case, alone, goes red.
 
 ## Package dependency rules
 
@@ -161,8 +409,10 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O — NO fetch client, NO Drizzle)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
-                     @akasecurity/plugin-sdk (repo-identity, project-file walkers, and posix
-                     path normalization only)
+                     @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
+                     path normalization, and the ReDoS gates the dashboard's folder
+                     scan reuses — filterUnsafeRules + createGuardedScanner, see
+                     src/guarded-scan.ts and Architecture principles §5)
                      (shared CLI/web-ui operations: update report + apply via npm/claude
                      child processes, the agent-plugin registry, the fs scan pipeline,
                      the project-inventory pass; network ONLY via package-manager
@@ -185,10 +435,19 @@ cli               → @akasecurity/schema, persistence, local-ops, detections (t
 
 # Plugin
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
+plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
+plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
+plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
+                     host only — Node side); the browser-side content script bundles just
+                     `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
+                     must never import anything Node-only
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
-                     directly at SessionStart), ignore (gitignore semantics for
+                     directly at SessionStart — `provider.ts` for Claude Code,
+                     `provider-codex.ts` for Codex CLI, `provider-antigravity.ts`
+                     for Antigravity, each its own file-scoped
+                     `n/no-process-env` opt-out), ignore (gitignore semantics for
                      the SessionStart project-file walk), node:worker_threads
                      (the isolated scan — see Architecture principles §5)
                      `src/scan-worker.ts` is the worker's own entry, exported as the
@@ -199,11 +458,47 @@ plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
+@akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
+                     (the harness-agnostic core of the /aka:setup calibration →
+                     triage → remediation flow: pure logic plus dependency-injected
+                     orchestration. It must NEVER name a host command, hardcode a
+                     transcript location, or spawn a judge — each plugin supplies
+                     those at its own I/O boundary, which is what lets multiple
+                     harness plugins share this without forking it.)
 ```
+
+All three CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
+only in their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook
+contract) plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
+resolution, tool-name → scannable-field tables).
+
+**The hosts' hook contracts are NOT equivalent, and the differences are behavioral, not
+cosmetic.** Each plugin's `skills/setup/SKILL.md` carries a "Known limitations" section that
+is the authority on what its host can actually enforce; keep it accurate when the adapter
+changes. The gaps that exist today:
+
+- **Codex** does not yet fire PreToolUse/PostToolUse for `apply_patch` (file-write) calls,
+  only `Bash`.
+- **Antigravity** is the most constrained and the most different. It has only five events —
+  no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
+  off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be
+  neither blocked nor redacted. `PreToolUse` has **no `updatedInput` equivalent**, so a
+  `redact` policy escalates to a deny for every field (not just executable ones, the way
+  Codex escalates), and a `warn` has no channel to print on. `PostToolUse` receives **no tool
+  result at all**, so there is no live response scanning and no `tool-response.ts` /
+  `scan-response.ts` counterpart in that package.
+- **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
+  hook that exits non-zero, is killed on timeout, or prints nothing is read as a `deny` on
+  every tool call. "Fail-open" there therefore means _always printing an explicit_
+  `{"decision":"allow"}`, which is what `runHookFailOpen` in
+  `plugins/antigravity/src/hooks/shared.ts` guarantees — including on a throw and on its own
+  watchdog. A silent exit is a bug that would block the user's every tool call. The guarantee
+  holds over everything that **yields** and cannot reach a body that blocks the thread; §1
+  states that limit and names the two suites that cover each half.
 
 **Cross-cutting rules:**
 
-- No `process.env` reads except the few spots that explicitly opt out of `n/no-process-env` (the plugin's provider resolution, the CLI spawning the dashboard).
+- No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
 - No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
@@ -247,6 +542,40 @@ When adding a **new reusable component** to `@akasecurity/ui-kit`, follow the sh
   `badge.tsx`). No hardcoded hex — add a token to `theme.css` if one is missing.
 - Each component is its own file under `packages/ui-kit/src/`, exported from `src/index.ts`.
 
+### Tonal tokens come in pairs: a hue and an ink
+
+Every tonal family (`sev-critical`, `sev-high`, `sev-medium`, `sev-low`, `ok`, `teal`,
+`violet`) carries **two** foregrounds, and picking the wrong one is an accessibility bug
+that compiles, renders, and reads fine in review:
+
+- `--color-X` — the **hue**: chart series, status dots, bar segments. Non-text, so what
+  matters is staying distinguishable from its neighbours (WCAG 1.4.11).
+- `--color-X-ink` — **text** on that family's tint, and solid fills that carry text
+  (WCAG 1.4.3, 4.5:1).
+
+They cannot be collapsed. Forcing every hue dark enough to read as text on a pale tint
+crowds them into one luminance band — severity chart separation measured 1.69 before and
+1.05 after, with red/orange/yellow rendering as the same brown. So **a foreground always
+spells the `-ink` form**, and every family carries one even where its hue already clears
+4.5:1 (violet in light; all of them in dark, where ink == hue): a family missing its
+`-ink` makes `text-X-ink` generate no CSS at all, because an undefined theme variable
+produces no utility and the element silently inherits its color.
+
+`--color-primary` is the one exception and reads the other way round — it **is** the ink,
+and `--color-primary-solid` is its fill. So `text-primary` is right while
+`text-sev-critical` is wrong, and nothing in the names says which. That is why it is
+enforced rather than remembered: `tonalInkTokens` in `@akasecurity/eslint-config` is a
+`no-restricted-syntax` ban on a bare hue reached through `text-*`, spread by `ui-kit`,
+`dashboard-ui` and `web-ui`. It re-spreads `noNetworkSyntax()` because a flat-config
+`rules` entry **replaces** the rule's options rather than merging them — drop that and
+those three packages silently lose §4's dynamic-import ban.
+`packages/eslint-config/test/tonal-ink-tokens.test.js` pins both halves.
+
+What the ban does **not** see, and what still needs reading: a hue handed over as a CSS
+variable string, since `iconColor="var(--color-ok)"` and `iconBg="var(--color-ok-fill)"`
+are the same node to a selector (`toneColors()` and the `StatTile` `iconColor` prop are
+the live examples); and a class assembled from a non-literal.
+
 ## Detection rules
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR without fixtures is rejected by CI.
@@ -261,6 +590,11 @@ replays frozen SQL from already-shipped binaries, which app-level guards cannot 
 cli/                  the `aka` CLI (self-contained npm bundle; ships the web-ui as a spawned Next server)
 web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; Server Actions mutate it)
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
+plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
+plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm bundle)
+plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
+                      content scripts + a native-messaging host; private — bundled into
+                      the CLI by `bundle:extension`, installed via `aka extension install`)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
@@ -291,27 +625,98 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    (`eslint --no-config-lookup -c eslint.scripts.config.mjs scripts`) — a generated
    `scripts/` dir (the plugin's bundled hooks) is build output and is exempt.
 
-   That covers files a **package** owns. Files at the **repo root**, owned by no
-   package, are a separate case with its own pass: `pnpm lint:root` /
-   `pnpm typecheck:root`, run outside Turbo (`pnpm lint`/`pnpm typecheck` are
-   `turbo run …`, which drives per-package scripts and never sees the repo root), so
-   CI runs them as their own steps beside `format:check`. `lint:root` is two
-   invocations — the same full-ruleset + network-only split a package makes with
-   `eslint src test` and its `eslint.scripts.config.mjs`: `eslint.root.config.mjs`
-   runs the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`; `eslint.root.guard.config.mjs` runs the network-only guard over the
-   plain-JS enforcement suites in `packages/eslint-config/test/**`, which the
-   eslint-config package's no-op `lint` leaves behind every other pass.
-   `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   **Naming a target is not enough if the same invocation hands it back.** An
+   `--ignore-pattern` cancels a target it matches, so `*.config.*` plus an ignore of
+   `vitest.config.ts` reads as covering that file and lints it not at all. Anything an
+   ignore flag excludes therefore counts as uncovered however the targets read, and the
+   fix is to drop the flag rather than the directory. `--ignore-path` counts as excluding
+   its whole invocation: flat-config ESLint rejects the flag outright, so that `eslint`
+   call lints nothing. No `lint` script carries either flag today, and
+   `packages/eslint-config/test/effective-config.test.js` is what would catch one that
+   took coverage back. It bounds the damage rather than banning the flag: an ignore
+   matching nothing the package ships stays green, which is what stops the guard
+   over-reporting.
 
-   Anything new at the repo root belongs in those passes — and a **file** at the
-   root is named explicitly, not folded into a directory glob (the same rule step 5
-   draws inside a package). `*.config.*` is the standing lint target for root config
-   and now catches the two root ESLint configs themselves; any other root file is
-   named by hand. A root file carrying `// @ts-check` (as both root configs do) is
-   also named in `tsconfig.root.json`'s `include`, or the directive is decorative —
-   nothing runs `tsc` over it and a real type error surfaces nowhere. Miss the pass
-   and esbuild strips its types unchecked and nothing lints it.
+   A `lint` script is a shell string, so **two ESLint calls are chained with `&&`
+   and nothing else**. Behind a `||` the second runs only once the first has
+   failed, so no green run ever lints what it targets; `|| true` is the mirror
+   image, running the call and discarding its exit code. The same guard drops a
+   segment carrying any operator but `&&` — reporting the package as covering
+   nothing, rather than crediting a call a green run skips.
+
+   That covers files a **package** owns. Files **outside every package** — at the
+   repo root or under a directory no package claims — are a separate case with its
+   own pass: `pnpm lint:root` / `pnpm typecheck:root`. Both run outside Turbo
+   (`turbo run …` drives per-package scripts, each with its package as the working
+   directory, and no package's `lint` script targets anything outside its own
+   tree), and CI runs them as their own steps beside `format:check`. `pnpm lint`
+   and `pnpm typecheck` additionally **chain** them with `&&`, so the pre-push
+   hook, the two release workflows and a contributor running them locally all
+   cover the repo root rather than reading green while a file there is unlinted or
+   unchecked — those callers run only the workspace-wide scripts and never the CI
+   steps. The chain has to be unconditional: behind a `||` the root pass runs only
+   once the workspace pass has already failed, which is every green run skipping
+   the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
+   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
+   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+
+   It used to carry a second, network-only invocation over the plain-JS
+   enforcement suites in `packages/eslint-config/test/**`, because that package's
+   `lint` was a deliberate no-op and a root pass was the only thing that could
+   reach them. It lints itself now — `eslint src *.config.*` then
+   `eslint --no-config-lookup -c eslint.guard.config.mjs test`, the same
+   full-ruleset + network-only split every other two-pass package makes — so those
+   suites are covered by the ordinary per-package check and nothing about them is
+   special any more.
+
+   **Naming a target is not enough here either.** The rule the package paragraph
+   above draws applies to `lint:root` unchanged: an `--ignore-pattern` cancels a
+   target it matches, and an `--ignore-path` cancels the whole invocation, so the
+   script reads as covering a repo-root file that ESLint then skips. Either way the
+   file counts as **uncovered** and the failure names it, and the fix is to drop the
+   flag rather than the target. This is enforced rather than remembered — the
+   derived check below reads each invocation's ignore flags next to its own targets,
+   so an ignore that takes a root file back out fails exactly as a missing target
+   does.
+
+   Anything new outside every package belongs in those passes — and a **file** at
+   the root is named explicitly, not folded into a directory glob (the same rule
+   step 5 draws inside a package). `*.config.*` is the standing lint target for root
+   config and catches the root ESLint config and commitlint's; any other root
+   file is named by hand — including one whose `.config.` segment is capitalized,
+   since a shell glob is case-sensitive on every platform and `*.config.*` reaches
+   `aka.config.mjs` but not `aka.Config.mjs`. A root file carrying `// @ts-check`
+   (as `eslint.root.config.mjs` does) is also named in `tsconfig.root.json`'s
+   `include`, or the directive is
+   decorative — nothing runs `tsc` over it and a real type error surfaces nowhere.
+   Miss the pass and esbuild strips its types unchecked and nothing lints it.
+
+   **Forgetting is caught rather than remembered.** `effective-config.test.js`
+   derives the set of git-tracked lintable files belonging to no workspace package
+   (`git ls-files` minus the `pnpm-workspace.yaml` globs — never a hardcoded list,
+   or a file added tomorrow would not be in it), and fails naming each one that no
+   eslint invocation lints. The coverage side is derived too, and from what is
+   actually **run**: the invocations are walked out of the root `package.json`
+   starting at `lint` and following the scripts it **unconditionally** chains, so
+   a pass sitting in a script no gate invokes — a `lint:fix`, say — covers
+   nothing, and neither does one the chain reaches only on failure. That rule
+   applies to the eslint calls inside a script as well as to the scripts it
+   chains: `eslint <a> || eslint <b>` reads as two passes and runs the second only
+   once the first has already failed, so a green run never lints `<b>`. A
+   fault-injection case then plants network code at each real path and requires
+   all four network
+   rules to fire with no fatal parse error, because a file outside every tsconfig
+   `include` reports a parse error and NO rule violations — structurally wired,
+   behaviorally correct, enforcing nothing. Adding such a file means adding a lint
+   target for it and listing it in `EXPECTED_NON_PACKAGE_FILES`.
+
+   It also means keeping the repo-root glob in `@akasecurity/eslint-config#test`'s
+   `turbo.json` `inputs`: the per-package input globs all require a directory
+   segment, so without it a new root-level file leaves that task's hash untouched
+   and turbo replays a cached green in which the check never ran. Those globs spell
+   their extensions by hand, so the same suite drives that list against the one it
+   enumerates by — a file whose extension it counts as lintable and the glob omits
+   is the same cached-green hole one extension wide.
 
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
@@ -347,33 +752,48 @@ Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refac
 
 ## Releasing (CLI / plugin versioning)
 
-Both shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
+All four shippable artifacts are **self-contained bundles of the workspace** — their `tsup.config.ts`
 sets `noExternal: [/^@akasecurity\//]`, so every `@akasecurity/*` package they use is inlined into
 the published output (the user's machine has no `node_modules`). So a change to a _bundled_ package
 changes the shipped artifact **even when the app's own `src/` is untouched**:
 
-- **`plugins/claude-code`** bundles `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they
-  pull in — `@akasecurity/schema`, `persistence`, `detections`. A change to any of
-  those changes the plugin's `scripts/*.js`.
+- **`plugins/claude-code`**, **`plugins/codex`** and **`plugins/antigravity`** each bundle
+  `@akasecurity/plugin-runtime` + `plugin-sdk` and everything they pull in —
+  `@akasecurity/schema`, `persistence`, `detections`. A change to any of those changes ALL
+  THREE plugins' `scripts/*.js`.
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
-1. **Ask the user the release type first** — major, minor, patch, or pre-release — before touching
-   any version.
-2. **Bump every affected artifact** accordingly:
+1. **Bump every affected artifact**:
    - web-ui / `local-ops` / `dashboard-ui` / `ui-kit` change → `cli` (bundled into the CLI JS
-     and/or the web-ui it ships; the plugin bundles none of these).
+     and/or the web-ui it ships; the plugins bundle none of these).
    - `schema` / `persistence` / `plugin-runtime` / `plugin-sdk` / `detections`
-     change → **both** `cli` **and** `plugins/claude-code` (both bundle them).
-   - The CLI and plugin normally move together on one shared version line.
-3. Keep `plugins/claude-code/.claude-plugin/plugin.json` **in sync** with
-   `plugins/claude-code/package.json` (identical version) whenever the plugin is bumped.
+     change → **all four** of `cli`, `plugins/claude-code`, `plugins/codex` **and**
+     `plugins/antigravity` (all bundle them).
+   - `setup-wizard` change → `plugins/claude-code`, `plugins/codex` **and**
+     `plugins/antigravity` (all three bundle it; the CLI does not).
+   - The CLI and all three plugins normally move together on one shared version line.
+2. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
+   `plugins/claude-code/package.json`, `plugins/codex/.codex-plugin/plugin.json` in sync
+   with `plugins/codex/package.json`, and `plugins/antigravity/plugin.json` (Antigravity reads
+   its manifest from the plugin ROOT, not a dotted dir) in sync with
+   `plugins/antigravity/package.json` (identical version within each pair) whenever that plugin
+   is bumped.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). The current pre-release
-line is `0.0.2-alpha.N` — a pre-release bump increments `N`.
+**The bump is not a decision to surface during feature work, because it is not made there.**
+Pre-1.0.0 the version numbers are chosen **ad hoc**, at the **scheduled release** (twice a week)
+— not per change. So do not ask which release type to use, and do not raise "this touches a
+bundled package, so it needs a version bump" as an open question, a follow-up, or a caveat in a
+summary or PR description. The steps above are what a **release** does: which artifacts move is
+derivable from the bundling rules, and how far they move is settled at release time by whoever
+cuts it.
+
+Versions are bumped by hand in a `chore(release):` commit (no changesets). Every release is a
+bare `X.Y.Z` on the one shared version line — never a pre-release suffix. The CLI and both
+plugins currently share the `0.9.x` line.
 
 ### Binary (SEA) channel — `bin-v*`
 
@@ -444,7 +864,7 @@ see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
 
-Four things about it are load-bearing:
+Five things about it are load-bearing:
 
 - **A refusal is recorded as well as thrown.** Almost every boundary here is
   deliberately fail-open, so a throw inside a `catch {}` would be swallowed and the
@@ -454,8 +874,26 @@ Four things about it are load-bearing:
 - **It imports `node:net`/`node:dgram`/`node:dns`, which the lint ban forbids.**
   That is the enforcement, not a violation. `packages/eslint-config/test/no-network-runtime.test.js`
   lints the file and fails if it trips a **fourth** ban.
+- **It re-installs itself into every worker it can reach.** A `worker_thread` gets a
+  fresh module registry, so a worker used to escape the guard **silently** — nothing
+  threw, and the parent recorded nothing for `afterEach` to fail on, which is worse
+  than a miss. The guard wraps the `Worker` constructor (both the module property and,
+  via `syncBuiltinESMExports`, the named-import binding `isolated-scan.ts` uses) and
+  appends `--import <itself>` to the worker's `execArgv`. Wrapping the CONSTRUCTOR
+  rather than the call sites is what reaches a worker **product code** starts, which
+  is the case that matters; a worker's refusal cannot land in the parent's array, so
+  it goes to a file `takeBlockedAttempts()` drains alongside it. Three consequences to
+  keep true: that file is written only when a worker actually **refuses**, so a run
+  that reaches for nothing touches the filesystem never and the drain reads a missing
+  file as "no refusals"; it is **appended to and never truncated**, because a
+  read-then-truncate drain destroys a refusal appended between the two; and a nested
+  worker reports to the same file rather than stacking another preload onto `execArgv`.
+  Any read failure that is not `ENOENT` fails the run — a channel that cannot be read
+  reports zero refusals, which looks exactly like a clean one.
 - **A child process is invisible to it**, which is the whole reason the `No-network`
-  CI job exists. Do not describe the guard as covering shell-outs.
+  CI job exists. Do not describe the guard as covering shell-outs — and note that a
+  worker started **by** such a child is out of reach for the same reason, since the
+  wrapper lives in this process and the child never loaded it.
 - **Every package must wire it**, at the right relative depth. The same suite fails
   the workspace if a package drops the entry, points it at a path that does not
   resolve to the guard, or is added without one. That last one holds for packages
@@ -506,12 +944,69 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   must gate**: `if (!readOnly.effective) ctx.skip(reason)`. Pass the store's `onCleanup` to
   any injector that has to be undone before the tree can be removed, and the store itself
   to any that needs no live connection.
-  `fillStore` is in the same file but **not yet a peer of the other three**: the page cap
-  is connection-scoped and `LocalDatabase` exposes no raw handle, so it can only reach
-  `node:sqlite`, not the repository writes built on it. It waits on a raw-handle seam.
+  `fillStore` is in the same file and its page cap is connection-scoped, so it bounds only
+  the handle it is given — which is what decides where it can be aimed. A repository
+  constructed over a raw handle takes it (`SqliteAuditEventsRepository(raw)`, the
+  `activity.test.ts` pattern), and so does `applyMigrations` — but only with a cap sized
+  against a real migration: the default headroom on an empty file stops the ledger's own
+  `CREATE TABLE`, so the applier's loop never runs and every claim about a partial
+  migration then holds vacuously. The blanket fail-open sites in `database.ts`
+  (`recordCapture`, `ensureInventory`, `recordConfigScan`, `recordProjectFiles`, and
+  `reconcileWorktreeProjects`, which reaches `withTransaction` directly) are closures over
+  the connection `openLocalDatabase` opened, so they are reached by capping **that**
+  connection — `db[UNSAFE_TEST_ONLY_RAW_HANDLE]`, below. Handing `fillStore` a second
+  handle on the same file instead is the mistake to avoid: it carries none of the cap, the
+  facade writes on undisturbed, and every "the write was dropped" assertion then passes
+  because nothing was ever refused.
+- **`UNSAFE_TEST_ONLY_RAW_HANDLE`** — not a helper but the seam a connection-scoped
+  injector aims at, so it is listed here: the `DatabaseSync` a `LocalDatabase` writes
+  through, exported from `src/database.ts`, and the only test-only seam in shipped
+  source. It is
+  symbol-keyed and **not** re-exported from `src/index.ts`, and the package's `exports` map
+  is `"." -> "./src/index.ts"` alone, so no other package can reach the module that defines
+  it. Two properties are load-bearing and easy to break: it is a plain **enumerable data
+  property**, because the helpers hand out `{ ...db, close }` wrappers and spread copies own
+  enumerable symbols — a getter or a non-enumerable definition loses it silently; and it is
+  the **real** connection, so `close()` reaches it.
+  `packages/eslint-config/test/test-only-seam.test.js` is what keeps "test-only" true: it
+  walks the tracked tree and fails if any file naming the seam is neither its one definition
+  site nor a test. That is a derived rule, not a list — a new fault test needs no edit there,
+  a product caller anywhere in the workspace fails CI. It lives in that package rather than
+  in `persistence` because only that task's turbo `inputs` hash the whole workspace; the
+  same check inside `persistence` would replay a cached green while a caller appeared in
+  `cli/src`.
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+- `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
+  [Testing](#testing) on why the try/catch form asserts on the test's own guard).
+- `captureEvent()` / `captureFinding()` — the minimal `recordCapture` pair. Both vary
+  their identity per call, which is load-bearing: `contentHash` feeds the event's
+  content-addressed id and `maskedMatch` is half the finding-level session dedup key, so a
+  shared constant makes a second capture land as zero rows **by design** — and every "the
+  event is gone" assertion in `test/faults/` would then pass whether or not the fault did
+  anything.
+
+`packages/persistence/test/faults/` is where those injectors are pointed at product code —
+one file per fault (corrupt is covered in `database.test.ts`, which predates the
+directory). A fault case documents the **actual** behaviour rather than the desirable one:
+no fail-open site inspects a SQLite result code, so contention, a full disk, a read-only
+file and a caller bug all arrive there as the same discarded `false`, and a dropped event
+leaves no counter, marker or log line behind. (Scoped to those sites deliberately: the
+package reads `errcode` in two places — `internal/sqlite-errors.ts` for
+`SQLITE_CONSTRAINT_UNIQUE`, and `fingerprint.ts`, which separates "no such table" from a
+damaged or locked store. Neither is a fail-open path.) Write that down and assert it; do not assert a signal the product does not
+emit. Two behaviours there are the opposite of what the fault's name suggests and are
+pinned so nobody "fixes" them: a store chmod'd read-only under a **live** handle keeps
+being written (a descriptor carries the permission it was opened with, so only the next
+open is refused), and a read-only store's refusal lands **inside the migration applier**
+rather than on the first `PRAGMA journal_mode = WAL`, which succeeds and mints the
+sidecars. A tightened directory the owner still owns is a third case, and the distinction
+is the point: `ensureDataDirSync` widens the **data dir** back to 0700, so a 0500 there
+never reaches SQLite — but a 0000 `~/.aka` is **reported**, as `EACCES` out of `mkdir`,
+long before any chmod runs. `aka init` repairs a 0000 home because it calls
+`ensureDataDirSync` on the home itself; `openLocalDatabase` does not, and the tests in
+this directory assert the refusal.
 
 Assert the result code, not an error message or an elapsed time — Windows CI runs several
 times slower, and a timing assertion there is a flake. Compare with `primaryCode()`:
@@ -551,6 +1046,33 @@ scans against the **DB snapshot**, not the engine's process-global registry.
 `@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
 is not a runtime package-wall crossing.
 
+### Testing a web-ui page
+
+An async Server Component is a plain async function that returns an element, so a route's
+own data work — which store reads it issues, and which one it hands to which consumer — is
+testable by **calling the page and reading the props it hands down**. No renderer, no DOM,
+no jsdom. `element.props` carries them; assert `element.type` alongside, so a page that
+starts returning a wrapper fails naming that rather than reading every prop as `undefined`.
+`web-ui/test/pages/exceptions-page.test.ts` is the worked example. The four steps above
+apply unchanged (a read-only page needs no `next/cache` mock).
+
+This is not the browser tier — nothing mounts, no event fires, no client component runs.
+It covers the seam between the store and the props, which is where a route's derivations
+live and where nothing else can see them.
+
+**The one thing that makes it work is a config line.** `web-ui/tsconfig.json` sets
+`"jsx": "preserve"` because Next's own compiler consumes untransformed JSX, and vitest
+inherits it — so the page's JSX survives into the output and the parser that reads it next
+rejects it. `oxc.jsx` in `web-ui/vitest.config.ts` overrides that for the test run only. It
+is already wired; a new suite needs no change, but a parse error on a `.tsx` import is what
+its absence looks like, and it names neither JSX nor the tsconfig.
+
+A route that issues **more than one read of the same table** is the case worth writing a
+page test for at all: a count derived from the wrong one of two windows is still a number,
+so it typechecks, lints, and satisfies every assertion aimed at the pieces. Make the fixture
+straddle the two windows and **pin the straddle itself** — with rows that all fall inside
+both, the assertions pass whichever read the page used, and the suite proves nothing.
+
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
 hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
 `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store — in that
@@ -569,18 +1091,106 @@ violation on `aka.db` must throw.
 
 Assert a raw value is absent from an **error** run by run, not whole. `not.toContain(value)`
 stays green if a branch echoes a _truncated_ value, which is still a live credential's
-prefix. `expectNoEchoOf` is the **required form for every error assertion in a suite that
-already defines it** — today `web-ui/test/actions/exceptions.test.ts` and
-`plugins/claude-code/test/triage/judge.test.ts` — including the ones a newly covered action
-or seam brings with it; a plain `not.toContain(rawValue)` on an error is a defect, not a
-style choice. It is not reachable across a package wall, so a third suite that needs it
-copies it rather than importing it, and copies the `expect(value).toBeDefined()` guard with
-it — without that guard an `undefined` message satisfies the loop vacuously.
-This applies to a **raw value** in an **error** only. At-rest and grant-shape assertions
-stay whole-value, because `maskMatch` deliberately keeps a fragment visible and that
-fragment is stored on purpose; and an assertion that some non-secret string is absent — an
-internal error-class name, say — is a different property that `expectNoEchoOf` does not
-express.
+prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
+newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
+`plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
+`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts` and
+`packages/setup-wizard/test/helpers/no-echo.ts`. A plain
+`not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
+editing a file means its in-class assertions come along rather than being left beside converted
+ones.
+
+**Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
+twenty whole-value raw-value assertions in files this convention has not reached —
+`history/`, `journey/`, `remediation/`, `render.test.ts`, `triage/plan-file.test.ts`,
+`hooks/pointer-substitution.test.ts` and `backfill.test.ts` among them. `plugins/codex` carries
+the same backlog in its counterparts of those files — the helper reached its hook and
+remediation-render assertions, not `history/`, `triage/judge.test.ts` or
+`remediation/redact.test.ts`. Do not read the rule above as a claim that either package is
+clean. Two shapes are genuinely **exempt** and stay
+whole-value: an assertion on a masked preview (`writeback.test.ts` on `maskedValue`,
+`triage/surfaced-secrets.test.ts` on `maskedToken`), because that fragment is revealed on
+purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`, which exist
+to show the whole-value form would have passed.
+
+**Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
+All six packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+each case drives the helper with an output that leaks a run, and asserts both that the helper
+refuses it **and** that the whole-value form it replaced would have passed. That second half is
+what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
+run length or emptying the loop cannot go unnoticed — widening `ECHO_RUN` leaves every
+**caller** green, so the helper's own suite is the only thing that goes red. `web-ui` is the
+worked example of that failure: its copy was inline with no suite, and all 86 of its action
+tests passed with `ECHO_RUN` set to 64. A package wall blocks the import, not the pattern, so a
+further package copies **both** files — including the `expect(value).toBeDefined()` guard,
+without which an `undefined` message satisfies the loop vacuously.
+
+**A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built
+literal asserts that a string the test constructed lacks a run of another string the test
+constructed — true by construction, and it stays true however `maskMatch` changes. Each
+`no-echo.test.ts` calls `maskMatch` itself (`@akasecurity/plugin-sdk` re-exports it, so the
+plugin crosses no package wall), which is what makes widening its generic branch go red where
+the reason is written down.
+
+**Capture the error outside the `catch`.** This shape passes while the function under test
+stops throwing entirely:
+
+```ts
+try {
+  parse(input);
+  throw new Error('expected parse to throw'); // caught by its own catch, below
+} catch (err) {
+  expect((err as Error).message).not.toContain(RAW); // asserts on THAT message
+}
+```
+
+The guard error carries no secret, so the absence check is satisfied by the test's own
+throw. Use `errorFrom(() => parse(input))` (the plugin's helper) or the CLI's
+`.then(() => undefined, (e) => e as Error)`, then assert what the error **says** before
+asserting what it **omits** — a never-thrown error arrives as `undefined` and `toBeDefined()`
+catches it. Naming the expected refusal is also the positive control: without it a case
+proves only that _some_ error said nothing, not that the guarded branch was the one reached.
+
+**Never point it at bytes that can come back empty.** Every `not.toContain` passes on `''`,
+and `toBeDefined()` does not catch that: it catches a never-thrown error arriving as
+`undefined`, while a Prompter's `output()` returns `string` and is never undefined, so the
+guard is **inert on stdout**. Where a path prints nothing at all, assert that —
+`expect(io.output()).toBe('')` — which goes red on anything printed there, raw or not.
+Where it does print, pin a **positive control** on the same bytes first.
+
+This applies to a **raw value**, in an **error** and on whatever further surface a suite
+binds below. At-rest and grant-shape assertions stay whole-value, because `maskMatch`
+deliberately keeps a fragment visible and that fragment is stored on purpose; and an
+assertion that some non-secret string is absent — an internal error-class name, say — is a
+different property that `expectNoEchoOf` does not express. Drive the window with a
+**high-entropy** fixture: against an English-phrase literal an eight-character window
+collides with ordinary output text instead of catching a leak. High-entropy does **not**
+mean credential-shaped — this repo is public, and a fixture that looks like a real secret
+does not belong in it. Where a suite needs both (`cli/test/commands/exception-reveal.test.ts`
+tokenizes a value the engine never scans), a random-looking string that matches no rule
+satisfies them together; where the value must match a rule, take it from that rule's own
+`examples` so no secret-shaped literal is written by hand.
+
+The CLI's `exception` suites bind it **wider than an error** — to their **stdout**
+assertions too, because a CLI's terminal output is where a leaked value gets scrolled,
+pasted into a bug report and captured by CI logs. That is safe rather than fragile **for
+the values those suites use**: what they print of a blocked **generic** secret is
+`maskMatch`'s first-and-last preview (`A******E`), two characters, which cannot fill an
+eight-character window. **It does not generalize to every value `maskMatch` handles.** The
+email branch reveals the first local character plus the **whole domain**
+(`user@example.com` → `u***@example.com`), and a single-character local part returns the
+input unchanged — both fill the window on purpose. A surface printing a pii/email preview is
+out of scope for the stdout half, not a leak it found; `no-echo.test.ts` pins both branches
+so that boundary is written down rather than re-derived. If the **generic** branch is ever
+widened past two characters, that suite goes red first, which is the correct answer and not
+a reason to loosen the callers back.
+
+**Bind it per assertion, never per file.** `cli/test/commands/vault.test.ts` is the worked
+example: its forged-pointer refusal pins absence like any other, but `aka vault show`'s
+success path prints the raw value **on purpose** and asserts `output().startsWith(RAW)`, so
+a run-by-run rule over that case would assert the opposite of the command's contract. Exempt
+the case, not the file — a file-level exemption also disarms the refusal paths in it, which
+are the ones a leak actually travels through.
 
 Assert against the value **that call supplied**, never a module constant the case does not
 send. A case driven with an inert literal and asserted against a shared `VALUE` cannot fail

@@ -98,6 +98,35 @@ export const ExceptionBundleEntry = DetectionException.pick({
 });
 export type ExceptionBundleEntry = z.infer<typeof ExceptionBundleEntry>;
 
+// What a presentation surface may know about a grant. Carries no
+// valueFingerprint — the keyed HMAC is a correlation key and must never reach
+// a view layer or the browser, the same rule PointerDescriptor states for
+// vault pointers. keyVersion stays: it is a bare key epoch, not a correlation
+// key, and the views need it to say which grants a rotation invalidates.
+//
+// `valueFingerprint?: never` is what makes this an EXCLUSION rather than an
+// omission. A plain omit still accepts a full store row — every property it
+// asks for is present — so a surface typed against it would keep compiling if
+// the projection call in front of it were dropped, and the fingerprint would
+// be back in the browser with nothing red. The optional-never makes a row
+// carrying the field unassignable, so the projection is enforced by the type
+// rather than by whoever remembers to call it.
+export const ExceptionDescriptor = DetectionException.omit({ valueFingerprint: true });
+export type ExceptionDescriptor = z.infer<typeof ExceptionDescriptor> & {
+  valueFingerprint?: never;
+};
+
+// Strip the keyed fingerprint from a grant row before it crosses to a view.
+// Destructured rather than spread-and-deleted: with the exclusion above, a
+// spread copy still carries `valueFingerprint: string` at the type level, so
+// separating the key from the rest is what produces a value the return type
+// accepts.
+export function toExceptionDescriptor(exception: DetectionException): ExceptionDescriptor {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- binding the field is how it is dropped
+  const { valueFingerprint: _fingerprint, ...rest } = exception;
+  return rest;
+}
+
 // One "a detection was just blocked/redacted" record from the short-lived
 // (30-minute) blocked-detections ledger: everything the approve flows — CLI
 // and web-ui — need to create an exception without the user retyping the
@@ -118,6 +147,21 @@ export interface BlockedDetection {
 
 // Insert shape: the persistence repo stamps blocked_at at write time.
 export type BlockedDetectionInput = Omit<BlockedDetection, 'blockedAt'>;
+
+// The ledger row minus its keyed fingerprint — the same egress rule, and the
+// same optional-never exclusion, as ExceptionDescriptor. The approve flows
+// round-trip `reference` and the server re-reads the full row, so the
+// fingerprint never needs to leave it.
+export type BlockedDetectionDescriptor = Omit<BlockedDetection, 'valueFingerprint'> & {
+  valueFingerprint?: never;
+};
+
+/** Strip the keyed fingerprint from a ledger row before it crosses to a view. */
+export function toBlockedDetectionDescriptor(row: BlockedDetection): BlockedDetectionDescriptor {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- binding the field is how it is dropped
+  const { valueFingerprint: _fingerprint, ...rest } = row;
+  return rest;
+}
 
 /**
  * What the machine's fingerprint key file amounts to right now.
@@ -146,4 +190,55 @@ export type FingerprintKeyState =
  */
 export function isMatchableUnder(keyVersion: number, key: FingerprintKeyState): boolean {
   return key.status === 'present' && key.version === keyVersion;
+}
+
+/**
+ * The blocked-ledger retention window, in hours, as the rotate note names it.
+ *
+ * The count the note carries is taken over the ledger's whole retention window,
+ * while the dashboard strip behind the dialog shows whichever lookback chip is
+ * selected — 30 minutes by default. So the number routinely exceeds what is on
+ * screen, and a reader who cannot reconcile the two has been given a figure
+ * they cannot trust. Naming the window is what makes it reconcilable.
+ *
+ * The authority is BLOCKED_DETECTIONS_RETENTION_MS in @akasecurity/persistence,
+ * which this package does not depend on and must not — persistence depends on
+ * this one. Hosts that have both pin them together instead.
+ */
+export const LEDGER_WINDOW_HOURS = 24;
+
+/**
+ * What a key rotation costs the blocked-detections ledger, as a line the rotate
+ * surfaces show before the user commits.
+ *
+ * The ledger is retained for a day, so it routinely outlives a rotation, and
+ * every row in it carries a fingerprint recorded under the key that was current
+ * when the detection was blocked. After rotating, none of them can be turned
+ * into a grant. The rows are not removed — they stay as a record of what was
+ * blocked — and the server-side refusal is the actual control; this is the
+ * "tell them before, not after" half.
+ *
+ * `stillApprovable` counts the rows matchable under the CURRENT key — the same
+ * predicate every approve surface gates on, so the number and the rows a user
+ * can act on agree. That is also its limit: like the dashboard strip, it counts
+ * a row whose grant is already active, because neither models grant state.
+ *
+ * It lives here, beside `isMatchableUnder`, for the same reason that predicate
+ * does: `aka exception rotate-key` and the dashboard's rotate dialog disclose
+ * the cost of one irreversible action, and a second copy is how two surfaces
+ * come to state different costs for it. @akasecurity/dashboard-ui re-exports it
+ * so the views keep their existing import.
+ */
+export function rotationBlockedLedgerNote(stillApprovable: number): string {
+  if (stillApprovable <= 0) {
+    // No number, so no window to name — this variant claims nothing the reader
+    // could try to reconcile with the rows in front of them.
+    return 'Recently blocked detections are invalidated too: the ledger outlives a rotation, so its rows stay listed as a record of what was blocked but stop being approvable. Trigger the detection again to approve it under the new key.';
+  }
+  const window = `from the last ${String(LEDGER_WINDOW_HOURS)} hours`;
+  const subject =
+    stillApprovable === 1
+      ? `1 recently blocked detection ${window} is still approvable; after rotating, none are`
+      : `${String(stillApprovable)} recently blocked detections ${window} are still approvable; after rotating, none are`;
+  return `${subject}. They stay listed as a record of what was blocked — trigger the detection again to approve under the new key.`;
 }

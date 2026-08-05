@@ -81,7 +81,7 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
         </div>
         <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-3">
           <span className="shrink-0">{SEVERITY_META[item.severity].label}</span>
-          <span className="shrink-0 text-border-strong">·</span>
+          <span className="shrink-0 text-text-3">·</span>
           <span className="truncate font-mono" title={item.path}>
             {item.path}
           </span>

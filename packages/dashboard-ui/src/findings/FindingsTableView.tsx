@@ -6,6 +6,9 @@ import {
   Button,
   Card,
   cn,
+  LoadMore,
+  LoadMoreButton,
+  LoadMoreStatus,
   SeverityBadge,
   Table,
   TableBody,
@@ -49,6 +52,9 @@ export function FindingsTableView({
   onSelectGroup,
   onSelectInstance,
   hasMore = false,
+  onLoadMore,
+  loadingMore = false,
+  total,
   isLoading = false,
   error = null,
   emptyState,
@@ -64,6 +70,15 @@ export function FindingsTableView({
   onSelectGroup: (group: FindingGroup) => void;
   onSelectInstance: (group: FindingGroup, instance: FindingInstance) => void;
   hasMore?: boolean;
+  /**
+   * Append the next page. Absent ⇒ the caller cannot paginate, and the
+   * truncation notice below is shown instead — which is the honest thing to
+   * render when there is more data and no way to reach it.
+   */
+  onLoadMore?: (() => void) | undefined;
+  loadingMore?: boolean;
+  /** Groups matching the filters across the whole scope, not just this page. */
+  total?: number | undefined;
   isLoading?: boolean;
   error?: string | null;
   /**
@@ -93,7 +108,7 @@ export function FindingsTableView({
     <Card className="flex flex-col overflow-hidden shadow-sm h-full">
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {error ? (
-          <p className="py-8 text-center text-sm text-sev-critical">
+          <p className="py-8 text-center text-sm text-sev-critical-ink">
             Error loading findings: {error}
           </p>
         ) : isLoading ? (
@@ -217,14 +232,28 @@ export function FindingsTableView({
           </Table>
         )}
 
-        {/* The server's fetched-page cap over the full filtered set. `groups`
-          are grouped rows, so the unit is types — the toolbar's findings tally
-          counts instances and would disagree with this number. */}
-        {hasMore && (
-          <p className="mt-4 text-center text-xs text-text-3">
-            Showing the first {groups.length} types — refine the filters to narrow results.
-          </p>
-        )}
+        {/* The unit here is TYPES — the toolbar's findings tally counts
+          instances and would disagree with this number. */}
+        {onLoadMore
+          ? groups.length > 0 && (
+              <LoadMore>
+                {hasMore && (
+                  <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
+                    {loadingMore ? 'Loading…' : 'Load more types'}
+                  </LoadMoreButton>
+                )}
+                <LoadMoreStatus>
+                  {total === undefined
+                    ? `${String(groups.length)} shown`
+                    : `${String(groups.length)} of ${String(total)} types`}
+                </LoadMoreStatus>
+              </LoadMore>
+            )
+          : hasMore && (
+              <p className="mt-4 text-center text-xs text-text-3">
+                Showing the first {groups.length} types — refine the filters to narrow results.
+              </p>
+            )}
       </div>
     </Card>
   );

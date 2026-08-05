@@ -10,15 +10,15 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { routeRemediationOption } from '@akasecurity/setup-wizard';
+import { renderRedactionConfirmation } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { routeRemediationOption } from '../../src/remediation/chain.ts';
 import {
   type RedactionScope,
   type RedactionTarget,
   redactLeakedKeys,
 } from '../../src/remediation/redact.ts';
-import { renderRedactionConfirmation } from '../../src/remediation/render.ts';
 
 // Redaction acts only on transcript and temp artifacts.
 //

@@ -1,10 +1,18 @@
-import type { FindingsFilters } from '@akasecurity/dashboard-ui';
+import {
+  DEFAULT_FINDINGS_VIEW,
+  type FindingsFilters,
+  type FindingsView,
+  isFindingsView,
+} from '@akasecurity/dashboard-ui';
 import {
   FindingAction,
   FindingProvider,
   FindingStatus,
+  type ListFindingInstancesQuery,
+  type ListFindingLocationsQuery,
   type ListGroupedFindingsQuery,
   Severity,
+  TimeRange,
 } from '@akasecurity/schema';
 
 // The findings filters ride in the URL (?severity=…&type=…&provider=…&action=…&status=…&q=…,
@@ -63,6 +71,44 @@ export function parseSession(sp: FindingsSearchParams): string {
   return typeof sp.session === 'string' ? sp.session.trim() : '';
 }
 
+/**
+ * Which view the list renders (?view=). An absent or unknown value is the
+ * grouped default — a hand-edited URL must not produce a blank page.
+ */
+export function parseView(sp: FindingsSearchParams): FindingsView {
+  const raw = typeof sp.view === 'string' ? sp.view.trim() : '';
+  return isFindingsView(raw) ? raw : DEFAULT_FINDINGS_VIEW;
+}
+
+/**
+ * Exact host-tool names (?tool=, repeatable). A real filter, unlike `q`, which
+ * can only match the rendered "via Bash" label. Free strings (tool names come
+ * from the host, not an enum), so deduped rather than enum-checked.
+ */
+export function parseTools(sp: FindingsSearchParams): string[] {
+  return [...new Set(asArray(sp.tool))];
+}
+
+/** The repo (?repo=) and file (?file=) drill-down from the locations view. */
+export function parseRepo(sp: FindingsSearchParams): string {
+  return typeof sp.repo === 'string' ? sp.repo.trim() : '';
+}
+
+export function parseFile(sp: FindingsSearchParams): string {
+  return typeof sp.file === 'string' ? sp.file.trim() : '';
+}
+
+/**
+ * The time window (?range=). Parsed with safeParse so an absent or unknown
+ * value means ALL TIME: this list has never had a default window, and silently
+ * applying one would hide findings a reader has no way to know are missing.
+ */
+export function parseRange(sp: FindingsSearchParams): TimeRange | null {
+  const raw = typeof sp.range === 'string' ? sp.range.trim() : '';
+  const parsed = TimeRange.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 /** The finding (group or instance) id the detail sheet opens on (?finding=…). */
 export function parseSelectedFinding(sp: FindingsSearchParams): string {
   return typeof sp.finding === 'string' ? sp.finding.trim() : '';
@@ -78,7 +124,42 @@ export function toGroupedQuery(
   filters: FindingsFilters,
   q: string,
   session = '',
+  scope: FindingsScope = {},
 ): ListGroupedFindingsQuery {
+  const trimmed = q.trim();
+  // `tool`, `repo` and `file` are deliberately NOT carried: they are
+  // per-instance filters, and a group spans instances. Switching to the
+  // grouped view drops them, which the view toggle states rather than hides.
+  return {
+    ...(filters.severity.length ? { severity: filters.severity as Severity[] } : {}),
+    ...(filters.type.length ? { subtype: filters.type } : {}),
+    ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
+    ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
+    ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
+    ...(trimmed ? { q: trimmed } : {}),
+    ...(session ? { sessionId: session } : {}),
+    ...(scope.from ? { from: scope.from } : {}),
+  };
+}
+
+/**
+ * The scope a query carries beyond the toolbar's own dimensions: the resolved
+ * time bound, and the locations view's drill-down.
+ */
+export interface FindingsScope {
+  from?: string | undefined;
+  tools?: string[] | undefined;
+  repo?: string | undefined;
+  file?: string | undefined;
+}
+
+/** Filters + search → the instance-level (flat) query. */
+export function toInstancesQuery(
+  filters: FindingsFilters,
+  q: string,
+  session = '',
+  scope: FindingsScope = {},
+): ListFindingInstancesQuery {
   const trimmed = q.trim();
   return {
     ...(filters.severity.length ? { severity: filters.severity as Severity[] } : {}),
@@ -88,6 +169,35 @@ export function toGroupedQuery(
     ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
     ...(trimmed ? { q: trimmed } : {}),
     ...(session ? { sessionId: session } : {}),
+    ...(scope.from ? { from: scope.from } : {}),
+    ...(scope.tools?.length ? { tool: scope.tools } : {}),
+    ...(scope.repo ? { repo: scope.repo } : {}),
+    ...(scope.file ? { file: scope.file } : {}),
+  };
+}
+
+/**
+ * Filters + search → the locations query. `repo`/`file` are absent by design:
+ * this view IS the repo/file breakdown, so narrowing it to one would leave a
+ * tree of exactly one node.
+ */
+export function toLocationsQuery(
+  filters: FindingsFilters,
+  q: string,
+  session = '',
+  scope: FindingsScope = {},
+): ListFindingLocationsQuery {
+  const trimmed = q.trim();
+  return {
+    ...(filters.severity.length ? { severity: filters.severity as Severity[] } : {}),
+    ...(filters.type.length ? { subtype: filters.type } : {}),
+    ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
+    ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
+    ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
+    ...(trimmed ? { q: trimmed } : {}),
+    ...(session ? { sessionId: session } : {}),
+    ...(scope.from ? { from: scope.from } : {}),
+    ...(scope.tools?.length ? { tool: scope.tools } : {}),
   };
 }
 
@@ -101,6 +211,7 @@ export function buildFindingsParams(
   filters: FindingsFilters,
   q: string,
   session = '',
+  url: FindingsUrlState = {},
 ): URLSearchParams {
   const sp = new URLSearchParams();
   for (const s of filters.severity) sp.append('severity', s);
@@ -111,5 +222,28 @@ export function buildFindingsParams(
   const trimmed = q.trim();
   if (trimmed) sp.set('q', trimmed);
   if (session) sp.set('session', session);
+
+  // The default view writes no param, so the plain findings URL stays clean.
+  if (url.view && url.view !== DEFAULT_FINDINGS_VIEW) sp.set('view', url.view);
+  if (url.range) sp.set('range', url.range);
+  // The instance-level filters exist only where a view can honor them. Writing
+  // them under `grouped` would leave a param the page silently ignores, which
+  // survives into a shared link and reads as a filter that stopped working.
+  if (url.view === 'flat' || url.view === 'files') {
+    for (const t of url.tools ?? []) sp.append('tool', t);
+  }
+  if (url.view === 'flat') {
+    if (url.repo) sp.set('repo', url.repo);
+    if (url.file) sp.set('file', url.file);
+  }
   return sp;
+}
+
+/** The URL state beyond the toolbar filters, search and session scope. */
+export interface FindingsUrlState {
+  view?: FindingsView | undefined;
+  range?: TimeRange | null | undefined;
+  tools?: string[] | undefined;
+  repo?: string | undefined;
+  file?: string | undefined;
 }

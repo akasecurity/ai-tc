@@ -1,10 +1,11 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { getLoadedRules } from '@akasecurity/detections';
+import { getLoadedRules, maskMatch } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
-import { openLocalDatabase } from '@akasecurity/persistence';
+import { BLOCKED_DETECTIONS_RETENTION_MS, openLocalDatabase } from '@akasecurity/persistence';
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   createPluginRuntime,
@@ -15,13 +16,19 @@ import {
   registerBundledPacks,
   rotateFingerprintKey,
 } from '@akasecurity/plugin-sdk';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import type { DetectionException } from '@akasecurity/schema';
+import {
+  defaultWorkspaceSettings,
+  LEDGER_WINDOW_HOURS,
+  rotationBlockedLedgerNote,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runException } from '../../src/commands/exception.ts';
 import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with
@@ -34,6 +41,31 @@ if (exampleValue === undefined) throw new Error(`bundled rule ${RULE_ID} has no 
 // Re-bound after the guard so the narrowing survives into the hoisted
 // `function` helpers below (tsc drops it there for the original binding).
 const VALUE: string = exampleValue;
+
+// A second value the SAME rule detects: the ASIA form of the fixture. Distinct
+// from VALUE with identical entropy, derived rather than written out, and it
+// masks to the same `A******E` preview — which is the point wherever a test
+// needs two values one surface must keep apart.
+const SECOND_VALUE = `ASIA${VALUE.slice(4)}`;
+
+// A value the engine detects under a DIFFERENT rule, for the branch that builds
+// the "did you mean" hint out of the other matches — the one rejection in this
+// command that composes a message while holding the raw value in scope.
+const OTHER_RULE_ID = 'secrets/gitlab-token';
+const otherExample = getLoadedRules().find((r) => r.id === OTHER_RULE_ID)?.examples?.[0];
+if (otherExample === undefined) throw new Error(`bundled rule ${OTHER_RULE_ID} has no example`);
+const OTHER_VALUE: string = otherExample;
+
+// expectNoEchoOf is shared across this package's suites (see its own tests in
+// test/helpers/no-echo.test.ts), and this file applies it to BOTH surfaces the
+// command has, which is wider than the web-ui original it mirrors: an ERROR,
+// where no part of the value has any business appearing, and STDOUT, where the
+// only thing this command ever prints of a blocked SECRET is maskMatch's
+// first-and-last-character preview (`A******E`) — two characters, so it cannot
+// fill the window. That scoping is load-bearing: maskMatch's email branch
+// reveals the whole domain, so the stdout half does not extend to a surface
+// printing a pii/email preview. Where a path prints nothing at all, assert the
+// emptiness instead — searching empty bytes proves nothing.
 
 // Scripted, non-interactive Prompter: output captured, value via "stdin".
 function scriptedIo(stdin = ''): Prompter & { output: () => string } {
@@ -209,13 +241,83 @@ describe('aka exception add → enforcement full loop', () => {
     }
   });
 
+  // `add` is the ONLY verb here that holds a raw value in this process: it reads
+  // it from stdin and composes every refusal below with that value still in
+  // scope (approve works from a ledger row and never sees one). So this is where
+  // an echo would come from, and each rejection is asserted run by run against
+  // the value THAT call piped in.
   it('refuses a value that does not match the rule (no dangling grant)', async () => {
-    await expect(
-      runException(
-        ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--once', '--reason', 'nope'],
-        scriptedIo('not-a-credential\n'),
-      ),
-    ).rejects.toThrow(/does not match rule/);
+    // High-entropy but rule-shaped for nothing: an English-phrase fixture would
+    // put ordinary words in the sliding window, where they can collide with the
+    // message's own wording instead of catching a leak.
+    const supplied = 'zq7vk2mx9tw4hb6n';
+    const io = scriptedIo(`${supplied}\n`);
+    const err = await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--once', '--reason', 'nope'],
+      io,
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toMatch(/does not match rule/);
+    // Nothing else matched, so the "did you mean" hint is absent — pin that, or
+    // the case cannot be told apart from the one below it.
+    expect(err?.message).not.toMatch(/did you mean/);
+    expectNoEchoOf(err?.message, supplied);
+    // The refusal prints NOTHING. Asserted as emptiness rather than as an
+    // absence within it: `not.toContain` over bytes that are always empty
+    // passes however the branch is worded.
+    expect(io.output()).toBe('');
+
+    const db = openLocalDatabase(dir);
+    try {
+      expect(await db.exceptions.list()).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('names the rule that DID match without echoing the value it was handed', async () => {
+    const io = scriptedIo(`${OTHER_VALUE}\n`);
+    const err = await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--once', '--reason', 'wrong rule'],
+      io,
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    // Positive control: the hint branch really ran, so the message under test is
+    // the one built FROM the scan of the piped value — not the bare rejection.
+    expect(err?.message).toMatch(/does not match rule/);
+    expect(err?.message).toContain(OTHER_RULE_ID);
+    // Rule ids are the only thing that branch may carry out of the scan.
+    expectNoEchoOf(err?.message, OTHER_VALUE);
+    expect(io.output()).toBe('');
+
+    const db = openLocalDatabase(dir);
+    try {
+      expect(await db.exceptions.list()).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses an input holding two distinct values for the rule, echoing neither', async () => {
+    const io = scriptedIo(`${VALUE} and ${SECOND_VALUE}\n`);
+    const err = await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--once', '--reason', 'two spans'],
+      io,
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    // The count is what the operator needs; the spans themselves are two live
+    // credentials, and they mask identically, so the message could not name one
+    // usefully even if it were safe to.
+    expect(err?.message).toMatch(/contains 2 distinct values/);
+    expectNoEchoOf(err?.message, VALUE);
+    expectNoEchoOf(err?.message, SECOND_VALUE);
+    expect(io.output()).toBe('');
 
     const db = openLocalDatabase(dir);
     try {
@@ -310,8 +412,12 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
     } finally {
       db.close();
     }
-    // The raw value must never be echoed back.
-    expect(io.output()).not.toContain(VALUE);
+    // Positive control FIRST: this path really does print, and what it prints of
+    // the value is the masked preview. Without it the assertion below could not
+    // tell a clean confirmation from a capture that stopped receiving anything.
+    expect(io.output()).toContain('A******E');
+    // The raw value must never be echoed back — not even a run of it.
+    expectNoEchoOf(io.output(), VALUE);
   });
 
   it('trims paste artifacts (embedded newlines) from the selector', async () => {
@@ -339,7 +445,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       (e: unknown) => e as Error,
     );
     expect(err?.message).toMatch(/no blocked detection matches/);
-    expect(err?.message).not.toContain(unmatched);
+    expectNoEchoOf(err?.message, unmatched);
   });
 
   it('refuses a value blocked under multiple rules — the rule choice is real', async () => {
@@ -488,7 +594,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         (e: unknown) => e as Error,
       );
       expect(err?.message).toMatch(/needs the fingerprint key/);
-      expect(err?.message).not.toContain(unmatched);
+      expectNoEchoOf(err?.message, unmatched);
       expect(readFingerprintKey(dir)).toBeNull();
     });
 
@@ -644,8 +750,12 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         expect(err?.message).toMatch(/no blocked detection matches/);
         expect(await grants()).toHaveLength(0);
         // The selector may be a live secret however the refusal is reached.
-        expect(err?.message).not.toContain(VALUE);
-        expect(io.output()).not.toContain(VALUE);
+        expectNoEchoOf(err?.message, VALUE);
+        // This path prints nothing at all before it throws, so the property is
+        // emptiness — asserted directly. Pointing expectNoEchoOf at a capture
+        // that is always empty would pass however the branch is worded, and this
+        // form goes red the moment anything at all is printed here.
+        expect(io.output()).toBe('');
       });
 
       it('grants nothing by value when the version moved but the material did not', async () => {
@@ -681,10 +791,55 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         // site reporting a stale version.
         expect(err?.message).toMatch(/no blocked detection matches/);
         expect(await grants()).toHaveLength(0);
-        expect(err?.message).not.toContain(VALUE);
-        expect(io.output()).not.toContain(VALUE);
+        expectNoEchoOf(err?.message, VALUE);
+        // Same refusal site, same reason for asserting emptiness as above.
+        expect(io.output()).toBe('');
       });
     });
+  });
+});
+
+describe('aka exception show', () => {
+  it('prints the id, masked value, and key version — never a fingerprint fragment', async () => {
+    await runException(
+      ['add', '--home', home, '--rule', RULE_ID, '--stdin', '--for', '1h', '--reason', 'render'],
+      scriptedIo(`${VALUE}\n`),
+    );
+
+    const db = openLocalDatabase(dir);
+    let grant: DetectionException | undefined;
+    try {
+      grant = (await db.exceptions.list())[0];
+    } finally {
+      db.close();
+    }
+    if (!grant) throw new Error('grant missing');
+
+    const io = scriptedIo();
+    await runException(['show', grant.id.slice(0, 6), '--home', home], io);
+    const out = io.output();
+
+    // Positive control first: an empty capture would pass every absence
+    // assertion below vacuously.
+    expect(out).toContain(grant.id.slice(0, 6));
+    expect(out).toContain(grant.maskedValue);
+    expect(out).toContain(`key v${String(grant.keyVersion)}`);
+    expect(out).not.toContain(VALUE);
+
+    // The keyed fingerprint is a correlation key: no window of it may be
+    // echoed. Window by window rather than the whole digest — a truncated
+    // echo is still a stable correlation key. The shape guard keeps the loop
+    // from passing vacuously on a short or malformed digest.
+    expect(grant.valueFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    const WINDOW = 6;
+    for (let i = 0; i + WINDOW <= grant.valueFingerprint.length; i++) {
+      expect(out).not.toContain(grant.valueFingerprint.slice(i, i + WINDOW));
+    }
+    // The fragment shape this command used to print sits below the window
+    // size above (4-char prefix…4-char suffix); pin its absence directly.
+    expect(out).not.toContain(
+      `${grant.valueFingerprint.slice(0, 4)}…${grant.valueFingerprint.slice(-4)}`,
+    );
   });
 });
 
@@ -698,7 +853,7 @@ describe('aka exception list / revoke', () => {
     const listIo = scriptedIo();
     await runException(['list', '--home', home], listIo);
     expect(listIo.output()).toContain(RULE_ID);
-    expect(listIo.output()).not.toContain(VALUE);
+    expectNoEchoOf(listIo.output(), VALUE);
 
     const db = openLocalDatabase(dir);
     let id: string;
@@ -743,11 +898,15 @@ describe('aka exception list / revoke', () => {
     const db = openLocalDatabase(dir);
     try {
       await db.exceptions.create({
-        ruleId: 'secrets/generic-credential',
+        ruleId: OTHER_RULE_ID,
         category: 'secret',
-        valueFingerprint: fingerprintValue(key, 'not-the-listed-value'),
+        // A different value from the suppress row's, and a high-entropy one:
+        // the absence check below slides an eight-character window over it, and
+        // an English-phrase fixture invites a collision with ordinary output
+        // text rather than catching a leak.
+        valueFingerprint: fingerprintValue(key, OTHER_VALUE),
         keyVersion: key.version,
-        maskedValue: 'gh*…ret',
+        maskedValue: maskMatch(OTHER_VALUE),
         capability: 'reveal_to_model',
         scope: 'temporary',
         expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
@@ -764,11 +923,235 @@ describe('aka exception list / revoke', () => {
     const listIo = scriptedIo();
     await runException(['list', '--home', home], listIo);
     const out = listIo.output();
-    // Only the reveal row carries the tag; the suppress row is unchanged.
-    expect(out).toContain('gh*…ret · REVEALS-TO-MODEL');
+    // Only the reveal row carries the tag; the suppress row is unchanged. The
+    // two previews differ, so the tag is pinned to a nameable row rather than to
+    // whichever one the renderer happened to emit.
+    expect(out).toContain(`${maskMatch(OTHER_VALUE)} · REVEALS-TO-MODEL`);
     expect(out.match(/REVEALS-TO-MODEL/g)).toHaveLength(1);
     // The list is metadata-only even for reveal grants — masked, never raw.
-    expect(out).not.toContain(VALUE);
-    expect(out).not.toContain('not-the-listed-value');
+    expectNoEchoOf(out, VALUE);
+    expectNoEchoOf(out, OTHER_VALUE);
+  });
+});
+
+// Rotation is one-way, and the two stores holding GRANTABLE fingerprints are
+// the permanent grants and the blocked-detections ledger. This command listed
+// the first and said nothing about the second, while the dashboard's rotate
+// dialog disclosed both — two surfaces stating different costs for the same
+// irreversible action, and this is the one that runs unattended under `--yes`.
+//
+// The ledger half is the easy one to miss precisely because it degrades so
+// politely: those rows go on appearing under `aka exception approve`
+// afterwards, correctly refused, which is a worse place to learn it than in the
+// confirmation.
+describe('aka exception rotate-key — the cost it discloses before committing', () => {
+  // Seeds a ledger row under whatever key is current, the way the enforcement
+  // path writes one.
+  async function seedBlocked(reference: string): Promise<void> {
+    const key = loadOrCreateFingerprintKey(dir);
+    const db = openLocalDatabase(dir);
+    try {
+      await db.exceptions.recordBlocked({
+        reference,
+        ruleId: RULE_ID,
+        category: 'secret',
+        valueFingerprint: fingerprintValue(key, VALUE),
+        keyVersion: key.version,
+        maskedValue: maskMatch(VALUE),
+        sessionId: 'sess-rotate',
+        repo: null,
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  // `recordBlocked` stamps `blocked_at` with the wall clock, so ageing a row is
+  // the one thing the repository API cannot express. Written straight to the
+  // real store rather than by mocking a clock — the property under test is
+  // which WINDOW the command reads over, and a faked clock would move the
+  // command's cutoff along with the row and assert nothing.
+  function backdate(reference: string, ageMs: number): void {
+    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    try {
+      const changes = raw
+        .prepare('UPDATE blocked_detections SET blocked_at = ? WHERE reference = ?')
+        .run(Date.now() - ageMs, reference).changes;
+      // An UPDATE matching nothing exits happily and would leave the row at
+      // `now`, where the assertion below passes for the wrong reason.
+      expect(Number(changes)).toBe(1);
+    } finally {
+      raw.close();
+    }
+  }
+
+  // Interactive prompter that also captures what had ALREADY been printed at
+  // the moment the confirm prompt was asked. `interactiveIo` above records the
+  // questions and the output separately, so it cannot tell a disclosure made
+  // before the decision from one made after it — which is the whole property
+  // here, not an incidental detail of layout.
+  function confirmIo(answer: string): Prompter & {
+    output: () => string;
+    printedBeforePrompt: () => string | null;
+  } {
+    const chunks: string[] = [];
+    let atPrompt: string | null = null;
+    return {
+      output: () => chunks.join(''),
+      printedBeforePrompt: () => atPrompt,
+      out: (text) => {
+        chunks.push(text);
+      },
+      err: (text) => {
+        chunks.push(text);
+      },
+      isInteractive: true,
+      ask: () => {
+        atPrompt = chunks.join('');
+        return Promise.resolve(answer);
+      },
+      askHidden: () => Promise.reject(new Error('no hidden prompt expected')),
+      readAllStdin: () => Promise.resolve(''),
+    };
+  }
+
+  function keyVersion(): number | undefined {
+    return readFingerprintKey(dir)?.version;
+  }
+
+  it('states the ledger cost under --yes, which skips the prompt but not the preamble', async () => {
+    await seedBlocked('a11ce5');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    expect(out).toContain('invalidates EVERY existing exception grant');
+    expect(out).toContain(rotationBlockedLedgerNote(1));
+    // The unattended path is the one that most needs the disclosure and the
+    // least likely to be read, so pin that it really rotated — a version still
+    // at 1 would mean this asserted the copy on a run that did nothing.
+    expect(keyVersion()).toBe(2);
+  });
+
+  it('states it before the confirm prompt, not after the decision', async () => {
+    await seedBlocked('b22dee');
+
+    const io = confirmIo('n');
+    await runException(['rotate-key', '--home', home], io);
+
+    // Printed by the time the user was asked — "tell them before, not after" is
+    // the entire point, and a note emitted after the answer is worth nothing.
+    expect(io.printedBeforePrompt()).toContain(rotationBlockedLedgerNote(1));
+    expect(io.output()).toContain('Aborted — key unchanged.');
+    expect(keyVersion()).toBe(1);
+  });
+
+  it('counts over the ledger retention window, not the approve picker default', async () => {
+    // Two hours old: outside `recentBlocked`'s 30-minute default — which is the
+    // `aka exception approve` picker's lookback, not a retention bound — and
+    // well inside the day the ledger is actually kept for. A count taken over
+    // the default would report nothing here and understate a one-way action by
+    // the better part of a day.
+    await seedBlocked('c33fff');
+    backdate('c33fff', 2 * 60 * 60_000);
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    expect(io.output()).toContain(rotationBlockedLedgerNote(1));
+  });
+
+  it('counts only the rows still matchable under the current key', async () => {
+    await seedBlocked('d44aaa');
+    const rotated = rotateFingerprintKey(dir);
+    expect(rotated.version).toBe(2);
+    // Recorded under the key that is now current — the positive control. Without
+    // it a zero would be indistinguishable from a reader that finds nothing.
+    await seedBlocked('e55bbb');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // Two rows in the ledger, one of them already unapprovable because it was
+    // blocked under v1. Counting both would overstate what THIS rotation costs.
+    expect(out).toContain(rotationBlockedLedgerNote(1));
+    expect(out).not.toContain(rotationBlockedLedgerNote(2));
+  });
+
+  it('states the caveat with nothing approvable, on both paths', async () => {
+    // The ledger refills within minutes of a rotation, so a note shown only
+    // when the count is non-zero reads as a caveat that only sometimes applies.
+    // Asserted on both paths because they print through different branches.
+    const zero = rotationBlockedLedgerNote(0);
+
+    const interactive = confirmIo('n');
+    await runException(['rotate-key', '--home', home], interactive);
+    expect(interactive.output()).toContain(zero);
+
+    const unattended = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], unattended);
+    expect(unattended.output()).toContain(zero);
+  });
+
+  it('lists the permanent grants and the ledger cost together, without the value', async () => {
+    // `--yes` stands in for the retype a permanent grant asks for on a
+    // terminal; this suite is non-interactive.
+    await runException(
+      [
+        'add',
+        '--home',
+        home,
+        '--rule',
+        RULE_ID,
+        '--stdin',
+        '--permanent',
+        '--reason',
+        'pinned',
+        '--yes',
+      ],
+      scriptedIo(`${VALUE}\n`),
+    );
+    await seedBlocked('f66ccc');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    const out = io.output();
+    // Both halves of what rotation invalidates, in the order the dashboard
+    // dialog shows them: the grants that stop applying, then the ledger rows
+    // that stop being approvable.
+    const grants = out.indexOf('Active PERMANENT exceptions');
+    const ledger = out.indexOf(rotationBlockedLedgerNote(1));
+    expect(grants).toBeGreaterThanOrEqual(0);
+    expect(ledger).toBeGreaterThan(grants);
+    // Everything here is metadata and masked previews; the raw value has no
+    // business on a screen that is only naming what stops working.
+    expectNoEchoOf(out, VALUE);
+  });
+
+  it('prints the dashboard dialog’s own sentence rather than a second copy', async () => {
+    // `rotationBlockedLedgerNote` is exported from @akasecurity/schema and
+    // re-exported by @akasecurity/dashboard-ui, so this command and the rotate
+    // dialog cannot word the same disclosure differently. Asserted against the
+    // shared function itself — a literal here would be the duplicate the shared
+    // helper exists to prevent, and would go green while the two drifted apart.
+    await seedBlocked('077ddd');
+
+    const io = scriptedIo();
+    await runException(['rotate-key', '--home', home, '--yes'], io);
+
+    expect(io.output()).toContain(rotationBlockedLedgerNote(1));
+  });
+
+  it('names a window that matches the one the count is actually taken over', () => {
+    // The sentence hard-codes 24 hours; the read passes
+    // BLOCKED_DETECTIONS_RETENTION_MS. @akasecurity/schema cannot import the
+    // authority (persistence depends on schema, not the reverse), so the two
+    // are pinned here — at the consumer that holds both. Widen the retention
+    // and this goes red rather than the copy quietly describing a window the
+    // count no longer spans.
+    expect(LEDGER_WINDOW_HOURS * 60 * 60 * 1000).toBe(BLOCKED_DETECTIONS_RETENTION_MS);
   });
 });

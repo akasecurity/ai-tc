@@ -26,7 +26,8 @@ import {
   SessionStatus,
 } from '@akasecurity/schema';
 
-import { parseJsonObject, safeJson } from '../internal/json.ts';
+import { safeJson } from '../internal/json.ts';
+import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
 import { allRows, countScalar, getRow, intToBool, mapRowsTolerant } from '../internal/rows.ts';
 import { containsPattern, placeholders } from '../internal/sql-text.ts';
 import type { ActivityReadPort } from '../ports.ts';
@@ -117,32 +118,6 @@ export function todayWindow(timeZone: string, nowMs: number): TodayWindow {
 function utcWindow(nowMs: number): TodayWindow {
   const startMs = Math.floor(nowMs / DAY_MS) * DAY_MS;
   return { startMs, endMs: startMs + DAY_MS };
-}
-
-interface SessionCursor {
-  startedAtMs: number;
-  id: string;
-}
-
-// Opaque base64url keyset cursor of the last item's {startedAtMs, id}, most-
-// recent-first (same convention as services/activity.ts). A stale/undecodable
-// cursor restarts from the top rather than throwing.
-function encodeCursor(payload: SessionCursor): string {
-  return Buffer.from(JSON.stringify(payload)).toString('base64url');
-}
-
-function decodeCursor(cursor: string): SessionCursor | null {
-  const parsed = parseJsonObject(Buffer.from(cursor, 'base64url').toString('utf8'));
-  if (
-    parsed !== undefined &&
-    'startedAtMs' in parsed &&
-    'id' in parsed &&
-    typeof parsed.startedAtMs === 'number' &&
-    typeof parsed.id === 'string'
-  ) {
-    return parsed as unknown as SessionCursor;
-  }
-  return null;
 }
 
 // DB event_type → contract AuditEventKind. `tool_call` renames to `tool`; the
@@ -419,7 +394,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   listSessions(query: ListActivitySessionsQuery): Promise<ListActivitySessionsResponse> {
-    const cursor = query.cursor ? decodeCursor(query.cursor) : null;
+    const cursor = query.cursor ? decodeKeysetCursor(query.cursor) : null;
     const toMs = query.to ? isoToEpochMillis(query.to) : this.now();
     const fromMs = query.from ? isoToEpochMillis(query.from) : undefined;
 
@@ -516,7 +491,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const last = page[page.length - 1];
     const nextCursor =
-      hasMore && last ? encodeCursor({ startedAtMs: last.started_at, id: last.id }) : null;
+      hasMore && last ? encodeKeysetCursor({ startedAtMs: last.started_at, id: last.id }) : null;
 
     return Promise.resolve({ items, nextCursor, emptyCount });
   }

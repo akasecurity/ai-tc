@@ -19,7 +19,18 @@ export type EventKind = z.infer<typeof EventKind>;
 export const CAPTURE_EVENT_TYPES_SQL = EventKind.options.map((k) => `'${k}'`).join(',');
 
 export const SourceTool = z
-  .enum(['claude-code', 'claude-desktop', 'cursor', 'chatgpt', 'github-copilot', 'cli', 'unknown'])
+  .enum([
+    'claude-code',
+    'claude-desktop',
+    'cursor',
+    'chatgpt',
+    'claude-ai',
+    'github-copilot',
+    'codex',
+    'antigravity',
+    'cli',
+    'unknown',
+  ])
   .meta({ id: 'SourceTool' });
 export type SourceTool = z.infer<typeof SourceTool>;
 

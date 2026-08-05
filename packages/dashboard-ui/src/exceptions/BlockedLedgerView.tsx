@@ -1,5 +1,5 @@
 'use client';
-import type { BlockedDetection, FingerprintKeyState } from '@akasecurity/schema';
+import type { BlockedDetectionDescriptor, FingerprintKeyState } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
@@ -9,7 +9,7 @@ import { BlockedWindowSelect } from './BlockedWindowSelect.tsx';
 import { blockedRowBlockReason } from './meta.ts';
 
 export interface BlockedLedgerViewProps {
-  items: BlockedDetection[];
+  items: BlockedDetectionDescriptor[];
   onApprove: (reference: string) => void;
   blockedWindow: BlockedWindow;
   onBlockedWindowChange: (window: BlockedWindow) => void;
@@ -25,8 +25,9 @@ export interface BlockedLedgerViewProps {
 /**
  * The "blocked in the last N" strip — the web twin of the
  * `aka exception approve` picker, with a lookback window filter the CLI
- * doesn't have. Each row carries the keyed fingerprint and masked preview
- * only (never the raw value); Approve opens the grant dialog for that entry.
+ * doesn't have. Each row carries the masked preview only (never the raw value
+ * or its keyed fingerprint); Approve opens the grant dialog for that entry,
+ * and the server re-reads the full ledger row by `reference`.
  *
  * The ledger is retained for a day, so it outlives a key rotation and keeps
  * listing rows fingerprinted under the old key. Those rows are shown — they are
@@ -43,11 +44,11 @@ export function BlockedLedgerView({
   return (
     <div className="mb-3.5 overflow-hidden rounded-xl border border-sev-high-fill bg-sev-high-fill">
       <div className="flex items-center gap-2.5 px-3.5 py-3">
-        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-high text-white">
+        <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-high-ink text-on-accent">
           <SlashCircleIcon aria-hidden focusable={false} className="size-4" />
         </span>
         <span className="text-sm font-semibold text-text">Recently blocked</span>
-        <span className="rounded-full bg-sev-high px-2 py-0.5 text-xs font-bold text-white">
+        <span className="rounded-full bg-sev-high-ink px-2 py-0.5 text-xs font-bold text-on-accent">
           {items.length}
         </span>
         <span className="text-xs text-text-2">

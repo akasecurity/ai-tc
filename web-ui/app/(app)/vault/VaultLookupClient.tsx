@@ -80,7 +80,9 @@ export function VaultLookupClient() {
           </Button>
         </div>
 
-        {result && !result.ok && <p className="mt-3 text-xs text-sev-critical">{result.error}</p>}
+        {result && !result.ok && (
+          <p className="mt-3 text-xs text-sev-critical-ink">{result.error}</p>
+        )}
         {result?.ok && (
           <div className="mt-3 rounded-lg border border-border bg-surface-2 px-3 py-2">
             <ScrubbedValue value={result.value} descriptor={result.descriptor} />
@@ -100,7 +102,7 @@ export function VaultLookupClient() {
 
           {grantResult?.ok === true ? (
             <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
-              <p className="text-sm font-semibold text-sev-critical">
+              <p className="text-sm font-semibold text-sev-critical-ink">
                 Reveal grant {grantResult.grantIdPrefix} created
               </p>
               <p className="mt-1 text-xs text-text-2">
@@ -146,7 +148,7 @@ export function VaultLookupClient() {
                   className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm text-text placeholder:text-text-3"
                 />
               </div>
-              {grantResult && <p className="text-xs text-sev-critical">{grantResult.error}</p>}
+              {grantResult && <p className="text-xs text-sev-critical-ink">{grantResult.error}</p>}
               <div>
                 <Button
                   variant="solid"

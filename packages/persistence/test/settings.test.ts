@@ -1,7 +1,16 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { SimpleDetectionPolicy } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyOnboarding, readWorkspaceSettings } from '../src/settings.ts';
@@ -136,5 +145,69 @@ describe('applyOnboarding', () => {
     expect(second.policy).toBe('warn'); // preserved from the first call
     expect(second.historicalAccess).toBe('full'); // newly applied
     expect(second.onboardedAt).toBe(first.onboardedAt); // stable across edits
+  });
+
+  it('leaves no lock file behind', () => {
+    applyOnboarding({ policy: 'warn' }, base);
+    // The write lock is a sibling of settings.json. One left behind costs every
+    // later writer its full stale wait before it can proceed.
+    expect(readdirSync(join(base, 'settings'))).toEqual(['settings.json']);
+  });
+});
+
+describe('applyOnboarding (derived answers)', () => {
+  it('hands the updater the settings already on disk', () => {
+    applyOnboarding({ policy: 'warn' }, base);
+
+    let seen: SimpleDetectionPolicy | undefined;
+    applyOnboarding((current) => {
+      seen = current.policy;
+      return { historicalAccess: 'full' };
+    }, base);
+
+    expect(seen).toBe('warn');
+    expect(readWorkspaceSettings(base).historicalAccess).toBe('full');
+    expect(readWorkspaceSettings(base).policy).toBe('warn');
+  });
+
+  it('merges what the updater returns, exactly as a plain answer object would', () => {
+    const saved = applyOnboarding(() => ({ policy: 'warn' }), base);
+    expect(saved.policy).toBe('warn');
+    expect(saved.onboardedAt).toBeDefined();
+    expect(readWorkspaceSettings(base).policy).toBe('warn');
+  });
+
+  it('lets an updater carry a value forward from the current settings', () => {
+    // The dashboard's shape: a consent grant that survives an unrelated edit is
+    // read on the far side of the lock, so it is the grant still on file rather
+    // than one a concurrent revoke has since cleared.
+    const granted = { acknowledgedAt: '2026-01-01T00:00:00.000Z', version: 1 };
+    applyOnboarding({ vaultConsent: granted }, base);
+
+    applyOnboarding((current) => ({ policy: 'warn', vaultConsent: current.vaultConsent }), base);
+
+    expect(readWorkspaceSettings(base).vaultConsent).toEqual(granted);
+    expect(readWorkspaceSettings(base).policy).toBe('warn');
+  });
+
+  it('drops a field the updater returns as undefined', () => {
+    applyOnboarding(
+      { modelJudgeConsent: { acknowledgedAt: '2026-01-01T00:00:00.000Z', payloadVersion: 1 } },
+      base,
+    );
+    applyOnboarding(() => ({ modelJudgeConsent: undefined }), base);
+    expect(readWorkspaceSettings(base).modelJudgeConsent).toBeUndefined();
+  });
+
+  it('does not write when the updater throws', () => {
+    applyOnboarding({ policy: 'warn' }, base);
+    expect(() =>
+      applyOnboarding(() => {
+        throw new Error('derivation failed');
+      }, base),
+    ).toThrow('derivation failed');
+    expect(readWorkspaceSettings(base).policy).toBe('warn');
+    // And the lock is released, so the next writer is not left waiting it out.
+    expect(applyOnboarding({ historicalAccess: 'full' }, base).historicalAccess).toBe('full');
   });
 });

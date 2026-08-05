@@ -65,6 +65,38 @@ import { purgeSampleData } from './sample-purge.ts';
 export type { InventoryContext, InventoryFacets, ResolvedInventory } from '@akasecurity/schema';
 
 /**
+ * TEST-ONLY. The `DatabaseSync` this facade writes through.
+ *
+ * A connection-scoped fault — `PRAGMA max_page_count`, the only way to raise a
+ * genuine `SQLITE_FULL` without a real full disk — binds to one connection, not
+ * to the file. Without this the store's blanket fail-open closures
+ * (`recordCapture` and friends, below) could not be faulted at all: they close
+ * over the connection opened here, a second handle on the same file carries none
+ * of the cap, and those closures are the whole reason the fault tests exist.
+ *
+ * Three properties are load-bearing:
+ *
+ * - **Symbol-keyed and NOT re-exported from `src/index.ts`.** The package's
+ *   `exports` map is `"." -> "./src/index.ts"` and nothing else, so no other
+ *   package can reach `database.ts` to name this. Test-only is structural here,
+ *   not a request.
+ * - **A plain enumerable data property, never a getter.** Test helpers hand out
+ *   `{ ...db, close }` wrappers (`test/helpers/temp-store.ts`), and object
+ *   spread copies own enumerable properties — symbol keys included. Make it
+ *   non-enumerable and every wrapped handle silently loses the seam instead of
+ *   failing.
+ * - **It grants nothing the process did not already have.** Any code running
+ *   here can open the store file directly with `node:sqlite`; the store's
+ *   protection is the 0600 file mode, not the reachability of a handle.
+ *
+ * The handle is closed by `close()` like any other reference to it — a caller
+ * holding this after that holds a closed connection.
+ */
+export const UNSAFE_TEST_ONLY_RAW_HANDLE: unique symbol = Symbol(
+  'aka.persistence.unsafeTestOnlyRawHandle',
+);
+
+/**
  * The local SQLite store under <dir>/aka.db — the writer of events/findings
  * for the plugin/CLI. Uses the Node 24+ builtin node:sqlite (no native dep,
  * tsup-bundleable), applies the canonical schema from @akasecurity/schema on
@@ -178,6 +210,12 @@ export interface LocalDatabase {
   // call this from inside another transaction.
   transaction<T>(fn: () => Promise<T> | T): Promise<T>;
   close(): void;
+  /**
+   * TEST-ONLY — see UNSAFE_TEST_ONLY_RAW_HANDLE. No product code reads this;
+   * `packages/eslint-config/test/test-only-seam.test.js` fails the workspace if
+   * any does.
+   */
+  readonly [UNSAFE_TEST_ONLY_RAW_HANDLE]: DatabaseSync;
 }
 
 // Attach the resolved host id to a harness/account descriptor — the
@@ -668,5 +706,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     close: () => {
       db.close();
     },
+    // Last, and a plain value rather than a getter, so `{ ...db }` carries it.
+    [UNSAFE_TEST_ONLY_RAW_HANDLE]: db,
   };
 }

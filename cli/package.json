@@ -19,7 +19,9 @@
   },
   "files": [
     "dist",
-    "web-ui"
+    "web-ui",
+    "extension",
+    "native-host"
   ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -34,10 +36,11 @@
     "package:sea": "node scripts/package-sea.mjs",
     "archive:sea": "node scripts/archive-sea.mjs",
     "bundle:web-ui": "node scripts/bundle-web-ui.mjs",
-    "prepack": "tsup && node scripts/bundle-web-ui.mjs",
+    "prepack": "tsup && node scripts/bundle-web-ui.mjs && node scripts/bundle-extension.mjs",
     "lint": "eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bundle:extension": "node scripts/bundle-extension.mjs"
   },
   "dependencies": {
     "ink": "^7.1.1",
@@ -51,6 +54,7 @@
     "@akasecurity/eslint-config": "workspace:*",
     "@akasecurity/local-ops": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/plugin-browser-extension": "workspace:*",
     "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/web-ui": "workspace:*",

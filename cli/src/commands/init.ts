@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import * as readline from 'node:readline/promises';
 import { parseArgs } from 'node:util';
@@ -10,9 +10,11 @@ import {
   pluginRef,
 } from '@akasecurity/local-ops';
 import {
+  FileLockError,
   keysDir,
   openLocalDatabase,
   tightenFile,
+  withFileLock,
   writeOwnerOnlyFileSync,
 } from '@akasecurity/persistence';
 import {
@@ -61,6 +63,36 @@ function storeTargets(home: string): string[] {
   return [...storeContents(home).keys()];
 }
 
+// Every path whose owner-only MODE this command stands behind. The layout above
+// has to stay enumerated — some of it does not exist yet on a first run, and an
+// absent target is not a loose one — but the artifacts beside the store are not
+// a fixed list, so they are walked instead. SQLite's `-wal`/`-shm`/`-journal`
+// appear with whichever journal mode is active, and the legacy drop leaves an
+// `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the prompt corpus
+// — on every run, including a first one. `tightenPerms`/`tightenFile` already
+// hold all of them at 0600, so each is a path a rejected chmod can strand; a
+// hardcoded list here would never name one, and could not name whatever the
+// next migration adds.
+function storeModeTargets(home: string): string[] {
+  const targets = new Set(storeTargets(home));
+  const data = dataDir(home);
+  try {
+    for (const name of readdirSync(data)) {
+      // A `.partial` is the one artifact deliberately left at the umask: it
+      // exists for the whole of the `VACUUM INTO` that writes it and is only
+      // tightened just before the rename, so a copy cut short by a kill leaves
+      // a 0644 one behind on purpose (see snapshotStore). Reporting it would
+      // blame the filesystem for a mode nothing tried to apply — the wrong
+      // diagnosis, which is the same reason a symlinked path is skipped below.
+      if (name.endsWith('.partial')) continue;
+      targets.add(join(data, name));
+    }
+  } catch {
+    // absent or unreadable data dir — the enumerated layout still applies
+  }
+  return [...targets];
+}
+
 // The store paths whose owner-only mode could not be applied. `aka init` tightens
 // all of them; any that stay group/other-readable means the filesystem rejected
 // chmod (a root-owned home, an SMB/NFS/DrvFs mount), so the store has no at-rest
@@ -69,7 +101,7 @@ function storeTargets(home: string): string[] {
 // actionable. POSIX-only — Windows never applies these modes (see SECURITY.md).
 export function looseStorePaths(home: string): string[] {
   if (process.platform === 'win32') return [];
-  return storeTargets(home).filter((p) => {
+  return storeModeTargets(home).filter((p) => {
     try {
       // A symlinked path is deliberately never chmod'd (see symlinkedStorePaths),
       // so reporting its target's mode here would blame the filesystem for a
@@ -230,6 +262,58 @@ function isBrokenLink(path: string): boolean {
   }
 }
 
+// A store directory that already exists as a FILE cannot be created either, and
+// the raw failure is actively misleading: `mkdir` raises EEXIST, whose message
+// ("file already exists") reads as "this is already done" rather than "something
+// else is sitting where the store goes". Every occupied path reports that way,
+// at any depth — `ensureDataDirSync` passes `recursive: true`, so it fails at
+// the occupied component itself and never creates *through* a file. Refuse here
+// instead, naming the path that is occupied and what to do about it.
+//
+// Checked for the same three directories as the broken-link guard, and after
+// it, so a broken link keeps its own more specific diagnosis. `statSync`
+// follows a link deliberately: a link to a regular file is this fault, not a
+// symlink note, and `aka init` supports a home symlinked to a real directory.
+//
+// Which means the path named here may itself be a link, and saying "move that
+// file aside" of one sends a reader to the TARGET — someone else's real file,
+// which removing would be the wrong repair and is not reversible. A link is
+// therefore reported as a link, naming what it resolves to, the way
+// assertStoreLinksResolve reports its own.
+function assertStorePathsAreDirectories(home: string): void {
+  // keys/ is included even though `aka init` does not create it: the vault
+  // mints it lazily on first use, so a regular file there lets init SUCCEED
+  // and then blames the filesystem — "could not enforce owner-only permissions
+  // on …/keys" — for a path that is simply occupied, while `aka vault` later
+  // dies on a bare EEXIST. An absent path is not a finding, so adding it costs
+  // the common case nothing.
+  for (const dir of [home, settingsDir(home), dataDir(home), keysDir(home)]) {
+    if (!existsAsNonDirectory(dir)) continue;
+    const occupant = isSymlink(dir)
+      ? `is a symlink to ${linkTarget(dir)}, which is not a directory — remove the link`
+      : 'exists but is not a directory — move that file aside or remove it';
+    throw new Error(`${dir} ${occupant}. AKA keeps its store there; re-run \`aka init\` after.`);
+  }
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function existsAsNonDirectory(path: string): boolean {
+  try {
+    return !statSync(path).isDirectory();
+  } catch {
+    // Absent (the normal case on a fresh init), a broken link (already
+    // diagnosed above), or unreadable — none of them this diagnosis.
+    return false;
+  }
+}
+
 // `aka init` — scaffold the local AKA home: owner-only ~/.aka, a default
 // settings.json, and the SQLite store (openLocalDatabase creates the data dir,
 // applies migrations, and seeds the default per-category policies). Idempotent:
@@ -244,6 +328,7 @@ export async function runInit(argv: string[]): Promise<void> {
   const home = homeBase(values.home);
 
   assertStoreLinksResolve(home);
+  assertStorePathsAreDirectories(home);
   ensureDataDirSync(home);
   const settings = settingsDir(home);
   ensureDataDirSync(settings);
@@ -251,15 +336,41 @@ export async function runInit(argv: string[]): Promise<void> {
   // Don't clobber an existing settings.json — a re-run must preserve the user's
   // onboarding choices (runMode/policy/historicalAccess). Only write defaults on
   // first init.
-  const settingsCreated = !existsSync(settingsFile);
-  if (settingsCreated) {
-    // Owner-only atomic write (tmp + rename), matching every other writer under
-    // ~/.aka — a crash mid-write must never leave a truncated or group-readable
-    // settings.json, and a pre-existing loose `.tmp` isn't carried through.
-    writeOwnerOnlyFileSync(
-      settingsFile,
-      `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
-    );
+  //
+  // Under the same lock the wizard and the dashboard take, and the existence
+  // check is re-run INSIDE it: this is the third writer of one file, and an
+  // unlocked check-then-write can see no file, have the wizard's answers land
+  // while it decides, and then replace them with defaults.
+  //
+  // The lock is taken only when there is a write to make. A settings.json that
+  // is already there needs neither the lock nor the write, and taking one anyway
+  // would make `aka init` fail on a store whose settings dir refuses new files —
+  // the broken state this command exists to repair, and one it used to walk
+  // through untouched.
+  //
+  // A `timeout` is swallowed because the only writer that can hold this lock is
+  // one writing this same file: it is creating what init would have created, so
+  // there is nothing left to do. An `unavailable` directory is a real fault and
+  // propagates, exactly as the failed write did before there was a lock.
+  let settingsCreated = false;
+  if (!existsSync(settingsFile)) {
+    try {
+      settingsCreated = withFileLock(settingsFile, () => {
+        // Re-checked INSIDE the lock: the wizard's answers can land between the
+        // check above and this one, and defaults must never replace them.
+        if (existsSync(settingsFile)) return false;
+        // Owner-only atomic write (tmp + rename), matching every other writer under
+        // ~/.aka — a crash mid-write must never leave a truncated or group-readable
+        // settings.json, and a pre-existing loose `.tmp` isn't carried through.
+        writeOwnerOnlyFileSync(
+          settingsFile,
+          `${JSON.stringify(defaultWorkspaceSettings(), null, 2)}\n`,
+        );
+        return true;
+      });
+    } catch (err) {
+      if (!(err instanceof FileLockError) || err.reason !== 'timeout') throw err;
+    }
   }
   // Re-tighten whether or not we just wrote it: a re-run of `aka init` over a
   // settings.json a prior release left loose (the leftover-`.tmp` bug) must
@@ -289,7 +400,12 @@ export async function runInit(argv: string[]): Promise<void> {
   const symlinked = symlinkedStorePaths(home);
   process.stdout.write(
     `✓ Initialized AKA at ${home}\n` +
-      `  settings: ${settingsFile}${settingsCreated ? '' : ' (kept existing)'}\n` +
+      // "kept existing" is a claim about a file that is there. The one path that
+      // reaches here with nothing on disk is a write skipped because another
+      // process held the lock, and saying "kept existing" about a file that does
+      // not exist would make the case where init did not do its job read exactly
+      // like the case where it had nothing to do.
+      `  settings: ${settingsFile}${settingsCreated ? '' : existsSync(settingsFile) ? ' (kept existing)' : ' (not written — another process was writing it)'}\n` +
       `  database: ${dbPath(home)}\n` +
       `  seeded ${String(policyCount)} default policies, ${String(packCount)} detection pack(s)\n` +
       (updatesAvailable > 0

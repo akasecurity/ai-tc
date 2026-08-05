@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { Button, Input } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
@@ -9,7 +9,7 @@ import { CapabilityTagFor, StateTagFor } from './atoms.tsx';
 import { exceptionState, SCOPE_LABEL, VIA_LABEL } from './meta.ts';
 
 export interface ExceptionDetailViewProps {
-  exception: DetectionException;
+  exception: ExceptionDescriptor;
   // Provided by the connected layer (a server action in the web-ui); omitted →
   // read-only detail. Only rendered while the grant is still active.
   onRevoke?: ((reason: string) => void) | undefined;
@@ -39,7 +39,7 @@ export function ExceptionDetailView({
 
       {exception.capability === 'reveal_to_model' && (
         <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
-          <SectionLabel className="text-sev-critical">Reveal to model</SectionLabel>
+          <SectionLabel className="text-sev-critical-ink">Reveal to model</SectionLabel>
           <p className="text-sm text-text-2">
             While this grant is active, the model can receive this value&apos;s raw form at tool
             boundaries. Every crossing is audited in the vault&apos;s de-reference trail.
@@ -73,11 +73,6 @@ export function ExceptionDetailView({
           {VIA_LABEL[exception.createdVia]}
         </MetaItem>
         <MetaItem label="Key version">{String(exception.keyVersion)}</MetaItem>
-        <MetaItem label="Fingerprint">
-          <span className="font-mono text-xs text-text-3">
-            {exception.valueFingerprint.slice(0, 16)}…
-          </span>
-        </MetaItem>
       </div>
 
       <div>
@@ -87,7 +82,7 @@ export function ExceptionDetailView({
 
       {exception.revokedAt !== null && (
         <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
-          <SectionLabel className="text-sev-critical">Revoked</SectionLabel>
+          <SectionLabel className="text-sev-critical-ink">Revoked</SectionLabel>
           <p className="text-sm text-text-2">
             {relativeTime(exception.revokedAt)} by {exception.revokedBy ?? 'unknown'}
             {exception.revokeReason ? ` — ${exception.revokeReason}` : ''}
@@ -122,7 +117,7 @@ export function ExceptionDetailView({
               Revoke
             </Button>
           </div>
-          {error && <p className="mt-2 text-xs text-sev-critical">{error}</p>}
+          {error && <p className="mt-2 text-xs text-sev-critical-ink">{error}</p>}
         </div>
       )}
     </div>

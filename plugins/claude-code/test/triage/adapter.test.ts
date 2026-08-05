@@ -12,12 +12,14 @@ import {
   CalibrationFrame,
   DetectionCategory as DetectionCategorySchema,
 } from '@akasecurity/schema';
+import { readPlanFile, writePlanFile } from '@akasecurity/setup-wizard';
+import { runApply } from '@akasecurity/setup-wizard';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import { parseSurface } from '../../src/setup-show.ts';
-import { runApply } from '../../src/triage/adapter.ts';
-import { readPlanFile, writePlanFile } from '../../src/triage/plan-file.ts';
+import { adapterPresenter } from '../../src/triage/presenter.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const RAW = 'AKIAIOSFODNN7EXAMPLE';
 const FP = 'ab'.repeat(32);
@@ -110,6 +112,7 @@ describe('runApply — preview persists a plan and writes nothing', () => {
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -139,6 +142,7 @@ describe('runApply — preview consolidates the human gate into one SHOW region'
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -181,6 +185,7 @@ describe('runApply — preview renders the honest empty state on a clean scan', 
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => `${JSON.stringify({ done: true, count: 0, status: 'complete' })}\n`,
       runJudge: () => verdict(),
@@ -216,6 +221,7 @@ describe('runApply — preview renders the no-history empty state on an empty-hi
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () =>
         `${JSON.stringify({ done: true, count: 0, status: 'complete:no-history' })}\n`,
@@ -247,6 +253,7 @@ describe('runApply — preview renders the skipped-scan copy when triage was ski
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () =>
         `${JSON.stringify({ done: true, count: 0, status: 'skipped:no-consent' })}\n`,
@@ -281,6 +288,7 @@ describe('runApply — preview gates the judge behind model-judge consent', () =
     const out: string[] = [];
     const runJudge = vi.fn(() => verdict());
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge,
@@ -310,6 +318,7 @@ describe('runApply — preview gates the judge behind model-judge consent', () =
     const out: string[] = [];
     const runJudge = vi.fn(() => verdict());
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge,
@@ -334,6 +343,7 @@ describe('runApply — preview is a raw-free egress boundary by construction', (
     const db = fakeDb();
     try {
       await runApply({
+        present: adapterPresenter,
         argv: [],
         readStream: () => streamText(),
         runJudge,
@@ -357,8 +367,12 @@ describe('runApply — preview is a raw-free egress boundary by construction', (
       throw new Error(`judge blew up near ${RAW} — export KEY=${RAW}`);
     });
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).not.toContain(RAW);
+    // Positive control first: the boundary really did replace the message, so
+    // the absence below is a property of the replacement rather than of an
+    // error that never carried anything. Then run by run — a boundary that
+    // withheld only PART of the value would still hand over a live prefix.
     expect((thrown as Error).message).toMatch(/withheld/i);
+    expectNoEchoOf((thrown as Error).message, RAW);
   });
 
   it('passes a raw-free error message through unchanged (keeps useful diagnostics)', async () => {
@@ -375,6 +389,7 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
     const previewDb = fakeDb();
     const previewOut: string[] = [];
     await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -399,6 +414,7 @@ describe('runApply — confirm applies the persisted plan without re-judging', (
     const confirmDb = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream,
       runJudge,
@@ -458,6 +474,7 @@ describe('runApply — confirm persists the full recommended 8-pack posture', ()
     const confirmDb = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -543,6 +560,7 @@ function fakeAtomicDb(opts: { failOnCall?: number } = {}) {
 function previewPlan(stream: string, v: TriageRecommendation): Promise<string> {
   const out: string[] = [];
   return runApply({
+    present: adapterPresenter,
     argv: [],
     readStream: () => stream,
     runJudge: () => v,
@@ -565,6 +583,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
     const path = await previewPlan(streamText(), verdict());
     const db = fakeAtomicDb();
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: vi.fn(),
       runJudge: vi.fn(),
@@ -593,6 +612,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
     const path = await previewPlan(streamText(), verdict());
     const db = fakeAtomicDb();
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: vi.fn(),
       runJudge: vi.fn(),
@@ -638,6 +658,7 @@ describe('runApply — confirm is atomic and reports what actually persisted', (
     const db = fakeAtomicDb({ failOnCall: 2 });
     const err: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: vi.fn(),
       runJudge: vi.fn(),
@@ -663,6 +684,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     Object.assign(db.posture, posture);
     const out: string[] = [];
     await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -687,6 +709,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     confirmDb.posture.secret = 'redact';
     const err: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -704,6 +727,9 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     expect(code).toBe(1);
     expect(err.join('')).toMatch(/store changed/i);
     expect(err.join('')).toContain('secret');
+    // The refusal always leaves the user something to type: the real
+    // presenter's rerun hint is the wizard's Claude Code command name.
+    expect(err.join('')).toContain('re-run /aka:setup to review against the current store');
     // fail loud, NO write, handle closed exactly once
     expect(confirmDb.posture).toEqual({ secret: 'redact' });
     expect(confirmDb.created).toEqual([]);
@@ -716,6 +742,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     confirmDb.posture.secret = 'block'; // unchanged since preview
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -754,6 +781,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     confirmDb.posture.code_context = 'block'; // still hardened at confirm — no drift
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -787,6 +815,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     confirmDb.posture.secret = 'block'; // row added after preview
     const err: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -814,6 +843,7 @@ describe('runApply — confirm rejects a plan stale against the current store (d
     const created: unknown[] = [];
     let closed = 0;
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', path],
       readStream: () => {
         throw new Error('stream must not be read');
@@ -858,6 +888,7 @@ describe('runApply — confirm fails loud on a bad --plan', () => {
     const err: string[] = [];
     const runJudge = vi.fn(() => verdict());
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed'],
       readStream: () => streamText(),
       runJudge,
@@ -880,6 +911,7 @@ describe('runApply — confirm fails loud on a bad --plan', () => {
     const db = fakeDb();
     const err: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: ['--confirmed', '--plan', '/no/such/aka-plan-xyz.json'],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -918,6 +950,7 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => genuineVerdict(),
@@ -969,6 +1002,7 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
     const db = fakeDb();
     const out: string[] = [];
     await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => genuineVerdict(),
@@ -980,9 +1014,13 @@ describe('runApply — preview emits the calibration frame JSON alongside the hu
       stderr: vi.fn(),
     });
     const blob = out.join('');
-    // The frame block itself never echoes the raw hit value.
     expect(blob).toContain('<<<AKA_FRAME_JSON');
-    expect(JSON.stringify(readFrameJsonBlock(blob))).not.toContain(RAW);
+    // The frame block itself never echoes the raw hit value — not even a run.
+    const frameJson = JSON.stringify(readFrameJsonBlock(blob));
+    // Positive control on the SAME bytes the absence check reads: a block that
+    // failed to parse serializes to 'null', which passes every absence check.
+    expect(frameJson).toContain('"counts"');
+    expectNoEchoOf(frameJson, RAW);
   });
 });
 
@@ -1007,6 +1045,7 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () =>
         `${JSON.stringify(h)}\n${JSON.stringify({ done: true, count: 1, status: 'complete' })}\n`,
@@ -1083,7 +1122,11 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     const { frame } = await previewFrame(
       hit({ id: '0', filePath: '~/.claude/transcripts/2026-07-01.jsonl' }),
     );
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
+    const serialized = JSON.stringify(frame.maskedFindings);
+    // Positive control on the same bytes: an empty findings array serializes to
+    // '[]', which passes every absence check without proving anything.
+    expect(serialized).toContain(safeMaskedMatch(RAW));
+    expectNoEchoOf(serialized, RAW);
   });
 
   it('surfaces only the genuine hit on a mixed stream — the FP stays dismissed and counts stay coherent', async () => {
@@ -1105,6 +1148,7 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () =>
         `${JSON.stringify(genuine)}\n${JSON.stringify(falsePositive)}\n${JSON.stringify({ done: true, count: 2, status: 'complete' })}\n`,
@@ -1143,9 +1187,12 @@ describe('runApply — preview derives surfaced secret findings into the frame',
     ]);
     // The remediation count and the frame's important (genuine) count agree.
     expect(frame.maskedFindings).toHaveLength(frame.counts.important);
-    // No raw value from either hit rides into the emitted summaries.
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(RAW);
-    expect(JSON.stringify(frame.maskedFindings)).not.toContain(OTHER);
+    // No raw value from either hit rides into the emitted summaries — not even
+    // a run. The toEqual above is the positive control: the findings really are
+    // populated, so an absence within them means something.
+    const serialized = JSON.stringify(frame.maskedFindings);
+    expectNoEchoOf(serialized, RAW);
+    expectNoEchoOf(serialized, OTHER);
   });
 });
 
@@ -1154,6 +1201,7 @@ describe('runApply — preview derives the masked false-positive pattern signal 
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => verdict(),
@@ -1180,7 +1228,9 @@ describe('runApply — preview derives the masked false-positive pattern signal 
         ],
       },
     ]);
-    expect(JSON.stringify(frame.falsePositivePatterns)).not.toContain(RAW);
+    // The toMatchObject above is the positive control: the pattern group is
+    // populated, so an absence within its serialization means something.
+    expectNoEchoOf(JSON.stringify(frame.falsePositivePatterns), RAW);
   });
 
   it('omits falsePositivePatterns when nothing was marked a false positive', async () => {
@@ -1200,6 +1250,7 @@ describe('runApply — preview derives the masked false-positive pattern signal 
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => streamText(),
       runJudge: () => surfacedVerdict(),
@@ -1227,6 +1278,7 @@ describe('runApply — preview degrades fail-open when the local store is unread
     let threw: unknown;
     try {
       code = await runApply({
+        present: adapterPresenter,
         argv: [],
         readStream: () => streamText(),
         runJudge: () => verdict(),
@@ -1306,6 +1358,7 @@ describe('runApply — dedups repeated hits before the judge and before the writ
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => stream,
       runJudge,
@@ -1377,6 +1430,7 @@ describe('runApply — location-scoped findings survive the value-scoped dedup',
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => stream,
       runJudge,
@@ -1448,6 +1502,7 @@ describe('runApply — the batch-and-merge path the large-history fallback takes
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => stream,
       runJudge,
@@ -1524,6 +1579,7 @@ describe('runApply — an fpId the judge was never shown, on the single-batch pa
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv: [],
       readStream: () => stream,
       runJudge,
@@ -1591,6 +1647,7 @@ describe('runApply — --max-judge-bytes makes the batch path exercisable', () =
     const db = fakeDb();
     const out: string[] = [];
     const code = await runApply({
+      present: adapterPresenter,
       argv,
       readStream: () => streamOf(hits),
       runJudge,

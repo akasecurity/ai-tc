@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import {
   applyOnboarding,
   createKeyProvider,
   dataDir,
+  EXCEPTION_KEY_FILENAME,
   fingerprintValue,
   keysDir,
   loadOrCreateFingerprintKey,
@@ -20,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runException } from '../../src/commands/exception.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // `aka exception approve <pointer> --reveal` is the sanctioned door for "the
 // agent legitimately needs this raw value": it mints a reveal_to_model grant
@@ -27,11 +29,18 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // activeRevealGrant. The suite runs against the REAL node:sqlite store and
 // REAL key files (no vault mocking), mirroring vault.test.ts.
 
-// Not secret-shaped on purpose: tokenize never scans, and a plain string keeps
-// secret-looking literals out of this public file.
-const RAW = 'vaulted-value-for-reveal-grant-test';
+// Two constraints meet here. Not secret-SHAPED, because tokenize never scans
+// and a credential-looking literal has no business in a public file; but still
+// high-ENTROPY, because the absence check below slides an eight-character
+// window over this value, and against an English-phrase fixture those windows
+// are ordinary words that collide with the message's own wording instead of
+// catching a leak. Random-looking and rule-shaped for nothing satisfies both.
+const RAW = 'zq7vk2mx9tw4hb6njf3pd8sr5gc1ly';
 const RULE_ID = 'secrets/test-rule';
-const MASKED = 'vau…est';
+// Derived so the two cannot drift apart. Seven characters, which is shorter
+// than the echo window on purpose: this preview is stored and shown, so it must
+// never be able to fill it.
+const MASKED = `${RAW.slice(0, 3)}…${RAW.slice(-3)}`;
 
 // Scripted, non-interactive Prompter with captured output.
 function scriptedIo(): Prompter & { output: () => string } {
@@ -77,14 +86,17 @@ async function seedPointer(): Promise<string> {
     const vault = new SecretVault({
       repo: db.secretVault,
       keys: createKeyProvider(readWorkspaceSettings(home).vaultKeyCustody, keysDir(home)),
-      fingerprintKey: loadOrCreateFingerprintKey(dir),
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(home).vaultConsent),
     });
-    const pointer = await vault.tokenize(RAW, {
-      ruleId: RULE_ID,
-      category: 'secret',
-      maskedMatch: MASKED,
-    });
+    const pointer = await vault.tokenize(
+      RAW,
+      {
+        ruleId: RULE_ID,
+        category: 'secret',
+        maskedMatch: MASKED,
+      },
+      () => loadOrCreateFingerprintKey(dir),
+    );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     return pointer;
   } finally {
@@ -137,8 +149,12 @@ describe('aka exception approve <pointer> --reveal', () => {
     expect(out).toContain('RAW form');
     expect(out).toContain('audited');
     expect(out).toContain(`aka exception revoke ${grant.id.slice(0, 6)}`);
-    // The raw value itself never reaches the output.
-    expect(out).not.toContain(RAW);
+    // The raw value itself never reaches the output — not even a run of it.
+    // This is the confirmation for the grant that lets the model receive the
+    // value raw later, so the one surface that must not show it now is this one.
+    // The four assertions above are its positive control: the capture is live
+    // and full, so an absence within it means something.
+    expectNoEchoOf(out, RAW);
   });
 
   it('rejects a pointer without --reveal and creates nothing', async () => {
@@ -313,6 +329,88 @@ describe('aka exception approve <pointer> --reveal', () => {
       } finally {
         db.close();
       }
+    });
+  });
+
+  // Approving a reveal reads: the grant's identity is the vault ROW's triple,
+  // which the row carries, so nothing here needs the key that is current now.
+  // The command must therefore leave the store's key footprint as it found it.
+  describe('fingerprint key footprint', () => {
+    const keyFile = (): string => join(dataDir(home), EXCEPTION_KEY_FILENAME);
+
+    it('mints nothing when approving a reveal on a store with no key', async () => {
+      const pointer = await seedPointer();
+      const rowKey = loadOrCreateFingerprintKey(dataDir(home));
+      // Seeding tokenized, which mints legitimately. Take the key away exactly
+      // as the CLI's own corrupt-key guidance tells an operator to.
+      rmSync(keyFile());
+
+      await runException(
+        approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'no key on this store'),
+        scriptedIo(),
+      );
+
+      // Positive control: the grant was really minted, from the row's own
+      // identity, with no key file in existence at any point above. Without
+      // this the absence below would also hold for a command that refused.
+      const grant = (await openAndList())[0];
+      if (!grant) throw new Error('grant row missing — the reveal approve was refused');
+      expect(grant.capability).toBe('reveal_to_model');
+      expect(grant.valueFingerprint).toBe(fingerprintValue(rowKey, RAW));
+      expect(grant.keyVersion).toBe(rowKey.version);
+
+      expect(existsSync(keyFile())).toBe(false);
+    });
+
+    // The diagnostic this protects. `keyAccessHint` tells an operator holding a
+    // corrupt key to delete it and start fresh. If a reveal in between put a
+    // key back, a later ledger approve would read a version that is merely
+    // NEWER than the row's and report a rotation — sending the operator after a
+    // rotation nobody performed. With nothing re-minting, the same state
+    // reports the truth: the key is gone.
+    it('leaves a later ledger approve reporting the key as missing, not rotated', async () => {
+      const rowKey = loadOrCreateFingerprintKey(dataDir(home));
+      const pointer = await seedPointer();
+      const db = openLocalDatabase(dataDir(home));
+      try {
+        await db.exceptions.recordBlocked({
+          reference: '9c4e17',
+          ruleId: RULE_ID,
+          category: 'secret',
+          valueFingerprint: fingerprintValue(rowKey, RAW),
+          keyVersion: rowKey.version,
+          maskedValue: MASKED,
+          sessionId: 'sess-1',
+          repo: null,
+        });
+      } finally {
+        db.close();
+      }
+
+      rmSync(keyFile());
+      // The reveal is the step that used to re-mint. Everything after it is the
+      // observation.
+      await runException(
+        approveArgs(pointer, '--reveal', '--for', '1h', '--reason', 'reveal before the approve'),
+        scriptedIo(),
+      );
+
+      const io = scriptedIo();
+      const err = await runException(approveArgs('9c4e17', '--once', '--reason', 'x'), io).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+      // Captured outside its own catch: a command that stopped refusing arrives
+      // here as undefined rather than as a passing absence assertion.
+      expect(err).toBeDefined();
+      // Naming the branch is the point — the two refusals differ only in their
+      // explanation, so asserting merely that SOME error was raised would hold
+      // for the wrong one just as well.
+      expect(err?.message).toContain('the fingerprint key file is missing');
+      // The version-mismatch branch, spelled as it spells itself. A re-mint
+      // makes it fire with a version the row never saw.
+      expect(err?.message).not.toContain('and the key is now v');
+      expect(existsSync(keyFile())).toBe(false);
     });
   });
 });

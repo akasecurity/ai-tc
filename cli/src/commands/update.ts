@@ -4,9 +4,9 @@ import { parseArgs } from 'node:util';
 import {
   applyCliUpdate as applyCliUpdateShared,
   applyPluginUpdate as applyPluginUpdateShared,
-  claudeAvailable,
   clearCache,
   CLI_PACKAGE,
+  createCliPluginManager,
   findAgent,
   gatherReportLive,
   outdated,
@@ -118,18 +118,19 @@ function applyCliUpdate(): boolean {
 function applyPluginUpdate(status: ComponentStatus): boolean {
   const agent = findAgent(status.id);
   const ref = agent ? pluginRef(agent) : undefined;
-  if (!agent || !ref) {
+  const cliBin = agent?.cliBin;
+  if (!agent || !ref || !cliBin) {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
-  if (!claudeAvailable()) {
+  if (!createCliPluginManager(cliBin).available()) {
     process.stderr.write(
-      `✗ ${status.name}: the \`claude\` CLI isn't on your PATH — install Claude Code, ` +
-        `then run \`claude plugin update ${ref}\`.\n`,
+      `✗ ${status.name}: the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, ` +
+        `then run \`${cliBin} plugin update ${ref}\`.\n`,
     );
     return false;
   }
-  process.stdout.write(`Updating ${status.name} (claude plugin update ${ref})…\n`);
+  process.stdout.write(`Updating ${status.name} (${cliBin} plugin update ${ref})…\n`);
   const { ok } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
   return ok;

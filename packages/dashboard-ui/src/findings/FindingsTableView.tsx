@@ -6,9 +6,10 @@ import {
   Button,
   Card,
   cn,
-  LoadMore,
-  LoadMoreButton,
-  LoadMoreStatus,
+  Pagination,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationStatus,
   SeverityBadge,
   Table,
   TableBody,
@@ -33,6 +34,16 @@ import {
 } from './meta.ts';
 import { ProviderChips, ProviderTag } from './ProviderChips.tsx';
 
+const FINDING_COLUMN_CLASS: Record<FindingColumn['id'], string> = {
+  severity: 'min-w-[110px] whitespace-nowrap',
+  subtype: '',
+  sources: 'min-w-[140px] whitespace-nowrap',
+  locations: '',
+  action: 'min-w-[130px] whitespace-nowrap',
+  status: 'min-w-[110px] whitespace-nowrap',
+  latest: 'min-w-[100px] whitespace-nowrap',
+};
+
 /**
  * The findings table — grouped rows that expand to per-location instance rows.
  * Fully presentational: selection/expansion state is owned by the caller and
@@ -51,9 +62,12 @@ export function FindingsTableView({
   onToggleExpand,
   onSelectGroup,
   onSelectInstance,
-  hasMore = false,
-  onLoadMore,
-  loadingMore = false,
+  hasNextPage = false,
+  hasPreviousPage = false,
+  onNextPage,
+  onPreviousPage,
+  loadingNextPage = false,
+  pageStart,
   total,
   isLoading = false,
   error = null,
@@ -69,14 +83,18 @@ export function FindingsTableView({
   onToggleExpand: (groupId: string) => void;
   onSelectGroup: (group: FindingGroup) => void;
   onSelectInstance: (group: FindingGroup, instance: FindingInstance) => void;
-  hasMore?: boolean;
+  hasNextPage?: boolean;
+  hasPreviousPage?: boolean;
   /**
-   * Append the next page. Absent ⇒ the caller cannot paginate, and the
+   * Advance to the next page. Absent ⇒ the caller cannot paginate, and the
    * truncation notice below is shown instead — which is the honest thing to
    * render when there is more data and no way to reach it.
    */
-  onLoadMore?: (() => void) | undefined;
-  loadingMore?: boolean;
+  onNextPage?: (() => void) | undefined;
+  onPreviousPage?: (() => void) | undefined;
+  loadingNextPage?: boolean;
+  /** 1-indexed position of `groups[0]` within the whole result set — needed to render "51–100 of N". Absent ⇒ falls back to "{groups.length} shown". */
+  pageStart?: number | undefined;
   /** Groups matching the filters across the whole scope, not just this page. */
   total?: number | undefined;
   isLoading?: boolean;
@@ -123,7 +141,9 @@ export function FindingsTableView({
               <TableRow>
                 <TableHead className="w-10" />
                 {columns.map((col) => (
-                  <TableHead key={col.id}>{col.header}</TableHead>
+                  <TableHead key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
+                    {col.header}
+                  </TableHead>
                 ))}
               </TableRow>
             </TableHeader>
@@ -160,7 +180,9 @@ export function FindingsTableView({
                         </Button>
                       </TableCell>
                       {columns.map((col) => (
-                        <TableCell key={col.id}>{GROUP_CELL[col.id](group)}</TableCell>
+                        <TableCell key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
+                          {GROUP_CELL[col.id](group)}
+                        </TableCell>
                       ))}
                     </TableRow>
                     {expanded &&
@@ -180,7 +202,7 @@ export function FindingsTableView({
                         >
                           <TableCell />
                           {columns.map((col) => (
-                            <TableCell key={col.id}>
+                            <TableCell key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
                               {INSTANCE_CELL[col.id](group, instance)}
                             </TableCell>
                           ))}
@@ -234,27 +256,32 @@ export function FindingsTableView({
 
         {/* The unit here is TYPES — the toolbar's findings tally counts
           instances and would disagree with this number. */}
-        {onLoadMore
-          ? groups.length > 0 && (
-              <LoadMore>
-                {hasMore && (
-                  <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
-                    {loadingMore ? 'Loading…' : 'Load more types'}
-                  </LoadMoreButton>
-                )}
-                <LoadMoreStatus>
-                  {total === undefined
-                    ? `${String(groups.length)} shown`
-                    : `${String(groups.length)} of ${String(total)} types`}
-                </LoadMoreStatus>
-              </LoadMore>
-            )
-          : hasMore && (
-              <p className="mt-4 text-center text-xs text-text-3">
-                Showing the first {groups.length} types — refine the filters to narrow results.
-              </p>
-            )}
       </div>
+      {onNextPage
+        ? groups.length > 0 &&
+          (hasNextPage || hasPreviousPage) && (
+            <Pagination>
+              <PaginationPrevious
+                disabled={!hasPreviousPage || loadingNextPage}
+                onClick={onPreviousPage}
+              />
+              <PaginationStatus>
+                {total === undefined || pageStart === undefined
+                  ? `${String(groups.length)} shown`
+                  : `${String(pageStart)}–${String(pageStart + groups.length - 1)} of ${String(total)} types`}
+              </PaginationStatus>
+              <PaginationNext
+                disabled={!hasNextPage || loadingNextPage}
+                loading={loadingNextPage}
+                onClick={onNextPage}
+              />
+            </Pagination>
+          )
+        : hasNextPage && (
+            <p className="mt-4 text-center text-xs text-text-3">
+              Showing the first {groups.length} types — refine the filters to narrow results.
+            </p>
+          )}
     </Card>
   );
 }
@@ -273,9 +300,11 @@ function TypeCell({ finding }: { finding: FindingGroup }) {
         <Icon className="size-4" />
       </span>
       <div className="flex flex-col">
-        <span className="font-semibold text-text">{finding.subtype}</span>
+        <span className="font-semibold text-text break-words [word-break:break-word]">
+          {finding.subtype}
+        </span>
         <span
-          className="block max-w-[20rem] truncate font-mono text-xs text-text-3"
+          className="font-mono text-xs text-text-3 break-words [word-break:break-word]"
           title={finding.match.maskedValue}
         >
           {finding.match.maskedValue}
@@ -318,17 +347,18 @@ const INSTANCE_CELL: Record<
     <div className="flex items-center gap-2.5 pl-1">
       <span className="-mt-1.5 size-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
       <div className="flex flex-col gap-px">
-        <span className="font-semibold text-text text-ui">{i.repo}</span>
-        <span className="font-mono text-label text-text-3">{i.id}</span>
+        <span className="font-semibold text-text text-ui break-words [word-break:break-word]">
+          {i.repo}
+        </span>
+        <span className="font-mono text-label text-text-3 break-words [word-break:break-word]">
+          {i.id}
+        </span>
       </div>
     </div>
   ),
   sources: (_g, i) => <ProviderTag provider={i.provider} />,
   locations: (_g, i) => (
-    <span
-      className="font-mono text-xs text-text-3 block max-w-[20rem] truncate"
-      title={instanceLocationLabel(i)}
-    >
+    <span className="font-mono text-xs text-text-3 break-words [word-break:break-word]">
       {instanceLocationLabel(i)}
     </span>
   ),

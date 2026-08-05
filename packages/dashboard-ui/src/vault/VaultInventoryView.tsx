@@ -22,6 +22,14 @@ export interface VaultInventoryViewProps {
   onRevoke?: (grantId: string) => void;
 }
 
+const COLUMN_CLASS: Record<string, string> = {
+  occurrences: 'min-w-[120px] whitespace-nowrap',
+  firstSeen: 'min-w-[110px] whitespace-nowrap',
+  lastSeen: 'min-w-[110px] whitespace-nowrap',
+  grant: 'min-w-[140px] whitespace-nowrap',
+  action: 'min-w-[120px] whitespace-nowrap',
+};
+
 /**
  * The vault register — every value currently held, raw-free: the masked
  * preview is the value's identity for humans. Each row also lists the places
@@ -44,11 +52,11 @@ export function VaultInventoryView({ entries, onReveal, onRevoke }: VaultInvento
         <TableHeader>
           <TableRow>
             <TableHead>Value</TableHead>
-            <TableHead>Occurrences</TableHead>
-            <TableHead>First seen</TableHead>
-            <TableHead>Last seen</TableHead>
-            <TableHead>Grant</TableHead>
-            {hasActions ? <TableHead>Actions</TableHead> : null}
+            <TableHead className={COLUMN_CLASS.occurrences}>Occurrences</TableHead>
+            <TableHead className={COLUMN_CLASS.firstSeen}>First seen</TableHead>
+            <TableHead className={COLUMN_CLASS.lastSeen}>Last seen</TableHead>
+            <TableHead className={COLUMN_CLASS.grant}>Grant</TableHead>
+            {hasActions ? <TableHead className={COLUMN_CLASS.action}>Actions</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -86,12 +94,20 @@ function VaultInventoryRow({
         <TableCell>
           <ScrubbedValue value={null} descriptor={entry} />
         </TableCell>
-        <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
-        <TableCell className="text-xs text-text-2">{relativeTime(entry.firstSeen)}</TableCell>
-        <TableCell className="text-xs text-text-2">{relativeTime(entry.lastSeen)}</TableCell>
-        <TableCell>{grantId === null ? null : <RevealToModelBadge />}</TableCell>
+        <TableCell className={COLUMN_CLASS.occurrences}>
+          <span className="text-xs text-text-2">{String(entry.occurrences)}</span>
+        </TableCell>
+        <TableCell className={COLUMN_CLASS.firstSeen}>
+          <span className="text-xs text-text-2">{relativeTime(entry.firstSeen)}</span>
+        </TableCell>
+        <TableCell className={COLUMN_CLASS.lastSeen}>
+          <span className="text-xs text-text-2">{relativeTime(entry.lastSeen)}</span>
+        </TableCell>
+        <TableCell className={COLUMN_CLASS.grant}>
+          {grantId === null ? null : <RevealToModelBadge />}
+        </TableCell>
         {hasActions ? (
-          <TableCell>
+          <TableCell className={COLUMN_CLASS.action}>
             <span className="inline-flex items-center gap-2">
               {onReveal === undefined ? null : (
                 <Button
@@ -130,18 +146,20 @@ function VaultInventoryRow({
                 {entry.sightings.length === 1 ? 'location' : 'locations'} — anyone who can read them
                 sees the correlation
               </summary>
-              <ul className="mt-2 space-y-1">
+              <div className="mt-2 space-y-1 flex flex-col gap-2">
                 {entry.sightings.map((sighting) => (
-                  <li
+                  <div
                     key={`${sighting.kind}:${sighting.location}`}
-                    className="flex flex-wrap items-center gap-2 text-xs text-text-2"
+                    className="grid grid-cols-[1fr_110px_100px] items-center gap-2 text-xs text-text-2"
                   >
                     <code className="break-all font-mono">{sighting.location}</code>
-                    <SightingKindChip kind={sighting.kind} />
+                    <div>
+                      <SightingKindChip kind={sighting.kind} />
+                    </div>
                     <span className="text-text-3">{relativeTime(sighting.lastSeen)}</span>
-                  </li>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </details>
           </TableCell>
         </TableRow>

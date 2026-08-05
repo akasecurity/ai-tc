@@ -30,7 +30,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { DATA_FILE_MODE, ensureDataDirSync } from '../paths.ts';
+import { createOwnerOnlyFileSync, DATA_FILE_MODE, ensureDataDirSync } from '../paths.ts';
 
 export interface VaultKeyMaterial {
   material: Buffer;
@@ -336,33 +336,30 @@ export class FileKeyProvider implements KeyProvider {
   }
 
   /**
-   * First mint: the keyring is created at its FINAL path with a
-   * creation-exclusive write, so two processes racing a fresh machine cannot
-   * each mint a different epoch 1 — with tmp + rename the loser's replace
-   * would orphan everything the winner had already sealed. On EEXIST the
-   * loser re-reads and adopts the winner's keyring; it minted nothing.
-   * Atomic replace is unnecessary here: nothing can be mid-read of a file
-   * that did not exist, and a torn exclusive write parses as corrupt on the
-   * next read and fails secure rather than being re-minted over.
+   * First mint: the keyring is CREATED, never replaced, so two processes racing
+   * a fresh machine cannot each mint a different epoch 1 — with tmp + rename
+   * the loser's replace would orphan everything the winner had already sealed.
+   * The loser re-reads and adopts the winner's keyring; it minted nothing.
+   *
+   * `createOwnerOnlyFileSync` publishes by link rather than by an exclusive open
+   * at the final path, so the keyring never exists at zero length: a reader —
+   * including the loser, re-reading in order to adopt — sees the file absent or
+   * whole, and never mistakes a live keyring for a corrupt one. A corrupt file
+   * still throws from the parse and is never re-minted over.
    */
   #createExclusive(): Keyring {
     ensureDataDirSync(this.#keysDir);
     const keyring = mintKeyring();
-    try {
-      writeFileSync(this.filePath, `${serializeKeyring(keyring)}\n`, {
-        flag: 'wx',
-        mode: DATA_FILE_MODE,
-      });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw asError(err);
-      const winner = this.#read();
-      if (!winner) {
-        throw new Error('vault: key file vanished during first mint', { cause: err });
-      }
-      return winner;
+    if (createOwnerOnlyFileSync(this.filePath, `${serializeKeyring(keyring)}\n`)) return keyring;
+
+    const winner = this.#read();
+    if (!winner) {
+      throw new Error(
+        `vault: cannot create a key file at ${this.filePath} — the path is occupied but holds no keyring (a symlink, or removed while it was being created)`,
+      );
     }
     tightenFileMode(this.filePath);
-    return keyring;
+    return winner;
   }
 
   /**

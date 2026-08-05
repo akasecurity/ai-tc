@@ -10,7 +10,7 @@
 // full data-dir access has both file and key by construction. The key material
 // must never be logged, surfaced, or shipped anywhere.
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -18,7 +18,13 @@ import type { FingerprintKeyState } from '@akasecurity/schema';
 import { isMatchableUnder } from '@akasecurity/schema';
 
 import { getRow } from './internal/rows.ts';
-import { DB_FILENAME, ensureDataDirSync, tightenFile, writeOwnerOnlyFileSync } from './paths.ts';
+import {
+  createOwnerOnlyFileSync,
+  DB_FILENAME,
+  ensureDataDirSync,
+  tightenFile,
+  writeOwnerOnlyFileSync,
+} from './paths.ts';
 
 export interface FingerprintKey {
   version: number;
@@ -157,14 +163,90 @@ function storedKeyVersionFloor(dataDir: string): number {
   }
 }
 
-// Owner-only atomic write (tmp + rename), so a key file that pre-existed with
-// looser permissions ends 0600 rather than carrying its mode through the rename.
+function serializeKey(key: FingerprintKey): string {
+  return JSON.stringify({ version: key.version, material: key.material.toString('base64') });
+}
+
+// Owner-only atomic REPLACE (tmp + rename), so a key file that pre-existed with
+// looser permissions ends 0600 rather than carrying its mode through the
+// rename. Replacing is what ROTATION is for; a first mint must not use this —
+// see createKeyFileExclusive.
 function writeKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
   ensureDataDirSync(dataDir);
-  const file = keyFilePath(dataDir);
-  const body = JSON.stringify({ version: key.version, material: key.material.toString('base64') });
-  writeOwnerOnlyFileSync(file, `${body}\n`);
+  writeOwnerOnlyFileSync(keyFilePath(dataDir), `${serializeKey(key)}\n`);
   return key;
+}
+
+/**
+ * Raised when a first mint lost the race but the winner cannot be read back.
+ *
+ * It carries a `code` because the surfaces that render key failures branch on
+ * one: a codeless error is treated as a corrupt key, whose remedy is deleting
+ * `exception.key` — and doing that here would orphan every grant written under
+ * the perfectly good key the winner just published.
+ */
+export class KeyUnclaimableError extends Error {
+  readonly code = 'key-unclaimable';
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'KeyUnclaimableError';
+  }
+}
+
+/**
+ * First mint: the key is CREATED, never replaced.
+ *
+ * Reading the key and writing it are two syscalls, so on a fresh store every
+ * process that gets through the absence check before anyone's write lands mints
+ * material of its own — the plugin's hooks, the CLI and the dashboard all reach
+ * this path and all run as separate processes. Publishing with a replace lets
+ * the LAST writer win, which is the one outcome this module exists to prevent:
+ * a fingerprint is an HMAC under this key and the raw value is never stored, so
+ * every grant a losing process writes is unmatchable the moment it is created,
+ * while still reporting as approved. That is the same orphaning a corrupt key
+ * throws to avoid, reached by accident instead of by re-minting.
+ *
+ * `createOwnerOnlyFileSync` publishes by link, so exactly one caller wins and a
+ * concurrent reader never sees a partially written key. The loser re-reads and
+ * ADOPTS the winner's key — including its VERSION, since rows written under a
+ * version the key file does not carry are exactly the inert grants above.
+ *
+ * When the path is taken but no key can be read back, this throws rather than
+ * falling back to a replacing write, because that fallback is the clobber this
+ * exists to remove. Two states reach it, and they are reported apart because
+ * their remedies differ: a symlink sitting at the key path (which `link` refuses
+ * whether or not its target exists, and which the caller has to remove), and a
+ * key that was unlinked between the failed publish and the re-read. A corrupt
+ * winner throws from the parse, for the reason it always does.
+ */
+function createKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
+  ensureDataDirSync(dataDir);
+  const file = keyFilePath(dataDir);
+  if (createOwnerOnlyFileSync(file, `${serializeKey(key)}\n`)) return key;
+
+  const winner = readFingerprintKey(dataDir);
+  if (winner) {
+    // Re-tighten for the same reason the load path does: the winner may be an
+    // older build, or a restore, that published without the mode.
+    tightenFile(file);
+    return winner;
+  }
+  throw new KeyUnclaimableError(
+    isSymlinkPath(file)
+      ? `exception key file is a symlink (${file}); remove it so a key can be created`
+      : 'exception key file was removed while it was being created',
+    undefined,
+  );
+}
+
+// Whether the key path itself is a symlink — checked only to tell two failures
+// apart in a message, so an lstat failure just means "cannot say".
+function isSymlinkPath(file: string): boolean {
+  try {
+    return lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -195,6 +277,11 @@ export function readFingerprintKey(dataDir: string): FingerprintKey | null {
  * is never mistaken for the material the stored rows were written under. A store
  * that cannot report its versions throws instead of minting: a colliding key is
  * worse than no key, because it produces grants that silently never match.
+ *
+ * The mint is creation-exclusive, so concurrent callers on a fresh store
+ * converge on ONE key instead of each publishing their own over the last —
+ * including the version, which is adopted from the winner rather than kept from
+ * whatever this call computed before it lost.
  */
 export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
   const existing = readFingerprintKey(dataDir);
@@ -204,7 +291,7 @@ export function loadOrCreateFingerprintKey(dataDir: string): FingerprintKey {
     tightenFile(keyFilePath(dataDir));
     return existing;
   }
-  return writeKeyFile(dataDir, {
+  return createKeyFile(dataDir, {
     version: storedKeyVersionFloor(dataDir) + 1,
     material: randomBytes(KEY_MATERIAL_BYTES),
   });

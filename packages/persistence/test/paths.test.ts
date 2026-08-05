@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import fsModule from 'node:fs';
 import {
   chmodSync,
   existsSync,
@@ -18,6 +19,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   dbSidecars,
@@ -406,5 +408,80 @@ describe('writeOwnerOnlyFileSync', () => {
     } finally {
       execFileSync('chflags', ['nouchg', base]);
     }
+  });
+});
+
+describe('createOwnerOnlyFileSync', () => {
+  // The exclusive twin of writeOwnerOnlyFileSync, and the one primitive both
+  // machine-local keys publish their FIRST copy through. Its whole job is two
+  // properties at once — exactly one caller wins, and no reader ever sees a
+  // partial file — so both are pinned here rather than in either key's suite.
+  const file = (): string => join(base, 'exception.key');
+
+  it('creates the file and reports that it won', () => {
+    expect(createOwnerOnlyFileSync(file(), 'first\n')).toBe(true);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('refuses an occupied path and leaves the incumbent byte-for-byte', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+
+    expect(createOwnerOnlyFileSync(file(), 'second\n')).toBe(false);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('publishes only a COMPLETE file — the final path is never seen empty', () => {
+    // The reason this exists rather than a bare exclusive open at the final
+    // path: `open(O_CREAT|O_EXCL)` publishes an empty inode and fills it on the
+    // next syscall, so a concurrent reader can take a live key for a corrupt
+    // one. Watching every intermediate state is what distinguishes the two.
+    const seen: number[] = [];
+    const target = file();
+    const realWriteSync = fsModule.writeSync;
+    fsModule.writeSync = function watched(...args: Parameters<typeof realWriteSync>) {
+      if (existsSync(target)) seen.push(statSync(target).size);
+      return realWriteSync.apply(this, args);
+    } as typeof realWriteSync;
+    try {
+      createOwnerOnlyFileSync(target, 'complete\n');
+    } finally {
+      fsModule.writeSync = realWriteSync;
+    }
+
+    expect(seen.filter((size) => size === 0)).toEqual([]);
+    expect(readFileSync(target, 'utf8')).toBe('complete\n');
+  });
+
+  it('leaves no tmp behind on either outcome', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+    createOwnerOnlyFileSync(file(), 'second\n');
+
+    expect(readdirSync(base).sort()).toEqual(['exception.key']);
+  });
+
+  it('leaves nothing at the final path when the write itself fails', () => {
+    // A failed publish must not strand a half-made file at the name every later
+    // reader resolves — that would brick the key permanently.
+    const dirAtPath = join(base, 'exception.key');
+    mkdirSync(dirAtPath);
+
+    expect(() => createOwnerOnlyFileSync(join(dirAtPath, 'x', 'y'), 'data\n')).toThrow();
+    expect(readdirSync(dirAtPath)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('writes the file owner-only', () => {
+    createOwnerOnlyFileSync(file(), 'data\n');
+
+    expect(mode(file())).toBe(DATA_FILE_MODE);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink at the final path', () => {
+    // link() will not replace an existing name, and the target is never created
+    // through it — so a planted link cannot capture the key.
+    const victim = join(base, 'victim');
+    symlinkSync(victim, file());
+
+    expect(createOwnerOnlyFileSync(file(), 'PWNED\n')).toBe(false);
+    expect(existsSync(victim)).toBe(false);
   });
 });

@@ -1,4 +1,13 @@
-import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { threadId } from 'node:worker_threads';
 
 // The shared SQLite store holds prompt/file content and masked findings, so the
 // directory is owner-only and the DB files are written 0600. This module is the
@@ -142,4 +151,85 @@ export function writeOwnerOnlyFileSync(file: string, data: string): void {
     }
   }
   tightenFile(file);
+}
+
+/**
+ * Owner-only CREATE of `file`: publish it only if nothing is there already.
+ * Returns false when something already occupies the path — the caller adopts
+ * what is there rather than replacing it. The caller must have created the
+ * parent dir (ensureDataDirSync).
+ *
+ * This is the exclusive twin of writeOwnerOnlyFileSync, and it exists because
+ * neither of the two obvious primitives has both properties a first-time
+ * publisher needs:
+ *
+ *   - `rename` is atomic but REPLACES, so two writers each publish their own
+ *     content and the last one wins.
+ *   - `open(O_CREAT|O_EXCL)` at the final path picks one winner, but publishes
+ *     an EMPTY inode and fills it on the next syscall. A concurrent reader — in
+ *     particular the loser, re-reading in order to adopt — can read zero bytes
+ *     and mistake a live file for a corrupt one. It also leaves that empty file
+ *     behind for good if the write never lands.
+ *
+ * `link` has both: it publishes a name for an inode that is ALREADY complete,
+ * and it fails EEXIST rather than replacing. So a reader sees the file absent or
+ * whole, and exactly one caller wins.
+ *
+ * The tmp is per-process and removed in a `finally`, so a failed or interrupted
+ * write leaves nothing behind and never a half-made file at the final path. The
+ * tmp create uses `wx`, which refuses to follow a symlink; `link` refuses an
+ * occupied final path whether it holds a file or a symlink.
+ *
+ * Hard links are unavailable on a few filesystems (FAT/exFAT, some network
+ * mounts). There the publish falls back to the exclusive open at the final path,
+ * which keeps the one-winner guarantee and gives up only the empty-read window.
+ */
+export function createOwnerOnlyFileSync(file: string, data: string): boolean {
+  // Per THREAD, not just per process. A worker thread shares its parent's pid,
+  // so a pid-only name makes two concurrent callers collide on the tmp — one
+  // fails to create it, and the other has its in-flight tmp deleted underneath
+  // it by the loser's cleanup. Still deterministic, so a same-thread tmp left
+  // by an earlier crash is reclaimed rather than accumulating.
+  const tmp = `${file}.${String(process.pid)}.${String(threadId)}.new`;
+  try {
+    rmSync(tmp, { force: true });
+  } catch {
+    // best-effort: unlink removes a leftover/symlinked tmp without touching its
+    // target; the exclusive `wx` create below still refuses to follow a symlink.
+  }
+  let created: boolean;
+  try {
+    writeFileSync(tmp, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    created = publishByLink(tmp, file, data);
+  } finally {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // best-effort cleanup — never mask the original write/link error.
+    }
+  }
+  if (created) tightenFile(file);
+  return created;
+}
+
+// Link `tmp` into place, or say the path was taken. EEXIST is the answer this
+// is asking for, not a failure. A filesystem that cannot hard-link reports
+// EPERM/ENOSYS/EXDEV/EMLINK instead of EEXIST — there, and only there, fall
+// back to creating the final path exclusively and writing it in place.
+function publishByLink(tmp: string, file: string, data: string): boolean {
+  try {
+    linkSync(tmp, file);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return false;
+    if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'EXDEV' && code !== 'EMLINK') throw err;
+  }
+  try {
+    writeFileSync(file, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw err;
+  }
 }

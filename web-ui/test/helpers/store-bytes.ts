@@ -51,10 +51,13 @@ export function storeBytes(dir: string, read: (path: string) => Buffer = readFil
     try {
       parts.push(read(join(dir, name)));
     } catch (err) {
-      // One tolerated fault: ENOENT on a SIBLING, which is the per-process
-      // `${file}.<pid>.tmp` an atomic write unlinks the moment it renames into
-      // place (`writeOwnerOnlyFileSync`, which mints `exception.key` in this
-      // very directory) vanishing between the listing and the read.
+      // One tolerated fault: ENOENT on a SIBLING, which is the short-lived tmp
+      // an atomic write unlinks the moment it publishes — `${file}.<pid>.tmp`
+      // from `writeOwnerOnlyFileSync` (the rename twin, which rotates
+      // `exception.key`) or `${file}.<pid>.<tid>.new` from
+      // `createOwnerOnlyFileSync` (the link twin, which mints it) — vanishing
+      // between the listing and the read. Both write raw key material into this
+      // very directory, so the tolerance is on the ENOENT, never on the name.
       //
       // Everything else rethrows. `aka.db` is never atomically rewritten, so an
       // ENOENT on it is as much a fault as a permission denial; and a swallowed

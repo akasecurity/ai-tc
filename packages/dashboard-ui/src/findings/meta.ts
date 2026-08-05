@@ -190,6 +190,32 @@ export const EMPTY_FILTERS: FindingsFilters = {
   status: [],
 };
 
+/**
+ * How the findings list is grouped. `grouped` folds by rule (which rules are
+ * firing), `flat` lists one row per finding newest-first (what happened most
+ * recently), `files` folds by repository and file (where findings live).
+ *
+ * Lives beside FindingsFilters because it is part of the same URL vocabulary —
+ * a consumer parsing `?view=` validates against this list rather than
+ * re-spelling the values.
+ */
+export const FINDINGS_VIEWS = ['grouped', 'flat', 'files'] as const;
+export type FindingsView = (typeof FINDINGS_VIEWS)[number];
+
+/** The default view — what an absent `?view=` means. */
+export const DEFAULT_FINDINGS_VIEW: FindingsView = 'grouped';
+
+export function isFindingsView(value: string): value is FindingsView {
+  return (FINDINGS_VIEWS as readonly string[]).includes(value);
+}
+
+/** Toggle labels, and what each view counts — the units differ per view. */
+export const FINDINGS_VIEW_LABEL: Record<FindingsView, string> = {
+  grouped: 'By type',
+  flat: 'All findings',
+  files: 'By location',
+};
+
 /** Column-visibility map: column id → visible. Absent id ⇒ visible. */
 export type ColumnVisibility = Partial<Record<FindingColumn['id'], boolean>>;
 

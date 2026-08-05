@@ -35,7 +35,7 @@ export default defineConfig({
   clean: true,
   noExternal: [/^@akasecurity\//, 'zod', 'ink', 'react'],
   // @akasecurity/web-ui + next: the separately-spawned dashboard stack (sidecar / dev-only).
-  external: ['@akasecurity/web-ui', 'next'],
+  external: ['@akasecurity/web-ui', '@akasecurity/plugin-browser-extension', 'next'],
   esbuildOptions(options) {
     options.alias = { ...options.alias, 'react-devtools-core': devtoolsStub };
     // Bundled CJS deps (e.g. signal-exit) call require() for Node builtins. An ESM

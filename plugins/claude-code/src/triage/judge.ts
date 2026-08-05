@@ -2,7 +2,8 @@
  * The ephemeral setup-wizard judge runner.
  *
  * The FP/severity judgment is the one place the wizard feeds the model RAW
- * hits (rawMatch + surrounding context) — the locked rubric (eval/prompt.md)
+ * hits (rawMatch + surrounding context) — the locked rubric (the shared
+ * @akasecurity/setup-wizard asset)
  * requires raw to judge accurately. To keep that raw out of the user's
  * scannable transcript store (~/.claude/projects), the judgment runs as a
  * SEPARATE, transient `claude -p` subprocess that writes NO transcript:
@@ -29,12 +30,21 @@ import { fileURLToPath } from 'node:url';
 
 import { maskText } from '@akasecurity/plugin-sdk';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
-
-import { parseRecommendation } from './parse-verdict.ts';
+import { parseRecommendation } from '@akasecurity/setup-wizard';
 
 const TRIAGE_DIR = dirname(fileURLToPath(import.meta.url));
-// src/triage/judge.ts -> plugins/claude-code/eval/prompt.md
-const DEFAULT_RUBRIC_PATH = join(TRIAGE_DIR, '..', '..', 'eval', 'prompt.md');
+// src/triage/judge.ts -> packages/setup-wizard/assets/triage-rubric.md
+const DEFAULT_RUBRIC_PATH = join(
+  TRIAGE_DIR,
+  '..',
+  '..',
+  '..',
+  '..',
+  'packages',
+  'setup-wizard',
+  'assets',
+  'triage-rubric.md',
+);
 
 // -------------------------------------------------------------------------
 // Pure parse: envelope -> verdict (shares the fence extractor with eval/run.ts)
@@ -141,7 +151,7 @@ export interface JudgeDeps {
   // process stdout (the --output-format json envelope). Tests inject a fake
   // returning a canned envelope so no real `claude -p` runs.
   spawn: (argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string) => string;
-  // Override the rubric source (defaults to eval/prompt.md); injectable so
+  // Override the rubric source (defaults to the shared package asset); injectable so
   // tests need not read the real file.
   loadRubric?: () => string;
   // Host platform, defaulting to the real one. Injectable so the darwin-only

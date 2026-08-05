@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +7,7 @@ import type { AvailablePlugin, ComponentStatus, UpdateReport } from '@akasecurit
 
 import { runCapture } from './exec.ts';
 import { AGENT_PLUGINS, pluginRef } from './registry.ts';
-import { isNewer } from './semver.ts';
+import { compareSemver, isNewer, isSemver } from './semver.ts';
 
 // Pure update-report gathering: version discovery over npm + the local Claude Code
 // ledger, with no @akasecurity/plugin-sdk dependency (so the report logic stays unit-
@@ -101,6 +101,78 @@ export function installedPluginVersions(
   return out;
 }
 
+// Codex CLI caches an installed plugin's contents under
+// `<codexHome>/plugins/cache/<marketplaceName>/<pluginName>/<version>/`, with
+// possibly more than one version directory present (a stale prior install
+// left behind) — there is no single ledger file to parse the way Claude
+// Code's installed_plugins.json is, so this walks the cache directory instead.
+// Confirmed against openai/codex's own `PluginStore::active_plugin_version`
+// (codex-rs/core-plugins/src/store.rs): the "active" version is the
+// highest-semver subdirectory found, UNLESS a literal `local` version
+// directory exists (a dev-mode install marker), which always wins.
+function codexPluginCacheRoot(codexHome: string): string {
+  return join(codexHome, 'plugins', 'cache');
+}
+
+function activeCodexPluginVersion(dir: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return null;
+  }
+  if (entries.length === 0) return null;
+  if (entries.includes('local')) return 'local';
+  // Only orderable names may enter the reduce. compareSemver returns 0 for
+  // input it cannot parse, so a stray sibling (a partial download, an editor
+  // scratch dir) that reaches the accumulator can never be displaced: it would
+  // be reported as the installed version, and isNewer(latest, junk) is 0 too,
+  // so the update silently stops being offered.
+  const versions = entries.filter(isSemver);
+  if (versions.length === 0) return null;
+  return versions.reduce((best, candidate) =>
+    compareSemver(candidate, best) > 0 ? candidate : best,
+  );
+}
+
+// Walk `<codexHome>/plugins/cache/<marketplace>/<pluginName>/` for every
+// codex-`cliBin` agent in the registry and resolve its active installed
+// version, keyed the same way as installedPluginVersions() (`<plugin>@
+// <marketplace>`) so the two maps merge directly — see
+// installedAgentPluginVersions() below.
+export function installedCodexPluginVersions(
+  codexHome: string = join(homedir(), '.codex'),
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const cacheRoot = codexPluginCacheRoot(codexHome);
+  for (const agent of AGENT_PLUGINS) {
+    if (agent.cliBin !== 'codex') continue;
+    const ref = pluginRef(agent);
+    if (!ref || !agent.pluginName || !agent.marketplace) continue;
+    const pluginDir = join(cacheRoot, agent.marketplace, agent.pluginName);
+    const version = activeCodexPluginVersion(pluginDir);
+    if (version !== null) out.set(ref, version);
+  }
+  return out;
+}
+
+// The merged view `gatherReport`'s `installed` map needs: every registered
+// agent's installed version, regardless of which host CLI's ledger/cache
+// format it comes from. Refs never collide across agents (registry.ts keeps
+// each agent's `pluginName` distinct for exactly this reason), so a plain
+// merge is safe — no agent's entry can shadow another's.
+export function installedAgentPluginVersions(
+  claudeHome?: string,
+  codexHome?: string,
+): Map<string, string> {
+  return new Map([
+    ...installedPluginVersions(claudeHome),
+    ...installedCodexPluginVersions(codexHome),
+  ]);
+}
+
 // `npm view <pkg> version` — the latest published version, or null on any failure.
 export function npmViewVersion(pkg: string): string | null {
   const res = runCapture('npm', ['view', pkg, 'version'], 15_000);
@@ -153,7 +225,7 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
 export function gatherReportLive(): UpdateReport {
   return gatherReport({
     viewVersion: npmViewVersion,
-    installed: installedPluginVersions(),
+    installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(),
   });
 }

@@ -242,8 +242,18 @@ function buildSessionRoot(
   const attributes: Record<string, unknown> = {};
   const osVersion = ctx.host?.attributes.os_version;
   const harnessVersion = ctx.harness?.attributes.harness_version;
+  const harnessInterface = ctx.harness?.attributes.interface;
   if (typeof osVersion === 'string') attributes.os_version = osVersion;
   if (typeof harnessVersion === 'string') attributes.harness_version = harnessVersion;
+  // Snapshotted onto the session's OWN attributes for the same reason as
+  // harness_version above: the shared harness inventory row is keyed only on
+  // `tool` (e.g. 'codex'), so a later session's ensureInventory() upsert would
+  // silently overwrite it there — a durable per-session fact needs to live on
+  // the fact itself. Distinguishes e.g. a Codex session run inside the
+  // ChatGPT desktop app ('codex_desktop') from one run in a terminal
+  // ('codex_cli_rs'/'codex-tui'/'codex_exec') without forking the harness/
+  // sourceTool dimension — see plugins/codex/src/hooks/session-start.ts.
+  if (typeof harnessInterface === 'string') attributes.harness_interface = harnessInterface;
   attributes.provider = provider.provider;
   if (provider.gatewayHost !== undefined) attributes.gateway_host = provider.gatewayHost;
 

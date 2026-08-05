@@ -23,8 +23,8 @@
  *     exists and nothing can read as a downgrade.
  */
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
+import { parseCurrent, parsePosture } from '@akasecurity/setup-wizard';
 
-import { parseCurrent, parsePosture } from './onboard-posture.ts';
 import { fenced, show } from './present.ts';
 import { renderAdjustConfirm, renderStartLight } from './render.ts';
 

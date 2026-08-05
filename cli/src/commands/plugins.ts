@@ -3,10 +3,10 @@ import { parseArgs } from 'node:util';
 
 import {
   AGENT_PLUGINS,
-  claudeAvailable,
+  createCliPluginManager,
   findAgent,
   installAgentPlugin,
-  installedPluginVersions,
+  installedAgentPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -47,8 +47,10 @@ async function listPlugins(argv: string[]): Promise<void> {
     }
   }
 
-  // Installed versions, keyed by `<plugin>@<marketplace>`, from Claude Code's ledger.
-  const installed = installedPluginVersions();
+  // Installed versions, keyed by `<plugin>@<marketplace>`, merged from every
+  // registered agent's own install ledger/cache (Claude Code's
+  // installed_plugins.json, Codex CLI's plugins/cache directory layout).
+  const installed = installedAgentPluginVersions();
 
   const out = process.stdout;
   out.write('Agent plugins (the CLI is an optional hub — plugins also self-install):\n\n');
@@ -82,41 +84,44 @@ function installPlugin(argv: string[]): void {
     return;
   }
   const ref = pluginRef(agent);
-  if (!ref) {
+  const cliBin = agent.cliBin;
+  if (!ref || !cliBin) {
     process.stdout.write(
-      `${agent.name} has no automated install path yet — install it from the AKA ` +
-        `marketplace in Claude Code, then run \`aka init\`.\n`,
+      agent.installHint
+        ? `${agent.installHint}\n`
+        : `${agent.name} has no automated install path yet — install it from the AKA ` +
+            `marketplace in ${agent.name}, then run \`aka init\`.\n`,
     );
     return;
   }
 
-  // Delegate to the `claude` plugin manager (it owns the plugin cache + lifecycle).
-  // If it isn't on PATH, fall back to the manual in-app path so the command stays
-  // honest and actionable.
-  if (!claudeAvailable()) {
+  // Delegate to the host CLI's own plugin manager (it owns the plugin cache +
+  // lifecycle). If it isn't on PATH, fall back to the manual in-app path so
+  // the command stays honest and actionable.
+  if (!createCliPluginManager(cliBin).available()) {
     process.stdout.write(
       `Installing ${agent.name}…\n\n` +
-        `The \`claude\` CLI isn't on your PATH, so I can't install it automatically.\n` +
-        `Install it from inside Claude Code:\n` +
-        `  /plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
-        `  /plugin install ${ref}\n\n` +
+        `The \`${cliBin}\` CLI isn't on your PATH, so I can't install it automatically.\n` +
+        `Install it from inside ${agent.name}:\n` +
+        `  ${cliBin} plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
+        `  ${cliBin} plugin install ${ref}\n\n` +
         `Then run \`aka init\` to set up the local store.\n`,
     );
     return;
   }
 
-  process.stdout.write(`Installing ${agent.name} via Claude Code…\n`);
+  process.stdout.write(`Installing ${agent.name} via ${cliBin}…\n`);
   const { ok } = installAgentPlugin(agent.id, 'inherit');
   if (ok) {
     process.stdout.write(
       `\n✓ Installed ${agent.name}.\n` +
-        `  ↻ Restart Claude Code to load it.\n` +
+        `  ↻ Restart ${agent.name} to load it.\n` +
         `  Run \`aka init\` to scaffold your local store (if you haven't already).\n`,
     );
   } else {
     process.stderr.write(
-      `\n✗ Install failed — see the output above, or add it in Claude Code with ` +
-        `\`/plugin install ${ref}\`.\n`,
+      `\n✗ Install failed — see the output above, or add it in ${agent.name} with ` +
+        `\`${cliBin} plugin install ${ref}\`.\n`,
     );
     process.exitCode = 1;
   }

@@ -9,6 +9,11 @@ import type {
   MaskedSecretFinding,
   RemediationEntryContext,
 } from '@akasecurity/schema';
+import { presentBatchedRemediation, routeRemediationOption } from '@akasecurity/setup-wizard';
+import {
+  presentStandingSecretPosture,
+  writeStandingSecretPosture,
+} from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { frameCalibration } from '../../src/calibration.ts';
@@ -16,12 +21,7 @@ import {
   readRegisteredCommands,
   selectSecretScanContinuation,
 } from '../../src/command-registry.ts';
-import { presentBatchedRemediation, routeRemediationOption } from '../../src/remediation/chain.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
-import {
-  presentStandingSecretPosture,
-  writeStandingSecretPosture,
-} from '../../src/remediation/posture.ts';
 import {
   type RedactionScope,
   type RedactionTarget,

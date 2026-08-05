@@ -8,9 +8,22 @@
   // green for the guarantee it exists to enforce.
   "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
   "tasks": {
+    // `native-host/**` is plugins/browser-extension's tsup outDir. An output a
+    // package writes but does not declare is not restored on a cache hit, so a
+    // fresh checkout leaves it missing and an existing checkout keeps whatever
+    // stale copy is on disk — which bundle-extension.mjs would then ship into
+    // the npm tarball and the SEA binary. Declared for the same reason
+    // `scripts/**` is (plugins/claude-code's generated hooks).
     "build": {
       "dependsOn": ["^build", "^typecheck"],
-      "outputs": ["dist/**", "public/**", "scripts/**", ".next/**", "!.next/cache/**"]
+      "outputs": [
+        "dist/**",
+        "public/**",
+        "scripts/**",
+        "native-host/**",
+        ".next/**",
+        "!.next/cache/**"
+      ]
     },
     "dev": {
       "dependsOn": ["^build"],
@@ -111,7 +124,15 @@
         "!$TURBO_ROOT$/web-ui/out/**",
         "!$TURBO_ROOT$/web-ui/next-env.d.ts",
         "!$TURBO_ROOT$/cli/web-ui/**",
-        "!$TURBO_ROOT$/plugins/claude-code/scripts/**"
+        "!$TURBO_ROOT$/plugins/claude-code/scripts/**",
+        // plugins/browser-extension's tsup outDir, and the copies of it that
+        // cli/scripts/bundle-extension.mjs stages into the CLI package. All
+        // three are generated and gitignored, and none is named `dist`, so the
+        // blanket dist exclusion above does not reach them — without these the
+        // .js they emit lands in this hash and every extension build perturbs it.
+        "!$TURBO_ROOT$/plugins/browser-extension/native-host/**",
+        "!$TURBO_ROOT$/cli/extension/**",
+        "!$TURBO_ROOT$/cli/native-host/**"
       ]
     },
     "clean": {

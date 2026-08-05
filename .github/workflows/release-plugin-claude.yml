@@ -1,4 +1,4 @@
-name: Release plugin
+name: Release plugin (Claude Code)
 
 # Publishes the Claude Code plugin package to the public npm registry AND to the
 # repo's GitHub Packages registry, and attaches the packed tarball to a GitHub
@@ -9,12 +9,12 @@ name: Release plugin
 # even for public reads, so it is a secondary artifact, not the marketplace source).
 #
 # Release flow: bump version in package.json + .claude-plugin/plugin.json, then
-# push a tag `plugin-v<version>` (e.g. plugin-v0.1.0).
+# push a tag `plugin-claude-v<version>` (e.g. plugin-claude-v0.1.0).
 
 on:
   push:
     tags:
-      - 'plugin-v*'
+      - 'plugin-claude-v*'
   workflow_dispatch:
     inputs:
       publish:
@@ -97,12 +97,12 @@ jobs:
       - name: Verify tag matches manifest versions
         if: github.event_name == 'push'
         run: |
-          tag="${GITHUB_REF_NAME#plugin-v}"
+          tag="${GITHUB_REF_NAME#plugin-claude-v}"
           pkg=$(node -p "require('./plugins/claude-code/package.json').version")
           manifest=$(node -p "require('./plugins/claude-code/.claude-plugin/plugin.json').version")
           echo "tag=$tag  package.json=$pkg  plugin.json=$manifest"
           if [ "$tag" != "$pkg" ] || [ "$tag" != "$manifest" ]; then
-            echo "::error::Version mismatch — tag plugin-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
+            echo "::error::Version mismatch — tag plugin-claude-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
             exit 1
           fi
 
@@ -144,7 +144,7 @@ jobs:
         with:
           files: ${{ runner.temp }}/*.tgz
           generate_release_notes: true
-          prerelease: ${{ startsWith(github.ref_name, 'plugin-v0.') }}
+          prerelease: ${{ startsWith(github.ref_name, 'plugin-claude-v0.') }}
 
   # Publish the same package to the repo's GitHub Packages registry (requirement:
   # packages land in the org's GitHub registry). Kept a separate job so its GitHub

@@ -12,10 +12,11 @@ import type {
   Harness,
   SessionTokenReport,
 } from '@akasecurity/schema';
-import { Card } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { buildActivityParams } from './filters';
 
@@ -59,8 +60,8 @@ export function ActivityClient({
   /** Whether zero-activity sessions are currently listed (?empty=1). */
   showEmpty: boolean;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  const { isPending, push: pushUrl } = useNavigationTransition();
 
   // Timeline deep links: a detection event opens the findings page scoped to
   // this session (narrowed to the event's finding when the event carries one);
@@ -113,13 +114,19 @@ export function ActivityClient({
       showEmpty?: boolean;
     }) => {
       onNavigate(opts.q);
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4">
+    <div
+      aria-busy={isPending}
+      className={cn(
+        'flex min-h-0 flex-1 gap-4 transition-shadow duration-150',
+        isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+      )}
+    >
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">
         <SessionListView
           sessions={sessions}

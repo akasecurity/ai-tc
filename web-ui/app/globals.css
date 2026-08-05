@@ -6,3 +6,24 @@
    primitives and the dashboard-ui composites directly, so scan both. */
 @source '../../packages/ui-kit/src';
 @source '../../packages/dashboard-ui/src';
+
+@theme {
+  --animate-nav-progress: nav-progress 850ms ease-out forwards;
+}
+
+/* The navigation progress bar. It grows toward — but never reaches — full
+   width, since the render it tracks reports no measurable progress. The
+   "don't flash on a fast navigation" delay is NOT here: the bar is mounted on
+   a timer (see NavigationProgressBar), so that a screen reader is not told
+   "Loading" for a navigation nobody saw. */
+@keyframes nav-progress {
+  0% {
+    transform: scaleX(0);
+  }
+  60% {
+    transform: scaleX(0.75);
+  }
+  100% {
+    transform: scaleX(0.96);
+  }
+}

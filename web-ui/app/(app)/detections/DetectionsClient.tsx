@@ -8,10 +8,11 @@ import {
   UpdateModal,
 } from '@akasecurity/dashboard-ui';
 import type { DetectionDetail, ListDetectionsResponse } from '@akasecurity/schema';
-import { Card } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import {
   pullDetectionUpdate,
@@ -53,12 +54,17 @@ export function DetectionsClient({
   query: string;
   selectedId: string;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  // Navigation transition (filter/search/selection pushes) — distinct from the
+  // write transitions below, which track Server Actions.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
 
   const [editRuleId, setEditRuleId] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  // Named for what it tracks (the enable/policy WRITE), not just "pending":
+  // the guard below reads it to reject a repeat click, and confusing it with
+  // the navigation flag above would turn that guard into a no-op.
+  const [isToggling, startTransition] = useTransition();
   // The update apply gets its own transition: sharing one flag would render the
   // modal's confirm as "Updating…"/disabled while a mere enable-toggle or
   // policy change is in flight (and vice versa).
@@ -91,9 +97,9 @@ export function DetectionsClient({
   const push = useCallback(
     (opts: { filter: string; q: string; id?: string }) => {
       onNavigate(opts.q);
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   const editRule =
@@ -106,7 +112,13 @@ export function DetectionsClient({
 
   return (
     <>
-      <div className="mt-4 grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4">
+      <div
+        aria-busy={navPending}
+        className={cn(
+          'mt-4 grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4 transition-shadow duration-150',
+          navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+        )}
+      >
         <DetectionsListView
           items={list.items}
           counts={list.counts}
@@ -135,7 +147,7 @@ export function DetectionsClient({
                 // Ignore repeat clicks while a write is in flight: `detail.enabled`
                 // only updates after the action revalidates, so a second click would
                 // re-send the same (now stale) target instead of toggling back.
-                if (isPending) return;
+                if (isToggling) return;
                 // Pin this detection in the URL first. The action's revalidate re-runs
                 // buildDetectionsList (enabled-first sort), so a just-disabled row drops
                 // to the bottom; without a pinned ?id the implicit first-row selection

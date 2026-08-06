@@ -63,11 +63,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # build:sea (ESM bundle) → bundle:web-ui (standalone sidecar) → bundle:extension → package:sea
-      # (binary + self-verify via --version) → archive:sea (tarball/zip + sha256).
+      # (binary + self-verify via --version) → smoke:sea → smoke:dashboard → archive:sea
+      # (tarball/zip + sha256).
       - run: pnpm --filter @akasecurity/cli build:sea
       - run: pnpm --filter @akasecurity/cli bundle:web-ui
       - run: pnpm --filter @akasecurity/cli bundle:extension
       - run: pnpm --filter @akasecurity/cli package:sea
+      # build-binaries.yml runs both smokes on PRs; this workflow ran neither, which is how a
+      # binary shipped whose `aka dashboard` could not resolve `next` on any user's machine.
+      - run: pnpm --filter @akasecurity/cli smoke:sea
+      # Boot the packaged binary's dashboard from a copy of the archive outside the repo and
+      # assert HTTP 200. build-binaries.yml runs this on PRs; releasing without it is what let
+      # a binary ship whose `aka dashboard` could not resolve `next` on any user's machine.
+      - run: pnpm --filter @akasecurity/cli smoke:dashboard
       - run: pnpm --filter @akasecurity/cli archive:sea
       - uses: actions/upload-artifact@v4
         with:

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Local pre-push / lint gate for the cross-platform test bugs enumerated in
-// CLAUDE.local.md "Cross-Platform Test Rules": a hardcoded file:/// URL, a
-// bare GNU `timeout` inside a shell command string, a path comparison with no
-// case normalization, and a worker/concurrency test with no explicit
-// timeout. Scans the git-tracked test tree only — see lib.ts's header for
-// what each rule can and cannot see.
+// Local pre-push / lint gate for four cross-platform test bugs: a hardcoded
+// file:/// URL, a bare GNU `timeout` inside a shell command string, a path
+// comparison with no case normalization, and a worker/concurrency test with
+// no explicit timeout. Scans the git-tracked test tree only — see lib.ts's
+// header for what each rule can and cannot see.
 //
 // Exit codes:
 //   0 — no violations

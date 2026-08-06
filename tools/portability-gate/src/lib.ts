@@ -1,8 +1,11 @@
 // Pure scanning logic for the cross-platform portability gate: a lightweight,
 // non-parsing scanner over the tracked test tree looking for four known
-// failure shapes (see CLAUDE.local.md "Cross-Platform Test Rules"). The CLI
-// entry (check-portability.ts) owns all I/O — git ls-files, reading file
-// contents — so the unit suite can drive this with canned file lists.
+// failure shapes — a hardcoded file:/// URL (POSIX-only, breaks on Windows),
+// a bare GNU `timeout` shell command (absent on macOS), a path comparison
+// with no case normalization (macOS/Windows are case-insensitive, Linux is
+// not), and a worker/concurrency test with no explicit timeout. The CLI entry
+// (check-portability.ts) owns all I/O — git ls-files, reading file contents —
+// so the unit suite can drive this with canned file lists.
 //
 // This is a heuristic text scanner, not a real parser. It tokenizes just far
 // enough to tell code from string/template literals and comments (and to give

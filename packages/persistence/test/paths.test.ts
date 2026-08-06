@@ -437,10 +437,23 @@ describe('createOwnerOnlyFileSync', () => {
     // path: `open(O_CREAT|O_EXCL)` publishes an empty inode and fills it on the
     // next syscall, so a concurrent reader can take a live key for a corrupt
     // one. Watching every intermediate state is what distinguishes the two.
+    //
+    // `intercepts` is the positive control, and it carries the whole case. The
+    // size assertion below reads a FILTERED array, so an empty `seen` satisfies
+    // it — and an empty `seen` is precisely what a watcher that never fired
+    // produces. Nothing here makes the write route through `fs.writeSync`; that
+    // is an implementation detail of `writeFileSync` on the current runtime, so
+    // a Node release that stops routing through it would leave every assertion
+    // green while this watched nothing at all. Counting the interceptions is
+    // what turns that silence into a failure. On the healthy tmp+link path the
+    // count is non-zero while `seen` stays empty — the write lands on the tmp,
+    // so the final path legitimately does not exist yet to be measured.
     const seen: number[] = [];
+    let intercepts = 0;
     const target = file();
     const realWriteSync = fsModule.writeSync;
     fsModule.writeSync = ((...args: Parameters<typeof realWriteSync>) => {
+      intercepts += 1;
       if (existsSync(target)) seen.push(statSync(target).size);
       return realWriteSync(...args);
     }) as typeof realWriteSync;
@@ -450,6 +463,7 @@ describe('createOwnerOnlyFileSync', () => {
       fsModule.writeSync = realWriteSync;
     }
 
+    expect(intercepts).toBeGreaterThan(0);
     expect(seen.filter((size) => size === 0)).toEqual([]);
     expect(readFileSync(target, 'utf8')).toBe('complete\n');
   });

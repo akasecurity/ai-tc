@@ -216,6 +216,14 @@ export class KeyUnclaimableError extends Error {
  * what is there rather than replacing it. The caller must have created the
  * parent dir (ensureDataDirSync).
  *
+ * true and false are not the only outcomes. Anything that is neither "won" nor
+ * "occupied" THROWS, and throws the RAW errno — never KeyUnclaimableError, which
+ * this function does not raise. A directory sitting at the tmp path is the
+ * reachable example: the `wx` create fails EEXIST and that EEXIST propagates as
+ * a plain Error, even though the FINAL path was free. So a caller reading only
+ * the boolean cannot tell "someone else holds it" from "this store is broken";
+ * distinguishing those means catching.
+ *
  * This is the exclusive twin of writeOwnerOnlyFileSync, and it exists because
  * neither of the two obvious primitives has both properties a first-time
  * publisher needs:
@@ -247,6 +255,11 @@ export class KeyUnclaimableError extends Error {
  * the corrupt-file state whose documented remedy is deleting it. Neither is
  * avoidable while still publishing on a filesystem that cannot hard-link, so the
  * fallback is the weaker guarantee taken deliberately, not an oversight.
+ *
+ * Which of the two routes ran is not observable from the return value, and does
+ * not need to be: an occupied final path answers false either way, because the
+ * fallback's `wx` create reports EEXIST there exactly as `link` does. Only the
+ * two properties above are given up on that path — never the one-winner answer.
  */
 export function createOwnerOnlyFileSync(file: string, data: string): boolean {
   // Per THREAD, not just per process. A worker thread shares its parent's pid,

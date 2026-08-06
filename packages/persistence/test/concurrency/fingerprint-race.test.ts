@@ -312,29 +312,45 @@ function agreedKey(minted: Minted[]): string {
 }
 
 describe('concurrent first mints converge on one key', () => {
-  it('leaves every racing thread holding the key that is on disk', async (ctx) => {
+  it('leaves every racing thread holding the key that is on disk', async () => {
     const race = await raceUntilOverlap(dir, RACERS);
 
     // Positive controls first: threads that did not overlap agree trivially.
     expect(race.arrivedAtRelease).toBe(RACERS);
     expect(race.keyPublishedAtBarrier).toBe(false);
-    if (race.maxConcurrent < 2) {
-      // Reported, not failed: on a saturated runner the threads genuinely do
-      // not overlap, and convergence without overlap proves nothing either way.
-      // Skipping says the premise was unmeasurable here; asserting would blame
-      // the code for the scheduler.
-      ctx.skip(
-        `no attempt got two of ${String(RACERS)} threads inside the mint at once ` +
-          `(best ${String(race.maxConcurrent)} over ${String(OVERLAP_ATTEMPTS)} attempts) — ` +
-          `this runner serialized them, so convergence here would be trivial`,
-      );
-    }
 
+    // Asserted unconditionally, including on a runner that serialized the
+    // threads. Convergence without overlap is a WEAKER claim, not a vacuous one
+    // — it still catches a mint that publishes one key and hands back another —
+    // and gating it on the overlap measurement is worse than keeping it: a
+    // ctx.skip() throws, so every assertion below it would go unrun and be
+    // reported as a skip rather than a gap. The overlap PREMISE is the only part
+    // a scheduler can genuinely deny, so that is the part with its own case.
     expect(race.minted).toHaveLength(RACERS);
     const published = keyOnDisk();
     // The whole property: one key, and it is the one that was published.
     expect(agreedKey(race.minted)).toBe(`${String(published.version)}:${published.material}`);
     expect(published.version).toBe(1);
+  });
+
+  it('gets two threads inside the mint at once, so the case above is not trivial', async (ctx) => {
+    // The premise the convergence case rests on, measured rather than assumed.
+    // It is a separate case because it is the one claim here whose failure says
+    // nothing about the code: on a saturated runner the threads genuinely do not
+    // overlap, so this is reported rather than failed. Asserting it would blame
+    // the mint for the scheduler; folding it back into the case above would take
+    // that case's real assertions down with it.
+    const race = await raceUntilOverlap(dir, RACERS);
+
+    if (race.maxConcurrent < 2) {
+      ctx.skip(
+        `no attempt got two of ${String(RACERS)} threads inside the mint at once ` +
+          `(best ${String(race.maxConcurrent)} over ${String(OVERLAP_ATTEMPTS)} attempts) — ` +
+          `this runner serialized them, so convergence was proven only trivially`,
+      );
+    }
+
+    expect(race.maxConcurrent).toBeGreaterThanOrEqual(2);
   });
 
   it('is stable afterwards — a later reader sees what the racers agreed on', async () => {

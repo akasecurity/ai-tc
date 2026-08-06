@@ -311,7 +311,7 @@ first one's answers — with both reporting success, because neither ever learns
 
 `withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
 existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
-equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Four
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Six
 properties are load-bearing:
 
 - **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
@@ -319,9 +319,15 @@ properties are load-bearing:
   writers hold it today: `applyOnboarding` (which the `/aka:setup` wizard and the dashboard's
   Settings action both go through) and `aka init`'s create-if-absent. A third that writes
   `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
-  `fingerprint.ts`'s key mint and `local-ops`' `update-cache.ts` are unlocked read-modify-writes
-  with the same shape, and each is its own outstanding fix. Do not read this section as a
-  property the store has; it is a property `settings.json` has.
+  `fingerprint.ts`'s key ROTATION and `local-ops`' `update-cache.ts` are unlocked
+  read-modify-writes with the same shape, and each is its own outstanding fix. The first MINT
+  is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
+  `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
+  caller wins and every loser reads the file back and ADOPTS the winner's key. That works only
+  because a first mint has nothing to preserve — rotation must replace an existing file, so it
+  still reads the current version and writes version+1 over it, and the same fix does not reach
+  it. Do not read this section as a property the store has; it is a property `settings.json`
+  has.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's

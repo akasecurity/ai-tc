@@ -268,7 +268,7 @@ export function WorkspaceSettingsFormView({
     (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
-    <div className="flex max-w-2xl flex-col gap-6">
+    <div className="flex max-w-4xl flex-col gap-6">
       <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>{HANDLING_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</p>
@@ -301,7 +301,7 @@ export function WorkspaceSettingsFormView({
         <SectionLabel>{VAULT_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{VAULT_SECTION_DESCRIPTION}</p>
         {vaultConsentStale(settings.vaultConsent) ? (
-          <p className="mb-3 text-xs text-sev-high" data-slot="vault-stale-notice">
+          <p className="mb-3 text-xs text-sev-high-ink" data-slot="vault-stale-notice">
             {VAULT_STALE_NOTICE}
           </p>
         ) : null}
@@ -313,7 +313,7 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
-      <section>
+      <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>{INLINE_REVEAL_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{INLINE_REVEAL_SECTION_DESCRIPTION}</p>
         <ChoiceGroup
@@ -344,8 +344,8 @@ export function WorkspaceSettingsFormView({
         >
           {busy ? 'Saving…' : 'Save changes'}
         </Button>
-        {saved && !dirty && <span className="text-xs text-ok">Saved.</span>}
-        {error && <span className="text-xs text-sev-critical">{error}</span>}
+        {saved && !dirty && <span className="text-xs text-ok-ink">Saved.</span>}
+        {error && <span className="text-xs text-sev-critical-ink">{error}</span>}
       </div>
     </div>
   );

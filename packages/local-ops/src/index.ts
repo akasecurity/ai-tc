@@ -6,6 +6,14 @@ export {
   installClaudePlugin,
   updateClaudePlugin,
 } from './claude-plugin.ts';
+export type { CliPluginManager } from './cli-plugin-manager.ts';
+export { createCliPluginManager } from './cli-plugin-manager.ts';
+export {
+  codexAvailable,
+  ensureCodexMarketplace,
+  installCodexPlugin,
+  updateCodexPlugin,
+} from './codex-plugin.ts';
 export type { EgressRecordResult } from './egress-record.ts';
 export { recordProjectEgress } from './egress-record.ts';
 export type { RunResult } from './exec.ts';
@@ -17,6 +25,12 @@ export type {
   ScanPathResult,
 } from './fs-scan.ts';
 export { collectFiles, scanPathIntoStore } from './fs-scan.ts';
+export type {
+  DroppedRules,
+  GuardedFileScanner,
+  GuardedFileScannerOptions,
+} from './guarded-scan.ts';
+export { createGuardedFileScanner } from './guarded-scan.ts';
 export type { ProjectInventoryResult } from './project-inventory.ts';
 export { recordProjectInventory } from './project-inventory.ts';
 export type { AgentPlugin } from './registry.ts';
@@ -42,6 +56,8 @@ export {
   cliVersion,
   gatherReport,
   gatherReportLive,
+  installedAgentPluginVersions,
+  installedCodexPluginVersions,
   installedPluginVersions,
   npmViewVersion,
 } from './updates.ts';

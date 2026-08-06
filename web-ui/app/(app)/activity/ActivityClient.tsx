@@ -12,10 +12,11 @@ import type {
   Harness,
   SessionTokenReport,
 } from '@akasecurity/schema';
-import { Card } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { buildActivityParams } from './filters';
 
@@ -59,8 +60,8 @@ export function ActivityClient({
   /** Whether zero-activity sessions are currently listed (?empty=1). */
   showEmpty: boolean;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  const { isPending, push: pushUrl } = useNavigationTransition();
 
   // Timeline deep links: a detection event opens the findings page scoped to
   // this session (narrowed to the event's finding when the event carries one);
@@ -70,6 +71,8 @@ export function ActivityClient({
   const linkHref = useCallback<BuildActivityLinkHref>(
     (link, targetId) => {
       if (link === 'detections') {
+        // The session scope is exact, so it stands alone — no range or harness
+        // carry, which would only narrow a list already pinned to one session.
         const params = new URLSearchParams();
         if (sessionId) params.set('session', sessionId);
         if (targetId) params.set('finding', targetId);
@@ -111,13 +114,19 @@ export function ActivityClient({
       showEmpty?: boolean;
     }) => {
       onNavigate(opts.q);
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4">
+    <div
+      aria-busy={isPending}
+      className={cn(
+        'flex min-h-0 flex-1 gap-4 transition-shadow duration-150',
+        isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+      )}
+    >
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">
         <SessionListView
           sessions={sessions}
@@ -150,10 +159,20 @@ export function ActivityClient({
           linkHref={linkHref}
           isLoading={false}
           error={null}
-          // Tool chips deep-link to the findings page scoped to that tool —
-          // `q` matches the instance location label ("via Bash") of findings
-          // captured from that tool's input/output.
-          toolHref={(toolName) => `/findings?q=${encodeURIComponent(`via ${toolName}`)}`}
+          // Tool chips deep-link to the flat findings view filtered to that
+          // tool. `?tool=` is a real filter on the capturing event's recorded
+          // tool name, where the previous `?q=via Bash` was a text match
+          // against a rendered label — it matched any finding whose search
+          // text happened to contain the phrase, and missed nothing only by
+          // luck. The session scope rides along so the link stays about this
+          // session.
+          toolHref={(toolName) => {
+            const params = new URLSearchParams();
+            params.set('view', 'flat');
+            if (sessionId) params.set('session', sessionId);
+            params.append('tool', toolName);
+            return `/findings?${params.toString()}`;
+          }}
         />
       </Card>
     </div>

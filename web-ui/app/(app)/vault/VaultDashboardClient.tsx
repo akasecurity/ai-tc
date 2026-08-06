@@ -7,7 +7,7 @@ import {
   VaultReuseView,
 } from '@akasecurity/dashboard-ui';
 import type { VaultDeref, VaultInventoryEntry } from '@akasecurity/schema';
-import { Button, Input } from '@akasecurity/ui-kit';
+import { Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@akasecurity/ui-kit';
 import { useState, useTransition } from 'react';
 
 import type { PurgeVaultResult, RotateVaultKeyResult } from './actions';
@@ -112,13 +112,20 @@ export function VaultDashboardClient({
   const revealedEntries = inventory.filter((entry) => entry.pointerId in revealed);
 
   return (
-    <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-3">
+    <Tabs defaultValue="inventory" className="flex flex-col gap-4">
+      <TabsList>
+        <TabsTrigger value="inventory">Vaulted values</TabsTrigger>
+        <TabsTrigger value="reuse">Reuse</TabsTrigger>
+        <TabsTrigger value="audit">De-reference audit</TabsTrigger>
+        <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="inventory" className="flex flex-col gap-3">
         <SectionHead
           title="Vaulted values"
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
         />
-        {actionError !== null && <p className="text-xs text-sev-critical">{actionError}</p>}
+        {actionError !== null && <p className="text-xs text-sev-critical-ink">{actionError}</p>}
         <VaultInventoryView entries={inventory} onReveal={onReveal} onRevoke={onRevoke} />
         {revealedEntries.length > 0 && (
           <div className="rounded-xl border border-border bg-surface p-4">
@@ -156,17 +163,17 @@ export function VaultDashboardClient({
             </ul>
           </div>
         )}
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="reuse" className="flex flex-col gap-3">
         <SectionHead
           title="Reuse on this machine"
           sub="Values detected in more than one place. Reuse widens the blast radius of a single leak."
         />
         <VaultReuseView entries={inventory} />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="audit" className="flex flex-col gap-3">
         <SectionHead
           title="De-reference audit"
           sub="Every resolution of a vaulted value — never the value itself. Model crossings render loud."
@@ -177,9 +184,9 @@ export function VaultDashboardClient({
           showBatched={showBatched}
           onToggleBatched={setShowBatched}
         />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="maintenance" className="flex flex-col gap-3">
         <SectionHead title="Vault maintenance" sub="Key rotation is routine; the purge is not." />
         <div className="rounded-xl border border-border bg-surface p-5">
           <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
@@ -190,7 +197,7 @@ export function VaultDashboardClient({
             keep working — only the ciphertext changes.
           </p>
           {rotateResult?.ok === true && (
-            <p className="mb-3 text-xs text-ok">
+            <p className="mb-3 text-xs text-ok-ink">
               Key rotated to version {rotateResult.version} —{' '}
               {rotateResult.reEncrypted === 1
                 ? '1 entry re-encrypted'
@@ -199,7 +206,7 @@ export function VaultDashboardClient({
             </p>
           )}
           {rotateResult?.ok === false && (
-            <p className="mb-3 text-xs text-sev-critical">{rotateResult.error}</p>
+            <p className="mb-3 text-xs text-sev-critical-ink">{rotateResult.error}</p>
           )}
           <Button
             variant="outline"
@@ -213,7 +220,7 @@ export function VaultDashboardClient({
         </div>
 
         <div className="rounded-xl border border-sev-critical-fill bg-surface p-5">
-          <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-sev-critical">
+          <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-sev-critical-ink">
             Purge vault
           </div>
           <p className="mb-3 text-xs text-text-3">
@@ -231,7 +238,7 @@ export function VaultDashboardClient({
             </p>
           )}
           {purgeResult?.ok === false && (
-            <p className="mb-3 text-xs text-sev-critical">{purgeResult.error}</p>
+            <p className="mb-3 text-xs text-sev-critical-ink">{purgeResult.error}</p>
           )}
           <div className="flex items-center gap-2">
             <Input
@@ -253,7 +260,7 @@ export function VaultDashboardClient({
             </Button>
           </div>
         </div>
-      </section>
-    </div>
+      </TabsContent>
+    </Tabs>
   );
 }

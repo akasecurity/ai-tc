@@ -137,8 +137,8 @@ describe('HarnessEventKind enum', () => {
 });
 
 describe('HarnessId enum', () => {
-  it('accepts claudecode, cursor, codex', () => {
-    for (const v of ['claudecode', 'cursor', 'codex']) {
+  it('accepts claudecode, cursor, codex, antigravity', () => {
+    for (const v of ['claudecode', 'cursor', 'codex', 'antigravity']) {
       expect(HarnessId.safeParse(v).success).toBe(true);
     }
   });

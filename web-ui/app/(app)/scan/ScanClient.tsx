@@ -20,7 +20,7 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
   };
 
   return (
-    <div className="flex max-w-xl flex-col gap-4">
+    <div className="flex max-w-3xl flex-col gap-4">
       <div className="rounded-xl border border-border bg-surface p-5">
         <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
           File or directory to scan
@@ -53,7 +53,9 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
           />
         </div>
 
-        {result && !result.ok && <p className="mt-3 text-xs text-sev-critical">{result.error}</p>}
+        {result && !result.ok && (
+          <p className="mt-3 text-xs text-sev-critical-ink">{result.error}</p>
+        )}
         {result?.ok && (
           <div className="mt-3 rounded-lg border border-ok-fill bg-ok-fill px-3 py-2 text-xs text-text">
             Scanned {String(result.scanned)} file{result.scanned === 1 ? '' : 's'} ·{' '}
@@ -64,6 +66,13 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
               </Link>
             )}
           </div>
+        )}
+        {/* Also outside the ok/error branches: a scan that finished with a
+            smaller ruleset than the Detections page lists has to say so, and a
+            scan that failed on pack state may still have dropped rules on top
+            of that. */}
+        {result?.droppedRules && (
+          <p className="mt-2 text-xs text-sev-medium-ink">{result.droppedRules}</p>
         )}
         {/* Outside the ok/error branches above: egress extraction does not read
             the ruleset, so destinations are recorded — and worth surfacing —

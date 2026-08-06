@@ -1,15 +1,20 @@
 // @ts-check
 //
-// The full-ruleset half of `pnpm lint:root`, which lints the sources no
-// per-package `lint` pass reaches. `pnpm lint` is `turbo run lint`, which drives
-// per-package scripts and never sees the repo root, so lint:root runs as its own
-// CI step. This config covers the repo-root files no workspace package owns that
-// ARE written for the full ruleset: the vitest no-network guard, the CI egress
-// probe, and the repo-root `*.config.*` (this file and commitlint's). The plain-JS
-// enforcement suites under `packages/eslint-config/test` — which the eslint-config
-// package's deliberate no-op `lint` leaves behind every pass — get network-only
-// coverage from the sibling `eslint.root.guard.config.mjs`, the same split the
-// per-package `eslint.scripts.config.mjs` second pass makes for non-compiled JS.
+// `pnpm lint:root` lints the sources no per-package `lint` pass reaches.
+// `turbo run lint` drives per-package scripts and never sees the repo root, so
+// lint:root is a pass of its own — chained off `pnpm lint` (which is what the
+// pre-push hook and the release workflows run) and named as its own CI step. This
+// config covers every repo-root file no workspace package owns: the vitest
+// no-network guard, the CI egress probe, and the repo-root `*.config.*` (this file
+// and commitlint's).
+//
+// The plain-JS enforcement suites under `packages/eslint-config/test` are NOT
+// here. They sit inside a package, and that package now lints itself: its `lint`
+// script runs the full ruleset over `src` and its root configs, then a second
+// network-only pass over `test` against its own `eslint.guard.config.mjs` — the
+// same split the per-package `eslint.scripts.config.mjs` second pass makes for
+// non-compiled JS. A root pass over them used to exist only because that
+// package's `lint` was a deliberate no-op.
 //
 // The guard and probe import banned network modules on purpose: opening a socket
 // is what they are for. The file-scoped opt-outs below are what let the full

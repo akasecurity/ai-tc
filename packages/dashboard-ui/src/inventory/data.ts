@@ -20,21 +20,38 @@ import type { IconName } from './icons.ts';
 type Tone = NonNullable<BadgeProps['variant']>;
 
 // ─── Access (per-file LLM access) ────────────────────────────────────────────
+/**
+ * `bar` and `accent` are the hue/ink split carried into this record, and they
+ * cannot be one field. `bar` paints AccessBar's stacked segments and the status
+ * dots beside them — non-text marks whose whole job is to stay tellable apart, so
+ * they take the HUE. `accent` fills the selected check circle in RadioCardList,
+ * which carries a glyph in `text-on-accent`, so it takes the INK: white on the `ok`
+ * hue is 2.81:1 and fails, on `ok-ink` it is 5.22:1.
+ *
+ * Collapsing them onto the ink is what the split exists to prevent — it drops
+ * AccessBar's adjacent-segment separation in light from 2.46/1.63/1.51 to
+ * 1.33/1.29/1.03, green against red at 1.03. `bar-and-accent.test.ts` pins both
+ * roles. TRUST below needs only the ink half, so it carries `iconBg` alone.
+ */
 export interface AccessMeta {
   label: string;
   icon: IconName;
   fg: string;
   bg: string;
+  /** Bar segments and status dots — non-text, so the hue. */
   bar: string;
+  /** Solid fill under a `text-on-accent` glyph — so the ink. */
+  accent: string;
   desc: string;
 }
 export const ACCESS: Record<AccessLevel, AccessMeta> = {
   open: {
     label: 'Any LLM',
     icon: 'cloud',
-    fg: 'text-ok',
+    fg: 'text-ok-ink',
     bg: 'bg-ok-fill',
     bar: 'bg-ok',
+    accent: 'bg-ok-ink',
     desc: 'Allowed to any model — including public, consumer LLMs.',
   },
   approved: {
@@ -42,15 +59,20 @@ export const ACCESS: Record<AccessLevel, AccessMeta> = {
     icon: 'shield-check',
     fg: 'text-primary',
     bg: 'bg-primary-tint',
+    // primary is the inverted pair — the bare token IS the ink — so one value
+    // serves both roles here. In dark it lifts to a pale lavender, which reads as
+    // a bar segment against the dark surface and still carries the dark glyph.
     bar: 'bg-primary',
+    accent: 'bg-primary',
     desc: 'Allowed only to approved, governed models.',
   },
   blocked: {
     label: 'No LLM',
     icon: 'slash-circle',
-    fg: 'text-sev-critical',
+    fg: 'text-sev-critical-ink',
     bg: 'bg-sev-critical-fill',
     bar: 'bg-sev-critical',
+    accent: 'bg-sev-critical-ink',
     desc: 'Never sent to any model. Blocked at the proxy.',
   },
 };
@@ -71,27 +93,27 @@ export const TRUST: Record<TrustLevel, TrustMeta> = {
     label: 'Known good',
     icon: 'shield-check',
     tone: 'success',
-    fg: 'text-ok',
+    fg: 'text-ok-ink',
     bg: 'bg-ok-fill',
-    iconBg: 'bg-ok',
+    iconBg: 'bg-ok-ink',
     desc: 'Reviewed & allow-listed. Agents may call it freely.',
   },
   risky: {
     label: 'Risky',
     icon: 'alert',
     tone: 'high',
-    fg: 'text-sev-high',
+    fg: 'text-sev-high-ink',
     bg: 'bg-sev-high-fill',
-    iconBg: 'bg-sev-high',
+    iconBg: 'bg-sev-high-ink',
     desc: 'Allowed, but reaches sensitive systems or external hosts. Use with care.',
   },
   unapproved: {
     label: 'Unapproved',
     icon: 'x-circle',
     tone: 'critical',
-    fg: 'text-sev-critical',
+    fg: 'text-sev-critical-ink',
     bg: 'bg-sev-critical-fill',
-    iconBg: 'bg-sev-critical',
+    iconBg: 'bg-sev-critical-ink',
     desc: 'Not reviewed or explicitly denied — calls are blocked at the proxy.',
   },
 };
@@ -166,16 +188,28 @@ export const ASSET_META = {
     type: 'skill',
     label: 'Skills',
     icon: 'sparkles',
-    fg: 'text-violet',
+    fg: 'text-violet-ink',
     bg: 'bg-violet-fill',
   },
-  mcp: { type: 'mcp', label: 'MCP servers', icon: 'server', fg: 'text-teal', bg: 'bg-teal-fill' },
-  hook: { type: 'hook', label: 'Hooks', icon: 'route', fg: 'text-sev-low', bg: 'bg-sev-low-fill' },
+  mcp: {
+    type: 'mcp',
+    label: 'MCP servers',
+    icon: 'server',
+    fg: 'text-teal-ink',
+    bg: 'bg-teal-fill',
+  },
+  hook: {
+    type: 'hook',
+    label: 'Hooks',
+    icon: 'route',
+    fg: 'text-sev-low-ink',
+    bg: 'bg-sev-low-fill',
+  },
   config: {
     type: 'config',
     label: 'Configuration',
     icon: 'sliders',
-    fg: 'text-teal',
+    fg: 'text-teal-ink',
     bg: 'bg-surface-2',
   },
 } satisfies Record<Exclude<AssetType, 'project'>, TypeMeta>;
@@ -220,15 +254,21 @@ export const EVENT_KIND: Record<HarnessEventKind, EventKindMeta> = {
     label: 'Blocked',
     icon: 'slash-circle',
     tone: 'critical',
-    fg: 'text-sev-critical',
+    fg: 'text-sev-critical-ink',
     bg: 'bg-sev-critical-fill',
   },
-  redact: { label: 'Redacted', icon: 'redact', tone: 'teal', fg: 'text-teal', bg: 'bg-teal-fill' },
+  redact: {
+    label: 'Redacted',
+    icon: 'redact',
+    tone: 'teal',
+    fg: 'text-teal-ink',
+    bg: 'bg-teal-fill',
+  },
   warn: {
     label: 'Warned',
     icon: 'alert',
     tone: 'high',
-    fg: 'text-sev-high',
+    fg: 'text-sev-high-ink',
     bg: 'bg-sev-high-fill',
   },
 };

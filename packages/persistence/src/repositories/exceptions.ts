@@ -129,6 +129,12 @@ interface BlockedDetectionRow {
 // a second source of truth that a crashed sweep could leave stale. This
 // predicate is the single definition of "active"; correctness never depends on
 // a cleanup sweep.
+//
+// Its COMPLEMENT is derived from neither: `create()`'s supersede clause and
+// `sweepTerminal` each spell "terminal" out longhand instead of negating this
+// string. One boundary, three statements — they must move together. The two
+// longhand copies decide whether a spent grant frees its index slot and
+// whether it is ever deleted, so a one-sided edit is not visible from here.
 const ACTIVE_PREDICATE = `revoked_at IS NULL
      AND (expires_at IS NULL OR expires_at > :now)
      AND (max_uses IS NULL OR use_count < max_uses)`;
@@ -141,8 +147,12 @@ const ACTIVE_PREDICATE = `revoked_at IS NULL
  *
  * Exported as the single definition of "authorizes a reveal right now": the
  * vault inventory's badge subquery interpolates this same string (binding
- * `:now`), so the dashboard can never call a value revealable where the
- * crossing itself would refuse.
+ * `:now`), so the dashboard cannot call a value revealable where the crossing
+ * itself would refuse — while both bind the same instant. They do wherever
+ * this repository is built with its default clock, which is every product
+ * path. A caller that supplies a clock of its own moves only the crossing:
+ * SqliteSecretVaultRepository takes no clock, so its badge stays on the wall
+ * clock and the two can then disagree.
  */
 export const ACTIVE_REVEAL_GRANT_PREDICATE = `capability = 'reveal_to_model'
      AND conditions IS NULL
@@ -163,7 +173,14 @@ export class SqliteExceptionsRepository {
   private readonly insertBlockedStmt: StatementSync;
   private readonly sweepBlockedStmt: StatementSync;
 
-  constructor(private readonly db: DatabaseSync) {
+  constructor(
+    private readonly db: DatabaseSync,
+    // Every time-dependent decision here — expiry, both sweeps, and the
+    // terminal-collider supersede — reads this and nothing else, so a test can
+    // drive the boundary instead of racing the wall clock. The use budget is
+    // not among them: `use_count < max_uses` binds no instant.
+    private readonly now: () => number = () => Date.now(),
+  ) {
     // The fail-secure primitive: one-time semantics ride a single conditional
     // UPDATE (SQLite serializes writers, so this is race-free on one machine).
     // changes === 1 → the grant applies; 0 rows or any error → enforce as usual.
@@ -215,7 +232,7 @@ export class SqliteExceptionsRepository {
       );
     }
     const id = randomUUID();
-    const now = Date.now();
+    const now = this.now();
     try {
       this.insertExceptionRow(id, input, now);
     } catch (err) {
@@ -306,7 +323,7 @@ export class SqliteExceptionsRepository {
     const where = opts?.includeTerminal ? '' : `WHERE ${ACTIVE_PREDICATE}`;
     const rows = allRows<ExceptionRow>(
       this.db.prepare(`SELECT * FROM exceptions ${where} ORDER BY created_at DESC, rowid DESC`),
-      opts?.includeTerminal ? {} : { now: Date.now() },
+      opts?.includeTerminal ? {} : { now: this.now() },
     );
     const exceptions = mapRowsTolerant(rows, parseExceptionRow);
     return Promise.resolve(exceptions);
@@ -350,7 +367,7 @@ export class SqliteExceptionsRepository {
    * already revoked.
    */
   revoke(id: string, revokedBy: string, reason?: string): Promise<boolean> {
-    const now = Date.now();
+    const now = this.now();
     const result = this.db
       .prepare(
         `UPDATE exceptions
@@ -367,7 +384,7 @@ export class SqliteExceptionsRepository {
    * callers must treat identically — means it does not and the detection is
    * enforced as usual. Deliberately NOT wrapped in try/catch.
    */
-  consume(id: string, now = Date.now()): Promise<boolean> {
+  consume(id: string, now = this.now()): Promise<boolean> {
     const result = this.consumeStmt.run({ id, now });
     return Promise.resolve(Number(result.changes) === 1);
   }
@@ -377,7 +394,7 @@ export class SqliteExceptionsRepository {
    * version — what rides the policy bundle to the hook. Grants written under
    * a different (rotated-away) key never match, so they are excluded at read.
    */
-  activeBundleEntries(keyVersion: number, now = Date.now()): Promise<ExceptionBundleEntryType[]> {
+  activeBundleEntries(keyVersion: number, now = this.now()): Promise<ExceptionBundleEntryType[]> {
     const rows = allRows<ExceptionRow>(
       this.db.prepare(
         `SELECT * FROM exceptions
@@ -410,7 +427,7 @@ export class SqliteExceptionsRepository {
    * than the retention window on every write, so the ledger self-limits.
    */
   recordBlocked(entry: BlockedDetectionInput): Promise<void> {
-    const now = Date.now();
+    const now = this.now();
     this.sweepBlockedStmt.run({ cutoff: now - BLOCKED_DETECTIONS_RETENTION_MS });
     this.insertBlockedStmt.run({
       reference: entry.reference,
@@ -434,7 +451,7 @@ export class SqliteExceptionsRepository {
           WHERE blocked_at > :cutoff
           ORDER BY blocked_at DESC, rowid DESC`,
       ),
-      { cutoff: Date.now() - windowMs },
+      { cutoff: this.now() - windowMs },
     );
     return Promise.resolve(
       rows.map((row) => ({
@@ -467,9 +484,14 @@ export class SqliteExceptionsRepository {
     ruleId: string,
     valueFingerprint: string,
     keyVersion: number,
-    now = Date.now(),
+    now?: number,
   ): Promise<{ id: string } | null> {
     try {
+      // Read the clock INSIDE the try rather than as a default-parameter
+      // initializer: an initializer runs before the body, so a clock that
+      // threw would escape this method synchronously — past the guard that
+      // exists to make every failure here a rejection.
+      const at = now ?? this.now();
       const row = getRow<{ id: string }>(
         this.db.prepare(
           `SELECT id FROM exceptions
@@ -478,7 +500,7 @@ export class SqliteExceptionsRepository {
               AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
             LIMIT 1`,
         ),
-        { ruleId, valueFingerprint, keyVersion, now },
+        { ruleId, valueFingerprint, keyVersion, now: at },
       );
       return Promise.resolve(row ?? null);
     } catch (err) {
@@ -493,7 +515,7 @@ export class SqliteExceptionsRepository {
    * predicate, so correctness never depends on this sweep; it only bounds how
    * long the audit evidence is kept locally. Returns the deleted count.
    */
-  sweepTerminal(retentionMs: number, now = Date.now()): Promise<number> {
+  sweepTerminal(retentionMs: number, now = this.now()): Promise<number> {
     const result = this.db
       .prepare(
         `DELETE FROM exceptions

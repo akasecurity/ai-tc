@@ -25,6 +25,14 @@ function parse(version: string): Parsed | null {
   };
 }
 
+// Does `version` parse as a semver this module can order? Callers that pick a
+// winner out of a set need this: compareSemver returns 0 for anything it cannot
+// parse, so an unparseable candidate is indistinguishable from an equal one and
+// can survive a reduce it should never have entered.
+export function isSemver(version: string): boolean {
+  return parse(version) !== null;
+}
+
 function comparePre(a: string[], b: string[]): -1 | 0 | 1 {
   // A release (no prerelease) outranks a prerelease of the same core.
   if (a.length === 0 && b.length === 0) return 0;

@@ -116,6 +116,13 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
       // accessors, nothing `this`-bound, nothing lazily got. Turn that into a
       // class instance or add a getter and every handle handed out here goes
       // quietly wrong instead of failing.
+      //
+      // It also carries UNSAFE_TEST_ONLY_RAW_HANDLE, which spread copies because
+      // that property is an enumerable own symbol. A fault test capping the
+      // connection reads it off the wrapper handed back here, so a handle that
+      // lost it would leave the cap pointed at nothing and every fault
+      // assertion downstream passing vacuously. `raw-handle-seam.test.ts` pins
+      // the spread itself rather than leave that to this comment.
       let closed = false;
       const tracked: LocalDatabase = {
         ...db,
@@ -186,16 +193,21 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
 }
 
 // Windows refuses to delete a file some handle still has open, where POSIX is
-// happy to. A fault test reaches that state legitimately: `openLocalDatabase`
-// never closes its `DatabaseSync` when it throws partway through — on a corrupt
-// or locked store it fails after construction and the handle is unreachable —
-// so nothing can close it before the rm.
+// happy to. This used to swallow that refusal, because a fault test reached it
+// legitimately: `openLocalDatabase` did not close its `DatabaseSync` when it
+// threw partway through, so on a corrupt or locked store the handle was
+// unreachable and nothing could close it before the rm.
 //
-// Retry through the case where a handle is merely on its way out, then, on
-// Windows only, give the tree to the OS temp sweeper rather than fail a test
-// whose assertions already passed. POSIX keeps throwing: there the same codes
-// mean a cleanup did not run — a forgotten mode restore, say — and that is a
-// defect in the test, not the platform.
+// That is fixed — the open path closes the handle on every throw — so the
+// swallow no longer covers a known-good case, and keeping it would hide the
+// next one. An undeletable tree now fails on every platform, which is what makes
+// this the regression signal: a store handle that escapes a failed open reddens
+// the Windows leg here, and the descriptor counts in `helpers/descriptors.ts`
+// redden the POSIX legs.
+//
+// `rmSync`'s own retries stay. They cover the genuinely transient case — a
+// handle on its way out, or a scanner holding a file for a moment — which is a
+// different thing from a handle nobody closed.
 const STILL_HELD = new Set(['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY']);
 
 function removeTree(home: string): void {
@@ -203,7 +215,25 @@ function removeTree(home: string): void {
     rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   } catch (err) {
     const code = (err as { code?: string }).code;
-    if (process.platform !== 'win32' || code === undefined || !STILL_HELD.has(code)) throw err;
+    if (code !== undefined && STILL_HELD.has(code)) {
+      // A bare EPERM/EACCES from an rm names neither the tree nor the likely
+      // cause, and on the Windows leg that is the whole diagnostic a reader
+      // gets. The likely cause is platform-specific: on Windows these codes
+      // mean a handle is still open, full stop. On POSIX the same codes are at
+      // least as often a directory mode a test set and never restored —
+      // removing an entry needs write+execute on its PARENT, not on the entry
+      // itself — so a held handle is named second there, not first.
+      const likely =
+        process.platform === 'win32'
+          ? 'a handle still holds a file under it: one the test opened outside the store ' +
+            '(use openRaw), or one an open path failed without closing'
+          : 'a directory under it is not writable (a mode a test set and did not restore), ' +
+            'or a handle still holds a file under it';
+      throw new Error(`temp store teardown could not remove ${home} (${code}): ${likely}.`, {
+        cause: err,
+      });
+    }
+    throw err;
   }
 }
 

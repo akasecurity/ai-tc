@@ -9,16 +9,20 @@ import type { ReactNode } from 'react';
 import {
   ActivityIcon,
   AkaLogo,
+  AlertOctagonIcon,
   ExternalShareIcon,
   KeyIcon,
   LayersIcon,
   ListIcon,
+  LockIcon,
   PolicyIcon,
   RefreshIcon,
   SearchIcon,
   SettingsIcon,
   ShieldCheckIcon,
 } from './icons.tsx';
+import { NavigationProgressBar } from './NavigationTransition.tsx';
+import { ThemeToggle } from './ThemeToggle.tsx';
 
 // Sidebar + topbar shell layout, built for Next.js (next/link + usePathname).
 // No auth/user-card/sign-out; icons stay inline (the app
@@ -32,14 +36,17 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { label: 'Security', icon: ShieldCheckIcon, href: '/security' },
-  { label: 'Findings', icon: ListIcon, href: '/findings' },
+  // Findings are severity-bearing events, so they reuse the severity glyph; Detections
+  // is the catalog of installed rule packs, which is what the list reads as.
+  { label: 'Findings', icon: AlertOctagonIcon, href: '/findings' },
   { label: 'Inventory', icon: LayersIcon, href: '/inventory' },
   { label: 'Data Shares', icon: ExternalShareIcon, href: '/data-shares' },
   { label: 'Activity', icon: ActivityIcon, href: '/activity' },
   { label: 'Detections', icon: ListIcon, href: '/detections' },
   { label: 'Policies', icon: PolicyIcon, href: '/policies' },
+  // Exceptions keeps the key (granting access); Vault is the locked store it draws from.
   { label: 'Exceptions', icon: KeyIcon, href: '/exceptions' },
-  { label: 'Vault', icon: KeyIcon, href: '/vault' },
+  { label: 'Vault', icon: LockIcon, href: '/vault' },
   { label: 'Scan', icon: SearchIcon, href: '/scan' },
   { label: 'Updates', icon: RefreshIcon, href: '/updates' },
   { label: 'Settings', icon: SettingsIcon, href: '/settings' },
@@ -50,7 +57,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
       <Sidebar pathname={pathname} />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <NavigationProgressBar />
         <TopBar />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
@@ -62,7 +70,7 @@ function Sidebar({ pathname }: { pathname: string }) {
   return (
     <aside className="flex w-62 flex-col border-r border-border bg-surface shrink-0">
       <div className="flex h-16 items-center border-b border-text/6 px-5">
-        <AkaLogo aria-label="AKA" className="h-8 w-auto text-text" />
+        <AkaLogo aria-label="AKA" className="h-8 w-auto text-mark-fg" />
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3.5">
         {NAV.map((item) => (
@@ -122,7 +130,9 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
 function TopBar() {
   return (
     <header className="flex items-center gap-4 border-b border-border bg-surface px-6 h-16">
-      <div className="ml-auto flex items-center gap-2"></div>
+      <div className="ml-auto flex items-center gap-2">
+        <ThemeToggle />
+      </div>
     </header>
   );
 }

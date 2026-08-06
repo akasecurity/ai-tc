@@ -80,7 +80,7 @@ function DetailBody({
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-ui text-text-3">
               {harness.label} · {HARNESS_KIND[session.harness]}
-              <span className="text-border-strong">·</span>
+              <span className="text-text-3">·</span>
               <span className="font-mono">{session.id}</span>
             </div>
           </div>
@@ -120,19 +120,17 @@ function DetailBody({
               <span className="inline-flex flex-wrap items-center gap-x-1.5">
                 {session.findings > 0 && (
                   <span
-                    className="font-semibold text-sev-critical"
+                    className="font-semibold text-sev-critical-ink"
                     title="Detection firings across this session's transcript — the same value fires once per event it appears in"
                   >
                     {session.findings} triggered
                   </span>
                 )}
-                {session.findings > 0 && liveFindings && (
-                  <span className="text-border-strong">·</span>
-                )}
+                {session.findings > 0 && liveFindings && <span className="text-text-3">·</span>}
                 {liveFindings && (
                   <a
                     href={liveFindings.href}
-                    className="inline-flex items-center gap-0.5 font-semibold text-sev-critical underline-offset-2 hover:underline"
+                    className="inline-flex items-center gap-0.5 font-semibold text-sev-critical-ink underline-offset-2 hover:underline"
                     title="Unique findings recorded by live enforcement — open in Findings"
                   >
                     {liveFindings.count} enforced live
@@ -141,7 +139,7 @@ function DetailBody({
                 )}
               </span>
             ) : (
-              <span className="text-ok">None</span>
+              <span className="text-ok-ink">None</span>
             )}
           </MetaItem>
           <MetaItem label="Egress">
@@ -225,7 +223,7 @@ function DetailBody({
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4.5">
         <div className="mb-4 flex items-center gap-2 text-label font-semibold uppercase tracking-wider text-text-3">
           {rawOpen ? 'Raw events' : 'Audit log'}
-          <span className="text-border-strong">·</span>
+          <span className="text-text-3">·</span>
           <span className="font-mono text-label font-medium normal-case tracking-normal text-text-3">
             {session.events.length} events
           </span>

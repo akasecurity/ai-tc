@@ -104,7 +104,7 @@ export default async function ActivityPage({
       icon: BoltIcon,
       value: stats.liveNow,
       label: 'Live now',
-      text: 'text-ok',
+      text: 'text-ok-ink',
       fill: 'bg-ok-fill',
     },
     {
@@ -118,14 +118,14 @@ export default async function ActivityPage({
       icon: ShieldCheckIcon,
       value: stats.findingsToday,
       label: 'Findings triggered',
-      text: 'text-sev-critical',
+      text: 'text-sev-critical-ink',
       fill: 'bg-sev-critical-fill',
     },
     {
       icon: ExternalShareIcon,
       value: stats.egressToday,
       label: 'Egress events',
-      text: 'text-teal',
+      text: 'text-teal-ink',
       fill: 'bg-teal-fill',
     },
   ];

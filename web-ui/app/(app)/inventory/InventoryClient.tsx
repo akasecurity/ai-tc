@@ -23,10 +23,11 @@ import type {
   ProjectTreeResponse,
   TrustLevel,
 } from '@akasecurity/schema';
-import { Card, Sheet, SheetContent } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn, Sheet, SheetContent } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback, useState, useTransition } from 'react';
 
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { setFileAccess, setMcpTrust } from './actions';
 import { buildInventoryParams } from './filters';
@@ -74,8 +75,10 @@ export function InventoryClient({
   fq: string;
   drawer: string | null;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  // Navigation transition (selection/search/path pushes) — distinct from the
+  // write transition below, which tracks the access/trust Server Actions.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
 
   // Pure client state — no server refetch.
   const [viewMode, setViewMode] = useState<'tree' | 'type'>('tree');
@@ -112,9 +115,9 @@ export function InventoryClient({
   const push = useCallback(
     (opts: { sel?: Selection | null; path?: string[]; fq?: string; file?: string | null }) => {
       onNavigate(opts.fq ?? '');
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   // Run a write action inside the transition, guarding against overlapping writes
@@ -147,12 +150,18 @@ export function InventoryClient({
       {writeError && (
         <div
           role="alert"
-          className="mb-3 shrink-0 rounded-lg border border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical"
+          className="mb-3 shrink-0 rounded-lg border border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical-ink"
         >
           {writeError}
         </div>
       )}
-      <div className="flex min-h-0 flex-1 gap-4">
+      <div
+        aria-busy={navPending}
+        className={cn(
+          'flex min-h-0 flex-1 gap-4 transition-shadow duration-150',
+          navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+        )}
+      >
         <InventoryNav
           projects={projects}
           assetGroups={assetGroups}

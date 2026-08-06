@@ -144,11 +144,11 @@ export function ActivityTokenUsageView({
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-text-3">
             <span>{sessions}</span>
-            <span className="text-border-strong">·</span>
+            <span className="text-text-3">·</span>
             <span className="font-semibold tabular-nums text-text-2">
               {tokenLabel(summary.totalTokens)} tokens
             </span>
-            <span className="text-border-strong">·</span>
+            <span className="text-text-3">·</span>
             <span className="font-semibold tabular-nums text-text-2">{cost}</span>
           </div>
         </div>

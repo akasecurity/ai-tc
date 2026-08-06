@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import type { MaskedSecretFinding, RemediationEntryContext } from '@akasecurity/schema';
+import { presentBatchedRemediation, routeRemediationOption } from '@akasecurity/setup-wizard';
+import { writeStandingSecretPosture } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { presentBatchedRemediation, routeRemediationOption } from '../../src/remediation/chain.ts';
-import { writeStandingSecretPosture } from '../../src/remediation/posture.ts';
 import {
   type RedactionScope,
   type RedactionTarget,

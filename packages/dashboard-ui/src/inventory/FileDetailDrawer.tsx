@@ -40,7 +40,7 @@ export function FileDetailDrawer({
             <OriginTag origin={file.origin} />
             <VisBadge v={project.visibility} />
             {file.findings > 0 && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-sev-critical-fill px-2 py-0.5 text-xs font-semibold text-sev-critical">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-sev-critical-fill px-2 py-0.5 text-xs font-semibold text-sev-critical-ink">
                 <Ico name="alert" className="size-3" />
                 {file.findings} finding{file.findings === 1 ? '' : 's'}
               </span>
@@ -54,7 +54,9 @@ export function FileDetailDrawer({
             meta={ACCESS}
             value={file.access}
             onChange={onChange}
-            accentOf={(a) => a.bar}
+            // `accent`, not `bar`: this fills the check circle under a
+            // `text-on-accent` glyph, so it needs the ink. `bar` is the hue.
+            accentOf={(a) => a.accent}
           />
         </Section>
 
@@ -77,7 +79,7 @@ export function FileDetailDrawer({
                   type="button"
                   className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-primary-tint px-3 py-2.5 text-left"
                 >
-                  <Ico name="alert" className="size-4 shrink-0 text-sev-critical" />
+                  <Ico name="alert" className="size-4 shrink-0 text-sev-critical-ink" />
                   <span className="flex-1 text-xs font-medium text-text">
                     {ref.title || file.note}
                   </span>

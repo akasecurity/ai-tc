@@ -51,9 +51,9 @@ export function VaultReuseView({ entries }: VaultReuseViewProps) {
                 </TableCell>
                 <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
                 <TableCell>
-                  <ul className="space-y-0.5">
+                  <ul className="space-y-0.5 pl-3">
                     {locations.map((location) => (
-                      <li key={location} className="font-mono text-xs text-text-2">
+                      <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
                         {location}
                       </li>
                     ))}

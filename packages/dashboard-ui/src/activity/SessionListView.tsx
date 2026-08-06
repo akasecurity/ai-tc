@@ -56,7 +56,7 @@ function SessionRow({
         <span className="min-w-0 max-w-[50%] truncate" title={session.project}>
           {session.project}
         </span>
-        <span className="shrink-0 text-border-strong">·</span>
+        <span className="shrink-0 text-text-3">·</span>
         <BranchIcon aria-hidden focusable={false} className="size-3 shrink-0" />
         <span className="min-w-0 flex-1 truncate" title={session.branches[0]}>
           {session.branches[0]}
@@ -78,7 +78,7 @@ function SessionRow({
         </Metric>
         <Metric icon={ListIcon}>{session.turns} turns</Metric>
         {flagged && (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-sev-critical">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-sev-critical-ink">
             <ShieldCheckIcon aria-hidden focusable={false} className="size-3" />
             {session.findings}
           </span>

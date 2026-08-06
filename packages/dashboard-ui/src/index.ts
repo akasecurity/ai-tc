@@ -85,6 +85,8 @@ export { SessionListView } from './activity/SessionListView.tsx';
 // sections without forking the body.
 export { ActionTag, AggregateActionTag } from './findings/ActionTag.tsx';
 export { FindingDetailView, formatConfidence } from './findings/FindingDetailView.tsx';
+export { FindingsFlatTableView } from './findings/FindingsFlatTableView.tsx';
+export { FindingsLocationsView } from './findings/FindingsLocationsView.tsx';
 export { FindingsTableView } from './findings/FindingsTableView.tsx';
 export { ColumnsMenu, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
 export {
@@ -95,10 +97,15 @@ export {
   CATEGORY_STYLE,
   categoryStyle,
   type ColumnVisibility,
+  DEFAULT_FINDINGS_VIEW,
   EMPTY_FILTERS,
   type FindingColumn,
   FINDINGS_COLUMNS,
+  FINDINGS_VIEW_LABEL,
+  FINDINGS_VIEWS,
   type FindingsFilters,
+  type FindingsView,
+  isFindingsView,
   type Selection,
   SEVERITIES,
 } from './findings/meta.ts';
@@ -107,10 +114,12 @@ export { ProviderChips, ProviderTag } from './findings/ProviderChips.tsx';
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).
 export {
+  AlertOctagonIcon,
   BoltIcon,
   BracesIcon,
   ExternalShareIcon,
   LayersIcon,
+  LockIcon,
   SearchIcon,
   ShieldCheckIcon,
   TerminalIcon,

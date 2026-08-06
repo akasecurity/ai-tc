@@ -27,8 +27,8 @@ function buildInstance(id: string, status?: FindingStatus): FindingInstance {
 
 describe('categoryStyle', () => {
   it('returns the tinted classes for a known category', () => {
-    expect(categoryStyle('secret')).toBe('bg-sev-critical-fill text-sev-critical');
-    expect(categoryStyle('source_code')).toBe('bg-violet-fill text-violet');
+    expect(categoryStyle('secret')).toBe('bg-sev-critical-fill text-sev-critical-ink');
+    expect(categoryStyle('source_code')).toBe('bg-violet-fill text-violet-ink');
   });
 
   it('falls back to a neutral surface tone for an off-enum category', () => {
@@ -69,11 +69,11 @@ describe('CATEGORY_LABEL / SEVERITIES / FINDING_STATUSES', () => {
 
 describe('formatConfidence', () => {
   it('buckets by threshold and formats the score to two decimals', () => {
-    expect(formatConfidence(0.95)).toEqual({ label: 'High · 0.95', tone: 'text-ok' });
+    expect(formatConfidence(0.95)).toEqual({ label: 'High · 0.95', tone: 'text-ok-ink' });
     // Threshold boundaries are inclusive at 0.9 (High) and 0.7 (Medium).
-    expect(formatConfidence(0.9)).toEqual({ label: 'High · 0.90', tone: 'text-ok' });
-    expect(formatConfidence(0.89)).toEqual({ label: 'Medium · 0.89', tone: 'text-sev-high' });
-    expect(formatConfidence(0.7)).toEqual({ label: 'Medium · 0.70', tone: 'text-sev-high' });
+    expect(formatConfidence(0.9)).toEqual({ label: 'High · 0.90', tone: 'text-ok-ink' });
+    expect(formatConfidence(0.89)).toEqual({ label: 'Medium · 0.89', tone: 'text-sev-high-ink' });
+    expect(formatConfidence(0.7)).toEqual({ label: 'Medium · 0.70', tone: 'text-sev-high-ink' });
     expect(formatConfidence(0.69)).toEqual({ label: 'Low · 0.69', tone: 'text-text-2' });
     expect(formatConfidence(0)).toEqual({ label: 'Low · 0.00', tone: 'text-text-2' });
   });

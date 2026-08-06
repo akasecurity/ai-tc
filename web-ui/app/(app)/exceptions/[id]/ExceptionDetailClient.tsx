@@ -1,12 +1,12 @@
 'use client';
 
 import { ExceptionDetailView } from '@akasecurity/dashboard-ui';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import { useState, useTransition } from 'react';
 
 import { revokeException } from '../actions';
 
-export function ExceptionDetailClient({ exception }: { exception: DetectionException }) {
+export function ExceptionDetailClient({ exception }: { exception: ExceptionDescriptor }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
 

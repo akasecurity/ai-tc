@@ -36,7 +36,9 @@ export const HarnessEventKind = z
   .meta({ id: 'HarnessEventKind' });
 export type HarnessEventKind = z.infer<typeof HarnessEventKind>;
 
-export const HarnessId = z.enum(['claudecode', 'cursor', 'codex']).meta({ id: 'HarnessId' });
+export const HarnessId = z
+  .enum(['claudecode', 'cursor', 'codex', 'antigravity'])
+  .meta({ id: 'HarnessId' });
 export type HarnessId = z.infer<typeof HarnessId>;
 
 // ─── Shared sub-shapes ────────────────────────────────────────────────────────

@@ -379,6 +379,17 @@ describe('listSessions', () => {
     expect(res.items.map((s) => s.id).sort()).toEqual(['A', 'Z']);
   });
 
+  it('surfaces a claudeai root as claudeai, not the claudecode default', async () => {
+    // 'claudeai' is a Harness enum member — the read-side validation must pass
+    // it through rather than coalesce it to the claudecode fail-open.
+    insertSession({ id: 'W', startedAt: NOW - 2 * HOUR_MS, attributes: { harness: 'claudeai' } });
+    const res = await activity().listSessions({ limit: 50 });
+    expect(res.items.find((s) => s.id === 'W')?.harness).toBe('claudeai');
+
+    const filtered = await activity().listSessions({ limit: 50, harness: ['claudeai'] });
+    expect(filtered.items.map((s) => s.id)).toEqual(['W']);
+  });
+
   it('matches q against a descendant event detail', async () => {
     const res = await activity().listSessions({ limit: 50, q: 'masked' });
     expect(res.items.map((s) => s.id)).toEqual(['A']);
@@ -575,6 +586,11 @@ describe('harnessFacets', () => {
     insertSession({ id: 'Z', startedAt: NOW - 2 * HOUR_MS, attributes: {} }); // bare → claudecode
     const facets = await activity().harnessFacets();
     expect([...facets].sort()).toEqual(['claudecode', 'cursor']);
+  });
+
+  it('surfaces a claudeai root as claudeai, not the claudecode fail-open', async () => {
+    insertSession({ id: 'W', startedAt: NOW, attributes: { harness: 'claudeai' } });
+    expect(await activity().harnessFacets()).toEqual(['claudeai']);
   });
 
   it('a store of only bare roots surfaces exactly [claudecode]', async () => {

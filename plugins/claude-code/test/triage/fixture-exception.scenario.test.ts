@@ -28,9 +28,8 @@ import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import type { FalsePositivePatternGroup, FalsePositivePatternValue } from '@akasecurity/schema';
 import { resolveScopeFlags, scopeFromAnswer } from '@akasecurity/schema';
+import { acceptFixtureExceptionOffer } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import { acceptFixtureExceptionOffer } from '../../src/triage/fixture-exception.ts';
 
 const OPTS = { justification: 'confirmed test fixture', createdBy: 'me' };
 

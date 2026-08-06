@@ -58,14 +58,14 @@ export const CATEGORY_ICON: Record<FindingCategory, IconComponent> = {
 
 /** Per-category icon-tile fill + text color (falls back to a neutral surface tone). */
 export const CATEGORY_STYLE: Record<FindingCategory, string> = {
-  secret: 'bg-sev-critical-fill text-sev-critical',
-  pii: 'bg-sev-low-fill text-sev-low',
-  source_code: 'bg-violet-fill text-violet',
-  external_share: 'bg-teal-fill text-teal',
-  mcp_server: 'bg-sev-high-fill text-sev-high',
-  customer_data: 'bg-sev-high-fill text-sev-high',
-  financial: 'bg-sev-high-fill text-sev-high',
-  phi: 'bg-sev-low-fill text-sev-low',
+  secret: 'bg-sev-critical-fill text-sev-critical-ink',
+  pii: 'bg-sev-low-fill text-sev-low-ink',
+  source_code: 'bg-violet-fill text-violet-ink',
+  external_share: 'bg-teal-fill text-teal-ink',
+  mcp_server: 'bg-sev-high-fill text-sev-high-ink',
+  customer_data: 'bg-sev-high-fill text-sev-high-ink',
+  financial: 'bg-sev-high-fill text-sev-high-ink',
+  phi: 'bg-sev-low-fill text-sev-low-ink',
   custom: 'bg-surface-2 text-text-2',
 };
 
@@ -89,16 +89,16 @@ export const ACTION_META: Record<
   blocked: {
     label: 'Blocked',
     icon: SlashCircleIcon,
-    className: 'bg-sev-critical-fill text-sev-critical',
+    className: 'bg-sev-critical-fill text-sev-critical-ink',
   },
   redacted: { label: 'Redacted', icon: RedactIcon, className: 'bg-primary-tint text-primary' },
-  warned: { label: 'Warned', icon: AlertIcon, className: 'bg-sev-high-fill text-sev-high' },
-  allowed: { label: 'Allowed', icon: CheckIcon, className: 'bg-ok-fill text-ok' },
+  warned: { label: 'Warned', icon: AlertIcon, className: 'bg-sev-high-fill text-sev-high-ink' },
+  allowed: { label: 'Allowed', icon: CheckIcon, className: 'bg-ok-fill text-ok-ink' },
   monitored: { label: 'Monitored', icon: EyeIcon, className: 'bg-surface-3 text-text-2' },
   quarantined: {
     label: 'Quarantined',
     icon: ShieldIcon,
-    className: 'bg-sev-critical-fill text-sev-critical',
+    className: 'bg-sev-critical-fill text-sev-critical-ink',
   },
 };
 
@@ -188,6 +188,32 @@ export const EMPTY_FILTERS: FindingsFilters = {
   provider: [],
   action: [],
   status: [],
+};
+
+/**
+ * How the findings list is grouped. `grouped` folds by rule (which rules are
+ * firing), `flat` lists one row per finding newest-first (what happened most
+ * recently), `files` folds by repository and file (where findings live).
+ *
+ * Lives beside FindingsFilters because it is part of the same URL vocabulary —
+ * a consumer parsing `?view=` validates against this list rather than
+ * re-spelling the values.
+ */
+export const FINDINGS_VIEWS = ['grouped', 'flat', 'files'] as const;
+export type FindingsView = (typeof FINDINGS_VIEWS)[number];
+
+/** The default view — what an absent `?view=` means. */
+export const DEFAULT_FINDINGS_VIEW: FindingsView = 'grouped';
+
+export function isFindingsView(value: string): value is FindingsView {
+  return (FINDINGS_VIEWS as readonly string[]).includes(value);
+}
+
+/** Toggle labels, and what each view counts — the units differ per view. */
+export const FINDINGS_VIEW_LABEL: Record<FindingsView, string> = {
+  grouped: 'By type',
+  flat: 'All findings',
+  files: 'By location',
 };
 
 /** Column-visibility map: column id → visible. Absent id ⇒ visible. */

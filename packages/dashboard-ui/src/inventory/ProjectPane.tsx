@@ -112,7 +112,7 @@ export function ProjectPane(props: ProjectPaneProps) {
         {isLoading && !tree ? (
           <div className="py-12 text-center text-sm text-text-3">Loading files…</div>
         ) : error ? (
-          <div className="py-12 text-center text-sm text-sev-critical">{error}</div>
+          <div className="py-12 text-center text-sm text-sev-critical-ink">{error}</div>
         ) : searching ? (
           files.length > 0 ? (
             <FileTable
@@ -258,7 +258,7 @@ function FolderRow({ folder, onOpen }: { folder: FolderSummary; onOpen: () => vo
         <div className="flex items-center gap-3">
           <AccessBar counts={counts} />
           {counts.blocked > 0 ? (
-            <span className="text-xs font-semibold text-sev-critical">
+            <span className="text-xs font-semibold text-sev-critical-ink">
               {counts.blocked} blocked
             </span>
           ) : (
@@ -289,7 +289,7 @@ function FileNameCell({ file, showPath }: { file: FileSummary; showPath?: boolea
           <span className="font-mono text-xs font-semibold text-text">{file.name}</span>
         </div>
         {file.blockedAt && blocked && (
-          <div className="mt-px flex items-center gap-1.5 text-xs text-sev-critical">
+          <div className="mt-px flex items-center gap-1.5 text-xs text-sev-critical-ink">
             <Ico name="slash-circle" className="size-3" />
             {file.note}
           </div>
@@ -387,11 +387,11 @@ function BlockedStrip({
         className="flex w-full items-center gap-2.5 px-4.5 py-3 text-left cursor-pointer"
         onClick={onToggleBlocked}
       >
-        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-sev-critical-fill text-sev-critical">
+        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-sev-critical-fill text-sev-critical-ink">
           <Ico name="slash-circle" className="size-3.5" />
         </span>
         <span className="text-ui font-semibold">Recently blocked</span>
-        <span className="rounded-full bg-sev-critical px-2 py-px text-xs font-bold text-white">
+        <span className="rounded-full bg-sev-critical-ink px-2 py-px text-xs font-bold text-on-accent">
           {blocked.length}
         </span>
         <span className="text-xs text-text-3">Auto-blocked on detection — review to adjust</span>

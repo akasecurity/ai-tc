@@ -19,7 +19,11 @@ export interface StatDelta {
 
 function DeltaPill({ label, tone = 'neutral', dir }: StatDelta) {
   const toneClass =
-    tone === 'positive' ? 'text-ok' : tone === 'negative' ? 'text-sev-critical' : 'text-text-3';
+    tone === 'positive'
+      ? 'text-ok-ink'
+      : tone === 'negative'
+        ? 'text-sev-critical-ink'
+        : 'text-text-3';
   const Arrow = dir === 'up' ? ArrowUpIcon : dir === 'down' ? ArrowDownIcon : null;
   return (
     <span className={cn('inline-flex items-center gap-1 text-xs font-semibold', toneClass)}>

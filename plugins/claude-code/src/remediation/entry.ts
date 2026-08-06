@@ -52,15 +52,16 @@ import {
   type MaskedSecretFinding,
   RemediationOption,
 } from '@akasecurity/schema';
+import { presentBatchedRemediation, routeRemediationOption } from '@akasecurity/setup-wizard';
+import { resolveRemediationDeliverable } from '@akasecurity/setup-wizard';
+import { type StandingPostureResult, writeStandingSecretPosture } from '@akasecurity/setup-wizard';
+import { renderRedactionOutcome } from '@akasecurity/setup-wizard';
 
 import { readRegisteredCommands } from '../command-registry.ts';
 import { fenced, show } from '../present.ts';
 import { frameJsonBlock, readFrameJsonBlock } from '../setup-frame-json.ts';
-import { presentBatchedRemediation, routeRemediationOption } from './chain.ts';
-import { resolveRemediationDeliverable } from './deliverable.ts';
 import { loadSecretLeakFindings } from './findings.ts';
-import { type StandingPostureResult, writeStandingSecretPosture } from './posture.ts';
-import { renderRedactionOutcome, renderRemediationDecision } from './render.ts';
+import { renderRemediationDecision } from './render.ts';
 import { redactSurfacedSecrets } from './surfaced-redact.ts';
 
 function fail(message: string): never {

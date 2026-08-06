@@ -13,11 +13,12 @@ import type {
   ShareDestinationGroup,
   SharesStats,
 } from '@akasecurity/schema';
-import { Card, Sheet, SheetContent, SheetTitle } from '@akasecurity/ui-kit';
-import { usePathname, useRouter } from 'next/navigation';
+import { Card, cn, Sheet, SheetContent, SheetTitle } from '@akasecurity/ui-kit';
+import { usePathname } from 'next/navigation';
 import { useCallback, useState, useTransition } from 'react';
 
 import { SearchIcon } from '../../components/icons';
+import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { setEgressDecision } from './actions';
 import { buildDataSharesParams } from './filters';
@@ -47,8 +48,10 @@ export function DataSharesClient({
   selectedDest: string | null;
   selectedEndpoint: string | null;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
+  // Navigation transition (search/selection pushes) — distinct from the write
+  // transition below, which tracks the egress-decision Server Action.
+  const { isPending: navPending, push: pushUrl } = useNavigationTransition();
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showReview, setShowReview] = useState(true);
@@ -73,9 +76,9 @@ export function DataSharesClient({
   const push = useCallback(
     (opts: { q?: string; dest?: string | null; ep?: string | null }) => {
       onNavigate(opts.q ?? '');
-      router.push(buildUrl(opts));
+      pushUrl(buildUrl(opts));
     },
-    [onNavigate, router, buildUrl],
+    [onNavigate, pushUrl, buildUrl],
   );
 
   const selection: ShareSelection | null = selectedDest
@@ -122,7 +125,13 @@ export function DataSharesClient({
       </div>
 
       {/* Body */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        aria-busy={navPending}
+        className={cn(
+          'flex min-h-0 flex-1 flex-col transition-shadow duration-150',
+          navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
+        )}
+      >
         {!ql && (
           <div className="shrink-0">
             <NeedsReviewStripView
@@ -180,7 +189,7 @@ export function DataSharesClient({
               {decisionError && (
                 <div
                   role="alert"
-                  className="border-b border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical"
+                  className="border-b border-border bg-sev-critical-fill px-4 py-2.5 text-sm text-sev-critical-ink"
                 >
                   {decisionError}
                 </div>

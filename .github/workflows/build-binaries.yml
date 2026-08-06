@@ -43,6 +43,7 @@ jobs:
       # the binary (package:sea runs the binary's `--version` and fails if it can't boot).
       - run: pnpm --filter @akasecurity/cli build:sea
       - run: pnpm --filter @akasecurity/cli bundle:web-ui
+      - run: pnpm --filter @akasecurity/cli bundle:extension
       - run: pnpm --filter @akasecurity/cli package:sea
       # Exercise the packaged binary against a real SQLite store: `init` + `stats` prove
       # the store read/write path that `package:sea`'s `--version` self-check never touches.

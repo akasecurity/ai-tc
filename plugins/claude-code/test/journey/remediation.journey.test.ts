@@ -35,13 +35,10 @@ import type {
   MaskedSecretFinding,
   RotationChecklistEntry,
 } from '@akasecurity/schema';
+import { buildChecklistEntries, renderChecklistMarkdown } from '@akasecurity/setup-wizard';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
-import {
-  buildChecklistEntries,
-  renderChecklistMarkdown,
-} from '../../src/remediation/rotation-checklist.ts';
 import {
   REMEDIATION_LEAK_RAW_KEYS,
   type RemediationDrive,

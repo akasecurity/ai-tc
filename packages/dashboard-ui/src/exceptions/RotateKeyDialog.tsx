@@ -1,5 +1,5 @@
 'use client';
-import type { DetectionException } from '@akasecurity/schema';
+import type { ExceptionDescriptor } from '@akasecurity/schema';
 import {
   Button,
   Dialog,
@@ -24,7 +24,7 @@ export interface RotateKeyDialogProps {
   onOpenChange: (open: boolean) => void;
   // Active permanent grants that rotation will orphan — listed so the user
   // sees exactly what stops applying.
-  activePermanent: DetectionException[];
+  activePermanent: ExceptionDescriptor[];
   /**
    * Blocked-ledger rows still matchable under the current key — the ones
    * rotation makes unapprovable. Counted over the ledger's full retention
@@ -100,7 +100,7 @@ export function RotateKeyDialog({
         <DialogBody>
           {activePermanent.length > 0 && (
             <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
-              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high-ink">
                 Active permanent grants that will stop applying
               </div>
               <ul className="flex flex-col gap-1">
@@ -115,7 +115,7 @@ export function RotateKeyDialog({
 
           {approvableBlocked > 0 ? (
             <div className="rounded-lg border border-sev-high-fill bg-sev-high-fill p-3">
-              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high">
+              <div className="mb-2 text-label font-semibold uppercase tracking-wider text-sev-high-ink">
                 Blocked detections that will stop being approvable
               </div>
               <p className="text-xs text-text-2">{ledgerNote}</p>
@@ -129,7 +129,12 @@ export function RotateKeyDialog({
 
           <div>
             <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
-              Type “{ROTATE_CONFIRMATION}” to confirm
+              Type{' '}
+              {/* normal-case is load-bearing: the label is uppercased for style but the
+                  match below is case-sensitive, so the token has to render in the case
+                  the user must actually type. */}
+              <span className="font-mono normal-case tracking-normal">“{ROTATE_CONFIRMATION}”</span>{' '}
+              to confirm
             </div>
             <Input
               value={typed}
@@ -137,10 +142,11 @@ export function RotateKeyDialog({
                 setTyped(e.target.value);
               }}
               autoComplete="off"
+              className="font-mono"
             />
           </div>
 
-          {error && <p className="text-xs text-sev-critical">{error}</p>}
+          {error && <p className="text-xs text-sev-critical-ink">{error}</p>}
         </DialogBody>
 
         <DialogFooter>

@@ -8,7 +8,7 @@
     "./react": "./src/react.js"
   },
   "scripts": {
-    "lint": "echo 'no self-lint for eslint-config'",
+    "lint": "eslint src *.config.* && eslint --no-config-lookup -c eslint.guard.config.mjs test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

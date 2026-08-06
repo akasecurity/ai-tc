@@ -12,9 +12,9 @@ import {
   severityFloorPosture,
 } from '@akasecurity/plugin-sdk';
 import { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
+import { parsePosture } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parsePosture } from '../src/onboard-posture.ts';
 import { parseSurface } from '../src/setup-show.ts';
 import { isModelJudgeConsentValid, MODEL_JUDGE_PAYLOAD_VERSION } from '../src/triage/consent.ts';
 

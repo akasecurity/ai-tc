@@ -1,7 +1,8 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { useNavigationTransition } from '../components/NavigationTransition';
 
 /**
  * Owns a search box that drives a URL query param on the OSS dashboard's
@@ -30,7 +31,9 @@ export function useDebouncedUrlQuery(
   setQuery: (value: string) => void;
   onNavigate: (term: string) => void;
 } {
-  const router = useRouter();
+  // The shared transition, so a settled search reports pending state through the
+  // same flag as an explicit filter push.
+  const { push } = useNavigationTransition();
   const [query, setQuery] = useState(urlQuery);
 
   const lastPushed = useRef(urlQuery);
@@ -82,14 +85,14 @@ export function useDebouncedUrlQuery(
     const handle = setTimeout(() => {
       lastPushed.current = term;
       debounceRef.current = null;
-      router.push(buildRef.current(query));
+      push(buildRef.current(query));
     }, delayMs);
     debounceRef.current = handle;
     return () => {
       clearTimeout(handle);
       debounceRef.current = null;
     };
-  }, [query, urlQuery, delayMs, router]);
+  }, [query, urlQuery, delayMs, push]);
 
   return { query, setQuery, onNavigate };
 }

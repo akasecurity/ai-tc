@@ -19,6 +19,7 @@ import type { CaptureRecord, DataGateway, RuleProbeVerdictEntry } from '../src/d
 import { registerRulePack } from '../src/rule-packs.ts';
 import { ruleProbeKey } from '../src/rule-quarantine.ts';
 import { createPluginRuntime } from '../src/runtime.ts';
+import { countWorkerStarts } from './helpers/worker-starts.ts';
 
 // A bundled-pack rule, standing in for the compiled-in packs: it must keep
 // detecting even in the capture whose pulled rule had to be terminated.
@@ -99,6 +100,14 @@ const START_MS = 30_000;
 //
 // `starts` is how many times the path builds a worker; `budgetUnits` keeps
 // whatever multiple of BUDGET_MS the case already justified.
+//
+// What this ceiling is FOR, now that `countWorkerStarts` asserts the same
+// `starts` figure directly: separating "this path got slower" from "this path
+// stopped terminating". The count is the shape check and catches a regression
+// of one extra cycle, which no ceiling sized for a cold start ever could; but a
+// path that keeps its two workers and spends forever inside them has the right
+// count, and only an elapsed bound distinguishes that from a hang. The 120s
+// per-test timeout cannot — it reports the same way for both.
 //
 // THE RESULT IS MOSTLY FORCED, WHICH IS THE POINT — do not retune the multiple.
 // A start is allowed to take START_MS before the scanner gives up and reports
@@ -255,8 +264,14 @@ describe('a pulled rule that never returns', () => {
     async () => {
       silenceStderr();
       const gw = fakeGateway(bundle([HOSTILE]), clearedByPreflight(HOSTILE));
+      const starts = countWorkerStarts();
       const rt = createPluginRuntime(gw, settings(), {
-        scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
+        scanIsolation: {
+          budgetMs: BUDGET_MS,
+          minAttributionMs: 50,
+          startBudgetMs: START_MS,
+          onWorkerStart: starts.onWorkerStart,
+        },
       });
       try {
         const text = `${HOSTILE_TEXT} and SECRET_MARKER`;
@@ -266,24 +281,24 @@ describe('a pulled rule that never returns', () => {
 
         // Fail-open in the sense that matters: the call returns. Left in-process
         // this text runs longer than the harness would ever wait, and a hook the
-        // harness kills lets the whole tool call through unscanned. Worst case
-        // here is TWO budgets — the scan, then the retry that names the rule —
-        // and TWO worker starts to spend them on, which is what the ceiling has
-        // to cover; see isolationCeilingMs.
+        // harness kills lets the whole tool call through unscanned.
         //
-        // Be clear about what this does NOT say. The SHIPPED budgets are
+        // TWO worker starts is the property, and it is exact: one thread for the
+        // scan, which is terminated at its deadline, then a second for the retry
+        // that walks the unverified rules to name the rule that hung. No third
+        // cycle, whatever the runner's speed. This is what the elapsed ceiling
+        // below could only approximate — a third worker plus a third budget
+        // lands ~6.5s into a 75s ceiling, which is to say unnoticed.
+        expect(starts.count()).toBe(2);
+        // And the ceiling for what the count cannot see. The SHIPPED budgets are
         // ISOLATED_START_BUDGET_MS = 5_000 and ISOLATED_SCAN_BUDGET_MS = 2_000,
-        // so the product's worst case on this path is ~14s, and the ceiling is
-        // 75s — about 5x that, the whole gap being the test-environment startup
-        // grant START_MS documents. So this is not a check on the product's
-        // latency contract; it is a SHAPE check that happens to be denominated in
-        // milliseconds, and a regression of one extra budget would vanish inside
-        // it. What it still separates is "this path got slower" from "this path
-        // stopped terminating", which the 120s timeout alone cannot: a path that
-        // slows but returns fails here and names what it exceeded, where a hang
-        // fails there. Asserting the COUNT of worker starts would recover the
-        // real property and be runner-independent, but counting across threads
-        // needs a channel this file does not have.
+        // so the product's worst case on this path is ~14s, and this is 75s —
+        // about 5x that, the whole gap being the test-environment startup grant
+        // START_MS documents. So it is not a check on the product's latency
+        // contract either. What it still separates is "this path got slower" from
+        // "this path stopped terminating", which the 120s timeout alone cannot: a
+        // path that slows but returns fails here and names what it exceeded,
+        // where a hang fails there.
         expect(elapsedMs).toBeLessThan(isolationCeilingMs(2, 10));
         // The bundled rule in the same text is untouched by the termination.
         expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
@@ -305,8 +320,14 @@ describe('a pulled rule that never returns', () => {
     silenceStderr();
     const verdicts = clearedByPreflight(HOSTILE);
 
+    const firstStarts = countWorkerStarts();
     const first = createPluginRuntime(fakeGateway(bundle([HOSTILE]), verdicts), settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
+      scanIsolation: {
+        budgetMs: BUDGET_MS,
+        minAttributionMs: 50,
+        startBudgetMs: START_MS,
+        onWorkerStart: firstStarts.onWorkerStart,
+      },
     });
     try {
       await first.processText(HOSTILE_TEXT);
@@ -314,20 +335,35 @@ describe('a pulled rule that never returns', () => {
       await first.close();
     }
 
+    // The two-cycle path, so the verdict below was reached by the attributing
+    // retry rather than by something cheaper. Without this the case's own
+    // premise is unpinned: a `quarantined` row written by any other route would
+    // satisfy everything after it.
+    expect(firstStarts.count()).toBe(2);
+
     const key = ruleProbeKey(HOSTILE);
     expect(key).toBeDefined();
     expect(verdicts.get(key ?? '')?.verdict).toBe('quarantined');
 
     // A fresh runtime over the same store: filterUnsafeRules reads the cached
-    // verdict and drops the rule before it can reach a scan, so this costs no
-    // budget at all rather than another termination.
+    // verdict and drops the rule before it can reach a scan.
+    const secondStarts = countWorkerStarts();
     const second = createPluginRuntime(fakeGateway(bundle([HOSTILE]), verdicts), settings(), {
-      scanIsolation: { budgetMs: BUDGET_MS, minAttributionMs: 50, startBudgetMs: START_MS },
+      scanIsolation: {
+        budgetMs: BUDGET_MS,
+        minAttributionMs: 50,
+        startBudgetMs: START_MS,
+        onWorkerStart: secondStarts.onWorkerStart,
+      },
     });
     try {
-      const started = performance.now();
       const result = await second.processText(`${HOSTILE_TEXT} and SECRET_MARKER`);
-      expect(performance.now() - started).toBeLessThan(BUDGET_MS);
+      // NO thread at all — not a fast one. The rule is gone before either gate
+      // needs somewhere to run it: nothing to measure, since the verdict is
+      // cached, and nothing unverified left to bound. An elapsed bound here said
+      // only that the run was quick, which a second termination on a fast
+      // machine could also be.
+      expect(secondStarts.count()).toBe(0);
       expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
     } finally {
       await second.close();
@@ -346,12 +382,24 @@ describe('a pulled rule that hangs the timing battery itself', () => {
       // call earlier, so the measurement runs where it can be killed too.
       silenceStderr();
       const verdicts = new Map<string, RuleProbeVerdictEntry>();
+      const starts = countWorkerStarts();
       const rt = createPluginRuntime(fakeGateway(bundle([BATTERY_KILLER]), verdicts), settings(), {
-        scanIsolation: { probeBudgetMs: BUDGET_MS, startBudgetMs: START_MS },
+        scanIsolation: {
+          probeBudgetMs: BUDGET_MS,
+          startBudgetMs: START_MS,
+          onWorkerStart: starts.onWorkerStart,
+        },
       });
       try {
         const started = performance.now();
         const result = await rt.processText('deploy with SECRET_MARKER now');
+        // ONE worker, and one only: the pre-flight builds a thread to measure
+        // the rule in and terminates it, and the quarantine that follows leaves
+        // no unverified rule for the scan to bound — so no second thread is
+        // built for the scan itself. A regression that isolated the scan anyway,
+        // or re-measured the rule the pre-flight had already condemned, shows up
+        // here as a number rather than as milliseconds on a loaded runner.
+        expect(starts.count()).toBe(1);
         // Same shape as the two-cycle case above: the pre-flight builds a worker
         // to measure in, so the start belongs in the ceiling. This one has not
         // gone red, but on the Windows numbers it was inside ~1.5x of its
@@ -423,13 +471,22 @@ describe('what isolation costs when nothing is wrong', () => {
     // No worker is startable here — the URL points at a module that throws on
     // load — so finishing at all proves the in-process path was taken. This is
     // the steady state of a machine that installed no extra pack.
+    const starts = countWorkerStarts();
     const rt = createPluginRuntime(fakeGateway(bundle()), settings(), {
-      scanIsolation: { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
+      scanIsolation: {
+        workerUrl: CRASHING_WORKER,
+        startBudgetMs: START_MS,
+        onWorkerStart: starts.onWorkerStart,
+      },
     });
     try {
       const result = await rt.processText('deploy with SECRET_MARKER now');
       expect(result.findings.map((f) => f.ruleId)).toEqual(['isolation/secret-marker']);
       expect(rt.scanIsolationDegraded()).toBe(false);
+      // The crashing URL makes a started thread fatal; the count makes it
+      // stated. A construction is reported before the module is loaded, so this
+      // is zero only because no thread was ever built.
+      expect(starts.count()).toBe(0);
     } finally {
       await rt.close();
     }
@@ -440,8 +497,13 @@ describe('what isolation costs when nothing is wrong', () => {
     // pack author can make it catastrophic and it needs no bound. The crashing
     // worker URL is the proof: this can only pass by never starting a thread,
     // for the gate or for the scan.
+    const starts = countWorkerStarts();
     const rt = createPluginRuntime(fakeGateway(bundle([PULLED_KEYWORD])), settings(), {
-      scanIsolation: { workerUrl: CRASHING_WORKER, startBudgetMs: START_MS },
+      scanIsolation: {
+        workerUrl: CRASHING_WORKER,
+        startBudgetMs: START_MS,
+        onWorkerStart: starts.onWorkerStart,
+      },
     });
     try {
       const result = await rt.processText('TOKENX beside SECRET_MARKER');
@@ -452,6 +514,10 @@ describe('what isolation costs when nothing is wrong', () => {
         'pulled/keyword',
       ]);
       expect(rt.scanIsolationDegraded()).toBe(false);
+      // Neither gate builds a thread: a keyword rule has no probe key to
+      // measure, and it lands on the verified side of the partition, so there
+      // is nothing for the scan to bound either.
+      expect(starts.count()).toBe(0);
     } finally {
       await rt.close();
     }
@@ -466,7 +532,12 @@ describe('what isolation costs when nothing is wrong', () => {
       severity: 'low',
       matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
     };
-    const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings());
+    const starts = countWorkerStarts();
+    const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings(), {
+      // Every budget stays at the product's own default — this case is about
+      // what isolation costs as shipped, and only the observation is added.
+      scanIsolation: { onWorkerStart: starts.onWorkerStart },
+    });
     try {
       const text = 'lorem ipsum dolor sit amet '.repeat(80); // ~2KB, a typical prompt
 
@@ -489,26 +560,32 @@ describe('what isolation costs when nothing is wrong', () => {
       samples.sort((a, b) => a - b);
       const medianMs = samples[Math.floor(samples.length / 2)] ?? Infinity;
 
+      // TWO threads for the whole run — the prober that measures the pulled
+      // rule against the battery, and the scan worker — across 41 captures. The
+      // "once" in this case's name is this number and nothing else: a worker
+      // started per scan reads 41 here, and a prober that re-measures a rule
+      // the cache already answered scales with the ruleset. Both are the SHAPE
+      // regressions the two ceilings below were sized to catch, and a count
+      // catches them without being sized for anything.
+      expect(starts.count()).toBe(2);
+
       // Ceilings, not measurements — CI runners are far too noisy to assert a
-      // real timing, and these two are noisy in very different degrees.
+      // real timing, and these two are noisy in very different degrees. They
+      // cover what a count cannot: the per-scan COST of a thread that is
+      // correctly started only once.
       //
       // The round trip is the load-bearing one: it is what a real payload
       // MULTIPLIES, one scan per MCP leaf, and it is stable because it measures
       // a message round trip and nothing else. 0.195ms here against an
-      // in-process scan of ~0.173ms, so 25ms is ~128x headroom and would catch
-      // the regression that matters — a worker started per scan instead of per
-      // process.
+      // in-process scan of ~0.173ms, so 25ms is ~128x headroom.
       //
       // The cold start is the noisy one and guards much less. It covers two
       // thread creations plus a whole probe battery, and in the repo Node
       // strips the types on the way in; 189ms here, and a contended Linux CI
-      // runner has been seen at 2.7s for the same work. So the ceiling is a
-      // smoke bound, sized to clear that with room while still catching a
-      // change of SHAPE — a worker per rule, or a prober that re-measures what
-      // the cache already answered, both scale with the ruleset and blow this
-      // by orders of magnitude. Do not tighten it toward the observed number:
-      // the last time this was sized against one worker start, adding the
-      // second one turned it into a red CI run rather than a real signal.
+      // runner has been seen at 2.7s for the same work. So it is a smoke bound,
+      // sized to clear that with room. Do not tighten it toward the observed
+      // number: the last time this was sized against one worker start, adding
+      // the second one turned it into a red CI run rather than a real signal.
       expect(startupMs).toBeLessThan(10_000);
       expect(medianMs).toBeLessThan(25);
     } finally {

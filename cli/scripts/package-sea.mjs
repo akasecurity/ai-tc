@@ -49,6 +49,20 @@ writeFileSync(
 );
 cpSync(webUiSrc, join(outDir, 'web-ui'), { recursive: true });
 
+// The browser extension + its native-messaging host, staged next to the binary
+// the same way (aka extension install resolves them via dirname(process.execPath)
+// under a SEA — see cli/src/commands/extension.ts).
+const extensionSrc = join(cliDir, 'extension');
+const nativeHostSrc = join(cliDir, 'native-host');
+if (!existsSync(join(extensionSrc, 'manifest.json'))) {
+  throw new Error('missing cli/extension — run `pnpm bundle:extension` first');
+}
+if (!existsSync(join(nativeHostSrc, 'host.js'))) {
+  throw new Error('missing cli/native-host — run `pnpm bundle:extension` first');
+}
+cpSync(extensionSrc, join(outDir, 'extension'), { recursive: true });
+cpSync(nativeHostSrc, join(outDir, 'native-host'), { recursive: true });
+
 // 2. Generate the SEA preparation blob from entry.cjs.
 const blobPath = join(cliDir, 'sea-prep.blob');
 execFileSync(process.execPath, ['--experimental-sea-config', join(cliDir, 'sea-config.json')], {

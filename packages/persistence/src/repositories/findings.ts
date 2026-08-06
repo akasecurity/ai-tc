@@ -1,33 +1,59 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import type {
   ActionTaken,
   DayActivity,
+  FindingGroup,
   FindingGroupAggregate,
+  FindingInstanceDetail,
+  FindingLocationFile,
   FindingStatus,
   FindingView,
+  FlatFindingRow,
   GroupableFindingRow,
   HealthSummary,
+  InstanceFilterOptions,
+  ListFindingInstancesQuery,
+  ListFindingInstancesResponse,
+  ListFindingLocationsQuery,
+  ListFindingLocationsResponse,
   ListGroupedFindingsQuery,
   ListGroupedFindingsResponse,
+  LocationAccumulator,
 } from '@akasecurity/schema';
 import {
   ACTION_TAKEN_KEYS,
+  addToLocation,
   applyFindingFilters,
   buildFindingGroups,
   CAPTURE_EVENT_TYPES_SQL,
+  compareFindingGroupOrder,
   computeFindingFacets,
   countInstancesByStatus,
+  createInstanceFacetAccumulator,
+  DEFAULT_FLAT_FINDINGS_LIMIT,
   DEFAULT_GROUPED_FINDINGS_LIMIT,
   deriveFindingStatus,
   ENFORCEABLE_CATEGORIES,
   epochMillisToIso,
+  foldGroupStatus,
+  isoToEpochMillis,
+  matchesInstanceFilters,
+  newLocationAccumulator,
   sortFindingGroups,
+  toInstanceDetail,
 } from '@akasecurity/schema';
 
+import { parseJsonObject } from '../internal/json.ts';
+import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
 import { allRows, countBy, countScalar } from '../internal/rows.ts';
-import type { DashboardViews, FindingsReadPort, GroupedFindingsView } from '../ports.ts';
-import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
+import type {
+  DashboardViews,
+  FindingInstancesView,
+  FindingsReadPort,
+  GroupedFindingsView,
+} from '../ports.ts';
+import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resolution-sql.ts';
 
 // How many of each group's newest instances listGroupedFindings materializes.
 // Group-wide numbers (instanceCount, providers, actions, status, latest, search
@@ -37,6 +63,37 @@ import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 // (distinct rule_ids × this) however large the store grows; SQLite still scans
 // the table to count, so time grows with it while memory does not.
 const PREVIEW_INSTANCES_PER_GROUP = 200;
+
+// How many rows one batch of the flat scan pulls. The scan is a sequence of
+// these rather than one result set, so a store far larger than any page keeps
+// memory flat while the totals and facets are counted.
+const SCAN_BATCH_ROWS = 1000;
+
+// Repos returned by listFindingLocations when the query names no limit.
+const DEFAULT_LOCATIONS_LIMIT = 100;
+
+// Distinct rules named on one location row. The row renders them as chips and
+// the instance count is what conveys scale, so the list is a sample, not a tally.
+const LOCATION_RULE_IDS_CAP = 20;
+
+/** Location rows sort like groups: worst severity first, then most recent. */
+function compareLocationOrder(
+  a: { maxSeverity: string; latestDetectedAt: string },
+  b: { maxSeverity: string; latestDetectedAt: string },
+): number {
+  return compareFindingGroupOrder(
+    {
+      severity: a.maxSeverity as FindingGroup['severity'],
+      latestDetectedAt: a.latestDetectedAt,
+      id: '',
+    },
+    {
+      severity: b.maxSeverity as FindingGroup['severity'],
+      latestDetectedAt: b.latestDetectedAt,
+      id: '',
+    },
+  );
+}
 
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
@@ -80,6 +137,8 @@ interface FindingGroupRowJoined {
   repo: string | null;
   file: string | null;
   tool_name: string | null;
+  event_id: string;
+  session_id: string | null;
   // Status-derivation inputs — mirrors SqliteSecurityRepository.severitySummary's
   // atRest/latest-resolution-wins predicate (see deriveInstanceStatus below).
   kind: string;
@@ -104,6 +163,63 @@ function deriveInstanceStatus(row: {
     findingKey: row.finding_key,
     latestResolutionStatus: row.latest_status,
   });
+}
+
+// The grouped list's cursor: the sort key of the last group on the page just
+// served. Its own codec rather than the shared keyset one, because this list
+// sorts by (severity, latestDetectedAt, id) — not by a timestamp and an id — so
+// resuming needs all three. Undecodable restarts from the top, matching the
+// convention the other paginated reads follow.
+type GroupCursorPayload = Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'>;
+
+function encodeGroupCursor(group: GroupCursorPayload): string {
+  const payload = {
+    sev: group.severity,
+    t: group.latestDetectedAt,
+    id: group.id,
+  };
+  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
+
+function decodeGroupCursor(cursor: string): GroupCursorPayload | null {
+  const parsed = parseJsonObject(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (
+    parsed !== undefined &&
+    typeof parsed.sev === 'string' &&
+    typeof parsed.t === 'string' &&
+    typeof parsed.id === 'string'
+  ) {
+    // `sev` is not checked against the Severity enum: an out-of-enum value ranks
+    // below every known severity (see compareFindingGroupOrder), so a garbage
+    // cursor sorts before the whole list and degrades to a restart from the top
+    // — the same outcome as an undecodable one.
+    return {
+      severity: parsed.sev as FindingGroup['severity'],
+      latestDetectedAt: parsed.t,
+      id: parsed.id,
+    };
+  }
+  return null;
+}
+
+/** Index of the first group strictly after the cursor, or the length when none. */
+function firstAfter(sorted: FindingGroup[], cursor: GroupCursorPayload): number {
+  const index = sorted.findIndex((g) => compareFindingGroupOrder(g, cursor) > 0);
+  return index === -1 ? sorted.length : index;
+}
+
+/**
+ * The group a `?finding=` deep link names, when it is not already on the page:
+ * either the group itself, or the group holding the named instance. Returns
+ * undefined when the id is unknown or already present.
+ */
+function findDeepLinked(
+  sorted: FindingGroup[],
+  page: FindingGroup[],
+  id: string,
+): FindingGroup | undefined {
+  if (page.some((g) => g.id === id || g.instances.some((i) => i.id === id))) return undefined;
+  return sorted.find((g) => g.id === id || g.instances.some((i) => i.id === id));
 }
 
 const DAY_MS = 86_400_000;
@@ -133,7 +249,7 @@ interface FindingRowJoined {
  * tenant), so there is no tenant predicate on any query.
  */
 export class SqliteFindingsRepository
-  implements FindingsReadPort, DashboardViews, GroupedFindingsView
+  implements FindingsReadPort, DashboardViews, GroupedFindingsView, FindingInstancesView
 {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -250,10 +366,16 @@ export class SqliteFindingsRepository
     // never surface, the same universe the old `events` table was already
     // limited to.
     const sessionPredicate = query.sessionId ? ` AND e.root_session_id = :sessionId` : '';
-    const predicate = `WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})${sessionPredicate}`;
-    const sessionParams: Record<string, string> = query.sessionId
-      ? { sessionId: query.sessionId }
-      : {};
+    // The time bound is a SQL predicate for the same reason: totals, facets and
+    // aggregates must all speak for the window, not just the rows that survived
+    // into the preview.
+    const fromMs = query.from === undefined ? undefined : isoToEpochMillis(query.from);
+    const fromPredicate = fromMs === undefined ? '' : ` AND e.started_at >= :fromMs`;
+    const predicate = `WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})${sessionPredicate}${fromPredicate}`;
+    const sessionParams: Record<string, string | number> = {
+      ...(query.sessionId ? { sessionId: query.sessionId } : {}),
+      ...(fromMs === undefined ? {} : { fromMs }),
+    };
 
     // The search text is the one aggregate column whose size tracks the store
     // rather than the rule count, so fetch it only for a request that can use
@@ -266,7 +388,8 @@ export class SqliteFindingsRepository
     const rows = allRows<FindingGroupRowJoined>(
       this.db.prepare(
         `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
-                occurred_at, source_tool, repo, file, tool_name, kind, finding_key, latest_status
+                occurred_at, source_tool, repo, file, tool_name, event_id, session_id,
+                kind, finding_key, latest_status
          FROM (
            SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
                   d.severity AS severity, f.masked_match AS masked_match,
@@ -276,6 +399,7 @@ export class SqliteFindingsRepository
                   json_extract(e.attributes, '$.repo') AS repo,
                   json_extract(e.attributes, '$.file_path') AS file,
                   json_extract(e.attributes, '$.tool_name') AS tool_name,
+                  f.audit_event_id AS event_id, e.root_session_id AS session_id,
                   e.event_type AS kind, f.finding_key AS finding_key,
                   latest.status AS latest_status,
                   ROW_NUMBER() OVER (
@@ -308,6 +432,8 @@ export class SqliteFindingsRepository
       repo: r.repo ?? '',
       file: r.file ?? '',
       ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+      eventId: r.event_id,
+      ...(r.session_id === null ? {} : { sessionId: r.session_id }),
       status: deriveInstanceStatus(r),
     }));
 
@@ -349,6 +475,33 @@ export class SqliteFindingsRepository
     };
 
     const limit = query.limit ?? DEFAULT_GROUPED_FINDINGS_LIMIT;
+
+    // Page the sorted groups by keyset rather than offset. Both are equally
+    // cheap here — the whole filtered set is already sorted in memory — but the
+    // store is written by processes this read does not coordinate with, and an
+    // offset skips or repeats a group whenever a write reorders one between
+    // pages. compareFindingGroupOrder is a total order, so "strictly after the
+    // cursor" always names exactly one position.
+    const cursor = query.cursor === undefined ? null : decodeGroupCursor(query.cursor);
+    const start = cursor === null ? 0 : firstAfter(sorted, cursor);
+    const page = sorted.slice(start, start + limit);
+    // From the page, BEFORE any deep-link append: the appended group is out of
+    // sort order, and minting the cursor from it would skip everything between
+    // the real page end and wherever it sorts.
+    const lastOnPage = page.at(-1);
+    const nextCursor =
+      start + limit < sorted.length && lastOnPage ? encodeGroupCursor(lastOnPage) : null;
+
+    // Keep the ?finding= deep link resolving once the list pages: its target may
+    // sort past the page the cursor landed on, and scanning forward for it would
+    // be unbounded work for what is often a stale id. Matched against the
+    // un-narrowed preview so a status filter cannot hide the instance the link
+    // names. Appended out of order, and never counted in totals or the cursor.
+    const deepLinked =
+      query.includeId === undefined || query.includeId === ''
+        ? undefined
+        : findDeepLinked(sorted, page, query.includeId);
+
     // Under a status filter, narrow each group's instance PREVIEW to the
     // requested statuses so every rendered location matches the filter (the
     // group-level folds still describe the whole group). The preview holds only
@@ -356,20 +509,22 @@ export class SqliteFindingsRepository
     // group the filter correctly kept — every matching instance may be older
     // than the preview window; views render an explicit notice for that case.
     const statusSet = statusFilter.length > 0 ? new Set<string>(statusFilter) : null;
-    const items = sorted.slice(0, limit).map((g) =>
+    const narrow = (g: FindingGroup): FindingGroup =>
       statusSet
         ? {
             ...g,
             instances: g.instances.filter((i) => i.status !== undefined && statusSet.has(i.status)),
           }
-        : g,
-    );
+        : g;
+    // The appended group is narrowed like the rest: it is one more row in the
+    // same table, and an unnarrowed one would show locations the filter excluded.
+    const items = [...page, ...(deepLinked ? [deepLinked] : [])].map(narrow);
 
     return Promise.resolve({
       totals,
       facets,
       items,
-      nextCursor: null,
+      nextCursor,
       ...(query.sessionId ? { sessionFirings: this.sessionFirings(query.sessionId) } : {}),
     });
   }
@@ -402,9 +557,318 @@ export class SqliteFindingsRepository
    * request actually carries a `q`. (Substring matching is unaffected by a
    * path repeating across tuples.)
    */
+  /**
+   * The instance-level (flat) findings list: one row per finding, newest first,
+   * paged by keyset.
+   *
+   * SQL owns SCOPE, JS owns every FILTER DIMENSION. The session and the time
+   * bound are SQL predicates: nothing counts them, so narrowing the scan by
+   * them changes no reported number. Severity, subtype, provider, action,
+   * status, tool, repo, file and `q` all stay in JS — each has a facet, and a
+   * facet excludes its own filter, so a row the filter rejects still has to be
+   * counted. Pushing any of them into SQL would silently empty its own facet.
+   * Several could not be expressed there anyway: status comes from the one
+   * shared classifier (deriveFindingStatus), and provider 'api' means "a tool
+   * none of the mappers names", which no IN-list can say.
+   *
+   * The scan runs from the top of the scope on every request, not from the
+   * cursor: `totals` and `facets` describe the whole filtered scope and must not
+   * move as the caller pages. Rows are pulled in batches so memory stays flat
+   * while the counting runs, and only the page itself is retained.
+   */
+  listFindingInstances(query: ListFindingInstancesQuery): Promise<ListFindingInstancesResponse> {
+    const opts: InstanceFilterOptions = {
+      severity: query.severity,
+      subtype: query.subtype,
+      providers: query.provider,
+      actions: query.action,
+      statuses: query.status,
+      tools: query.tool,
+      repo: query.repo,
+      file: query.file,
+      q: query.q,
+    };
+    const limit = query.limit ?? DEFAULT_FLAT_FINDINGS_LIMIT;
+    const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
+
+    const accumulator = createInstanceFacetAccumulator(opts);
+    const items: FindingInstanceDetail[] = [];
+    let total = 0;
+    let last: FlatFindingRow | undefined;
+    // Whether the page is full and at least one further row matched — the
+    // cursor is minted from the last COLLECTED row, so no matching row between
+    // the page's end and the batch's end is ever skipped.
+    let hasMore = false;
+
+    for (const row of this.scanFindingRows({
+      sessionId: query.sessionId,
+      from: query.from,
+    })) {
+      accumulator.add(row);
+      if (!matchesInstanceFilters(row, opts)) continue;
+      total += 1;
+      if (items.length < limit) {
+        items.push(toInstanceDetail(row));
+        last = row;
+      } else {
+        hasMore = true;
+      }
+    }
+
+    const nextCursor =
+      hasMore && last
+        ? encodeKeysetCursor({ startedAtMs: isoToEpochMillis(last.occurredAt), id: last.id })
+        : null;
+
+    // The cursor selects the page out of the fully-counted scope rather than
+    // narrowing the scan, so paging cannot change what totals and facets say.
+    if (cursor !== null) {
+      const resumed = this.pageAfter(cursor, opts, limit, query);
+      return Promise.resolve({
+        totals: { findings: total },
+        facets: accumulator.facets(),
+        items: resumed.items,
+        nextCursor: resumed.nextCursor,
+      });
+    }
+
+    return Promise.resolve({
+      totals: { findings: total },
+      facets: accumulator.facets(),
+      items,
+      nextCursor,
+    });
+  }
+
+  /**
+   * The page of matching rows strictly after `cursor`. Separate from the
+   * counting pass because that one starts at the top of the scope by design;
+   * this one narrows the scan with the same keyset predicate the activity list
+   * uses, so a later page costs less than the first rather than more.
+   */
+  private pageAfter(
+    cursor: { startedAtMs: number; id: string },
+    opts: InstanceFilterOptions,
+    limit: number,
+    query: ListFindingInstancesQuery,
+  ): { items: FindingInstanceDetail[]; nextCursor: string | null } {
+    const items: FindingInstanceDetail[] = [];
+    let last: FlatFindingRow | undefined;
+    let hasMore = false;
+
+    for (const row of this.scanFindingRows({
+      sessionId: query.sessionId,
+      from: query.from,
+      after: cursor,
+    })) {
+      if (!matchesInstanceFilters(row, opts)) continue;
+      if (items.length < limit) {
+        items.push(toInstanceDetail(row));
+        last = row;
+      } else {
+        hasMore = true;
+        break;
+      }
+    }
+
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? encodeKeysetCursor({ startedAtMs: isoToEpochMillis(last.occurredAt), id: last.id })
+          : null,
+    };
+  }
+
+  /**
+   * The same findings folded by location: repository, then file within it.
+   *
+   * The grouping keys come from the capturing event's attributes, which is what
+   * the local store relates a finding to — there is no finding↔asset row to
+   * group by instead. A repo or file the event did not record folds into the
+   * empty-string bucket, which the view renders but does not link, since no
+   * filter can name it.
+   */
+  listFindingLocations(query: ListFindingLocationsQuery): Promise<ListFindingLocationsResponse> {
+    const opts: InstanceFilterOptions = {
+      severity: query.severity,
+      subtype: query.subtype,
+      providers: query.provider,
+      actions: query.action,
+      statuses: query.status,
+      tools: query.tool,
+      q: query.q,
+    };
+    const limit = query.limit ?? DEFAULT_LOCATIONS_LIMIT;
+
+    // Bounded by distinct (repo, file) pairs rather than by the store's size —
+    // the same cardinality the grouped path's search-text aggregate already
+    // carries, holding counts instead of paths.
+    const byRepo = new Map<string, Map<string, LocationAccumulator>>();
+    let total = 0;
+
+    for (const row of this.scanFindingRows({
+      sessionId: query.sessionId,
+      from: query.from,
+    })) {
+      if (!matchesInstanceFilters(row, opts)) continue;
+      total += 1;
+      let files = byRepo.get(row.repo);
+      if (files === undefined) {
+        files = new Map<string, LocationAccumulator>();
+        byRepo.set(row.repo, files);
+      }
+      let acc = files.get(row.file);
+      if (acc === undefined) {
+        acc = newLocationAccumulator();
+        files.set(row.file, acc);
+      }
+      addToLocation(acc, row);
+    }
+
+    let fileCount = 0;
+    const repos = [...byRepo.entries()].map(([repo, files]) => {
+      fileCount += files.size;
+      const fileRows: FindingLocationFile[] = [...files.entries()]
+        .map(([file, acc]) => ({
+          file,
+          instanceCount: acc.instanceCount,
+          maxSeverity: acc.maxSeverity as FindingLocationFile['maxSeverity'],
+          latestDetectedAt: acc.latestDetectedAt,
+          ...(foldGroupStatus(acc.statuses) === undefined
+            ? {}
+            : { status: foldGroupStatus(acc.statuses) }),
+          ruleIds: [...acc.ruleIds].slice(0, LOCATION_RULE_IDS_CAP),
+        }))
+        .sort(compareLocationOrder);
+      const rollup = fileRows.reduce(
+        (a, f) => ({
+          instanceCount: a.instanceCount + f.instanceCount,
+          maxSeverity: compareLocationOrder(f, a) < 0 ? f.maxSeverity : a.maxSeverity,
+          latestDetectedAt:
+            f.latestDetectedAt > a.latestDetectedAt ? f.latestDetectedAt : a.latestDetectedAt,
+        }),
+        {
+          instanceCount: 0,
+          maxSeverity: fileRows[0]?.maxSeverity ?? 'low',
+          latestDetectedAt: '',
+        },
+      );
+      const statuses = fileRows.map((f) => f.status);
+      const folded = foldGroupStatus(statuses);
+      return {
+        repo,
+        instanceCount: rollup.instanceCount,
+        maxSeverity: rollup.maxSeverity,
+        latestDetectedAt: rollup.latestDetectedAt,
+        ...(folded === undefined ? {} : { status: folded }),
+        files: fileRows,
+      };
+    });
+    repos.sort(compareLocationOrder);
+
+    return Promise.resolve({
+      totals: { findings: total, repos: repos.length, files: fileCount },
+      items: repos.slice(0, limit),
+      hasMore: repos.length > limit,
+    });
+  }
+
+  /**
+   * Every finding in scope as a FlatFindingRow, newest first, pulled in batches.
+   *
+   * A generator so a caller streams the scope without it ever being an array:
+   * the flat list counts and facets the whole filtered scope, which on a large
+   * store is far more rows than any page. Each batch advances the same keyset
+   * predicate the page read uses, so the scan is a sequence of bounded reads
+   * rather than one unbounded result set.
+   *
+   * The latest-resolution lookup is the CORRELATED form, not the derived table
+   * the grouped path joins: only `status` is needed, idx_finding_resolution_key
+   * makes it a point lookup per row, and the derived table would re-materialize
+   * a window over the whole resolution table once per batch.
+   *
+   * `scope` carries ONLY what no facet counts. A filter dimension narrowed here
+   * would be missing from its own facet, which is computed by excluding that
+   * dimension — see listFindingInstances.
+   */
+  private *scanFindingRows(scope: {
+    sessionId?: string | undefined;
+    from?: string | undefined;
+    after?: { startedAtMs: number; id: string } | undefined;
+  }): Generator<FlatFindingRow> {
+    const conditions = [`e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`];
+    const params: SQLInputValue[] = [];
+
+    if (scope.sessionId !== undefined && scope.sessionId !== '') {
+      conditions.push('e.root_session_id = ?');
+      params.push(scope.sessionId);
+    }
+    if (scope.from !== undefined) {
+      conditions.push('e.started_at >= ?');
+      params.push(isoToEpochMillis(scope.from));
+    }
+
+    const sql = `SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
+              d.severity AS severity, f.masked_match AS masked_match,
+              f.action_taken AS action_taken, f.confidence AS confidence,
+              e.started_at AS occurred_at,
+              json_extract(e.attributes, '$.source_tool') AS source_tool,
+              json_extract(e.attributes, '$.repo') AS repo,
+              json_extract(e.attributes, '$.file_path') AS file,
+              json_extract(e.attributes, '$.tool_name') AS tool_name,
+              f.audit_event_id AS event_id, e.root_session_id AS session_id,
+              e.event_type AS kind, f.finding_key AS finding_key,
+              ${latestResolutionStatusSql('f')} AS latest_status
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+        WHERE ${conditions.join(' AND ')}
+          AND (e.started_at < ? OR (e.started_at = ? AND f.id < ?))
+        ORDER BY e.started_at DESC, f.id DESC
+        LIMIT ?`;
+
+    // The batch walks the same tuple the cursor does. It starts one past the
+    // newest possible row (or at the caller's cursor) and re-enters at the last
+    // row of the previous batch, so no row is read twice or skipped.
+    let after = scope.after ?? { startedAtMs: Number.MAX_SAFE_INTEGER, id: '￿' };
+    for (;;) {
+      const rows = allRows<FindingGroupRowJoined>(this.db.prepare(sql), [
+        ...params,
+        after.startedAtMs,
+        after.startedAtMs,
+        after.id,
+        SCAN_BATCH_ROWS,
+      ]);
+      for (const r of rows) {
+        yield {
+          id: r.id,
+          ruleId: r.rule_id,
+          category: r.category,
+          severity: r.severity,
+          maskedMatch: r.masked_match,
+          actionTaken: r.action_taken,
+          confidence: r.confidence,
+          occurredAt: epochMillisToIso(r.occurred_at),
+          sourceTool: r.source_tool,
+          repo: r.repo ?? '',
+          file: r.file ?? '',
+          ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+          eventId: r.event_id,
+          ...(r.session_id === null ? {} : { sessionId: r.session_id }),
+          status: deriveInstanceStatus(r),
+        };
+      }
+      if (rows.length < SCAN_BATCH_ROWS) return;
+      const lastRow = rows[rows.length - 1];
+      if (lastRow === undefined) return;
+      after = { startedAtMs: lastRow.occurred_at, id: lastRow.id };
+    }
+  }
+
   private groupAggregates(
     withSearchText: boolean,
-    scope: { predicate: string; params: Record<string, string> },
+    scope: { predicate: string; params: Record<string, string | number> },
   ): Map<string, FindingGroupAggregate> {
     // Tool names ride as their display label ("via Bash") to mirror
     // buildHaystack — see its doc for why the bare name is not searched.

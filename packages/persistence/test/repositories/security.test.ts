@@ -616,9 +616,56 @@ describe('scanCoverage', () => {
       'claudecode',
       'cursor',
       'codex',
+      'antigravity',
+      'claudeai',
       'chatgpt',
       'copilot',
       'api',
     ]);
+  });
+
+  it('pins the claudeai row: listed, not yet supported', async () => {
+    // The claude-ai source exists in the schema before any capture surface
+    // ships for it, so the coverage table names it explicitly at zero rather
+    // than omitting it — an omitted provider reads as an oversight, a zero
+    // row reads as a decision.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'claudeai')).toEqual({
+      provider: 'claudeai',
+      coverage: 0,
+      supported: false,
+    });
+  });
+
+  it('pins the codex row: supported at partial (80) coverage', async () => {
+    // The Codex plugin's live PreToolUse/PostToolUse hooks cover Bash calls but
+    // not yet apply_patch, so the curated fact is partial coverage — never 100,
+    // never unsupported.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'codex')).toEqual({
+      provider: 'codex',
+      coverage: 80,
+      supported: true,
+    });
+  });
+
+  it('pins the antigravity row BELOW codex: supported at partial (60) coverage', async () => {
+    // Antigravity's hook contract has no prompt-bearing event and no field for
+    // rewriting a tool argument or withholding a tool result, so prompts and
+    // responses are outside live coverage entirely and a redact can only
+    // escalate to a deny. Tool CALLS are covered across every tool in the CLI,
+    // which is why this is partial rather than unsupported — and why it must
+    // stay strictly below the Codex row rather than matching it.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'antigravity')).toEqual({
+      provider: 'antigravity',
+      coverage: 60,
+      supported: true,
+    });
+
+    const coverageOf = (p: string): number =>
+      res.providers.find((row) => row.provider === p)?.coverage ?? -1;
+    expect(coverageOf('antigravity')).toBeLessThan(coverageOf('codex'));
+    expect(coverageOf('codex')).toBeLessThan(coverageOf('claudecode'));
   });
 });

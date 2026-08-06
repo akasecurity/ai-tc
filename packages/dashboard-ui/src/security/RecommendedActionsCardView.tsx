@@ -29,9 +29,9 @@ import { WidgetError } from './widget-shared.tsx';
 type RecommendationTone = 'critical' | 'primary' | 'teal';
 
 const TONE_TILE: Record<RecommendationTone, string> = {
-  critical: 'bg-sev-critical-fill text-sev-critical',
+  critical: 'bg-sev-critical-fill text-sev-critical-ink',
   primary: 'bg-primary-tint text-primary',
-  teal: 'bg-teal-fill text-teal',
+  teal: 'bg-teal-fill text-teal-ink',
 };
 
 // `category` is an extensible string; map the known ones to a tile icon, falling

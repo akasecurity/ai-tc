@@ -26,7 +26,15 @@ const noNetworkGuard = fileURLToPath(new URL('../test/setup/no-network.ts', impo
 //
 // `include` is pinned to test/ so `vitest run` never globs a built `.next/`
 // (left by any `next build`) into the run.
+//
+// `oxc.jsx` overrides tsconfig.json's `"jsx": "preserve"`, which Next requires
+// (its own compiler consumes the untransformed JSX) and which vitest otherwise
+// inherits — leaving JSX in the output for a parser that then rejects it. Any
+// test importing a page or a component fails at parse time without this, so a
+// route's data derivation could only be tested by reading its source as text.
+// It applies to `.tsx` alone; the suites that import no component are unchanged.
 export default defineConfig({
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     setupFiles: [noNetworkGuard],
     environment: 'node',

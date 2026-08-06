@@ -117,9 +117,6 @@ function parsePointer(token: string): ParsedPointerToken | null {
 export interface SecretVaultDeps {
   repo: SqliteSecretVaultRepository;
   keys: KeyProvider;
-  // The exception-key epoch a value's fingerprint is derived under. This is a
-  // different key from the vault's, with different rotation semantics.
-  fingerprintKey: FingerprintKey;
   // Read live on every call, so revoking consent takes effect immediately
   // rather than at the next process start.
   isConsented: () => boolean;
@@ -141,7 +138,6 @@ export interface SecretVaultDeps {
 export class SecretVault {
   readonly #repo: SqliteSecretVaultRepository;
   readonly #keys: KeyProvider;
-  readonly #fingerprintKey: FingerprintKey;
   readonly #isConsented: () => boolean;
   readonly #verifyGrant:
     ((grantId: string, identity: PointerIdentity) => Promise<boolean>) | undefined;
@@ -150,7 +146,6 @@ export class SecretVault {
   constructor(deps: SecretVaultDeps) {
     this.#repo = deps.repo;
     this.#keys = deps.keys;
-    this.#fingerprintKey = deps.fingerprintKey;
     this.#isConsented = deps.isConsented;
     this.#verifyGrant = deps.verifyGrant;
     this.#now = deps.now ?? ((): number => Date.now());
@@ -160,11 +155,28 @@ export class SecretVault {
    * Store a value and return the pointer that stands for it. The same value
    * always yields the same pointer on this machine — one row, one pointer id,
    * one category — which is what makes dedup and reuse counting work.
+   *
+   * `fingerprintKey` is the exception-key epoch this value's fingerprint is
+   * derived under — a different key from the vault's, with different rotation
+   * semantics. It is a parameter of the WRITE rather than a constructor dep,
+   * and a thunk rather than a value, so that the only way to reach a key is to
+   * store something: a read-only caller never names it, and a caller whose
+   * source mints on absence mints only once consent has actually opened the
+   * write. `refreshFingerprints` takes its key the same way, for the same
+   * reason.
+   *
+   * Resolved once per call, so the fingerprint and the version it is recorded
+   * under can never come from two different epochs.
    */
-  async tokenize(raw: string, meta: TokenizeMeta): Promise<TokenizeResult> {
+  async tokenize(
+    raw: string,
+    meta: TokenizeMeta,
+    fingerprintKey: () => FingerprintKey,
+  ): Promise<TokenizeResult> {
     if (!this.#isConsented()) return CONSENT_ABSENT;
 
-    const valueFingerprint = fingerprintValue(this.#fingerprintKey, raw);
+    const fpKey = fingerprintKey();
+    const valueFingerprint = fingerprintValue(fpKey, raw);
     const existing = this.#repo.byValueFingerprint(valueFingerprint);
     const now = this.#now();
 
@@ -186,7 +198,7 @@ export class SecretVault {
       {
         pointerId: base32Encode(pointerId),
         valueFingerprint,
-        fingerprintKeyVersion: this.#fingerprintKey.version,
+        fingerprintKeyVersion: fpKey.version,
         keyVersion: version,
         // Recorded so the row stays OPENABLE if the wire-format constant ever
         // moves: it is part of this row's AEAD AAD. It is not a tag input —

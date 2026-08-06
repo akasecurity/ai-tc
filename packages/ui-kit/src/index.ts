@@ -40,6 +40,7 @@ export {
 export { Input } from './input.tsx';
 export { cn } from './lib/cn.ts';
 export { Meter, type MeterProps } from './meter.tsx';
+export { Pagination, PaginationNext, PaginationPrevious, PaginationStatus } from './pagination.tsx';
 export {
   Popover,
   PopoverAnchor,
@@ -79,4 +80,13 @@ export {
 export { Skeleton } from './skeleton.tsx';
 export { Switch, type SwitchProps } from './switch.tsx';
 export { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './table.tsx';
+export {
+  Tabs,
+  TabsContent,
+  type TabsContentProps,
+  TabsList,
+  type TabsListProps,
+  TabsTrigger,
+  type TabsTriggerProps,
+} from './tabs.tsx';
 export { Tag, type TagProps } from './tag.tsx';

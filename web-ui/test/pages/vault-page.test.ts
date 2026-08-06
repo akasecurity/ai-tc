@@ -14,7 +14,7 @@ import type { VaultDerefReason } from '@akasecurity/schema';
 import { DEFAULT_VAULT_DEREFS_LIMIT, DEFAULT_VAULT_INVENTORY_LIMIT } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import VaultPage from '../../app/(app)/vault/page.tsx';
 import { VaultDashboardClient } from '../../app/(app)/vault/VaultDashboardClient.tsx';
@@ -59,16 +59,56 @@ function dropMemoisedDb(): void {
   delete store.__akaDb;
 }
 
-beforeEach(() => {
+// The fixture is seeded ONCE for the whole file, not per test.
+//
+// Every assertion here READS — the route is a Server Component that only
+// queries — so a per-test store bought no isolation, and it is not free: the
+// fixture is 175 writes (113 upserts + 62 derefs), and `upsert` commits its own
+// IMMEDIATE transaction per call, so each seed is that many durable commits. On
+// a developer machine that is ~30ms and invisible; on the Windows CI leg a
+// commit costs a fsync, and the file ran 93s for 7 tests — ~13s each, six of
+// them re-seeding the same rows — which put every test against the 20s per-test
+// budget in web-ui/vitest.config.ts and timed one out.
+// packages/persistence/test/repositories/findings.test.ts seeds its bulk store
+// once for the same reason.
+//
+// So the seed is a hook, and the hook carries its own budget. That is sizing, not
+// waiting out a slow test: the cost is one fixture that has to outgrow a 50-row
+// page, paid once, and the per-test budget stays at the config default — where a
+// genuinely slow assertion still has to answer for itself.
+//
+// This holds only while the block stays read-only. A test that WRITES belongs
+// on its own store — `afterAll` re-reads the totals and fails if the fixture
+// moved, so that lands as a named failure here rather than as a confusing one
+// in whichever neighbour happened to run next.
+const SEED_TIMEOUT_MS = 60_000;
+
+beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-vault-page-'));
   osHome.dir = home;
   dir = dataDir();
   dropMemoisedDb();
-});
+  seedFixture();
+}, SEED_TIMEOUT_MS);
 
-afterEach(() => {
-  dropMemoisedDb();
-  rmSync(home, { recursive: true, force: true });
+afterAll(() => {
+  // Cleanup sits in the `finally` because vitest runs afterAll even when
+  // beforeAll THREW (measured, not assumed). On that path the invariant below
+  // reads a store that was never seeded and throws in turn — so outside a
+  // `finally` it would both leak the temp tree and bury the real failure under
+  // its own. Dropping the handle before rmSync matters on Windows too, where an
+  // open SQLite handle refuses the delete.
+  try {
+    // The shared-fixture invariant, checked where a writing test cannot dodge
+    // it by running after the totals case. Reads through the memoised handle,
+    // so it opens nothing.
+    const props = renderPage();
+    expect(props.inventory.totals.values).toBe(SEEDED_VALUES);
+    expect(props.derefs.hiddenBatched).toBe(BATCHED_DEREFS);
+  } finally {
+    dropMemoisedDb();
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 type ClientProps = ComponentProps<typeof VaultDashboardClient>;
@@ -191,8 +231,6 @@ describe('the vault route hands down first pages, not whole tables', () => {
   });
 
   it('caps each list at one page and says there is more', () => {
-    seedFixture();
-
     const props = renderPage();
 
     expect(props.inventory.items).toHaveLength(DEFAULT_VAULT_INVENTORY_LIMIT);
@@ -204,8 +242,6 @@ describe('the vault route hands down first pages, not whole tables', () => {
   });
 
   it('reports the whole-store totals alongside the capped pages', () => {
-    seedFixture();
-
     const props = renderPage();
 
     // The counts the section headings speak for cover the store, so they must
@@ -217,8 +253,6 @@ describe('the vault route hands down first pages, not whole tables', () => {
 
 describe('the vault route wires each read to the prop that needs it', () => {
   it('is a fixture the two orderings disagree on', () => {
-    seedFixture();
-
     const props = renderPage();
 
     // The control for the wiring cases below: the inventory's page and the
@@ -230,8 +264,6 @@ describe('the vault route wires each read to the prop that needs it', () => {
   });
 
   it('leads the inventory with the newest value', () => {
-    seedFixture();
-
     const props = renderPage();
 
     expect(props.inventory.items[0]?.pointerId).toBe(NEWEST_POINTER);
@@ -242,8 +274,6 @@ describe('the vault route wires each read to the prop that needs it', () => {
   });
 
   it('leads the reuse list with the most-reused value, wherever it sits in time', () => {
-    seedFixture();
-
     const props = renderPage();
 
     expect(props.reuse.items[0]?.pointerId).toBe(OLDEST_POINTER);
@@ -257,8 +287,6 @@ describe('the vault route wires each read to the prop that needs it', () => {
   });
 
   it('hides the batched render reasons from the trail and counts them whole', () => {
-    seedFixture();
-
     const props = renderPage();
 
     expect(props.derefs.items.map((r) => r.reason)).not.toContain('display');

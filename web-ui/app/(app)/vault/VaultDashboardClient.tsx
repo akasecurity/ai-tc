@@ -401,21 +401,19 @@ export function VaultDashboardClient({
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
         />
         {actionError !== null && <p className="text-xs text-sev-critical-ink">{actionError}</p>}
-        <VaultInventoryView
-          entries={inventoryRows}
-          onReveal={onReveal}
-          onRevoke={onRevoke}
-          total={inventory.totals.values}
-          hasMore={inventoryPages.cursor !== null}
-          loadingMore={inventoryBusy}
-          onLoadMore={loadMore(
-            inventoryPages,
-            loadMoreVaultInventory,
-            startInventoryTransition,
-            setActionError,
-            'vaulted values',
-          )}
-        />
+        {/*
+          ABOVE the table, not below it. A reveal renders here rather than in the
+          row that was clicked — the row keeps its mask — so below the table this
+          strip sits a full page length past the button that fills it: measured at
+          ~2900px down, four viewport-heights from a click on row 1, with nothing
+          changing anywhere the reader was looking. The button reads as broken
+          while the reveal has in fact completed and been audited.
+
+          Position is the whole fix; the strip stays a strip rather than moving
+          into the row, because it must outlive the row. A value revealed on page
+          3 has to stay on screen after a reset takes that row out of the list,
+          which is why `revealed` carries its own entry.
+        */}
         {revealedEntries.length > 0 && (
           <div className="rounded-xl border border-border bg-surface p-4">
             <div className="mb-2 text-label font-semibold uppercase tracking-wider text-text-3">
@@ -451,6 +449,21 @@ export function VaultDashboardClient({
             </ul>
           </div>
         )}
+        <VaultInventoryView
+          entries={inventoryRows}
+          onReveal={onReveal}
+          onRevoke={onRevoke}
+          total={inventory.totals.values}
+          hasMore={inventoryPages.cursor !== null}
+          loadingMore={inventoryBusy}
+          onLoadMore={loadMore(
+            inventoryPages,
+            loadMoreVaultInventory,
+            startInventoryTransition,
+            setActionError,
+            'vaulted values',
+          )}
+        />
       </section>
 
       <section className="flex flex-col gap-3">

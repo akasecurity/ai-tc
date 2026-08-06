@@ -8,31 +8,44 @@ import {
   parseSelectedId,
 } from '../../app/(app)/activity/filters';
 
-// The full-width session inspector is URL state (`?view=full`) rather than
-// component state, which is what makes the drill-down shareable and puts it in
-// the browser's history. These pin the round trip — parse ∘ build — plus the two
-// ways the param can arrive without a session behind it.
+// The full-width session inspector is URL state (`?view=full&id=<session>`)
+// rather than component state, which is what makes the drill-down shareable and
+// puts it in the browser's history. These pin the round trip — parse ∘ build —
+// plus the ways the param can arrive without a session behind it, on BOTH sides:
+// the serializer never writes that pairing, and the parser refuses it when
+// something else wrote the URL.
 
 describe('parseExpanded', () => {
-  it('reads ?view=full as open', () => {
-    expect(parseExpanded({ view: 'full' })).toBe(true);
+  it('reads ?view=full beside an ?id as open', () => {
+    expect(parseExpanded({ view: 'full', id: 'sess-1' })).toBe(true);
   });
 
   it('reads a missing ?view as closed', () => {
-    expect(parseExpanded({})).toBe(false);
+    expect(parseExpanded({ id: 'sess-1' })).toBe(false);
   });
 
   it('reads any other ?view value as closed', () => {
     // `view` is a shared param name across pages (findings uses `view=flat`), so
     // a value this page does not own must be inert rather than truthy.
     for (const view of ['', 'flat', '1', 'true', 'FULL']) {
-      expect(parseExpanded({ view })).toBe(false);
+      expect(parseExpanded({ view, id: 'sess-1' })).toBe(false);
     }
   });
 
   it('reads the first value when the param repeats', () => {
-    expect(parseExpanded({ view: ['full', 'flat'] })).toBe(true);
-    expect(parseExpanded({ view: ['flat', 'full'] })).toBe(false);
+    expect(parseExpanded({ view: ['full', 'flat'], id: 'sess-1' })).toBe(true);
+    expect(parseExpanded({ view: ['flat', 'full'], id: 'sess-1' })).toBe(false);
+  });
+
+  it('reads ?view=full with no session behind it as closed', () => {
+    // buildActivityParams never writes this pairing, but it only constrains the
+    // URLs this app writes — a hand-typed /activity?view=full reaches the parser
+    // having gone nowhere near the serializer, and a panel is a view OF a
+    // session. Blank and whitespace-only ids are the same case as a missing one.
+    expect(parseExpanded({ view: 'full' })).toBe(false);
+    expect(parseExpanded({ view: 'full', id: '' })).toBe(false);
+    expect(parseExpanded({ view: 'full', id: '   ' })).toBe(false);
+    expect(parseExpanded({ view: 'full', id: [] })).toBe(false);
   });
 });
 

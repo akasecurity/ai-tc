@@ -64,7 +64,7 @@ export function ActivityClient({
   expanded: boolean;
 }) {
   const pathname = usePathname();
-  const { isPending, push: pushUrl } = useNavigationTransition();
+  const { isPending, push: pushUrl, replace: replaceUrl } = useNavigationTransition();
 
   // Timeline deep links: a detection event opens the findings page scoped to
   // this session (narrowed to the event's finding when the event carries one);
@@ -124,13 +124,23 @@ export function ActivityClient({
     [onNavigate, pushUrl, buildUrl],
   );
 
-  // Opening and closing the inspector are both real navigations, so the drill-down
-  // is in history (Back closes it) and the open state survives a copied URL.
+  // Push to open, replace to close.
+  //
+  // Opening is a real drill-down, so it earns a history entry: Back closes the
+  // inspector and the open state survives a copied URL. Closing is the reverse of
+  // that entry rather than a place of its own — pushing it would leave the panel
+  // the reader just dismissed sitting on the Back path (and open/close/open would
+  // stack a run of them), so the close overwrites the entry the open added.
   const setExpanded = useCallback(
     (next: boolean) => {
-      push({ q: query, harness, range, id: selectedId, showEmpty, expanded: next });
+      const url = buildUrl({ q: query, harness, range, id: selectedId, showEmpty, expanded: next });
+      // Settle the search debounce on both paths: it holds a URL built from the
+      // pre-navigation state, so closing mid-typing would otherwise let the timer
+      // fire a URL that predates the close and re-open the panel.
+      onNavigate(query);
+      (next ? pushUrl : replaceUrl)(url);
     },
-    [push, query, harness, range, selectedId, showEmpty],
+    [buildUrl, onNavigate, pushUrl, replaceUrl, query, harness, range, selectedId, showEmpty],
   );
 
   // Shared by the docked pane and the inspector — one session, two frames, so
@@ -201,7 +211,13 @@ export function ActivityClient({
 
       {/* The full-width inspector. Same view, more room: the docked pane shares
           the viewport with the session list, so a long timeline is read here.
-          Open state is the URL's, not this component's — see setExpanded. */}
+          Open state is the URL's, not this component's — see setExpanded.
+
+          `detail !== null` is a second guard, and it is the one that survives a
+          hand-typed URL. parseExpanded already refuses `?view=full` with no ?id,
+          but an id naming a session the store does not have parses as open and
+          arrives here with nothing to render — so the panel stays shut on the
+          session itself, not merely on the param that claims one. */}
       <Sheet
         open={expanded && detail !== null}
         onOpenChange={(open) => {

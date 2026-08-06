@@ -51,15 +51,20 @@ export function parseShowEmpty(sp: ActivitySearchParams): boolean {
 }
 
 /**
- * Whether the full-width session inspector is open (`?view=full`).
+ * Whether the full-width session inspector is open (`?view=full&id=<session>`).
  *
  * It lives in the URL rather than in component state so the drill-down is a real
  * navigation: it gets a history entry (Back closes it) and the link is
  * shareable — `?id=<session>&view=full` opens straight into that session's
  * inspector. Any other value reads as closed, so a crafted `?view=` is inert.
+ *
+ * The `?id` is required here, not just when building: the serializer constrains
+ * only the URLs this app writes, and a hand-typed `/activity?view=full` reaches
+ * the parser having gone nowhere near it. The panel is a view OF a session, so
+ * the pairing is a property of the state itself and belongs on both sides.
  */
 export function parseExpanded(sp: ActivitySearchParams): boolean {
-  return one(sp.view) === 'full';
+  return one(sp.view) === 'full' && parseSelectedId(sp) !== '';
 }
 
 /**

@@ -19,16 +19,26 @@ import {
   SecretVault,
 } from '@akasecurity/persistence';
 import type {
+  ActionInputFailure,
+  AddExceptionInput,
+  ApproveBlockedInput,
   BlockedDetection,
+  GrantRevealInput,
   PointerDescriptor,
   PointerIdentity,
   ResolvedScope,
   Rule,
 } from '@akasecurity/schema';
 import {
+  AddExceptionInput as AddExceptionInputSchema,
+  ApproveBlockedInput as ApproveBlockedInputSchema,
   DetectionCategory,
+  GrantRevealInput as GrantRevealInputSchema,
   isVaultConsentValid,
+  parseActionInput,
   PointerToken,
+  RevokeExceptionInput as RevokeExceptionInputSchema,
+  RotateKeyInput as RotateKeyInputSchema,
   scopeFromAnswer,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
@@ -66,6 +76,35 @@ const KEY_IO_ERROR =
 // message rather than an exception, or a Server Action rejects and the dialog
 // shows a framework error page instead of a way forward.
 const STORE_ERROR = 'Could not read the local store (~/.aka/data/aka.db).';
+
+// The same requirement, reached through the other door. A Server Action's
+// arguments arrive as untrusted JSON over an HTTP POST, so the parameter types
+// below are a compile-time claim about a runtime that never checked one: a
+// caller is free to post a number, a null, or an object carrying a hostile
+// `toString`. Such a value reaching a `.trim()`, a `.slice()`, a template
+// literal or a SQL bind parameter throws — and a thrown Server Action rejects,
+// producing exactly the framework error page STORE_ERROR exists to avoid.
+//
+// So every action below parses its whole input before touching a field,
+// including the case where the input is not an object at all. The refusal names
+// the FIELD and never its value: a payload that arrives as the wrong type is
+// still a live credential, and a rejection is not a place to echo one. The name
+// comes from the schema's own key, so nothing derived from the payload reaches
+// the message.
+//
+// It branches on `wrongType` rather than always naming the type, because the
+// parse is generic over any schema: every field is `z.string()` today, so every
+// failure really is a type failure — but a `.min()` or `.uuid()` added to one of
+// them would reject a value that IS text, and "did not arrive as text" would
+// then be a false diagnosis pointing at the wrong fix.
+function malformedInput(failure: ActionInputFailure): string {
+  if (failure.field === null) {
+    return 'The request did not arrive in the expected shape — reload the page and try again.';
+  }
+  return failure.wrongType
+    ? `The '${failure.field}' field did not arrive as text — reload the page and try again.`
+    : `The '${failure.field}' field was not in the expected form — reload the page and try again.`;
+}
 
 // Minting a key reads the store to find a version no stored row already claims,
 // and refuses rather than guess when it cannot — so a key resolution can fail
@@ -127,12 +166,11 @@ function createGrant(input: CreateExceptionInput): Promise<ActionResult> {
  * a key version that is no longer current is refused: the grant could never
  * match.
  */
-export async function approveBlocked(input: {
-  reference: string;
-  scope: string;
-  reason: string;
-  confirmation?: string;
-}): Promise<ActionResult> {
+export async function approveBlocked(raw: ApproveBlockedInput): Promise<ActionResult> {
+  const parsed = parseActionInput(ApproveBlockedInputSchema, raw);
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  const input = parsed.data;
+
   const reason = input.reason.trim();
   if (reason === '') return { ok: false, error: 'A reason is required — it is the audit trail.' };
   const scope = resolveScope(input.scope);
@@ -207,15 +245,21 @@ export async function approveBlocked(input: {
  * Pre-authorize a value that has never been blocked (`aka exception add`).
  * The raw value exists only inside this function: verified against the rule's
  * DB-snapshot definition, reduced to fingerprint + masked preview, and
- * discarded. Errors never echo the value.
+ * discarded. Errors never echo `value`.
+ *
+ * Read that as scoped to `value`, because the other fields are not alike.
+ * `ruleId` IS echoed, by the unknown-rule refusal below — safe for the id it is
+ * meant to carry, and the reason the parse above matters: before it, an object
+ * with a hostile `toString` posted as `ruleId` reached that template literal
+ * and came back carrying whatever it yielded. It discloses nothing the caller
+ * did not already send, but "errors never echo" was the claim, and the field
+ * the claim was written about was not the field it travelled through.
  */
-export async function addException(input: {
-  ruleId: string;
-  value: string;
-  scope: string;
-  reason: string;
-  confirmation?: string;
-}): Promise<ActionResult> {
+export async function addException(raw: AddExceptionInput): Promise<ActionResult> {
+  const parsed = parseActionInput(AddExceptionInputSchema, raw);
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  const input = parsed.data;
+
   const reason = input.reason.trim();
   if (reason === '') return { ok: false, error: 'A reason is required — it is the audit trail.' };
   const scope = resolveScope(input.scope);
@@ -308,16 +352,16 @@ function categoryFromToken(token: string): DetectionCategory | null {
  * fingerprint + key version), which is exactly what the grant matches on. The
  * fingerprint never reaches the browser — only an id prefix comes back. Scope
  * timestamps and expiry are stamped server-side from the validated choice.
+ *
+ * `confirmation` is required when scope is permanent: the masked value retyped,
+ * so a never-expiring reveal takes the same deliberate confirmation every other
+ * permanent grant does.
  */
-export async function grantRevealFromPointer(input: {
-  pointer: string;
-  scope: string;
-  justification: string;
-  // Required when scope is permanent: the masked value retyped, so a
-  // never-expiring reveal takes the same deliberate confirmation every other
-  // permanent grant does.
-  confirmation?: string;
-}): Promise<RevealGrantResult> {
+export async function grantRevealFromPointer(raw: GrantRevealInput): Promise<RevealGrantResult> {
+  const shape = parseActionInput(GrantRevealInputSchema, raw);
+  if (!shape.ok) return { ok: false, error: malformedInput(shape) };
+  const input = shape.data;
+
   const justification = input.justification.trim();
   if (justification === '') {
     return { ok: false, error: 'A justification is required — it is the audit trail.' };
@@ -420,7 +464,16 @@ export async function grantRevealFromPointer(input: {
  * `revoke_reason IS NOT NULL`.
  */
 export async function revokeException(id: string, reason: string): Promise<ActionResult> {
-  const note = reason.trim();
+  // Positional arguments, parsed as one object so the shape of the call is
+  // checked too. A non-string `id` would otherwise reach the repository as a
+  // SQL bind parameter, whose refusal is indistinguishable here from a store
+  // that cannot be read — and answering a malformed id with "your store is
+  // unreadable" sends someone to repair a database that is fine.
+  const parsed = parseActionInput(RevokeExceptionInputSchema, { id, reason });
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  const input = parsed.data;
+
+  const note = input.reason.trim();
 
   // Opening the handle and running the UPDATE are both synchronous, and the
   // repository wraps the result in an already-resolved promise — so a failing
@@ -432,13 +485,17 @@ export async function revokeException(id: string, reason: string): Promise<Actio
   // leave someone believing a still-active bypass had been taken away.
   let revoked: boolean;
   try {
-    revoked = await db().exceptions.revoke(id, resolveCreatedBy(), note === '' ? undefined : note);
+    revoked = await db().exceptions.revoke(
+      input.id,
+      resolveCreatedBy(),
+      note === '' ? undefined : note,
+    );
   } catch {
     return { ok: false, error: STORE_ERROR };
   }
   if (!revoked) return { ok: false, error: 'No active exception with that id.' };
   revalidatePath('/exceptions');
-  revalidatePath(`/exceptions/${id}`);
+  revalidatePath(`/exceptions/${input.id}`);
   return { ok: true };
 }
 
@@ -448,7 +505,17 @@ export async function revokeException(id: string, reason: string): Promise<Actio
  * gate alone is not the control.
  */
 export async function rotateKey(confirmation: string): Promise<ActionResult> {
-  if (confirmation !== 'rotate') {
+  // The `!==` below already REFUSES every non-string, so this parse changes no
+  // accept/reject decision — only the message, from "type rotate to confirm"
+  // (which a caller who posted a number cannot act on) to one naming the field.
+  // Its real job is to make "every mutating action on this surface validates its
+  // whole input" a property of the file rather than of four of its five
+  // functions, and to stop the guarantee resting on one comparison operator that
+  // a later "be more forgiving" edit could turn into `==`.
+  const parsed = parseActionInput(RotateKeyInputSchema, { confirmation });
+  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+
+  if (parsed.data.confirmation !== 'rotate') {
     return { ok: false, error: 'Type "rotate" to confirm.' };
   }
   let next: FingerprintKey;

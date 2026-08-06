@@ -1046,6 +1046,39 @@ scans against the **DB snapshot**, not the engine's process-global registry.
 `@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
 is not a runtime package-wall crossing.
 
+**A Server Action's parameter types are a claim its runtime never checks.** The arguments
+arrive as JSON over an HTTP POST, so a caller may post a number, a null, or an object
+carrying a hostile `toString` wherever the signature says `string`. Such a value reaching a
+`.trim()`, a `.slice()`, a template literal or a SQL bind parameter throws — and a **thrown
+Server Action rejects**, so the browser gets a framework error page instead of the
+recoverable `{ ok: false, error }` the action was written to return. That is the same
+failure the store-failure guards in `actions.ts` exist to prevent, reached by another door,
+which is why a fail-open `catch` around the store is not enough on its own.
+
+The exceptions surface closes it by parsing the **whole input** — the shapes live in
+`@akasecurity/schema` (`src/zod/exception-action.ts`) and every mutating action there
+`parseActionInput`s its payload before touching a field. Three rules make it hold:
+
+- **Parse the whole input, not each field.** A payload that is not an object at all fails
+  before any field is read, and no per-field check can express that case.
+- **The refusal names the schema's KEY, never the payload.** A field arriving as the wrong
+  type is still a live credential, so nothing derived from it — including a Zod issue
+  message — may reach the message describing its rejection.
+- **Widening in a test alias is per-PARAMETER, not per-action.** An alias that widens
+  `confirmation` to `unknown` and leaves `reason` at `string` covers one field while reading
+  as covering the action; that is exactly how `reason` went unwidened, and unguarded, across
+  three actions at once. Widen the alias's whole input to `unknown`.
+
+Assert three things per case, in this order: it does not throw, it names the field, and it
+echoes no raw value (`expectNoEchoOf`). The middle one is not decoration — `expectNoEchoOf`
+catches an absent error but not an empty one, and every `not.toContain` passes on `''`, so
+requiring the message to say something specific is what stops the echo check going vacuous.
+Keep a positive control that a well-formed payload still succeeds, or an action rewritten to
+refuse everything satisfies all three.
+
+The other Server Actions (settings, vault, scan, detections) are **not** guarded this way
+yet — do not read the above as a property the dashboard has.
+
 ### Testing a web-ui page
 
 An async Server Component is a plain async function that returns an element, so a route's

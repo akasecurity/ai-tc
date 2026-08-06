@@ -20,7 +20,7 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
   };
 
   return (
-    <div className="flex max-w-xl flex-col gap-4">
+    <div className="flex max-w-3xl flex-col gap-4">
       <div className="rounded-xl border border-border bg-surface p-5">
         <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
           File or directory to scan

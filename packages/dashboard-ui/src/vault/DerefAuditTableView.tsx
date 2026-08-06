@@ -5,9 +5,10 @@ import {
   Badge,
   Button,
   cn,
-  LoadMore,
-  LoadMoreButton,
-  LoadMoreStatus,
+  Pagination,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -28,9 +29,13 @@ export interface DerefAuditTableViewProps {
   showBatched: boolean;
   onToggleBatched?: (showBatched: boolean) => void;
   // Whether the trail holds resolutions older than the ones passed in.
-  hasMore?: boolean;
-  onLoadMore?: (() => void) | undefined;
-  loadingMore?: boolean;
+  hasNextPage?: boolean;
+  hasPreviousPage?: boolean;
+  onNextPage?: (() => void) | undefined;
+  onPreviousPage?: (() => void) | undefined;
+  loadingNextPage?: boolean;
+  // 1-based position of this window's first row in the whole trail.
+  pageStart?: number | undefined;
 }
 
 // Model-target crossings are the anomaly signal this trail exists for, so both
@@ -62,9 +67,12 @@ export function DerefAuditTableView({
   hiddenBatched,
   showBatched,
   onToggleBatched,
-  hasMore = false,
-  onLoadMore,
-  loadingMore = false,
+  hasNextPage = false,
+  hasPreviousPage = false,
+  onNextPage,
+  onPreviousPage,
+  loadingNextPage = false,
+  pageStart,
 }: DerefAuditTableViewProps) {
   const toggle =
     onToggleBatched === undefined ? null : (
@@ -160,17 +168,25 @@ export function DerefAuditTableView({
           )}
         </TableBody>
       </Table>
-      {onLoadMore ? (
-        <LoadMore>
-          {hasMore && (
-            <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
-              {loadingMore ? 'Loading…' : 'Load more resolutions'}
-            </LoadMoreButton>
-          )}
-          <LoadMoreStatus>{`${String(rows.length)} shown`}</LoadMoreStatus>
-        </LoadMore>
+      {onNextPage ? (
+        <Pagination>
+          <PaginationPrevious
+            disabled={!hasPreviousPage || loadingNextPage}
+            onClick={onPreviousPage}
+          />
+          <PaginationStatus>
+            {pageStart === undefined
+              ? `${String(rows.length)} shown`
+              : `${String(pageStart)}–${String(pageStart + rows.length - 1)} resolutions`}
+          </PaginationStatus>
+          <PaginationNext
+            disabled={!hasNextPage || loadingNextPage}
+            loading={loadingNextPage}
+            onClick={onNextPage}
+          />
+        </Pagination>
       ) : (
-        hasMore && (
+        hasNextPage && (
           <p className="mt-4 text-center text-xs text-text-3">
             Showing the most recent {rows.length} resolutions.
           </p>

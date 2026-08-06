@@ -21,17 +21,35 @@ import { VaultReuseView } from '../../src/vault/VaultReuseView.tsx';
 
 const BADGE = 'Reveal to model';
 
-// ui-kit's LoadMore parts, by the data-slot each one carries. The container
-// slot is matched with its closing quote so it cannot also match the button's
-// `load-more-button`.
-const FOOTER = 'data-slot="load-more"';
-const FOOTER_BUTTON = 'data-slot="load-more-button"';
-const FOOTER_STATUS = 'data-slot="load-more-status"';
-// LoadMoreButton sets `disabled={disabled ?? loading}`, so the attribute lands
-// on the footer button itself. It is matched there rather than anywhere in the
-// markup, where every Button's `disabled:` utility classes would match.
-const FOOTER_BUTTON_DISABLED = `${FOOTER_BUTTON} disabled=""`;
+// ui-kit's Pagination parts, by the data-slot each one carries. The container
+// slot is matched with its closing quote so it cannot also match
+// `pagination-next` or `pagination-previous`.
+const FOOTER = 'data-slot="pagination"';
+const FOOTER_PREV = 'data-slot="pagination-previous"';
+const FOOTER_NEXT = 'data-slot="pagination-next"';
+const FOOTER_STATUS = 'data-slot="pagination-status"';
 const SPINNER = 'animate-spin';
+
+/**
+ * The single tag carrying `slot`, so a `disabled` check lands on THAT control
+ * rather than anywhere in the markup — every Button emits `disabled:` utility
+ * classes, and both pagination buttons can be disabled independently. Matching
+ * the attribute rather than a fixed `slot disabled=""` string also survives
+ * React reordering the attributes it serialises.
+ */
+function tagWithSlot(html: string, slot: string): string {
+  const at = html.indexOf(`data-slot="${slot}"`);
+  if (at < 0) return '';
+  return html.slice(html.lastIndexOf('<', at), html.indexOf('>', at) + 1);
+}
+
+// `disabled=""` is the ATTRIBUTE React serialises for a boolean prop. Matching
+// a bare `disabled` would hit the `disabled:` utility classes every Button
+// carries in its className, which are present whatever the prop says.
+const nextDisabled = (html: string): boolean =>
+  tagWithSlot(html, 'pagination-next').includes('disabled=""');
+const prevDisabled = (html: string): boolean =>
+  tagWithSlot(html, 'pagination-previous').includes('disabled=""');
 
 // The masked preview is the only value-shaped string allowed through: nothing
 // matching a live AWS key id or a generic long token may appear. Shared by both
@@ -141,69 +159,121 @@ describe('VaultInventoryView', () => {
     expect(complete).not.toContain('the rest are in the store');
     // More rows exist and there is no callback to reach them — saying so is
     // the honest render, and silence would hide the missing rows entirely.
-    const truncated = renderToStaticMarkup(<VaultInventoryView entries={rows} hasMore={true} />);
+    const truncated = renderToStaticMarkup(
+      <VaultInventoryView entries={rows} hasNextPage={true} />,
+    );
     expect(truncated).not.toContain(FOOTER);
     expect(truncated).toContain('Showing the first 2 values — the rest are in the store.');
   });
 
-  it('offers the footer button only while more values remain', () => {
+  it('keeps the pager on the last page, with Next disabled', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const more = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasMore={true} onLoadMore={() => undefined} total={40} />,
+      <VaultInventoryView
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        total={40}
+      />,
     );
     expect(more).toContain(FOOTER);
-    expect(more).toContain(FOOTER_BUTTON);
-    // The label names what is loaded, and is the button's own text.
-    expect(more).toContain('>Load more values</button>');
+    expect(more).toContain(FOOTER_NEXT);
+    expect(more).toContain(FOOTER_PREV);
+    expect(nextDisabled(more)).toBe(false);
     expect(more).not.toContain('the rest are in the store');
-    // Exhausted: no button to press, but the count line stays — it is what
-    // tells a reader the list is complete rather than merely stalled.
+    // Exhausted: the control STAYS and goes disabled — under a stepping
+    // pager a vanishing Next would also remove the reader's way back.
     const done = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasMore={false} onLoadMore={() => undefined} total={40} />,
+      <VaultInventoryView
+        entries={rows}
+        hasNextPage={false}
+        onNextPage={() => undefined}
+        total={40}
+      />,
     );
     expect(done).toContain(FOOTER);
-    expect(done).not.toContain(FOOTER_BUTTON);
+    expect(done).toContain(FOOTER_NEXT);
+    expect(nextDisabled(done)).toBe(true);
     expect(done).toContain(FOOTER_STATUS);
+  });
+
+  it('disables Previous on the first page and enables it past it', () => {
+    // The control the stepping pager adds. A keyset cursor only runs forward,
+    // so Previous replays a page the caller already holds — and on page one
+    // there is nothing to replay. Both renders are needed: without the enabled
+    // one, a Previous disabled whatever the caller passes would still pass.
+    const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
+    const first = renderToStaticMarkup(
+      <VaultInventoryView
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        pageStart={1}
+        total={40}
+      />,
+    );
+    expect(first).toContain(FOOTER_PREV);
+    expect(prevDisabled(first)).toBe(true);
+
+    const second = renderToStaticMarkup(
+      <VaultInventoryView
+        entries={rows}
+        hasNextPage={true}
+        hasPreviousPage={true}
+        onNextPage={() => undefined}
+        onPreviousPage={() => undefined}
+        pageStart={3}
+        total={40}
+      />,
+    );
+    expect(prevDisabled(second)).toBe(false);
+    // The status line counts from where the window actually starts, not from 1.
+    expect(second).toContain('3–4 of 40 values</p>');
   });
 
   it('disables the footer button while a page is in flight', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView
         entries={[entry({})]}
-        hasMore={true}
-        onLoadMore={() => undefined}
-        loadingMore={true}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        loadingNextPage={true}
         total={40}
       />,
     );
-    expect(html).toContain(FOOTER_BUTTON_DISABLED);
+    expect(nextDisabled(html)).toBe(true);
     expect(html).toContain(SPINNER);
-    expect(html).toContain('Loading…</button>');
-    expect(html).not.toContain('Load more values');
+    expect(html).toContain('Loading…');
     // The idle render is the control: without it the assertions above would
     // hold for a button that is disabled whatever the caller passes.
     const idle = renderToStaticMarkup(
       <VaultInventoryView
         entries={[entry({})]}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
         total={40}
       />,
     );
-    expect(idle).toContain(FOOTER_BUTTON);
-    expect(idle).not.toContain(FOOTER_BUTTON_DISABLED);
+    expect(idle).toContain(FOOTER_NEXT);
+    expect(nextDisabled(idle)).toBe(false);
     expect(idle).not.toContain(SPINNER);
   });
 
   it('counts the page against the store-wide total', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const html = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasMore={true} onLoadMore={() => undefined} total={40} />,
+      <VaultInventoryView
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        pageStart={1}
+        total={40}
+      />,
     );
-    expect(html).toContain('2 of 40 values</p>');
+    expect(html).toContain('1–2 of 40 values</p>');
     // With no total the view claims only what it can see.
     const untotalled = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasMore={true} onLoadMore={() => undefined} />,
+      <VaultInventoryView entries={rows} hasNextPage={true} onNextPage={() => undefined} />,
     );
     expect(untotalled).toContain('2 shown</p>');
     expect(untotalled).not.toContain('2 of');
@@ -264,27 +334,29 @@ describe('VaultReuseView', () => {
     const complete = renderToStaticMarkup(<VaultReuseView entries={rows} />);
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('the rest are in the store');
-    const truncated = renderToStaticMarkup(<VaultReuseView entries={rows} hasMore={true} />);
+    const truncated = renderToStaticMarkup(<VaultReuseView entries={rows} hasNextPage={true} />);
     expect(truncated).not.toContain(FOOTER);
     // Counted over the rendered rows, like the status line below — two of the
     // three inputs survive `isReused`.
     expect(truncated).toContain('Showing the first 2 reused values — the rest are in the store.');
   });
 
-  it('offers the footer button only while more reused values remain', () => {
+  it('keeps the pager on the last page, with Next disabled', () => {
     const rows = mixedReuseRows();
     const more = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasMore={true} onLoadMore={() => undefined} total={40} />,
+      <VaultReuseView entries={rows} hasNextPage={true} onNextPage={() => undefined} total={40} />,
     );
     expect(more).toContain(FOOTER);
-    expect(more).toContain(FOOTER_BUTTON);
-    expect(more).toContain('>Load more reused values</button>');
+    expect(more).toContain(FOOTER_NEXT);
+    expect(more).toContain(FOOTER_PREV);
+    expect(nextDisabled(more)).toBe(false);
     expect(more).not.toContain('the rest are in the store');
     const done = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasMore={false} onLoadMore={() => undefined} total={40} />,
+      <VaultReuseView entries={rows} hasNextPage={false} onNextPage={() => undefined} total={40} />,
     );
     expect(done).toContain(FOOTER);
-    expect(done).not.toContain(FOOTER_BUTTON);
+    expect(done).toContain(FOOTER_NEXT);
+    expect(nextDisabled(done)).toBe(true);
     expect(done).toContain(FOOTER_STATUS);
   });
 
@@ -293,21 +365,20 @@ describe('VaultReuseView', () => {
     const html = renderToStaticMarkup(
       <VaultReuseView
         entries={rows}
-        hasMore={true}
-        onLoadMore={() => undefined}
-        loadingMore={true}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        loadingNextPage={true}
         total={40}
       />,
     );
-    expect(html).toContain(FOOTER_BUTTON_DISABLED);
+    expect(nextDisabled(html)).toBe(true);
     expect(html).toContain(SPINNER);
-    expect(html).toContain('Loading…</button>');
-    expect(html).not.toContain('Load more reused values');
+    expect(html).toContain('Loading…');
     const idle = renderToStaticMarkup(
-      <VaultReuseView entries={rows} hasMore={true} onLoadMore={() => undefined} total={40} />,
+      <VaultReuseView entries={rows} hasNextPage={true} onNextPage={() => undefined} total={40} />,
     );
-    expect(idle).toContain(FOOTER_BUTTON);
-    expect(idle).not.toContain(FOOTER_BUTTON_DISABLED);
+    expect(idle).toContain(FOOTER_NEXT);
+    expect(nextDisabled(idle)).toBe(false);
     expect(idle).not.toContain(SPINNER);
   });
 
@@ -318,16 +389,17 @@ describe('VaultReuseView', () => {
     const html = renderToStaticMarkup(
       <VaultReuseView
         entries={mixedReuseRows()}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        pageStart={1}
         total={40}
       />,
     );
     expect(html).not.toContain('once****MASK');
-    expect(html).toContain('2 of 40 reused values</p>');
-    expect(html).not.toContain('3 of 40 reused values');
+    expect(html).toContain('1–2 of 40 reused values</p>');
+    expect(html).not.toContain('1–3 of 40 reused values');
     const untotalled = renderToStaticMarkup(
-      <VaultReuseView entries={mixedReuseRows()} hasMore={true} onLoadMore={() => undefined} />,
+      <VaultReuseView entries={mixedReuseRows()} hasNextPage={true} onNextPage={() => undefined} />,
     );
     expect(untotalled).toContain('2 shown</p>');
     expect(untotalled).not.toContain('3 shown');
@@ -413,38 +485,40 @@ describe('DerefAuditTableView', () => {
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('Showing the most recent');
     const truncated = renderToStaticMarkup(
-      <DerefAuditTableView rows={rows} hiddenBatched={0} showBatched={false} hasMore={true} />,
+      <DerefAuditTableView rows={rows} hiddenBatched={0} showBatched={false} hasNextPage={true} />,
     );
     expect(truncated).not.toContain(FOOTER);
     expect(truncated).toContain('Showing the most recent 2 resolutions.');
   });
 
-  it('offers the footer button only while more resolutions remain', () => {
+  it('keeps the pager on the last page, with Next disabled', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const more = renderToStaticMarkup(
       <DerefAuditTableView
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
       />,
     );
     expect(more).toContain(FOOTER);
-    expect(more).toContain(FOOTER_BUTTON);
-    expect(more).toContain('>Load more resolutions</button>');
+    expect(more).toContain(FOOTER_NEXT);
+    expect(more).toContain(FOOTER_PREV);
+    expect(nextDisabled(more)).toBe(false);
     expect(more).not.toContain('Showing the most recent');
     const done = renderToStaticMarkup(
       <DerefAuditTableView
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
-        hasMore={false}
-        onLoadMore={() => undefined}
+        hasNextPage={false}
+        onNextPage={() => undefined}
       />,
     );
     expect(done).toContain(FOOTER);
-    expect(done).not.toContain(FOOTER_BUTTON);
+    expect(done).toContain(FOOTER_NEXT);
+    expect(nextDisabled(done)).toBe(true);
     expect(done).toContain(FOOTER_STATUS);
     expect(done).toContain('2 shown</p>');
   });
@@ -456,30 +530,29 @@ describe('DerefAuditTableView', () => {
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
-        hasMore={true}
-        onLoadMore={() => undefined}
-        loadingMore={true}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+        loadingNextPage={true}
       />,
     );
-    expect(html).toContain(FOOTER_BUTTON_DISABLED);
+    expect(nextDisabled(html)).toBe(true);
     expect(html).toContain(SPINNER);
-    expect(html).toContain('Loading…</button>');
-    expect(html).not.toContain('Load more resolutions');
+    expect(html).toContain('Loading…');
     const idle = renderToStaticMarkup(
       <DerefAuditTableView
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
       />,
     );
-    expect(idle).toContain(FOOTER_BUTTON);
-    expect(idle).not.toContain(FOOTER_BUTTON_DISABLED);
+    expect(idle).toContain(FOOTER_NEXT);
+    expect(nextDisabled(idle)).toBe(false);
     expect(idle).not.toContain(SPINNER);
   });
 
-  it('keeps the batched-hidden line and its toggle alongside the load-more footer', () => {
+  it('keeps the batched-hidden line and its toggle alongside the pager', () => {
     // Two different counts that must not displace each other: `hiddenBatched`
     // spans the whole trail, the footer status counts the page.
     const rows = [deref({}), deref({ id: 'second-row-id' })];
@@ -489,13 +562,13 @@ describe('DerefAuditTableView', () => {
         hiddenBatched={4}
         showBatched={false}
         onToggleBatched={() => undefined}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
       />,
     );
     expect(hidden).toContain('4 display/render resolutions hidden');
     expect(hidden).toContain('Show them');
-    expect(hidden).toContain(FOOTER_BUTTON);
+    expect(hidden).toContain(FOOTER_NEXT);
     expect(hidden).toContain('2 shown</p>');
     // Under the flag the trail-wide line gives way to the Hide toggle, and the
     // page footer is untouched by that switch.
@@ -505,13 +578,13 @@ describe('DerefAuditTableView', () => {
         hiddenBatched={4}
         showBatched={true}
         onToggleBatched={() => undefined}
-        hasMore={true}
-        onLoadMore={() => undefined}
+        hasNextPage={true}
+        onNextPage={() => undefined}
       />,
     );
     expect(shown).toContain('Hide display/render resolutions');
     expect(shown).not.toContain('resolutions hidden');
-    expect(shown).toContain(FOOTER_BUTTON);
+    expect(shown).toContain(FOOTER_NEXT);
     expect(shown).toContain('2 shown</p>');
   });
 });
@@ -540,15 +613,15 @@ describe('raw-value hygiene', () => {
       <>
         <VaultInventoryView
           entries={[entry({ revealGrantId: 'grant-1' })]}
-          hasMore={true}
-          onLoadMore={() => undefined}
-          loadingMore={true}
+          hasNextPage={true}
+          onNextPage={() => undefined}
+          loadingNextPage={true}
           total={40}
         />
         <VaultReuseView
           entries={[entry({ occurrences: 2 })]}
-          hasMore={true}
-          onLoadMore={() => undefined}
+          hasNextPage={true}
+          onNextPage={() => undefined}
           total={40}
         />
         <DerefAuditTableView
@@ -556,15 +629,15 @@ describe('raw-value hygiene', () => {
           hiddenBatched={2}
           showBatched={false}
           onToggleBatched={() => undefined}
-          hasMore={true}
-          onLoadMore={() => undefined}
+          hasNextPage={true}
+          onNextPage={() => undefined}
         />
       </>,
     );
     // Positive control: all three footers really rendered, so the absence
     // checks below are reading paginated markup rather than passing vacuously
     // on a shape that never grew a footer at all.
-    expect(html.split(FOOTER_BUTTON).length - 1).toBe(3);
+    expect(html.split(FOOTER_NEXT).length - 1).toBe(3);
     expect(html).not.toMatch(RAW_AWS_KEY_ID);
     expect(html).not.toMatch(RAW_LONG_TOKEN);
   });

@@ -1,9 +1,10 @@
 'use client';
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
-  LoadMore,
-  LoadMoreButton,
-  LoadMoreStatus,
+  Pagination,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -17,9 +18,13 @@ import { ScrubbedValue } from '../shared/ScrubbedValue.tsx';
 export interface VaultReuseViewProps {
   entries: VaultInventoryEntry[];
   // Whether the store holds reused values beyond the ones passed in.
-  hasMore?: boolean;
-  onLoadMore?: (() => void) | undefined;
-  loadingMore?: boolean;
+  hasNextPage?: boolean;
+  hasPreviousPage?: boolean;
+  onNextPage?: (() => void) | undefined;
+  onPreviousPage?: (() => void) | undefined;
+  loadingNextPage?: boolean;
+  // 1-based position of this window's first row in the whole list.
+  pageStart?: number | undefined;
   // Reused values across the whole store. Counted against the rows this view
   // actually renders — which is `entries` after `isReused`, not `entries` —
   // since a caller that paged an unfiltered list would otherwise show a
@@ -41,9 +46,12 @@ function isReused(entry: VaultInventoryEntry): boolean {
  */
 export function VaultReuseView({
   entries,
-  hasMore = false,
-  onLoadMore,
-  loadingMore = false,
+  hasNextPage = false,
+  hasPreviousPage = false,
+  onNextPage,
+  onPreviousPage,
+  loadingNextPage = false,
+  pageStart,
   total,
 }: VaultReuseViewProps) {
   const reused = entries.filter(isReused).sort((a, b) => b.occurrences - a.occurrences);
@@ -77,9 +85,9 @@ export function VaultReuseView({
                 </TableCell>
                 <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
                 <TableCell>
-                  <ul className="space-y-0.5">
+                  <ul className="space-y-0.5 pl-3">
                     {locations.map((location) => (
-                      <li key={location} className="font-mono text-xs text-text-2">
+                      <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
                         {location}
                       </li>
                     ))}
@@ -90,21 +98,25 @@ export function VaultReuseView({
           })}
         </TableBody>
       </Table>
-      {onLoadMore ? (
-        <LoadMore>
-          {hasMore && (
-            <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
-              {loadingMore ? 'Loading…' : 'Load more reused values'}
-            </LoadMoreButton>
-          )}
-          <LoadMoreStatus>
-            {total === undefined
+      {onNextPage ? (
+        <Pagination>
+          <PaginationPrevious
+            disabled={!hasPreviousPage || loadingNextPage}
+            onClick={onPreviousPage}
+          />
+          <PaginationStatus>
+            {total === undefined || pageStart === undefined
               ? `${String(reused.length)} shown`
-              : `${String(reused.length)} of ${String(total)} reused values`}
-          </LoadMoreStatus>
-        </LoadMore>
+              : `${String(pageStart)}–${String(pageStart + reused.length - 1)} of ${String(total)} reused values`}
+          </PaginationStatus>
+          <PaginationNext
+            disabled={!hasNextPage || loadingNextPage}
+            loading={loadingNextPage}
+            onClick={onNextPage}
+          />
+        </Pagination>
       ) : (
-        hasMore && (
+        hasNextPage && (
           <p className="mt-4 text-center text-xs text-text-3">
             Showing the first {reused.length} reused values — the rest are in the store.
           </p>

@@ -12,7 +12,7 @@ import type {
   ListVaultReuseResponse,
   VaultInventoryEntry,
 } from '@akasecurity/schema';
-import { Button, Input } from '@akasecurity/ui-kit';
+import { Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@akasecurity/ui-kit';
 import { useState, useTransition } from 'react';
 
 import type { PurgeVaultResult, RotateVaultKeyResult } from './actions';
@@ -41,15 +41,20 @@ interface VaultDashboardClientProps {
 // contract reaches this hook instead of quietly diverging from it.
 type Page<T> = Pick<ListVaultInventoryResponse, 'nextCursor'> & { items: T[] };
 
-interface PagedState<T> {
+interface WindowState<T> {
+  // Each entry is one fetched page; `cursors[i]` fetches the page AFTER
+  // `pages[i]`. Keyset cursors only run forward, so stepping back has to read
+  // from this cache rather than re-query — there is no "previous" cursor to ask
+  // the store for.
   pages: T[][];
-  cursor: string | null;
+  cursors: (string | null)[];
+  index: number;
   // The in-flight page request, as an identity token. A response is applied
   // only while its own token is still the pending one; anything that
   // invalidates the window — a reset, a newer request — clears or replaces it,
   // and the older response is DROPPED. Without that, a page computed against
-  // the pre-reset window merges into the post-reset one, leaving an
-  // unreachable gap in the middle of the list and a cursor that skips past it.
+  // the pre-reset window lands in the post-reset one, leaving an unreachable
+  // gap and a cursor that skips past it.
   //
   // A token rather than a counter, and in state rather than a ref: the check
   // has to see the LATEST value from inside an async callback, and the React
@@ -58,113 +63,113 @@ interface PagedState<T> {
   pending: object | null;
 }
 
+interface PagedWindow<T> {
+  rows: T[];
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+  /** 1-based position of this window's first row in the whole list. */
+  pageStart: number;
+  next: () => void;
+  previous: () => void;
+}
+
 /**
- * One paged list's client state: the server's first page plus whatever the
- * reader has appended.
+ * One list's windowed client state: exactly one page on screen, with the pages
+ * already walked kept so stepping back is free.
  *
  * The reset is checked DURING RENDER against the first page's object identity,
- * not in an effect. An effect would commit one frame in which the appended
- * pages from the previous read are rendered under the new one — with duplicate
- * React keys, since a revalidate (a revoke, a purge) re-runs the route and
- * hands down a first page covering the same rows.
+ * not in an effect. An effect would commit one frame in which the previous
+ * read's page is rendered under the new one — with duplicate React keys, since
+ * a revalidate (a revoke, a purge) re-runs the route and hands down a first
+ * page covering the same rows.
  */
-function usePagedList<T extends { pointerId: string }>(
+function usePagedWindow<T extends { pointerId: string }>(
   firstPage: Page<T>,
-): {
-  rows: T[];
-  cursor: string | null;
-  /** Claim the next page request; returns the token to apply it under. */
-  claim: () => object;
-  append: (token: object, next: Page<T>) => void;
-  /** Release a claim whose request failed, so the retry is not dropped. */
-  abandon: (token: object) => void;
-} {
-  const [state, setState] = useState<PagedState<T>>({
-    pages: [],
-    cursor: firstPage.nextCursor,
+  fetchPage: (query: { cursor: string }) => Promise<Page<T>>,
+  start: (fn: () => Promise<void>) => void,
+  onError: (message: string) => void,
+  what: string,
+): PagedWindow<T> {
+  const [state, setState] = useState<WindowState<T>>({
+    pages: [firstPage.items],
+    cursors: [firstPage.nextCursor],
+    index: 0,
     pending: null,
   });
 
   const [forPage, setForPage] = useState(firstPage);
   if (forPage !== firstPage) {
     setForPage(firstPage);
-    setState({ pages: [], cursor: firstPage.nextCursor, pending: null });
+    setState({
+      pages: [firstPage.items],
+      cursors: [firstPage.nextCursor],
+      index: 0,
+      pending: null,
+    });
   }
 
-  return {
-    rows: dedupeByPointerId([...firstPage.items, ...state.pages.flat()]),
-    cursor: state.cursor,
-    claim: () => {
-      const token = {};
-      setState((prev) => ({ ...prev, pending: token }));
-      return token;
-    },
-    append: (token: object, next: Page<T>) => {
-      setState((prev) =>
-        prev.pending !== token
-          ? prev
-          : { pages: [...prev.pages, next.items], cursor: next.nextCursor, pending: null },
-      );
-    },
-    abandon: (token: object) => {
-      setState((prev) => (prev.pending !== token ? prev : { ...prev, pending: null }));
-    },
-  };
-}
+  const rows = state.pages[state.index] ?? [];
+  const cursor = state.cursors[state.index] ?? null;
+  // Cached ahead, or the store says there is another page to fetch.
+  const hasNextPage = state.index + 1 < state.pages.length || cursor !== null;
 
-/**
- * First occurrence wins.
- *
- * The window can shift under a walk, because `upsert` bumps the column each
- * list sorts on. The usual outcome of that is a MISS, not a duplicate, and a
- * miss cannot be repaired here — see the store's note on listInventory. What
- * this guards is the rarer direction (a row moving down past the cursor, which
- * takes two writers disagreeing on the clock) plus the ordinary case of a
- * revalidated first page overlapping rows already appended: either way the
- * second copy would collide on its React key.
- */
-function dedupeByPointerId<T extends { pointerId: string }>(entries: T[]): T[] {
-  const seen = new Set<string>();
-  return entries.filter((e) => (seen.has(e.pointerId) ? false : (seen.add(e.pointerId), true)));
-}
-
-/**
- * The load-more handler for one paged list. Always defined: this caller CAN
- * paginate, so the view keeps rendering its footer — the count line is what
- * tells a reader the list is complete, and it must not vanish on the last page.
- * `hasMore` is what governs the button.
- *
- * The cursor is read at BUILD time, so a click that raced a reset sends the
- * stale one; the token it claims is what stops the answer being applied.
- */
-function loadMore<T extends { pointerId: string }>(
-  list: {
-    cursor: string | null;
-    claim: () => object;
-    append: (token: object, next: Page<T>) => void;
-    abandon: (token: object) => void;
-  },
-  fetchPage: (query: { cursor: string }) => Promise<Page<T>>,
-  start: (fn: () => Promise<void>) => void,
-  onError: (message: string) => void,
-  what: string,
-): () => void {
-  const { cursor } = list;
-  return () => {
+  const next = (): void => {
+    // Already walked: stepping forward is just a move, no read.
+    if (state.index + 1 < state.pages.length) {
+      setState((prev) => ({ ...prev, index: prev.index + 1 }));
+      return;
+    }
     if (cursor === null) return;
-    const token = list.claim();
+    const token = {};
+    setState((prev) => ({ ...prev, pending: token }));
     start(async () => {
       try {
-        list.append(token, await fetchPage({ cursor }));
+        const page = await fetchPage({ cursor });
+        setState((prev) => {
+          if (prev.pending !== token) return prev;
+          // The window can shift under a walk, because `upsert` bumps the
+          // column each list sorts on. Dropping a row already on an earlier
+          // page keeps it from rendering twice under one React key; a MISS is
+          // the commoner direction and cannot be repaired here — see the
+          // store's note on listInventory.
+          const seen = new Set(prev.pages.flat().map((e) => e.pointerId));
+          const fresh = page.items.filter((e) => !seen.has(e.pointerId));
+          return {
+            pages: [...prev.pages, fresh],
+            cursors: [...prev.cursors, page.nextCursor],
+            index: prev.index + 1,
+            pending: null,
+          };
+        });
       } catch {
         // A read can fail — the CLI holding a write lock is enough. Every
         // mutating action on this page reports its errors; a page that just
         // stopped spinning over an unchanged list would be the one silent one.
         onError(`The next page of ${what} could not be read.`);
-        list.abandon(token);
+        setState((prev) => (prev.pending !== token ? prev : { ...prev, pending: null }));
       }
     });
   };
+
+  const previous = (): void => {
+    setState((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) }));
+  };
+
+  return {
+    rows,
+    hasNextPage,
+    hasPreviousPage: state.index > 0,
+    pageStart: pageStartOf(state.pages, state.index),
+    next,
+    previous,
+  };
+}
+
+/** 1-based index of the first row on `pageIndex`, counting the pages before it. */
+function pageStartOf(pages: unknown[][], pageIndex: number): number {
+  let start = 1;
+  for (let i = 0; i < pageIndex; i += 1) start += pages[i]?.length ?? 0;
+  return start;
 }
 
 function SectionHead({ title, sub }: { title: string; sub: string }) {
@@ -198,41 +203,76 @@ export function VaultDashboardClient({
   const [actionError, setActionError] = useState<string | null>(null);
   const [rowBusy, startRowTransition] = useTransition();
 
-  const inventoryPages = usePagedList(inventory);
-  const reusePages = usePagedList(reuse);
   const [inventoryBusy, startInventoryTransition] = useTransition();
   const [reuseBusy, startReuseTransition] = useTransition();
+
+  const inventoryPages = usePagedWindow(
+    inventory,
+    loadMoreVaultInventory,
+    startInventoryTransition,
+    setActionError,
+    'vaulted values',
+  );
+  const reusePages = usePagedWindow(
+    reuse,
+    loadMoreVaultReuse,
+    startReuseTransition,
+    setActionError,
+    'reused values',
+  );
 
   const inventoryRows = inventoryPages.rows;
   const reuseRows = reusePages.rows;
 
   // The trail is the one list whose FIRST page can change without the route
-  // re-rendering: flipping the batched toggle re-queries it. `page` holds
-  // whatever that query last returned, seeded from the server's read;
-  // `showBatched` names the filter those rows were read under; `pending` is the
-  // same claim token usePagedList uses, and matters more here — the toggle and
-  // the load-more button are two controls over ONE list, and the toggle is not
-  // disabled while a page is in flight. Without it an append computed under one
-  // filter lands on rows read under the other, producing a list that is neither
-  // trail and a cursor pointing into the wrong window.
+  // re-rendering: flipping the batched toggle re-queries it. So its window
+  // carries the filter its pages were read under, alongside the same page
+  // cache and claim token every other list here uses.
+  //
+  // The token matters more on this list than the others: the toggle and the
+  // pager are two controls over ONE trail, and the toggle is not disabled while
+  // a page is in flight. Without it a page fetched under one filter lands in a
+  // window read under the other, producing a list that is neither trail and a
+  // cursor pointing into the wrong one.
   const [deref, setDeref] = useState<{
-    page: ListVaultDerefsResponse;
+    pages: ListVaultDerefsResponse['items'][];
+    cursors: (string | null)[];
+    index: number;
+    hiddenBatched: number;
     showBatched: boolean;
     pending: object | null;
-  }>({ page: firstDerefs, showBatched: false, pending: null });
+  }>({
+    pages: [firstDerefs.items],
+    cursors: [firstDerefs.nextCursor],
+    index: 0,
+    hiddenBatched: firstDerefs.hiddenBatched,
+    showBatched: false,
+    pending: null,
+  });
   const [derefBusy, startDerefTransition] = useTransition();
-  const derefs = deref.page;
+
+  const derefRows = deref.pages[deref.index] ?? [];
   const showBatched = deref.showBatched;
+  const derefHasNext = deref.index + 1 < deref.pages.length || deref.cursors[deref.index] != null;
+
+  const resetDeref = (page: ListVaultDerefsResponse, batched: boolean) => ({
+    pages: [page.items],
+    cursors: [page.nextCursor],
+    index: 0,
+    hiddenBatched: page.hiddenBatched,
+    showBatched: batched,
+    pending: null,
+  });
 
   // A revalidate (a revoke, a purge) hands down a fresh first page — adopt it
-  // and drop the accumulated trail, checked during render for the same reason
-  // usePagedList checks its own. The toggle resets with it because the server
+  // and drop the walked pages, checked during render for the same reason
+  // usePagedWindow checks its own. The toggle resets with it because the server
   // only ever reads the batched-hidden variant: leaving it on would label those
   // rows as including the display/render ones, which they do not.
   const [forDerefs, setForDerefs] = useState(firstDerefs);
   if (forDerefs !== firstDerefs) {
     setForDerefs(firstDerefs);
-    setDeref({ page: firstDerefs, showBatched: false, pending: null });
+    setDeref(resetDeref(firstDerefs, false));
   }
 
   /**
@@ -260,9 +300,7 @@ export function VaultDashboardClient({
     startDerefTransition(async () => {
       try {
         const page = await loadVaultDerefs(batched ? { includeBatched: true } : {});
-        setDeref((prev) =>
-          prev.pending !== token ? prev : { page, showBatched: batched, pending: null },
-        );
+        setDeref((prev) => (prev.pending !== token ? prev : resetDeref(page, batched)));
       } catch {
         // A read can fail — the CLI holding a write lock is enough. Say so and
         // clear the claim, rather than stopping the spinner over an unchanged
@@ -284,10 +322,15 @@ export function VaultDashboardClient({
     reloadDerefs(showBatched);
   };
 
-  const loadMoreDerefs = () => {
+  const nextDerefPage = () => {
+    // Already walked: stepping forward is just a move, no read.
+    if (deref.index + 1 < deref.pages.length) {
+      setDeref((prev) => ({ ...prev, index: prev.index + 1 }));
+      return;
+    }
     // Read at BUILD time alongside the filter, so a click that raced a flip
     // sends the old pair — and the token is what stops the answer landing.
-    const cursor = derefs.nextCursor;
+    const cursor = deref.cursors[deref.index] ?? null;
     const batched = showBatched;
     if (cursor === null) return;
     const token = claimDeref(batched);
@@ -297,18 +340,15 @@ export function VaultDashboardClient({
           ...(batched ? { includeBatched: true } : {}),
           cursor,
         });
-        // Appended in place, so the toggle and the pages stay one list rather
-        // than two sources the view has to reconcile.
         setDeref((prev) =>
           prev.pending !== token
             ? prev
             : {
-                page: {
-                  items: [...prev.page.items, ...page.items],
-                  nextCursor: page.nextCursor,
-                  hiddenBatched: page.hiddenBatched,
-                },
-                showBatched: prev.showBatched,
+                ...prev,
+                pages: [...prev.pages, page.items],
+                cursors: [...prev.cursors, page.nextCursor],
+                index: prev.index + 1,
+                hiddenBatched: page.hiddenBatched,
                 pending: null,
               },
         );
@@ -317,6 +357,10 @@ export function VaultDashboardClient({
         setDeref((prev) => (prev.pending !== token ? prev : { ...prev, pending: null }));
       }
     });
+  };
+
+  const previousDerefPage = () => {
+    setDeref((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) }));
   };
 
   const [purgeText, setPurgeText] = useState('');
@@ -394,8 +438,15 @@ export function VaultDashboardClient({
   const revealedEntries = Object.values(revealed);
 
   return (
-    <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-3">
+    <Tabs defaultValue="inventory" className="flex flex-col gap-4">
+      <TabsList>
+        <TabsTrigger value="inventory">Vaulted values</TabsTrigger>
+        <TabsTrigger value="reuse">Reuse</TabsTrigger>
+        <TabsTrigger value="audit">De-reference audit</TabsTrigger>
+        <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="inventory" className="flex flex-col gap-3">
         <SectionHead
           title="Vaulted values"
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
@@ -454,55 +505,57 @@ export function VaultDashboardClient({
           onReveal={onReveal}
           onRevoke={onRevoke}
           total={inventory.totals.values}
-          hasMore={inventoryPages.cursor !== null}
-          loadingMore={inventoryBusy}
-          onLoadMore={loadMore(
-            inventoryPages,
-            loadMoreVaultInventory,
-            startInventoryTransition,
-            setActionError,
-            'vaulted values',
-          )}
+          pageStart={inventoryPages.pageStart}
+          hasNextPage={inventoryPages.hasNextPage}
+          hasPreviousPage={inventoryPages.hasPreviousPage}
+          loadingNextPage={inventoryBusy}
+          onNextPage={inventoryPages.next}
+          onPreviousPage={inventoryPages.previous}
         />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="reuse" className="flex flex-col gap-3">
         <SectionHead
           title="Reuse on this machine"
           sub="Values detected in more than one place. Reuse widens the blast radius of a single leak."
         />
+        {/*
+          Its OWN read, never the inventory's. Reuse is a property of the whole
+          store, so filtering the inventory window here would answer "which
+          values are reused" with "the ones on this page that happen to be".
+        */}
         <VaultReuseView
           entries={reuseRows}
           total={reuse.totals.reused}
-          hasMore={reusePages.cursor !== null}
-          loadingMore={reuseBusy}
-          onLoadMore={loadMore(
-            reusePages,
-            loadMoreVaultReuse,
-            startReuseTransition,
-            setActionError,
-            'reused values',
-          )}
+          pageStart={reusePages.pageStart}
+          hasNextPage={reusePages.hasNextPage}
+          hasPreviousPage={reusePages.hasPreviousPage}
+          loadingNextPage={reuseBusy}
+          onNextPage={reusePages.next}
+          onPreviousPage={reusePages.previous}
         />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="audit" className="flex flex-col gap-3">
         <SectionHead
           title="De-reference audit"
           sub="Every resolution of a vaulted value — never the value itself. Model crossings render loud."
         />
         <DerefAuditTableView
-          rows={derefs.items}
-          hiddenBatched={derefs.hiddenBatched}
+          rows={derefRows}
+          hiddenBatched={deref.hiddenBatched}
           showBatched={showBatched}
           onToggleBatched={toggleBatched}
-          hasMore={derefs.nextCursor !== null}
-          loadingMore={derefBusy}
-          onLoadMore={loadMoreDerefs}
+          pageStart={pageStartOf(deref.pages, deref.index)}
+          hasNextPage={derefHasNext}
+          hasPreviousPage={deref.index > 0}
+          loadingNextPage={derefBusy}
+          onNextPage={nextDerefPage}
+          onPreviousPage={previousDerefPage}
         />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="maintenance" className="flex flex-col gap-3">
         <SectionHead title="Vault maintenance" sub="Key rotation is routine; the purge is not." />
         <div className="rounded-xl border border-border bg-surface p-5">
           <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
@@ -576,7 +629,7 @@ export function VaultDashboardClient({
             </Button>
           </div>
         </div>
-      </section>
-    </div>
+      </TabsContent>
+    </Tabs>
   );
 }

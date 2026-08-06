@@ -216,14 +216,22 @@ function removeTree(home: string): void {
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code !== undefined && STILL_HELD.has(code)) {
-      // A bare EPERM from an rm names neither the tree nor the likely cause, and
-      // on the Windows leg that is the whole diagnostic a reader gets.
-      throw new Error(
-        `temp store teardown could not remove ${home} (${code}). Something still holds a file ` +
-          'under it: a handle the test opened outside the store (use openRaw), or one an open ' +
-          'path failed without closing.',
-        { cause: err },
-      );
+      // A bare EPERM/EACCES from an rm names neither the tree nor the likely
+      // cause, and on the Windows leg that is the whole diagnostic a reader
+      // gets. The likely cause is platform-specific: on Windows these codes
+      // mean a handle is still open, full stop. On POSIX the same codes are at
+      // least as often a directory mode a test set and never restored —
+      // removing an entry needs write+execute on its PARENT, not on the entry
+      // itself — so a held handle is named second there, not first.
+      const likely =
+        process.platform === 'win32'
+          ? 'a handle still holds a file under it: one the test opened outside the store ' +
+            '(use openRaw), or one an open path failed without closing'
+          : 'a directory under it is not writable (a mode a test set and did not restore), ' +
+            'or a handle still holds a file under it';
+      throw new Error(`temp store teardown could not remove ${home} (${code}): ${likely}.`, {
+        cause: err,
+      });
     }
     throw err;
   }

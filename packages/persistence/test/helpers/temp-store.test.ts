@@ -128,7 +128,10 @@ describe('withTempStore', () => {
     // `rmSync` reads `EACCES: permission denied, rmdir '<home>'` and contains it
     // too. These two are what separate the wrapper from the bare throw: the
     // explanation a reader can act on, and the errno still travelling under it.
-    expect(first?.message).toMatch(/still holds a file/);
+    // This case is a directory mode, not a held handle — nothing here ever
+    // opened one — so it must land in the POSIX branch's first clause rather
+    // than the "still holds a file" wording a held handle would produce.
+    expect(first?.message).toMatch(/not writable/);
     expect((first?.cause as { code?: string } | undefined)?.code).toBeTruthy();
   });
 

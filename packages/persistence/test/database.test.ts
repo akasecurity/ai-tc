@@ -585,8 +585,9 @@ describe('a failed open leaves no handle behind', () => {
     for (let i = 0; i < ATTEMPTS; i += 1) {
       expect(() => openLocalDatabase(dir)).toThrow(/no such table/);
     }
-    // Measured on macOS while this was unguarded: five attempts leaked twelve
-    // descriptors. afterEach is what catches it on Windows.
+    // Measured on macOS with the sequence guard removed: ~2 descriptors per
+    // attempt, matching the 11 the guard-removal table above records for this
+    // case. afterEach is what catches it on Windows.
   });
 
   it('leaks no descriptor when a repository constructor throws', (ctx) => {

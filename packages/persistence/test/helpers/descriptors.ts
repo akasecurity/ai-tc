@@ -19,12 +19,29 @@
  *
  * ## Why a total count is not flaky
  *
- * Because the measured window is **synchronous**. Node runs one thread, so
- * between the two counts no timer, no socket, no `fs` completion and no reporter
- * callback can run — the only code that executes inside the window is the thunk
- * itself. `leakedBy` refuses a thunk that returns a thenable for that reason: an
- * `await` inside would hand the loop back, unrelated I/O would settle, and the
- * delta would stop describing the thunk.
+ * Because the measured window is **synchronous**, and because it runs inside one
+ * OS process. The second half is not this module's doing: this package's
+ * `vitest.config.ts` sets no `pool`, so it inherits vitest 4's default,
+ * `pool: 'forks'` — one process per test file, each with its own descriptor
+ * table. Switch that config to `pool: 'threads'` and every worker in the process
+ * shares one table, so another file's `openLocalDatabase` can land inside this
+ * delta while this file's thunk runs — the window would still be synchronous and
+ * the count would still be wrong.
+ *
+ * Within that process, a synchronous window means no timer, no socket, no `fs`
+ * completion and no reporter callback can run between the two counts — the only
+ * code that executes inside the window is the thunk itself. `leakedBy` refuses a
+ * thunk that returns a thenable for that reason: an `await` inside would hand
+ * the loop back, unrelated I/O would settle, and the delta would stop describing
+ * the thunk.
+ *
+ * One gap survives both: Node's async `fs` calls run their actual syscall on a
+ * libuv threadpool thread, not the main one, so a call already in flight when
+ * the window opens can have its descriptor allocated inside the window even
+ * though its JS callback cannot fire there. That is a low-probability window —
+ * reporter and source-map I/O, mostly — not a zero one, which is why the
+ * counting tests that use this probe assert an exact `leaked === 0` rather than
+ * a looser bound: a stray tick fails loudly instead of hiding a leak.
  *
  * ## Why the probe validates itself
  *

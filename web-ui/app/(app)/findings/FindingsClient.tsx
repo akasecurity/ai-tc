@@ -376,7 +376,7 @@ function GroupedView({
   const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
 
   const onNextPage = () => {
-    if (pageIndex + 1 < pages.length) {
+    if (!needsFetch(pages.length, pageIndex)) {
       setPageIndex((i) => i + 1);
       return;
     }
@@ -392,7 +392,15 @@ function GroupedView({
         }),
         cursor,
       });
-      setPages((prev) => [...prev, next.items]);
+      // page 0's `?finding=` deep link is appended out of sort order (see
+      // ListGroupedFindingsQuery.includeId) and resurfaces here at its natural
+      // cursor position once paging reaches it — drop the repeat so a page
+      // never shows the same group twice. Once dropped, this page contributes
+      // one fewer row than it fetched, which is what lets pageStartOf's running
+      // sum catch back up to the true position after being one row ahead of it
+      // on the pages in between.
+      const fresh = dedupeAgainstPages(pages, next.items);
+      setPages((prev) => [...prev, fresh]);
       setCursors((prev) => [...prev, next.nextCursor]);
       setPageIndex((i) => i + 1);
     });
@@ -545,7 +553,10 @@ function FlatView({
   const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
 
   const onNextPage = () => {
-    if (pageIndex + 1 < pages.length) {
+    // Paging closes the detail drawer rather than leaving it silently pointing
+    // at a row `items` (now just the new page) no longer contains.
+    setSelectedInstanceId('');
+    if (!needsFetch(pages.length, pageIndex)) {
       setPageIndex((i) => i + 1);
       return;
     }
@@ -568,6 +579,7 @@ function FlatView({
   };
 
   const onPreviousPage = () => {
+    setSelectedInstanceId('');
     setPageIndex((i) => Math.max(0, i - 1));
   };
 
@@ -648,12 +660,37 @@ function LocationsView({
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+//
+// Exported (rather than file-local) so the page-cache derivation itself is
+// directly unit-testable — see test/pages/findings-pagination.test.ts — without
+// rendering GroupedView/FlatView, which this package's vitest setup (no DOM,
+// no React renderer) cannot do.
 
 /** 1-indexed position of `pages[pageIndex][0]` within the whole result set. */
-function pageStartOf(pages: unknown[][], pageIndex: number): number {
+export function pageStartOf(pages: unknown[][], pageIndex: number): number {
   let start = 1;
   for (let i = 0; i < pageIndex; i += 1) start += pages[i]?.length ?? 0;
   return start;
+}
+
+/**
+ * Whether stepping to the page after `pageIndex` needs a server fetch, or can
+ * just replay a page already sitting in the cache. `pageCount` is `pages.length`.
+ */
+export function needsFetch(pageCount: number, pageIndex: number): boolean {
+  return pageIndex + 1 >= pageCount;
+}
+
+/**
+ * Drop any item already rendered on an earlier page. The one case this matters
+ * for today: GroupedView's `?finding=` deep link is appended to page 0 out of
+ * sort order (see ListGroupedFindingsQuery.includeId) and resurfaces here at
+ * its natural cursor position once paging reaches it — without this, that
+ * group renders twice as the user pages through.
+ */
+export function dedupeAgainstPages<T extends { id: string }>(pages: T[][], incoming: T[]): T[] {
+  const seen = new Set(pages.flat().map((item) => item.id));
+  return incoming.filter((item) => !seen.has(item.id));
 }
 
 /**

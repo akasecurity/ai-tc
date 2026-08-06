@@ -6,12 +6,12 @@ import { cn } from './lib/cn.ts';
 /**
  * Discrete-page footer: Previous/Next buttons plus a status line.
  *
- * The sibling of LoadMore, for a list whose caller pages through discrete
- * chunks instead of accumulating everything fetched so far. Stepping only —
- * no numbered page links — because the lists this backs are keyset-paged (see
- * load-more.tsx): there is no offset to jump to, only "the page after this
- * cursor." The caller owns its page cache and cursor history, so Previous is
- * expected to replay an already-fetched page rather than refetch.
+ * For a list whose caller pages through discrete chunks instead of
+ * accumulating everything fetched so far. Stepping only — no numbered page
+ * links — because the lists this backs are keyset-paged: there is no offset
+ * to jump to, only "the page after this cursor." The caller owns its page
+ * cache and cursor history, so Previous is expected to replay an
+ * already-fetched page rather than refetch.
  */
 export function Pagination({ className, ...props }: ComponentPropsWithRef<'nav'>) {
   return (
@@ -37,7 +37,7 @@ export function PaginationPrevious({ children, ...props }: ButtonProps) {
 export function PaginationNext({
   loading = false,
   children,
-  disabled,
+  disabled = false,
   ...props
 }: ButtonProps & { loading?: boolean }) {
   return (
@@ -46,7 +46,7 @@ export function PaginationNext({
       variant="outline"
       tone="neutral"
       size="sm"
-      disabled={disabled ?? loading}
+      disabled={disabled || loading}
       {...props}
     >
       {children ?? (loading ? 'Loading…' : 'Next')}

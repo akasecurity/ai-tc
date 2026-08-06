@@ -146,9 +146,9 @@ function VaultInventoryRow({
                 {entry.sightings.length === 1 ? 'location' : 'locations'} — anyone who can read them
                 sees the correlation
               </summary>
-              <div className="mt-2 space-y-1 flex flex-col gap-2">
+              <ul className="mt-2 flex flex-col gap-2">
                 {entry.sightings.map((sighting) => (
-                  <div
+                  <li
                     key={`${sighting.kind}:${sighting.location}`}
                     className="grid grid-cols-[1fr_110px_100px] items-center gap-2 text-xs text-text-2"
                   >
@@ -157,9 +157,9 @@ function VaultInventoryRow({
                       <SightingKindChip kind={sighting.kind} />
                     </div>
                     <span className="text-text-3">{relativeTime(sighting.lastSeen)}</span>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </details>
           </TableCell>
         </TableRow>

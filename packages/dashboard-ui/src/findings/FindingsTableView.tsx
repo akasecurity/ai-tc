@@ -258,8 +258,7 @@ export function FindingsTableView({
           instances and would disagree with this number. */}
       </div>
       {onNextPage
-        ? groups.length > 0 &&
-          (hasNextPage || hasPreviousPage) && (
+        ? groups.length > 0 && (
             <Pagination>
               <PaginationPrevious
                 disabled={!hasPreviousPage || loadingNextPage}
@@ -300,11 +299,9 @@ function TypeCell({ finding }: { finding: FindingGroup }) {
         <Icon className="size-4" />
       </span>
       <div className="flex flex-col">
-        <span className="font-semibold text-text break-words [word-break:break-word]">
-          {finding.subtype}
-        </span>
+        <span className="font-semibold text-text wrap-anywhere">{finding.subtype}</span>
         <span
-          className="font-mono text-xs text-text-3 break-words [word-break:break-word]"
+          className="font-mono text-xs text-text-3 wrap-anywhere"
           title={finding.match.maskedValue}
         >
           {finding.match.maskedValue}
@@ -347,20 +344,14 @@ const INSTANCE_CELL: Record<
     <div className="flex items-center gap-2.5 pl-1">
       <span className="-mt-1.5 size-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
       <div className="flex flex-col gap-px">
-        <span className="font-semibold text-text text-ui break-words [word-break:break-word]">
-          {i.repo}
-        </span>
-        <span className="font-mono text-label text-text-3 break-words [word-break:break-word]">
-          {i.id}
-        </span>
+        <span className="font-semibold text-text text-ui wrap-anywhere">{i.repo}</span>
+        <span className="font-mono text-label text-text-3 wrap-anywhere">{i.id}</span>
       </div>
     </div>
   ),
   sources: (_g, i) => <ProviderTag provider={i.provider} />,
   locations: (_g, i) => (
-    <span className="font-mono text-xs text-text-3 break-words [word-break:break-word]">
-      {instanceLocationLabel(i)}
-    </span>
+    <span className="font-mono text-xs text-text-3 wrap-anywhere">{instanceLocationLabel(i)}</span>
   ),
   action: (_g, i) => <ActionTag action={i.action} />,
   status: (_g, i) => <StatusCell status={i.status} />,

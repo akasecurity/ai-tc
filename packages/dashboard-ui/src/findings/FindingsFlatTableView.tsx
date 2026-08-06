@@ -30,7 +30,9 @@ import {
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
 
-const FINDING_COLUMN_CLASS: Record<string, string> = {
+type FlatColumnId = 'severity' | 'type' | 'sources' | 'location' | 'action' | 'status' | 'latest';
+
+const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
   sources: 'min-w-[140px] whitespace-nowrap',
   action: 'min-w-[130px] whitespace-nowrap',
@@ -136,10 +138,10 @@ export function FindingsFlatTableView({
                           <Icon aria-hidden focusable={false} className="size-3.5" />
                         </span>
                         <div className="min-w-0">
-                          <div className="text-ui font-semibold text-text break-words [word-break:break-word]">
+                          <div className="text-ui font-semibold text-text wrap-anywhere">
                             {instance.subtype}
                           </div>
-                          <div className="font-mono text-xs text-text-3 break-words [word-break:break-word]">
+                          <div className="font-mono text-xs text-text-3 wrap-anywhere">
                             {instance.match.maskedValue}
                           </div>
                         </div>
@@ -150,13 +152,11 @@ export function FindingsFlatTableView({
                     </TableCell>
                     <TableCell className={FINDING_COLUMN_CLASS.location}>
                       <div className="min-w-0">
-                        <div className="font-mono text-xs text-text-2 break-words [word-break:break-word]">
+                        <div className="font-mono text-xs text-text-2 wrap-anywhere">
                           {instanceLocationLabel(instance)}
                         </div>
                         {instance.repo && (
-                          <div className="text-xs text-text-3 break-words [word-break:break-word]">
-                            {instance.repo}
-                          </div>
+                          <div className="text-xs text-text-3 wrap-anywhere">{instance.repo}</div>
                         )}
                       </div>
                     </TableCell>
@@ -184,7 +184,7 @@ export function FindingsFlatTableView({
           </Table>
         )}
       </div>
-      {onNextPage && items.length > 0 && (hasNextPage || hasPreviousPage) && (
+      {onNextPage && items.length > 0 && (
         <Pagination>
           <PaginationPrevious
             disabled={!hasPreviousPage || loadingNextPage}

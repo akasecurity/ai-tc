@@ -400,6 +400,14 @@ describe('SqliteExceptionsRepository', () => {
         // `consume` is deliberately NOT wrapped in try/catch, so contention
         // surfaces as a throw. Captured outside its own catch — inside one, a
         // `consume` that stopped throwing would satisfy the assertion below.
+        //
+        // `errorFrom` is a SYNCHRONOUS try/catch, and it reaches this throw
+        // only because `consume` returns `Promise.resolve(...)` rather than
+        // being `async`: the statement runs on the calling stack, before any
+        // promise exists. Marking it `async` — a refactor its return type
+        // invites — turns the throw into a rejection this cannot see, and the
+        // assertion below then fails on `undefined` with an unhandled
+        // rejection beside it.
         const err = errorFrom(() => contended.consume(grant.id));
         lock.release();
 

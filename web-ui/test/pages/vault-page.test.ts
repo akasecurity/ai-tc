@@ -62,20 +62,26 @@ function dropMemoisedDb(): void {
 // The fixture is seeded ONCE for the whole file, not per test.
 //
 // Every assertion here READS — the route is a Server Component that only
-// queries — so a per-test store bought no isolation, and it is not free: the
-// fixture is 175 writes (113 upserts + 62 derefs), and `upsert` commits its own
-// IMMEDIATE transaction per call, so each seed is that many durable commits. On
-// a developer machine that is ~30ms and invisible; on the Windows CI leg a
-// commit costs a fsync, and the file ran 93s for 7 tests — ~13s each, six of
-// them re-seeding the same rows — which put every test against the 20s per-test
-// budget in web-ui/vitest.config.ts and timed one out.
+// queries — so a per-test store buys no isolation, and it is not free. The
+// fixture is 175 writes (113 upserts + 62 derefs), which unwrapped is 175
+// durable commits, and on the Windows CI leg a commit costs a fsync. Seeding
+// that per test ran the file at ~13s a test against the 20s per-test budget in
+// web-ui/vitest.config.ts, and timed one out.
 // packages/persistence/test/repositories/findings.test.ts seeds its bulk store
 // once for the same reason.
 //
-// So the seed is a hook, and the hook carries its own budget. That is sizing, not
-// waiting out a slow test: the cost is one fixture that has to outgrow a 50-row
-// page, paid once, and the per-test budget stays at the config default — where a
-// genuinely slow assertion still has to answer for itself.
+// Both halves of that are fixed, and the second is what makes it hold. Seeding
+// once takes six seeds to one; wrapping the seed in a single transaction
+// (`seedFixture`) takes that one seed from 175 commits to 1. The first alone
+// was not enough — it left the whole cost in one hook, which then blew a 60s
+// hook budget on a runner roughly five times slower than the one it was sized
+// against.
+//
+// The hook keeps an explicit budget anyway, now covering the store open and its
+// migrations rather than a pile of fsyncs: on that same degraded runner a plain
+// one-store `beforeEach` elsewhere in this package exceeded 20s. The per-test
+// budget stays at the config default, where a genuinely slow assertion still
+// has to answer for itself.
 //
 // This holds only while the block stays read-only. A test that WRITES belongs
 // on its own store — `afterAll` re-reads the totals and fails if the fixture
@@ -83,12 +89,12 @@ function dropMemoisedDb(): void {
 // in whichever neighbour happened to run next.
 const SEED_TIMEOUT_MS = 60_000;
 
-beforeAll(() => {
+beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-vault-page-'));
   osHome.dir = home;
   dir = dataDir();
   dropMemoisedDb();
-  seedFixture();
+  await seedFixture();
 }, SEED_TIMEOUT_MS);
 
 afterAll(() => {
@@ -188,30 +194,40 @@ const OLDEST_OCCURRENCES = 5;
 const BATCHED_DEREFS = 7;
 const SURFACED_DEREFS = DEFAULT_VAULT_DEREFS_LIMIT + 5;
 
-function seedFixture(): void {
+async function seedFixture(): Promise<void> {
   const db = openLocalDatabase(dir);
   try {
-    for (let i = 0; i < SEEDED_VALUES; i += 1) {
-      const pointerId = `vault-${String(SEEDED_VALUES - 1 - i).padStart(2, '0')}`;
-      const at = BASE + i * 1_000;
-      // Every upsert passes the same clock: a repeat sighting bumps `last_seen`,
-      // so this raises the occurrence count the reuse list ranks on while
-      // leaving the stamp the inventory sorts on where it was put.
-      const times = i === 0 ? OLDEST_OCCURRENCES : 2;
-      for (let n = 0; n < times; n += 1) db.secretVault.upsert(vaultRow(pointerId), at);
-    }
-    const deref = (at: number, reason: VaultDerefReason): void => {
-      db.secretVault.recordDeref({
-        id: randomUUID(),
-        pointerId: NEWEST_POINTER,
-        at,
-        target: 'human',
-        reason,
-        outcome: 'revealed',
-      });
-    };
-    for (let i = 0; i < SURFACED_DEREFS; i += 1) deref(BASE + i * 1_000, 'explicit-reveal');
-    for (let i = 0; i < BATCHED_DEREFS; i += 1) deref(BASE + i * 1_000, 'display');
+    // ONE transaction around all 175 writes, so the seed costs one commit
+    // rather than 175. `upsert` opens its own IMMEDIATE envelope per call and
+    // `recordDeref` writes its own row, so unwrapped this is 175 durable
+    // commits — and a commit is an fsync, which is why the seed was the
+    // tallest pole on the Windows leg. Nesting is supported rather than
+    // tolerated: `withTransaction` runs inside a SAVEPOINT when the handle is
+    // already in a transaction, and only this outer COMMIT makes any of it
+    // durable.
+    await db.transaction(() => {
+      for (let i = 0; i < SEEDED_VALUES; i += 1) {
+        const pointerId = `vault-${String(SEEDED_VALUES - 1 - i).padStart(2, '0')}`;
+        const at = BASE + i * 1_000;
+        // Every upsert passes the same clock: a repeat sighting bumps
+        // `last_seen`, so this raises the occurrence count the reuse list ranks
+        // on while leaving the stamp the inventory sorts on where it was put.
+        const times = i === 0 ? OLDEST_OCCURRENCES : 2;
+        for (let n = 0; n < times; n += 1) db.secretVault.upsert(vaultRow(pointerId), at);
+      }
+      const deref = (at: number, reason: VaultDerefReason): void => {
+        db.secretVault.recordDeref({
+          id: randomUUID(),
+          pointerId: NEWEST_POINTER,
+          at,
+          target: 'human',
+          reason,
+          outcome: 'revealed',
+        });
+      };
+      for (let i = 0; i < SURFACED_DEREFS; i += 1) deref(BASE + i * 1_000, 'explicit-reveal');
+      for (let i = 0; i < BATCHED_DEREFS; i += 1) deref(BASE + i * 1_000, 'display');
+    });
   } finally {
     db.close();
   }

@@ -805,4 +805,42 @@ describe('SqliteSecretVaultRepository.listDerefs', () => {
     expect(fresh.items.map((i) => i.id)).toEqual(EXPECTED_VISIBLE.slice(0, 3));
     expect(restarted.items.map((i) => i.id)).toEqual(fresh.items.map((i) => i.id));
   });
+
+  // Both reads are index-only, and they use DIFFERENT indexes. The default page
+  // filters out the two high-volume reasons, so `(at, id)` orders it but does
+  // not narrow it — the walk would fetch each row and discard most of them. The
+  // partial index carries the same predicate; the full one still serves the
+  // toggle, where the partial does not apply. Asserting the plan rather than a
+  // duration: the timing is single-digit ms either way on a small store, so
+  // only the plan can tell an index-only read from a filtered scan.
+  describe('query plans', () => {
+    function planOf(sql: string): string {
+      return (raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[])
+        .map((p) => p.detail)
+        .join(' | ');
+    }
+
+    it('serves the default page from the partial index and the toggle from the full one', () => {
+      seedTrail();
+
+      const visible = planOf(
+        `SELECT id, pointer_id, at, target, reason, outcome, grant_id, pointer_count
+           FROM secret_vault_deref
+          WHERE reason NOT IN ('display', 'view-render')
+          ORDER BY at DESC, id DESC LIMIT 4`,
+      );
+      const all = planOf(
+        `SELECT id, pointer_id, at, target, reason, outcome, grant_id, pointer_count
+           FROM secret_vault_deref
+          ORDER BY at DESC, id DESC LIMIT 4`,
+      );
+
+      expect(visible).toContain('idx_secret_vault_deref_signal');
+      expect(all).toContain('idx_secret_vault_deref_at');
+      // Neither sorts: a temp B-tree here would mean the index is ordering
+      // nothing and the LIMIT is applied after the whole trail is read.
+      expect(visible).not.toContain('TEMP B-TREE');
+      expect(all).not.toContain('TEMP B-TREE');
+    });
+  });
 });

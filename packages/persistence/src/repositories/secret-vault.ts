@@ -413,16 +413,6 @@ export class SqliteSecretVaultRepository {
       });
   }
 
-  listSightings(pointerId: string): VaultSighting[] {
-    return allRows<RawSightingRow>(
-      this.db.prepare(
-        `SELECT pointer_id, location, kind, first_seen, last_seen FROM secret_vault_sighting
-          WHERE pointer_id = :pointerId ORDER BY last_seen DESC`,
-      ),
-      { pointerId },
-    ).map(toSighting);
-  }
-
   /**
    * Sightings for a whole page of pointers, in ONE query grouped in JS rather
    * than one query per row. A pointer with no sightings still gets an entry, so

@@ -7,7 +7,7 @@ import {
   VaultReuseView,
 } from '@akasecurity/dashboard-ui';
 import type { VaultDeref, VaultInventoryEntry } from '@akasecurity/schema';
-import { Button, Input } from '@akasecurity/ui-kit';
+import { Button, Input, Tabs, TabsContent, TabsList, TabsTrigger } from '@akasecurity/ui-kit';
 import { useState, useTransition } from 'react';
 
 import type { PurgeVaultResult, RotateVaultKeyResult } from './actions';
@@ -112,8 +112,15 @@ export function VaultDashboardClient({
   const revealedEntries = inventory.filter((entry) => entry.pointerId in revealed);
 
   return (
-    <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-3">
+    <Tabs defaultValue="inventory" className="flex flex-col gap-4">
+      <TabsList>
+        <TabsTrigger value="inventory">Vaulted values</TabsTrigger>
+        <TabsTrigger value="reuse">Reuse</TabsTrigger>
+        <TabsTrigger value="audit">De-reference audit</TabsTrigger>
+        <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="inventory" className="flex flex-col gap-3">
         <SectionHead
           title="Vaulted values"
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
@@ -156,17 +163,17 @@ export function VaultDashboardClient({
             </ul>
           </div>
         )}
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="reuse" className="flex flex-col gap-3">
         <SectionHead
           title="Reuse on this machine"
           sub="Values detected in more than one place. Reuse widens the blast radius of a single leak."
         />
         <VaultReuseView entries={inventory} />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="audit" className="flex flex-col gap-3">
         <SectionHead
           title="De-reference audit"
           sub="Every resolution of a vaulted value — never the value itself. Model crossings render loud."
@@ -177,9 +184,9 @@ export function VaultDashboardClient({
           showBatched={showBatched}
           onToggleBatched={setShowBatched}
         />
-      </section>
+      </TabsContent>
 
-      <section className="flex flex-col gap-3">
+      <TabsContent value="maintenance" className="flex flex-col gap-3">
         <SectionHead title="Vault maintenance" sub="Key rotation is routine; the purge is not." />
         <div className="rounded-xl border border-border bg-surface p-5">
           <div className="mb-1.5 text-label font-semibold uppercase tracking-wider text-text-3">
@@ -253,7 +260,7 @@ export function VaultDashboardClient({
             </Button>
           </div>
         </div>
-      </section>
-    </div>
+      </TabsContent>
+    </Tabs>
   );
 }

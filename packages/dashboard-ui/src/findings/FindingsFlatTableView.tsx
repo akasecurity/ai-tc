@@ -5,9 +5,10 @@ import {
   Badge,
   Card,
   cn,
-  LoadMore,
-  LoadMoreButton,
-  LoadMoreStatus,
+  Pagination,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationStatus,
   SeverityBadge,
   Table,
   TableBody,
@@ -29,6 +30,18 @@ import {
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
 
+type FlatColumnId = 'severity' | 'type' | 'sources' | 'location' | 'action' | 'status' | 'latest';
+
+const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
+  severity: 'min-w-[110px] whitespace-nowrap',
+  sources: 'min-w-[140px] whitespace-nowrap',
+  action: 'min-w-[130px] whitespace-nowrap',
+  status: 'min-w-[110px] whitespace-nowrap',
+  latest: 'min-w-[100px] whitespace-nowrap',
+  location: 'min-w-[200px]',
+  type: 'min-w-[200px]',
+};
+
 /**
  * The flat findings table — one row per finding, newest first.
  *
@@ -36,8 +49,8 @@ import { ProviderTag } from './ProviderChips.tsx';
  * happened most recently" and so has no expansion: every row is already a single
  * location, and the counts it shows are findings rather than types.
  *
- * Fully presentational. Selection and pagination state are the caller's; a page
- * of rows arrives already accumulated.
+ * Fully presentational. Selection and pagination state are the caller's; `items`
+ * is only the current page's rows, not everything fetched so far.
  *
  * Layout contract: as with FindingsTableView, the card fills its container and
  * scrolls internally, so it needs a height-constrained parent.
@@ -46,9 +59,12 @@ export function FindingsFlatTableView({
   items,
   selectedId,
   onSelect,
-  onLoadMore,
-  loadingMore = false,
-  hasMore = false,
+  onNextPage,
+  onPreviousPage,
+  hasNextPage = false,
+  hasPreviousPage = false,
+  loadingNextPage = false,
+  pageStart,
   total,
   isLoading = false,
   emptyState,
@@ -57,10 +73,14 @@ export function FindingsFlatTableView({
   /** The row rendered as selected ('' for none). */
   selectedId?: string;
   onSelect: (instance: FindingInstanceDetail) => void;
-  /** Absent ⇒ no pagination footer, however `hasMore` reads. */
-  onLoadMore?: () => void;
-  loadingMore?: boolean;
-  hasMore?: boolean;
+  /** Absent ⇒ no pagination footer, however the has*Page flags read. */
+  onNextPage?: () => void;
+  onPreviousPage?: () => void;
+  hasNextPage?: boolean;
+  hasPreviousPage?: boolean;
+  loadingNextPage?: boolean;
+  /** 1-indexed position of `items[0]` within the whole result set — needed to render "51–100 of N". Absent ⇒ falls back to "{items.length} shown". */
+  pageStart?: number;
   /** Findings matching the filters across the whole scope, not just this page. */
   total?: number;
   isLoading?: boolean;
@@ -83,13 +103,13 @@ export function FindingsFlatTableView({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Severity</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Location</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Detected</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.severity}>Severity</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.type}>Type</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.sources}>Source</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.location}>Location</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.action}>Action</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.status}>Status</TableHead>
+                <TableHead className={FINDING_COLUMN_CLASS.latest}>Detected</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -99,15 +119,15 @@ export function FindingsFlatTableView({
                   <TableRow
                     key={instance.id}
                     data-state={selectedId === instance.id ? 'selected' : undefined}
-                    className="cursor-pointer"
+                    className="cursor-pointer hover:bg-surface-2"
                     onClick={() => {
                       onSelect(instance);
                     }}
                   >
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.severity}>
                       <SeverityBadge severity={instance.severity} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.type}>
                       <div className="flex items-center gap-2.5">
                         <span
                           className={cn(
@@ -118,32 +138,32 @@ export function FindingsFlatTableView({
                           <Icon aria-hidden focusable={false} className="size-3.5" />
                         </span>
                         <div className="min-w-0">
-                          <div className="truncate text-ui font-semibold text-text">
+                          <div className="text-ui font-semibold text-text wrap-anywhere">
                             {instance.subtype}
                           </div>
-                          <div className="truncate font-mono text-xs text-text-3">
+                          <div className="font-mono text-xs text-text-3 wrap-anywhere">
                             {instance.match.maskedValue}
                           </div>
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.sources}>
                       <ProviderTag provider={instance.provider} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.location}>
                       <div className="min-w-0">
-                        <div className="truncate font-mono text-xs text-text-2">
+                        <div className="font-mono text-xs text-text-2 wrap-anywhere">
                           {instanceLocationLabel(instance)}
                         </div>
                         {instance.repo && (
-                          <div className="truncate text-xs text-text-3">{instance.repo}</div>
+                          <div className="text-xs text-text-3 wrap-anywhere">{instance.repo}</div>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.action}>
                       <ActionTag action={instance.action} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={FINDING_COLUMN_CLASS.status}>
                       {instance.status === undefined ? (
                         <span className="text-text-3">—</span>
                       ) : (
@@ -152,8 +172,10 @@ export function FindingsFlatTableView({
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-text-3">
-                      {relativeTime(instance.detectedAt)}
+                    <TableCell className={FINDING_COLUMN_CLASS.latest}>
+                      <span className="text-text-3 text-xs">
+                        {relativeTime(instance.detectedAt)}
+                      </span>
                     </TableCell>
                   </TableRow>
                 );
@@ -161,25 +183,25 @@ export function FindingsFlatTableView({
             </TableBody>
           </Table>
         )}
-
-        {onLoadMore && items.length > 0 && (
-          <LoadMore>
-            {hasMore && (
-              <LoadMoreButton
-                loading={loadingMore}
-                onClick={() => {
-                  onLoadMore();
-                }}
-              />
-            )}
-            <LoadMoreStatus>
-              {total === undefined
-                ? `${String(items.length)} shown`
-                : `${String(items.length)} of ${String(total)} findings`}
-            </LoadMoreStatus>
-          </LoadMore>
-        )}
       </div>
+      {onNextPage && items.length > 0 && (
+        <Pagination>
+          <PaginationPrevious
+            disabled={!hasPreviousPage || loadingNextPage}
+            onClick={onPreviousPage}
+          />
+          <PaginationStatus>
+            {total === undefined || pageStart === undefined
+              ? `${String(items.length)} shown`
+              : `${String(pageStart)}–${String(pageStart + items.length - 1)} of ${String(total)} findings`}
+          </PaginationStatus>
+          <PaginationNext
+            disabled={!hasNextPage || loadingNextPage}
+            loading={loadingNextPage}
+            onClick={onNextPage}
+          />
+        </Pagination>
+      )}
     </Card>
   );
 }

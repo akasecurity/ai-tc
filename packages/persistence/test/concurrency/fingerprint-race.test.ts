@@ -62,7 +62,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EXCEPTION_KEY_FILENAME,
@@ -141,7 +141,10 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const keyFile = (): string => join(dir, EXCEPTION_KEY_FILENAME);
+// Defaulted to the per-test dir so every existing caller is unaffected. The
+// shared race below owns a dir of its own and passes it, because its key must
+// outlive the per-test lifecycle that both cases reading it run under.
+const keyFile = (dataDir: string = dir): string => join(dataDir, EXCEPTION_KEY_FILENAME);
 
 /** What one racing thread ended up holding. */
 type Minted = Omit<MintOutcome, 'ok'>;
@@ -210,29 +213,57 @@ function awaitBarrier(signal: Int32Array, count: number): void {
 // interceptor cases below force it deterministically on every run.
 const OVERLAP_ATTEMPTS = 5;
 
+interface OverlapRace {
+  /**
+   * The LAST attempt run, which is the only one a caller may compare against
+   * the data dir: every attempt wipes and re-mints, so an earlier attempt's
+   * key no longer exists anywhere.
+   */
+  race: RaceResult;
+  /**
+   * The highest occupancy seen across every attempt. Reported rather than
+   * asserted — it exists so a skip can say what the runner actually managed,
+   * and it can exceed `race.maxConcurrent` only when no attempt overlapped.
+   */
+  bestMaxConcurrent: number;
+  attempts: number;
+}
+
 /**
  * Race repeatedly until two threads are actually observed inside the mint at
- * once, returning the best attempt if none manages it.
+ * once, returning the LAST attempt and the best occupancy seen.
  *
  * Each attempt needs a FRESH data dir: a retry against a dir that already holds
  * the published key takes the load path and races nothing, so it would report a
  * tidy `maxConcurrent` of 0 forever.
+ *
+ * Returning the last attempt rather than the best-scoring one is load-bearing,
+ * and returning the best is a bug this function shipped with. Each attempt wipes
+ * the dir and mints a NEW random key, so the key on disk is always the last
+ * attempt's. Handing back an earlier attempt's `minted` gives the caller two
+ * unrelated keys to compare, and `agreedKey(...) === keyOnDisk()` then fails on
+ * a mismatch that means nothing — on exactly the serialized runner the retry
+ * loop exists to accommodate. When an attempt DOES overlap the loop stops on it,
+ * so the last attempt is that attempt and the two readings coincide.
  */
-async function raceUntilOverlap(dataDir: string, count: number): Promise<RaceResult> {
+async function raceUntilOverlap(dataDir: string, count: number): Promise<OverlapRace> {
   const attempt = async (): Promise<RaceResult> => {
     rmSync(dataDir, { recursive: true, force: true });
     mkdirSync(dataDir, { recursive: true });
     return raceToMint(dataDir, count);
   };
 
-  // The first attempt runs unconditionally, so the best-so-far is always a real
-  // result and the caller never has to reason about an empty run.
-  let best = await attempt();
-  for (let i = 1; i < OVERLAP_ATTEMPTS && best.maxConcurrent < 2; i += 1) {
-    const next = await attempt();
-    if (next.maxConcurrent > best.maxConcurrent) best = next;
+  // The first attempt runs unconditionally, so the caller never has to reason
+  // about an empty run.
+  let race = await attempt();
+  let bestMaxConcurrent = race.maxConcurrent;
+  let attempts = 1;
+  while (attempts < OVERLAP_ATTEMPTS && race.maxConcurrent < 2) {
+    race = await attempt();
+    attempts += 1;
+    bestMaxConcurrent = Math.max(bestMaxConcurrent, race.maxConcurrent);
   }
-  return best;
+  return { race, bestMaxConcurrent, attempts };
 }
 
 /** Mint from `count` threads released at the same instant. */
@@ -293,8 +324,8 @@ async function raceToMint(
 }
 
 /** The key as it landed on disk. */
-function keyOnDisk(): Minted {
-  const parsed = JSON.parse(readFileSync(keyFile(), 'utf8')) as {
+function keyOnDisk(dataDir: string = dir): Minted {
+  const parsed = JSON.parse(readFileSync(keyFile(dataDir), 'utf8')) as {
     version: number;
     material: string;
   };
@@ -312,8 +343,32 @@ function agreedKey(minted: Minted[]): string {
 }
 
 describe('concurrent first mints converge on one key', () => {
-  it('leaves every racing thread holding the key that is on disk', async () => {
-    const race = await raceUntilOverlap(dir, RACERS);
+  // ONE race, read by the two cases below. They are two assertions about the
+  // SAME run, and that is the point rather than an optimisation: the occupancy
+  // case exists to say the convergence case was not trivial, which it can only
+  // say about the run that produced it. Racing twice let one case overlap and
+  // the other serialize, so the reassurance described a run nobody asserted on.
+  //
+  // It also halves what a starved runner pays here — the retry loop only
+  // iterates when nothing overlaps, which is exactly the runner that can least
+  // afford paying for it twice.
+  //
+  // The dir is owned here rather than taken from `beforeEach`, because both
+  // cases read a key that has to outlive the per-test lifecycle.
+  let shared: OverlapRace;
+  let sharedDir: string;
+
+  beforeAll(async () => {
+    sharedDir = mkdtempSync(join(tmpdir(), 'aka-fp-race-shared-'));
+    shared = await raceUntilOverlap(sharedDir, RACERS);
+  });
+
+  afterAll(() => {
+    rmSync(sharedDir, { recursive: true, force: true });
+  });
+
+  it('leaves every racing thread holding the key that is on disk', () => {
+    const { race } = shared;
 
     // Positive controls first: threads that did not overlap agree trivially.
     expect(race.arrivedAtRelease).toBe(RACERS);
@@ -327,30 +382,31 @@ describe('concurrent first mints converge on one key', () => {
     // reported as a skip rather than a gap. The overlap PREMISE is the only part
     // a scheduler can genuinely deny, so that is the part with its own case.
     expect(race.minted).toHaveLength(RACERS);
-    const published = keyOnDisk();
+    // Read from the shared dir, and it must be the LAST attempt's key — every
+    // attempt wipes and re-mints, so an earlier one's key is gone.
+    const published = keyOnDisk(sharedDir);
     // The whole property: one key, and it is the one that was published.
     expect(agreedKey(race.minted)).toBe(`${String(published.version)}:${published.material}`);
     expect(published.version).toBe(1);
   });
 
-  it('gets two threads inside the mint at once, so the case above is not trivial', async (ctx) => {
-    // The premise the convergence case rests on, measured rather than assumed.
-    // It is a separate case because it is the one claim here whose failure says
-    // nothing about the code: on a saturated runner the threads genuinely do not
-    // overlap, so this is reported rather than failed. Asserting it would blame
-    // the mint for the scheduler; folding it back into the case above would take
-    // that case's real assertions down with it.
-    const race = await raceUntilOverlap(dir, RACERS);
-
-    if (race.maxConcurrent < 2) {
+  it('gets two threads inside the mint at once, so the case above is not trivial', (ctx) => {
+    // The premise the convergence case rests on, measured on THAT run rather
+    // than assumed or re-raced. It is a separate case because it is the one
+    // claim here whose failure says nothing about the code: on a saturated
+    // runner the threads genuinely do not overlap, so this is reported rather
+    // than failed. Asserting it would blame the mint for the scheduler; folding
+    // it back into the case above would take that case's real assertions down
+    // with it, which is what a skip did before it was split out.
+    if (shared.race.maxConcurrent < 2) {
       ctx.skip(
         `no attempt got two of ${String(RACERS)} threads inside the mint at once ` +
-          `(best ${String(race.maxConcurrent)} over ${String(OVERLAP_ATTEMPTS)} attempts) — ` +
+          `(best ${String(shared.bestMaxConcurrent)} over ${String(shared.attempts)} attempts) — ` +
           `this runner serialized them, so convergence was proven only trivially`,
       );
     }
 
-    expect(race.maxConcurrent).toBeGreaterThanOrEqual(2);
+    expect(shared.race.maxConcurrent).toBeGreaterThanOrEqual(2);
   });
 
   it('is stable afterwards — a later reader sees what the racers agreed on', async () => {

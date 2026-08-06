@@ -11,12 +11,23 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Vault' };
 
+// Three FIRST PAGES, not three whole tables. The inventory grows one row per
+// distinct value ever detected on this machine — thousands on a working
+// install, each carrying its own sightings array — so loading it whole cost
+// seconds of serialization and tens of thousands of table rows before anything
+// was on screen. Later pages arrive through the load-more Server Actions in
+// ./actions.ts, which append in client state rather than re-rendering the route.
+//
+// The reuse list is its OWN read rather than a filter over the inventory page:
+// reuse is a property of the whole store, and deriving it from the newest 50
+// rows would quietly under-report the values a reader most needs to see.
 export default function VaultPage() {
   const inventory = db().secretVault.listInventory();
-  // Both audit variants up front, so the batched-rows toggle swaps locally
-  // instead of re-querying.
+  const reuse = db().secretVault.listReuse();
+  // Only the default (batched-hidden) variant up front. The toggle re-queries
+  // through an action — fetching both whole trails to save one round-trip was
+  // the wrong trade once either of them could be long.
   const derefs = db().secretVault.listDerefs();
-  const allDerefs = db().secretVault.listDerefs({ includeBatched: true });
 
   return (
     <div className="px-8 pb-10 pt-7">
@@ -26,12 +37,7 @@ export default function VaultPage() {
       />
       <div className="flex flex-col gap-8">
         <VaultLookupClient />
-        <VaultDashboardClient
-          inventory={inventory}
-          derefRows={derefs.rows}
-          hiddenBatched={derefs.hiddenBatched}
-          allDerefRows={allDerefs.rows}
-        />
+        <VaultDashboardClient inventory={inventory} reuse={reuse} derefs={derefs} />
       </div>
     </div>
   );

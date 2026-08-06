@@ -1,10 +1,30 @@
+'use client';
 import type { VaultInventoryEntry } from '@akasecurity/schema';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@akasecurity/ui-kit';
+import {
+  LoadMore,
+  LoadMoreButton,
+  LoadMoreStatus,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@akasecurity/ui-kit';
 
 import { ScrubbedValue } from '../shared/ScrubbedValue.tsx';
 
 export interface VaultReuseViewProps {
   entries: VaultInventoryEntry[];
+  // Whether the store holds reused values beyond the ones passed in.
+  hasMore?: boolean;
+  onLoadMore?: (() => void) | undefined;
+  loadingMore?: boolean;
+  // Reused values across the whole store. Counted against the rows this view
+  // actually renders — which is `entries` after `isReused`, not `entries` —
+  // since a caller that paged an unfiltered list would otherwise show a
+  // fraction that never reaches its denominator.
+  total?: number | undefined;
 }
 
 // A value counts as reused when it was detected more than once or sighted in
@@ -19,7 +39,13 @@ function isReused(entry: VaultInventoryEntry): boolean {
  * by how often they recur. Reuse widens the blast radius of a single leak — one
  * exposed value unlocks every location listed here.
  */
-export function VaultReuseView({ entries }: VaultReuseViewProps) {
+export function VaultReuseView({
+  entries,
+  hasMore = false,
+  onLoadMore,
+  loadingMore = false,
+  total,
+}: VaultReuseViewProps) {
   const reused = entries.filter(isReused).sort((a, b) => b.occurrences - a.occurrences);
   if (reused.length === 0) {
     return (
@@ -64,6 +90,26 @@ export function VaultReuseView({ entries }: VaultReuseViewProps) {
           })}
         </TableBody>
       </Table>
+      {onLoadMore ? (
+        <LoadMore>
+          {hasMore && (
+            <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
+              {loadingMore ? 'Loading…' : 'Load more reused values'}
+            </LoadMoreButton>
+          )}
+          <LoadMoreStatus>
+            {total === undefined
+              ? `${String(reused.length)} shown`
+              : `${String(reused.length)} of ${String(total)} reused values`}
+          </LoadMoreStatus>
+        </LoadMore>
+      ) : (
+        hasMore && (
+          <p className="mt-4 text-center text-xs text-text-3">
+            Showing the first {reused.length} reused values — the rest are in the store.
+          </p>
+        )
+      )}
     </div>
   );
 }

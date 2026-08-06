@@ -109,7 +109,7 @@ async function seedPointer(): Promise<string> {
 function inventory(): VaultInventoryEntry[] {
   const db = openLocalDatabase(dataDir());
   try {
-    return db.secretVault.listInventory();
+    return db.secretVault.listInventory().items;
   } finally {
     db.close();
   }

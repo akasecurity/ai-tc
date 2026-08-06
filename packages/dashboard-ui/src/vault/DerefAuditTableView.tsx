@@ -5,6 +5,9 @@ import {
   Badge,
   Button,
   cn,
+  LoadMore,
+  LoadMoreButton,
+  LoadMoreStatus,
   Table,
   TableBody,
   TableCell,
@@ -18,10 +21,16 @@ import { DEREF_REASON_LABEL } from './atoms.tsx';
 
 export interface DerefAuditTableViewProps {
   rows: VaultDeref[];
-  // How many display/view-render rows the caller's query hid.
+  // How many display/view-render rows the caller's query hid. Counted over the
+  // whole trail, not the page — the toggle below reveals all of them, not the
+  // ones that happen to fall inside the rows loaded so far.
   hiddenBatched: number;
   showBatched: boolean;
   onToggleBatched?: (showBatched: boolean) => void;
+  // Whether the trail holds resolutions older than the ones passed in.
+  hasMore?: boolean;
+  onLoadMore?: (() => void) | undefined;
+  loadingMore?: boolean;
 }
 
 // Model-target crossings are the anomaly signal this trail exists for, so both
@@ -53,6 +62,9 @@ export function DerefAuditTableView({
   hiddenBatched,
   showBatched,
   onToggleBatched,
+  hasMore = false,
+  onLoadMore,
+  loadingMore = false,
 }: DerefAuditTableViewProps) {
   const toggle =
     onToggleBatched === undefined ? null : (
@@ -148,6 +160,22 @@ export function DerefAuditTableView({
           )}
         </TableBody>
       </Table>
+      {onLoadMore ? (
+        <LoadMore>
+          {hasMore && (
+            <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
+              {loadingMore ? 'Loading…' : 'Load more resolutions'}
+            </LoadMoreButton>
+          )}
+          <LoadMoreStatus>{`${String(rows.length)} shown`}</LoadMoreStatus>
+        </LoadMore>
+      ) : (
+        hasMore && (
+          <p className="mt-4 text-center text-xs text-text-3">
+            Showing the most recent {rows.length} resolutions.
+          </p>
+        )
+      )}
       {hiddenLine}
     </div>
   );

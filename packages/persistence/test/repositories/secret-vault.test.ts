@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
+import type { VaultDerefReason } from '@akasecurity/schema';
+import { DEFAULT_VAULT_INVENTORY_LIMIT } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { VaultRowInsert } from '../../src/repositories/secret-vault.ts';
@@ -41,6 +43,24 @@ function entry(overrides: Partial<VaultRowInsert> = {}): VaultRowInsert {
     authTag: 'dGFn',
     ...overrides,
   };
+}
+
+// A distinct 64-char hex fingerprint per pointer, DERIVED from the pointer id
+// rather than counted out: a sequence would have to be reset between tests, and
+// a seed helper that forgot would fold two rows into one by fingerprint.
+function fingerprintFor(pointerId: string): string {
+  return Buffer.from(pointerId).toString('hex').padEnd(64, '0');
+}
+
+// One detection of the value behind `pointerId`. The first call mints the row;
+// every later call with the same pointer id bumps its occurrence count and
+// last_seen, because `upsert` keys on the fingerprint.
+function detect(pointerId: string, at: number): void {
+  vault.upsert(entry({ pointerId, valueFingerprint: fingerprintFor(pointerId) }), at);
+}
+
+function iso(ms: number): string {
+  return new Date(ms).toISOString();
 }
 
 describe('SqliteSecretVaultRepository.upsert', () => {
@@ -265,12 +285,464 @@ describe('SqliteSecretVaultRepository.listInventory grant badge', () => {
   it('badges a clean active reveal grant', () => {
     vault.upsert(entry(), NOW);
     grantRow();
-    expect(vault.listInventory(NOW)[0]?.revealGrantId).not.toBeNull();
+    expect(vault.listInventory({}, NOW).items[0]?.revealGrantId).not.toBeNull();
   });
 
   it('refuses to badge a conditioned grant, exactly as the crossing refuses it', () => {
     vault.upsert(entry(), NOW);
     grantRow({ conditions: JSON.stringify({ repo: 'github.com/example/app' }) });
-    expect(vault.listInventory(NOW)[0]?.revealGrantId).toBeNull();
+    expect(vault.listInventory({}, NOW).items[0]?.revealGrantId).toBeNull();
+  });
+});
+
+// The three dashboard lists are keyset-paged rather than loaded whole. What a
+// walk holds that a single-page assertion cannot: a cursor minted from the extra
+// probe row, or an ORDER BY that leaves ties unresolved, drops a row SILENTLY —
+// every page still looks well-formed, and only the concatenation is short.
+describe('SqliteSecretVaultRepository.listInventory paging', () => {
+  // Newest-first insertion, with `ptr-04a` written BEFORE `ptr-04b` at the same
+  // last_seen: pointer_id DESC is therefore not insertion order, so an ordering
+  // that falls back to the table's own is visible.
+  const SEED: readonly (readonly [string, number])[] = [
+    ['ptr-06', NOW + 6_000],
+    ['ptr-05', NOW + 5_000],
+    ['ptr-04a', NOW + 4_000],
+    ['ptr-04b', NOW + 4_000],
+    ['ptr-03', NOW + 3_000],
+    ['ptr-02', NOW + 2_000],
+    ['ptr-01', NOW + 1_000],
+  ];
+
+  // last_seen DESC, pointer_id DESC. Written out rather than derived by sorting
+  // SEED — a comparator here would be free to carry the same defect the read
+  // has. The tied pair sits at indices 2 and 3, so with limit 3 it straddles the
+  // first page boundary: an unresolved tie does not merely reorder the pair, it
+  // mints a cursor that excludes one of them from every later page.
+  const EXPECTED_ORDER = ['ptr-06', 'ptr-05', 'ptr-04b', 'ptr-04a', 'ptr-03', 'ptr-02', 'ptr-01'];
+
+  function seed(): void {
+    for (const [pointerId, at] of SEED) detect(pointerId, at);
+  }
+
+  interface Walk {
+    pointerIds: string[];
+    totals: number[];
+    cursors: (string | null)[];
+  }
+
+  function walk(limit: number): Walk {
+    const pointerIds: string[] = [];
+    const totals: number[] = [];
+    const cursors: (string | null)[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const res = vault.listInventory({ limit, ...(cursor === undefined ? {} : { cursor }) }, NOW);
+      pointerIds.push(...res.items.map((i) => i.pointerId));
+      totals.push(res.totals.values);
+      cursors.push(res.nextCursor);
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
+    }
+    return { pointerIds, totals, cursors };
+  }
+
+  it('walks every row exactly once, newest first, with pointer_id breaking ties', () => {
+    seed();
+    const walked = walk(3);
+
+    expect(walked.pointerIds).toEqual(EXPECTED_ORDER);
+    // Against the store rather than against the literal above: a row the walk
+    // never reached is a hole this catches even if both were edited together.
+    expect(walked.pointerIds).toHaveLength(vault.countEntries());
+    // Pages of 3 / 3 / 1 — only the last one ends the walk.
+    expect(walked.cursors).toHaveLength(3);
+    expect(walked.cursors[0]).not.toBeNull();
+    expect(walked.cursors[1]).not.toBeNull();
+    expect(walked.cursors[2]).toBeNull();
+  });
+
+  it('reports totals.values over the whole store on every page', () => {
+    seed();
+    const walked = walk(3);
+
+    expect(walked.totals).toEqual([SEED.length, SEED.length, SEED.length]);
+    expect(vault.countEntries()).toBe(SEED.length);
+  });
+
+  it('restarts from the top on an undecodable cursor', () => {
+    seed();
+    const fresh = vault.listInventory({ limit: 3 }, NOW);
+    const restarted = vault.listInventory({ limit: 3, cursor: 'not-a-cursor' }, NOW);
+
+    // The positive control: without it both sides could be empty and agree.
+    expect(fresh.items.map((i) => i.pointerId)).toEqual(EXPECTED_ORDER.slice(0, 3));
+    expect(restarted.items.map((i) => i.pointerId)).toEqual(fresh.items.map((i) => i.pointerId));
+  });
+
+  // A cursor that fails at JSON.parse — the case above — never reaches the
+  // decoder's type predicate, so it cannot tell `typeof x === 'number'` from
+  // `Number.isInteger(x)`. These do: each decodes cleanly and carries a number
+  // SQLite will bind without complaint. Under the looser check they produce an
+  // empty page with a null cursor, which every caller reads as "end of list" —
+  // the list silently truncated by a hand-edited request, and the one outcome
+  // "restarts from the top" must never mean. (`1e999` is valid JSON; `NaN` is
+  // not, so it cannot arrive this way.)
+  it.each([
+    ['positive infinity', '1e999'],
+    ['negative infinity', '-1e999'],
+    ['a fraction', '1.5'],
+  ])('restarts from the top on a decodable cursor carrying %s', (_label, literal) => {
+    seed();
+    const cursor = Buffer.from(`{"startedAtMs":${literal},"id":"zzz"}`).toString('base64url');
+
+    const fresh = vault.listInventory({ limit: 3 }, NOW);
+    const restarted = vault.listInventory({ limit: 3, cursor }, NOW);
+
+    expect(fresh.items.map((i) => i.pointerId)).toEqual(EXPECTED_ORDER.slice(0, 3));
+    expect(restarted.items.map((i) => i.pointerId)).toEqual(fresh.items.map((i) => i.pointerId));
+    expect(restarted.nextCursor).not.toBeNull();
+  });
+
+  it('pages at DEFAULT_VAULT_INVENTORY_LIMIT when the query omits a limit', () => {
+    const total = DEFAULT_VAULT_INVENTORY_LIMIT + 5;
+    for (let i = 0; i < total; i += 1) {
+      detect(`bulk-${String(i).padStart(3, '0')}`, NOW + i * 1_000);
+    }
+
+    const res = vault.listInventory();
+
+    expect(res.items).toHaveLength(DEFAULT_VAULT_INVENTORY_LIMIT);
+    expect(res.nextCursor).not.toBeNull();
+    expect(res.totals.values).toBe(total);
+  });
+
+  // The boundary the walks above cannot reach: they end on a SHORT page, where
+  // `rows.length > limit` and `rows.length >= limit` agree. Only a terminal page
+  // exactly `limit` rows long separates them — and off by one there costs no
+  // rows, so every other assertion here stays green while the last real page
+  // hands back a cursor and the dashboard renders a button that fetches nothing.
+  it('ends the walk when the last page is exactly `limit` rows', () => {
+    for (const [pointerId, at] of SEED.slice(0, 6)) detect(pointerId, at);
+    expect(vault.countEntries()).toBe(6);
+
+    const walked = walk(3);
+
+    expect(walked.pointerIds).toHaveLength(6);
+    // Two requests, not three: the second page fills exactly and still ends it.
+    expect(walked.cursors).toEqual([expect.any(String), null]);
+  });
+
+  // The raw-free claim these two reads make is asserted nowhere else: the
+  // fingerprint is keyed correlation material and the ciphertext is the value
+  // itself, and both now cross a Server Action to the browser.
+  //
+  // The gate is `toInventoryEntries`' field-by-field mapping, NOT the SELECT
+  // list — measured: widening INVENTORY_COLUMNS to select value_fingerprint
+  // leaves this suite green, because the extra column reaches no response field.
+  // So this asserts the RESPONSE's key set, which is where the property lives;
+  // aim a mutation at the mapping to see it fail.
+  it('carries no fingerprint and no sealed columns', () => {
+    vault.upsert(entry(), NOW);
+    vault.recordSighting({ pointerId: 'pointer-a', location: 'a.ts', kind: 'file' }, NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW + 1);
+
+    for (const items of [vault.listInventory({}, NOW).items, vault.listReuse({}, NOW).items]) {
+      // The positive control: an empty list satisfies every absence below.
+      expect(items.length).toBeGreaterThan(0);
+      const serialized = JSON.stringify(items);
+      for (const secret of [FINGERPRINT_A, FINGERPRINT_B, 'Y2lwaGVy', 'bm9uY2U=', 'dGFn']) {
+        expect(serialized).not.toContain(secret);
+      }
+      for (const item of items) {
+        expect(Object.keys(item).sort()).toEqual(
+          [
+            'category',
+            'firstSeen',
+            'lastSeen',
+            'maskedMatch',
+            'occurrences',
+            'pointerId',
+            'provider',
+            'revealGrantId',
+            'sightings',
+          ].sort(),
+        );
+      }
+    }
+  });
+});
+
+// The N+1 read this replaced asked one query per row, so misattribution was
+// impossible by construction. One batched query grouped in JS can cross-wire
+// instead — which is invisible to a count, and visible only to an assertion that
+// names each row's OWN locations.
+describe('SqliteSecretVaultRepository.listInventory sightings', () => {
+  it('gives each row exactly its own locations, and an empty array for none', () => {
+    detect('sight-a', NOW + 3_000);
+    detect('sight-b', NOW + 2_000);
+    detect('sight-c', NOW + 1_000);
+
+    vault.recordSighting({ pointerId: 'sight-a', location: 'src/one.ts', kind: 'file' }, NOW + 100);
+    vault.recordSighting({ pointerId: 'sight-a', location: 'src/two.ts', kind: 'file' }, NOW + 200);
+    vault.recordSighting({ pointerId: 'sight-c', location: 'Bash', kind: 'tool-input' }, NOW + 300);
+
+    const items = vault.listInventory({ limit: 10 }, NOW).items;
+    const byPointer = new Map(items.map((i) => [i.pointerId, i.sightings]));
+
+    expect(items.map((i) => i.pointerId)).toEqual(['sight-a', 'sight-b', 'sight-c']);
+    expect(byPointer.get('sight-a')).toEqual([
+      { location: 'src/two.ts', kind: 'file', firstSeen: iso(NOW + 200), lastSeen: iso(NOW + 200) },
+      { location: 'src/one.ts', kind: 'file', firstSeen: iso(NOW + 100), lastSeen: iso(NOW + 100) },
+    ]);
+    // Present and empty, never absent — the caller must not have to tell the
+    // two apart.
+    expect(byPointer.get('sight-b')).toEqual([]);
+    expect(byPointer.get('sight-c')).toEqual([
+      { location: 'Bash', kind: 'tool-input', firstSeen: iso(NOW + 300), lastSeen: iso(NOW + 300) },
+    ]);
+  });
+
+  it("orders a row's sightings by last_seen, newest first", () => {
+    detect('sight-a', NOW);
+    vault.recordSighting({ pointerId: 'sight-a', location: 'src/one.ts', kind: 'file' }, NOW + 100);
+    vault.recordSighting({ pointerId: 'sight-a', location: 'src/two.ts', kind: 'file' }, NOW + 200);
+    // Re-sighting the FIRST location last: it now sorts first on last_seen and
+    // last on first_seen, so ordering on the wrong column reverses the pair.
+    vault.recordSighting({ pointerId: 'sight-a', location: 'src/one.ts', kind: 'file' }, NOW + 400);
+
+    expect(vault.listInventory({ limit: 10 }, NOW).items[0]?.sightings).toEqual([
+      { location: 'src/one.ts', kind: 'file', firstSeen: iso(NOW + 100), lastSeen: iso(NOW + 400) },
+      { location: 'src/two.ts', kind: 'file', firstSeen: iso(NOW + 200), lastSeen: iso(NOW + 200) },
+    ]);
+  });
+});
+
+describe('SqliteSecretVaultRepository.listReuse', () => {
+  // occurrence_count DESC, pointer_id DESC. `reuse-mid-a` is written before
+  // `reuse-mid-b` at the same count, so pointer_id DESC is not insertion order,
+  // and with limit 1 the tied pair straddles a page boundary.
+  const EXPECTED_REUSE = ['reuse-hi', 'reuse-mid-b', 'reuse-mid-a', 'reuse-spread'];
+
+  function seedReuse(): void {
+    // Detected three times.
+    detect('reuse-hi', NOW + 1_000);
+    detect('reuse-hi', NOW + 1_100);
+    detect('reuse-hi', NOW + 1_200);
+
+    // Detected twice, each.
+    detect('reuse-mid-a', NOW + 2_000);
+    detect('reuse-mid-a', NOW + 2_100);
+    detect('reuse-mid-b', NOW + 3_000);
+    detect('reuse-mid-b', NOW + 3_100);
+
+    // Detected ONCE, but its pointer was written in two places — reuse by
+    // spread rather than by count.
+    detect('reuse-spread', NOW + 4_000);
+    vault.recordSighting({ pointerId: 'reuse-spread', location: 'a.ts', kind: 'file' }, NOW);
+    vault.recordSighting({ pointerId: 'reuse-spread', location: 'b.ts', kind: 'file' }, NOW);
+
+    // Detected once, written in one place — not reuse.
+    detect('reuse-solo', NOW + 5_000);
+    vault.recordSighting({ pointerId: 'reuse-solo', location: 'c.ts', kind: 'file' }, NOW);
+  }
+
+  it('lists exactly the reused values, most-reused first', () => {
+    seedReuse();
+    const res = vault.listReuse({ limit: 10 }, NOW);
+
+    expect(res.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE);
+    expect(res.items.map((i) => i.occurrences)).toEqual([3, 2, 2, 1]);
+    // The excluded row is in the store — otherwise the exclusion above holds
+    // because nothing was seeded.
+    expect(vault.countEntries()).toBe(EXPECTED_REUSE.length + 1);
+    expect(vault.byPointerId('reuse-solo')).not.toBeNull();
+    expect(res.totals.reused).toBe(EXPECTED_REUSE.length);
+  });
+
+  it('walks every reused value once and keeps totals.reused page-independent', () => {
+    seedReuse();
+    const pointerIds: string[] = [];
+    const totals: number[] = [];
+    const cursors: (string | null)[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const res = vault.listReuse({ limit: 1, ...(cursor === undefined ? {} : { cursor }) }, NOW);
+      pointerIds.push(...res.items.map((i) => i.pointerId));
+      totals.push(res.totals.reused);
+      cursors.push(res.nextCursor);
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
+    }
+
+    expect(pointerIds).toEqual(EXPECTED_REUSE);
+    expect(totals).toEqual([4, 4, 4, 4]);
+    expect(vault.countReused()).toBe(EXPECTED_REUSE.length);
+    expect(cursors[cursors.length - 1]).toBeNull();
+    expect(cursors.slice(0, -1).every((c) => c !== null)).toBe(true);
+    expect(cursors).toHaveLength(EXPECTED_REUSE.length);
+  });
+
+  it('restarts from the top on an undecodable cursor', () => {
+    seedReuse();
+    const fresh = vault.listReuse({ limit: 2 }, NOW);
+    const restarted = vault.listReuse({ limit: 2, cursor: 'not-a-cursor' }, NOW);
+
+    expect(fresh.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE.slice(0, 2));
+    expect(restarted.items.map((i) => i.pointerId)).toEqual(fresh.items.map((i) => i.pointerId));
+  });
+
+  // This list has its OWN decoder, so the inventory's copy of this case does
+  // not cover it — see the note there for why a well-formed cursor carrying a
+  // non-integer is the one that separates the two type checks.
+  it.each([
+    ['positive infinity', '1e999'],
+    ['negative infinity', '-1e999'],
+    ['a fraction', '1.5'],
+  ])('restarts from the top on a decodable cursor carrying %s', (_label, literal) => {
+    seedReuse();
+    const cursor = Buffer.from(`{"occurrences":${literal},"pointerId":"zzz"}`).toString(
+      'base64url',
+    );
+
+    const fresh = vault.listReuse({ limit: 2 }, NOW);
+    const restarted = vault.listReuse({ limit: 2, cursor }, NOW);
+
+    expect(fresh.items.map((i) => i.pointerId)).toEqual(EXPECTED_REUSE.slice(0, 2));
+    expect(restarted.items.map((i) => i.pointerId)).toEqual(fresh.items.map((i) => i.pointerId));
+    expect(restarted.nextCursor).not.toBeNull();
+  });
+});
+
+describe('SqliteSecretVaultRepository.listDerefs', () => {
+  // A guid whose lexical order the caller chooses. The trail orders on
+  // (at DESC, id DESC), so a randomUUID would exercise the tie-break only by
+  // luck — and would agree with insertion order half the time.
+  function derefId(n: number): string {
+    return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+  }
+
+  // THREE rows share `at`, and their ids resolve the tie into an order that is
+  // neither the insertion order (31, 33, 32) nor its reverse (32, 33, 31): a
+  // two-row tie cannot separate those two, and the table's own order is one of
+  // them whichever way SQLite scans.
+  const TRAIL: readonly { n: number; at: number; reason: VaultDerefReason }[] = [
+    { n: 31, at: NOW + 700, reason: 'explicit-reveal' },
+    { n: 95, at: NOW + 850, reason: 'display' },
+    { n: 33, at: NOW + 700, reason: 'model-input' },
+    { n: 10, at: NOW + 900, reason: 'explicit-reveal' },
+    { n: 75, at: NOW + 750, reason: 'view-render' },
+    { n: 32, at: NOW + 700, reason: 'explicit-reveal' },
+    { n: 40, at: NOW + 600, reason: 'model-input' },
+    { n: 65, at: NOW + 650, reason: 'display' },
+    { n: 20, at: NOW + 800, reason: 'model-input' },
+    { n: 55, at: NOW + 550, reason: 'view-render' },
+  ];
+
+  const EXPECTED_VISIBLE = [10, 20, 33, 32, 31, 40].map(derefId);
+  const EXPECTED_ALL = [10, 95, 20, 75, 33, 32, 31, 65, 40, 55].map(derefId);
+  const BATCHED_TOTAL = 4;
+
+  function seedTrail(): void {
+    for (const row of TRAIL) {
+      vault.recordDeref({
+        id: derefId(row.n),
+        pointerId: 'pointer-a',
+        at: row.at,
+        target: row.reason === 'model-input' ? 'model' : 'human',
+        reason: row.reason,
+        outcome: 'revealed',
+      });
+    }
+  }
+
+  interface TrailWalk {
+    ids: string[];
+    reasons: string[];
+    hidden: number[];
+    cursors: (string | null)[];
+  }
+
+  function walkTrail(limit: number, includeBatched: boolean): TrailWalk {
+    const ids: string[] = [];
+    const reasons: string[] = [];
+    const hidden: number[] = [];
+    const cursors: (string | null)[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const res = vault.listDerefs({
+        limit,
+        ...(includeBatched ? { includeBatched: true } : {}),
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      ids.push(...res.items.map((i) => i.id));
+      reasons.push(...res.items.map((i) => i.reason));
+      hidden.push(res.hiddenBatched);
+      cursors.push(res.nextCursor);
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
+    }
+    return { ids, reasons, hidden, cursors };
+  }
+
+  it('hides the batched reasons and walks the rest newest-first, ids breaking ties', () => {
+    seedTrail();
+    const walked = walkTrail(2, false);
+
+    expect(walked.ids).toEqual(EXPECTED_VISIBLE);
+    expect(walked.reasons).not.toContain('display');
+    expect(walked.reasons).not.toContain('view-render');
+    // Pages of 2 / 2 / 2 — the tie group straddles the second boundary.
+    expect(walked.cursors).toHaveLength(3);
+    expect(walked.cursors[0]).not.toBeNull();
+    expect(walked.cursors[1]).not.toBeNull();
+    expect(walked.cursors[2]).toBeNull();
+  });
+
+  it('counts hiddenBatched over the whole trail, unchanged as the reader pages', () => {
+    seedTrail();
+    const walked = walkTrail(2, false);
+
+    // Every page is batched-free, so a count taken over the PAGE reads 0 while
+    // the trail holds four.
+    expect(walked.hidden).toEqual([BATCHED_TOTAL, BATCHED_TOTAL, BATCHED_TOTAL]);
+    expect(
+      raw
+        .prepare(
+          `SELECT COUNT(*) AS n FROM secret_vault_deref WHERE reason IN ('display', 'view-render')`,
+        )
+        .get(),
+    ).toMatchObject({ n: BATCHED_TOTAL });
+  });
+
+  it('includes the batched rows and hides nothing when includeBatched is set', () => {
+    seedTrail();
+    const res = vault.listDerefs({ includeBatched: true, limit: 20 });
+
+    expect(res.items.map((i) => i.id)).toEqual(EXPECTED_ALL);
+    expect(res.items.map((i) => i.reason)).toContain('display');
+    expect(res.items.map((i) => i.reason)).toContain('view-render');
+    expect(res.hiddenBatched).toBe(0);
+    expect(res.nextCursor).toBeNull();
+  });
+
+  it('walks the batched-inclusive trail exactly once across pages', () => {
+    seedTrail();
+    const walked = walkTrail(2, true);
+
+    expect(walked.ids).toEqual(EXPECTED_ALL);
+    expect(walked.ids).toHaveLength(TRAIL.length);
+    expect(walked.hidden).toEqual([0, 0, 0, 0, 0]);
+    expect(walked.cursors[walked.cursors.length - 1]).toBeNull();
+    expect(walked.cursors.slice(0, -1).every((c) => c !== null)).toBe(true);
+  });
+
+  it('restarts from the top on an undecodable cursor', () => {
+    seedTrail();
+    const fresh = vault.listDerefs({ limit: 3 });
+    const restarted = vault.listDerefs({ limit: 3, cursor: 'not-a-cursor' });
+
+    expect(fresh.items.map((i) => i.id)).toEqual(EXPECTED_VISIBLE.slice(0, 3));
+    expect(restarted.items.map((i) => i.id)).toEqual(fresh.items.map((i) => i.id));
   });
 });

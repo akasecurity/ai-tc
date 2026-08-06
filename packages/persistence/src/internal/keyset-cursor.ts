@@ -30,7 +30,14 @@ export function decodeKeysetCursor(cursor: string): KeysetCursor | null {
     parsed !== undefined &&
     'startedAtMs' in parsed &&
     'id' in parsed &&
-    typeof parsed.startedAtMs === 'number' &&
+    // `Number.isInteger`, not `typeof === 'number'`. Every timestamp this
+    // resumes from is epoch millis, and a payload carrying ±Infinity or a
+    // fraction binds cleanly rather than failing — returning an EMPTY page with
+    // a null cursor, which a caller reads as "end of list". That is the one
+    // outcome a cursor that does not decode must never produce, since the
+    // documented behaviour above is to restart from the top. (`1e999` is valid
+    // JSON and parses to Infinity; a bare `NaN` is not, so it cannot arrive.)
+    Number.isInteger(parsed.startedAtMs) &&
     typeof parsed.id === 'string'
   ) {
     return parsed as unknown as KeysetCursor;

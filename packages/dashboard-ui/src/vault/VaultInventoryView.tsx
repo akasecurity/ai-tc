@@ -2,6 +2,9 @@
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
   Button,
+  LoadMore,
+  LoadMoreButton,
+  LoadMoreStatus,
   Table,
   TableBody,
   TableCell,
@@ -20,6 +23,17 @@ export interface VaultInventoryViewProps {
   onReveal?: (pointerId: string) => void;
   // Revoke the active reveal-to-model grant covering the row's value.
   onRevoke?: (grantId: string) => void;
+  // Whether the store holds rows beyond the ones passed in.
+  hasMore?: boolean;
+  /**
+   * Append the next page. Absent ⇒ the caller cannot paginate, and the
+   * truncation notice is shown instead — which is the honest thing to render
+   * when there is more data and no way to reach it.
+   */
+  onLoadMore?: (() => void) | undefined;
+  loadingMore?: boolean;
+  // Vaulted values across the whole store, not just this page.
+  total?: number | undefined;
 }
 
 /**
@@ -28,7 +42,15 @@ export interface VaultInventoryViewProps {
  * the value's POINTER has been written (its sightings): pointers are
  * deterministic, so anyone who can read those locations sees the correlation.
  */
-export function VaultInventoryView({ entries, onReveal, onRevoke }: VaultInventoryViewProps) {
+export function VaultInventoryView({
+  entries,
+  onReveal,
+  onRevoke,
+  hasMore = false,
+  onLoadMore,
+  loadingMore = false,
+  total,
+}: VaultInventoryViewProps) {
   if (entries.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface py-10 text-center text-sm text-text-3">
@@ -63,6 +85,26 @@ export function VaultInventoryView({ entries, onReveal, onRevoke }: VaultInvento
           ))}
         </TableBody>
       </Table>
+      {onLoadMore ? (
+        <LoadMore>
+          {hasMore && (
+            <LoadMoreButton loading={loadingMore} onClick={onLoadMore}>
+              {loadingMore ? 'Loading…' : 'Load more values'}
+            </LoadMoreButton>
+          )}
+          <LoadMoreStatus>
+            {total === undefined
+              ? `${String(entries.length)} shown`
+              : `${String(entries.length)} of ${String(total)} values`}
+          </LoadMoreStatus>
+        </LoadMore>
+      ) : (
+        hasMore && (
+          <p className="mt-4 text-center text-xs text-text-3">
+            Showing the first {entries.length} values — the rest are in the store.
+          </p>
+        )
+      )}
     </div>
   );
 }

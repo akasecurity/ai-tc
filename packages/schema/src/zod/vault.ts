@@ -234,6 +234,84 @@ export const VaultInventoryEntry = z.object({
 });
 export type VaultInventoryEntry = z.infer<typeof VaultInventoryEntry>;
 
+// ─── Paged reads ─────────────────────────────────────────────────────────────
+
+// The vault dashboard's three lists are cursor-paged, not loaded whole. The
+// inventory grows one row per distinct value this machine has ever detected, so
+// on a working install it reaches thousands of rows — each carrying its own
+// sightings array — and rendering all of them cost more in payload and DOM than
+// every query behind them put together.
+//
+// Every shape below follows the findings/activity list convention (`limit` +
+// opaque `cursor` in, `items` + `totals` + `nextCursor` out) with one deliberate
+// departure: NO `.meta({ id })` on the responses either, per the file header —
+// nothing about the vault belongs on a public API surface.
+//
+// `limit` uses `z.coerce.number()` for the same reason the other list queries
+// do: these cross a Server Action boundary the browser can post anything to.
+
+// Page size when a query omits `limit` — one source of truth, so the page, the
+// load-more action and the CLI all page identically.
+export const DEFAULT_VAULT_INVENTORY_LIMIT = 50;
+export const DEFAULT_VAULT_DEREFS_LIMIT = 50;
+
+export const ListVaultInventoryQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  // Opaque; names the last row of the page just served.
+  cursor: z.string().optional(),
+});
+export type ListVaultInventoryQuery = z.infer<typeof ListVaultInventoryQuery>;
+
+export const ListVaultInventoryResponse = z.object({
+  // Vaulted values across the whole store, not just this page — cursor-
+  // independent, so paging never changes what the count claims.
+  totals: z.object({ values: z.number().int().nonnegative() }),
+  items: z.array(VaultInventoryEntry),
+  // `null` once the last page is reached.
+  nextCursor: z.string().nullable(),
+});
+export type ListVaultInventoryResponse = z.infer<typeof ListVaultInventoryResponse>;
+
+// The same-machine reuse signal. A separate read rather than a filter over the
+// inventory page: reuse is a property of the WHOLE store, so deriving it from
+// whichever 50 rows the inventory happens to be showing would silently under-
+// report it — the reused values are exactly the ones a reader must not miss.
+export const ListVaultReuseQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+});
+export type ListVaultReuseQuery = z.infer<typeof ListVaultReuseQuery>;
+
+export const ListVaultReuseResponse = z.object({
+  // Reused values across the whole store — the number the section's claim
+  // ("values detected in more than one place") is about.
+  totals: z.object({ reused: z.number().int().nonnegative() }),
+  items: z.array(VaultInventoryEntry),
+  nextCursor: z.string().nullable(),
+});
+export type ListVaultReuseResponse = z.infer<typeof ListVaultReuseResponse>;
+
+export const ListVaultDerefsQuery = z.object({
+  // Include the batched, high-volume reasons (display, view-render). Omitted
+  // hides them and counts them into `hiddenBatched` instead, so the model
+  // crossings stay visible. A real boolean, not `z.stringbool()`: this arrives
+  // over a Server Action, which preserves the type, never as a URL param.
+  includeBatched: z.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+});
+export type ListVaultDerefsQuery = z.infer<typeof ListVaultDerefsQuery>;
+
+export const ListVaultDerefsResponse = z.object({
+  items: z.array(VaultDeref),
+  nextCursor: z.string().nullable(),
+  // Display/view-render rows the query hid, over the WHOLE trail rather than
+  // this page — it is the count the "N hidden" line and its toggle speak for.
+  // Always 0 when `includeBatched` was set, since nothing was hidden.
+  hiddenBatched: z.number().int().nonnegative(),
+});
+export type ListVaultDerefsResponse = z.infer<typeof ListVaultDerefsResponse>;
+
 // ─── Settings-side vocabulary ────────────────────────────────────────────────
 
 // Where the vault master key lives. An OPEN discriminant: the custody vocabulary

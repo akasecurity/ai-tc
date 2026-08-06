@@ -1,8 +1,12 @@
 // Package the CLI as a Node Single Executable Application for the current OS/arch.
 // Prereqs (run first): `build:sea` (dist-sea/cli.mjs) and `bundle:web-ui` (cli/web-ui).
 // Produces sea-dist/aka-<platform>-<arch>/ containing the `aka` binary plus its sidecars:
-//   boot.cjs, cli.mjs, package.json (for cliVersion), web-ui/ (the Next standalone).
+//   boot.cjs, cli.mjs, package.json (for cliVersion), web-ui/ (the Next standalone plus
+//   the node_modules that standalone needs — see step 1b).
 // The binary embeds Node + entry.cjs; entry.cjs requires boot.cjs, which imports cli.mjs.
+//
+// NEEDS THE NETWORK: step 1b shells out to `npm install` against the registry, so this script
+// does not run offline or behind a blocked proxy. It is release tooling, never a product path.
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
@@ -10,11 +14,13 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +54,89 @@ writeFileSync(
   `${JSON.stringify({ name: pkg.name, version: pkg.version, private: true }, null, 2)}\n`,
 );
 cpSync(webUiSrc, join(outDir, 'web-ui'), { recursive: true });
+
+// 1b. Install the standalone server's runtime dependencies INTO the staged web-ui.
+//
+// bundle-web-ui strips node_modules out of the Next standalone copy on purpose, and the
+// npm channel re-supplies them a different way: `@akasecurity/cli` declares next/react/
+// react-dom as runtime deps, so `npm i -g` puts them ABOVE web-ui/web-ui/server.js and
+// Node's upward node_modules walk finds them from there.
+//
+// A SEA has no npm install anywhere and nothing above the extracted archive, so that walk
+// finds nothing — `aka dashboard` dies with "Cannot find module 'next'" on every binary
+// install. Nothing in-repo notices, because the build tree answers the same walk: from
+// cli/sea-dist/aka-<triple>/web-ui/web-ui/ it climbs to cli/node_modules/next, which the
+// workspace install already put there. That is why smoke-dashboard runs from a copy
+// outside this tree — a smoke rooted here passes on an archive that cannot work anywhere
+// else.
+//
+// Installed at the standalone ROOT (web-ui/), which is both where Next expects them and
+// the first node_modules the walk from web-ui/web-ui/server.js reaches.
+const seaWebUi = join(outDir, 'web-ui');
+// Pin the three TOP-LEVEL versions to what the workspace lockfile already resolved, so the
+// binary channel serves the same Next the npm channel does rather than whatever the range
+// floats to that day. The pin reaches exactly one level: there is no lockfile here, so every
+// TRANSITIVE dependency (styled-jsx, @swc/helpers, caniuse-lite, scheduler, …) resolves by
+// range at package time, and two builds of one bin-v tag can embed different bytes. Parity
+// with the npm channel survives that — an end user's `npm i -g` re-resolves those same ranges,
+// since a published package ships no lockfile for its own dependencies — but bit-for-bit
+// reproducibility does not, and the SHA256SUMS the installers verify are per-build, not
+// per-tag. Closing that needs a checked-in lockfile and `npm ci`, not a stronger comment.
+const RUNTIME_DEP_NAMES = ['next', 'react', 'react-dom'];
+const runtimeDeps = RUNTIME_DEP_NAMES.map((name) => {
+  const manifest = join(cliDir, 'node_modules', name, 'package.json');
+  if (!existsSync(manifest)) {
+    throw new Error(`cannot pin ${name} for the web-ui sidecar — missing ${manifest}`);
+  }
+  return `${name}@${JSON.parse(readFileSync(manifest, 'utf8')).version}`;
+});
+// Into a temp prefix, then copied in: installing directly over the staged web-ui would
+// have npm rewrite its package.json — which is the REPO ROOT manifest that Next's
+// outputFileTracingRoot puts there, devDependencies and all — rather than a manifest this
+// step owns. `--ignore-scripts` keeps release packaging free of dependency install hooks.
+//
+// `--omit=optional` sheds ~140M of a ~308M tree, nearly all of it `@next/swc-<host>`. A
+// standalone Next server is prebuilt and compiles nothing while serving, so swc is not on the
+// serve path — smoke-dashboard is what holds that claim rather than this comment, by booting
+// the PACKAGED binary and rendering two Server Component pages through middleware. The flag
+// also drops `sharp`, which only `next/image` would load: the dashboard has no `next/image`
+// usage at all, which `.github/audit-waivers.json` already relies on for its sharp waiver.
+// Adding a `next/image` anywhere in web-ui means dropping this flag (or re-adding `sharp`).
+const depStage = mkdtempSync(join(tmpdir(), 'aka-sea-deps-'));
+try {
+  execFileSync(
+    'npm',
+    [
+      'install',
+      '--prefix',
+      depStage,
+      '--no-package-lock',
+      '--no-audit',
+      '--no-fund',
+      '--omit=optional',
+      '--ignore-scripts',
+      ...runtimeDeps,
+    ],
+    // `shell` on Windows: npm is npm.cmd there, and Node refuses to execFile a .cmd
+    // without a shell. No-op elsewhere. (Same reason bundle-web-ui.mjs does it for pnpm.)
+    { stdio: 'inherit', shell: isWin },
+  );
+  cpSync(join(depStage, 'node_modules'), join(seaWebUi, 'node_modules'), { recursive: true });
+} finally {
+  rmSync(depStage, { recursive: true, force: true });
+}
+// Assert every module whose absence is the failure mode actually landed. `npm install` exits
+// 0 on plenty of outcomes that leave a tree the server cannot boot from.
+//
+// existsSync rather than createRequire(...).resolve(name): a resolve walks UP from this
+// script, so running in-repo it climbs to cli/node_modules and reports success for precisely
+// the archive this step exists to fix — the same trap that made the old smoke pass on a
+// broken tree. Check the path that has to hold, not the one Node would search.
+for (const name of RUNTIME_DEP_NAMES) {
+  if (!existsSync(join(seaWebUi, 'node_modules', name, 'package.json'))) {
+    throw new Error(`${name} missing from the staged web-ui at ${join(seaWebUi, 'node_modules')}`);
+  }
+}
 
 // The browser extension + its native-messaging host, staged next to the binary
 // the same way (aka extension install resolves them via dirname(process.execPath)

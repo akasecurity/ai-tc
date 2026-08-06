@@ -1,0 +1,50 @@
+# ai-tc — AI Traffic Control
+
+> An open-source, local-first control plane for coding agents. Every event in an agent session — prompt, response, tool call, file read — passes one control point: the detection engine scans it against rule packs for secrets and regulated data (PCI, PHI, PII), and policy decides what happens next (monitor, warn, redact, block, or a manual exception). Runs entirely on the developer's machine with no backend and no account. Apache-2.0. Installs as a Claude Code / Claude Desktop plugin, or as the standalone `aka` CLI.
+
+Detection and enforcement never send your data anywhere: the source ships no network client. Three narrow paths do reach the network through child processes — package-manager installs, the plugin's `npm audit signatures` supply-chain check, and the **opt-in** `/aka:setup` calibration. Only that last one carries your data, and it takes two separate, separately-revocable grants. The README's egress footnote states exactly what it sends.
+
+## Install
+
+- Claude Code: `/plugin marketplace add akasecurity/marketplace` then `/plugin install ai-tc@akasecurity`.
+- Claude Desktop: supported through the same plugin package; see the installation guide.
+- Standalone CLI (binary `aka`, no coding agent required): install, then `aka init` — it detects whether the plugin is present and offers to add it.
+
+## Key concepts
+
+- **Event** — a prompt, response, tool call, or file read captured from an agent session.
+- **Finding** — a rule match the detection engine produces against an event.
+- **Rule** — a JSON file describing what to detect: a keyword list, a regex pattern, or a validator.
+- **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Seven ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`.
+- **Policy** — the decision taken when a rule or category fires.
+- **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop.
+
+## Where your data lives
+
+A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/settings`. No database server, no schema to manage. The store is a running log of sessions: only rule-flagged spans are masked, the rest is kept verbatim and unencrypted. On macOS and Linux the directories are owner-only (`0700`) and files are `0600`; those permissions are the only at-rest control, and they do nothing on Windows. [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md) has the full picture.
+
+## Documentation
+
+- [README.md](https://github.com/akasecurity/ai-tc/blob/main/README.md): How it works, key concepts, where data lives, install, and the full egress footnote.
+- [Docs site](https://akasecurity.github.io/ai-tc-docs/): Full documentation, architecture, and the built-in detection catalog.
+- [How it works](https://akasecurity.github.io/ai-tc-docs/getting-started/how-it-works/): The control point and the path an event takes through it.
+- [Architecture overview](https://akasecurity.github.io/ai-tc-docs/architecture/overview/): How the plugin, detection engine, and local SQLite store fit together.
+- [Writing rules](https://akasecurity.github.io/ai-tc-docs/rules/writing-rules/): Authoring a detection rule and its fixtures.
+- [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md): The store's threat model and private vulnerability reporting.
+- [CONTRIBUTING.md](https://github.com/akasecurity/ai-tc/blob/main/CONTRIBUTING.md): Branch-and-PR workflow, commit convention, and the test suite.
+
+## Repository layout
+
+- `packages/` — the workspace: `detections` (rule engine), `scanner`, `extract`, `persistence` (SQLite store), `schema`, `plugin-runtime`, `plugin-sdk`, `local-ops`, `dashboard-ui`, `ui-kit`.
+- `plugins/claude-code/` — the harness plugin published as `@akasecurity/ai-tc-claude-code`.
+- `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
+- `rules/` — the seven built-in rule packs and their fixtures.
+- `skills/write-detection-rule/` — the authoring skill for new detection rules.
+- `web-ui/` — the local dashboard.
+
+## Related
+
+- [akasecurity/marketplace](https://github.com/akasecurity/marketplace): One place to install AKA Security's tools for coding agents; `ai-tc` is served from here.
+- [akasecurity/ai-tc-docs](https://github.com/akasecurity/ai-tc-docs): Source for the documentation site above.
+- [akasecurity/claude-tools](https://github.com/akasecurity/claude-tools): The security defaults Claude Code doesn't ship with (guard hooks on an isolated profile).
+- [akasecurity/preflight-skills](https://github.com/akasecurity/preflight-skills): An independent multi-model review crew for coding agents. Report-only.

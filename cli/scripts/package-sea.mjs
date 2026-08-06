@@ -93,8 +93,15 @@ const runtimeDeps = RUNTIME_DEP_NAMES.map((name) => {
 // Into a temp prefix, then copied in: installing directly over the staged web-ui would
 // have npm rewrite its package.json — which is the REPO ROOT manifest that Next's
 // outputFileTracingRoot puts there, devDependencies and all — rather than a manifest this
-// step owns. `--ignore-scripts` keeps release packaging free of dependency install hooks;
-// the deps here ship prebuilt binaries via optional deps and need no build step.
+// step owns. `--ignore-scripts` keeps release packaging free of dependency install hooks.
+//
+// `--omit=optional` sheds ~140M of a ~308M tree, nearly all of it `@next/swc-<host>`. A
+// standalone Next server is prebuilt and compiles nothing while serving, so swc is not on the
+// serve path — smoke-dashboard is what holds that claim rather than this comment, by booting
+// the PACKAGED binary and rendering two Server Component pages through middleware. The flag
+// also drops `sharp`, which only `next/image` would load: the dashboard has no `next/image`
+// usage at all, which `.github/audit-waivers.json` already relies on for its sharp waiver.
+// Adding a `next/image` anywhere in web-ui means dropping this flag (or re-adding `sharp`).
 const depStage = mkdtempSync(join(tmpdir(), 'aka-sea-deps-'));
 try {
   execFileSync(
@@ -106,6 +113,7 @@ try {
       '--no-package-lock',
       '--no-audit',
       '--no-fund',
+      '--omit=optional',
       '--ignore-scripts',
       ...runtimeDeps,
     ],

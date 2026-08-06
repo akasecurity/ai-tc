@@ -74,6 +74,14 @@ const PULLED_PACK_RULE = Rule.parse({
 });
 const PULLED_MATCH = 'ZQXJ12345678';
 
+// A COMPILED-IN rule and a value it matches, for the missing-worker case below.
+// The built-in packs are what must keep detecting when the worker is gone, so
+// this pair is that case's positive control — taken from the rule's own
+// `examples` rather than written by hand, since this repo is public and a
+// hand-rolled literal here would be secret-shaped for no reason.
+const BUNDLED_RULE_ID = 'secrets/aws-access-key';
+const BUNDLED_MATCH = 'AKIAIOSFODNN7EXAMPLE';
+
 const temps: string[] = [];
 
 function tempDir(prefix: string): string {
@@ -232,6 +240,109 @@ describe('the built scan worker', () => {
     // would print, once, on every machine, if the worker URL pointed at a
     // source path that was never packaged.
     expect(result.stderr).not.toContain('the scan worker script was not found');
+  });
+
+  it('blames the install, not the rules, when it is missing from a real hook', async () => {
+    // The inverse of the case above, and the one that matters to a user: an
+    // install where the worker never arrived. What breaks then is not one
+    // rule — it is EVERY pulled/custom regex rule on the machine, in every
+    // scan, until the install is repaired. So the hook has one job here beyond
+    // staying out of the way, which is to say which of those two happened.
+    //
+    // Driven against the built scripts rather than the source, because the
+    // whole failure only exists once packaged: in the repo the resolver finds
+    // `scan-worker.ts` and this state is unreachable.
+    const dir = tempDir('aka-worker-missing-');
+    const scripts = join(dir, 'scripts');
+    cpSync(SCRIPTS_DIR, scripts, { recursive: true });
+    rmSync(join(scripts, WORKER_SCRIPT));
+    // The copy is what the assertions rest on: with the worker still present
+    // every one of them would read the opposite way round.
+    expect(existsSync(join(scripts, WORKER_SCRIPT))).toBe(false);
+    expect(existsSync(join(SCRIPTS_DIR, WORKER_SCRIPT))).toBe(true);
+
+    const home = tempDir('aka-worker-missing-home-');
+    const dataDir = join(home, '.aka', 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const db = openLocalDatabase(dataDir);
+    try {
+      db.installedPacks.recordInventory([
+        ...bundledDetections(),
+        {
+          namespace: 'e2e-worker',
+          packId: 'marker',
+          version: '1.0.0',
+          name: 'Isolated-scan e2e pack',
+          rules: [PULLED_PACK_RULE],
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const result = spawnSync(process.execPath, [join(scripts, 'user-prompt-submit.js')], {
+      input: JSON.stringify({
+        // Both a pulled match and a BUILT-IN one. The built-in is the positive
+        // control for the absence check below: it needs a rule that still fires
+        // here, or an empty findings list satisfies "the pulled rule did not
+        // fire" whether it was correctly dropped or the hook stopped scanning
+        // altogether.
+        prompt: `here is a token ${PULLED_MATCH} and a key ${BUNDLED_MATCH} for you`,
+        session_id: 'e2e-worker-missing-session',
+        cwd: home,
+        hook_event_name: 'UserPromptSubmit',
+      }),
+      encoding: 'utf8',
+      env: { ...processEnv(), HOME: home, USERPROFILE: home },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+
+    // Fail-open first, as ever: a broken install must not break the session.
+    expect(result.status).toBe(0);
+
+    // The diagnosis reaches the user. It exists inside `isolated-scan.ts` on
+    // every build; what this pins is that it survives the trip to stderr rather
+    // than being replaced by a timing verdict one frame before it gets there.
+    expect(result.stderr).toContain('the scan worker script was not found next to this bundle');
+    expect(result.stderr).toContain('reinstalling AKA brings them straight back');
+    // And it states the real span. A hook builds its runtime once and scans many
+    // fields in that process, so a line claiming one scan would understate a
+    // whole-category gap as momentary — and talk the reader out of the reinstall
+    // the same sentence just asked for.
+    expect(result.stderr).toContain('excluded from every scan on this machine');
+    // Not a rule problem, in any of the three spellings that would make it read
+    // like one. The rule id is the load-bearing one: a user who sees it goes and
+    // audits a ruleset that is fine, and the reinstall never occurs to them.
+    expect(result.stderr).not.toContain('ReDoS timing budget');
+    expect(result.stderr).not.toContain('quarantined rule');
+    expect(result.stderr).not.toContain('e2e-worker/marker');
+
+    const after = openLocalDatabase(dataDir);
+    try {
+      // The safety behaviour underneath the message, unchanged. Nothing was
+      // measured, so nothing may be cached: a verdict written here would
+      // disable a rule forever on the strength of a missing file, and would
+      // survive the reinstall that fixes everything else.
+      const key = ruleProbeKey(PULLED_PACK_RULE);
+      expect(key).toBeDefined();
+      expect(after.ruleProbeCache.getVerdict(key ?? '')).toBeUndefined();
+
+      // And it was DROPPED rather than run here. Running it on this thread to
+      // find out whether it is safe is the exact unbounded call the worker
+      // exists to replace, so its absence from the findings is the property —
+      // the same rule fires in the case above, where the worker was present.
+      //
+      // The built-in assertion comes FIRST and is what makes the absence mean
+      // anything: it is the half that proves this hook still scanned and still
+      // recorded, so the pulled rule is missing because it was dropped rather
+      // than because nothing ran. Without it the check below passes on an empty
+      // list, which is exactly what it did before this control was added.
+      const recent = await after.findings.recentFindings({ limit: 50 });
+      expect(recent.map((f) => f.ruleId)).toContain(BUNDLED_RULE_ID);
+      expect(recent.map((f) => f.ruleId)).not.toContain('e2e-worker/marker');
+    } finally {
+      after.close();
+    }
   });
 });
 

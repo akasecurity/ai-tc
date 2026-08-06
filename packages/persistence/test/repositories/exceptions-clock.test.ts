@@ -285,6 +285,55 @@ describe('SqliteExceptionsRepository — injected clock', () => {
       expect(await repo.sweepTerminal(RETENTION_MS)).toBe(0);
       expect((await repo.list()).map((e) => e.id)).toEqual([grant.id]);
     });
+
+    /**
+     * The cases above reach the expiry arm from far outside it — the clock
+     * lands a whole retention window past the stamp, where `expires_at <= :now`
+     * and `expires_at < :now` are the same question. So nothing pinned THIS
+     * copy of the boundary: the supersede clause has a millisecond-exact pair
+     * below, and the sweep had no counterpart.
+     *
+     * That matters because `sweepTerminal` does not read `ACTIVE_PREDICATE`; it
+     * restates the complement longhand. This case asserts the two agree at the
+     * one instant that can tell them apart — terminal per the sweep and inert
+     * on all four readers of the predicate, at the same millisecond. A sweep
+     * that drifted to `<` would leave a row every active surface has already
+     * disowned.
+     */
+    it('sweeps at exactly the millisecond of expiry, agreeing with all four active surfaces', async () => {
+      // Expiry a retention window past T0, so the row is ALREADY old enough
+      // when the clock reaches the stamp. Nearer than that and `updated_at <
+      // :cutoff` is what decides the case, leaving the expiry comparison
+      // unreached — which is exactly how the boundary went unpinned above.
+      const expiry = T0 + RETENTION_MS + 1;
+      const SWEEP_FP = 'ef'.repeat(32);
+      const expiring = await repo.create(
+        input({
+          // So the reveal surface is askable of this same row; the other three
+          // do not filter on capability.
+          capability: 'reveal_to_model',
+          valueFingerprint: SWEEP_FP,
+          expiresAt: iso(expiry),
+        }),
+      );
+      // The control: equally old, never expires. Without it a sweep deleting
+      // every row past the cutoff passes this test.
+      const permanent = await repo.create(input({ scope: 'permanent', expiresAt: null }));
+
+      at(expiry);
+
+      // Inert on all four readers of the predicate. `consume` is asked BEFORE
+      // the sweep: once the row is deleted it returns false whatever the
+      // predicate says, and the assertion would hold vacuously.
+      expect((await repo.list()).map((e) => e.id)).toEqual([permanent.id]);
+      expect((await repo.activeBundleEntries(1)).map((e) => e.id)).toEqual([permanent.id]);
+      expect(await repo.activeRevealGrant('aws-access-key-id', SWEEP_FP, 1)).toBeNull();
+      expect(await repo.consume(expiring.id)).toBe(false);
+
+      // ...and terminal per the sweep, at that same instant.
+      expect(await repo.sweepTerminal(RETENTION_MS)).toBe(1);
+      expect((await repo.list({ includeTerminal: true })).map((e) => e.id)).toEqual([permanent.id]);
+    });
   });
 
   describe('terminal-collider supersede', () => {

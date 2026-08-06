@@ -129,6 +129,12 @@ interface BlockedDetectionRow {
 // a second source of truth that a crashed sweep could leave stale. This
 // predicate is the single definition of "active"; correctness never depends on
 // a cleanup sweep.
+//
+// Its COMPLEMENT is derived from neither: `create()`'s supersede clause and
+// `sweepTerminal` each spell "terminal" out longhand instead of negating this
+// string. One boundary, three statements — they must move together. The two
+// longhand copies decide whether a spent grant frees its index slot and
+// whether it is ever deleted, so a one-sided edit is not visible from here.
 const ACTIVE_PREDICATE = `revoked_at IS NULL
      AND (expires_at IS NULL OR expires_at > :now)
      AND (max_uses IS NULL OR use_count < max_uses)`;

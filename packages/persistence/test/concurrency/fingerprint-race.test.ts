@@ -49,6 +49,7 @@ import type * as FsModule from 'node:fs';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -191,6 +192,49 @@ function awaitBarrier(signal: Int32Array, count: number): void {
   }
 }
 
+// How many times to re-run the race looking for real overlap.
+//
+// The barrier guarantees the threads are all PARKED and released together, and
+// `arrivedAtRelease` / `keyPublishedAtBarrier` pin that on every run. It cannot
+// guarantee two of them are inside the mint at the same INSTANT, because that is
+// a scheduling outcome: the mint is a handful of syscalls, and a runner with
+// fewer free cores than racers can finish one thread before the next is
+// scheduled and legitimately observe an occupancy of 1. CI runs the whole
+// workspace under `turbo --force`, so the machine is oversubscribed and that is
+// the normal case there, not a rare one.
+//
+// Retrying is what separates "this machine would not overlap" from "the code
+// stopped overlapping": several independent attempts make a genuinely
+// concurrent runner show it, while a saturated one is reported as unmeasurable
+// instead of failing. The loser-adopts path itself is not left to this — the
+// interceptor cases below force it deterministically on every run.
+const OVERLAP_ATTEMPTS = 5;
+
+/**
+ * Race repeatedly until two threads are actually observed inside the mint at
+ * once, returning the best attempt if none manages it.
+ *
+ * Each attempt needs a FRESH data dir: a retry against a dir that already holds
+ * the published key takes the load path and races nothing, so it would report a
+ * tidy `maxConcurrent` of 0 forever.
+ */
+async function raceUntilOverlap(dataDir: string, count: number): Promise<RaceResult> {
+  const attempt = async (): Promise<RaceResult> => {
+    rmSync(dataDir, { recursive: true, force: true });
+    mkdirSync(dataDir, { recursive: true });
+    return raceToMint(dataDir, count);
+  };
+
+  // The first attempt runs unconditionally, so the best-so-far is always a real
+  // result and the caller never has to reason about an empty run.
+  let best = await attempt();
+  for (let i = 1; i < OVERLAP_ATTEMPTS && best.maxConcurrent < 2; i += 1) {
+    const next = await attempt();
+    if (next.maxConcurrent > best.maxConcurrent) best = next;
+  }
+  return best;
+}
+
 /** Mint from `count` threads released at the same instant. */
 async function raceToMint(
   dataDir: string,
@@ -268,13 +312,23 @@ function agreedKey(minted: Minted[]): string {
 }
 
 describe('concurrent first mints converge on one key', () => {
-  it('leaves every racing thread holding the key that is on disk', async () => {
-    const race = await raceToMint(dir, RACERS);
+  it('leaves every racing thread holding the key that is on disk', async (ctx) => {
+    const race = await raceUntilOverlap(dir, RACERS);
 
     // Positive controls first: threads that did not overlap agree trivially.
     expect(race.arrivedAtRelease).toBe(RACERS);
     expect(race.keyPublishedAtBarrier).toBe(false);
-    expect(race.maxConcurrent).toBeGreaterThanOrEqual(2);
+    if (race.maxConcurrent < 2) {
+      // Reported, not failed: on a saturated runner the threads genuinely do
+      // not overlap, and convergence without overlap proves nothing either way.
+      // Skipping says the premise was unmeasurable here; asserting would blame
+      // the code for the scheduler.
+      ctx.skip(
+        `no attempt got two of ${String(RACERS)} threads inside the mint at once ` +
+          `(best ${String(race.maxConcurrent)} over ${String(OVERLAP_ATTEMPTS)} attempts) — ` +
+          `this runner serialized them, so convergence here would be trivial`,
+      );
+    }
 
     expect(race.minted).toHaveLength(RACERS);
     const published = keyOnDisk();

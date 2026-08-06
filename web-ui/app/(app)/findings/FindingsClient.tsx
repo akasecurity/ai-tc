@@ -96,9 +96,12 @@ type ViewProps =
  * filter/search/view changes push a new URL so the server re-queries — the OSS
  * store is server-only, so filtering can't happen in the browser.
  *
- * Pagination is the exception: "Load more" appends through a data-returning
- * Server Action rather than a URL push, so the pages already accumulated
- * survive and no history entry is created per page.
+ * Pagination is the exception: stepping through pages calls a data-returning
+ * Server Action rather than a URL push, so no history entry is created per
+ * page. Each view keeps a client-side cache of the pages it has already
+ * fetched (keyed by index) plus the cursor to fetch the next one — the lists
+ * are keyset-paged server-side, so "Previous" replays a cached page rather
+ * than re-fetching, and there is no way to jump to an arbitrary page.
  */
 export function FindingsClient(props: CommonProps & ViewProps) {
   const {
@@ -349,24 +352,63 @@ function GroupedView({
   sessionHref: string | null;
   emptyState: React.ReactNode;
 }) {
-  const [pages, setPages] = useState<FindingGroup[][]>([]);
-  const [cursor, setCursor] = useState<string | null>(data.nextCursor);
+  // Each entry is one fetched page; `cursors[i]` is what fetches the page
+  // after `pages[i]`. Stepping forward past the cached frontier fetches and
+  // appends; stepping back just moves `pageIndex` — the page is still here.
+  const [pages, setPages] = useState<FindingGroup[][]>([data.items]);
+  const [cursors, setCursors] = useState<(string | null)[]>([data.nextCursor]);
+  const [pageIndex, setPageIndex] = useState(0);
   const [loading, startLoading] = useTransition();
 
-  // Reset accumulation when the server hands back a different first page —
+  // Reset the cache when the server hands back a different first page —
   // checked DURING RENDER against the data object's identity, not in an effect.
-  // An effect would commit one frame in which the appended pages from the
-  // previous query are rendered under the new one, with duplicate React keys.
+  // An effect would commit one frame in which the previous query's page is
+  // rendered under the new one, with duplicate React keys.
   const [forData, setForData] = useState(data);
   if (forData !== data) {
     setForData(data);
-    setPages([]);
-    setCursor(data.nextCursor);
+    setPages([data.items]);
+    setCursors([data.nextCursor]);
+    setPageIndex(0);
   }
 
-  // Dedupe by id: an includeId-appended group is out of sort order, so it
-  // reappears at its natural position on whichever later page reaches it.
-  const groups = dedupeById([...data.items, ...pages.flat()]);
+  const groups = pages[pageIndex] ?? [];
+  const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
+
+  const onNextPage = () => {
+    if (!needsFetch(pages.length, pageIndex)) {
+      setPageIndex((i) => i + 1);
+      return;
+    }
+    const cursor = cursors[pageIndex];
+    if (cursor === null) return;
+    startLoading(async () => {
+      // Built from the SERVER-RENDERED filters, never the live debounced
+      // query: a click during the debounce window would otherwise page a
+      // different filtered set into this one.
+      const next = await loadMoreGroupedFindings({
+        ...toGroupedQuery(filters, query, session, {
+          ...(from ? { from } : {}),
+        }),
+        cursor,
+      });
+      // page 0's `?finding=` deep link is appended out of sort order (see
+      // ListGroupedFindingsQuery.includeId) and resurfaces here at its natural
+      // cursor position once paging reaches it — drop the repeat so a page
+      // never shows the same group twice. Once dropped, this page contributes
+      // one fewer row than it fetched, which is what lets pageStartOf's running
+      // sum catch back up to the true position after being one row ahead of it
+      // on the pages in between.
+      const fresh = dedupeAgainstPages(pages, next.items);
+      setPages((prev) => [...prev, fresh]);
+      setCursors((prev) => [...prev, next.nextCursor]);
+      setPageIndex((i) => i + 1);
+    });
+  };
+
+  const onPreviousPage = () => {
+    setPageIndex((i) => Math.max(0, i - 1));
+  };
 
   const [selected, setSelected] = useState<Selection | null>(() =>
     findSelection(data.items, selectedId),
@@ -417,26 +459,12 @@ function GroupedView({
         statusFilter={filters.status}
         {...(data.sessionFirings ? { sessionFirings: data.sessionFirings } : {})}
         {...(emptyState === undefined ? {} : { emptyState })}
-        onLoadMore={
-          cursor === null
-            ? undefined
-            : () => {
-                startLoading(async () => {
-                  // Built from the SERVER-RENDERED filters, never the live
-                  // debounced query: a click during the debounce window would
-                  // otherwise page a different filtered set into this one.
-                  const next = await loadMoreGroupedFindings({
-                    ...toGroupedQuery(filters, query, session, {
-                      ...(from ? { from } : {}),
-                    }),
-                    cursor,
-                  });
-                  setPages((prev) => [...prev, next.items]);
-                  setCursor(next.nextCursor);
-                });
-              }
-        }
-        loadingMore={loading}
+        onNextPage={onNextPage}
+        onPreviousPage={onPreviousPage}
+        hasNextPage={hasNextPage}
+        hasPreviousPage={pageIndex > 0}
+        loadingNextPage={loading}
+        pageStart={pageStartOf(pages, pageIndex)}
         total={data.totals.groups}
       />
 
@@ -506,20 +534,54 @@ function FlatView({
   file: string;
   emptyState: React.ReactNode;
 }) {
-  const [pages, setPages] = useState<FindingInstanceDetail[][]>([]);
-  const [cursor, setCursor] = useState<string | null>(data.nextCursor);
+  const [pages, setPages] = useState<FindingInstanceDetail[][]>([data.items]);
+  const [cursors, setCursors] = useState<(string | null)[]>([data.nextCursor]);
+  const [pageIndex, setPageIndex] = useState(0);
   const [loading, startLoading] = useTransition();
   const [selectedInstanceId, setSelectedInstanceId] = useState('');
 
   const [forData, setForData] = useState(data);
   if (forData !== data) {
     setForData(data);
-    setPages([]);
-    setCursor(data.nextCursor);
+    setPages([data.items]);
+    setCursors([data.nextCursor]);
+    setPageIndex(0);
   }
 
-  const items = dedupeById([...data.items, ...pages.flat()]);
+  const items = pages[pageIndex] ?? [];
   const selected = items.find((i) => i.id === selectedInstanceId) ?? null;
+  const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
+
+  const onNextPage = () => {
+    // Paging closes the detail drawer rather than leaving it silently pointing
+    // at a row `items` (now just the new page) no longer contains.
+    setSelectedInstanceId('');
+    if (!needsFetch(pages.length, pageIndex)) {
+      setPageIndex((i) => i + 1);
+      return;
+    }
+    const cursor = cursors[pageIndex];
+    if (cursor === null) return;
+    startLoading(async () => {
+      const next = await loadMoreFindingInstances({
+        ...toInstancesQuery(filters, query, session, {
+          ...(from ? { from } : {}),
+          ...(tools.length ? { tools } : {}),
+          ...(repo ? { repo } : {}),
+          ...(file ? { file } : {}),
+        }),
+        cursor,
+      });
+      setPages((prev) => [...prev, next.items]);
+      setCursors((prev) => [...prev, next.nextCursor]);
+      setPageIndex((i) => i + 1);
+    });
+  };
+
+  const onPreviousPage = () => {
+    setSelectedInstanceId('');
+    setPageIndex((i) => Math.max(0, i - 1));
+  };
 
   return (
     <>
@@ -530,23 +592,12 @@ function FlatView({
           setSelectedInstanceId(instance.id);
         }}
         total={data.totals.findings}
-        hasMore={cursor !== null}
-        loadingMore={loading}
-        onLoadMore={() => {
-          startLoading(async () => {
-            const next = await loadMoreFindingInstances({
-              ...toInstancesQuery(filters, query, session, {
-                ...(from ? { from } : {}),
-                ...(tools.length ? { tools } : {}),
-                ...(repo ? { repo } : {}),
-                ...(file ? { file } : {}),
-              }),
-              cursor,
-            });
-            setPages((prev) => [...prev, next.items]);
-            setCursor(next.nextCursor);
-          });
-        }}
+        pageStart={pageStartOf(pages, pageIndex)}
+        hasNextPage={hasNextPage}
+        hasPreviousPage={pageIndex > 0}
+        loadingNextPage={loading}
+        onNextPage={onNextPage}
+        onPreviousPage={onPreviousPage}
         {...(emptyState === undefined ? {} : { emptyState })}
       />
 
@@ -609,15 +660,37 @@ function LocationsView({
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+//
+// Exported (rather than file-local) so the page-cache derivation itself is
+// directly unit-testable — see test/pages/findings-pagination.test.ts — without
+// rendering GroupedView/FlatView, which this package's vitest setup (no DOM,
+// no React renderer) cannot do.
+
+/** 1-indexed position of `pages[pageIndex][0]` within the whole result set. */
+export function pageStartOf(pages: unknown[][], pageIndex: number): number {
+  let start = 1;
+  for (let i = 0; i < pageIndex; i += 1) start += pages[i]?.length ?? 0;
+  return start;
+}
 
 /**
- * First occurrence wins. The grouped list can append an includeId group out of
- * sort order, so that group arrives again at its natural cursor position on a
- * later page; without this the second copy would collide on its React key.
+ * Whether stepping to the page after `pageIndex` needs a server fetch, or can
+ * just replay a page already sitting in the cache. `pageCount` is `pages.length`.
  */
-function dedupeById<T extends { id: string }>(rows: T[]): T[] {
-  const seen = new Set<string>();
-  return rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+export function needsFetch(pageCount: number, pageIndex: number): boolean {
+  return pageIndex + 1 >= pageCount;
+}
+
+/**
+ * Drop any item already rendered on an earlier page. The one case this matters
+ * for today: GroupedView's `?finding=` deep link is appended to page 0 out of
+ * sort order (see ListGroupedFindingsQuery.includeId) and resurfaces here at
+ * its natural cursor position once paging reaches it — without this, that
+ * group renders twice as the user pages through.
+ */
+export function dedupeAgainstPages<T extends { id: string }>(pages: T[][], incoming: T[]): T[] {
+  const seen = new Set(pages.flat().map((item) => item.id));
+  return incoming.filter((item) => !seen.has(item.id));
 }
 
 /**
@@ -755,7 +828,7 @@ function ScopeChips({
             </Badge>
           </Link>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             aria-label="Clear session filter"
             onClick={onClearSession}
@@ -774,7 +847,7 @@ function ScopeChips({
               {tool}
             </Badge>
           ))}
-          <Button variant="ghost" size="sm" aria-label="Clear tool filter" onClick={onClearTools}>
+          <Button variant="outline" size="sm" aria-label="Clear tool filter" onClick={onClearTools}>
             <XIcon aria-hidden focusable={false} className="size-3.5" />
             Clear
           </Button>
@@ -788,7 +861,7 @@ function ScopeChips({
             {[repo, file].filter(Boolean).join(' / ')}
           </Badge>
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             aria-label="Clear location filter"
             onClick={onClearLocation}

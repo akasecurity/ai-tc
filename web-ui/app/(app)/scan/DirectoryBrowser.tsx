@@ -66,7 +66,7 @@ export function DirectoryBrowser({ onSelect }: { onSelect: (path: string) => voi
       }}
     >
       <PopoverTrigger asChild>
-        <Button variant="ghost" tone="neutral" size="sm">
+        <Button variant="outline" tone="neutral" size="sm">
           Browse…
         </Button>
       </PopoverTrigger>

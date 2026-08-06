@@ -214,8 +214,12 @@ registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audi
 PR and daily, sending the workspace dependency graph — package names and versions,
 including the `@akasecurity/*` workspace importers — to the registry's audit endpoint; it
 also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
-temp dir, sending that (public-package) graph the same way. That is repository tooling,
-not a product path; nothing a user installs performs it.
+temp dir, sending that (public-package) graph the same way. The binary channel's packaging
+is the second such path: `cli/scripts/package-sea.mjs` shells out to `npm install` to place
+the Next standalone server's runtime dependencies (`next`, `react`, `react-dom` and their
+transitive graph) inside the archive, so `release-binaries.yml` and `build-binaries.yml`
+both reach the registry — and `pnpm package:sea` does not run offline. Both are repository
+tooling, not product paths; nothing a user installs performs either.
 
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:

@@ -6,6 +6,7 @@ export * from './detection-build.ts';
 export * from './egress-extraction.ts';
 export * from './event.ts';
 export * from './exception.ts';
+export * from './exception-action.ts';
 export * from './finding.ts';
 export * from './findings-flat-build.ts';
 export * from './findings-group-build.ts';

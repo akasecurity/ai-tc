@@ -31,16 +31,20 @@ import {
 } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BlockedDetectionInput, DetectionException } from '@akasecurity/schema';
+import { DetectionCategory, PointerToken } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type ActionResult,
   addException,
   approveBlocked,
+  grantRevealFromPointer,
+  type RevealGrantResult,
   revokeException,
   rotateKey,
 } from '../../app/(app)/exceptions/actions.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { expectNoRejection } from '../helpers/no-throw.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
@@ -227,13 +231,35 @@ async function bundleIds(keyVersion: number): Promise<string[]> {
 // `string` in each signature is a compile-time claim the runtime never checks.
 // Call through widened aliases so the tests can drive the boundary as it
 // actually exists.
+//
+// Widening is PER-PARAMETER, not per-action: an alias that widens
+// `confirmation` and leaves `reason` at `string` covers the boundary for one
+// field and reads as covering the action. So each alias below widens every
+// field, and the whole input is widened to `unknown` as well — a payload that
+// is not an object at all is a shape no per-field alias can express, and it is
+// the one that fails before any field is read.
 const rotateKeyRaw = rotateKey as unknown as (confirmation: unknown) => Promise<ActionResult>;
-const approveBlockedRaw = approveBlocked as unknown as (input: {
+const approveBlockedRaw = approveBlocked as unknown as (input: unknown) => Promise<ActionResult>;
+// The confirmation blocks below are the exception to that rule, and deliberately
+// keep a NAMED shape: they drive one field across the boundary and depend on
+// every other arriving well-formed. Widened to `unknown` they would still pass
+// after `reference` was renamed — the payload would fail on a missing field
+// instead of reaching the confirmation gate, and `ok: false` plus zero grants
+// reads the same either way. Widen the field under test, not its siblings.
+const approveBlockedConfirmationRaw = approveBlocked as unknown as (input: {
   reference: string;
   scope: string;
   reason: string;
   confirmation?: unknown;
 }) => Promise<ActionResult>;
+const addExceptionRaw = addException as unknown as (input: unknown) => Promise<ActionResult>;
+const revokeExceptionRaw = revokeException as unknown as (
+  id: unknown,
+  reason: unknown,
+) => Promise<ActionResult>;
+const grantRevealFromPointerRaw = grantRevealFromPointer as unknown as (
+  input: unknown,
+) => Promise<RevealGrantResult>;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-ex-'));
   osHome.dir = home;
@@ -982,7 +1008,7 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
     it.each(COERCING)('rejects %s that coerces to the masked value', async (_label, build) => {
       const confirmation = build(MASKED);
       expect(String(confirmation)).toBe(MASKED); // the case is only meaningful if it coerces
-      const res = await approveBlockedRaw({
+      const res = await approveBlockedConfirmationRaw({
         reference: REFERENCE,
         scope: 'permanent',
         reason: 'x',
@@ -1003,7 +1029,7 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
     ];
 
     it.each(EMPTYISH)('rejects %s arriving over the wire', async (_label, confirmation) => {
-      const res = await approveBlockedRaw({
+      const res = await approveBlockedConfirmationRaw({
         reference: REFERENCE,
         scope: 'permanent',
         reason: 'x',
@@ -1461,4 +1487,269 @@ describe('revokeException — terminal, audit-retained, and easy to no-op silent
       expect(res.error).not.toMatch(/no active exception/i);
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('the untyped wire — every mutating action parses its whole input', () => {
+  // A Server Action's parameter types are a compile-time claim about a runtime
+  // that never checked one: the arguments arrive as JSON over an HTTP POST, and
+  // a caller is free to post a number, a null, or an object carrying a hostile
+  // `toString`. Reaching a `.trim()`, a `.slice()`, a template literal or a SQL
+  // bind parameter, such a value throws — and a THROWN Server Action rejects,
+  // so the browser gets a framework error page rather than the recoverable
+  // message every branch in actions.ts is written to return. That is the same
+  // outcome the store-failure guards exist to prevent, reached by another door.
+  //
+  // Three properties are pinned per case and each catches a different mistake:
+  //   1. it does not throw      — the rejection reaches the caller at all
+  //   2. it names the FIELD     — the refusal is actionable, and (below) the
+  //                               name is the schema's key rather than anything
+  //                               derived from the payload
+  //   3. it echoes no raw value — a field arriving as the wrong type is still a
+  //                               live credential
+  // Plus inertness: a refused payload writes no grant.
+  //
+  // Property 2 is also what stops property 3 passing vacuously. `expectNoEchoOf`
+  // guards against an absent error but NOT an empty one, and every
+  // `not.toContain` is satisfied by `''` — so the message is required to say
+  // something specific before it is asked what it omits.
+
+  // A shape-valid vault pointer, assembled from its segments rather than
+  // written out: the repo is developed with the plugin active, and a contiguous
+  // pointer literal in a source file is exactly what it substitutes away. The
+  // grantRevealFromPointer cases below refuse before it is ever resolved — it
+  // only has to get past the shape check so those cases fail for the reason
+  // they name, and safeParse pins that rather than leaving it to inspection.
+  const POINTER =
+    `[[aka:${DetectionCategory.enum.secret}:` +
+    `${'A'.repeat(4)}.${'A'.repeat(26)}.${'A'.repeat(16)}]]`;
+  if (!PointerToken.safeParse(POINTER).success) {
+    throw new Error('the assembled pointer fixture no longer matches PointerToken');
+  }
+
+  // The shapes a browser can actually post in place of a string.
+  //
+  // The three COMPOUND shapes each carry the secret, and that is what makes the
+  // echo assertion below able to fail at all: an assertion that a message omits
+  // a value the case never supplied is true by construction and stays true
+  // however the branch is worded. `[VALUE]` coerces to VALUE outright, and
+  // `{ leak: VALUE }` surfaces it through any serialization, so a branch that
+  // interpolates the field it rejected is caught in each of them.
+  //
+  // The four PRIMITIVE shapes have nothing echoable in them — a `42` cannot
+  // disclose a credential. For those rows the echo assertion is live only
+  // through the SIBLING fields, so every payload below carries VALUE in a field
+  // it is not mutating wherever the action has one to spare. `rotateKey` takes a
+  // single parameter and has none, so its four primitive cases are inert on the
+  // echo check by construction and are covered by the compound shapes instead.
+  const NON_TEXT: [string, unknown][] = [
+    ['a number', 42],
+    ['null', null],
+    ['undefined', undefined],
+    ['true', true],
+    ['an object carrying the secret', { leak: VALUE }],
+    ['an array carrying the secret', [VALUE]],
+    ['an object whose toString yields the secret', { toString: () => VALUE }],
+  ];
+
+  // Every field on this surface that must arrive as text, with a call that puts
+  // one payload into it and leaves every other field well-formed. Enumerated
+  // per FIELD rather than per action: the hole this closes was per-field, so a
+  // table keyed by action would have exactly the blind spot it is testing for.
+  //
+  // Every payload carries VALUE in some field it is NOT mutating, so the echo
+  // assertion has something the call really supplied to look for even on the
+  // primitive shapes. None of these actions echoes the field VALUE is parked in
+  // — `approveBlocked` names no reference in "expired from the ledger",
+  // `grantRevealFromPointer` names no pointer in "not a vault pointer", and
+  // `revokeException` names no id in "no active exception with that id" — so
+  // each of those is a live assertion that passes today and would go red the
+  // moment one of them started interpolating.
+  const FIELDS: [string, string, (bad: unknown) => Promise<{ ok: boolean; error?: string }>][] = [
+    [
+      'addException',
+      'ruleId',
+      (b) => addExceptionRaw({ ruleId: b, value: VALUE, scope: 'once', reason: 'r' }),
+    ],
+    [
+      'addException',
+      'value',
+      (b) => addExceptionRaw({ ruleId: RULE_ID, value: b, scope: 'once', reason: VALUE }),
+    ],
+    [
+      'addException',
+      'scope',
+      (b) => addExceptionRaw({ ruleId: RULE_ID, value: VALUE, scope: b, reason: 'r' }),
+    ],
+    [
+      'addException',
+      'reason',
+      (b) => addExceptionRaw({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: b }),
+    ],
+    [
+      'approveBlocked',
+      'reference',
+      (b) => approveBlockedRaw({ reference: b, scope: 'once', reason: VALUE }),
+    ],
+    [
+      'approveBlocked',
+      'scope',
+      (b) => approveBlockedRaw({ reference: VALUE, scope: b, reason: 'r' }),
+    ],
+    [
+      'approveBlocked',
+      'reason',
+      (b) => approveBlockedRaw({ reference: VALUE, scope: 'once', reason: b }),
+    ],
+    [
+      'grantRevealFromPointer',
+      'pointer',
+      (b) => grantRevealFromPointerRaw({ pointer: b, scope: 'once', justification: VALUE }),
+    ],
+    [
+      'grantRevealFromPointer',
+      'scope',
+      (b) => grantRevealFromPointerRaw({ pointer: POINTER, scope: b, justification: VALUE }),
+    ],
+    [
+      'grantRevealFromPointer',
+      'justification',
+      (b) => grantRevealFromPointerRaw({ pointer: VALUE, scope: 'once', justification: b }),
+    ],
+    ['revokeException', 'id', (b) => revokeExceptionRaw(b, VALUE)],
+    ['revokeException', 'reason', (b) => revokeExceptionRaw(VALUE, b)],
+    // The one row with no sibling to park VALUE in — see NON_TEXT above.
+    ['rotateKey', 'confirmation', (b) => rotateKeyRaw(b)],
+  ];
+
+  const CASES = FIELDS.flatMap(([action, field, call]) =>
+    NON_TEXT.map(
+      ([label, bad]) =>
+        [action, field, label, bad, call] as [
+          string,
+          string,
+          string,
+          unknown,
+          (bad: unknown) => Promise<{ ok: boolean; error?: string }>,
+        ],
+    ),
+  );
+
+  it.each(CASES)('%s refuses %s arriving as %s', async (_action, field, _label, bad, call) => {
+    // A key on disk so rotateKey's inertness is observable, and so the
+    // addException cases reach a key resolution that could succeed.
+    loadOrCreateFingerprintKey(dir);
+    const keyBefore = keyBytes();
+
+    // The rejection has to arrive as a RETURN. A rejected promise here is the
+    // framework error page this whole block exists to rule out, so it is
+    // asserted on directly rather than allowed to fail the case as an unrelated
+    // error naming a TypeError deep inside the action.
+    const res = await expectNoRejection(() => call(bad));
+    expect(res.ok).toBe(false);
+
+    // Names the field — and names it from the schema's own key. Asserted
+    // before the echo check so that check is never satisfied by an empty
+    // message.
+    expect(res.error).toContain(`'${field}'`);
+    expectNoEchoOf(res.error, VALUE);
+
+    // Refused means refused: nothing written, and the key untouched.
+    expect(await grants()).toHaveLength(0);
+    expect(keyBytes()).toBe(keyBefore);
+  });
+
+  // The case no per-field alias can express: the argument is not an object, so
+  // the failure happens before any field is read. It is also the one shape that
+  // cannot name a field, which is why the refusal has a second form.
+  // Same rule as NON_TEXT: the shapes that CAN carry the secret do, so the echo
+  // assertion below is not asserting the absence of something never sent. A
+  // bare string posted where an object belongs is the realistic hostile form —
+  // and the realistic string to post is the credential itself.
+  const NON_OBJECTS: [string, unknown][] = [
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 42],
+    ['a bare string that is the secret', VALUE],
+    ['an array carrying the secret', [VALUE]],
+  ];
+
+  const WHOLE_INPUT: [string, (input: unknown) => Promise<{ ok: boolean; error?: string }>][] = [
+    ['addException', addExceptionRaw],
+    ['approveBlocked', approveBlockedRaw],
+    ['grantRevealFromPointer', grantRevealFromPointerRaw],
+  ];
+
+  it.each(
+    WHOLE_INPUT.flatMap(([action, call]) =>
+      NON_OBJECTS.map(
+        ([label, input]) =>
+          [action, label, input, call] as [
+            string,
+            string,
+            unknown,
+            (input: unknown) => Promise<{ ok: boolean; error?: string }>,
+          ],
+      ),
+    ),
+  )('%s refuses a payload that is %s', async (_action, _label, input, call) => {
+    const res = await expectNoRejection(() => call(input));
+    expect(res.ok).toBe(false);
+    // No field can be blamed, so the refusal takes its other form — pinned so
+    // the message cannot silently become an empty string, which would satisfy
+    // every absence assertion below it.
+    expect(res.error).toMatch(/expected shape/i);
+    expectNoEchoOf(res.error, VALUE);
+    expect(await grants()).toHaveLength(0);
+  });
+
+  // The control, without which every assertion above passes with the actions
+  // rewritten to refuse unconditionally. A guard that refuses everything
+  // satisfies "does not throw", "returns ok: false" and "echoes nothing".
+  it('still accepts a well-formed payload', async () => {
+    const res = await addException({
+      ruleId: RULE_ID,
+      value: VALUE,
+      scope: 'once',
+      reason: 'a real grant',
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.ok).toBe(true);
+    expect(await grants()).toHaveLength(1);
+  });
+
+  // `confirmation` is optional, so `undefined` is the one non-string it must
+  // accept — the field is simply absent for a non-permanent scope. Pinned
+  // separately from the table above, where `undefined` is a rejection.
+  it('accepts an absent confirmation on a non-permanent scope', async () => {
+    const res = await addException({
+      ruleId: RULE_ID,
+      value: VALUE,
+      scope: 'once',
+      reason: 'no confirmation needed',
+      confirmation: undefined,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  // ...but a confirmation that is PRESENT and not text is refused, rather than
+  // coerced. The existing rotateKey and approveBlocked blocks pin this for
+  // their own actions through the value comparison; here it is the parse.
+  it.each(NON_TEXT.filter(([label]) => label !== 'undefined'))(
+    'refuses a confirmation arriving as %s',
+    async (_label, bad) => {
+      const res = await addExceptionRaw({
+        ruleId: RULE_ID,
+        value: VALUE,
+        scope: 'permanent',
+        reason: 'r',
+        confirmation: bad,
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("'confirmation'");
+      expectNoEchoOf(res.error, VALUE);
+      expect(await grants()).toHaveLength(0);
+    },
+  );
 });

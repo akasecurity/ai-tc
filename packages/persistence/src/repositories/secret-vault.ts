@@ -36,6 +36,7 @@ import type {
 import {
   DEFAULT_VAULT_DEREFS_LIMIT,
   DEFAULT_VAULT_INVENTORY_LIMIT,
+  MAX_VAULT_PAGE_LIMIT,
   POINTER_FORMAT_VERSION,
 } from '@akasecurity/schema';
 
@@ -45,6 +46,25 @@ import { allRows, bindParams, countScalar, getRow } from '../internal/rows.ts';
 import { placeholders } from '../internal/sql-text.ts';
 import { withTransaction } from '../internal/transactions.ts';
 import { ACTIVE_REVEAL_GRANT_PREDICATE } from './exceptions.ts';
+
+/**
+ * The page size a read will actually use.
+ *
+ * The Server Actions parse `limit` against the same ceiling before it reaches
+ * here, so on the web path this is redundant — but the ceiling protects an
+ * invariant of the STORE rather than of that one caller: `sightingsFor` hydrates
+ * a page through one `IN (…)` carrying a bind variable per row, and SQLite
+ * refuses to prepare past 32766 of them. Anything constructing this repository
+ * directly would otherwise reach that as a thrown prepare.
+ *
+ * `trunc` and the floor of 1 are not decoration. A fractional limit binds as a
+ * SQLite `datatype mismatch`, and 0 asks for one row, keeps none, and reports no
+ * next cursor — a silently empty page that reads as the end of the list.
+ */
+function pageLimit(requested: number | undefined, fallback: number): number {
+  if (requested === undefined) return fallback;
+  return Math.min(Math.max(1, Math.trunc(requested)), MAX_VAULT_PAGE_LIMIT);
+}
 
 /** What a caller supplies when it asks for a value to be vaulted. */
 export interface VaultRowInsert {
@@ -455,7 +475,7 @@ export class SqliteSecretVaultRepository {
    * sees never depends on how far they have paged.
    */
   listInventory(query: ListVaultInventoryQuery = {}, now = Date.now()): ListVaultInventoryResponse {
-    const limit = query.limit ?? DEFAULT_VAULT_INVENTORY_LIMIT;
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
     const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
 
     // Keyset pagination, expanded tuple comparison (node:sqlite has no row-value
@@ -531,7 +551,7 @@ export class SqliteSecretVaultRepository {
    * under-report exactly the values a reader most needs to see.
    */
   listReuse(query: ListVaultReuseQuery = {}, now = Date.now()): ListVaultReuseResponse {
-    const limit = query.limit ?? DEFAULT_VAULT_INVENTORY_LIMIT;
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
     const cursor = query.cursor === undefined ? null : decodeReuseCursor(query.cursor);
 
     // Same expanded tuple comparison as above, over (occurrence_count DESC,
@@ -596,7 +616,7 @@ export class SqliteSecretVaultRepository {
    * the reader pages.
    */
   listDerefs(query: ListVaultDerefsQuery = {}): ListVaultDerefsResponse {
-    const limit = query.limit ?? DEFAULT_VAULT_DEREFS_LIMIT;
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_DEREFS_LIMIT);
     const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
 
     const conditions: string[] = [];

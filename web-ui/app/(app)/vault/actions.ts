@@ -139,7 +139,13 @@ export async function revokeRevealGrant(input: { grantId: string }): Promise<Vau
   try {
     const revoked = await db().exceptions.revoke(input.grantId, 'dashboard');
     if (!revoked) return { ok: false, error: 'No active grant with that id.' };
-    revalidatePath('/vault');
+    // Deliberately NO revalidatePath, for the same reason `revealEntry` skips it
+    // one function above: this changes ONE row's badge, but a revalidate hands
+    // the client a fresh first page, so revoking from page 3 drops the reader
+    // back to rows 1-50 — and resets the audit tab's batched toggle, which is
+    // keyed off the same route render. The client clears the badge itself.
+    // `purgeVault` and `rotateVaultKey` below DO revalidate, correctly: they
+    // change every row, so a fresh first page is the right answer there.
     return { ok: true };
   } catch {
     return { ok: false, error: 'The grant could not be revoked.' };

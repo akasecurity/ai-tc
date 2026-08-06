@@ -71,6 +71,12 @@ interface PagedWindow<T> {
   pageStart: number;
   next: () => void;
   previous: () => void;
+  /**
+   * Rewrite rows in place, across every walked page rather than just the one on
+   * screen. This is what lets a per-row write skip `revalidatePath`: the route
+   * would hand down a fresh first page and discard the walk.
+   */
+  patch: (update: (row: T) => T) => void;
 }
 
 /**
@@ -83,9 +89,18 @@ interface PagedWindow<T> {
  * a revalidate (a revoke, a purge) re-runs the route and hands down a first
  * page covering the same rows.
  */
-function usePagedWindow<T extends { pointerId: string }>(
+function usePagedWindow<T>(
   firstPage: Page<T>,
   fetchPage: (query: { cursor: string }) => Promise<Page<T>>,
+  /**
+   * This list's ROW identity, which the dedup below keys on. The caller names it
+   * because only the caller knows it: `pointerId` is a row identity for the
+   * inventory and reuse lists, where it is the table's primary key, and a VALUE
+   * identity on the de-reference trail, whose rows share it — keying that list
+   * on the pointer would collapse the trail to one row per value and lose the
+   * audit. There is no safe default, so there is no default.
+   */
+  keyOf: (row: T) => string,
   start: (fn: () => Promise<void>) => void,
   onError: (message: string) => void,
   what: string,
@@ -132,8 +147,23 @@ function usePagedWindow<T extends { pointerId: string }>(
           // page keeps it from rendering twice under one React key; a MISS is
           // the commoner direction and cannot be repaired here — see the
           // store's note on listInventory.
-          const seen = new Set(prev.pages.flat().map((e) => e.pointerId));
-          const fresh = page.items.filter((e) => !seen.has(e.pointerId));
+          const seen = new Set(prev.pages.flat().map(keyOf));
+          const fresh = page.items.filter((e) => !seen.has(keyOf(e)));
+          // Nothing left to step onto. Both routes here are real: the store can
+          // hand back an empty later page (one repeat detection bumps the last
+          // unwalked row above the cursor, and a purge empties every later
+          // page), and the dedup above can filter a whole page away. Advancing
+          // would land the reader on a blank page whose only way back is
+          // Previous — so stay put, and take the current page's cursor to what
+          // the store just said, which is what disables Next.
+          if (fresh.length === 0) {
+            onError(`The rest of the ${what} list moved while you were reading it.`);
+            return {
+              ...prev,
+              cursors: prev.cursors.map((c, i) => (i === prev.index ? page.nextCursor : c)),
+              pending: null,
+            };
+          }
           return {
             pages: [...prev.pages, fresh],
             cursors: [...prev.cursors, page.nextCursor],
@@ -155,6 +185,10 @@ function usePagedWindow<T extends { pointerId: string }>(
     setState((prev) => ({ ...prev, index: Math.max(0, prev.index - 1) }));
   };
 
+  const patch = (update: (row: T) => T): void => {
+    setState((prev) => ({ ...prev, pages: prev.pages.map((page) => page.map(update)) }));
+  };
+
   return {
     rows,
     hasNextPage,
@@ -162,6 +196,7 @@ function usePagedWindow<T extends { pointerId: string }>(
     pageStart: pageStartOf(state.pages, state.index),
     next,
     previous,
+    patch,
   };
 }
 
@@ -209,6 +244,7 @@ export function VaultDashboardClient({
   const inventoryPages = usePagedWindow(
     inventory,
     loadMoreVaultInventory,
+    (entry) => entry.pointerId,
     startInventoryTransition,
     setActionError,
     'vaulted values',
@@ -216,6 +252,7 @@ export function VaultDashboardClient({
   const reusePages = usePagedWindow(
     reuse,
     loadMoreVaultReuse,
+    (entry) => entry.pointerId,
     startReuseTransition,
     setActionError,
     'reused values',
@@ -340,18 +377,30 @@ export function VaultDashboardClient({
           ...(batched ? { includeBatched: true } : {}),
           cursor,
         });
-        setDeref((prev) =>
-          prev.pending !== token
-            ? prev
-            : {
-                ...prev,
-                pages: [...prev.pages, page.items],
-                cursors: [...prev.cursors, page.nextCursor],
-                index: prev.index + 1,
-                hiddenBatched: page.hiddenBatched,
-                pending: null,
-              },
-        );
+        setDeref((prev) => {
+          if (prev.pending !== token) return prev;
+          // The same guard `usePagedWindow` carries. This trail is append-only,
+          // so an empty later page is not reachable here today — but the pager
+          // is the same and the dead end it would leave is the same, and the
+          // reachability is a property of the STORE rather than of this file.
+          if (page.items.length === 0) {
+            setActionError('The rest of the de-reference trail moved while you were reading it.');
+            return {
+              ...prev,
+              cursors: prev.cursors.map((c, i) => (i === prev.index ? page.nextCursor : c)),
+              hiddenBatched: page.hiddenBatched,
+              pending: null,
+            };
+          }
+          return {
+            ...prev,
+            pages: [...prev.pages, page.items],
+            cursors: [...prev.cursors, page.nextCursor],
+            index: prev.index + 1,
+            hiddenBatched: page.hiddenBatched,
+            pending: null,
+          };
+        });
       } catch {
         setActionError('The next page of the de-reference trail could not be read.');
         setDeref((prev) => (prev.pending !== token ? prev : { ...prev, pending: null }));
@@ -404,6 +453,15 @@ export function VaultDashboardClient({
     startRowTransition(async () => {
       const result = await revokeRevealGrant({ grantId });
       setActionError(result.ok ? null : result.error);
+      if (!result.ok) return;
+      // The action deliberately does not revalidate — see its comment — so the
+      // badge is cleared here instead. Both lists carry `revealGrantId` (the
+      // reuse read returns inventory rows), so a grant left on either would
+      // outlive its revocation on screen.
+      const clear = (row: VaultInventoryEntry): VaultInventoryEntry =>
+        row.revealGrantId === grantId ? { ...row, revealGrantId: null } : row;
+      inventoryPages.patch(clear);
+      reusePages.patch(clear);
     });
   };
 
@@ -446,12 +504,21 @@ export function VaultDashboardClient({
         <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
       </TabsList>
 
+      {/*
+        OUTSIDE the tab panels, because every tab writes to it. Each list reports
+        its own read failures and its own "the list moved under you" notice, and
+        inside `TabsContent value="inventory"` those messages render on the one
+        tab that did not raise them — the reader on Reuse or the audit trail gets
+        a control that silently did nothing, which is the failure this line
+        exists to prevent.
+      */}
+      {actionError !== null && <p className="text-xs text-sev-critical-ink">{actionError}</p>}
+
       <TabsContent value="inventory" className="flex flex-col gap-3">
         <SectionHead
           title="Vaulted values"
           sub="Every value this machine holds, masked, with everywhere its pointer has been written. Each reveal is audited."
         />
-        {actionError !== null && <p className="text-xs text-sev-critical-ink">{actionError}</p>}
         {/*
           ABOVE the table, not below it. A reveal renders here rather than in the
           row that was clicked — the row keeps its mask — so below the table this

@@ -99,7 +99,12 @@ export function DerefAuditTableView({
       <p className="mt-3 text-xs text-text-3">{toggle}</p>
     ) : null;
 
-  if (rows.length === 0) {
+  // See VaultInventoryView. This trail is append-only and never purged, so an
+  // empty later page is not reachable here the way it is on the other two lists
+  // — but the pager is wired the same way, and a view that strands the reader
+  // when its list does start losing rows is the wrong thing to leave behind.
+  const isEmpty = rows.length === 0;
+  if (isEmpty && !hasPreviousPage && !hasNextPage) {
     return (
       <div className="rounded-xl border border-border bg-surface p-4">
         <div className="py-10 text-center text-sm text-text-3">
@@ -111,63 +116,69 @@ export function DerefAuditTableView({
   }
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface p-4">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>When</TableHead>
-            <TableHead>Reason</TableHead>
-            <TableHead>Target</TableHead>
-            <TableHead>Outcome</TableHead>
-            <TableHead>Grant</TableHead>
-            <TableHead>Pointers</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) =>
-            row.reason === 'purge' ? (
-              // A purge is an event, not a de-reference: render it as one
-              // distinguished line — the record that values were destroyed
-              // outlives the values.
-              <TableRow key={row.id} data-purge="" className="bg-surface-2">
-                <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
-                <TableCell colSpan={5} className="text-xs font-medium text-text-2">
-                  Vault purge —{' '}
-                  {row.pointerCount === 1 ? 'a pointer' : `${String(row.pointerCount)} pointers`}{' '}
-                  made permanently unresolvable
-                </TableCell>
-              </TableRow>
-            ) : (
-              <TableRow
-                key={row.id}
-                data-model-crossing={row.target === 'model' ? row.outcome : undefined}
-                className={cn(
-                  row.target === 'model' && MODEL_ROW_CLASS[row.outcome],
-                  isBatchedDerefReason(row.reason) && 'text-text-3',
-                )}
-              >
-                <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
-                <TableCell className="text-xs">{DEREF_REASON_LABEL[row.reason]}</TableCell>
-                <TableCell className="text-xs">
-                  {row.target === 'model' ? (
-                    <span className="font-semibold text-sev-critical-ink">model</span>
-                  ) : (
-                    <span className="text-text-2">human</span>
+      {isEmpty ? (
+        <div className="py-10 text-center text-sm text-text-3">
+          These rows moved while you were reading. Step back to see the rest.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>When</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead>Target</TableHead>
+              <TableHead>Outcome</TableHead>
+              <TableHead>Grant</TableHead>
+              <TableHead>Pointers</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) =>
+              row.reason === 'purge' ? (
+                // A purge is an event, not a de-reference: render it as one
+                // distinguished line — the record that values were destroyed
+                // outlives the values.
+                <TableRow key={row.id} data-purge="" className="bg-surface-2">
+                  <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
+                  <TableCell colSpan={5} className="text-xs font-medium text-text-2">
+                    Vault purge —{' '}
+                    {row.pointerCount === 1 ? 'a pointer' : `${String(row.pointerCount)} pointers`}{' '}
+                    made permanently unresolvable
+                  </TableCell>
+                </TableRow>
+              ) : (
+                <TableRow
+                  key={row.id}
+                  data-model-crossing={row.target === 'model' ? row.outcome : undefined}
+                  className={cn(
+                    row.target === 'model' && MODEL_ROW_CLASS[row.outcome],
+                    isBatchedDerefReason(row.reason) && 'text-text-3',
                   )}
-                </TableCell>
-                <TableCell>
-                  <OutcomeBadge row={row} />
-                </TableCell>
-                <TableCell className="font-mono text-xs text-text-3">
-                  {row.grantId === undefined ? '—' : row.grantId.slice(0, 8)}
-                </TableCell>
-                <TableCell className="text-xs text-text-2">
-                  {row.pointerCount > 1 ? `×${String(row.pointerCount)}` : '—'}
-                </TableCell>
-              </TableRow>
-            ),
-          )}
-        </TableBody>
-      </Table>
+                >
+                  <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
+                  <TableCell className="text-xs">{DEREF_REASON_LABEL[row.reason]}</TableCell>
+                  <TableCell className="text-xs">
+                    {row.target === 'model' ? (
+                      <span className="font-semibold text-sev-critical-ink">model</span>
+                    ) : (
+                      <span className="text-text-2">human</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <OutcomeBadge row={row} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-text-3">
+                    {row.grantId === undefined ? '—' : row.grantId.slice(0, 8)}
+                  </TableCell>
+                  <TableCell className="text-xs text-text-2">
+                    {row.pointerCount > 1 ? `×${String(row.pointerCount)}` : '—'}
+                  </TableCell>
+                </TableRow>
+              ),
+            )}
+          </TableBody>
+        </Table>
+      )}
       {onNextPage ? (
         <Pagination>
           <PaginationPrevious
@@ -177,7 +188,9 @@ export function DerefAuditTableView({
           <PaginationStatus>
             {pageStart === undefined
               ? `${String(rows.length)} shown`
-              : `${String(pageStart)}–${String(pageStart + rows.length - 1)} resolutions`}
+              : isEmpty
+                ? '0 resolutions'
+                : `${String(pageStart)}–${String(pageStart + rows.length - 1)} resolutions`}
           </PaginationStatus>
           <PaginationNext
             disabled={!hasNextPage || loadingNextPage}

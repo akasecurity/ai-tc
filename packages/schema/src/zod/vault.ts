@@ -255,8 +255,15 @@ export type VaultInventoryEntry = z.infer<typeof VaultInventoryEntry>;
 export const DEFAULT_VAULT_INVENTORY_LIMIT = 50;
 export const DEFAULT_VAULT_DEREFS_LIMIT = 50;
 
+// The largest page any caller can ask for. The three queries below enforce it at
+// the boundary, and the repository clamps to it as well, so the bound is a
+// property of the store rather than of whoever happened to call it: the
+// inventory and reuse reads hydrate sightings through one `IN (…)` sized to the
+// page, and SQLite refuses to prepare a statement past 32766 bind variables.
+export const MAX_VAULT_PAGE_LIMIT = 200;
+
 export const ListVaultInventoryQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   // Opaque; names the last row of the page just served.
   cursor: z.string().optional(),
 });
@@ -277,7 +284,7 @@ export type ListVaultInventoryResponse = z.infer<typeof ListVaultInventoryRespon
 // whichever 50 rows the inventory happens to be showing would silently under-
 // report it — the reused values are exactly the ones a reader must not miss.
 export const ListVaultReuseQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   cursor: z.string().optional(),
 });
 export type ListVaultReuseQuery = z.infer<typeof ListVaultReuseQuery>;
@@ -297,7 +304,7 @@ export const ListVaultDerefsQuery = z.object({
   // crossings stay visible. A real boolean, not `z.stringbool()`: this arrives
   // over a Server Action, which preserves the type, never as a URL param.
   includeBatched: z.boolean().optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_VAULT_PAGE_LIMIT).optional(),
   cursor: z.string().optional(),
 });
 export type ListVaultDerefsQuery = z.infer<typeof ListVaultDerefsQuery>;

@@ -151,6 +151,53 @@ describe('VaultInventoryView', () => {
     expect(html).toContain('Nothing vaulted yet');
   });
 
+  // A later page can come back empty — one repeat detection bumps the last
+  // unwalked row above the cursor, and a purge empties every later page. The
+  // empty state used to return before the footer, so the reader landed on a
+  // page whose only way back was a browser reload.
+  it('keeps the pager on an empty page the reader paged into', () => {
+    const stranded = renderToStaticMarkup(
+      <VaultInventoryView
+        entries={[]}
+        hasPreviousPage={true}
+        hasNextPage={false}
+        onNextPage={() => undefined}
+        onPreviousPage={() => undefined}
+        pageStart={51}
+        total={50}
+      />,
+    );
+
+    expect(stranded).toContain(FOOTER);
+    expect(stranded).toContain(FOOTER_PREV);
+    // The way back is live, not merely present.
+    expect(prevDisabled(stranded)).toBe(false);
+    // `pageStart + entries.length - 1` reads backwards on an empty page.
+    expect(stranded).not.toContain('51–50');
+    expect(stranded).toContain('0 of 50 values');
+    // Not the fresh-install copy: this reader has rows, they moved.
+    expect(stranded).not.toContain('Nothing vaulted yet');
+  });
+
+  // The control for the case above: an empty FIRST page is the fresh install,
+  // and a pager there would be three dead controls under "Nothing vaulted yet".
+  it('shows no pager on an empty first page, even when one is wired', () => {
+    const fresh = renderToStaticMarkup(
+      <VaultInventoryView
+        entries={[]}
+        hasPreviousPage={false}
+        hasNextPage={false}
+        onNextPage={() => undefined}
+        onPreviousPage={() => undefined}
+        pageStart={1}
+        total={0}
+      />,
+    );
+
+    expect(fresh).toContain('Nothing vaulted yet');
+    expect(fresh).not.toContain(FOOTER);
+  });
+
   it('states the truncation rather than the footer when the caller cannot page', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     // Nothing beyond the page and no way to page: neither branch renders.

@@ -55,7 +55,11 @@ export function VaultReuseView({
   total,
 }: VaultReuseViewProps) {
   const reused = entries.filter(isReused).sort((a, b) => b.occurrences - a.occurrences);
-  if (reused.length === 0) {
+  // See VaultInventoryView: an empty page the reader paged INTO keeps its pager,
+  // because Previous is the only way back. An empty FIRST page is the ordinary
+  // "nothing reused here" state and keeps the standalone message.
+  const isEmpty = reused.length === 0;
+  if (isEmpty && !hasPreviousPage && !hasNextPage) {
     return (
       <div className="rounded-xl border border-border bg-surface py-10 text-center text-sm text-text-3">
         No reused values detected on this machine.
@@ -67,37 +71,43 @@ export function VaultReuseView({
       <p className="mb-3 text-xs text-text-3">
         Values detected more than once on this machine, most-reused first.
       </p>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Value</TableHead>
-            <TableHead>Occurrences</TableHead>
-            <TableHead>Seen in</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {reused.map((entry) => {
-            const locations = [...new Set(entry.sightings.map((s) => s.location))];
-            return (
-              <TableRow key={entry.pointerId}>
-                <TableCell>
-                  <ScrubbedValue value={null} descriptor={entry} />
-                </TableCell>
-                <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
-                <TableCell>
-                  <ul className="space-y-0.5 pl-3">
-                    {locations.map((location) => (
-                      <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
-                        {location}
-                      </li>
-                    ))}
-                  </ul>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+      {isEmpty ? (
+        <div className="py-10 text-center text-sm text-text-3">
+          These rows moved while you were reading. Step back to see the rest.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Value</TableHead>
+              <TableHead>Occurrences</TableHead>
+              <TableHead>Seen in</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {reused.map((entry) => {
+              const locations = [...new Set(entry.sightings.map((s) => s.location))];
+              return (
+                <TableRow key={entry.pointerId}>
+                  <TableCell>
+                    <ScrubbedValue value={null} descriptor={entry} />
+                  </TableCell>
+                  <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
+                  <TableCell>
+                    <ul className="space-y-0.5 pl-3">
+                      {locations.map((location) => (
+                        <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
+                          {location}
+                        </li>
+                      ))}
+                    </ul>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
       {onNextPage ? (
         <Pagination>
           <PaginationPrevious
@@ -107,7 +117,9 @@ export function VaultReuseView({
           <PaginationStatus>
             {total === undefined || pageStart === undefined
               ? `${String(reused.length)} shown`
-              : `${String(pageStart)}–${String(pageStart + reused.length - 1)} of ${String(total)} reused values`}
+              : isEmpty
+                ? `0 of ${String(total)} reused values`
+                : `${String(pageStart)}–${String(pageStart + reused.length - 1)} of ${String(total)} reused values`}
           </PaginationStatus>
           <PaginationNext
             disabled={!hasNextPage || loadingNextPage}

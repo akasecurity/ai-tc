@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { VaultDerefReason } from '@akasecurity/schema';
-import { DEFAULT_VAULT_INVENTORY_LIMIT } from '@akasecurity/schema';
+import { DEFAULT_VAULT_INVENTORY_LIMIT, MAX_VAULT_PAGE_LIMIT } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { VaultRowInsert } from '../../src/repositories/secret-vault.ts';
@@ -414,6 +414,66 @@ describe('SqliteSecretVaultRepository.listInventory paging', () => {
     expect(res.items).toHaveLength(DEFAULT_VAULT_INVENTORY_LIMIT);
     expect(res.nextCursor).not.toBeNull();
     expect(res.totals.values).toBe(total);
+  });
+
+  // The Server Actions already cap `limit`, so this is about the OTHER callers —
+  // the repository is exported, and a page is hydrated through one `IN (…)` with
+  // a bind variable per row, which SQLite refuses to prepare past 32766 of.
+  //
+  // The fixture has to straddle the cap. Seeded below it, a clamped and an
+  // unclamped read return exactly the same page, and the case passes whether or
+  // not the clamp is there.
+  it('clamps an over-large limit to MAX_VAULT_PAGE_LIMIT', () => {
+    const total = MAX_VAULT_PAGE_LIMIT + 5;
+    for (let i = 0; i < total; i += 1) {
+      detect(`cap-${String(i).padStart(4, '0')}`, NOW + i * 1_000);
+    }
+
+    const res = vault.listInventory({ limit: 5_000 });
+
+    expect(res.items).toHaveLength(MAX_VAULT_PAGE_LIMIT);
+    // Not the end of the list: the clamp bounded the page, it did not truncate
+    // the walk. Without this a clamp to zero rows would satisfy the length check.
+    expect(res.nextCursor).not.toBeNull();
+    expect(res.totals.values).toBe(total);
+  });
+
+  // The reachability the dashboard's empty-page handling rests on, pinned at the
+  // layer that decides it. A bump moves a row toward page 1 — ABOVE a cursor
+  // already handed out — so re-detecting the only row past a full page leaves
+  // the next page with nothing on it, while `totals` still counts it. The client
+  // renders whatever this returns, and an empty later page used to strand the
+  // reader on a view with no pager.
+  it('returns an empty later page when the only unwalked row is bumped above the cursor', () => {
+    for (let i = 0; i < 4; i += 1) detect(`bump-${String(i)}`, NOW + i * 1_000);
+
+    const first = vault.listInventory({ limit: 3 });
+    expect(first.items.map((i) => i.pointerId)).toEqual(['bump-3', 'bump-2', 'bump-1']);
+    expect(first.nextCursor).not.toBeNull();
+
+    // `bump-0` is the whole of page 2. Detecting it again stamps last_seen to a
+    // time above the cursor page 1 just minted.
+    detect('bump-0', NOW + 9_000);
+
+    const second = vault.listInventory({ limit: 3, cursor: first.nextCursor ?? undefined });
+
+    expect(second.items).toEqual([]);
+    expect(second.nextCursor).toBeNull();
+    // Counted over the store, not the walk — which is what makes the shortfall
+    // visible rather than silent.
+    expect(second.totals.values).toBe(4);
+  });
+
+  // A floor as well as a ceiling. `limit: 0` binds `LIMIT 1`, keeps none of it
+  // (`slice(0, 0)`), and reports no next cursor — an empty page that reads as
+  // the end of a list which is not empty.
+  it('floors a zero limit rather than serving an empty terminal page', () => {
+    for (let i = 0; i < 3; i += 1) detect(`floor-${String(i)}`, NOW + i * 1_000);
+
+    const res = vault.listInventory({ limit: 0 });
+
+    expect(res.items).toHaveLength(1);
+    expect(res.nextCursor).not.toBeNull();
   });
 
   // The boundary the walks above cannot reach: they end on a SHORT page, where

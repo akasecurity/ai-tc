@@ -15,17 +15,21 @@ export interface SummaryStatItem {
   fill: string;
 }
 
+// One stat. The value and its label sit on a single baseline rather than stacked:
+// the strip is chrome above the session list, so its height is space the list
+// does not get, and a label long enough to wrap is truncated with the full text
+// on hover rather than growing the row.
 function SummaryStat({ icon: Icon, value, label, text, fill }: SummaryStatItem) {
   return (
-    <div className="flex flex-1 items-center gap-2.5 px-5">
-      <span className={cn('grid size-8 shrink-0 place-items-center rounded-lg', fill, text)}>
-        <Icon aria-hidden focusable={false} className="size-4" />
+    <div className="flex min-w-0 flex-1 items-center gap-2 px-4">
+      <span className={cn('grid size-7 shrink-0 place-items-center rounded-lg', fill, text)}>
+        <Icon aria-hidden focusable={false} className="size-3.5" />
       </span>
-      <div className="min-w-0">
-        <div className="font-display text-xl font-semibold leading-none tabular-nums text-text">
+      <div className="flex min-w-0 items-baseline gap-1.5" title={`${String(value)} ${label}`}>
+        <span className="font-display text-lg font-semibold leading-none tabular-nums text-text">
           {value}
-        </div>
-        <div className="mt-0.5 text-xs text-text-3">{label}</div>
+        </span>
+        <span className="truncate text-xs text-text-3">{label}</span>
       </div>
     </div>
   );
@@ -41,7 +45,7 @@ export function ActivitySummaryStripView({
   error: string | null;
 }) {
   return (
-    <Card className="mb-3.5 flex shrink-0 items-stretch py-3.5 shadow-sm" aria-busy={isLoading}>
+    <Card className="mb-3 flex shrink-0 items-stretch py-2.5 shadow-sm" aria-busy={isLoading}>
       {error ? (
         <div className="px-5">
           <WidgetError message={error} />
@@ -50,12 +54,9 @@ export function ActivitySummaryStripView({
         Array.from({ length: 5 }, (_, i) => (
           <Fragment key={i}>
             {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
-            <div className="flex flex-1 items-center gap-2.5 px-5">
-              <Skeleton className="size-8 shrink-0 rounded-lg" />
-              <div className="min-w-0 flex-1">
-                <Skeleton className="h-5 w-10" />
-                <Skeleton className="mt-1 h-3 w-20" />
-              </div>
+            <div className="flex flex-1 items-center gap-2 px-4">
+              <Skeleton className="size-7 shrink-0 rounded-lg" />
+              <Skeleton className="h-4 w-24" />
             </div>
           </Fragment>
         ))

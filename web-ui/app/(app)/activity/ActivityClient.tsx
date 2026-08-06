@@ -12,7 +12,7 @@ import type {
   Harness,
   SessionTokenReport,
 } from '@akasecurity/schema';
-import { Card, cn } from '@akasecurity/ui-kit';
+import { Card, cn, Sheet, SheetContent, SheetTitle } from '@akasecurity/ui-kit';
 import { usePathname } from 'next/navigation';
 import { useCallback } from 'react';
 
@@ -40,6 +40,7 @@ export function ActivityClient({
   hasMore,
   emptyCount,
   showEmpty,
+  expanded,
 }: {
   sessions: ActivitySessionSummary[];
   detail: ActivitySession | null;
@@ -59,6 +60,8 @@ export function ActivityClient({
   emptyCount: number;
   /** Whether zero-activity sessions are currently listed (?empty=1). */
   showEmpty: boolean;
+  /** Whether the full-width session inspector is open (?view=full). */
+  expanded: boolean;
 }) {
   const pathname = usePathname();
   const { isPending, push: pushUrl } = useNavigationTransition();
@@ -91,6 +94,7 @@ export function ActivityClient({
       range: TimeRange;
       id?: string;
       showEmpty?: boolean;
+      expanded?: boolean;
     }) => {
       const qs = buildActivityParams(opts).toString();
       return qs ? `${pathname}?${qs}` : pathname;
@@ -112,12 +116,47 @@ export function ActivityClient({
       range: TimeRange;
       id?: string;
       showEmpty?: boolean;
+      expanded?: boolean;
     }) => {
       onNavigate(opts.q);
       pushUrl(buildUrl(opts));
     },
     [onNavigate, pushUrl, buildUrl],
   );
+
+  // Opening and closing the inspector are both real navigations, so the drill-down
+  // is in history (Back closes it) and the open state survives a copied URL.
+  const setExpanded = useCallback(
+    (next: boolean) => {
+      push({ q: query, harness, range, id: selectedId, showEmpty, expanded: next });
+    },
+    [push, query, harness, range, selectedId, showEmpty],
+  );
+
+  // Shared by the docked pane and the inspector — one session, two frames, so
+  // the deep links and figures must not drift between them.
+  const detailProps = {
+    session: detail,
+    tokenReport,
+    liveFindings,
+    linkHref,
+    isLoading: false,
+    error: null,
+    // Tool chips deep-link to the flat findings view filtered to that
+    // tool. `?tool=` is a real filter on the capturing event's recorded
+    // tool name, where the previous `?q=via Bash` was a text match
+    // against a rendered label — it matched any finding whose search
+    // text happened to contain the phrase, and missed nothing only by
+    // luck. The session scope rides along so the link stays about this
+    // session.
+    toolHref: (toolName: string) => {
+      const params = new URLSearchParams();
+      params.set('view', 'flat');
+      if (sessionId) params.set('session', sessionId);
+      params.append('tool', toolName);
+      return `/findings?${params.toString()}`;
+    },
+  };
 
   return (
     <div
@@ -153,28 +192,35 @@ export function ActivityClient({
       </Card>
       <Card className="flex min-w-0 flex-1 flex-col overflow-hidden shadow-sm">
         <SessionDetailView
-          session={detail}
-          tokenReport={tokenReport}
-          liveFindings={liveFindings}
-          linkHref={linkHref}
-          isLoading={false}
-          error={null}
-          // Tool chips deep-link to the flat findings view filtered to that
-          // tool. `?tool=` is a real filter on the capturing event's recorded
-          // tool name, where the previous `?q=via Bash` was a text match
-          // against a rendered label — it matched any finding whose search
-          // text happened to contain the phrase, and missed nothing only by
-          // luck. The session scope rides along so the link stays about this
-          // session.
-          toolHref={(toolName) => {
-            const params = new URLSearchParams();
-            params.set('view', 'flat');
-            if (sessionId) params.set('session', sessionId);
-            params.append('tool', toolName);
-            return `/findings?${params.toString()}`;
+          {...detailProps}
+          onExpand={() => {
+            setExpanded(true);
           }}
         />
       </Card>
+
+      {/* The full-width inspector. Same view, more room: the docked pane shares
+          the viewport with the session list, so a long timeline is read here.
+          Open state is the URL's, not this component's — see setExpanded. */}
+      <Sheet
+        open={expanded && detail !== null}
+        onOpenChange={(open) => {
+          if (!open) setExpanded(false);
+        }}
+      >
+        {/* No description in this panel — opt out of Radix's aria-describedby. */}
+        <SheetContent
+          className="w-320 max-w-[96%] gap-0 overflow-hidden p-0"
+          aria-describedby={undefined}
+        >
+          {/* The view renders its own visible heading; this is the accessible
+              name Radix requires on the dialog. */}
+          <SheetTitle className="sr-only">
+            {detail ? `Session ${detail.title}` : 'Session'}
+          </SheetTitle>
+          <SessionDetailView {...detailProps} overlayClose />
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

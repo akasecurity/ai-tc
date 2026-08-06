@@ -986,6 +986,21 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
 - `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
   [Testing](#testing) on why the try/catch form asserts on the test's own guard).
+- `descriptorProbe()` — how many OS descriptors a synchronous thunk left behind. A
+  `DatabaseSync` that escapes a failed open is unreachable to the caller, and POSIX
+  unlinks an open file happily, so the temp tree still goes and the leak shows up
+  nowhere; Windows alone refuses the delete. This counts instead, which is what makes
+  the leak observable on the legs that run most of the suite. Three properties are
+  load-bearing: the window must be **synchronous** (`leakedBy` refuses a thenable —
+  an await hands the loop back and unrelated I/O lands in the delta), the count is
+  the whole descriptor table rather than a per-file one (macOS `/dev/fd/N` entries
+  are character devices, so `readlink` cannot name the store the way Linux's
+  `/proc/self/fd` can), and the probe **self-checks** before reporting
+  `observable: true` — a counter stuck at a constant reports "nothing leaked" for
+  every input, so it proves it can see one descriptor it opens itself. Where it
+  cannot (Windows has no `/dev/fd`), it reports `observable: false` with a reason and
+  **the caller must gate**: `if (!probe.observable) ctx.skip(probe.reason)`, the same
+  shape `readOnlyStore` uses for a mode the platform ignored.
 - `captureEvent()` / `captureFinding()` — the minimal `recordCapture` pair. Both vary
   their identity per call, which is load-bearing: `contentHash` feeds the event's
   content-addressed id and `maskedMatch` is half the finding-level session dedup key, so a

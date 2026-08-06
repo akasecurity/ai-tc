@@ -59,9 +59,14 @@ const DEGRADE_SCOPE = 'the rest of this scan';
 // `filterUnsafeRules` excludes the rule WITHOUT persisting a verdict for this —
 // it was never timed, and caching "quarantined" for a rule nobody measured
 // would disable it forever on the strength of a missing file.
+//
+// This string is the whole diagnosis the user gets: the pre-flight prints it
+// verbatim, once per pass, in place of a per-rule timing line. So it names the
+// worker and reads as a clause inside that sentence, not as a standalone note.
 const NO_WORKER: IsolatedProbeOutcome = {
   status: 'unavailable',
-  reason: 'no scan worker was supplied, so nothing could measure the rule where it can be killed',
+  reason:
+    'this build shipped without its scan worker, so there was nowhere killable to measure them',
 };
 
 export interface GuardedFileScannerOptions {

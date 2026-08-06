@@ -288,6 +288,8 @@ ceiling that was never measuring the property.
 
 A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it; the dashboard's folder scan writes the same line to the server's console and additionally returns a notice to the page, since nobody is reading a server log while they click Scan. Anything that adds a new way to quarantine must keep those surfaces true.
 
+**Only a MEASURED rule is quarantined, and only that line may name the command.** A rule leaves the pre-flight three ways, and `rule-quarantine.ts` says which: measured and over budget (`quarantined rule "…"`, with the `unquarantine` hint, since a row exists to clear); never reached because the pass budget ran out (`skipped rule "…"`, no hint, back on the next pass); and never measured because there was nowhere killable to measure it. The third is **not a per-rule line at all** — it is one line for the whole pass, carrying the prober's own `unavailable` reason and naming no rule, because a missing or unstartable worker excludes EVERY pulled/custom regex rule on the machine from every scan until the install is repaired. It is a property of the install, and a fault the ruleset cannot fix. Collapsing any of the three into the timing wording is the defect this replaced: two of them cache nothing, so a user sent to `aka detections unquarantine` reaches a list their rule is not on, and a user told their rule blew a timing budget goes to audit a ruleset that is fine. `packages/plugin-sdk/test/rule-quarantine.test.ts`'s `what the pre-flight says on stderr` holds it, pairwise — a future collapse goes red whatever the new wording is.
+
 The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.
 
 **Where else the bound applies, and where it does not.** The capture path is `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The dashboard's folder scan is the second caller and reaches the same two gates through `packages/local-ops/src/guarded-scan.ts` — `web-ui/app/(app)/scan/actions.ts` builds a `createGuardedFileScanner` over the installed-pack snapshot and hands `scanPathIntoStore` its `scanText` seam, never the raw `rules`, which is the in-process path. Three things differ there and each is load-bearing:
@@ -986,6 +988,21 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
 - `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
   [Testing](#testing) on why the try/catch form asserts on the test's own guard).
+- `descriptorProbe()` — how many OS descriptors a synchronous thunk left behind. A
+  `DatabaseSync` that escapes a failed open is unreachable to the caller, and POSIX
+  unlinks an open file happily, so the temp tree still goes and the leak shows up
+  nowhere; Windows alone refuses the delete. This counts instead, which is what makes
+  the leak observable on the legs that run most of the suite. Three properties are
+  load-bearing: the window must be **synchronous** (`leakedBy` refuses a thenable —
+  an await hands the loop back and unrelated I/O lands in the delta), the count is
+  the whole descriptor table rather than a per-file one (macOS `/dev/fd/N` entries
+  are character devices, so `readlink` cannot name the store the way Linux's
+  `/proc/self/fd` can), and the probe **self-checks** before reporting
+  `observable: true` — a counter stuck at a constant reports "nothing leaked" for
+  every input, so it proves it can see one descriptor it opens itself. Where it
+  cannot (Windows has no `/dev/fd`), it reports `observable: false` with a reason and
+  **the caller must gate**: `if (!probe.observable) ctx.skip(probe.reason)`, the same
+  shape `readOnlyStore` uses for a mode the platform ignored.
 - `captureEvent()` / `captureFinding()` — the minimal `recordCapture` pair. Both vary
   their identity per call, which is load-bearing: `contentHash` feeds the event's
   content-addressed id and `maskedMatch` is half the finding-level session dedup key, so a

@@ -268,7 +268,7 @@ export function WorkspaceSettingsFormView({
     (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
-    <div className="flex max-w-2xl flex-col gap-6">
+    <div className="flex max-w-4xl flex-col gap-6">
       <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>{HANDLING_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</p>
@@ -313,7 +313,7 @@ export function WorkspaceSettingsFormView({
         />
       </section>
 
-      <section>
+      <section className="rounded-xl border border-border bg-surface p-5">
         <SectionLabel>{INLINE_REVEAL_SECTION_LABEL}</SectionLabel>
         <p className="mb-3 text-xs text-text-3">{INLINE_REVEAL_SECTION_DESCRIPTION}</p>
         <ChoiceGroup

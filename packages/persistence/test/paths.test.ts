@@ -19,11 +19,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  classifyOccupant,
   createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   dbSidecars,
   ensureDataDirSync,
+  KeyUnclaimableError,
   tightenDir,
   tightenFile,
   tightenPerms,
@@ -438,10 +440,10 @@ describe('createOwnerOnlyFileSync', () => {
     const seen: number[] = [];
     const target = file();
     const realWriteSync = fsModule.writeSync;
-    fsModule.writeSync = function watched(...args: Parameters<typeof realWriteSync>) {
+    fsModule.writeSync = ((...args: Parameters<typeof realWriteSync>) => {
       if (existsSync(target)) seen.push(statSync(target).size);
-      return realWriteSync.apply(this, args);
-    } as typeof realWriteSync;
+      return realWriteSync(...args);
+    }) as typeof realWriteSync;
     try {
       createOwnerOnlyFileSync(target, 'complete\n');
     } finally {
@@ -483,5 +485,94 @@ describe('createOwnerOnlyFileSync', () => {
 
     expect(createOwnerOnlyFileSync(file(), 'PWNED\n')).toBe(false);
     expect(existsSync(victim)).toBe(false);
+  });
+});
+
+describe('classifyOccupant', () => {
+  // Both machine-local keys use this to word the failure when a publish found
+  // the path occupied and the re-read then found nothing there. The three states
+  // carry different remedies, so collapsing any two sends operators after the
+  // wrong thing — which is what "cannot inspect" reported as "was removed" did.
+  it('names a symlink, so the remedy can be "remove it"', () => {
+    const link = join(base, 'exception.key');
+    symlinkSync(join(base, 'nowhere'), link);
+
+    expect(classifyOccupant(link)).toEqual({ kind: 'symlink' });
+  });
+
+  it('reports an absent path as gone, carrying no cause', () => {
+    // ENOENT is the removal itself, not a failed lookup: the caller is telling
+    // us the path WAS occupied, so its absence now is the whole diagnosis.
+    const result = classifyOccupant(join(base, 'exception.key'));
+
+    expect(result).toEqual({ kind: 'gone' });
+    expect(result.cause).toBeUndefined();
+  });
+
+  it('reports a real file as gone — the path changed under the read', () => {
+    const target = join(base, 'exception.key');
+    writeFileSync(target, 'data\n');
+
+    expect(classifyOccupant(target)).toEqual({ kind: 'gone' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reports an unreadable path as unknown, and keeps the errno',
+    (ctx) => {
+      // The case the old boolean folded into "was removed". It is the one state
+      // where the path may be perfectly intact and the lookup is what failed.
+      const dir = join(base, 'locked');
+      mkdirSync(dir);
+      const target = join(dir, 'exception.key');
+      writeFileSync(target, 'data\n');
+      chmodSync(dir, 0o000);
+
+      let readable = true;
+      try {
+        lstatSync(target);
+      } catch {
+        readable = false;
+      }
+      if (readable) {
+        chmodSync(dir, 0o700);
+        ctx.skip('lstat still succeeds under a 0000 dir (running as root?)');
+      }
+
+      const result = classifyOccupant(target);
+      chmodSync(dir, 0o700);
+
+      expect(result.kind).toBe('unknown');
+      expect((result.cause as NodeJS.ErrnoException | undefined)?.code).toBe('EACCES');
+    },
+  );
+});
+
+describe('KeyUnclaimableError', () => {
+  it('carries a string code, so a renderer never reads it as a corrupt file', () => {
+    // Both key surfaces branch on `typeof code === 'string'` to decide whether
+    // to advise deleting the file. A codeless error takes the destructive
+    // branch, which here would discard a key the winner had just published.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(err.code).toBe('key-unclaimable');
+    expect(typeof err.code).toBe('string');
+  });
+
+  it('omits `cause` entirely when there is none', () => {
+    // `{ cause: undefined }` defines the property anyway, so the error would
+    // answer `'cause' in err` while carrying nothing — a diagnosis that reads as
+    // captured-then-lost rather than never-taken.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(false);
+  });
+
+  it('keeps a cause when given one', () => {
+    const underlying = new Error('EACCES');
+
+    const err = new KeyUnclaimableError('occupied', underlying);
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(true);
+    expect(err.cause).toBe(underlying);
   });
 });

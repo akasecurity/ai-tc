@@ -10,7 +10,7 @@
 // full data-dir access has both file and key by construction. The key material
 // must never be logged, surfaced, or shipped anywhere.
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -19,9 +19,12 @@ import { isMatchableUnder } from '@akasecurity/schema';
 
 import { getRow } from './internal/rows.ts';
 import {
+  classifyOccupant,
   createOwnerOnlyFileSync,
   DB_FILENAME,
   ensureDataDirSync,
+  KeyUnclaimableError,
+  type Occupant,
   tightenFile,
   writeOwnerOnlyFileSync,
 } from './paths.ts';
@@ -178,22 +181,6 @@ function writeKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
 }
 
 /**
- * Raised when a first mint lost the race but the winner cannot be read back.
- *
- * It carries a `code` because the surfaces that render key failures branch on
- * one: a codeless error is treated as a corrupt key, whose remedy is deleting
- * `exception.key` — and doing that here would orphan every grant written under
- * the perfectly good key the winner just published.
- */
-export class KeyUnclaimableError extends Error {
-  readonly code = 'key-unclaimable';
-  constructor(message: string, cause: unknown) {
-    super(message, { cause });
-    this.name = 'KeyUnclaimableError';
-  }
-}
-
-/**
  * First mint: the key is CREATED, never replaced.
  *
  * Reading the key and writing it are two syscalls, so on a fresh store every
@@ -213,11 +200,20 @@ export class KeyUnclaimableError extends Error {
  *
  * When the path is taken but no key can be read back, this throws rather than
  * falling back to a replacing write, because that fallback is the clobber this
- * exists to remove. Two states reach it, and they are reported apart because
- * their remedies differ: a symlink sitting at the key path (which `link` refuses
- * whether or not its target exists, and which the caller has to remove), and a
- * key that was unlinked between the failed publish and the re-read. A corrupt
+ * exists to remove. Reaching that throw means the re-read returned null, and
+ * readFingerprintKey only returns null on ENOENT — so the path is occupied by
+ * something that does not resolve to a readable file. THREE states produce that,
+ * reported apart because their remedies differ: a DANGLING symlink at the key
+ * path (which the caller has to remove), a key unlinked between the failed
+ * publish and the re-read, and a path that cannot be inspected at all. A corrupt
  * winner throws from the parse, for the reason it always does.
+ *
+ * A symlink whose target is a READABLE key never reaches this function at all:
+ * the load path reads through it and ADOPTS it, because readFileSync follows
+ * links. So the refusal below is narrower than it reads — symlinks are refused
+ * only where they are also unresolvable. That is not an escalation (the data dir
+ * is 0700, and anyone who can plant a link in it can read the key directly), but
+ * the operator is then using a key that is not at the path they think it is.
  */
 function createKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
   ensureDataDirSync(dataDir);
@@ -231,21 +227,18 @@ function createKeyFile(dataDir: string, key: FingerprintKey): FingerprintKey {
     tightenFile(file);
     return winner;
   }
-  throw new KeyUnclaimableError(
-    isSymlinkPath(file)
-      ? `exception key file is a symlink (${file}); remove it so a key can be created`
-      : 'exception key file was removed while it was being created',
-    undefined,
-  );
+  const occupant = classifyOccupant(file);
+  throw new KeyUnclaimableError(occupantMessage(file, occupant.kind), occupant.cause);
 }
 
-// Whether the key path itself is a symlink — checked only to tell two failures
-// apart in a message, so an lstat failure just means "cannot say".
-function isSymlinkPath(file: string): boolean {
-  try {
-    return lstatSync(file).isSymbolicLink();
-  } catch {
-    return false;
+function occupantMessage(file: string, kind: Occupant['kind']): string {
+  switch (kind) {
+    case 'symlink':
+      return `exception key file is a symlink (${file}); remove it so a key can be created`;
+    case 'gone':
+      return 'exception key file was removed while it was being created';
+    case 'unknown':
+      return `exception key file (${file}) is occupied but cannot be inspected; check the permissions on its directory`;
   }
 }
 

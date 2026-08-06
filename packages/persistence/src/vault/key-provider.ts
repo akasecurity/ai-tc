@@ -30,7 +30,21 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { createOwnerOnlyFileSync, DATA_FILE_MODE, ensureDataDirSync } from '../paths.ts';
+import {
+  classifyOccupant,
+  createOwnerOnlyFileSync,
+  DATA_FILE_MODE,
+  ensureDataDirSync,
+  KeyUnclaimableError,
+  type Occupant,
+} from '../paths.ts';
+
+// The keyring's wording for the three states classifyOccupant tells apart.
+const VAULT_OCCUPANT_REASON: Record<Occupant['kind'], string> = {
+  symlink: 'the path is a symlink; remove it so a keyring can be created',
+  gone: 'the path was occupied but holds no keyring (removed while it was being created)',
+  unknown: 'the path is occupied but cannot be inspected; check the permissions on its directory',
+};
 
 export interface VaultKeyMaterial {
   material: Buffer;
@@ -354,8 +368,14 @@ export class FileKeyProvider implements KeyProvider {
 
     const winner = this.#read();
     if (!winner) {
-      throw new Error(
-        `vault: cannot create a key file at ${this.filePath} — the path is occupied but holds no keyring (a symlink, or removed while it was being created)`,
+      // Same type, and for the same reason, as the fingerprint key's first mint:
+      // a codeless error is read as "the file is corrupt, delete it", and the
+      // blast radius here is larger — a discarded epoch does not orphan a grant,
+      // it leaves ciphertext that nothing can ever open.
+      const occupant = classifyOccupant(this.filePath);
+      throw new KeyUnclaimableError(
+        `vault: cannot create a key file at ${this.filePath} — ${VAULT_OCCUPANT_REASON[occupant.kind]}`,
+        occupant.cause,
       );
     }
     tightenFileMode(this.filePath);

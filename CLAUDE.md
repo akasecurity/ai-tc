@@ -1093,8 +1093,13 @@ requiring the message to say something specific is what stops the echo check goi
 Keep a positive control that a well-formed payload still succeeds, or an action rewritten to
 refuse everything satisfies all three.
 
-The other Server Actions (settings, vault, scan, detections) are **not** guarded this way
-yet — do not read the above as a property the dashboard has.
+Every other `'use server'` file under `web-ui/app` is **not** guarded this way yet — eight
+files, 20 exported actions at the time of writing — so do not read the above as a property
+the dashboard has. The set is deliberately **not** listed here: a partial list reads as
+exhaustive and stops an audit at the files it names, and a full one goes stale the first
+time an action file lands. Derive it from the **directive**, which is not the same as
+grepping for the words — `app/lib/dropped-rules.ts` mentions them in a comment and exports
+a sync function, so it matches the text and is not a Server Action.
 
 ### Testing a web-ui page
 

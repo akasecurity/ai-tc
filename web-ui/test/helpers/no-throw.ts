@@ -23,9 +23,14 @@ export async function expectNoRejection<T>(call: () => Promise<T>): Promise<T> {
     (value) => ({ rejected: false as const, value }),
     (err: unknown) => ({ rejected: true as const, err: err as Error }),
   );
-  // Named rather than a bare `toBe(false)`: the message is the whole point when
-  // this fires, and the error it carries is what identifies the unguarded field.
-  expect(outcome.rejected ? `rejected with ${String(outcome.err)}` : 'returned').toBe('returned');
-  // The assertion above throws on the rejected branch, so this is the value.
-  return (outcome as { rejected: false; value: T }).value;
+  if (outcome.rejected) {
+    // `expect.fail` rather than a comparison carrying the error on one side:
+    // vitest elides the middle of a long value in a `toBe` diff, so the
+    // underlying message — the half that identifies the unguarded field — was
+    // truncated at around forty characters exactly when it was needed
+    // (`rejected with TypeError: payload.reas…`). This throws the string as
+    // written, and `no-throw.test.ts` pins that the error survives it.
+    expect.fail(`Server Action rejected rather than returning: ${String(outcome.err)}`);
+  }
+  return outcome.value;
 }

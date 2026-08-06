@@ -4,6 +4,9 @@
 //   boot.cjs, cli.mjs, package.json (for cliVersion), web-ui/ (the Next standalone plus
 //   the node_modules that standalone needs — see step 1b).
 // The binary embeds Node + entry.cjs; entry.cjs requires boot.cjs, which imports cli.mjs.
+//
+// NEEDS THE NETWORK: step 1b shells out to `npm install` against the registry, so this script
+// does not run offline or behind a blocked proxy. It is release tooling, never a product path.
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
@@ -70,9 +73,17 @@ cpSync(webUiSrc, join(outDir, 'web-ui'), { recursive: true });
 // Installed at the standalone ROOT (web-ui/), which is both where Next expects them and
 // the first node_modules the walk from web-ui/web-ui/server.js reaches.
 const seaWebUi = join(outDir, 'web-ui');
-// Pin to the versions the workspace lockfile already resolved, so the binary channel
-// serves the same Next the npm channel does instead of whatever the range floats to.
-const runtimeDeps = ['next', 'react', 'react-dom'].map((name) => {
+// Pin the three TOP-LEVEL versions to what the workspace lockfile already resolved, so the
+// binary channel serves the same Next the npm channel does rather than whatever the range
+// floats to that day. The pin reaches exactly one level: there is no lockfile here, so every
+// TRANSITIVE dependency (styled-jsx, @swc/helpers, caniuse-lite, scheduler, …) resolves by
+// range at package time, and two builds of one bin-v tag can embed different bytes. Parity
+// with the npm channel survives that — an end user's `npm i -g` re-resolves those same ranges,
+// since a published package ships no lockfile for its own dependencies — but bit-for-bit
+// reproducibility does not, and the SHA256SUMS the installers verify are per-build, not
+// per-tag. Closing that needs a checked-in lockfile and `npm ci`, not a stronger comment.
+const RUNTIME_DEP_NAMES = ['next', 'react', 'react-dom'];
+const runtimeDeps = RUNTIME_DEP_NAMES.map((name) => {
   const manifest = join(cliDir, 'node_modules', name, 'package.json');
   if (!existsSync(manifest)) {
     throw new Error(`cannot pin ${name} for the web-ui sidecar — missing ${manifest}`);
@@ -95,7 +106,6 @@ try {
       '--no-package-lock',
       '--no-audit',
       '--no-fund',
-      '--omit=dev',
       '--ignore-scripts',
       ...runtimeDeps,
     ],
@@ -107,10 +117,17 @@ try {
 } finally {
   rmSync(depStage, { recursive: true, force: true });
 }
-// Assert the module whose absence is the whole failure mode actually landed. `npm install`
-// exits 0 on plenty of outcomes that leave a tree the server cannot boot from.
-if (!existsSync(join(seaWebUi, 'node_modules', 'next', 'package.json'))) {
-  throw new Error(`next missing from the staged web-ui at ${join(seaWebUi, 'node_modules')}`);
+// Assert every module whose absence is the failure mode actually landed. `npm install` exits
+// 0 on plenty of outcomes that leave a tree the server cannot boot from.
+//
+// existsSync rather than createRequire(...).resolve(name): a resolve walks UP from this
+// script, so running in-repo it climbs to cli/node_modules and reports success for precisely
+// the archive this step exists to fix — the same trap that made the old smoke pass on a
+// broken tree. Check the path that has to hold, not the one Node would search.
+for (const name of RUNTIME_DEP_NAMES) {
+  if (!existsSync(join(seaWebUi, 'node_modules', name, 'package.json'))) {
+    throw new Error(`${name} missing from the staged web-ui at ${join(seaWebUi, 'node_modules')}`);
+  }
 }
 
 // The browser extension + its native-messaging host, staged next to the binary

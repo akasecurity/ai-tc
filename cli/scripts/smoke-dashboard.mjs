@@ -17,8 +17,12 @@
 // Copying to a temp dir removes the workspace from the walk; assertNoAncestorNodeModules
 // then proves it, because a smoke that silently regained an ancestor node_modules would
 // go back to passing on a broken archive without changing a line of this file.
+//
+// It also drives TWO routes. `/security` alone shows the server boots; a second Server
+// Component page shows it renders, which is the claim that actually covers the runtime
+// module graph rather than just its entrypoint.
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -36,16 +40,32 @@ if (!existsSync(join(stagedDir, 'web-ui', 'web-ui', 'server.js')))
 const PORT = 41847;
 const HOST = '127.0.0.1';
 
-// Every node_modules on the walk from `startDir` to the filesystem root. The archive's
-// own (web-ui/node_modules) sits BELOW the root passed in and is deliberately not counted
-// — it is the thing under test.
-const ancestorNodeModules = (startDir) => {
+// Two routes, not one. The first proves the server BOOTS; the second proves a Server
+// Component page RENDERS, which is what actually walks the runtime module graph rather than
+// just its entrypoint. Both go through web-ui/middleware.ts.
+const ROUTES = ['/security', '/findings'];
+
+// Throw if any node_modules sits on the walk from `startDir` to the filesystem root. The
+// archive's own (web-ui/node_modules) sits BELOW the root passed in and is deliberately not
+// counted — it is the thing under test.
+//
+// Walks the REAL path: Node resolves a module's realpath before starting its upward walk, so
+// on macOS — where tmpdir() is /var/…, a symlink to /private/var — the resolver's chain
+// includes /private/node_modules and a walk over the symlinked path never looks there.
+const assertNoAncestorNodeModules = (startDir) => {
   const hits = [];
-  for (let dir = startDir; ;) {
+  for (let dir = realpathSync(startDir); ;) {
     if (existsSync(join(dir, 'node_modules'))) hits.push(join(dir, 'node_modules'));
     const parent = dirname(dir);
-    if (parent === dir) return hits;
+    if (parent === dir) break;
     dir = parent;
+  }
+  if (hits.length > 0) {
+    throw new Error(
+      `the smoke root ${startDir} has node_modules above it (${hits.join(', ')}) — server.js ` +
+        `would resolve \`next\` from there, so this check could not tell a self-contained ` +
+        `archive from a broken one`,
+    );
   }
 };
 
@@ -72,14 +92,7 @@ try {
   const runDir = join(stage, `aka-${platform}-${arch}`);
   cpSync(stagedDir, runDir, { recursive: true });
 
-  const leaks = ancestorNodeModules(stage);
-  if (leaks.length > 0) {
-    throw new Error(
-      `the smoke root ${stage} has node_modules above it (${leaks.join(', ')}) — server.js ` +
-        `would resolve \`next\` from there, so this check could not tell a self-contained ` +
-        `archive from a broken one`,
-    );
-  }
+  assertNoAncestorNodeModules(stage);
 
   const exe = join(runDir, exeName);
   const serverJs = join(runDir, 'web-ui', 'web-ui', 'server.js');
@@ -97,14 +110,25 @@ try {
     process.exitCode = 1;
   });
 
+  // The retry loop is the BOOT probe and belongs to the first route only. Retrying the rest
+  // would let a route that never renders read as merely slow.
   let status = null;
   for (let i = 0; i < 120 && child.exitCode === null; i++) {
-    status = await get('/security');
+    status = await get(ROUTES[0]);
     if (status) break;
     await new Promise((r) => setTimeout(r, 500));
   }
-  if (status !== 200) throw new Error(`dashboard /security returned ${status ?? 'no response'}`);
-  process.stdout.write(`sea-dashboard-smoke: OK (/security -> ${status})\n`);
+  if (status !== 200) {
+    throw new Error(`dashboard ${ROUTES[0]} returned ${status ?? 'no response'}`);
+  }
+
+  const served = [`${ROUTES[0]} -> ${status}`];
+  for (const route of ROUTES.slice(1)) {
+    const code = await get(route);
+    if (code !== 200) throw new Error(`dashboard ${route} returned ${code ?? 'no response'}`);
+    served.push(`${route} -> ${code}`);
+  }
+  process.stdout.write(`sea-dashboard-smoke: OK (${served.join(', ')})\n`);
 } catch (err) {
   process.stderr.write(
     `sea-dashboard-smoke: FAIL — ${err instanceof Error ? err.message : String(err)}\n`,

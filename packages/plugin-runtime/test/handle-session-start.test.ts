@@ -7,7 +7,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, type PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { handleSessionStart } from '../src/handle-session-start.ts';
+import { EXCEPTION_RETENTION_MS, handleSessionStart } from '../src/handle-session-start.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
 let dir: string; // the ~/.aka data dir
@@ -188,9 +188,20 @@ describe('handleSessionStart (standalone)', () => {
     db.close();
   });
 
+  // How long a terminal grant is kept is a product decision about how long the
+  // audit evidence for a revoked or spent exception lives. Pinning the VALUE
+  // and pinning the BOUNDARY are different guards and neither implies the
+  // other: the boundary case below derives its offsets from the constant, so it
+  // follows the constant wherever it goes and proves only that the sweep
+  // applies the window it is handed. Shrink the constant with just that case in
+  // place and every offset shrinks with it, green the whole way.
+  it('terminal exception rows are retained for 90 days', () => {
+    expect(EXCEPTION_RETENTION_MS).toBe(90 * 24 * 60 * 60 * 1000);
+  });
+
   it('sweeps terminal exception rows past retention, never active grants', async () => {
-    // Seed the store, then plant one long-terminal (revoked) grant and one
-    // active grant before a fresh session starts.
+    // Seed the store, then plant grants straddling the retention boundary
+    // before a fresh session starts.
     await handleSessionStart({ sessionId: 's1', cwd, tool: 'claude-code' }, config(dir));
     const seed = open();
     const insert = seed.prepare(
@@ -201,21 +212,34 @@ describe('handleSessionStart (standalone)', () => {
        ) VALUES (?, 'r', 'secret', ?, 1, 'm', 'permanent', NULL, NULL, 0, 'j',
          'u', 'cli-add', ?, ?, ?, ?)`,
     );
-    const old = Date.now() - 100 * 24 * 60 * 60 * 1000; // 100 days ago
-    insert.run('terminal-old', 'fp-a', old, old, old, 'u');
-    insert.run('still-active', 'fp-b', old, old, null, null);
+    // Straddle the window rather than sit on it. The sweep compares
+    // `updated_at < now - retentionMs` against a `now` that SessionStart
+    // resolves after these rows are written, so an exact-millisecond boundary
+    // here is a race against however long the session takes — which on a loaded
+    // Windows runner is not a millisecond. The hour of margin makes the
+    // straddle decide the outcome instead of the elapsed time; the exact
+    // inclusive/exclusive edge is pinned where it can be, on the repository's
+    // own injectable clock, in persistence's exceptions.test.ts.
+    const now = Date.now();
+    const MARGIN_MS = 60 * 60 * 1000;
+    const past = now - EXCEPTION_RETENTION_MS - MARGIN_MS;
+    const inside = now - EXCEPTION_RETENTION_MS + MARGIN_MS;
+    insert.run('terminal-past-retention', 'fp-a', past, past, past, 'u');
+    insert.run('terminal-inside-retention', 'fp-b', inside, inside, inside, 'u');
+    insert.run('active-equally-old', 'fp-c', past, past, null, null);
     seed.close();
 
     await handleSessionStart({ sessionId: 's2', cwd, tool: 'claude-code' }, config(dir));
 
     const db = open();
-    const ids = (db.prepare('SELECT id FROM exceptions').all() as { id: string }[]).map(
+    const ids = (db.prepare('SELECT id FROM exceptions ORDER BY id').all() as { id: string }[]).map(
       (r) => r.id,
     );
     db.close();
-    // The revoked row aged past the 90-day retention is purged; the active
-    // grant — equally old — is untouched (the sweep is terminal-only).
-    expect(ids).toEqual(['still-active']);
+    // Only the revoked row aged PAST retention is purged. The revoked row still
+    // inside the window survives, and so does the active grant — equally old,
+    // but the sweep is terminal-only and correctness never depends on it.
+    expect(ids).toEqual(['active-equally-old', 'terminal-inside-retention']);
   });
 
   it('no-ops without a session id (returns before even opening the store)', async () => {

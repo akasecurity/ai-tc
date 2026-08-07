@@ -7,6 +7,14 @@
 // (check-portability.ts) owns all I/O — git ls-files, reading file contents —
 // so the unit suite can drive this with canned file lists.
 //
+// Rules 1-3 describe primitives, not test structure, so they apply to every
+// source file in a test tree — the helpers, fixtures-in-code and worker
+// entrypoints that carry the worker/platform/path code a spec file usually
+// only calls. Rule 4 keys on an `it()`/`test()` call and so stays scoped to
+// spec files. isRelevantPath is the single definition of what the scan reaches;
+// the CLI entry imports it rather than keeping a second copy, since a filter
+// that pre-selects paths and a filter that scans them are one decision.
+//
 // This is a heuristic text scanner, not a real parser. It tokenizes just far
 // enough to tell code from string/template literals and comments (and to give
 // regex literals opaque treatment, since a quote inside a character class —
@@ -229,8 +237,35 @@ const COMPARISON_RE = /===|!==|\.toBe\(|\.toEqual\(/;
 const CONCURRENCY_RE =
   /\bnew\s+Worker\b|\bworker_threads\b|Promise\.(?:all|race|allSettled)\(|\bspawn\(|\bfork\(/;
 const TEST_CALL_RE = /\b(?:it|test)\s*\(/g;
-const INLINE_TIMEOUT_RE = /,\s*\d{3,}\s*,?\s*\)\s*;?\s*$/;
-const OPTIONS_TIMEOUT_RE = /\btimeout\s*:\s*\d+/;
+
+// A JS identifier, optionally reached through a member expression, so a
+// timeout held in a named constant (CASE_TIMEOUT_MS) or on an object
+// (timeouts.worker) reads as a timeout rather than as an absent one.
+const IDENTIFIER = String.raw`[A-Za-z_$][\w$]*(?:\.[\w$]+)*`;
+// A numeric literal including underscore separators — 20_000 is the same
+// value as 20000 and just as deliberate.
+const NUMERIC = String.raw`\d[\d_]*`;
+
+// The trailing argument of an it()/test() call is the per-test timeout and
+// nothing else, so an identifier there is taken at face value. The end anchor
+// is what keeps that safe: a block only ends in `, <arg>)` when that arg is
+// the call's own last argument, never when it is an argument to something
+// nested inside the callback.
+const INLINE_TIMEOUT_RE = new RegExp(String.raw`,\s*(${IDENTIFIER}|${NUMERIC})\s*,?\s*\)\s*;?\s*$`);
+// An explicitly keyed `timeout:` needs no plausibility floor — naming the key
+// is the deliberate act.
+const OPTIONS_TIMEOUT_RE = new RegExp(String.raw`\btimeout\s*:\s*(?:${NUMERIC}|${IDENTIFIER})`);
+
+// Below this a trailing numeric argument is more likely a count or an index
+// than a timeout; a real one is at least a substantial fraction of a second.
+const MIN_PLAUSIBLE_TIMEOUT_MS = 100;
+
+function hasInlineTimeout(block: string): boolean {
+  const argument = INLINE_TIMEOUT_RE.exec(block)?.[1];
+  if (argument === undefined) return false;
+  if (!/^\d/.test(argument)) return true;
+  return Number(argument.replaceAll('_', '')) >= MIN_PLAUSIBLE_TIMEOUT_MS;
+}
 
 function findMatchingClose(codeMasked: string, openIndex: number): number {
   let depth = 0;
@@ -317,7 +352,7 @@ function checkConcurrencyMissingTimeout(
     const close = findMatchingClose(codeMasked, openParen);
     const block = codeMasked.slice(openParen, close + 1);
     if (!CONCURRENCY_RE.test(block)) continue;
-    if (INLINE_TIMEOUT_RE.test(block) || OPTIONS_TIMEOUT_RE.test(block)) continue;
+    if (hasInlineTimeout(block) || OPTIONS_TIMEOUT_RE.test(block)) continue;
     violations.push({
       rule: 'concurrency-missing-timeout',
       file: file.path,
@@ -328,9 +363,25 @@ function checkConcurrencyMissingTimeout(
   return violations;
 }
 
-const TEST_FILE_RE = /\.test\.(?:ts|tsx|js)$/;
+// A spec file: the unit rule 4 walks, wherever it sits in the tree.
+const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
+// Any source file under a directory named "test" — the helpers, worker
+// entrypoints and fixture corpora rules 1-3 apply to. The cut is by extension
+// alone, so a fixture that deliberately holds a bad pattern is only exempt
+// while it is data (.txt, .json); written as real .ts under a test tree it is
+// scanned like anything else, which is why this package keeps its own
+// violation fixtures at .txt.
+const TEST_TREE_FILE_RE = /(?:^|\/)test\/.*\.(?:ts|tsx|js|mjs|cts|mts)$/;
 const VITEST_CONFIG_SUFFIX = '/vitest.config.ts';
 const VITEST_CONFIG_RE = /(?:^|\/)vitest\.config\.ts$/;
+
+// Everything the scan needs handed to it: the files it applies rules to, plus
+// every vitest.config.ts, which is how rule 4 resolves a package-level
+// testTimeout override. The CLI entry filters on this before reading any file
+// content, so a repo-wide walk touches only what matters.
+export function isRelevantPath(path: string): boolean {
+  return SPEC_FILE_RE.test(path) || TEST_TREE_FILE_RE.test(path) || VITEST_CONFIG_RE.test(path);
+}
 
 interface PackageTimeoutInfo {
   dir: string;
@@ -368,17 +419,20 @@ export function scanTree(files: ScannedFile[]): Violation[] {
   const packages = derivePackageTimeouts(files);
   const violations: Violation[] = [];
   for (const file of files) {
-    if (!TEST_FILE_RE.test(file.path)) continue;
+    const isSpec = SPEC_FILE_RE.test(file.path);
+    if (!isSpec && !TEST_TREE_FILE_RE.test(file.path)) continue;
     const { codeMasked, strings } = tokenize(file.content);
     violations.push(
       ...checkHardcodedFileUrl(file, codeMasked, strings),
       ...checkBareTimeoutCommand(file, codeMasked, strings),
       ...checkPathComparisonCase(file, codeMasked),
-      ...checkConcurrencyMissingTimeout(
-        file,
-        codeMasked,
-        owningPackageHasTimeout(file.path, packages),
-      ),
+      ...(isSpec
+        ? checkConcurrencyMissingTimeout(
+            file,
+            codeMasked,
+            owningPackageHasTimeout(file.path, packages),
+          )
+        : []),
     );
   }
   return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { formatReport, type ScannedFile, scanTree } from '../src/lib.ts';
+import { formatReport, isRelevantPath, type ScannedFile, scanTree } from '../src/lib.ts';
 
 // Fixtures live in their own directory with a non-".test.ts" extension on
 // purpose: a real run of check-portability.ts walks the tracked test tree, so
@@ -113,6 +113,32 @@ describe('concurrency-missing-timeout', () => {
     ).toEqual([]);
   });
 
+  it('accepts an inline timeout written with numeric separators', () => {
+    expect(
+      scanTree([testFile('scan.test.ts', fixture('concurrency-timeout-separator.clean.txt'))]),
+    ).toEqual([]);
+  });
+
+  it('accepts an inline timeout held in a named constant', () => {
+    expect(
+      scanTree([testFile('scan.test.ts', fixture('concurrency-timeout-constant.clean.txt'))]),
+    ).toEqual([]);
+  });
+
+  it('accepts a named constant in the options-object form', () => {
+    expect(
+      scanTree([testFile('scan.test.ts', fixture('concurrency-options-constant.clean.txt'))]),
+    ).toEqual([]);
+  });
+
+  it('still flags a trailing number too small to be a real timeout', () => {
+    const violations = scanTree([
+      testFile('scan.test.ts', fixture('concurrency-timeout-implausible.bad.txt')),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.rule).toBe('concurrency-missing-timeout');
+  });
+
   it('is suppressed when the owning package sets a testTimeout override', () => {
     const files = [
       testFile('pkg/test/scan.test.ts', fixture('concurrency-no-timeout.bad.txt')),
@@ -168,12 +194,91 @@ describe('scanTree file selection', () => {
     ).toHaveLength(1);
   });
 
+  it('applies rules 1-3 to a helper in a test tree, not just to a spec file', () => {
+    const violations = scanTree([
+      testFile('pkg/test/helpers/worker-url.ts', fixture('hardcoded-file-url.bad.txt')),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      rule: 'hardcoded-file-url',
+      file: 'pkg/test/helpers/worker-url.ts',
+    });
+  });
+
+  // Rule 4 keys on an it()/test() call, which a helper does not own even when
+  // it contains the text of one. The same bytes at a spec path are the control:
+  // without it this case would pass on a rule that had stopped firing anywhere.
+  it('does not apply rule 4 to a non-spec file, but still does at a spec path', () => {
+    const helperBytes = fixture('concurrency-no-timeout.bad.txt');
+    expect(scanTree([testFile('pkg/test/helpers/spawn.ts', helperBytes)])).toEqual([]);
+    expect(scanTree([testFile('pkg/test/spawn.test.ts', helperBytes)])).toHaveLength(1);
+  });
+
+  it('leaves non-source files in a test tree alone, so fixtures stay safe', () => {
+    const bytes = fixture('hardcoded-file-url.bad.txt');
+    expect(scanTree([testFile('pkg/test/fixtures/bad.txt', bytes)])).toEqual([]);
+    expect(scanTree([testFile('pkg/test/fixtures/bad.json', bytes)])).toEqual([]);
+  });
+
+  it('still ignores a source file outside any test tree', () => {
+    expect(
+      scanTree([testFile('pkg/src/worker.ts', fixture('hardcoded-file-url.bad.txt'))]),
+    ).toEqual([]);
+  });
+
   it('sorts violations by file then line', () => {
     const files = [
       testFile('z.test.ts', fixture('hardcoded-file-url.bad.txt')),
       testFile('a.test.ts', fixture('bare-timeout.bad.txt')),
     ];
     expect(scanTree(files).map((v) => v.file)).toEqual(['a.test.ts', 'z.test.ts']);
+  });
+});
+
+// The pre-read filter the CLI entry walks git ls-files with. It decides what
+// the scan can ever see, so a path scanTree would rule on but this rejects is
+// a file the gate silently never reads.
+describe('isRelevantPath', () => {
+  it('accepts a spec file anywhere in the tree', () => {
+    expect(isRelevantPath('pkg/test/scan.test.ts')).toBe(true);
+    expect(isRelevantPath('pkg/src/scan.test.tsx')).toBe(true);
+    expect(isRelevantPath('scan.test.js')).toBe(true);
+  });
+
+  it('accepts a source file under a test tree, at the repo root or nested', () => {
+    expect(isRelevantPath('test/setup/no-network.ts')).toBe(true);
+    expect(isRelevantPath('packages/persistence/test/helpers/fault-injection.ts')).toBe(true);
+    expect(isRelevantPath('packages/eslint-config/test/helpers/lint-invocations.js')).toBe(true);
+  });
+
+  it('accepts every vitest.config.ts, which is how rule 4 finds an override', () => {
+    expect(isRelevantPath('pkg/vitest.config.ts')).toBe(true);
+    expect(isRelevantPath('vitest.config.ts')).toBe(true);
+  });
+
+  it('rejects non-source files and source outside a test tree', () => {
+    expect(isRelevantPath('pkg/test/fixtures/corpus.txt')).toBe(false);
+    expect(isRelevantPath('pkg/test/fixtures/rules.json')).toBe(false);
+    expect(isRelevantPath('pkg/src/worker.ts')).toBe(false);
+    expect(isRelevantPath('README.md')).toBe(false);
+  });
+
+  it('does not treat a directory merely starting with "test" as a test tree', () => {
+    expect(isRelevantPath('pkg/testing/helper.ts')).toBe(false);
+    expect(isRelevantPath('pkg/test-utils/helper.ts')).toBe(false);
+  });
+
+  // The CLI entry used to carry its own copy of this filter, which no test
+  // reached — so the two could disagree about what the gate scans and only the
+  // untested one decided. Pinning the call itself rather than the absence of a
+  // regex is what makes that unrepeatable: any private filter, however spelled,
+  // stops this from matching.
+  it('is the only path filter the CLI entry has', () => {
+    const entrySource = readFileSync(
+      fileURLToPath(new URL('../src/check-portability.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(entrySource).toMatch(/trackedFiles\(\)\s*\.filter\(isRelevantPath\)/);
   });
 });
 

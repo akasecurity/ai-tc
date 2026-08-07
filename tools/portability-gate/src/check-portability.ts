@@ -14,16 +14,9 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { formatReport, type ScannedFile, scanTree } from './lib.ts';
+import { formatReport, isRelevantPath, type ScannedFile, scanTree } from './lib.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
-
-// Anything scanTree cares about: the test files it applies the four rules to,
-// plus every vitest.config.ts, which is how rule 4 resolves a package-level
-// testTimeout override. Filtered here — before reading any file content — so
-// a repo-wide scan touches only the files that matter instead of every
-// tracked file.
-const RELEVANT_PATH_RE = /(?:\.test\.(?:ts|tsx|js)|\/vitest\.config\.ts)$/;
 
 function trackedFiles(): string[] {
   const result = spawnSync('git', ['ls-files'], {
@@ -60,7 +53,7 @@ function readScannedFiles(paths: string[]): ScannedFile[] {
 }
 
 function main(): void {
-  const paths = trackedFiles().filter((path) => RELEVANT_PATH_RE.test(path));
+  const paths = trackedFiles().filter(isRelevantPath);
   const files = readScannedFiles(paths);
   const violations = scanTree(files);
 

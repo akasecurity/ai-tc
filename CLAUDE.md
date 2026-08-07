@@ -844,7 +844,16 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/` (imported by `*.test.ts` only — never shipped).
+`packages/persistence/src/test-fixtures/` — never shipped, because only a package's own
+`test/` and `bench/` files import it and `src/index.ts` never re-exports it. That rule is
+about DIRECTORIES rather than filename suffixes (`test/helpers/corpus.ts` is an importer
+and is neither a `*.test.ts` nor a `*.bench.ts`), and
+`packages/eslint-config/test/test-fixtures-imports.test.js` derives it from the tracked
+tree — so a product importer fails CI rather than being caught in review. Two kinds live
+there and they answer different questions: the
+`seedSample*` datasets are FIXED rows shaped to exercise a read surface, while
+`generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
+sizes that matter there cannot live in git.
 
 ## Documentation
 
@@ -864,6 +873,49 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
 
+### Benchmarks are a trend, never a gate
+
+```bash
+pnpm bench                                    # every package that has benchmarks
+pnpm bench --filter @akasecurity/detections   # just one
+```
+
+`vitest bench` (no second framework), one `bench/*.bench.ts` per package, a `bench` turbo
+task, and a nightly `bench.yml` on `main` that uploads each package's
+`bench-results.json` as a workflow artifact. **Nothing gates a PR on wall-clock.** Hosted
+runners vary by a large factor on neighbour load alone — this repository has retuned three
+timing assertions for exactly that — so a wall-clock check on a PR fails for reasons
+unrelated to the diff, and a check that cries wolf is one people learn to re-run until it
+is green.
+
+What DOES gate a PR is the timing **guards**, which are correctness assertions rather than
+measurements: the adversarial-rule bound in `packages/detections/test/security/redos.test.ts`
+and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
+threw would be a timing gate wearing a different name.
+
+Four properties are load-bearing, and each is enforced by
+`packages/eslint-config/test/bench-harness.test.js` rather than remembered:
+
+- **`cache: false` on the `bench` turbo task.** Every other task derives its output from
+  its inputs, so replaying one is sound; a benchmark returns a MEASUREMENT, and the machine
+  it ran on is in none of the hashes. A cache hit hands the trend another runner's number
+  and labels it this run's — the one stale green that cannot be spotted by reading it.
+- **A package holding benchmarks declares a `bench` script.** `turbo run bench` skips a
+  package without one silently and exits 0, so the nightly job goes on reporting success
+  having measured nothing.
+- **`bench/` is a lint target and a tsconfig `include` like any other source directory.** A
+  bench file imports product code; outside those, its types are stripped unchecked and the
+  network bans never apply to it.
+- **`bench.yml` has no `pull_request` trigger**, still runs nightly, and still uploads.
+
+A benchmark carries no assertions, so anything a bench file would otherwise have checked
+about its own input belongs in a test instead. `generateCaptureCorpus` is the worked
+example: it writes through the product's own `recordCapture` (so the corpus cannot drift
+from what the product writes), wraps the whole corpus in one transaction, and — because
+`recordCapture` is fail-open — **counts the rows that actually landed and throws when they
+are not there**. Without that last check a locked or full store hands back an empty one and
+every downstream measurement is a timing of nothing, reported as a fast one.
+
 ### The no-network guard
 
 `test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
@@ -875,6 +927,15 @@ frame, since a transitive dependency reaching out is the case the ESLint ban can
 see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
+
+**It covers `vitest bench` too**, and by construction rather than by a second wiring:
+bench mode resolves the same `vitest.config.ts`, so the same `setupFiles` entry loads.
+Both halves were confirmed live there — the throw on a non-loopback connect, and the
+`afterAll` backstop that fails a run where a refusal was swallowed. What that argument
+rests on is a `bench` script not steering vitest at another config, which
+`packages/eslint-config/test/bench-harness.test.js` asserts: a bench-only config missing
+the entry would run product code unguarded while every existing assertion here, all of
+which read the config the `test` script uses, stayed green.
 
 Five things about it are load-bearing:
 

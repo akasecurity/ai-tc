@@ -5,8 +5,8 @@
 // lint:root is a pass of its own — chained off `pnpm lint` (which is what the
 // pre-push hook and the release workflows run) and named as its own CI step. This
 // config covers every repo-root file no workspace package owns: the vitest
-// no-network guard, the CI egress probe, and the repo-root `*.config.*` (this file
-// and commitlint's).
+// no-network guard, the shared adversarial fixture corpus, the CI egress probe,
+// and the repo-root `*.config.*` (this file and commitlint's).
 //
 // The plain-JS enforcement suites under `packages/eslint-config/test` are NOT
 // here. They sit inside a package, and that package now lints itself: its `lint`

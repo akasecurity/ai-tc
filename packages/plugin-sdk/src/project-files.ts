@@ -1,5 +1,5 @@
 import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { ProjectFileInput, ProjectFilesScan } from '@akasecurity/schema';
 import ignore, { type Ignore } from 'ignore';
@@ -22,6 +22,12 @@ import { resolveHeadRoot, resolveWorktreeRoot } from './repo.ts';
 // possible future upgrade), tracked-but-ignored files (`git add -f`, committed
 // files under SKIP_DIRS) are invisible, `.git/info/exclude` and the global
 // gitignore aren't consulted, and MAX_FILES bounds KEPT files, not traversal.
+//
+// Nothing bounds traversal, and the cost is not flat: an entry is tested against
+// every .gitignore layer above it that has an opinion to give, so a tree whose
+// directories each carry one costs O(entries x depth). A deep enough chain
+// outruns the hosts' 10 s hook timeout, and a deep enough one over a wide leaf
+// exhausts the heap. `bench/project-files.bench.ts` measures the curve.
 
 // Hard floor of never-inventoried directories — huge machine-generated trees.
 const SKIP_DIRS = new Set([
@@ -45,34 +51,60 @@ const SKIP_DIRS = new Set([
 // 20k files covers those comfortably while bounding SessionStart cost.
 const MAX_FILES = 20_000;
 
-// One .gitignore's rules, anchored to the directory that contains it (git
-// patterns are relative to their own ignore file, not the repo root).
+// One .gitignore's rules, plus how much of the walk's current repo-relative
+// directory path belongs to the directory that contains it (git patterns are
+// relative to their own ignore file, not the repo root).
+//
+// The walk carries ONE `dirRel` string per directory and every layer keeps an
+// offset into it, so testing a layer is a slice of that string. Holding a
+// per-layer prefix instead would rebuild all of them on every descent — O(depth)
+// strings of O(depth) characters per directory, for prefixes the deepest-first
+// lookup below usually never reads.
 interface IgnoreLayer {
-  base: string;
   matcher: Ignore;
+  /** Length of `dirRel` at the directory holding this .gitignore. */
+  anchorLen: number;
 }
 
-function readIgnoreLayer(dir: string): IgnoreLayer | undefined {
+function readIgnoreLayer(dir: string, anchorLen: number): IgnoreLayer | undefined {
   try {
     const content = readFileSync(join(dir, '.gitignore'), 'utf8');
-    return { base: dir, matcher: ignore().add(content) };
+    return { matcher: ignore().add(content), anchorLen };
   } catch {
     return undefined;
   }
 }
 
-// Layered gitignore verdict, deeper files consulted later so their verdicts
-// (ignore OR `!` re-include) override shallower ones. Directories are tested
-// with a trailing slash so `dir/`-style patterns match.
-function isIgnored(layers: IgnoreLayer[], absPath: string, isDir: boolean): boolean {
-  let ignored = false;
-  for (const layer of layers) {
-    const rel = relative(layer.base, absPath).split(sep).join('/') + (isDir ? '/' : '');
-    const verdict = layer.matcher.test(rel);
-    if (verdict.ignored) ignored = true;
-    else if (verdict.unignored) ignored = false;
+/** `name` as the layer's own .gitignore addresses it: posix, anchor-relative. */
+function relToAnchor(dirRel: string, anchorLen: number, name: string): string {
+  if (anchorLen === dirRel.length) return name;
+  // Skip the separator that follows the anchor, unless the anchor is the root
+  // and contributes no leading segment at all.
+  return `${dirRel.slice(anchorLen === 0 ? 0 : anchorLen + 1)}/${name}`;
+}
+
+// Layered gitignore verdict for the entry named `name` in the directory `dirRel`
+// addresses. A deeper .gitignore's verdict (ignore OR `!` re-include) overrides
+// a shallower one's, so the answer is the DEEPEST layer that has one: this walks
+// from the deepest and returns at the first, which reaches that answer without
+// consulting the ancestors behind it. A layer matching neither is silent and the
+// search continues past it — an entry no layer names at all is kept.
+// Directories are tested with a trailing slash so `dir/`-style patterns match.
+function isIgnored(
+  layers: readonly IgnoreLayer[],
+  dirRel: string,
+  name: string,
+  isDir: boolean,
+): boolean {
+  const suffix = isDir ? '/' : '';
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    if (layer === undefined) continue;
+    const verdict = layer.matcher.test(relToAnchor(dirRel, layer.anchorLen, name) + suffix);
+    if (verdict.ignored) return true;
+    if (verdict.unignored) return false;
   }
-  return ignored;
+  return false;
 }
 
 // ─── Origin classification ────────────────────────────────────────────────────
@@ -185,7 +217,10 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
 
     // Returns true when the file cap was hit — propagated up so the whole walk
     // stops at the first over-cap file.
-    function visit(dir: string, layers: IgnoreLayer[]): boolean {
+    // `dirRel` is `dir` as a repo-relative posix path ('' at the root). It is
+    // built by appending one component per descent rather than diffed against
+    // the root, which is also the path every kept file is recorded under.
+    function visit(dir: string, dirRel: string, layers: IgnoreLayer[]): boolean {
       let dirents: Dirent[];
       try {
         dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
@@ -193,18 +228,21 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
         walk.lostSubtree = true;
         return false;
       }
-      const layer = readIgnoreLayer(dir);
+      const layer = readIgnoreLayer(dir, dirRel.length);
+      // Copied only when this directory contributes a layer; otherwise the same
+      // array descends unchanged, since a layer's anchor offset does not move.
       const dirLayers = layer ? [...layers, layer] : layers;
 
       for (const entry of dirents) {
-        const fullPath = join(dir, entry.name);
         if (entry.isDirectory()) {
-          if (SKIP_DIRS.has(entry.name) || isIgnored(dirLayers, fullPath, true)) continue;
+          if (SKIP_DIRS.has(entry.name) || isIgnored(dirLayers, dirRel, entry.name, true)) continue;
+          const fullPath = join(dir, entry.name);
           // A nested `.git` marks ANOTHER repo's checkout (a linked worktree
           // under .claude/worktrees/, a nested clone, a submodule) — its files
           // belong to THAT project's tree, never this one's.
           if (existsSync(join(fullPath, '.git'))) continue;
-          if (visit(fullPath, dirLayers)) return true;
+          const childRel = dirRel === '' ? entry.name : `${dirRel}/${entry.name}`;
+          if (visit(fullPath, childRel, dirLayers)) return true;
           continue;
         }
         // Dirent types are lstat-based, so a symlink is neither a file nor a
@@ -212,10 +250,10 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
         // followed (see the fidelity-gaps note above).
         if (!entry.isFile()) continue;
         if (entry.name === '.git') continue;
-        if (isIgnored(dirLayers, fullPath, false)) continue;
+        if (isIgnored(dirLayers, dirRel, entry.name, false)) continue;
 
         if (files.length >= MAX_FILES) return true;
-        const relPath = relative(root, fullPath).split(sep).join('/');
+        const relPath = dirRel === '' ? entry.name : `${dirRel}/${entry.name}`;
         files.push({
           path: relPath,
           name: basename(entry.name),
@@ -226,7 +264,7 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
       return false;
     }
 
-    const truncated = visit(root, []) || walk.lostSubtree || isLinkedCheckout;
+    const truncated = visit(root, '', []) || walk.lostSubtree || isLinkedCheckout;
     if (files.length === 0) return undefined;
     files.sort((a, b) => a.path.localeCompare(b.path));
     return { files, truncated, scannedAt: new Date().toISOString() };

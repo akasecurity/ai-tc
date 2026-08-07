@@ -1,6 +1,8 @@
 {
   // The repo-root sources no workspace package owns: the vitest no-network guard,
-  // the CI egress probe, and lint:root's own ESLint config (a root-level file, not
+  // the shared adversarial fixture corpus (whose whole point is that three
+  // packages' walkers drive the SAME hostile trees, so it can live inside none of
+  // them), the CI egress probe, and lint:root's own ESLint config (a root-level file, not
   // a directory — it carries `// @ts-check`, which is decorative unless something
   // runs tsc over it). Every package's tsconfig covers only its own tree, so
   // without this those files would be the only .ts/.mjs in the repo that nothing
@@ -33,5 +35,5 @@
     "declarationMap": false,
     "types": ["node"]
   },
-  "include": ["test/setup", "tools/ci", "eslint.root.config.mjs"]
+  "include": ["test/setup", "test/fixtures", "tools/ci", "eslint.root.config.mjs"]
 }

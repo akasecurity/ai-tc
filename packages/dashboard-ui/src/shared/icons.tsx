@@ -478,6 +478,12 @@ export const DownloadIcon: IconComponent = (props) => (
   </svg>
 );
 
+export const ExpandIcon: IconComponent = (props) => (
+  <svg {...base} {...props}>
+    <path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" />
+  </svg>
+);
+
 // ─── Operations dashboard chrome ─────────────────────────────────────────────
 
 export const FlowIcon: IconComponent = (props) => (

@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -125,6 +126,31 @@ describe('FileKeyProvider', () => {
 
     expect(statSync(keyFile()).mode & 0o777).toBe(0o600);
   });
+
+  it.skipIf(!POSIX_MODES)(
+    'refuses a symlinked key path with a CODED error, naming the link',
+    async () => {
+      // The publish finds the path occupied (link never replaces a name) and the
+      // re-read follows the dangling link to nothing, so no keyring can be
+      // adopted. The error must carry a string `code`: the surfaces that render
+      // key failures treat a codeless one as "the file is corrupt, delete it",
+      // and the blast radius here is every pointer sealed under the lost epoch —
+      // ciphertext nothing can reopen, not merely a grant that stops matching.
+      const target = join(dir, 'elsewhere.key');
+      symlinkSync(target, keyFile());
+
+      const err = await new FileKeyProvider(dir).loadOrCreate().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeDefined();
+      expect((err as { code?: unknown }).code).toBe('key-unclaimable');
+      expect((err as Error).message).toMatch(/symlink/);
+      // Refused without creating what it pointed at.
+      expect(existsSync(target)).toBe(false);
+    },
+  );
 
   it('returns the same material on a second load rather than re-minting', async () => {
     const first = await new FileKeyProvider(dir).loadOrCreate();

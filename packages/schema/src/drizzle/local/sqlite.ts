@@ -745,6 +745,15 @@ export const secretVault = sqliteTable(
     // One row per value — this is what makes the pointer deterministic and the
     // reuse count meaningful.
     uniqueIndex('uq_secret_vault_value').on(t.valueFingerprint),
+    // The dashboard inventory's keyset page: newest-first by last_seen, broken
+    // by the primary key. Without it every page full-scans the table and sorts
+    // it in a temp B-tree, so paging bounds the payload but not the query.
+    index('idx_secret_vault_last_seen').on(t.lastSeen, t.pointerId),
+    // The reuse list's keyset page, ranked by how often a value recurs. Same
+    // argument as above — it is a second ORDER BY over the same table, and
+    // without its own index it lands in exactly the temp-B-tree scan the line
+    // above exists to avoid.
+    index('idx_secret_vault_reuse').on(t.occurrenceCount, t.pointerId),
   ],
 );
 
@@ -796,5 +805,20 @@ export const secretVaultDeref = sqliteTable(
     index('idx_secret_vault_deref_pointer').on(t.pointerId),
     // The audit view's default read: model crossings newest-first.
     index('idx_secret_vault_deref_reason_at').on(t.reason, t.at),
+    // The trail's keyset page. The (reason, at) index above does not serve it:
+    // its left prefix is `reason`, and the default read excludes reasons rather
+    // than selecting them, so ordering across the rest still needs this one.
+    // Still required: it serves the page with the batched toggle ON, where the
+    // partial index below does not apply.
+    index('idx_secret_vault_deref_at').on(t.at, t.id),
+    // The same page with the toggle OFF, which is the default. The index above
+    // orders that read but does not filter it, and `display`/`view-render` are
+    // the high-volume reasons — so the walk descends `at`, fetches each row and
+    // discards most of them on `reason`. Matching the list's own predicate makes
+    // it index-only: measured 0.293 ms -> 0.032 ms over 100k rows at a 2%
+    // surfaced ratio, first page and deep page alike.
+    index('idx_secret_vault_deref_signal')
+      .on(t.at, t.id)
+      .where(sql`${t.reason} NOT IN ('display', 'view-render')`),
   ],
 );

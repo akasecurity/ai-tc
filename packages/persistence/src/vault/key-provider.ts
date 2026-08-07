@@ -30,7 +30,21 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { DATA_FILE_MODE, ensureDataDirSync } from '../paths.ts';
+import {
+  classifyOccupant,
+  createOwnerOnlyFileSync,
+  DATA_FILE_MODE,
+  ensureDataDirSync,
+  KeyUnclaimableError,
+  type Occupant,
+} from '../paths.ts';
+
+// The keyring's wording for the three states classifyOccupant tells apart.
+const VAULT_OCCUPANT_REASON: Record<Occupant['kind'], string> = {
+  symlink: 'the path is a symlink; remove it so a keyring can be created',
+  gone: 'the path was occupied but holds no keyring (removed while it was being created)',
+  unknown: 'the path is occupied but cannot be inspected; check the permissions on its directory',
+};
 
 export interface VaultKeyMaterial {
   material: Buffer;
@@ -336,33 +350,36 @@ export class FileKeyProvider implements KeyProvider {
   }
 
   /**
-   * First mint: the keyring is created at its FINAL path with a
-   * creation-exclusive write, so two processes racing a fresh machine cannot
-   * each mint a different epoch 1 — with tmp + rename the loser's replace
-   * would orphan everything the winner had already sealed. On EEXIST the
-   * loser re-reads and adopts the winner's keyring; it minted nothing.
-   * Atomic replace is unnecessary here: nothing can be mid-read of a file
-   * that did not exist, and a torn exclusive write parses as corrupt on the
-   * next read and fails secure rather than being re-minted over.
+   * First mint: the keyring is CREATED, never replaced, so two processes racing
+   * a fresh machine cannot each mint a different epoch 1 — with tmp + rename
+   * the loser's replace would orphan everything the winner had already sealed.
+   * The loser re-reads and adopts the winner's keyring; it minted nothing.
+   *
+   * `createOwnerOnlyFileSync` publishes by link rather than by an exclusive open
+   * at the final path, so the keyring never exists at zero length: a reader —
+   * including the loser, re-reading in order to adopt — sees the file absent or
+   * whole, and never mistakes a live keyring for a corrupt one. A corrupt file
+   * still throws from the parse and is never re-minted over.
    */
   #createExclusive(): Keyring {
     ensureDataDirSync(this.#keysDir);
     const keyring = mintKeyring();
-    try {
-      writeFileSync(this.filePath, `${serializeKeyring(keyring)}\n`, {
-        flag: 'wx',
-        mode: DATA_FILE_MODE,
-      });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw asError(err);
-      const winner = this.#read();
-      if (!winner) {
-        throw new Error('vault: key file vanished during first mint', { cause: err });
-      }
-      return winner;
+    if (createOwnerOnlyFileSync(this.filePath, `${serializeKeyring(keyring)}\n`)) return keyring;
+
+    const winner = this.#read();
+    if (!winner) {
+      // Same type, and for the same reason, as the fingerprint key's first mint:
+      // a codeless error is read as "the file is corrupt, delete it", and the
+      // blast radius here is larger — a discarded epoch does not orphan a grant,
+      // it leaves ciphertext that nothing can ever open.
+      const occupant = classifyOccupant(this.filePath);
+      throw new KeyUnclaimableError(
+        `vault: cannot create a key file at ${this.filePath} — ${VAULT_OCCUPANT_REASON[occupant.kind]}`,
+        occupant.cause,
+      );
     }
     tightenFileMode(this.filePath);
-    return keyring;
+    return winner;
   }
 
   /**

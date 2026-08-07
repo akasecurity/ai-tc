@@ -2,6 +2,10 @@
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
   Button,
+  Pagination,
+  PaginationNext,
+  PaginationPrevious,
+  PaginationStatus,
   Table,
   TableBody,
   TableCell,
@@ -20,6 +24,21 @@ export interface VaultInventoryViewProps {
   onReveal?: (pointerId: string) => void;
   // Revoke the active reveal-to-model grant covering the row's value.
   onRevoke?: (grantId: string) => void;
+  // Whether the store holds a page after / before the one passed in.
+  hasNextPage?: boolean;
+  hasPreviousPage?: boolean;
+  /**
+   * Step the window. Absent ⇒ the caller cannot paginate, and the truncation
+   * notice is shown instead — which is the honest thing to render when there is
+   * more data and no way to reach it.
+   */
+  onNextPage?: (() => void) | undefined;
+  onPreviousPage?: (() => void) | undefined;
+  loadingNextPage?: boolean;
+  // 1-based position of this window's first row in the whole list.
+  pageStart?: number | undefined;
+  // Vaulted values across the whole store, not just this page.
+  total?: number | undefined;
 }
 
 const COLUMN_CLASS: Record<string, string> = {
@@ -36,8 +55,28 @@ const COLUMN_CLASS: Record<string, string> = {
  * the value's POINTER has been written (its sightings): pointers are
  * deterministic, so anyone who can read those locations sees the correlation.
  */
-export function VaultInventoryView({ entries, onReveal, onRevoke }: VaultInventoryViewProps) {
-  if (entries.length === 0) {
+export function VaultInventoryView({
+  entries,
+  onReveal,
+  onRevoke,
+  hasNextPage = false,
+  hasPreviousPage = false,
+  onNextPage,
+  onPreviousPage,
+  loadingNextPage = false,
+  pageStart,
+  total,
+}: VaultInventoryViewProps) {
+  // An empty page the reader PAGED INTO keeps its pager, because Previous is the
+  // only way back out — a later page can come back empty (a repeat detection
+  // bumps an unwalked row above the cursor, and a purge empties every later
+  // page), and returning the bare empty state there strands the reader with no
+  // control but a reload. A first page with nothing on it is the fresh-install
+  // state and keeps the clean standalone message: gating on the pager's own
+  // reachability rather than on `onNextPage` is what separates the two, since
+  // the dashboard always wires `onNextPage`.
+  const isEmpty = entries.length === 0;
+  if (isEmpty && !hasPreviousPage && !hasNextPage) {
     return (
       <div className="rounded-xl border border-border bg-surface py-10 text-center text-sm text-text-3">
         Nothing vaulted yet — values land here when a redact policy fires with vault consent
@@ -48,29 +87,63 @@ export function VaultInventoryView({ entries, onReveal, onRevoke }: VaultInvento
   const hasActions = onReveal !== undefined || onRevoke !== undefined;
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface p-4">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Value</TableHead>
-            <TableHead className={COLUMN_CLASS.occurrences}>Occurrences</TableHead>
-            <TableHead className={COLUMN_CLASS.firstSeen}>First seen</TableHead>
-            <TableHead className={COLUMN_CLASS.lastSeen}>Last seen</TableHead>
-            <TableHead className={COLUMN_CLASS.grant}>Grant</TableHead>
-            {hasActions ? <TableHead className={COLUMN_CLASS.action}>Actions</TableHead> : null}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {entries.map((entry) => (
-            <VaultInventoryRow
-              key={entry.pointerId}
-              entry={entry}
-              hasActions={hasActions}
-              onReveal={onReveal}
-              onRevoke={onRevoke}
-            />
-          ))}
-        </TableBody>
-      </Table>
+      {isEmpty ? (
+        <div className="py-10 text-center text-sm text-text-3">
+          These rows moved while you were reading. Step back to see the rest.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Value</TableHead>
+              <TableHead className={COLUMN_CLASS.occurrences}>Occurrences</TableHead>
+              <TableHead className={COLUMN_CLASS.firstSeen}>First seen</TableHead>
+              <TableHead className={COLUMN_CLASS.lastSeen}>Last seen</TableHead>
+              <TableHead className={COLUMN_CLASS.grant}>Grant</TableHead>
+              {hasActions ? <TableHead className={COLUMN_CLASS.action}>Actions</TableHead> : null}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {entries.map((entry) => (
+              <VaultInventoryRow
+                key={entry.pointerId}
+                entry={entry}
+                hasActions={hasActions}
+                onReveal={onReveal}
+                onRevoke={onRevoke}
+              />
+            ))}
+          </TableBody>
+        </Table>
+      )}
+      {onNextPage ? (
+        <Pagination>
+          <PaginationPrevious
+            disabled={!hasPreviousPage || loadingNextPage}
+            onClick={onPreviousPage}
+          />
+          <PaginationStatus>
+            {total === undefined || pageStart === undefined
+              ? `${String(entries.length)} shown`
+              : // An empty page has no range to name — `pageStart + length - 1`
+                // renders it backwards ("51–50 of 51").
+                isEmpty
+                ? `0 of ${String(total)} values`
+                : `${String(pageStart)}–${String(pageStart + entries.length - 1)} of ${String(total)} values`}
+          </PaginationStatus>
+          <PaginationNext
+            disabled={!hasNextPage || loadingNextPage}
+            loading={loadingNextPage}
+            onClick={onNextPage}
+          />
+        </Pagination>
+      ) : (
+        hasNextPage && (
+          <p className="mt-4 text-center text-xs text-text-3">
+            Showing the first {entries.length} values — the rest are in the store.
+          </p>
+        )
+      )}
     </div>
   );
 }

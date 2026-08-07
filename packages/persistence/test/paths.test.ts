@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import fsModule from 'node:fs';
 import {
   chmodSync,
   existsSync,
@@ -18,10 +19,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  classifyOccupant,
+  createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   dbSidecars,
   ensureDataDirSync,
+  KeyUnclaimableError,
   tightenDir,
   tightenFile,
   tightenPerms,
@@ -406,5 +410,183 @@ describe('writeOwnerOnlyFileSync', () => {
     } finally {
       execFileSync('chflags', ['nouchg', base]);
     }
+  });
+});
+
+describe('createOwnerOnlyFileSync', () => {
+  // The exclusive twin of writeOwnerOnlyFileSync, and the one primitive both
+  // machine-local keys publish their FIRST copy through. Its whole job is two
+  // properties at once — exactly one caller wins, and no reader ever sees a
+  // partial file — so both are pinned here rather than in either key's suite.
+  const file = (): string => join(base, 'exception.key');
+
+  it('creates the file and reports that it won', () => {
+    expect(createOwnerOnlyFileSync(file(), 'first\n')).toBe(true);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('refuses an occupied path and leaves the incumbent byte-for-byte', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+
+    expect(createOwnerOnlyFileSync(file(), 'second\n')).toBe(false);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('publishes only a COMPLETE file — the final path is never seen empty', () => {
+    // The reason this exists rather than a bare exclusive open at the final
+    // path: `open(O_CREAT|O_EXCL)` publishes an empty inode and fills it on the
+    // next syscall, so a concurrent reader can take a live key for a corrupt
+    // one. Watching every intermediate state is what distinguishes the two.
+    //
+    // `intercepts` is the positive control, and it carries the whole case. The
+    // size assertion below reads a FILTERED array, so an empty `seen` satisfies
+    // it — and an empty `seen` is precisely what a watcher that never fired
+    // produces. Nothing here makes the write route through `fs.writeSync`; that
+    // is an implementation detail of `writeFileSync` on the current runtime, so
+    // a Node release that stops routing through it would leave every assertion
+    // green while this watched nothing at all. Counting the interceptions is
+    // what turns that silence into a failure. On the healthy tmp+link path the
+    // count is non-zero while `seen` stays empty — the write lands on the tmp,
+    // so the final path legitimately does not exist yet to be measured.
+    const seen: number[] = [];
+    let intercepts = 0;
+    const target = file();
+    const realWriteSync = fsModule.writeSync;
+    fsModule.writeSync = ((...args: Parameters<typeof realWriteSync>) => {
+      intercepts += 1;
+      if (existsSync(target)) seen.push(statSync(target).size);
+      return realWriteSync(...args);
+    }) as typeof realWriteSync;
+    try {
+      createOwnerOnlyFileSync(target, 'complete\n');
+    } finally {
+      fsModule.writeSync = realWriteSync;
+    }
+
+    expect(intercepts).toBeGreaterThan(0);
+    expect(seen.filter((size) => size === 0)).toEqual([]);
+    expect(readFileSync(target, 'utf8')).toBe('complete\n');
+  });
+
+  it('leaves no tmp behind on either outcome', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+    createOwnerOnlyFileSync(file(), 'second\n');
+
+    expect(readdirSync(base).sort()).toEqual(['exception.key']);
+  });
+
+  it('leaves nothing at the final path when the write itself fails', () => {
+    // A failed publish must not strand a half-made file at the name every later
+    // reader resolves — that would brick the key permanently.
+    const dirAtPath = join(base, 'exception.key');
+    mkdirSync(dirAtPath);
+
+    expect(() => createOwnerOnlyFileSync(join(dirAtPath, 'x', 'y'), 'data\n')).toThrow();
+    expect(readdirSync(dirAtPath)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('writes the file owner-only', () => {
+    createOwnerOnlyFileSync(file(), 'data\n');
+
+    expect(mode(file())).toBe(DATA_FILE_MODE);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink at the final path', () => {
+    // link() will not replace an existing name, and the target is never created
+    // through it — so a planted link cannot capture the key.
+    const victim = join(base, 'victim');
+    symlinkSync(victim, file());
+
+    expect(createOwnerOnlyFileSync(file(), 'PWNED\n')).toBe(false);
+    expect(existsSync(victim)).toBe(false);
+  });
+});
+
+describe('classifyOccupant', () => {
+  // Both machine-local keys use this to word the failure when a publish found
+  // the path occupied and the re-read then found nothing there. The three states
+  // carry different remedies, so collapsing any two sends operators after the
+  // wrong thing — which is what "cannot inspect" reported as "was removed" did.
+  it('names a symlink, so the remedy can be "remove it"', () => {
+    const link = join(base, 'exception.key');
+    symlinkSync(join(base, 'nowhere'), link);
+
+    expect(classifyOccupant(link)).toEqual({ kind: 'symlink' });
+  });
+
+  it('reports an absent path as gone, carrying no cause', () => {
+    // ENOENT is the removal itself, not a failed lookup: the caller is telling
+    // us the path WAS occupied, so its absence now is the whole diagnosis.
+    const result = classifyOccupant(join(base, 'exception.key'));
+
+    expect(result).toEqual({ kind: 'gone' });
+    expect(result.cause).toBeUndefined();
+  });
+
+  it('reports a real file as gone — the path changed under the read', () => {
+    const target = join(base, 'exception.key');
+    writeFileSync(target, 'data\n');
+
+    expect(classifyOccupant(target)).toEqual({ kind: 'gone' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reports an unreadable path as unknown, and keeps the errno',
+    (ctx) => {
+      // The case the old boolean folded into "was removed". It is the one state
+      // where the path may be perfectly intact and the lookup is what failed.
+      const dir = join(base, 'locked');
+      mkdirSync(dir);
+      const target = join(dir, 'exception.key');
+      writeFileSync(target, 'data\n');
+      chmodSync(dir, 0o000);
+
+      let readable = true;
+      try {
+        lstatSync(target);
+      } catch {
+        readable = false;
+      }
+      if (readable) {
+        chmodSync(dir, 0o700);
+        ctx.skip('lstat still succeeds under a 0000 dir (running as root?)');
+      }
+
+      const result = classifyOccupant(target);
+      chmodSync(dir, 0o700);
+
+      expect(result.kind).toBe('unknown');
+      expect((result.cause as NodeJS.ErrnoException | undefined)?.code).toBe('EACCES');
+    },
+  );
+});
+
+describe('KeyUnclaimableError', () => {
+  it('carries a string code, so a renderer never reads it as a corrupt file', () => {
+    // Both key surfaces branch on `typeof code === 'string'` to decide whether
+    // to advise deleting the file. A codeless error takes the destructive
+    // branch, which here would discard a key the winner had just published.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(err.code).toBe('key-unclaimable');
+    expect(typeof err.code).toBe('string');
+  });
+
+  it('omits `cause` entirely when there is none', () => {
+    // `{ cause: undefined }` defines the property anyway, so the error would
+    // answer `'cause' in err` while carrying nothing — a diagnosis that reads as
+    // captured-then-lost rather than never-taken.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(false);
+  });
+
+  it('keeps a cause when given one', () => {
+    const underlying = new Error('EACCES');
+
+    const err = new KeyUnclaimableError('occupied', underlying);
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(true);
+    expect(err.cause).toBe(underlying);
   });
 });

@@ -132,12 +132,15 @@ describe('the project walk terminates on a hostile tree', () => {
     // anywhere from ~130 to ~16,000 depending on the long-path setting.
     const chain = deepChain(r);
     // GATED, not asserted: `created: false` is how the corpus reports a shape
-    // this platform refused to build (no `process.chdir` under a worker-thread
-    // pool, a filesystem that rejects the 255-character names). Asserting it
-    // turns "cannot be built here" into a failure of the walker, which is not
-    // what went wrong. The addressable half below is still real either way, so
-    // the skip costs only the past-the-ceiling assertion — which is itself
-    // already gated on `chain.unaddressable`.
+    // this platform refused to build, and turning that into a failed assertion
+    // would blame the walker for something the filesystem decided.
+    //
+    // It reports only whether the ADDRESSABLE chain exists, which is all the
+    // assertions below need. Failing to push past the ceiling does not retract
+    // it — that half is reported through `unaddressable`, which gates the
+    // truncation assertion at the end on its own. Collapsing the two is what
+    // made this whole case skip on Windows, where the chain builds fine and only
+    // the `chdir` past the ceiling is refused.
     if (!chain.created) ctx.skip(chain.reason);
     expect(
       chain.addressable,
@@ -256,6 +259,7 @@ describe('the project walk stays inside its budget', () => {
       label: '100 files',
       budgetMs: 200,
       files: 100,
+      heavy: false,
       build: (r: HostileRepo) => {
         flatFiles(r, 100);
       },
@@ -264,6 +268,7 @@ describe('the project walk stays inside its budget', () => {
       label: '5k files',
       budgetMs: 1_000,
       files: 5_000,
+      heavy: false,
       build: (r: HostileRepo) => {
         flatFiles(r, 5_000);
       },
@@ -272,6 +277,9 @@ describe('the project walk stays inside its budget', () => {
       label: '20k files (the cap)',
       budgetMs: 3_000,
       files: 20_000,
+      // See the skip below: the 20k-file BUILD, not the walk, is what blows the
+      // per-test timeout on the Windows runner.
+      heavy: true,
       build: (r: HostileRepo) => {
         flatFiles(r, 20_000);
       },
@@ -283,13 +291,14 @@ describe('the project walk stays inside its budget', () => {
       label: '1k sibling directories each with a .gitignore',
       budgetMs: 3_000,
       files: 3_000,
+      heavy: false,
       build: (r: HostileRepo) => {
         gitignorePerDirectory(r, 1_000);
       },
     }, // 39 ms
   ] as const;
 
-  it.each(ROWS.map((row) => [row.label, row] as const))('%s', (_label, row) => {
+  function runRow(row: (typeof ROWS)[number]): void {
     const r = fresh();
     row.build(r);
 
@@ -300,5 +309,23 @@ describe('the project walk stays inside its budget', () => {
 
     expect(files, "the walk did not return this row's whole tree").toBe(row.files);
     expect(ms).toBeLessThan(row.budgetMs);
+  }
+
+  const asCases = (rows: readonly (typeof ROWS)[number][]) =>
+    rows.map((row) => [row.label, row] as const);
+
+  it.each(asCases(ROWS.filter((row) => !row.heavy)))('%s', (_label, row) => {
+    runRow(row);
+  });
+
+  // Skipped on Windows, for the reason the file-cap case above states: the tree
+  // costs more to BUILD there than the whole test is allowed to take, and
+  // `fastestOf` walks it four times on top of that — measured at ~41 s against a
+  // 20 s timeout. What this row asserts is a property of the walk, not of the
+  // filesystem underneath it, so it is proven on the legs that can afford the
+  // fixture rather than by widening a timeout until the slowest runner fits.
+  const heavyRows = ROWS.filter((row) => row.heavy);
+  it.skipIf(process.platform === 'win32').each(asCases(heavyRows))('%s', (_label, row) => {
+    runRow(row);
   });
 });

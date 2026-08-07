@@ -283,12 +283,29 @@ export interface DeepChain extends ShapeOutcome {
  */
 export function deepChain(
   repo: HostileRepo,
-  { limit = 4_096, maxBeyond = 160 }: { limit?: number; maxBeyond?: number } = {},
+  {
+    limit = 4_096,
+    maxBeyond = 160,
+    budgetMs = 4_000,
+  }: { limit?: number; maxBeyond?: number; budgetMs?: number } = {},
 ): DeepChain {
   // Build down to the ceiling with absolute paths — cheap, one syscall a level.
+  //
+  // Bounded by TIME as well as by count, because `limit` alone is not a bound on
+  // cost anywhere the path ceiling is high: a Windows runner with long paths
+  // enabled accepts thousands of levels, and creating them one `mkdir` at a time
+  // on NTFS is where the wall clock goes. The depth reached is reported, and a
+  // caller asserts a floor on it rather than an exact figure — which it has to
+  // do regardless, since the ceiling is a platform constant nobody controls.
+  const startedAt = performance.now();
   let addressable = 0;
   let deepest = repo.root;
+  let budgetSpent = false;
   for (let i = 0; i < limit; i++) {
+    if (performance.now() - startedAt > budgetMs) {
+      budgetSpent = true;
+      break;
+    }
     const next = join(deepest, 'd');
     try {
       mkdirSync(next);
@@ -300,8 +317,8 @@ export function deepChain(
   }
 
   const base: DeepChain = {
-    created: false,
-    reason: BUILT,
+    created: addressable > 0,
+    reason: addressable > 0 ? BUILT : 'no directory could be created under the repo root',
     addressable,
     deepest,
     beyond: 0,
@@ -327,6 +344,16 @@ export function deepChain(
 
   if (typeof process.chdir !== 'function') {
     return { ...base, reason: 'process.chdir is unavailable in a worker thread' };
+  }
+  if (budgetSpent) {
+    // The chain stopped on the clock rather than on the ceiling, so it is not AT
+    // the ceiling and nothing can be pushed past it. The addressable part is
+    // still real and `unaddressable` stays false, which is what gates the
+    // truncation assertion.
+    return {
+      ...base,
+      reason: `stopped at depth ${String(addressable)} on the ${String(budgetMs)}ms build budget`,
+    };
   }
 
   const LONG = 'x'.repeat(255);
@@ -385,7 +412,7 @@ export function deepChain(
   };
 
   return {
-    created: failure === undefined,
+    created: base.created,
     reason: failure ?? BUILT,
     addressable,
     deepest,

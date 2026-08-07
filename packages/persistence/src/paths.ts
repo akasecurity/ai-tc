@@ -1,4 +1,13 @@
-import { chmodSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { threadId } from 'node:worker_threads';
 
 // The shared SQLite store holds prompt/file content and masked findings, so the
 // directory is owner-only and the DB files are written 0600. This module is the
@@ -142,4 +151,180 @@ export function writeOwnerOnlyFileSync(file: string, data: string): void {
     }
   }
   tightenFile(file);
+}
+
+/**
+ * What is sitting at a path that a creation-exclusive publish found occupied but
+ * could not then read back. An lstat failure is reported as 'unknown' rather
+ * than folded into 'gone': telling an operator the file "was removed" when the
+ * truth is that its directory cannot be read sends them looking for the wrong
+ * thing, and the lstat error is the one fact that narrows it — so it travels
+ * with the verdict and ends up as the thrown error's `cause`.
+ *
+ * Shared by both machine-local keys, which classify the same three states and
+ * differ only in the wording they put on them.
+ */
+export type Occupant =
+  { kind: 'symlink' | 'gone'; cause?: undefined } | { kind: 'unknown'; cause: unknown };
+
+export function classifyOccupant(file: string): Occupant {
+  try {
+    if (lstatSync(file).isSymbolicLink()) return { kind: 'symlink' };
+    // lstat sees a non-symlink at a path the read just reported ENOENT for, so
+    // whatever occupied it has already been replaced — same remedy as an
+    // outright removal, and the same message.
+    return { kind: 'gone' };
+  } catch (err) {
+    // ENOENT is the removal itself, not a failure to look: the caller found the
+    // path occupied and by now it is not. Only a lookup that failed for some
+    // OTHER reason is genuinely unknown, and that error is the one fact worth
+    // carrying — folding it into 'gone' is what sent operators after a file
+    // that was never missing.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'gone' };
+    return { kind: 'unknown', cause: err };
+  }
+}
+
+/**
+ * Raised when a creation-exclusive publish lost the race but the winner cannot
+ * be read back afterwards. It lives beside createOwnerOnlyFileSync rather than
+ * in either key's module because BOTH machine-local keys — the exception
+ * fingerprint key and the vault keyring — publish their first copy through that
+ * one primitive, and so fail through one type.
+ *
+ * It carries a `code` because the surfaces that render key failures branch on
+ * one: a codeless error is treated as a CORRUPT key file, whose remedy is
+ * deleting it. Doing that here would destroy everything written under the
+ * perfectly good key the winner had just published — every exception grant on
+ * the machine, or every pointer sealed under a vault epoch.
+ */
+export class KeyUnclaimableError extends Error {
+  readonly code = 'key-unclaimable';
+  // `cause` is installed only when there IS one. Passing { cause: undefined }
+  // defines the property anyway, so an error carrying nothing would still answer
+  // `'cause' in err` — a present-but-empty field reads as a diagnosis that was
+  // captured and then lost, which is worse than its plain absence.
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'KeyUnclaimableError';
+  }
+}
+
+/**
+ * Owner-only CREATE of `file`: publish it only if nothing is there already.
+ * Returns false when something already occupies the path — the caller adopts
+ * what is there rather than replacing it. The caller must have created the
+ * parent dir (ensureDataDirSync).
+ *
+ * true and false are not the only outcomes. Anything that is neither "won" nor
+ * "occupied" THROWS, and throws the RAW errno — never KeyUnclaimableError, which
+ * this function does not raise. A directory sitting at the tmp path is the
+ * reachable example: the `wx` create fails EEXIST and that EEXIST propagates as
+ * a plain Error, even though the FINAL path was free. So a caller reading only
+ * the boolean cannot tell "someone else holds it" from "this store is broken";
+ * distinguishing those means catching.
+ *
+ * This is the exclusive twin of writeOwnerOnlyFileSync, and it exists because
+ * neither of the two obvious primitives has both properties a first-time
+ * publisher needs:
+ *
+ *   - `rename` is atomic but REPLACES, so two writers each publish their own
+ *     content and the last one wins.
+ *   - `open(O_CREAT|O_EXCL)` at the final path picks one winner, but publishes
+ *     an EMPTY inode and fills it on the next syscall. A concurrent reader — in
+ *     particular the loser, re-reading in order to adopt — can read zero bytes
+ *     and mistake a live file for a corrupt one. It also leaves that empty file
+ *     behind for good if the write never lands.
+ *
+ * `link` has both: it publishes a name for an inode that is ALREADY complete,
+ * and it fails EEXIST rather than replacing. So a reader sees the file absent or
+ * whole, and exactly one caller wins.
+ *
+ * The tmp is per-thread and removed in a `finally`, so a failed or interrupted
+ * write leaves nothing behind. On the `link` path it also leaves no half-made
+ * file at the FINAL path, because the only thing that ever appears there is a
+ * name for an inode that is already complete. The tmp create uses `wx`, which
+ * refuses to follow a symlink; `link` refuses an occupied final path whether it
+ * holds a file or a symlink.
+ *
+ * Hard links are unavailable on a few filesystems (FAT/exFAT, some network and
+ * FUSE mounts). There the publish falls back to an exclusive open at the final
+ * path, which keeps the one-winner guarantee but gives up BOTH of the properties
+ * the paragraph above states: a concurrent reader can see the file at zero
+ * length, and an interrupted write strands a TRUNCATED file at the final name —
+ * the corrupt-file state whose documented remedy is deleting it. Neither is
+ * avoidable while still publishing on a filesystem that cannot hard-link, so the
+ * fallback is the weaker guarantee taken deliberately, not an oversight.
+ *
+ * Which of the two routes ran is not observable from the return value, and does
+ * not need to be: an occupied final path answers false either way, because the
+ * fallback's `wx` create reports EEXIST there exactly as `link` does. Only the
+ * two properties above are given up on that path — never the one-winner answer.
+ */
+export function createOwnerOnlyFileSync(file: string, data: string): boolean {
+  // Per THREAD, not just per process. A worker thread shares its parent's pid,
+  // so a pid-only name makes two concurrent callers collide on the tmp — one
+  // fails to create it, and the other has its in-flight tmp deleted underneath
+  // it by the loser's cleanup. Still deterministic, so a same-thread tmp left
+  // by an earlier crash is reclaimed rather than accumulating.
+  const tmp = `${file}.${String(process.pid)}.${String(threadId)}.new`;
+  try {
+    rmSync(tmp, { force: true });
+  } catch {
+    // best-effort: unlink removes a leftover/symlinked tmp without touching its
+    // target; the exclusive `wx` create below still refuses to follow a symlink.
+  }
+  let created: boolean;
+  try {
+    writeFileSync(tmp, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    created = publishByLink(tmp, file, data);
+  } finally {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // best-effort cleanup — never mask the original write/link error.
+    }
+  }
+  if (created) tightenFile(file);
+  return created;
+}
+
+// Errno codes meaning "this filesystem cannot hard-link at all", as opposed to
+// "this particular link failed". There is no single canonical one — Linux vfat
+// reports EPERM, macOS on exFAT and several FUSE/SMB mounts report ENOTSUP (or
+// the EOPNOTSUPP spelling, a distinct errno there), and Windows on FAT32
+// surfaces EINVAL.
+//
+// This set is a JUDGEMENT CALL rather than a derivation: it is the codes seen in
+// practice, and it is not exhaustive. Getting it wrong is not cosmetic — a code
+// missing here makes createOwnerOnlyFileSync throw on a filesystem where the
+// tmp+rename write it replaced would have succeeded, so the key cannot be minted
+// at all. An uncovered code belongs in this set, not worked around at a caller.
+//
+// EXDEV and EMLINK are deliberately ABSENT despite naming link failures: the tmp
+// is a sibling of the final path, so there is no cross-device case, and the link
+// count goes 1 -> 2, so LINK_MAX is unreachable. Either arriving here would mean
+// a bug in this function, and throwing is the right answer to that.
+const LINK_UNSUPPORTED = new Set(['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EINVAL']);
+
+// Link `tmp` into place, or say the path was taken. EEXIST is the answer this
+// is asking for, not a failure. Where the filesystem cannot hard-link at all —
+// and only there — fall back to creating the final path exclusively and writing
+// it in place.
+function publishByLink(tmp: string, file: string, data: string): boolean {
+  try {
+    linkSync(tmp, file);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return false;
+    if (!LINK_UNSUPPORTED.has(code ?? '')) throw err;
+  }
+  try {
+    writeFileSync(file, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw err;
+  }
 }

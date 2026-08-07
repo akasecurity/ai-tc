@@ -23,6 +23,11 @@ plugins/browser-extension/native-host/
 /audit-report.md
 /artifact-audit-report.md
 
+# `vitest bench --outputJson`, one per package with a bench/ directory. A
+# measurement of the machine it ran on, so it is a workflow artifact rather
+# than something to commit.
+bench-results.json
+
 # Per-developer Claude Code settings (plugin enablement etc.) stay local.
 .claude/settings.local.json
 

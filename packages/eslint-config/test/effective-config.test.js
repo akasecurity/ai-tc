@@ -2051,6 +2051,10 @@ describe('ignore flags subtract from what an invocation covers', () => {
     // would pass on a predicate that had stopped seeing one of them.
     const REAL_SHAPES = [
       ['eslint src test *.config.*', ['src', 'test']],
+      // A package carrying a `bench/` directory. A benchmark imports product
+      // code and test helpers, so it is source like any other and sits behind
+      // the same bans.
+      ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
       ['eslint src *.config.*', ['src']],

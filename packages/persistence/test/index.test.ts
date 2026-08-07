@@ -17,6 +17,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'EXCEPTION_KEY_FILENAME',
   'FileKeyProvider',
   'FileLockError',
+  'KeyUnclaimableError',
   'KeychainKeyProvider',
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
   'SETTINGS_FILENAME',

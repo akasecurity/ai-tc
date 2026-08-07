@@ -37,6 +37,15 @@ import { resolveProjectFiles } from '../../src/project-files.ts';
 // FASTEST of several passes (noise only ever adds time, so the minimum is the
 // closest a loaded machine gets to the code's own cost) and the budgets carry
 // 76x or more headroom over the figures the bench rows measure.
+//
+// THE PER-TEST TIMEOUT IS NOT THE GATE, and the two must not be conflated. A
+// row's wall clock is dominated by BUILDING its tree — thousands of individual
+// `writeFileSync` calls, which cost an order of magnitude more on the Windows
+// runner than here — while what it asserts is `fastestOf`, which times the walk
+// alone. Leaving both under one 20 s budget makes the fixture the binding
+// constraint, so a row goes red for being slow to SET UP and the failure reads
+// as a slow walk. These carry a generous timeout that catches only a genuine
+// hang; `budgetMs` is what fails a walk that got slower.
 
 let repo: HostileRepo | undefined;
 
@@ -49,6 +58,13 @@ const fresh = (prefix?: string): HostileRepo => {
   repo = createHostileRepo(prefix);
   return repo;
 };
+
+/**
+ * Ceiling for a case whose fixture is thousands of files. Big enough that the
+ * BUILD never decides the outcome on the slowest runner, small enough that a
+ * walk which stopped terminating still fails rather than hanging the suite.
+ */
+const FIXTURE_TIMEOUT_MS = 120_000;
 
 /** The fastest of `runs` passes — see the note above on why not a mean. */
 function fastestOf(runs: number, body: () => void): number {
@@ -232,12 +248,13 @@ describe('the project walk terminates on a hostile tree', () => {
     }
   });
 
-  // Skipped on Windows for the same reason as the 20k budget row below: the
-  // FIXTURE is what exceeds the per-test timeout there, not the walk. 21,000
-  // individual `writeFileSync` calls measured ~56 s on that runner against a
-  // 20 s limit, where the same tree costs about 2 s locally. Nothing about
-  // `MAX_FILES` is platform-dependent, so the property is proven on the legs
-  // that can afford to build the tree.
+  // Skipped on Windows on COST, not on the timeout — the ceiling above would now
+  // accommodate it. 21,000 individual `writeFileSync` calls measured ~56 s on
+  // that runner against ~2 s here, and the Windows leg is shared: the first
+  // version of this suite pushed it to 10m16s and four unrelated `persistence`
+  // cases plus a `web-ui` one started timing out alongside it, which stopped as
+  // soon as the load came off. `MAX_FILES` has no platform-dependent behaviour,
+  // so a minute of pure file creation buys no coverage worth that.
   it.skipIf(process.platform === 'win32')(
     'the file cap bounds what is kept and says the tree was cut short',
     () => {
@@ -323,18 +340,25 @@ describe('the project walk stays inside its budget', () => {
   const asCases = (rows: readonly (typeof ROWS)[number][]) =>
     rows.map((row) => [row.label, row] as const);
 
-  it.each(asCases(ROWS.filter((row) => !row.heavy)))('%s', (_label, row) => {
-    runRow(row);
-  });
+  it.each(asCases(ROWS.filter((row) => !row.heavy)))(
+    '%s',
+    (_label, row) => {
+      runRow(row);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 
-  // Skipped on Windows, for the reason the file-cap case above states: the tree
-  // costs more to BUILD there than the whole test is allowed to take, and
-  // `fastestOf` walks it four times on top of that — measured at ~41 s against a
-  // 20 s timeout. What this row asserts is a property of the walk, not of the
-  // filesystem underneath it, so it is proven on the legs that can afford the
-  // fixture rather than by widening a timeout until the slowest runner fits.
+  // Skipped on Windows on the same COST argument as the file-cap case above:
+  // ~41 s to build 20k files and walk them four times, on a leg shared with
+  // every other package's suite. The walk budget it asserts is a property of the
+  // walk, not of the filesystem underneath it, and the lighter rows above cover
+  // that property on this platform already.
   const heavyRows = ROWS.filter((row) => row.heavy);
-  it.skipIf(process.platform === 'win32').each(asCases(heavyRows))('%s', (_label, row) => {
-    runRow(row);
-  });
+  it.skipIf(process.platform === 'win32').each(asCases(heavyRows))(
+    '%s',
+    (_label, row) => {
+      runRow(row);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 });

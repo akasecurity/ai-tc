@@ -593,6 +593,7 @@ const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
 const EXPECTED_NON_PACKAGE_FILES = [
   'commitlint.config.mjs',
   'eslint.root.config.mjs',
+  'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/setup/no-network.ts',
   'tools/ci/egress-probe.mjs',
 ];
@@ -2057,6 +2058,13 @@ describe('ignore flags subtract from what an invocation covers', () => {
       [
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
         ['src', 'test', 'scripts'],
+      ],
+      // The same shape once a package grows a `bench/`. A benchmark imports
+      // product code and builds fixtures like any other source here, so it sits
+      // behind the same bans rather than outside every lint pass.
+      [
+        'eslint src test bench *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+        ['src', 'test', 'bench', 'scripts'],
       ],
       // The same two-pass split, with `test` rather than `scripts` behind the
       // network-only config: @akasecurity/eslint-config's own suites are plain JS

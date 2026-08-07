@@ -40,6 +40,34 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
+    // Benchmarks. Run BY HAND today — no workflow invokes this task, so nothing
+    // watches the trend between the times somebody remembers to look. Wiring a
+    // scheduled job is the intended next step and is tracked separately; until
+    // it exists, do not describe this as monitored.
+    //
+    // What it must NOT become is a PR gate: hosted runners vary by a large
+    // factor on neighbour load alone, a flaky gate is one people learn to re-run
+    // until green, and an ignored gate is worth less than none. The timing
+    // properties that DO gate a PR are assertions on a ratio or on a bound with
+    // real headroom, and they live in the ordinary test suites beside the code
+    // they guard.
+    //
+    // `cache: false` is the load-bearing line. Every other task here derives its
+    // output from its inputs, which is what makes replaying one sound; a
+    // benchmark returns a MEASUREMENT, and the machine it ran on — its load, its
+    // CPU, its disk — is in none of the hashes. A cache hit would hand the trend
+    // another runner's number, taken at another moment, and label it this run's.
+    // It is the one stale green that cannot be spotted by reading the result,
+    // because the result looks exactly right.
+    //
+    // `dependsOn: build` is there for the benchmarks that measure a BUNDLED
+    // artifact rather than source — where the two differ by enough that a run
+    // against an unbuilt tree would track a number no user pays. It costs the
+    // source-only benchmarks nothing: turbo skips a package with no build task.
+    "bench": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "cache": false
+    },
     // The eslint-config suite asserts a workspace-wide invariant: every package
     // ships an eslint.config.mjs wiring the no-network ban, points its `lint`
     // script at every directory it holds code in, and covers scripts/ with a

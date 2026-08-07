@@ -6,8 +6,19 @@ import {
   readWorkspaceSettings,
   SecretVault,
 } from '@akasecurity/persistence';
-import type { PointerDescriptor } from '@akasecurity/schema';
-import { isVaultConsentValid, PointerToken } from '@akasecurity/schema';
+import type {
+  ListVaultDerefsResponse,
+  ListVaultInventoryResponse,
+  ListVaultReuseResponse,
+  PointerDescriptor,
+} from '@akasecurity/schema';
+import {
+  isVaultConsentValid,
+  ListVaultDerefsQuery,
+  ListVaultInventoryQuery,
+  ListVaultReuseQuery,
+  PointerToken,
+} from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -26,6 +37,42 @@ function buildVault(): SecretVault {
     keys: createKeyProvider(readWorkspaceSettings().vaultKeyCustody, keysDir()),
     isConsented: () => isVaultConsentValid(readWorkspaceSettings().vaultConsent),
   });
+}
+
+// ─── Paged reads ─────────────────────────────────────────────────────────────
+//
+// Data-returning Server Actions for the vault page's three "Load more" controls,
+// following the findings list's precedent.
+//
+// These are READS, so none revalidates: appending a page must not re-render the
+// route, which would discard the pages already accumulated in client state and
+// reset the reader's scroll. That matters more here than on the findings page —
+// a revalidate would also drop whatever the reader had revealed on screen.
+//
+// Each parses its argument at the boundary: an action is a POST endpoint the
+// browser can reach with anything, so a hand-rolled body must not reach the
+// store as a query. Neither the fingerprint nor the ciphertext is selected by
+// the reads below, so no raw value or correlation material crosses.
+
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function loadMoreVaultInventory(raw: unknown): Promise<ListVaultInventoryResponse> {
+  return db().secretVault.listInventory(ListVaultInventoryQuery.parse(raw));
+}
+
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function loadMoreVaultReuse(raw: unknown): Promise<ListVaultReuseResponse> {
+  return db().secretVault.listReuse(ListVaultReuseQuery.parse(raw));
+}
+
+/**
+ * The de-reference trail's next page — and the read behind the batched-rows
+ * toggle, which re-queries rather than filtering locally: the hidden
+ * display/view-render rows are the high-volume ones, so shipping both variants
+ * up front is exactly the load this page was paginated to avoid.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function loadVaultDerefs(raw: unknown): Promise<ListVaultDerefsResponse> {
+  return db().secretVault.listDerefs(ListVaultDerefsQuery.parse(raw));
 }
 
 export type RevealResult =
@@ -73,7 +120,12 @@ export async function revealEntry(input: { pointerId: string }): Promise<EntryRe
     const value = await buildVault().revealEntry(input.pointerId, {
       reason: 'explicit-reveal',
     });
-    revalidatePath('/vault');
+    // Deliberately NO revalidatePath, unlike the other writes here. A reveal
+    // changes nothing the inventory renders — it writes one audit row — but a
+    // revalidate hands the client a fresh first page, which drops every page the
+    // reader had appended. Revealing row 120 would then leave them looking at
+    // rows 1–50 with their own revealed value nowhere on screen. The client
+    // re-reads the audit trail itself instead.
     return { ok: true, value: typeof value === 'string' ? value : null };
   } catch {
     return { ok: false, error: 'The vault could not be read.' };
@@ -87,7 +139,13 @@ export async function revokeRevealGrant(input: { grantId: string }): Promise<Vau
   try {
     const revoked = await db().exceptions.revoke(input.grantId, 'dashboard');
     if (!revoked) return { ok: false, error: 'No active grant with that id.' };
-    revalidatePath('/vault');
+    // Deliberately NO revalidatePath, for the same reason `revealEntry` skips it
+    // one function above: this changes ONE row's badge, but a revalidate hands
+    // the client a fresh first page, so revoking from page 3 drops the reader
+    // back to rows 1-50 — and resets the audit tab's batched toggle, which is
+    // keyed off the same route render. The client clears the badge itself.
+    // `purgeVault` and `rotateVaultKey` below DO revalidate, correctly: they
+    // change every row, so a fresh first page is the right answer there.
     return { ok: true };
   } catch {
     return { ok: false, error: 'The grant could not be revoked.' };

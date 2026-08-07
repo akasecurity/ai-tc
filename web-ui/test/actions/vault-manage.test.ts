@@ -44,7 +44,11 @@ vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof NodeOs>();
   return { ...actual, homedir: () => osHome.dir };
 });
-vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+// A spy rather than a no-op: "a revoke does not revalidate" is one of the
+// properties under test below, and an absence assertion needs a live spy to be
+// worth anything.
+const revalidate = vi.hoisted(() => vi.fn());
+vi.mock('next/cache', () => ({ revalidatePath: revalidate }));
 
 // Not secret-shaped on purpose: tokenize never scans, and a plain string keeps
 // secret-looking literals out of this public file.
@@ -63,6 +67,7 @@ function resetSingleton(): void {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-vault-manage-'));
   osHome.dir = home;
+  revalidate.mockClear();
   // Vaulting (tokenize) is consent-gated; grant it for the seeding step.
   applyOnboarding({
     vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
@@ -109,7 +114,7 @@ async function seedPointer(): Promise<string> {
 function inventory(): VaultInventoryEntry[] {
   const db = openLocalDatabase(dataDir());
   try {
-    return db.secretVault.listInventory();
+    return db.secretVault.listInventory().items;
   } finally {
     db.close();
   }
@@ -177,6 +182,44 @@ describe('revokeRevealGrant', () => {
     const result = await revokeRevealGrant({ grantId: before.revealGrantId });
     expect(result).toEqual({ ok: true });
     expect(inventory()[0]?.revealGrantId).toBeNull();
+  });
+
+  // A revalidate re-runs the route, which hands the client a fresh FIRST page.
+  // The reader revoking a grant from page 3 would be dropped back to rows 1-50,
+  // and the audit tab's batched toggle — keyed off the same render — would flip
+  // back off under them. The client clears the badge in its own state instead,
+  // which is why the row above still reads null without one.
+  it('does not revalidate the route — it would drop the reader back to page 1', async () => {
+    const pointer = await seedPointer();
+    const granted = await grantRevealFromPointer({
+      pointer,
+      scope: '1h',
+      justification: 'integration test needs the live key',
+    });
+    expect(granted.ok).toBe(true);
+
+    const grantId = inventory()[0]?.revealGrantId;
+    if (grantId == null) throw new Error('unreachable');
+
+    // Scoped to the revoke: granting the exception above revalidates
+    // '/exceptions' on its own account, so an un-cleared spy would report the
+    // SETUP's call and this case would fail whatever the revoke does.
+    revalidate.mockClear();
+
+    // The revoke SUCCEEDED, so the absence below is about a completed write
+    // rather than an early error return that never reached a revalidate.
+    expect(await revokeRevealGrant({ grantId })).toEqual({ ok: true });
+    expect(revalidate).not.toHaveBeenCalled();
+  });
+
+  it('is a live spy — a whole-store write does revalidate', async () => {
+    // The positive control. Without it "revalidate was not called" would hold
+    // just as well for a spy wired to a module these actions never import.
+    // `purgeVault` changes every row, so resetting the reader to page 1 is the
+    // correct answer there and it keeps its revalidate.
+    await seedPointer();
+    expect(await purgeVault({ confirmation: 'purge' })).toEqual({ ok: true, destroyed: 1 });
+    expect(revalidate).toHaveBeenCalledWith('/vault');
   });
 });
 

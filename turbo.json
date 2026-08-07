@@ -51,9 +51,14 @@
     // another runner, at another moment, under another load, and report it as
     // this run's — the one flavour of stale green that cannot be caught by
     // reading the result, because the result looks exactly right.
+    //
+    // No `outputs` here, deliberately. Turbo consults it only to decide what to
+    // save into and restore from the cache, so on a never-cached task it does
+    // nothing while reading as if the file were tracked somewhere — the opposite
+    // of the line above it. Where `bench-results.json` lands is stated by the
+    // thing that collects it: `bench.yml`'s upload glob.
     "bench": {
       "dependsOn": ["build", "^build", "^typecheck"],
-      "outputs": ["bench-results.json"],
       "cache": false
     },
     // The eslint-config suite asserts a workspace-wide invariant: every package

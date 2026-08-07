@@ -844,8 +844,13 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/` (imported by `*.test.ts` and `*.bench.ts` only —
-never shipped). Two kinds live there and they answer different questions: the
+`packages/persistence/src/test-fixtures/` — never shipped, because only a package's own
+`test/` and `bench/` files import it and `src/index.ts` never re-exports it. That rule is
+about DIRECTORIES rather than filename suffixes (`test/helpers/corpus.ts` is an importer
+and is neither a `*.test.ts` nor a `*.bench.ts`), and
+`packages/eslint-config/test/test-fixtures-imports.test.js` derives it from the tracked
+tree — so a product importer fails CI rather than being caught in review. Two kinds live
+there and they answer different questions: the
 `seedSample*` datasets are FIXED rows shaped to exercise a read surface, while
 `generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
 sizes that matter there cannot live in git.

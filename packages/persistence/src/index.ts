@@ -46,6 +46,7 @@ export {
   DATA_FILE_MODE,
   DB_FILENAME,
   ensureDataDirSync,
+  KeyUnclaimableError,
   tightenFile,
   tightenPerms,
   writeOwnerOnlyFileSync,

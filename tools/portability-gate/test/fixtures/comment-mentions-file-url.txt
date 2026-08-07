@@ -1,0 +1,9 @@
+import { describe, expect, it } from 'vitest';
+
+// name a script that does not exist, but `file:///aka-no-such-dir/…` is a
+// deliberately-unresolvable path, not a real fixture location.
+describe('worker error handling', () => {
+  it('reports a clean error when the script is missing', () => {
+    expect(1).toBe(1);
+  });
+});

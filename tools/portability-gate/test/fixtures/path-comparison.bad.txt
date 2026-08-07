@@ -1,0 +1,8 @@
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+describe('resolved output path', () => {
+  it('matches the expected build target', () => {
+    expect(path.resolve(actualDir, 'out.js')).toBe(path.resolve(expectedDir, 'OUT.js'));
+  });
+});

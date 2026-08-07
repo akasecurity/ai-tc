@@ -1,0 +1,9 @@
+import { execSync } from 'node:child_process';
+import { describe, expect, it } from 'vitest';
+
+describe('probe script', () => {
+  it('gives up after a few seconds', () => {
+    const out = execSync('timeout 5 node ./probe.mjs').toString();
+    expect(out).toContain('ok');
+  });
+});

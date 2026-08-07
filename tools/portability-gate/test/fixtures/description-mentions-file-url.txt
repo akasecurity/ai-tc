@@ -1,0 +1,12 @@
+import { describe, expect, it } from 'vitest';
+
+describe('worker bundle', () => {
+  it('flags a hardcoded file:/// URL', () => {
+    expect(1).toBe(1);
+  });
+
+  it('still flags a real one in the body', () => {
+    const url = new URL('file:///Users/example/after-description.js');
+    expect(url.protocol).toBe('file:');
+  });
+});

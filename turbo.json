@@ -40,6 +40,30 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
+    // Benchmarks. Run BY HAND today — no workflow invokes this task, and the
+    // comment used to claim a nightly job that does not exist. Never by a PR
+    // gate, whatever else changes: CI runners are too noisy for a wall-clock
+    // check, a flaky gate gets ignored, and an ignored gate is worse than none.
+    // The budgets that must hold live in `test/performance/`, which is an
+    // ordinary `test` task.
+    //
+    // `cache: false` is the load-bearing line. Every other task here produces
+    // the same answer for the same inputs, which is what makes replaying one
+    // sound; a benchmark produces a MEASUREMENT, and the machine it ran on is
+    // not in the hash. A cached hit would hand the trend a number taken on
+    // another runner, at another moment, under another load, and report it as
+    // this run's — the one flavour of stale green that cannot be caught by
+    // reading the result, because the result looks exactly right.
+    //
+    // And so there is no `outputs`. Outputs are the files turbo saves to REPLAY
+    // a cache hit with, so declaring them under `cache: false` is dead config
+    // that reads as if caching were on. `bench-results.json` is still written —
+    // by `vitest bench --outputJson`, which is what the package's own script
+    // asks for — and still gitignored; turbo simply has no part in it.
+    "bench": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "cache": false
+    },
     // The eslint-config suite asserts a workspace-wide invariant: every package
     // ships an eslint.config.mjs wiring the no-network ban, points its `lint`
     // script at every directory it holds code in, and covers scripts/ with a

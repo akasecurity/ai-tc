@@ -33,6 +33,7 @@ import {
   type Selection,
 } from './meta.ts';
 import { ProviderChips, ProviderTag } from './ProviderChips.tsx';
+import { ShowMore } from './ShowMore.tsx';
 
 const FINDING_COLUMN_CLASS: Record<FindingColumn['id'], string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
@@ -300,12 +301,10 @@ function TypeCell({ finding }: { finding: FindingGroup }) {
       </span>
       <div className="flex flex-col">
         <span className="font-semibold text-text wrap-anywhere">{finding.subtype}</span>
-        <span
+        <ShowMore
+          value={finding.match.maskedValue}
           className="font-mono text-xs text-text-3 wrap-anywhere"
-          title={finding.match.maskedValue}
-        >
-          {finding.match.maskedValue}
-        </span>
+        />
       </div>
     </div>
   );

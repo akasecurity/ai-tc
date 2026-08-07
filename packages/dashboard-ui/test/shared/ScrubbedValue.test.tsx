@@ -18,25 +18,22 @@ const DESCRIPTOR = {
 };
 
 describe('ScrubbedValue', () => {
-  it('renders the raw value with a category/provider badge when revealed', () => {
+  it('renders the raw value when revealed', () => {
     const html = renderToStaticMarkup(<ScrubbedValue value={RAW} descriptor={DESCRIPTOR} />);
     expect(html).toContain(RAW);
-    expect(html).toContain('scrubbed: secret/aws');
     expect(html).toContain('data-slot="scrubbed-value"');
   });
 
-  it('omits the provider segment from the badge when absent', () => {
+  it('renders the raw value when the descriptor omits the provider segment', () => {
     const html = renderToStaticMarkup(
       <ScrubbedValue value={RAW} descriptor={{ category: 'secret', maskedMatch: 'raw-…9' }} />,
     );
-    expect(html).toContain('scrubbed: secret');
-    expect(html).not.toContain('secret/');
+    expect(html).toContain(RAW);
   });
 
   it('renders only the masked form when no raw value is available', () => {
     const html = renderToStaticMarkup(<ScrubbedValue value={null} descriptor={DESCRIPTOR} />);
     expect(html).toContain(DESCRIPTOR.maskedMatch);
-    expect(html).toContain('scrubbed: secret/aws');
     expect(html).not.toContain(RAW);
   });
 

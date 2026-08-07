@@ -1,6 +1,7 @@
 'use client';
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
+  Badge,
   Button,
   Pagination,
   PaginationNext,
@@ -42,11 +43,12 @@ export interface VaultInventoryViewProps {
 }
 
 const COLUMN_CLASS: Record<string, string> = {
-  occurrences: 'min-w-[120px] whitespace-nowrap',
-  firstSeen: 'min-w-[110px] whitespace-nowrap',
-  lastSeen: 'min-w-[110px] whitespace-nowrap',
-  grant: 'min-w-[140px] whitespace-nowrap',
-  action: 'min-w-[120px] whitespace-nowrap',
+  category: 'w-[200px] whitespace-nowrap',
+  occurrences: 'w-[120px] whitespace-nowrap',
+  firstSeen: 'w-[110px] whitespace-nowrap',
+  lastSeen: 'w-[110px] whitespace-nowrap',
+  grant: 'w-[140px] whitespace-nowrap',
+  action: 'w-[120px] whitespace-nowrap',
 };
 
 /**
@@ -96,6 +98,7 @@ export function VaultInventoryView({
           <TableHeader>
             <TableRow>
               <TableHead>Value</TableHead>
+              <TableHead className={COLUMN_CLASS.category}>Category</TableHead>
               <TableHead className={COLUMN_CLASS.occurrences}>Occurrences</TableHead>
               <TableHead className={COLUMN_CLASS.firstSeen}>First seen</TableHead>
               <TableHead className={COLUMN_CLASS.lastSeen}>Last seen</TableHead>
@@ -161,12 +164,19 @@ function VaultInventoryRow({
 }) {
   const grantId = entry.revealGrantId;
   const columns = hasActions ? 6 : 5;
+  const category = (
+    <Badge variant="primary">
+      scrubbed:{' '}
+      {entry.provider === undefined ? entry.category : `${entry.category}/${entry.provider}`}
+    </Badge>
+  );
   return (
     <>
       <TableRow>
         <TableCell>
           <ScrubbedValue value={null} descriptor={entry} />
         </TableCell>
+        <TableCell className={COLUMN_CLASS.category}>{category}</TableCell>
         <TableCell className={COLUMN_CLASS.occurrences}>
           <span className="text-xs text-text-2">{String(entry.occurrences)}</span>
         </TableCell>

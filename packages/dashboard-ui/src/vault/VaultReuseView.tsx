@@ -1,6 +1,7 @@
 'use client';
 import type { VaultInventoryEntry } from '@akasecurity/schema';
 import {
+  Button,
   Pagination,
   PaginationNext,
   PaginationPrevious,
@@ -12,8 +13,42 @@ import {
   TableHeader,
   TableRow,
 } from '@akasecurity/ui-kit';
+import { useState } from 'react';
 
 import { ScrubbedValue } from '../shared/ScrubbedValue.tsx';
+
+const LOCATIONS_COLLAPSE_COUNT = 2;
+
+function LocationsList({ locations }: { locations: string[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = locations.length > LOCATIONS_COLLAPSE_COUNT;
+  const shown = expanded ? locations : locations.slice(0, LOCATIONS_COLLAPSE_COUNT);
+  return (
+    <div>
+      <ul className="space-y-0.5 pl-3">
+        {shown.map((location) => (
+          <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
+            {location}
+          </li>
+        ))}
+      </ul>
+      {isLong && (
+        <Button
+          variant="link"
+          tone="primary"
+          size="sm"
+          className="font-ui"
+          aria-expanded={expanded}
+          onClick={() => {
+            setExpanded((v) => !v);
+          }}
+        >
+          {expanded ? 'Show fewer' : `Show all ${String(locations.length)}`}
+        </Button>
+      )}
+    </div>
+  );
+}
 
 export interface VaultReuseViewProps {
   entries: VaultInventoryEntry[];
@@ -94,13 +129,7 @@ export function VaultReuseView({
                   </TableCell>
                   <TableCell className="text-xs text-text-2">{String(entry.occurrences)}</TableCell>
                   <TableCell>
-                    <ul className="space-y-0.5 pl-3">
-                      {locations.map((location) => (
-                        <li key={location} className="font-mono text-xs text-text-2 list-disc py-1">
-                          {location}
-                        </li>
-                      ))}
-                    </ul>
+                    <LocationsList locations={locations} />
                   </TableCell>
                 </TableRow>
               );

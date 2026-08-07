@@ -29,6 +29,7 @@ import {
   instanceLocationLabel,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
+import { ShowMore } from './ShowMore.tsx';
 
 type FlatColumnId = 'severity' | 'type' | 'sources' | 'location' | 'action' | 'status' | 'latest';
 
@@ -141,9 +142,10 @@ export function FindingsFlatTableView({
                           <div className="text-ui font-semibold text-text wrap-anywhere">
                             {instance.subtype}
                           </div>
-                          <div className="font-mono text-xs text-text-3 wrap-anywhere">
-                            {instance.match.maskedValue}
-                          </div>
+                          <ShowMore
+                            value={instance.match.maskedValue}
+                            className="font-mono text-xs text-text-3 wrap-anywhere"
+                          />
                         </div>
                       </div>
                     </TableCell>

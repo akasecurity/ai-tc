@@ -150,8 +150,12 @@ describe('parseVerdict', () => {
 // only thing keeping the raw hits on stdin out of ~/.claude/projects, where the
 // product's own scanner would later find them. Every branch is pinned here, and
 // the platform is injected rather than read, so the darwin branch runs on every
-// runner — CI has no macOS machine, and a `if (process.platform === 'darwin')`
-// guard would mean these assertions execute nowhere.
+// runner rather than on one. CI does have a macOS leg now, which is why that is
+// worth stating precisely: injection is what makes these assertions execute on
+// all three platforms, and what a real darwin runner adds is the surrounding
+// filesystem — the mkdtemp/rm pair against case-insensitive APFS — not the
+// branch itself. A `if (process.platform === 'darwin')` guard here would trade
+// three runners' worth of coverage for one.
 describe('judgeEnv', () => {
   // Take the env, assert against it, then remove any dir it minted.
   function withEnv(platform: NodeJS.Platform, assert: (env: NodeJS.ProcessEnv) => void): void {

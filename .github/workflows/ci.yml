@@ -158,6 +158,88 @@ jobs:
       - name: Build and test with egress blocked
         run: tools/ci/no-network-test.sh pnpm exec turbo run test --force
 
+  # macOS leg: the primary platform for a Claude Code plugin's users, and until
+  # this job existed the only tier-1 platform whose tests never ran. macOS did
+  # appear in build-binaries.yml and release-binaries.yml, but those compile the
+  # SEA binary and run no suite — a darwin build is not darwin coverage.
+  #
+  # Three shipped code paths are darwin-only, and they are the reason this is a
+  # full run rather than a filtered one like the Windows leg:
+  #   - cli/src/lib/open-url.ts — the `open` branch (win32 gets `cmd /c start`,
+  #     everything else `xdg-open`).
+  #   - plugins/claude-code/src/triage/judge.ts — the darwin-only throwaway
+  #     CLAUDE_CONFIG_DIR, which is the transcript-suppression control keeping
+  #     raw findings out of ~/.claude/projects. Its platform is injectable, so
+  #     the BRANCH already ran on every runner; what only this leg adds is the
+  #     mkdtemp/rm pair against a real case-insensitive APFS volume.
+  #   - packages/persistence/src/vault/key-provider.ts — the keychain custody
+  #     backend, which shells out to /usr/bin/security and exists nowhere else.
+  #
+  # Two suites stop lying here, which is the sharpest single gain. Both guard a
+  # chflags-based fault injection with `if (process.platform !== 'darwin')
+  # return;`, and an early return REPORTS AS A PASS — so on every runner that
+  # has ever existed they were green without executing:
+  #   - packages/persistence/test/paths.test.ts — isolates `flag: 'wx'` (O_EXCL)
+  #     in writeOwnerOnlyFileSync by freezing the directory so the leading rmSync
+  #     cannot clear a planted tmp symlink. Drop the `wx` and the write follows
+  #     the symlink onto the victim; this is the only case that catches it.
+  #   - cli/test/commands/init.test.ts — freezes the settings dir so init's
+  #     chmod fails and the warning path is reached.
+  # Keep that in mind before filtering this job down: a filter that excludes
+  # `persistence` or `cli` puts both back to passing without running.
+  #
+  # It runs `test`, not lint/typecheck/build. Lint and typecheck read source and
+  # answer identically on every OS, so the ubuntu leg covers them; `build` is not
+  # skipped so much as already implied, since turbo's `test` task dependsOn
+  # `build`/`^build`. build-binaries.yml packages and smokes a darwin SEA as
+  # well, but do not lean on that here — its pull_request trigger is scoped to
+  # cli/**, web-ui/** and packages/**, so a plugins-only PR gets no darwin build
+  # from it at all. The dependsOn is what actually covers this leg.
+  #
+  # --continue for the same reason the Windows job takes it: on a new platform
+  # leg the first red package must not hide the rest.
+  #
+  # ONE CACHE INVARIANT IS LOAD-BEARING HERE AND WAS NOT BEFORE. Turbo's task
+  # hash covers file contents, dependencies and env — NOT the platform. So a
+  # .turbo/cache restored from a Linux run would hash-match on macOS and let
+  # turbo replay Linux's green `test` tasks, and this job would report success
+  # having executed nothing. What prevents that is `runner.os` leading both the
+  # key and every restore-key: with one platform in CI that segment was
+  # bookkeeping, and with three it is the whole guarantee. Do not reorder it out
+  # of the prefix, and do not add a restore-key that omits it.
+  macos:
+    name: macOS · Full suite
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same shape as the ubuntu leg's cache, and deliberately a separate lineage
+      # — see the runner.os note above.
+      - name: Restore Turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-${{ runner.os }}-
+
+      - name: Test
+        run: pnpm turbo run test --continue
+
   # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
   # processes — gets exercised on windows-latest. setup-wizard is included for

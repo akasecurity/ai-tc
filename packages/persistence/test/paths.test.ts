@@ -393,8 +393,12 @@ describe('writeOwnerOnlyFileSync', () => {
     // Isolates `wx`: chflags makes the dir immutable so the leading rmSync can't
     // remove the planted symlink, so ONLY the exclusive create can prevent the
     // write from following it. Without `flag: 'wx'` the write overwrites the
-    // victim. macOS-only (needs chflags to fail the unlink); no macOS CI, so this
-    // runs locally.
+    // victim. macOS-only, since it needs chflags to fail the unlink, so the only
+    // CI leg that executes it is `macOS · Full suite` in ci.yml (a local run on a
+    // Mac executes it too, and is the quickest way to reproduce a failure here).
+    // That leg runs the WHOLE workspace for this reason among others; filtering
+    // `persistence` out of it silently returns this case to the state below,
+    // where it reports a pass on every runner without reaching an assertion.
     if (process.platform !== 'darwin') return;
     const file = join(base, 'settings.json');
     const victim = join(base, 'victim');

@@ -148,6 +148,49 @@ describe('the benchmark harness', () => {
     ).toMatch(/"cache"\s*:\s*false/);
   });
 
+  it('keeps the `bench` comment honest about whether a workflow runs the task', () => {
+    // turbo.json's comment and bench.yml are two statements of one fact, kept in
+    // two files with nothing between them. The task BODY is not what is at risk —
+    // `cache: false` is asserted directly above. The SENTENCE is: a branch written
+    // before this workflow existed says, correctly, that nothing invokes the task,
+    // and goes on saying it through a merge — at which point it documents the
+    // opposite of what the repo does. No assertion here can catch that today,
+    // because the task body is byte-identical whichever comment sits above it, so
+    // every existing check stays green either way.
+    //
+    // Checked in both directions, since it can drift either way: a comment
+    // claiming a nightly runner must find one, and a nightly runner that exists
+    // must not be denied by the comment. The second half is the one that fires on
+    // a rebase, at exactly the sentence that needs rewriting.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const block = /\n((?:[ \t]*\/\/.*\n)+)[ \t]*"bench"\s*:/.exec(turbo);
+    expect(block, 'no comment block immediately above the `bench` task').not.toBeNull();
+    const comment = block[1];
+    // The positive control. Every absence assertion below passes on an empty
+    // string, and a regex that stopped matching would hand back exactly that.
+    expect(comment, 'the comment block above `bench` says nothing about it').toMatch(/bench/i);
+
+    // Reality, read from the workflow rather than from what the comment says
+    // about it — a schedule is what makes the job run unattended.
+    const nightly = existsSync(WORKFLOW) && /^\s+schedule:/m.test(readFileSync(WORKFLOW, 'utf8'));
+
+    if (nightly) {
+      // Denials by shape rather than by exact wording, so a reworded one is still
+      // caught. A form that slips past belongs in this list.
+      const denials = [/\bno workflow\b/i, /\bnothing invokes\b/i, /\bdoes not exist\b/i];
+      expect(
+        denials.filter((d) => d.test(comment)).map(String),
+        `${WORKFLOW_REL} runs this task on a schedule, but the comment above \`bench\` still ` +
+          'denies that any workflow does',
+      ).toEqual([]);
+    } else {
+      expect(
+        comment,
+        `the comment above \`bench\` claims a nightly run, but ${WORKFLOW_REL} schedules none`,
+      ).not.toMatch(/nightly/i);
+    }
+  });
+
   it('lints and typechecks the bench directory like any other source directory', () => {
     // A bench file imports product code and test helpers, so it is code — and
     // code outside every lint target and every tsconfig `include` has its types

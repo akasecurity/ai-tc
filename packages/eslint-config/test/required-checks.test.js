@@ -35,6 +35,51 @@ function matrixValues(source, key) {
   return inline[1].split(',').map((value) => value.trim().replace(/^['"]|['"]$/g, ''));
 }
 
+// One job's body: from its two-space key to the next two-space line, whatever
+// that line is. Ending at a `#` matters as much as ending at the next job key,
+// because each job here is introduced by a two-space comment block: run past it
+// and a job's body absorbs the NEXT job's prose, so an assertion about what this
+// job does starts answering to a paragraph describing a different one. Every
+// line a job actually owns is indented four or more, so nothing inside a body
+// can terminate it. Note this is the opposite choice from the `pull_request`
+// reader above, which must NOT stop at a comment — there the thing being looked
+// for could legitimately be written below one, inside the block.
+//
+// The two structural assertions are what make every ABSENCE check downstream
+// non-vacuous, and they belong here rather than in each caller. A block that
+// captured too little satisfies `not.toMatch(…)` for the wrong reason, and the
+// checks most exposed to that are the ones with nothing positive to pair with:
+// "no `if:` here" and "no cache in the no-network job" both pass on `''`. A
+// truncation is not hypothetical — one stray two-space line inside a body cuts
+// the macOS job from 26 lines to 4, which still carries `runs-on:` and `steps:`
+// and so survives any check that only asks whether this looks like a job. What
+// it does not survive is being asked for a STEP, because the cut lands above
+// them. So require both: a `runs-on:` (this is a job) and at least one step
+// list item (the body reached its end).
+function jobBlock(source, key) {
+  // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
+  // where nothing is a metacharacter: the cost is one call, and a caller that
+  // ever passes a step name instead would otherwise get `.` as a wildcard.
+  const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const block = new RegExp(
+    `^ {2}${pattern}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|\\s*$(?![\\s\\S]))`,
+    'm',
+  ).exec(source);
+  expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
+  const body = block[1];
+  expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
+  expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
+  return body;
+}
+
+// Every Turbo cache key a job declares — the `key:` and each line under
+// `restore-keys:`, which are bare values rather than `key: `-prefixed.
+// `[^\S\n]+` rather than `\s+`: this is one line's indentation, and `\s` would
+// let the anchor run back across blank lines.
+function turboCacheKeys(block) {
+  return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
+}
+
 // Every check name a workflow can emit, with matrix jobs expanded to the names
 // GitHub actually reports.
 function checkNames(file) {
@@ -73,10 +118,10 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   const rows = requiredChecks();
 
   // A table that parsed to nothing would satisfy every per-row assertion below
-  // without checking anything, so pin the count first. The three CI jobs, the
+  // without checking anything, so pin the count first. The four CI jobs, the
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     expect(rows.map((row) => row.file)).toEqual(
       expect.arrayContaining(['ci.yml', 'audit.yml', 'codeql.yml']),
     );
@@ -131,5 +176,98 @@ describe('the workflows behind those checks', () => {
   // and report nothing.
   it('codeql.yml grants security-events: write', () => {
     expect(readWorkflow('codeql.yml')).toMatch(/^\s*security-events: write$/m);
+  });
+});
+
+// The macOS leg is the only platform job whose value is entirely in what it does
+// NOT restrict. Its name promises the full suite, and nothing about a filtered
+// run looks wrong in a diff — the Windows leg is filtered on purpose, so a
+// filter copied here reads like consistency. These pin the promise instead.
+describe('the macOS leg', () => {
+  // Read here, but BLOCKED here too: jobBlock asserts, and an assertion in a
+  // describe body is a collection error rather than a test failure — vitest
+  // reports the file as `(0 test)` and every other suite in it stops running,
+  // so deleting the macOS job would also silence the CodeQL, audit and
+  // gate-table rows above. Each `it` resolves its own block instead.
+  const ci = readWorkflow('ci.yml');
+
+  it('runs on a macOS runner', () => {
+    expect(jobBlock(ci, 'macos')).toMatch(/^ {4}runs-on: macos-latest$/m);
+  });
+
+  // Two darwin-only fault-injection tests guard on `process.platform !== 'darwin'`
+  // with an early RETURN, so off darwin they report as passes without running.
+  // A --filter that drops `persistence` or `cli` therefore does not merely
+  // narrow this job — it puts those two cases straight back to green-and-unrun,
+  // which is the state this leg exists to end.
+  it('runs the whole workspace rather than a filtered subset', () => {
+    const block = jobBlock(ci, 'macos');
+    expect(block).toMatch(/turbo run test/);
+    expect(block).not.toMatch(/--filter/);
+  });
+
+  // --continue is what makes a first macOS run worth one triage pass instead of
+  // several: without it turbo bails at the first red package and the rest of the
+  // platform's failures stay hidden until that one is fixed. Nothing else here
+  // would notice its removal — `turbo run test` still matches.
+  it('reports every package rather than bailing at the first failure', () => {
+    expect(jobBlock(ci, 'macos')).toMatch(/turbo run test\b.*--continue/);
+  });
+
+  it('restores a Turbo cache', () => {
+    const block = jobBlock(ci, 'macos');
+    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/path: \.turbo\/cache$/m);
+  });
+
+  // A job-level `if:` is the obvious lever for anyone trimming macOS runner
+  // minutes — draft PRs, a label gate, push-only. It is also the one lever that
+  // cannot be applied here, and not merely because it would narrow the promise:
+  // GitHub reports a skipped job as PENDING for a required check, so a condition
+  // that makes this leg skip does not save a PR the wait, it blocks the merge
+  // outright and with nothing red to point at. Narrow the work inside the job
+  // instead, never whether the job runs.
+  //
+  // Absence-only, so its positive control is jobBlock's own structural pair —
+  // without those this passes on a body cut short above its steps.
+  it('carries no condition that could skip it on a PR', () => {
+    expect(jobBlock(ci, 'macos')).not.toMatch(/^ {4}if:/m);
+  });
+});
+
+// Turbo's task hash covers file contents, dependencies and env — not the
+// platform. Two jobs now restore .turbo/cache on two different OSes, so a key
+// that did not separate them would let macOS restore Linux's entry, hash-match,
+// and replay Linux's green `test` tasks: a platform leg reporting success
+// having executed nothing. `runner.os` leading every key and restore-key is the
+// whole of what prevents it, and it is one edit from being dropped.
+describe('the Turbo caches in ci.yml', () => {
+  const ci = readWorkflow('ci.yml');
+
+  it.each(['ci', 'macos'])('%s keys its cache per platform', (job) => {
+    const keys = turboCacheKeys(jobBlock(ci, job));
+    // The `key:` plus two restore-keys. Pinned so a key added without the
+    // prefix cannot hide behind a loop that happens to see none.
+    expect(keys).toHaveLength(3);
+    for (const key of keys) {
+      expect(key.startsWith('turbo-${{ runner.os }}-')).toBe(true);
+    }
+  });
+
+  // The inverse, and the reason the two cached jobs are named rather than
+  // discovered: the no-network job forgoes the cache deliberately, because a
+  // restore-key falling back to an earlier commit would let turbo replay a
+  // `test` task that never ran under the egress block. With caches now visibly
+  // the norm here, adding one there looks like fixing an oversight.
+  //
+  // The absence here is the whole assertion and the thing it looks for is the
+  // thing that must not be there, so it has no natural positive control of its
+  // own. It leans on jobBlock's structural pair, plus the egress step below —
+  // which is both the job's last step and the reason it exists, so a body that
+  // reaches it reached the end.
+  it('leaves the no-network job uncached', () => {
+    const block = jobBlock(ci, 'no-network');
+    expect(block).toMatch(/no-network-test\.sh/);
+    expect(block).not.toMatch(/uses: actions\/cache@/);
   });
 });

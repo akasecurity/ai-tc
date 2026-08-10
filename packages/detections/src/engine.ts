@@ -3,6 +3,7 @@ import type { Rule } from '@akasecurity/schema';
 import { escapeRegExp } from './escape-regexp.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
+import { memoizedRegExpList } from './regex-cache.ts';
 import type { MatchResult, RulePack } from './types.ts';
 import { isHighEntropy } from './validators/entropy.ts';
 import { luhnCheck } from './validators/luhn.ts';
@@ -111,13 +112,24 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
   const labels = req.labels;
   if (labels && labels.length > 0) {
     const haystack = text.slice(Math.max(0, winStart), winEnd);
-    for (const label of labels) {
-      const trimmed = label.trim();
-      if (trimmed.length === 0) continue;
-      // Boundaries = non-alphanumeric neighbours; robust for labels containing
-      // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
-      const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
-      if (re.test(haystack)) return true;
+    // Boundaries = non-alphanumeric neighbours; robust for labels containing
+    // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
+    //
+    // This was the densest construction site in the package: the loop runs per
+    // label per gated candidate, so a rule whose primitive matcher fires often
+    // and corroborates rarely (a 5-digit ZIP against a column of numbers)
+    // reached it once per candidate per label — and built the pattern string as
+    // well as the object each time. Compiling the set once per `requiresNearby`
+    // takes both off that product.
+    for (const re of memoizedRegExpList('label', req, () =>
+      labels.map((label) => {
+        const trimmed = label.trim();
+        return trimmed.length === 0
+          ? undefined
+          : new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
+      }),
+    )) {
+      if (re?.test(haystack)) return true;
     }
   }
 

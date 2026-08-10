@@ -146,6 +146,7 @@ a name in it no longer belongs to a real job.
 | ----------------------------------------- | ------------ |
 | `Lint · Typecheck · Test · Build`         | `ci.yml`     |
 | `No-network · Full suite, egress blocked` | `ci.yml`     |
+| `macOS · Full suite`                      | `ci.yml`     |
 | `Windows · Unit tests (shipped surface)`  | `ci.yml`     |
 | `Dependency audit`                        | `audit.yml`  |
 | `CodeQL (javascript-typescript)`          | `codeql.yml` |

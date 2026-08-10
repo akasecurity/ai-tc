@@ -1,0 +1,14 @@
+import { expect, it } from 'vitest';
+
+const SPEC_RE = /\.test\.[cm]?[jt]sx?$/;
+
+// The `.test(` below is a member call, not a test declaration. A rule keying on
+// a word boundary alone starts its block there — and that block holds the
+// concurrency primitive while closing long before this call's own trailing
+// timeout argument, so a correctly written test reads as an untimed one.
+it('classifies every path off the main thread', async () => {
+  const paths = ['scan.test.ts', 'helpers/worker.ts'];
+  if (SPEC_RE.test(String(await Promise.all(paths.map(async (p) => p))))) {
+    expect(paths).toHaveLength(2);
+  }
+}, 30_000);

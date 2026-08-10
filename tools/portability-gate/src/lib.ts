@@ -1,6 +1,6 @@
 // Pure scanning logic for the cross-platform portability gate: a lightweight,
-// non-parsing scanner over the tracked test tree looking for four known
-// failure shapes — a hardcoded file:/// URL (POSIX-only, breaks on Windows),
+// non-parsing scanner over the tracked test and bench trees looking for four
+// known failure shapes — a hardcoded file:/// URL (POSIX-only, breaks on Windows),
 // a bare GNU `timeout` shell command (absent on macOS), a path comparison
 // with no case normalization (macOS/Windows are case-insensitive, Linux is
 // not), and a worker/concurrency test with no explicit timeout. The CLI entry
@@ -8,12 +8,13 @@
 // so the unit suite can drive this with canned file lists.
 //
 // Rules 1-3 describe primitives, not test structure, so they apply to every
-// source file in a test tree — the helpers, fixtures-in-code and worker
-// entrypoints that carry the worker/platform/path code a spec file usually
-// only calls. Rule 4 keys on an `it()`/`test()` call and so stays scoped to
-// spec files. isRelevantPath is the single definition of what the scan reaches;
-// the CLI entry imports it rather than keeping a second copy, since a filter
-// that pre-selects paths and a filter that scans them are one decision.
+// source file in a test or bench tree — the helpers, fixtures-in-code, worker
+// entrypoints and benchmark drivers that carry the worker/platform/path code a
+// spec file usually only calls. Rule 4 keys on an `it()`/`test()` call and so
+// stays scoped to spec files, which a `.bench.ts` is not. isRelevantPath is
+// the single definition of what the scan reaches; the CLI entry imports it
+// rather than keeping a second copy, since a filter that pre-selects paths and
+// a filter that scans them are one decision.
 //
 // This is a heuristic text scanner, not a real parser. It tokenizes just far
 // enough to tell code from string/template literals and comments (and to give
@@ -236,7 +237,14 @@ const COMPARISON_RE = /===|!==|\.toBe\(|\.toEqual\(/;
 // a slow `npm install`, and the function name alone cannot tell them apart).
 const CONCURRENCY_RE =
   /\bnew\s+Worker\b|\bworker_threads\b|Promise\.(?:all|race|allSettled)\(|\bspawn\(|\bfork\(/;
-const TEST_CALL_RE = /\b(?:it|test)\s*\(/g;
+// The leading lookbehind is what keeps this off a member call. `\b` alone
+// matches the `test(` in `RE.test(`, because `.` is a non-word character and
+// so opens a word boundary — and that is not merely noisy, it mislocates the
+// scan: the match starts mid-body, so the block runs from there to the
+// enclosing call's close paren and never reaches the real call's trailing
+// timeout argument. A correctly written test carrying `}, 30_000)` is then
+// reported as having no timeout, at the line of the `.test(` call.
+const TEST_CALL_RE = /(?<![.\w])(?:it|test)\s*\(/g;
 
 // A JS identifier, optionally reached through a member expression, so a
 // timeout held in a named constant (CASE_TIMEOUT_MS) or on an object
@@ -365,13 +373,30 @@ function checkConcurrencyMissingTimeout(
 
 // A spec file: the unit rule 4 walks, wherever it sits in the tree.
 const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
-// Any source file under a directory named "test" — the helpers, worker
-// entrypoints and fixture corpora rules 1-3 apply to. The cut is by extension
-// alone, so a fixture that deliberately holds a bad pattern is only exempt
-// while it is data (.txt, .json); written as real .ts under a test tree it is
-// scanned like anything else, which is why this package keeps its own
-// violation fixtures at .txt.
-const TEST_TREE_FILE_RE = /(?:^|\/)test\/.*\.(?:ts|tsx|js|mjs|cts|mts)$/;
+// Any source file under a directory named "test" or "bench" — the helpers,
+// worker entrypoints, fixture corpora and benchmark drivers rules 1-3 apply
+// to. A benchmark carries the same subject matter as a spec (chdir descent,
+// symlink loops, PATH_MAX ceilings that differ between platforms), so it is
+// covered by where it sits rather than by whichever shared fixture it happens
+// to call. The cut is by extension alone, so a fixture that deliberately holds
+// a bad pattern is only exempt while it is data (.txt, .json); written as real
+// .ts under one of these trees it is scanned like anything else, which is why
+// this package keeps its own violation fixtures at .txt.
+//
+// Spelled as a substring search rather than as one regex. The regex form
+// `(?:^|\/)test\/.*\.(?:ts|…)$` gives the engine a viable start position at
+// every `/test/` segment and rescans the tail from each, so a path that does
+// not match costs time quadratic in the number of segments. Reaching that
+// needs a committed path, since the input is git ls-files output — but this
+// gate runs on every push, so it stays linear by construction.
+const TREE_DIR_NAMES = ['test', 'bench'] as const;
+const SOURCE_EXT_RE = /\.(?:ts|tsx|js|mjs|cts|mts)$/;
+
+function isTreeFile(path: string): boolean {
+  if (!SOURCE_EXT_RE.test(path)) return false;
+  return TREE_DIR_NAMES.some((dir) => path.startsWith(`${dir}/`) || path.includes(`/${dir}/`));
+}
+
 const VITEST_CONFIG_SUFFIX = '/vitest.config.ts';
 const VITEST_CONFIG_RE = /(?:^|\/)vitest\.config\.ts$/;
 
@@ -380,7 +405,7 @@ const VITEST_CONFIG_RE = /(?:^|\/)vitest\.config\.ts$/;
 // testTimeout override. The CLI entry filters on this before reading any file
 // content, so a repo-wide walk touches only what matters.
 export function isRelevantPath(path: string): boolean {
-  return SPEC_FILE_RE.test(path) || TEST_TREE_FILE_RE.test(path) || VITEST_CONFIG_RE.test(path);
+  return SPEC_FILE_RE.test(path) || isTreeFile(path) || VITEST_CONFIG_RE.test(path);
 }
 
 interface PackageTimeoutInfo {
@@ -420,7 +445,7 @@ export function scanTree(files: ScannedFile[]): Violation[] {
   const violations: Violation[] = [];
   for (const file of files) {
     const isSpec = SPEC_FILE_RE.test(file.path);
-    if (!isSpec && !TEST_TREE_FILE_RE.test(file.path)) continue;
+    if (!isSpec && !isTreeFile(file.path)) continue;
     const { codeMasked, strings } = tokenize(file.content);
     violations.push(
       ...checkHardcodedFileUrl(file, codeMasked, strings),

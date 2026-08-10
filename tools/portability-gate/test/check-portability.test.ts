@@ -139,6 +139,21 @@ describe('concurrency-missing-timeout', () => {
     expect(violations[0]?.rule).toBe('concurrency-missing-timeout');
   });
 
+  // `\b` opens a boundary after the `.` in `SPEC_RE.test(`, so a member call
+  // reads as a test declaration. That is not merely noisy: the block starts
+  // mid-body and closes at the enclosing paren, so it carries the concurrency
+  // primitive but never reaches the real call's trailing timeout — and the
+  // false positive lands on a test that is correctly written, at the line of
+  // the member call. The positive cases above are this one's control: they go
+  // red if rule 4 stops firing altogether.
+  it('does not mistake a .test() member call for a test declaration', () => {
+    expect(
+      scanTree([
+        testFile('pkg/test/classify.test.ts', fixture('concurrency-member-call.clean.txt')),
+      ]),
+    ).toEqual([]);
+  });
+
   it('is suppressed when the owning package sets a testTimeout override', () => {
     const files = [
       testFile('pkg/test/scan.test.ts', fixture('concurrency-no-timeout.bad.txt')),
@@ -214,6 +229,25 @@ describe('scanTree file selection', () => {
     expect(scanTree([testFile('pkg/test/spawn.test.ts', helperBytes)])).toHaveLength(1);
   });
 
+  it('applies rules 1-3 to a benchmark, which carries the same platform code as a spec', () => {
+    const violations = scanTree([
+      testFile('pkg/bench/project-files.bench.ts', fixture('hardcoded-file-url.bad.txt')),
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      rule: 'hardcoded-file-url',
+      file: 'pkg/bench/project-files.bench.ts',
+    });
+  });
+
+  // A .bench.ts is not a spec, so rule 4 stays off it for the reason it stays
+  // off a helper. The same bytes at a spec path are the control.
+  it('does not apply rule 4 to a benchmark, but still does at a spec path', () => {
+    const bytes = fixture('concurrency-no-timeout.bad.txt');
+    expect(scanTree([testFile('pkg/bench/scan.bench.ts', bytes)])).toEqual([]);
+    expect(scanTree([testFile('pkg/test/scan.test.ts', bytes)])).toHaveLength(1);
+  });
+
   it('leaves non-source files in a test tree alone, so fixtures stay safe', () => {
     const bytes = fixture('hardcoded-file-url.bad.txt');
     expect(scanTree([testFile('pkg/test/fixtures/bad.txt', bytes)])).toEqual([]);
@@ -263,9 +297,38 @@ describe('isRelevantPath', () => {
     expect(isRelevantPath('README.md')).toBe(false);
   });
 
+  it('accepts a source file under a bench tree, at the repo root or nested', () => {
+    expect(isRelevantPath('packages/plugin-sdk/bench/project-files.bench.ts')).toBe(true);
+    expect(isRelevantPath('packages/persistence/bench/helpers/corpus.ts')).toBe(true);
+    expect(isRelevantPath('bench/scan.bench.ts')).toBe(true);
+  });
+
   it('does not treat a directory merely starting with "test" as a test tree', () => {
     expect(isRelevantPath('pkg/testing/helper.ts')).toBe(false);
     expect(isRelevantPath('pkg/test-utils/helper.ts')).toBe(false);
+  });
+
+  it('does not treat a directory merely starting with "bench" as a bench tree', () => {
+    expect(isRelevantPath('pkg/benchmarks/helper.ts')).toBe(false);
+    expect(isRelevantPath('pkg/bench-utils/helper.ts')).toBe(false);
+  });
+
+  // The tree predicate used to be one regex — `(?:^|/)test/.*\.(?:ts|…)$` —
+  // which offers the engine a viable start position at every `/test/` segment
+  // and rescans the tail from each, so a path that does NOT match costs time
+  // quadratic in the segment count. This asserts elapsed time because
+  // unbounded time is the whole defect, and because a synchronous call cannot
+  // be cut short by vitest's own timeout: the body would run to completion and
+  // report afterwards however low that timeout was set. The band is wide on
+  // purpose rather than tuned — the regex form took ~2 s on this input and the
+  // substring form takes microseconds, so anything in between separates them
+  // and slow or loaded CI does not move it. The false assertion is the
+  // positive control: a predicate short-circuiting to true would be fast too.
+  it('answers a pathological path in linear time', () => {
+    const hostile = `${'test/'.repeat(32_000)}x.txt`;
+    const started = performance.now();
+    expect(isRelevantPath(hostile)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   // The CLI entry used to carry its own copy of this filter, which no test

@@ -268,6 +268,12 @@ describe('the project walk terminates on a hostile tree', () => {
       expect(scan?.files.length).toBe(20_000);
       expect(scan?.truncated).toBe(true);
     },
+    // Same ceiling the budget rows take, and for the same reason: what this
+    // asserts is a COUNT, so the clock is measuring the 21,000-file build. The
+    // package default is 20 s, which the macOS runner overran at 35.6 s while
+    // this machine builds the same tree in 2 s — a per-platform fixture cost
+    // deciding a case that has no timing property to fail.
+    FIXTURE_TIMEOUT_MS,
   );
 });
 

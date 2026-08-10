@@ -40,10 +40,12 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
-    // Benchmarks. Run BY HAND today — no workflow invokes this task, so nothing
-    // watches the trend between the times somebody remembers to look. Wiring a
-    // scheduled job is the intended next step and is tracked separately; until
-    // it exists, do not describe this as monitored.
+    // Benchmarks, runnable by hand. Whether anything ALSO runs them on a
+    // schedule is answered by .github/workflows and by nothing here — read that
+    // directory before calling the trend monitored. This comment deliberately
+    // asserts neither, because a claim about a sibling file is one nobody
+    // rechecks when that file appears or goes away, and a stale justification
+    // reads exactly like a live one.
     //
     // What it must NOT become is a PR gate: hosted runners vary by a large
     // factor on neighbour load alone, a flaky gate is one people learn to re-run

@@ -844,7 +844,12 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/` (imported by `*.test.ts` only — never shipped).
+`packages/persistence/src/test-fixtures/`. The property that matters is that **no shipped
+source imports them**, which is not the same claim as "only `*.test.ts` imports them" —
+`test/helpers/corpus.ts` does too, and `bench/*.bench.ts` reaches them through it. Derive
+the importer set from the import specifiers rather than from the filenames if you need it:
+a `*.bench.ts` that names `src/test-fixtures/` in a comment and imports the helper counts
+as a transitive reader, not a direct one.
 
 ## Documentation
 
@@ -869,18 +874,45 @@ database in a real temp dir, which is what catches real SQLite semantics.
 `packages/persistence/test/performance/` holds the scale guards, and they are **tests
 rather than benchmarks** because each asserts a size, a query plan or a row set — none
 of them a wall clock. A benchmark reports a trend and gates nothing; these fail a PR.
-Two of them do carry an elapsed bound, and they qualify under the same rule the ReDoS
-gate does: an UPPER bound with real headroom, over a cost that is flat.
+
+**No gate here asserts an elapsed time against a budget, and one used to.** The two
+per-call store costs are gated as a **ratio of the same cost at two store sizes**
+(`scale-budgets.test.ts`, 5k against 50k), because a ratio cancels the runner: half the
+machine halves both sides and moves the quotient not at all. The absolute form was tried
+first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
+and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
+commit. A shared runner does not get 1/165th as fast, it gets **preempted**, and a
+preempted sample has no upper bound; no headroom multiple fixes that. Anything newly
+added here follows the ratio shape, and **`p95` is not the estimator to build one from** —
+measured across idle and 3x-oversubscribed runs, a p95 ratio spread 4.6x on capture and
+17x on open, where the same ratio over the **fastest** sample spread 1.08x and 1.06x.
+Noise only ever adds time, so the minimum of n is the estimator a loaded runner cannot
+inflate.
+
+One absolute bound survives, and only as a **gross-regression backstop** four orders of
+magnitude clear of the measurement: a ratio is blind to a constant-factor regression
+(0.06 ms → 500 ms at every size keeps a ratio of 1.0), just as the backstop is blind to a
+scaling one. They catch different defects; neither substitutes for the other.
 
 The numbers, measured on arm64 macOS / Node 24 against corpora from
 `src/test-fixtures/generate.ts`:
 
-| Property                                  | Measured                               | Budget      |
-| ----------------------------------------- | -------------------------------------- | ----------- |
-| Store growth                              | **818 B/event** marginal, linear to 1M | —           |
-| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)     | ≤ 30 ms ✅  |
-| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)        | ≤ 100 ms ✅ |
-| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5               | ≤ 2 s ❌    |
+| Property                                  | Measured                                    | Gate                    |
+| ----------------------------------------- | ------------------------------------------- | ----------------------- |
+| Store growth                              | **818 B/event** marginal, linear to 1M      | —                       |
+| `recordCapture` 5k → 50k                  | ratio **1.03** (fastest of 200, worst 1.07) | ratio < 3 ✅            |
+| `openLocalDatabase` 5k → 50k              | ratio **0.98** (fastest of 20, worst 1.03)  | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)          | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)             | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5                    | ungated (misses 2 s) ❌ |
+
+**A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
+The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
+size-dependent term to reach 2/7 of the baseline — ~17 us against `recordCapture`'s ~58 us.
+Adding a `SELECT COUNT(*)` to that path is genuinely linear and does **not** redden it
+(ratio 1.094): SQLite answers the count from a covering index in ~4 us at 50k rows. A
+forced row scan (~2.2 ms) reads 10.174 and fails. So a ratio gate catches a linear cost
+that changes what the operation costs, not one inside its noise floor.
 
 **`/security` misses its budget, and it is not a missing index.**
 `hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
@@ -929,7 +961,9 @@ for the same inputs, but a benchmark returns a measurement, and the machine it r
 not in the hash, so a cached hit would report another runner's number as this run's.
 Nothing schedules it — no workflow invokes the task, so today it is run by hand, and the
 table above is re-taken rather than watched. Never wire it to a PR gate. Anything that
-must HOLD belongs in `test/performance/` instead.
+must HOLD belongs in `test/performance/` instead — restated as a **ratio** against a
+second store size, not carried over as the elapsed number the bench prints, which is the
+one form that cannot survive a shared runner.
 
 Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
 0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure

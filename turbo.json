@@ -44,8 +44,16 @@
     // comment used to claim a nightly job that does not exist. Never by a PR
     // gate, whatever else changes: CI runners are too noisy for a wall-clock
     // check, a flaky gate gets ignored, and an ignored gate is worse than none.
-    // The budgets that must hold live in `test/performance/`, which is an
-    // ordinary `test` task.
+    //
+    // `test/performance/` is where the properties that must HOLD live, and it
+    // gates without contradicting the line above, because what it asserts is not
+    // a wall clock: it compares one cost against itself at two store sizes, and
+    // a ratio cancels the runner. The one absolute millisecond bound left there
+    // is a gross-regression backstop four orders of magnitude clear of the
+    // measurement, for the constant-factor case a ratio cannot see. An absolute
+    // bound tight enough to be interesting is exactly what does not survive
+    // here — that shape was tried, and a preempted sample on a shared runner
+    // reddened a healthy tree.
     //
     // `cache: false` is the load-bearing line. Every other task here produces
     // the same answer for the same inputs, which is what makes replaying one

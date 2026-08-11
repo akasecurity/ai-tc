@@ -94,6 +94,66 @@ describe('path-comparison-case', () => {
   });
 });
 
+describe('path-separator-literal', () => {
+  // The shim that motivated this rule lives in a HELPER, not a *.test.ts, so
+  // every case here is filed under a test-tree path rather than a spec name —
+  // a bare "harness.ts" is neither, and scanTree would skip it, passing each
+  // absence assertion below without ever running the rule.
+  const HELPER = 'plugins/x/test/journey/harness.ts';
+
+  it('flags a template join, a .join(":") and a .split(":") on PATH', () => {
+    const violations = scanTree([testFile(HELPER, fixture('path-separator.bad.txt'))]).filter(
+      (v) => v.rule === 'path-separator-literal',
+    );
+    expect(violations.map((v) => v.line)).toEqual([8, 11, 12]);
+    expect(violations[0]?.message).toContain('path.delimiter');
+  });
+
+  it('does not flag path.delimiter, nor a colon-joined string naming no PATH', () => {
+    expect(scanTree([testFile(HELPER, fixture('path-separator.clean.txt'))])).toEqual([]);
+  });
+
+  it('flags it in a spec file too', () => {
+    const violations = scanTree([
+      testFile('shim.test.ts', fixture('path-separator.bad.txt')),
+    ]).filter((v) => v.rule === 'path-separator-literal');
+    expect(violations).toHaveLength(3);
+  });
+
+  it('reports a multi-line template at the separator s line, not where the literal opens', () => {
+    // A string segment's line is only where it OPENS. A template that spans
+    // lines carries its `}:${` further down, and reporting the opening line
+    // sends the reader somewhere the defect is not.
+    const violations = scanTree([
+      testFile(
+        HELPER,
+        ['const env = {', '  PATH: `${binDir}', '${middle}:${hostPath}`,', '};'].join('\n'),
+      ),
+    ]).filter((v) => v.rule === 'path-separator-literal');
+    expect(violations.map((v) => v.line)).toEqual([3]);
+  });
+
+  it('reports one violation per line however many literals sit on it', () => {
+    const violations = scanTree([
+      testFile(HELPER, "const round = process.env.PATH.split(':').join(':');"),
+    ]).filter((v) => v.rule === 'path-separator-literal');
+    expect(violations).toHaveLength(1);
+  });
+
+  it('does not flag the same shape inside a comment', () => {
+    const violations = scanTree([
+      testFile(
+        HELPER,
+        [
+          '// PATH: `${binDir}:${rest}` is the POSIX-only form this rule catches.',
+          'export const x = 1;',
+        ].join('\n'),
+      ),
+    ]);
+    expect(violations).toEqual([]);
+  });
+});
+
 describe('concurrency-missing-timeout', () => {
   it('flags a worker-spawning test with no timeout anywhere', () => {
     const violations = scanTree([

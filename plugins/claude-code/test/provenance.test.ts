@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,8 +8,10 @@ import {
   EXPECTED_REPOSITORY,
   EXPECTED_WORKFLOW_PATH,
   PROVENANCE_CHECK_TIMEOUT_MS,
+  USE_SHELL,
   verifyProvenance,
 } from '../src/provenance.ts';
+import { assertShimResolves, shimmedPath, writeCommandShim } from './helpers/path-shim.ts';
 
 const PACKAGE_NAME = '@akasecurity/ai-tc-claude-code';
 const VERSION = '0.8.2';
@@ -192,16 +194,28 @@ describe('verifyProvenance', () => {
 // Places a fake `npm` first on PATH (mirroring the journey harness's writeFakeJudge
 // pattern) so the REAL default runner is exercised end-to-end — real execFileSync,
 // real stdout capture, real base64/JSON parse — without spawning a live npm.
+//
+// The shim goes through writeCommandShim/shimmedPath for the same three reasons
+// the journey harness does — path.delimiter rather than a literal ':', a .cmd
+// launcher on Windows, no reliance on a chmod that is a no-op there — and its
+// resolution is proven before the runner is allowed to spawn: a miss here does
+// not fail closed, it runs the developer's real npm and reaches the registry.
 const withFakeNpmOnPath = <T>(script: string, fn: () => T): T => {
   const binDir = mkdtempSync(join(tmpdir(), 'aka-provenance-bin-'));
-  const npmPath = join(binDir, 'npm');
-  writeFileSync(npmPath, script);
-  chmodSync(npmPath, 0o755);
+  writeCommandShim(binDir, 'npm', script);
   // eslint-disable-next-line n/no-process-env -- test needs to prepend a fake npm onto the child's PATH
   const originalPath = process.env.PATH;
   // eslint-disable-next-line n/no-process-env -- test needs to prepend a fake npm onto the child's PATH
-  process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+  process.env.PATH = shimmedPath(binDir, originalPath);
   try {
+    // runNpmAudit passes no `env`, so the child inherits this process's — which
+    // makes process.env the environment the probe must resolve under too. The
+    // runner's own USE_SHELL is imported rather than re-derived: on Windows the
+    // shell is what consults PATHEXT, so a probe that disagrees with the runner
+    // reports a false miss in one direction or a false pass in the other, and a
+    // copied condition is free to drift.
+    // eslint-disable-next-line n/no-process-env -- the runner under test inherits this env; the probe must resolve under the same one
+    assertShimResolves('npm', process.env, { shell: USE_SHELL });
     return fn();
   } finally {
     // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
@@ -210,10 +224,27 @@ const withFakeNpmOnPath = <T>(script: string, fn: () => T): T => {
   }
 };
 
+// Elapsed time measured INSIDE the fake-npm scope, around the call under test
+// alone. withFakeNpmOnPath does a mkdtemp, two file writes and a resolution
+// probe that spawns a process; charging those to a budget that exists to bound
+// the RUNNER's timeout would measure setup this assertion has no opinion about
+// — and the probe's spawn is the most expensive of them on Windows, where it
+// launches a .cmd that launches node.
+const verifyWithElapsed = (script: string): { result: boolean; elapsed: number } => {
+  let elapsed = 0;
+  const result = withFakeNpmOnPath(script, () => {
+    const start = Date.now();
+    const verified = verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION });
+    elapsed = Date.now() - start;
+    return verified;
+  });
+  return { result, elapsed };
+};
+
 describe('verifyProvenance — real default runner against a fake npm on PATH', () => {
   it('returns true end-to-end when the real runner reads a matching verified report', () => {
     const report = buildReport({});
-    const script = `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(report)});\n`;
+    const script = `process.stdout.write(${JSON.stringify(report)});\n`;
     const result = withFakeNpmOnPath(script, () =>
       verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION }),
     );
@@ -224,7 +255,7 @@ describe('verifyProvenance — real default runner against a fake npm on PATH', 
     // `npm audit signatures` exits 1 when any entry is unverified; the report is
     // still on stdout and the exact package@version must still be honored.
     const report = buildReport({});
-    const script = `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(report)});\nprocess.exit(1);\n`;
+    const script = `process.stdout.write(${JSON.stringify(report)});\nprocess.exit(1);\n`;
     const result = withFakeNpmOnPath(script, () =>
       verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION }),
     );
@@ -232,12 +263,7 @@ describe('verifyProvenance — real default runner against a fake npm on PATH', 
   });
 
   it('terminates a non-terminating npm child and returns false within the timeout budget', () => {
-    const script = '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n';
-    const start = Date.now();
-    const result = withFakeNpmOnPath(script, () =>
-      verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION }),
-    );
-    const elapsed = Date.now() - start;
+    const { result, elapsed } = verifyWithElapsed('setInterval(() => {}, 1000);\n');
     expect(result).toBe(false);
     // Bounded, not indefinite — allow slack for spawn/teardown without waiting
     // anywhere near the length of an unbounded hang.
@@ -248,12 +274,9 @@ describe('verifyProvenance — real default runner against a fake npm on PATH', 
     // The report captured before the timeout kill must NOT count as success: a hung
     // shell-out is failed-open regardless of what it printed before being killed.
     const report = buildReport({});
-    const script = `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(report)});\nsetInterval(() => {}, 1000);\n`;
-    const start = Date.now();
-    const result = withFakeNpmOnPath(script, () =>
-      verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION }),
+    const { result, elapsed } = verifyWithElapsed(
+      `process.stdout.write(${JSON.stringify(report)});\nsetInterval(() => {}, 1000);\n`,
     );
-    const elapsed = Date.now() - start;
     expect(result).toBe(false);
     expect(elapsed).toBeLessThan(PROVENANCE_CHECK_TIMEOUT_MS * 3);
   });
@@ -261,13 +284,9 @@ describe('verifyProvenance — real default runner against a fake npm on PATH', 
   it('hard-kills a SIGTERM-resistant npm child within the budget and returns false', () => {
     // A child that traps SIGTERM cannot outlast the bound — the runner force-kills
     // with SIGKILL, which cannot be trapped or ignored.
-    const script =
-      '#!/usr/bin/env node\nprocess.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);\n';
-    const start = Date.now();
-    const result = withFakeNpmOnPath(script, () =>
-      verifyProvenance({ packageName: PACKAGE_NAME, version: VERSION }),
+    const { result, elapsed } = verifyWithElapsed(
+      'process.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);\n',
     );
-    const elapsed = Date.now() - start;
     expect(result).toBe(false);
     expect(elapsed).toBeLessThan(PROVENANCE_CHECK_TIMEOUT_MS * 3);
   });

@@ -1122,6 +1122,55 @@ probe reporting itself broken, the probe file gone, started as root, and the one
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
 
+### The PATH shim, and why it fails OPEN
+
+A suite that drives a **built** script cannot reach that script's spawn seams — they are
+in-process, and the script is another process. So the external command is faked by putting a
+controlled executable first on the child's `PATH`: the journey harnesses' judge stub
+(`claude`/`codex`/`agy`) and `plugins/claude-code/test/provenance.test.ts`'s fake `npm`.
+
+**A shim that does not land is not an `ENOENT`.** Resolution walks the rest of `PATH` and runs
+the REAL installed binary — measured by joining `PATH` with `';'` on a POSIX host, which
+resolved and executed the live `claude` CLI. So the failure mode is a suite that looks hermetic
+while reaching a live model or the npm registry, and no gate above sees it: the ESLint ban reads
+source, the vitest guard cannot follow a child process, and the Linux `No-network` job is the
+only one that would — on the one platform where the shim happens to work.
+
+`plugins/*/test/helpers/path-shim.ts` is the shared answer, and it is a **peer copy per
+plugin** for the reason `no-echo.ts` is: a package wall blocks the import, and a copy takes its
+`path-shim.test.ts` with it — or `assertShimResolves` can be weakened back into a no-op with
+every caller staying green. Four properties are load-bearing:
+
+- **Resolution is PROVEN before a chain is driven, not assumed.** `assertShimResolves` spawns
+  the command the way the code under test will, so a miss is a red setup rather than a live
+  call. It **performs** resolution rather than modelling it, so it agrees with libuv about
+  `PATHEXT` instead of restating it.
+- **`shell` and `cwd` must mirror the spawn being stood in for**, because the probe cannot
+  discover either and PATH is not the whole of resolution. `provenance.ts` exports its
+  `USE_SHELL` so the probe imports the runner's own condition rather than re-deriving it;
+  `triage/judge.ts`'s `spawnClaude` uses no shell. **Windows searches the working directory
+  before walking PATH**, so a probe taken under a different cwd than its subject faithfully
+  performs a resolution the subject never performs — which is why the journey harness keys its
+  proof by cwd rather than latching it once, its `run()` taking a per-step cwd.
+- **The probe answer comes before anything else the stub does**, so probing is never recorded
+  as an invocation — which is what a `judgeWasInvoked()`-style sentinel assertion rests on.
+- **Three POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
+  launcher on win32 rather than an extensionless `#!` file, and no reliance on a `chmod` that
+  is a no-op there. `tools/portability-gate`'s `path-separator-literal` rule catches the first
+  returning to a call site, which is how it arrived.
+
+`writeCommandShim` takes an optional `platform` (as `judgeEnv` does), so both branches are
+driven from either host: writing the other platform's form is a resolution failure on this one.
+Pin the **artifact** as well as the refusal there — a branch that wrote nothing also refuses,
+and reads identically.
+
+Two smaller things the same reasoning decides. The probe's own deadline sits **well under the
+package's `testTimeout`**, because it runs inside a test body: equal deadlines mean vitest wins
+the race and the refusal — the whole point of failing closed — is replaced by a bare timeout.
+And `shimmedPath` returns the bin dir **alone** when there is no base PATH: an empty PATH entry
+means the current directory to execvp and to libuv, so a trailing separator quietly puts the cwd
+on a search path whose only purpose is that nothing but the shim is on it.
+
 ### The adversarial fixture corpus
 
 `test/fixtures/adversarial/hostile-repo/` builds the hostile trees the tree walkers

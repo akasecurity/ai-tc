@@ -1,13 +1,14 @@
 // Pure scanning logic for the cross-platform portability gate: a lightweight,
-// non-parsing scanner over the tracked test and bench trees looking for four
+// non-parsing scanner over the tracked test and bench trees looking for five
 // known failure shapes — a hardcoded file:/// URL (POSIX-only, breaks on Windows),
 // a bare GNU `timeout` shell command (absent on macOS), a path comparison
 // with no case normalization (macOS/Windows are case-insensitive, Linux is
-// not), and a worker/concurrency test with no explicit timeout. The CLI entry
+// not), a worker/concurrency test with no explicit timeout, and a PATH built
+// with a literal ':' (Windows joins with ';'). The CLI entry
 // (check-portability.ts) owns all I/O — git ls-files, reading file contents —
 // so the unit suite can drive this with canned file lists.
 //
-// Rules 1-3 describe primitives, not test structure, so they apply to every
+// Rules 1-3 and 5 describe primitives, not test structure, so they apply to every
 // source file in a test or bench tree — the helpers, fixtures-in-code, worker
 // entrypoints and benchmark drivers that carry the worker/platform/path code a
 // spec file usually only calls. Rule 4 keys on an `it()`/`test()` call and so
@@ -22,10 +23,13 @@
 // e.g. /["']/ — would otherwise be misread as the start of a string), then
 // pattern-matches within each. Rules 1 and 2 are mechanical and reliable:
 // they only fire on characters that are unambiguously part of a string
-// literal. Rules 3 and 4 are best-effort: they cannot see a comparison split
+// literal. Rules 3, 4 and 5 are best-effort: they cannot see a comparison split
 // across lines or routed through an intermediate variable, and rule 3 in
 // particular only catches two path-producing expressions compared directly on
-// one line. Treat their silence as "found nothing," not "there is nothing."
+// one line. Rule 5 needs the word PATH to be code on the separator's own line
+// or on the line its literal opens, so a separator held in a named constant, or
+// a PATH assembled several statements away from the ':' it is joined with, goes
+// unseen. Treat their silence as "found nothing," not "there is nothing."
 
 export interface ScannedFile {
   path: string;
@@ -36,7 +40,8 @@ export type RuleId =
   | 'hardcoded-file-url'
   | 'bare-timeout-command'
   | 'path-comparison-case'
-  | 'concurrency-missing-timeout';
+  | 'concurrency-missing-timeout'
+  | 'path-separator-literal';
 
 export interface RuleInfo {
   title: string;
@@ -59,6 +64,10 @@ export const RULES: Record<RuleId, RuleInfo> = {
   'concurrency-missing-timeout': {
     title: 'Concurrency/worker test with no explicit timeout',
     help: "a test that spawns a worker or waits on concurrent I/O can outrun vitest's 5s default under CI load. Either raise testTimeout/hookTimeout for the whole package (see plugins/claude-code/vitest.config.ts) or pass an explicit timeout to this test.",
+  },
+  'path-separator-literal': {
+    title: "PATH joined or split on a literal ':'",
+    help: "Windows joins PATH with ';', so a ':'-joined value is one malformed entry there and a prepended bin dir is not on PATH at all. Use path.delimiter. This one fails OPEN, which is why it is worth a rule: a test shim that does not land is not an ENOENT — resolution walks on and runs the REAL installed binary, so the suite reaches a live tool while still looking hermetic (see plugins/*/test/helpers/path-shim.ts).",
   },
 };
 
@@ -345,6 +354,70 @@ function checkPathComparisonCase(file: ScannedFile, codeMasked: string): Violati
   return violations;
 }
 
+// A PATH the code builds or takes apart itself. `\bPATH\b` is deliberately
+// case-sensitive and boundary-anchored: it reaches `PATH:`, `env.PATH` and
+// `process.env.PATH`, and stays off `filePath` (no boundary, wrong case) and
+// `SCRIPTS_PATH` (an underscore is a word character, so no boundary either).
+const PATH_TOKEN_RE = /\bPATH\b/;
+// The two shapes a POSIX-only separator takes. A template interpolating either
+// side of a bare colon (`${dir}:${rest}`), and a lone ':' as a whole string,
+// which is what a .join(':')/.split(':') argument or a concatenation reads as.
+// A colon anywhere else in a longer literal is left alone — that is a path, a
+// URL or a label far more often than a separator.
+const PATH_JOIN_TEMPLATE = '}:${';
+const LONE_COLON = ':';
+
+// Every line a separator literal actually occupies. A template literal can span
+// lines, and s.line is only where it OPENS — so a PATH built across lines has
+// its `}:${` on a line the segment's start never names. Reporting (and testing
+// for the PATH token at) the opening line alone both misses those and points the
+// reader at the wrong line when it does fire.
+function separatorLines(segment: StringSegment): number[] {
+  if (segment.text === LONE_COLON) return [segment.line];
+  const lines: number[] = [];
+  let searchFrom = 0;
+  for (;;) {
+    const at = segment.text.indexOf(PATH_JOIN_TEMPLATE, searchFrom);
+    if (at === -1) break;
+    // +1 for the opening quote, which is not part of text.
+    const newlines = segment.text.slice(0, at).split('\n').length - 1;
+    lines.push(segment.line + newlines);
+    searchFrom = at + PATH_JOIN_TEMPLATE.length;
+  }
+  return lines;
+}
+
+function checkPathSeparatorLiteral(
+  file: ScannedFile,
+  codeMasked: string,
+  strings: StringSegment[],
+): Violation[] {
+  const codeLines = codeMasked.split('\n');
+  // The PATH token has to be code on the separator's own line or on the line the
+  // literal opens (a single-line build is both), so a colon-joined string with
+  // nothing to do with the environment variable stays quiet — and a `PATH` that
+  // appears only inside a comment or a test description is masked out and so
+  // does not count as naming one.
+  const namesPath = (line: number): boolean => PATH_TOKEN_RE.test(codeLines[line - 1] ?? '');
+  const flagged = new Set<number>();
+  for (const segment of strings) {
+    if (!segment.text.includes(PATH_JOIN_TEMPLATE) && segment.text !== LONE_COLON) continue;
+    for (const line of separatorLines(segment)) {
+      if (namesPath(line) || namesPath(segment.line)) flagged.add(line);
+    }
+  }
+  // One violation per line however many literals sit on it: two reports of the
+  // same defect at the same place is noise a reader has to reconcile.
+  return [...flagged]
+    .sort((a, b) => a - b)
+    .map((line) => ({
+      rule: 'path-separator-literal' as const,
+      file: file.path,
+      line,
+      message: `PATH built or split on a literal ":" — ${RULES['path-separator-literal'].help}`,
+    }));
+}
+
 function checkConcurrencyMissingTimeout(
   file: ScannedFile,
   codeMasked: string,
@@ -451,6 +524,7 @@ export function scanTree(files: ScannedFile[]): Violation[] {
       ...checkHardcodedFileUrl(file, codeMasked, strings),
       ...checkBareTimeoutCommand(file, codeMasked, strings),
       ...checkPathComparisonCase(file, codeMasked),
+      ...checkPathSeparatorLiteral(file, codeMasked, strings),
       ...(isSpec
         ? checkConcurrencyMissingTimeout(
             file,

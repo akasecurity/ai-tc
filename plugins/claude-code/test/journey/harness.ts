@@ -406,8 +406,19 @@ export class SetupJourney {
   // resolution probe below, so the PATH the probe proves is the PATH the chain
   // actually runs under — two independently-built envs could disagree.
   private childEnv(): NodeJS.ProcessEnv {
+    // `process.env` reads case-insensitively on Windows but SPREADS the key as
+    // the OS stored it — `Path`, not `PATH`. So `{ ...HOST_ENV, PATH: … }` hands
+    // the child TWO path variables there: the host's untouched `Path` and our
+    // stub-first `PATH`. A Windows environment block is case-insensitive, so
+    // which one the child resolves against is not something this harness may
+    // assume — and if the host's wins, the stub judge is no longer first and a
+    // real `claude` becomes reachable, which is the one thing this harness
+    // promises cannot happen. Drop every case-variant before setting ours.
+    const hostEnv = Object.fromEntries(
+      Object.entries(HOST_ENV).filter(([name]) => name.toUpperCase() !== 'PATH'),
+    );
     return {
-      ...HOST_ENV,
+      ...hostEnv,
       HOME: this.home,
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,

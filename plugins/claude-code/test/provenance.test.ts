@@ -218,8 +218,14 @@ const withFakeNpmOnPath = <T>(script: string, fn: () => T): T => {
     assertShimResolves('npm', process.env, { shell: USE_SHELL });
     return fn();
   } finally {
+    // `delete` rather than assigning back, because assigning `undefined` to a
+    // process.env property stores the STRING "undefined" — so a host with no
+    // PATH would leave every later test in this worker resolving children
+    // against a one-entry garbage PATH instead of none.
     // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
-    process.env.PATH = originalPath;
+    if (originalPath === undefined) delete process.env.PATH;
+    // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
+    else process.env.PATH = originalPath;
     rmSync(binDir, { recursive: true, force: true });
   }
 };

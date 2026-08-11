@@ -439,31 +439,64 @@ describe('a pulled rule and a vault pointer', () => {
   };
   const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
 
-  it('fires on a bare match, so the absence below is the shield and not the rule', async () => {
-    const rt = createPluginRuntime(
-      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
-      settings(),
-    );
-    try {
-      const result = await rt.processText(`token ${'A'.repeat(26)} here`);
-      expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
-    } finally {
-      await rt.close();
-    }
-  });
+  // Both cases below scan through the worker, so both need the startup grant
+  // START_MS documents — and they are the two in this file that were left on the
+  // product's own 5s default. That default is a FAIL-OPEN threshold, not a cost:
+  // a start that overruns it reports `unavailable`, and an unavailable worker
+  // means the pulled rule is dropped rather than run, which is the correct
+  // product behaviour and fatal to a case whose premise is that the rule ran.
+  //
+  // The direction that bites is not symmetric, which is why this is worth
+  // spelling out. The positive control fails LOUDLY when the rule is dropped —
+  // its expected finding simply is not there. Its sibling expects NO findings,
+  // so a dropped rule satisfies it for entirely the wrong reason: the shield is
+  // credited with an absence that a failed worker start produced. That is what
+  // makes the pair load-bearing rather than decorative, and it is also why each
+  // asserts `scanIsolationDegraded()` first — a startup overrun then names
+  // itself instead of arriving as a bare empty array.
+  const shieldIsolation = { startBudgetMs: START_MS };
 
-  it('never matches inside the pointer, even though the scan ran in the worker', async () => {
-    const rt = createPluginRuntime(
-      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
-      settings(),
-    );
-    try {
-      const result = await rt.processText(`resubmit ${POINTER} please`);
-      expect(result.findings).toEqual([]);
-    } finally {
-      await rt.close();
-    }
-  });
+  it(
+    'fires on a bare match, so the absence below is the shield and not the rule',
+    async () => {
+      const rt = createPluginRuntime(
+        fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+        settings(),
+        { scanIsolation: shieldIsolation },
+      );
+      try {
+        const result = await rt.processText(`token ${'A'.repeat(26)} here`);
+        // Before the finding: if isolation degraded, the rule was dropped and
+        // the assertion below is measuring the wrong thing.
+        expect(rt.scanIsolationDegraded()).toBe(false);
+        expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'never matches inside the pointer, even though the scan ran in the worker',
+    async () => {
+      const rt = createPluginRuntime(
+        fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+        settings(),
+        { scanIsolation: shieldIsolation },
+      );
+      try {
+        const result = await rt.processText(`resubmit ${POINTER} please`);
+        // The one that cannot tell a working shield from a missing rule on its
+        // own. Without this line, a worker that failed to start passes this case.
+        expect(rt.scanIsolationDegraded()).toBe(false);
+        expect(result.findings).toEqual([]);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('what isolation costs when nothing is wrong', () => {
@@ -534,9 +567,21 @@ describe('what isolation costs when nothing is wrong', () => {
     };
     const starts = countWorkerStarts();
     const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings(), {
-      // Every budget stays at the product's own default — this case is about
-      // what isolation costs as shipped, and only the observation is added.
-      scanIsolation: { onWorkerStart: starts.onWorkerStart },
+      // The budgets that MEASURE a cost stay at the product's own default,
+      // because that is what this case is about: the scan budget bounds the
+      // round trip asserted below, and the probe budget bounds the pre-flight.
+      //
+      // The start budget is not one of them, and leaving it at the default was a
+      // contradiction with this case's own ceiling. It is a fail-open THRESHOLD:
+      // a start that overruns it reports `unavailable`, degrades, and drops the
+      // pulled rule — so with the shipped 5s the `startupMs < 10_000` assertion
+      // below could never be reached. Anything in that 5-to-10s band failed on
+      // the worker COUNT instead, reading as "the path built the wrong number of
+      // threads" when what happened is that a contended runner was slow to start
+      // one. That is precisely the failure START_MS exists to prevent, so the
+      // grant applies here too and the assertion below — not the runner — is what
+      // decides.
+      scanIsolation: { startBudgetMs: START_MS, onWorkerStart: starts.onWorkerStart },
     });
     try {
       const text = 'lorem ipsum dolor sit amet '.repeat(80); // ~2KB, a typical prompt
@@ -559,6 +604,12 @@ describe('what isolation costs when nothing is wrong', () => {
       }
       samples.sort((a, b) => a - b);
       const medianMs = samples[Math.floor(samples.length / 2)] ?? Infinity;
+
+      // Isolation is still live, asserted before the count so that a worker
+      // which failed to start says so. Without it the same overrun arrives as
+      // "expected 1 to be 2", which reads like a shape regression in the path
+      // rather than a slow start on a busy machine.
+      expect(rt.scanIsolationDegraded()).toBe(false);
 
       // TWO threads for the whole run — the prober that measures the pulled
       // rule against the battery, and the scan worker — across 41 captures. The

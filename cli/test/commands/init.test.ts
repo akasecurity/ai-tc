@@ -389,7 +389,9 @@ describe('looseStorePaths', () => {
   it('makes `aka init` print a warning when a mode could not be applied', async () => {
     // macOS-only fault injection: chflags freezes the settings dir so init's
     // tighten of settings.json fails, and init must surface that (data/ stays
-    // writable, so the store still initializes). No macOS CI, so this runs local.
+    // writable, so the store still initializes). Runs on the `macOS · Full
+    // suite` leg in ci.yml — the only leg it executes on, since the early return
+    // below reports a pass everywhere else.
     if (process.platform !== 'darwin') return;
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     const settings = settingsDir(dir);

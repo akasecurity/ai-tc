@@ -10,8 +10,9 @@
   },
   "scripts": {
     "gen:bundled-packs": "node scripts/gen-bundled-packs.mjs",
-    "lint": "eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
+    "lint": "eslint src test bench *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
     "test": "vitest run",
+    "bench": "vitest bench --run --outputJson=bench-results.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -669,8 +669,8 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `tools/ci/**`, and the
+   repo-root `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -1007,6 +1007,36 @@ outcome: probe tooling missing, DNS still resolving, the target still answering,
 probe reporting itself broken, the probe file gone, started as root, and the one green
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
+
+### The adversarial fixture corpus
+
+`test/fixtures/adversarial/hostile-repo/` builds the hostile trees the tree walkers
+have to survive — symlink loops, `..`-bearing names, nesting past the depth a path can
+address, a `.gitignore` that ignores everything, 500k files ignored by directory and
+the same number ignored by pattern. It sits at the repo root for the same reason the
+no-network guard does: `project-files`, `local-ops`' folder scan and `scanner` all need
+the SAME inputs, a package wall blocks the import, and three private copies of a symlink
+loop drift apart. Only the first drives it today.
+
+Two things about it are load-bearing:
+
+- **Generators, not checked-in trees.** Most of these cannot live in git at all, and
+  the ones that could would read as a mistake in a listing. Everything goes into a temp
+  dir and comes back out through `cleanup()`.
+- **A shape that cannot be built everywhere reports `created: false` with a reason, and
+  the caller `ctx.skip`s on it** — a symlink needs a privilege on Windows, `chdir` is
+  absent in a worker thread. An early `return` would report as a pass, which is the
+  failure mode the store harness exists to remove.
+
+**Depth is the part that is easy to get expensively wrong.** Creating a directory whose
+absolute path exceeds `PATH_MAX` means descending with `process.chdir`, and the OS
+re-resolves an ever-longer working directory on every step — so that descent is
+QUADRATIC. Measured on an arm64 Mac: the first 500 levels take 35 ms, the next 1,000
+take 4.0 s, the next 2,000 take 31 s, and a 10,000-level chain costs ~348 s to build
+and ~347 s to remove. `deepChain` therefore builds the addressable part with plain
+absolute `mkdirSync` (one syscall a level) and gets PAST the ceiling by making a
+handful of NAMES 255 characters rather than the chain deep. A fixture that reaches for
+literal 10,000-deep nesting is not thorough, it is a timeout.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +

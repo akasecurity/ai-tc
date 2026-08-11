@@ -40,23 +40,40 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
-    // Benchmarks, run by the nightly `bench.yml` workflow and by hand. Never
-    // by a PR gate — CI runners are too noisy for a wall-clock check, a flaky
-    // gate gets ignored, and an ignored gate is worse than none.
+    // Benchmarks, run by the nightly `.github/workflows/bench.yml` and by hand.
     //
-    // `cache: false` is the load-bearing line. Every other task here produces
-    // the same answer for the same inputs, which is what makes replaying one
-    // sound; a benchmark produces a MEASUREMENT, and the machine it ran on is
-    // not in the hash. A cached hit would hand the trend a number taken on
-    // another runner, at another moment, under another load, and report it as
-    // this run's — the one flavour of stale green that cannot be caught by
-    // reading the result, because the result looks exactly right.
+    // What it must NOT become is a PR gate: hosted runners vary by a large
+    // factor on neighbour load alone, a flaky gate is one people learn to re-run
+    // until green, and an ignored gate is worth less than none. The timing
+    // properties that DO gate a PR are assertions on a ratio or on a bound with
+    // real headroom, and they live in the ordinary test suites beside the code
+    // they guard.
+    //
+    // Whether a workflow runs this is a claim about a SIBLING file, and a stale
+    // justification reads exactly like a live one — three branches carried three
+    // different answers to it at once, all of them green, because the task body
+    // is byte-identical whichever comment sits above it. So it is not left to
+    // this comment: `bench-harness.test.js` reads bench.yml's schedule and this
+    // sentence together and fails when they disagree, in either direction.
+    //
+    // `cache: false` is the load-bearing line. Every other task here derives its
+    // output from its inputs, which is what makes replaying one sound; a
+    // benchmark returns a MEASUREMENT, and the machine it ran on — its load, its
+    // CPU, its disk — is in none of the hashes. A cache hit would hand the trend
+    // another runner's number, taken at another moment, and label it this run's.
+    // It is the one stale green that cannot be spotted by reading the result,
+    // because the result looks exactly right.
     //
     // No `outputs` here, deliberately. Turbo consults it only to decide what to
     // save into and restore from the cache, so on a never-cached task it does
     // nothing while reading as if the file were tracked somewhere — the opposite
     // of the line above it. Where `bench-results.json` lands is stated by the
     // thing that collects it: `bench.yml`'s upload glob.
+    //
+    // `dependsOn: build` is there for the benchmarks that measure a BUNDLED
+    // artifact rather than source — where the two differ by enough that a run
+    // against an unbuilt tree would track a number no user pays. It costs the
+    // source-only benchmarks nothing: turbo skips a package with no build task.
     "bench": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "cache": false

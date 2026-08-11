@@ -1,5 +1,5 @@
 import { Rule } from '@akasecurity/schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { scan } from '../../src/index.ts';
 import { BUDGET_MS, checkRuleTiming, worstProbeMs } from '../../src/security/redos-probe.ts';
@@ -108,6 +108,50 @@ describe('checkRuleTiming', () => {
         `the budget interpreted — retune the pattern, do not touch the timing loop. Both red ` +
         `means the gate really has started reading V8's native tier.`,
     ).toBe(false);
+  });
+
+  // `worstProbeMs` takes its clock as a parameter so the bundled-rule CI gate
+  // can charge CPU time instead (see security/redos.test.ts, which explains
+  // why). The DEFAULT is the production path and must stay wall time:
+  // `checkRuleTiming` passes no clock, and the verdict it returns is what the
+  // runtime pre-flight caches — permanently — against a pulled rule. What a
+  // quarantined rule would have spent is the hook's harness timeout, and a
+  // harness timeout is wall-clock, so wall time is the resource that decides.
+  //
+  // Nothing else in this workspace pins that. A default flipped to CPU time
+  // changes which rules get disabled on user machines and leaves every OTHER
+  // timing suite here and in plugin-sdk green, because a catastrophic pattern
+  // is over budget on either resource — the two clocks disagree only on a
+  // stalled machine, and no test reproduces one. So this asserts the binding
+  // directly rather than a behaviour both clocks satisfy.
+  //
+  // Driven through `checkRuleTiming` and not `worstProbeMs`, because the
+  // property belongs to the production entry point: a default left correct
+  // while `checkRuleTiming` started passing a clock of its own is the same
+  // defect with the same consequence.
+  it('reads wall time by default, the resource the runtime pre-flight must charge', () => {
+    // Benign and unique to this file: the walk finishes in microseconds, and a
+    // pattern no other case here compiles cannot disturb their tier-up.
+    const rule = regexRule('ZZQ[0-9]{6}');
+    const wall = vi.spyOn(performance, 'now');
+    const cpu = vi.spyOn(process, 'cpuUsage');
+    try {
+      checkRuleTiming(rule);
+      expect(
+        wall,
+        'the default probe clock must read wall time — the pre-flight quarantines a rule for ' +
+          'what it would spend against a wall-clock harness timeout.',
+      ).toHaveBeenCalled();
+      expect(
+        cpu,
+        'the production pre-flight must not be charged CPU time. The CI gate over the bundled ' +
+          'packs passes a CPU clock deliberately, and that clock must not become the default: a ' +
+          'rule that stalls the hook still spends its harness timeout however little CPU it burns.',
+      ).not.toHaveBeenCalled();
+    } finally {
+      wall.mockRestore();
+      cpu.mockRestore();
+    }
   });
 });
 

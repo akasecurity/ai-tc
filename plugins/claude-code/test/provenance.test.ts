@@ -1,6 +1,6 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -199,13 +199,23 @@ const withFakeNpmOnPath = <T>(script: string, fn: () => T): T => {
   chmodSync(npmPath, 0o755);
   // eslint-disable-next-line n/no-process-env -- test needs to prepend a fake npm onto the child's PATH
   const originalPath = process.env.PATH;
+  // `delimiter`, not a literal `:` — Windows separates PATH entries with `;`.
+  // No trailing separator when the host has no PATH: an empty entry means "the
+  // current directory" on POSIX, which would put this suite's cwd on the PATH
+  // every child it spawns resolves against.
   // eslint-disable-next-line n/no-process-env -- test needs to prepend a fake npm onto the child's PATH
-  process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+  process.env.PATH = [binDir, originalPath].filter(Boolean).join(delimiter);
   try {
     return fn();
   } finally {
+    // `delete` rather than assigning back, because assigning `undefined` to a
+    // process.env property stores the STRING "undefined" — so a host with no
+    // PATH would leave every later test in this worker resolving children
+    // against a one-entry garbage PATH instead of none.
     // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
-    process.env.PATH = originalPath;
+    if (originalPath === undefined) delete process.env.PATH;
+    // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
+    else process.env.PATH = originalPath;
     rmSync(binDir, { recursive: true, force: true });
   }
 };

@@ -34,7 +34,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
@@ -158,7 +158,10 @@ class SetupJourney {
       // it, never a live model; node's own dir second so the stub's
       // `#!/usr/bin/env node` shebang resolves. Nothing else from the host
       // environment reaches the chain.
-      PATH: `${this.binDir}:${dirname(process.execPath)}`,
+      // `delimiter`, not a literal `:` — Windows separates PATH entries with
+      // `;`, and a literal colon there collapses both entries into one
+      // unresolvable string, so neither the stub nor node itself is reachable.
+      PATH: `${this.binDir}${delimiter}${dirname(process.execPath)}`,
     };
     // spawnSync (not execFileSync) so BOTH streams are captured on the success
     // path too — the stderr assertions below must see what a wizard transcript

@@ -39,16 +39,24 @@ import { writeSecretPosture } from '../../src/remediation/entry.ts';
 describe("entry.ts writeSecretPosture — a close() fault in the finally never rewrites the write's own result", () => {
   let home: string;
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     // writeSecretPosture calls loadConfig() with no override, resolving ~/.aka
-    // from $HOME — point it at a throwaway home so this test never touches the
-    // developer's real local store.
+    // from os.homedir() — point it at a throwaway home so this test never
+    // touches the developer's real local store. BOTH variables are set because
+    // homedir() reads $HOME on POSIX and %USERPROFILE% on Windows: setting only
+    // HOME leaves this writing into the real profile there, which is a silent
+    // contamination rather than a failure and so would never be noticed.
     home = mkdtempSync(join(tmpdir(), 'aka-entry-posture-'));
     // eslint-disable-next-line n/no-process-env -- test needs to redirect ~/.aka to a throwaway home
     originalHome = process.env.HOME;
     // eslint-disable-next-line n/no-process-env -- test needs to redirect ~/.aka to a throwaway home
+    originalUserProfile = process.env.USERPROFILE;
+    // eslint-disable-next-line n/no-process-env -- test needs to redirect ~/.aka to a throwaway home
     process.env.HOME = home;
+    // eslint-disable-next-line n/no-process-env -- test needs to redirect ~/.aka to a throwaway home
+    process.env.USERPROFILE = home;
   });
 
   afterEach(() => {
@@ -57,6 +65,10 @@ describe("entry.ts writeSecretPosture — a close() fault in the finally never r
     if (originalHome === undefined) delete process.env.HOME;
     // eslint-disable-next-line n/no-process-env -- restore the host HOME after the test
     else process.env.HOME = originalHome;
+    // eslint-disable-next-line n/no-process-env -- restore the host USERPROFILE after the test
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    // eslint-disable-next-line n/no-process-env -- restore the host USERPROFILE after the test
+    else process.env.USERPROFILE = originalUserProfile;
     rmSync(home, { recursive: true, force: true });
   });
 

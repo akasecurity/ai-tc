@@ -145,7 +145,11 @@ describe('scrubTranscriptTail', () => {
     expect(readFileSync(outside, 'utf8')).toBe(content);
   });
 
-  it('refuses a symlink inside the root that points outside it', async () => {
+  it('refuses a symlink inside the root that points outside it', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     const content = `{"text":"key ${SECRET}"}\n`;
     const target = join(outsideRoot, 'target.jsonl');
     writeFileSync(target, content);

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { readPackageManifest, workspacePackageDirs } from './helpers/lint-invocations.js';
+
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
 
@@ -56,6 +58,21 @@ function matrixValues(source, key) {
 // it does not survive is being asked for a STEP, because the cut lands above
 // them. So require both: a `runs-on:` (this is a job) and at least one step
 // list item (the body reached its end).
+//
+// COMMENT LINES ARE DROPPED, and that is load-bearing rather than tidying. Every
+// check below matches a pattern against this text, and a job's own comments
+// describe the very flags they sit next to — `# --continue: report every
+// package's failures…` sits one line above the `--continue` it explains. So a
+// reader that keeps them cannot tell a flag from a sentence about a flag, and
+// each of these passes on a job whose real step was deleted: measured, all three
+// of the Windows leg's structural checks stayed green with the flag, the filter
+// and the whole cache step removed and only the prose left behind. That is the
+// exact failure mode this file exists to prevent, one level up.
+//
+// A line whose first non-space character is `#` is a YAML comment here. The one
+// shape that would be misread is a `#` inside a `run:` block scalar, where it is
+// command text — no run command in these workflows contains one, and a shell
+// comment inside a CI command would be dead text anyway.
 function jobBlock(source, key) {
   // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
   // where nothing is a metacharacter: the cost is one call, and a caller that
@@ -66,7 +83,10 @@ function jobBlock(source, key) {
     'm',
   ).exec(source);
   expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
-  const body = block[1];
+  const body = block[1]
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
   expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
   expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
   return body;
@@ -79,6 +99,27 @@ function jobBlock(source, key) {
 function turboCacheKeys(block) {
   return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
 }
+
+/**
+ * Every `--filter=<name>` a job's run steps pass to turbo. Comment lines are
+ * already gone by the time a block reaches here (see jobBlock), which is what
+ * stops a filter that was moved into a comment reading as one that still runs.
+ */
+const turboFilters = (block) => [...block.matchAll(/--filter=(\S+)/g)].map(([, name]) => name);
+
+/**
+ * Every workspace package npm actually publishes — `private` absent or false.
+ * Derived from pnpm-workspace.yaml and the manifests themselves rather than
+ * listed, because a list is exactly what let the CLI and the plugin sit outside
+ * the Windows job while its name claimed the shipped surface: a fifth artifact
+ * added tomorrow would not be on it either.
+ */
+const publishedPackageNames = () =>
+  workspacePackageDirs()
+    .map((dir) => readPackageManifest(dir))
+    .filter((pkg) => pkg.private !== true && typeof pkg.name === 'string')
+    .map((pkg) => pkg.name)
+    .sort();
 
 // Every check name a workflow can emit, with matrix jobs expanded to the names
 // GitHub actually reports.
@@ -235,16 +276,84 @@ describe('the macOS leg', () => {
   });
 });
 
+// The Windows leg is the mirror image of the macOS one: it is filtered ON
+// PURPOSE, so nothing about a narrow filter looks wrong in a diff — which is how
+// it spent its whole life excluding `@akasecurity/cli` and the plugins while its
+// own name promised the shipped surface and its own comment named those very
+// packages as the reason it exists. The filter is where its promise lives, so
+// that is what these pin.
+describe('the Windows leg', () => {
+  // Read per-`it`, not in the describe body: jobBlock asserts, and an assertion
+  // in a describe body is a collection error that would silence every other
+  // suite in this file. Same reasoning as the macOS block above.
+  const ci = readWorkflow('ci.yml');
+
+  it('runs on a Windows runner', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/^ {4}runs-on: windows-latest$/m);
+  });
+
+  // THE assertion this job exists for. Derived from the workspace rather than
+  // listed, so a fifth published artifact is caught the day it lands; the
+  // count check first is what stops a broken derivation satisfying the loop
+  // with an empty set.
+  it('runs every package npm publishes', () => {
+    const published = publishedPackageNames();
+    // Positive control on the DERIVATION, not a second copy of the list: a
+    // manifest reader that broke and returned nothing — or everything — would
+    // otherwise satisfy `arrayContaining` and this check would pass forever
+    // while the filter list rotted. `cli` is the package the job's own comment
+    // names, and `persistence` is private and bundled, so one must be in the
+    // derived set and the other must not. A length floor alone cannot separate
+    // those two failures.
+    expect(published).toContain('@akasecurity/cli');
+    expect(published).not.toContain('@akasecurity/persistence');
+    expect(turboFilters(jobBlock(ci, 'windows'))).toEqual(expect.arrayContaining(published));
+  });
+
+  // A filter is only a filter while there is something to filter. `turbo run
+  // test` with no --filter at all would satisfy the containment check above by
+  // running everything, which is a different job with a different cost — and it
+  // would make the assertion above unfalsifiable from then on.
+  it('is a filtered run, which is what makes the filter list load-bearing', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    expect(turboFilters(block).length).toBeGreaterThan(0);
+  });
+
+  // Without it turbo bails at the first red package, so a platform-specific
+  // failure in an early package hides every later one — and on this leg the
+  // whole point is seeing the platform's failures in one triage pass.
+  it('reports every package rather than bailing at the first failure', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/--continue/);
+  });
+
+  it('restores a Turbo cache', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/path: \.turbo\/cache$/m);
+  });
+
+  // Same reasoning as the macOS leg: GitHub reports a skipped job as PENDING for
+  // a required check, so a condition that skips this one blocks the merge with
+  // nothing red to point at. Absence-only, leaning on jobBlock's structural pair
+  // for its positive control.
+  it('carries no condition that could skip it on a PR', () => {
+    expect(jobBlock(ci, 'windows')).not.toMatch(/^ {4}if:/m);
+  });
+});
+
 // Turbo's task hash covers file contents, dependencies and env — not the
-// platform. Two jobs now restore .turbo/cache on two different OSes, so a key
-// that did not separate them would let macOS restore Linux's entry, hash-match,
-// and replay Linux's green `test` tasks: a platform leg reporting success
-// having executed nothing. `runner.os` leading every key and restore-key is the
-// whole of what prevents it, and it is one edit from being dropped.
+// platform. Three jobs now restore .turbo/cache on three different OSes, so a
+// key that did not separate them would let macOS or Windows restore Linux's
+// entry, hash-match, and replay Linux's green `test` tasks: a platform leg
+// reporting success having executed nothing. `runner.os` leading every key and
+// restore-key is the whole of what prevents it, and it is one edit from being
+// dropped. It matters most on the Windows leg, which is the newest to take a
+// cache and the one whose packages differ most by platform.
 describe('the Turbo caches in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 
-  it.each(['ci', 'macos'])('%s keys its cache per platform', (job) => {
+  it.each(['ci', 'macos', 'windows'])('%s keys its cache per platform', (job) => {
     const keys = turboCacheKeys(jobBlock(ci, job));
     // The `key:` plus two restore-keys. Pinned so a key added without the
     // prefix cannot hide behind a loop that happens to see none.

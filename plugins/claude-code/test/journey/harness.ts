@@ -31,7 +31,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -404,14 +404,30 @@ export class SetupJourney {
   }
 
   private run(script: string, args: string[], input?: string, cwd?: string): StepResult {
+    // `process.env` reads case-insensitively on Windows but SPREADS the key as
+    // the OS stored it — `Path`, not `PATH`. So `{ ...HOST_ENV, PATH: … }` hands
+    // the child TWO path variables there: the host's untouched `Path` and our
+    // stub-first `PATH`. A Windows environment block is case-insensitive, so
+    // which one the child resolves against is not something this harness may
+    // assume — and if the host's wins, the stub judge is no longer first and a
+    // real `claude` becomes reachable, which is the one thing this harness
+    // promises cannot happen. Drop every case-variant before setting ours.
+    const hostEnv = Object.fromEntries(
+      Object.entries(HOST_ENV).filter(([name]) => name.toUpperCase() !== 'PATH'),
+    );
     const env: NodeJS.ProcessEnv = {
-      ...HOST_ENV,
+      ...hostEnv,
       HOME: this.home,
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
       // Stub judge first on PATH so apply-suppressions' `claude -p` spawn hits it,
       // never a live model.
-      PATH: `${this.binDir}:${HOST_ENV.PATH ?? ''}`,
+      // `delimiter`, not a literal `:` — Windows separates PATH entries with
+      // `;`, and a literal colon there collapses both entries into one
+      // unresolvable string, so the stub stops being reachable at all.
+      // No trailing separator when the host has no PATH: an empty entry means
+      // "the current directory" on POSIX, which would put the child's cwd on it.
+      PATH: [this.binDir, HOST_ENV.PATH].filter(Boolean).join(delimiter),
       // Cleared so judgeEnvSeen() proves something: if these reached the stub
       // merely by being inherited from here, the assertion would hold even with
       // spawnClaude passing no env at all. Node drops undefined entries when it

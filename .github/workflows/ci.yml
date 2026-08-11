@@ -240,9 +240,33 @@ jobs:
       - name: Test
         run: pnpm turbo run test --continue
 
-  # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
+  # Windows leg: the CLI and plugins advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
-  # processes — gets exercised on windows-latest. setup-wizard is included for
+  # processes — gets exercised on windows-latest.
+  #
+  # THE FOUR PUBLISHED ARTIFACTS ARE THE FIRST FOUR FILTERS, and that is the one
+  # part of this list with a rule behind it rather than a judgement. `cli`,
+  # `ai-tc-claude-code`, `ai-tc-codex` and `ai-tc-antigravity` are every package
+  # in the workspace npm actually publishes — everything else here is
+  # `private: true` and reaches a user only inlined into one of those four. They
+  # are also the packages carrying the most platform-specific code (`open-url.ts`'s
+  # `cmd /c start`, `prompter.ts`'s setRawMode, `dashboard.ts`'s spawn +
+  # require.resolve, `external-dispatch.ts`'s POSIX-only guard, the plugins'
+  # built-script child processes), and until they were added this job's name
+  # claimed a shipped surface none of them was part of.
+  # `packages/eslint-config/test/required-checks.test.js` derives that set from the
+  # workspace and fails when a published package is missing from this list, so a
+  # fifth artifact cannot ship untested here. Note turbo exits 1 on a `--filter`
+  # matching no package, so a typo here fails the job rather than quietly
+  # narrowing it.
+  #
+  # What is deliberately NOT here: `dashboard-ui` and `ui-kit` (presentational,
+  # no I/O — `ui-kit` has no `test` script at all), `plugin-browser-extension`
+  # (private, and its Node half is a native-messaging host whose Windows install
+  # path `cli`'s extension suite already covers), and `audit-gate` (repo tooling,
+  # never shipped).
+  #
+  # setup-wizard is included for
   # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
   # the plugin bundle. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
@@ -319,10 +343,52 @@ jobs:
   # approach vitest's 5s default. The bash-driven cases in
   # no-network-runtime.test.js skip themselves on win32 (the CI script is the
   # Linux job's mechanism) rather than passing vacuously — 9 skipped, 45 run.
+  #
+  # WHAT THE FOUR PUBLISHED PACKAGES SKIP HERE, and why each skip is a skip
+  # rather than a silent pass. Every one is `ctx.skip()` or `it.skipIf`, so it
+  # is reported; an early `return` would read as a green assertion instead.
+  #   - Unprivileged symlink creation (cli's init suite, the plugins' redact and
+  #     tail-scrub suites). Windows gates it behind a privilege the runner does
+  #     not grant, so the containment property those cases pin is asserted where
+  #     it can be, not faked here.
+  #   - POSIX mode-bit fault injection: a chmod is a no-op on Windows, so the
+  #     read-only-store and unwritable-home rows would pass having injected
+  #     nothing. Same rule the persistence suite already follows.
+  # Everything else in the four runs, including the plugins' fail-open e2e
+  # matrix and the bundled scan-worker resolution — which had never executed on
+  # Windows and is exactly the resolve-a-sibling-by-path code most likely to
+  # differ there.
+  #
+  # THE WIZARD JOURNEY SUITES ARE THE EXPECTED FIRST FAILURE, and they are NOT
+  # skipped — triage them before anything else on the first red run here. They
+  # put an extension-less `claude`/`codex`/`agy` stub on the child PATH behind a
+  # `#!/usr/bin/env node` shebang; Windows resolves a bare command name through
+  # PATHEXT and can execute neither form. They are left running deliberately:
+  # skipping a suite never observed to fail is the same coverage loss this leg
+  # exists to close, one door over, and the fix (a `.cmd` shim beside the stub)
+  # is only worth writing against a real failure. Their PATH handling is already
+  # Windows-correct — `path.delimiter` and USERPROFILE, not a literal `:` — so
+  # what remains is the stub's executability and nothing else.
+  #
+  # It runs `test` only, and the job's name says so. Lint and typecheck read
+  # source and answer identically on every OS, so the ubuntu leg covers them —
+  # the same reasoning the macOS leg above records. The one genuinely
+  # platform-sensitive part of the lint surface is `@akasecurity/eslint-config`'s
+  # own path handling, and that is a `test` task, already in this filter.
+  # The budget moved 25 -> 35 with the four packages, and that number is a
+  # HEADROOM JUDGEMENT rather than a measurement — nothing here has timed this
+  # job on Windows since they were added. What it is sized against: turbo's
+  # `test` dependsOn `build`/`^build`/`^typecheck`, so each new package brings a
+  # tsup build with it on the first (cold-cache) run; the plugin suites are the
+  # heaviest thing added and spend most of their time spawning real child
+  # processes, which is the single slowest operation on this runner; and the
+  # macOS leg runs every package inside 25. Windows is the slowest of the three,
+  # so it gets more than macOS, not less. Re-measure and tighten this once a few
+  # real runs exist rather than leaving it as folklore.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
@@ -338,12 +404,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same shape and the same separate-lineage rule as the other two cached
+      # legs — see the runner.os note above the macOS job. This leg re-ran every
+      # package from scratch on every push until it had one, which is also what
+      # paid for the four packages added below.
+      - name: Restore Turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-${{ runner.os }}-
+
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
         run: >
           pnpm turbo run test
           --continue
+          --filter=@akasecurity/cli
+          --filter=@akasecurity/ai-tc-claude-code
+          --filter=@akasecurity/ai-tc-codex
+          --filter=@akasecurity/ai-tc-antigravity
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections

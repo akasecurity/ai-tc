@@ -22,6 +22,16 @@ import { seedSampleShares } from './sample-shares.ts';
  * left to this comment — the check lives there because only that task's turbo
  * inputs hash the whole workspace.
  *
+ * That rule PERMITS a bench importer without requiring one, and today there is
+ * none: seeding a corpus needs the raw connection, and a *.bench.ts reading
+ * that seam is classified as shipped source by test-only-seam.test.js, whose
+ * predicate accepts a test/ segment or a .test./.spec. basename and not
+ * .bench. — so both benches reach the generator through test/helpers/corpus.ts
+ * instead. Two separate questions, answered by two separate predicates: what
+ * may import fixtures, and what may read the seam. Do not fold the second into
+ * the first and conclude the directory is off limits to bench/ — the generator
+ * below exists for that tier.
+ *
  * Two kinds live here and they answer different questions. `seedSampleFixtures`
  * and its parts are FIXED datasets — hand-authored rows shaped to exercise a
  * read surface. `generate.ts` is a deterministic GENERATOR, for the benchmark

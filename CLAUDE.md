@@ -855,6 +855,17 @@ there and they answer different questions: the
 `generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
 sizes that matter there cannot live in git.
 
+**Derive the importer set from import SPECIFIERS, never from filenames or a grep.** Both
+mislead, in opposite directions. A grep for the directory name counts a file that merely
+mentions it in a comment — `test/migrations.test.ts` does, and imports nothing from here,
+which is how an earlier count of this set came out one too high. Filenames miss the other
+way: a `*.bench.ts` reaching the fixtures through `test/helpers/corpus.ts` is a transitive
+reader, not a direct one. Today no `*.bench.ts` imports the directory directly, and that
+is a fact about the seam rather than a second rule — seeding needs the raw connection, and
+`test-only-seam.test.js` classifies a `.bench.` file as shipped source. The two predicates
+answer different questions and are deliberately not shared; do not collapse them into
+"`bench/` may not import fixtures".
+
 ## Documentation
 
 This repository is **public** (open source). Keep internal documentation out of it:

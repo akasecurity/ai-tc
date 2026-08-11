@@ -12,6 +12,7 @@
  * so nothing here is a raw value, and it matches no rule.
  */
 import { randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 
@@ -60,4 +61,22 @@ export function captureFinding(
     confidence: 0.9,
     ...overrides,
   };
+}
+
+/**
+ * How many CAPTURES the store holds, which is not how many `audit_events` rows
+ * it holds.
+ *
+ * `ensureSessionRoot` plants one `event_type = 'session'` row per session before
+ * the capture's own row can reference it, so counting the table counts those
+ * structural roots too and every "the write landed" assertion reads one high.
+ * Stated as "not a root" rather than "is a prompt": pinning a `kind` here would
+ * make a test that captures some other kind read as loss.
+ */
+export function captureCount(db: DatabaseSync): number {
+  return (
+    db.prepare("SELECT count(*) AS n FROM audit_events WHERE event_type != 'session'").get() as {
+      n: number;
+    }
+  ).n;
 }

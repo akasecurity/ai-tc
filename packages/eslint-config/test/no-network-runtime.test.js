@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { createConnection, createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, matchesGlob, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
@@ -271,7 +271,25 @@ describe('the guard cannot be cached or dropped out of CI', () => {
         turbo,
       );
     expect(inputs).not.toBeNull();
-    expect(inputs[1]).toContain('$TURBO_ROOT$/.github/workflows/ci.yml');
+
+    // ci.yml is asserted as COVERAGE rather than as a literal entry, because a
+    // glob covers it too and the entry is one today: ci-test-concurrency.test.js
+    // reads every workflow in the directory, so turbo hashes the directory. What
+    // matters is that editing ci.yml moves this hash — which a `*.yml` glob
+    // delivers and a `*.yaml` one silently would not.
+    const entries = [...inputs[1].matchAll(/"([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((e) => e.startsWith('$TURBO_ROOT$/'))
+      .map((e) => e.slice('$TURBO_ROOT$/'.length));
+    expect(
+      entries.length,
+      'no $TURBO_ROOT$ entries parsed out of the inputs array',
+    ).toBeGreaterThan(5);
+    expect(
+      entries.some((pattern) => matchesGlob('.github/workflows/ci.yml', pattern)),
+      `no inputs entry covers .github/workflows/ci.yml:\n  ${entries.join('\n  ')}`,
+    ).toBe(true);
+
     expect(inputs[1]).toContain('$TURBO_ROOT$/tools/ci/**');
     expect(inputs[1]).toContain('$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}');
   });

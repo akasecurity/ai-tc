@@ -268,6 +268,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
+  '@akasecurity/portability-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',
   '@akasecurity/setup-wizard',
@@ -593,6 +594,7 @@ const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
 const EXPECTED_NON_PACKAGE_FILES = [
   'commitlint.config.mjs',
   'eslint.root.config.mjs',
+  'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/setup/no-network.ts',
   'tools/ci/egress-probe.mjs',
 ];
@@ -2051,12 +2053,23 @@ describe('ignore flags subtract from what an invocation covers', () => {
     // would pass on a predicate that had stopped seeing one of them.
     const REAL_SHAPES = [
       ['eslint src test *.config.*', ['src', 'test']],
+      // The benchmark harness adds a third code directory to the packages that
+      // carry benchmarks. `bench/` imports product code and test helpers, so it
+      // is source like any other and has to sit behind the same bans.
+      ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
       ['eslint src *.config.*', ['src']],
       [
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
         ['src', 'test', 'scripts'],
+      ],
+      // The same shape once a package grows a `bench/`. A benchmark imports
+      // product code and builds fixtures like any other source here, so it sits
+      // behind the same bans rather than outside every lint pass.
+      [
+        'eslint src test bench *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+        ['src', 'test', 'bench', 'scripts'],
       ],
       // The same two-pass split, with `test` rather than `scripts` behind the
       // network-only config: @akasecurity/eslint-config's own suites are plain JS

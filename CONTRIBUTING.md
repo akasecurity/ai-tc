@@ -9,10 +9,18 @@ set up, the conventions we enforce, and how to contribute detection rules.
 pnpm setup                 # install deps + git hooks
 pnpm test                  # run the test suite
 pnpm typecheck && pnpm lint
+pnpm bench                 # benchmarks — advisory, never a merge gate
 ```
 
 Requires Node.js 24+ and pnpm. The core product is local-first — it runs on Node
 and SQLite with no other services.
+
+`pnpm bench` is not part of the checks above and does not need to pass before you open a
+PR — it records a performance **trend**, which a nightly job on `main` collects as a
+workflow artifact. Nothing here gates a merge on wall-clock: CI runners are too noisy for
+that, and a timing check that fails for reasons unrelated to your diff is one everyone
+learns to re-run until it goes green. Performance limits that genuinely must hold are
+written as ordinary tests with generous upper bounds, and those do run in `pnpm test`.
 
 ## Conventions (enforced by CI)
 

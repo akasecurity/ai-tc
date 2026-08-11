@@ -62,6 +62,49 @@ describe('resolveProjectFiles', () => {
     expect(paths).not.toContain('debug.log');
   });
 
+  // The layered verdict resolves DEEPEST-FIRST and stops at the first layer with
+  // an opinion, so the case that decides whether it is correct is the one where
+  // the deepest layer has NONE and the answer has to come from an ancestor. The
+  // `!re-include` case above cannot reach it: there the deepest layer answers, so
+  // a lookup that consulted only the deepest layer and never fell through would
+  // satisfy every assertion in it.
+  it('falls through to an ancestor .gitignore when the deepest one is silent', () => {
+    writeFileSync(join(root, '.gitignore'), '*.log\n');
+    mkdirSync(join(root, 'logs'), { recursive: true });
+    // Names one .log and says nothing about any other, so `other.log` reaches
+    // this layer, gets no verdict, and must still be ignored by the root's `*.log`.
+    writeFileSync(join(root, 'logs', '.gitignore'), '!important.log\n');
+    write('logs/important.log');
+    write('logs/other.log');
+    write('src/keep.ts');
+
+    const paths = resolveProjectFiles(root)?.files.map((f) => f.path);
+
+    // The positive control: without it a walk returning nothing passes the
+    // absence check below.
+    expect(paths).toContain('src/keep.ts');
+    expect(paths).toContain('logs/important.log');
+    expect(paths).not.toContain('logs/other.log');
+  });
+
+  // The mirror image: the deepest layer re-ignores what an ancestor re-included,
+  // which pins the precedence direction in the arm the case above cannot reach
+  // (there the deeper layer RE-INCLUDES). Reversing the iteration order fails
+  // this one, the fall-through one and the `!re-include` one together, so this
+  // case documents the direction rather than being the only thing holding it.
+  it('lets the deepest .gitignore override an ancestor re-include', () => {
+    writeFileSync(join(root, '.gitignore'), '*.log\n!keep.log\n');
+    mkdirSync(join(root, 'z'), { recursive: true });
+    writeFileSync(join(root, 'z', '.gitignore'), 'keep.log\n');
+    write('keep.log');
+    write('z/keep.log');
+
+    const paths = resolveProjectFiles(root)?.files.map((f) => f.path);
+
+    expect(paths).toContain('keep.log');
+    expect(paths).not.toContain('z/keep.log');
+  });
+
   it('never descends into .git or dependency/build trees', () => {
     write('node_modules/pkg/index.js');
     write('dist/bundle.js');

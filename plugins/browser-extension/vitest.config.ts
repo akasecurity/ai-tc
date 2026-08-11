@@ -16,5 +16,11 @@ export default defineConfig({
     // worker starts — the scan-worker bundle suite drives the built artifacts.
     globalSetup: ['./test/global-setup.ts'],
     environment: 'node',
+    // The scan-worker bundle suite spawns a real worker thread against those
+    // built artifacts, which runs slowly under Turbo's parallel task load —
+    // raise the per-test AND per-hook timeouts above vitest's 5s/10s defaults
+    // (mirrors plugins/claude-code/vitest.config.ts for the same reason).
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

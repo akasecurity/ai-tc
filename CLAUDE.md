@@ -669,8 +669,8 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `tools/ci/**`, and the
+   repo-root `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -844,7 +844,27 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/` (imported by `*.test.ts` only — never shipped).
+`packages/persistence/src/test-fixtures/` — never shipped, because only a package's own
+`test/` and `bench/` files import it and `src/index.ts` never re-exports it. That rule is
+about DIRECTORIES rather than filename suffixes (`test/helpers/corpus.ts` is an importer
+and is neither a `*.test.ts` nor a `*.bench.ts`), and
+`packages/eslint-config/test/test-fixtures-imports.test.js` derives it from the tracked
+tree — so a product importer fails CI rather than being caught in review. Two kinds live
+there and they answer different questions: the
+`seedSample*` datasets are FIXED rows shaped to exercise a read surface, while
+`generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
+sizes that matter there cannot live in git.
+
+**Derive the importer set from import SPECIFIERS, never from filenames or a grep.** Both
+mislead, in opposite directions. A grep for the directory name counts a file that merely
+mentions it in a comment — `test/migrations.test.ts` does, and imports nothing from here,
+which is how an earlier count of this set came out one too high. Filenames miss the other
+way: a `*.bench.ts` reaching the fixtures through `test/helpers/corpus.ts` is a transitive
+reader, not a direct one. Today no `*.bench.ts` imports the directory directly, and that
+is a fact about the seam rather than a second rule — seeding needs the raw connection, and
+`test-only-seam.test.js` classifies a `.bench.` file as shipped source. The two predicates
+answer different questions and are deliberately not shared; do not collapse them into
+"`bench/` may not import fixtures".
 
 ## Documentation
 
@@ -864,6 +884,163 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
 
+### Benchmarks are a trend, never a gate
+
+```bash
+pnpm bench                                    # every package that has benchmarks
+pnpm bench --filter @akasecurity/detections   # just one
+```
+
+`vitest bench` (no second framework), one `bench/*.bench.ts` per package, a `bench` turbo
+task, and a nightly `bench.yml` on `main` that uploads each package's
+`bench-results.json` as a workflow artifact. **Nothing gates a PR on wall-clock.** Hosted
+runners vary by a large factor on neighbour load alone — this repository has retuned three
+timing assertions for exactly that — so a wall-clock check on a PR fails for reasons
+unrelated to the diff, and a check that cries wolf is one people learn to re-run until it
+is green.
+
+What DOES gate a PR is the timing **guards**, which are correctness assertions rather than
+measurements: the adversarial-rule bound in `packages/detections/test/security/redos.test.ts`
+and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
+threw would be a timing gate wearing a different name.
+
+Four properties are load-bearing, and each is enforced by
+`packages/eslint-config/test/bench-harness.test.js` rather than remembered:
+
+- **`cache: false` on the `bench` turbo task.** Every other task derives its output from
+  its inputs, so replaying one is sound; a benchmark returns a MEASUREMENT, and the machine
+  it ran on is in none of the hashes. A cache hit hands the trend another runner's number
+  and labels it this run's — the one stale green that cannot be spotted by reading it.
+- **A package holding benchmarks declares a `bench` script.** `turbo run bench` skips a
+  package without one silently and exits 0, so the nightly job goes on reporting success
+  having measured nothing.
+- **`bench/` is a lint target and a tsconfig `include` like any other source directory.** A
+  bench file imports product code; outside those, its types are stripped unchecked and the
+  network bans never apply to it.
+- **`bench.yml` has no `pull_request` trigger**, still runs nightly, and still uploads.
+
+A benchmark carries no assertions, so anything a bench file would otherwise have checked
+about its own input belongs in a test instead. `generateCaptureCorpus` is the worked
+example: it writes through the product's own `recordCapture` (so the corpus cannot drift
+from what the product writes), wraps the whole corpus in one transaction, and — because
+`recordCapture` is fail-open — **counts the rows that actually landed and throws when they
+are not there**. Without that last check a locked or full store hands back an empty one and
+every downstream measurement is a timing of nothing, reported as a fast one.
+
+### Store scale: what is bounded, and what grows for ever
+
+`packages/persistence/test/performance/` holds the scale guards, and they are **tests
+rather than benchmarks** because each asserts a size, a query plan or a row set — none
+of them a wall clock. A benchmark reports a trend and gates nothing; these fail a PR.
+
+**No gate here asserts an elapsed time against a budget, and one used to.** The two
+per-call store costs are gated as a **ratio of the same cost at two store sizes**
+(`scale-budgets.test.ts`, 5k against 50k), because a ratio cancels the runner: half the
+machine halves both sides and moves the quotient not at all. The absolute form was tried
+first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
+and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
+commit. A shared runner does not get 1/165th as fast, it gets **preempted**, and a
+preempted sample has no upper bound; no headroom multiple fixes that. Anything newly
+added here follows the ratio shape, and **`p95` is not the estimator to build one from** —
+measured across idle and 3x-oversubscribed runs, a p95 ratio spread 4.6x on capture and
+17x on open, where the same ratio over the **fastest** sample spread 1.08x and 1.06x.
+Noise only ever adds time, so the minimum of n is the estimator a loaded runner cannot
+inflate.
+
+One absolute bound survives, and only as a **gross-regression backstop** four orders of
+magnitude clear of the measurement: a ratio is blind to a constant-factor regression
+(0.06 ms → 500 ms at every size keeps a ratio of 1.0), just as the backstop is blind to a
+scaling one. They catch different defects; neither substitutes for the other.
+
+The numbers, measured on arm64 macOS / Node 24 against corpora from
+`src/test-fixtures/generate.ts`:
+
+| Property                                  | Measured                                    | Gate                    |
+| ----------------------------------------- | ------------------------------------------- | ----------------------- |
+| Store growth                              | **818 B/event** marginal, linear to 1M      | —                       |
+| `recordCapture` 5k → 50k                  | ratio **1.03** (fastest of 200, worst 1.07) | ratio < 3 ✅            |
+| `openLocalDatabase` 5k → 50k              | ratio **0.98** (fastest of 20, worst 1.03)  | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)          | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)             | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5                    | ungated (misses 2 s) ❌ |
+
+**A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
+The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
+size-dependent term to reach 2/7 of the baseline — ~17 us against `recordCapture`'s ~58 us.
+Adding a `SELECT COUNT(*)` to that path is genuinely linear and does **not** redden it
+(ratio 1.094): SQLite answers the count from a covering index in ~4 us at 50k rows. A
+forced row scan (~2.2 ms) reads 10.174 and fails. So a ratio gate catches a linear cost
+that changes what the operation costs, not one inside its noise floor.
+
+**`/security` misses its budget, and it is not a missing index.**
+`hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
+`/vault` pages issue and confirms each one runs indexed. That capture runs at 3k and
+nothing re-captures the plans above it: the store carries no `ANALYZE` statistics, so
+SQLite plans from the schema rather than from row counts and the plans are EXPECTED to
+hold at 1M — reasoning, not a second measurement, and worth wording that way. The
+cost is that FOUR of the eight never shrink with the window at all: `severitySummary`,
+`recentFindings` and `recentlyResolved` take no range argument, and `mttrTrend` takes one
+whose `EXISTS` prefilter bounds the RESULT rather than the scan (measured at 1,523 ms
+returning zero rows). All four are linear in total FINDINGS, not events. And the page's
+`Promise.all` buys nothing: every repository method here runs its SQL **synchronously**
+and returns an already-resolved promise, so the page costs the SUM of the eight.
+
+Linear past 100k at 6.19 ms per thousand events (373 ms at 100k, 5,945 ms at 1M, both
+measured), so the budget is crossed near **363k events** (~300 MB). Fixing it means
+bounding what the page reads — retention, pre-aggregation or a cap — which is a product
+decision, not tuning.
+
+**Two tables have a retention policy; six do not.**
+`BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
+`EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,
+`inspection_findings`, `inspection_definitions` and the three `secret_vault*` tables have
+none — and `audit_events.content` is a full prompt corpus, so that is 818 B for every
+prompt, response and tool-call body the machine has ever produced. The vault tables raise
+a second concern beyond size: an entry nobody will reveal again is a ciphertext that
+stays decryptable for as long as its key epoch survives. `retention-surface.test.ts` pins
+the split behaviourally, with a positive control on the swept pair, so adding retention
+for one of the unbounded tables is a deliberate edit rather than a silent one.
+
+**`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
+`openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
+store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
+measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
+checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
+the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+which is hundreds of megabytes. Nothing on the capture path does that (every
+`recordCapture` commits, and every hook is its own process), but a batch importer would.
+Do not "fix" the pragma without re-reading `store-growth.test.ts`.
+
+That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
+the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
+batching them removes the property under test — and each one is an fsync on the platform
+that charges most for it; it overran its own 180 s setup ceiling there and starved
+neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
+the event count instead is the worse trade: the count is what puts a log that never
+checkpointed several times over the ceiling, so cutting it weakens the assertion on every
+platform to buy coverage on one.
+
+**`packages/persistence/bench/` is a separate tier, and it gates nothing.** `pnpm bench`
+(turbo task `bench`, `vitest bench`) reports a TREND — the trajectory the table above was
+taken from — and carries no assertions, because this repo does not gate a PR on
+wall-clock. Its turbo task sets `cache: false`: every other task returns the same answer
+for the same inputs, but a benchmark returns a measurement, and the machine it ran on is
+not in the hash, so a cached hit would report another runner's number as this run's.
+The nightly `.github/workflows/bench.yml` runs it unattended and uploads each package's
+`bench-results.json`; the table above was taken by hand and is re-taken the same way.
+Never wire it to a PR gate. Anything that must HOLD belongs in `test/performance/`
+instead — restated as a **ratio** against a second store size, not carried over as the
+elapsed number the bench prints, which is the one form that cannot survive a shared
+runner.
+
+Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
+0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure
+corpus belongs in a `beforeAll`, where it is charged to `hookTimeout` rather than eating a
+test's own budget before the first assertion. A synchronous body cannot be interrupted, so
+one that overruns runs to completion and is then reported as a timeout, which reads as a
+budget failure and is not one. Cut the corpus rather than raising the ceiling.
+
 ### The no-network guard
 
 `test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
@@ -875,6 +1052,15 @@ frame, since a transitive dependency reaching out is the case the ESLint ban can
 see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
+
+**It covers `vitest bench` too**, and by construction rather than by a second wiring:
+bench mode resolves the same `vitest.config.ts`, so the same `setupFiles` entry loads.
+Both halves were confirmed live there — the throw on a non-loopback connect, and the
+`afterAll` backstop that fails a run where a refusal was swallowed. What that argument
+rests on is a `bench` script not steering vitest at another config, which
+`packages/eslint-config/test/bench-harness.test.js` asserts: a bench-only config missing
+the entry would run product code unguarded while every existing assertion here, all of
+which read the config the `test` script uses, stayed green.
 
 Five things about it are load-bearing:
 
@@ -936,6 +1122,36 @@ probe reporting itself broken, the probe file gone, started as root, and the one
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
 
+### The adversarial fixture corpus
+
+`test/fixtures/adversarial/hostile-repo/` builds the hostile trees the tree walkers
+have to survive — symlink loops, `..`-bearing names, nesting past the depth a path can
+address, a `.gitignore` that ignores everything, 500k files ignored by directory and
+the same number ignored by pattern. It sits at the repo root for the same reason the
+no-network guard does: `project-files`, `local-ops`' folder scan and `scanner` all need
+the SAME inputs, a package wall blocks the import, and three private copies of a symlink
+loop drift apart. Only the first drives it today.
+
+Two things about it are load-bearing:
+
+- **Generators, not checked-in trees.** Most of these cannot live in git at all, and
+  the ones that could would read as a mistake in a listing. Everything goes into a temp
+  dir and comes back out through `cleanup()`.
+- **A shape that cannot be built everywhere reports `created: false` with a reason, and
+  the caller `ctx.skip`s on it** — a symlink needs a privilege on Windows, `chdir` is
+  absent in a worker thread. An early `return` would report as a pass, which is the
+  failure mode the store harness exists to remove.
+
+**Depth is the part that is easy to get expensively wrong.** Creating a directory whose
+absolute path exceeds `PATH_MAX` means descending with `process.chdir`, and the OS
+re-resolves an ever-longer working directory on every step — so that descent is
+QUADRATIC. Measured on an arm64 Mac: the first 500 levels take 35 ms, the next 1,000
+take 4.0 s, the next 2,000 take 31 s, and a 10,000-level chain costs ~348 s to build
+and ~347 s to remove. `deepChain` therefore builds the addressable part with plain
+absolute `mkdirSync` (one syscall a level) and gets PAST the ceiling by making a
+handful of NAMES 255 characters rather than the chain deep. A fixture that reaches for
+literal 10,000-deep nesting is not thorough, it is a timeout.
+
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
 cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
@@ -948,6 +1164,23 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).
+- `corpus.ts` — `seedCaptureCorpus(db, options)`, a deterministic store of a stated SIZE
+  written through the product's own `recordCapture` inside one transaction, plus
+  `corpusConnection(db)` and the corpus clock (`CORPUS_EPOCH_MS`, and
+  `GeneratedCaptureCorpus.endsAt` — prefer the latter). Two rules. **Drive every windowed
+  read with the corpus clock**, never `Date.now()`: the corpus is stamped from a fixed
+  2024 epoch, so the wall clock puts every `WHERE … >= :from` years past the data and the
+  read matches nothing while still returning a real plan and a real, meaningless number.
+  And **reach the connection through `corpusConnection`, never `UNSAFE_TEST_ONLY_RAW_HANDLE`
+  directly, from anything outside `test/`** — `bench/` is not a `test/` path, so a
+  `*.bench.ts` naming that seam is read as a product caller and fails
+  `packages/eslint-config/test/test-only-seam.test.js`.
+- `query-plans.ts` — `recordingConnection(db, into)` captures the SQL and the bound
+  parameters as the repositories execute them, and `explain` / `classifyPlanRow` /
+  `indexOwners` turn one into a plan step (`full-table` / `full-index` / `search`). The
+  point is that no query is ever spelled twice: a plan assertion over SQL restated in a
+  test is a real plan for a query no user issues. Record at EXECUTION, not at prepare
+  time — several repositories prepare in their constructor.
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
   `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
   real error code from the real engine and refuses to run rather than take effect

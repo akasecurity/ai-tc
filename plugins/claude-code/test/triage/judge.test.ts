@@ -73,6 +73,22 @@ afterEach(() => {
   while (OWNED.length > 0) rmSync(OWNED.pop() ?? '', { recursive: true, force: true });
 });
 
+// The dir the child was pointed at, for the cases that write into it as a real
+// `claude` would. An absent CLAUDE_CONFIG_DIR means the mint under test did not
+// happen, and a `?? ''` fallback is NOT an inert default here: `join('', 'x')`
+// is 'x', a CWD-RELATIVE path, so the child's files land in the package
+// directory instead of a temp dir. That pollutes the working tree and leaves
+// the case asserting against a tree nobody meant to write. Fail loudly instead
+// — under a correct mint this never fires, and under a broken one it names the
+// broken precondition rather than quietly relocating the write.
+function mintedDir(env: NodeJS.ProcessEnv): string {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  if (dir === undefined || dir === '') {
+    throw new Error('expected judgeEnv to have minted CLAUDE_CONFIG_DIR before the child wrote');
+  }
+  return dir;
+}
+
 // Every value the env holds under `name`, whatever its casing. Windows' env
 // block is case-INSENSITIVE but case-PRESERVING: `process.env.PATH` reads it,
 // yet spreading process.env into a plain object (which judgeEnv does) can yield
@@ -871,7 +887,7 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
     let existedDuringCall = false;
     let threw: unknown;
     const spawn = (_argv: readonly string[], env: NodeJS.ProcessEnv): string => {
-      dir = env.CLAUDE_CONFIG_DIR ?? '';
+      dir = mintedDir(env);
       existedDuringCall = dir !== '' && existsSync(dir);
       return outcome(env);
     };
@@ -912,7 +928,7 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
     // `recursive: true` matters: the real CLI writes config into this dir, and a
     // plain unlink would fail on a non-empty directory and leak it.
     const { dir, threw } = runDarwin((env) => {
-      writeFileSync(join(env.CLAUDE_CONFIG_DIR ?? '', 'config.json'), '{"leftover":true}');
+      writeFileSync(join(mintedDir(env), 'config.json'), '{"leftover":true}');
       return envelope(VERDICT_FENCE);
     });
     expect(threw).toBeUndefined();
@@ -972,7 +988,7 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
 
     let locked = '';
     const { dir, threw } = runDarwin((env) => {
-      locked = lock(env.CLAUDE_CONFIG_DIR ?? '');
+      locked = lock(mintedDir(env));
       throw Object.assign(new Error(`Command failed: claude ${hit.rawMatch}`), { status: 7 });
     });
     try {
@@ -1038,7 +1054,7 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
       let dir = '';
       runJudge([hit], {
         spawn: (_argv, env) => {
-          dir = env.CLAUDE_CONFIG_DIR ?? '';
+          dir = mintedDir(env);
           // Mid-call: the dir the child is pointed at has to exist WHILE the
           // child runs. Asserting only after the call cannot tell a dir that
           // was created and removed from one that was never created at all.
@@ -1066,7 +1082,7 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
       expect(() =>
         runJudge([hit], {
           spawn: (_argv, env) => {
-            dir = env.CLAUDE_CONFIG_DIR ?? '';
+            dir = mintedDir(env);
             writeFileSync(join(dir, 'settings.json'), '{"written":"by the child"}');
             throw new Error('boom');
           },

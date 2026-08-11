@@ -7,9 +7,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "lint": "eslint src test *.config.*",
+    "lint": "eslint src test bench *.config.*",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "vitest bench --run --outputJson=bench-results.json"
   },
   "dependencies": {
     "@akasecurity/schema": "workspace:*"

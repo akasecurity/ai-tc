@@ -29,7 +29,9 @@
  *
  * A ratio is only as stable as the statistic on each side of it, and a quantile
  * is the wrong one here. Measured over 7 repetitions spanning an idle machine
- * and one oversubscribed to 3x its core count:
+ * and one oversubscribed to 3x its core count — at the 5k -> 50k pair this file
+ * carried then, and not retaken since, because what it establishes is which
+ * ESTIMATOR survives load rather than what either one reads at a given size:
  *
  * | estimator | `recordCapture` ratio | `openLocalDatabase` ratio |
  * | --------- | --------------------: | ------------------------: |
@@ -55,32 +57,64 @@
  * cannot substitute for one; equally the ratio cannot substitute for it. They
  * fail on different defects, which is why both are here.
  *
- * ## Why 5k -> 50k
+ * ## Why 2k -> 20k
  *
- * The separation is what the guard is made of, not the absolute size: a cost
+ * The SEPARATION is what the guard is made of, not the absolute size: a cost
  * that went linear in the table reads ~10x at a 10x size step, against a 3.0
- * ceiling. Two sizes an order of magnitude apart at a third of the seeding cost
- * of 10k -> 100k, and measured marginally MORE stable than that pair
- * (1.08x against 1.11x on capture). The 1M end is exercised by hand and reported
- * in `bench/queries.bench.ts`.
+ * ceiling. Any pair an order of magnitude apart states that property, so the
+ * pair is chosen at the cheapest scale that still measures real work.
+ *
+ * It used to be 5k -> 50k, and that is the mistake worth naming, because it was
+ * not sized wrongly so much as sized against a seeding rate that does not hold.
+ * The corpus is written one `recordCapture` at a time inside one transaction,
+ * and past roughly 2,400 events — a 2 MiB page cache at ~818 B/event — the
+ * transaction's dirty pages stop fitting in that cache and every further event
+ * pays for a spill. So the per-event cost is not one number: measured here as
+ * the fastest of three runs, 0.091 ms/event at 3k against 0.456 at 50k.
+ * Seeding 5k + 50k therefore cost 24.4 s on this machine, not the ~3.5 s the
+ * pair was chosen against — and a CI leg several times slower turned that into
+ * 117 s on a run that passed and 135 s on one that did not, against the 120 s
+ * ceiling below. 2k + 20k is 6.0 s by the same measurement, which is where the
+ * headroom came from. Both figures are the fastest of three seeds through
+ * `seedCaptureCorpus` on arm64 macOS / Node 24.18 with nothing else running.
+ *
+ * The 1M end is exercised by hand and reported in `bench/queries.bench.ts`.
  *
  * ## How big a linear cost has to be before this sees it
  *
  * "Reads ~10x" holds only once the size-dependent term DOMINATES the baseline,
  * and that is a real limit rather than a quibble. The ratio is
  * `(base + 10k) / (base + k)` for a per-row cost `k` at the small size, so
- * clearing a ceiling of 3 needs `k >= 2/7` of the baseline — about 17 us against
- * the ~58 us `recordCapture` costs here, i.e. a linear term of ~0.17 ms by 50k
- * rows.
+ * clearing a ceiling of 3 needs `k >= 2/7` of the baseline — about 23 us against
+ * the ~79 us `recordCapture` costs here, i.e. a per-row slope of ~11 ns, or a
+ * linear term of ~0.22 ms by 20k rows.
  *
- * Measured, on this machine: adding `SELECT COUNT(*) FROM audit_events` to
- * `recordCapture` moved the ratio only to 1.094 and this file stayed GREEN,
- * because SQLite answers that count from a covering index in ~4 us at 50k rows —
- * genuinely linear, and 40x too small to see. Forcing a real row scan
- * (`... WHERE content LIKE '%zzz%'`, ~2.2 ms at 50k) took the ratio to 10.174
- * and failed it. So: this catches a linear cost that meaningfully changes what
- * the operation costs, and does not catch one lost in the noise floor. A
- * regression that only bites past 50k rows is not caught here either.
+ * **That floor moved by 2.5x when the pair came down**, in exactly the
+ * proportion the small size did, and it is the price the section above bought
+ * its headroom with. Do not read the cut as free.
+ *
+ * Both ends of the range are measured, on this machine and at THIS pair — the
+ * numbers a smaller pair invalidates are the numbers most likely to be carried
+ * forward stale, so they are retaken rather than scaled:
+ *
+ *  - `SELECT COUNT(*) FROM audit_events` inside `recordCapture` leaves this file
+ *    GREEN. SQLite answers that count from a covering index, so it is genuinely
+ *    linear and still far under the floor.
+ *  - `SELECT COUNT(*) FROM audit_events WHERE LENGTH(id) = 999` — the same scan
+ *    with the index defeated, ~40 ns/row — took the ratio to 4.739 (0.1844 ms at
+ *    2k against 0.8739 ms at 20k) and FAILED it.
+ *
+ * So: this catches a linear cost that meaningfully changes what the operation
+ * costs, and does not catch one lost in the noise floor. A regression that only
+ * bites past 20k rows is not caught here either.
+ *
+ * A caveat for whoever plants the next one, because it cost a cycle to find:
+ * a mutation inside `recordCapture` is charged to the SEED as well, once per
+ * row, so its cost there is QUADRATIC. A scan expensive enough per row
+ * (`content LIKE '%zzz%'`, over a 240-character column) never reaches the
+ * assertion at all — it overruns `SEED_TIMEOUT_MS` and reports as a hook
+ * timeout, which is a red for the wrong reason and proves nothing about
+ * flatness. Pick a cost above the floor and well under it.
  *
  * `/security` gets no test here, and the omission is deliberate rather than an
  * oversight: it MISSES its 2,000 ms budget at 1M events (5,945 ms measured), so
@@ -88,17 +122,19 @@
  *
  * ## The corpora are built in a HOOK, under a SETUP-sized ceiling
  *
- * Seeding both stores costs about 3.5 s on arm64 macOS against measured work of
- * roughly 60 ms — the setup is orders of magnitude more expensive than
+ * Seeding both stores costs 6.0 s on arm64 macOS against measured work of
+ * roughly 30 ms — the setup is orders of magnitude more expensive than
  * everything asserted, so it lives in `beforeAll` where the test's own budget
  * covers the measurement and nothing else. Left in an `it()` body it would spend
  * most of the `testTimeout` before the first sample, and a SYNCHRONOUS body
  * cannot be interrupted: it runs to completion and is then reported as a
  * timeout, which reads as a budget failure and is not one.
  *
- * `SEED_TIMEOUT_MS` bounds that setup and asserts nothing. Raising the
- * assertions' own timeouts to answer a red would be the mistake this file exists
- * to avoid.
+ * `SEED_TIMEOUT_MS` bounds that setup and asserts nothing. Raising it to answer
+ * a red is the mistake this file exists to avoid — the corpus comes down
+ * instead, which is what the section above records having done. Note which way
+ * round that is: a hook overrunning here is never evidence that the ceiling is
+ * too low, because nothing is measured against it.
  *
  * ## Each cost is asserted in its own `it()`
  *
@@ -116,8 +152,8 @@ import { CORPUS_EPOCH_MS, seedCaptureCorpus } from '../helpers/corpus.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
-const SMALL_EVENTS = 5_000;
-const LARGE_EVENTS = 50_000;
+const SMALL_EVENTS = 2_000;
+const LARGE_EVENTS = 20_000;
 
 /**
  * How much the ratio may drift before the cost counts as growing with the table.
@@ -147,9 +183,15 @@ const GROSS_REGRESSION_MS = 1_000;
  * The ceiling on CORPUS SETUP, distinct from the properties under test.
  *
  * A corpus is not a measurement, so this is sized for the slowest runner rather
- * than tuned: about 3.5 s of work on this machine, against a CI leg documented
- * as several times slower. Nothing is asserted against it — a hook that overran
+ * than tuned: 6.0 s of work on this machine, against a CI leg documented as
+ * several times slower. Nothing is asserted against it — a hook that overran
  * would report a setup failure, which is what it would be.
+ *
+ * The number to watch is the RATIO of the two, not this constant. At the pair
+ * this file used to seed it was 3%, measured — 117 s of a 120 s ceiling on the
+ * macOS leg — which is not headroom, it is a coin toss, and it landed both ways
+ * inside a single afternoon. Keep the seed far enough under this that a slow
+ * runner cannot reach it, and cut the corpus when it stops being.
  */
 const SEED_TIMEOUT_MS = 120_000;
 

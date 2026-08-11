@@ -935,7 +935,7 @@ of them a wall clock. A benchmark reports a trend and gates nothing; these fail 
 
 **No gate here asserts an elapsed time against a budget, and one used to.** The two
 per-call store costs are gated as a **ratio of the same cost at two store sizes**
-(`scale-budgets.test.ts`, 5k against 50k), because a ratio cancels the runner: half the
+(`scale-budgets.test.ts`, 2k against 20k), because a ratio cancels the runner: half the
 machine halves both sides and moves the quotient not at all. The absolute form was tried
 first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
 and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
@@ -955,22 +955,36 @@ scaling one. They catch different defects; neither substitutes for the other.
 The numbers, measured on arm64 macOS / Node 24 against corpora from
 `src/test-fixtures/generate.ts`:
 
-| Property                                  | Measured                                    | Gate                    |
-| ----------------------------------------- | ------------------------------------------- | ----------------------- |
-| Store growth                              | **818 B/event** marginal, linear to 1M      | —                       |
-| `recordCapture` 5k → 50k                  | ratio **1.03** (fastest of 200, worst 1.07) | ratio < 3 ✅            |
-| `openLocalDatabase` 5k → 50k              | ratio **0.98** (fastest of 20, worst 1.03)  | ratio < 3 ✅            |
-| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)          | backstop ≤ 1,000 ms ✅  |
-| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)             | backstop ≤ 1,000 ms ✅  |
-| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5                    | ungated (misses 2 s) ❌ |
+| Property                                  | Measured                           | Gate                    |
+| ----------------------------------------- | ---------------------------------- | ----------------------- |
+| Store growth, 5k → 10k                    | **797.9 B/event** marginal         | ±15% band ✅            |
+| `recordCapture` 2k → 20k                  | ratio **1.02** (fastest of 200)    | ratio < 3 ✅            |
+| `openLocalDatabase` 2k → 20k              | ratio **0.99** (fastest of 20)     | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5           | ungated (misses 2 s) ❌ |
+
+**Both pairs came down from a decade higher, and the reason is worth carrying.** They
+were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
+pieces of work `@akasecurity/persistence` does — `scale-budgets` seeded for 117 s on a
+macOS CI run that passed and 135 s on one that did not, against a 120 s hook ceiling. A
+3% margin is not headroom, and it landed both ways inside one afternoon. The property in
+each case is a RATIO or a SLOPE, and neither needs a particular absolute size, so the
+corpus came down rather than the ceiling going up. The prices are stated where they are
+paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's centre
+had to be retaken, because the marginal creeps with size — 791.3 B/event across 2.5k→5k,
+797.9 across 5k→10k, 818.4 across 10k→20k, all measured, all byte-identical run to run.
+**Do not carry a centre across a size change**; a stale one still reads green.
 
 **A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
 The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
-size-dependent term to reach 2/7 of the baseline — ~17 us against `recordCapture`'s ~58 us.
-Adding a `SELECT COUNT(*)` to that path is genuinely linear and does **not** redden it
-(ratio 1.094): SQLite answers the count from a covering index in ~4 us at 50k rows. A
-forced row scan (~2.2 ms) reads 10.174 and fails. So a ratio gate catches a linear cost
-that changes what the operation costs, not one inside its noise floor.
+size-dependent term to reach 2/7 of the baseline — ~23 us against `recordCapture`'s ~79 us,
+i.e. a per-row slope of ~11 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
+linear and does **not** redden it: SQLite answers the count from a covering index. The
+same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
+fails. So a ratio gate catches a linear cost that changes what the operation costs, not
+one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
+the pair by 2.5x raised it by 2.5x.
 
 **`/security` misses its budget, and it is not a missing index.**
 `hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
@@ -1034,12 +1048,24 @@ instead — restated as a **ratio** against a second store size, not carried ove
 elapsed number the bench prints, which is the one form that cannot survive a shared
 runner.
 
-Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
-0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure
-corpus belongs in a `beforeAll`, where it is charged to `hookTimeout` rather than eating a
-test's own budget before the first assertion. A synchronous body cannot be interrupted, so
-one that overruns runs to completion and is then reported as a timeout, which reads as a
-budget failure and is not one. Cut the corpus rather than raising the ceiling.
+Corpus scale is what decides where a scale test can live. Seeding is not flat per event,
+so a six-figure corpus belongs in a `beforeAll`, where it is charged to `hookTimeout`
+rather than eating a test's own budget before the first assertion. A synchronous body
+cannot be interrupted, so one that overruns runs to completion and is then reported as a
+timeout, which reads as a budget failure and is not one. Cut the corpus rather than
+raising the ceiling.
+
+**Take the rate before you size anything against it — the figures below are wider apart
+than a reading of "not flat" suggests, and a stale one has already cost a red main.**
+Measured as the fastest of three seeds through `seedCaptureCorpus` on arm64 macOS /
+Node 24.18, nothing else running: **0.091 ms/event at 3k, 0.276 at 20k, 0.456 at 50k**
+(0.27 s, 5.5 s and 22.8 s for the corpus). The step is not gradual: past roughly 2,400
+events the transaction's dirty pages stop fitting SQLite's 2 MiB page cache at ~800
+B/event, and everything after that pays for a spill. An earlier figure of 0.054 ms/event
+at 5k is what `scale-budgets.test.ts` sized its 120 s ceiling against; the same seed
+measures 0.325 here, and the CI leg then found the difference. The 100k and 1M rates that
+sat beside it (0.096 and 0.639 ms/event) have NOT been retaken — treat them as suspect
+for the same reason, and re-measure rather than budget from them.
 
 ### The no-network guard
 

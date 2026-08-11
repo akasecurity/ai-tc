@@ -167,7 +167,25 @@ describe('store growth per event', () => {
   });
 });
 
-describe('write-ahead log growth under sustained writes', () => {
+// Skipped on Windows on COST, not because the property differs there. The
+// `beforeAll` below commits 20,000 separate transactions — that is the whole
+// point, since a checkpoint cannot run inside one — and every commit is an
+// fsync on the platform that charges most for it. It overran its own 180 s
+// setup ceiling on that runner, and the leg is SHARED: `findings-flat.test.ts`
+// timed out alongside it at the config's 20 s while having nothing to do with
+// this file.
+//
+// What is asserted is SQLite's page arithmetic — the default 1000-page
+// autocheckpoint against a 4 KiB page — which is a property of the engine, not
+// of the filesystem underneath it. So the Linux and macOS legs cover it, the
+// same way the file-cap case in `plugin-sdk`'s walk tier and this package's own
+// `/security` omission are argued. Lowering WAL_EVENTS instead was the
+// alternative and is worse: the count is what makes a log that never
+// checkpointed land several times over the ceiling, so cutting it weakens the
+// assertion everywhere to buy coverage on one platform.
+const describeWal = describe.skipIf(process.platform === 'win32');
+
+describeWal('write-ahead log growth under sustained writes', () => {
   let store: OwnedTempStore;
   let peak = 0;
   let written = 0;

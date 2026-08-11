@@ -40,10 +40,13 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
-    // Benchmarks. Run BY HAND today — no workflow invokes this task, and the
-    // comment used to claim a nightly job that does not exist. Never by a PR
-    // gate, whatever else changes: CI runners are too noisy for a wall-clock
-    // check, a flaky gate gets ignored, and an ignored gate is worse than none.
+    // Benchmarks. Run unattended by the nightly `.github/workflows/bench.yml`,
+    // and by hand. Never by a PR gate, whatever else changes: CI runners are too
+    // noisy for a wall-clock check, a flaky gate gets ignored, and an ignored
+    // gate is worse than none. That workflow is the authority on whether
+    // anything runs this — `bench-harness.test.js` reads both and fails when
+    // this sentence and the schedule disagree, in either direction, so do not
+    // reword one without the other.
     //
     // `test/performance/` is where the properties that must HOLD live, and it
     // gates without contradicting the line above, because what it asserts is not

@@ -953,17 +953,28 @@ which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
 
+That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
+the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
+batching them removes the property under test — and each one is an fsync on the platform
+that charges most for it; it overran its own 180 s setup ceiling there and starved
+neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
+the event count instead is the worse trade: the count is what puts a log that never
+checkpointed several times over the ceiling, so cutting it weakens the assertion on every
+platform to buy coverage on one.
+
 **`packages/persistence/bench/` is a separate tier, and it gates nothing.** `pnpm bench`
 (turbo task `bench`, `vitest bench`) reports a TREND — the trajectory the table above was
 taken from — and carries no assertions, because this repo does not gate a PR on
 wall-clock. Its turbo task sets `cache: false`: every other task returns the same answer
 for the same inputs, but a benchmark returns a measurement, and the machine it ran on is
 not in the hash, so a cached hit would report another runner's number as this run's.
-Nothing schedules it — no workflow invokes the task, so today it is run by hand, and the
-table above is re-taken rather than watched. Never wire it to a PR gate. Anything that
-must HOLD belongs in `test/performance/` instead — restated as a **ratio** against a
-second store size, not carried over as the elapsed number the bench prints, which is the
-one form that cannot survive a shared runner.
+The nightly `.github/workflows/bench.yml` runs it unattended and uploads each package's
+`bench-results.json`; the table above was taken by hand and is re-taken the same way.
+Never wire it to a PR gate. Anything that must HOLD belongs in `test/performance/`
+instead — restated as a **ratio** against a second store size, not carried over as the
+elapsed number the bench prints, which is the one form that cannot survive a shared
+runner.
 
 Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
 0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure

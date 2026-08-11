@@ -1,0 +1,14 @@
+import { describe, expect, it } from 'vitest';
+
+const WORKSPACE_AUDIT_CONFIG = /^["']?auditConfig["']?\s*:/m;
+
+describe('audit config detector', () => {
+  it('matches a quoted key', () => {
+    expect(WORKSPACE_AUDIT_CONFIG.test('"auditConfig":')).toBe(true);
+  });
+
+  it('still catches a real violation after the regex', () => {
+    const url = new URL('file:///Users/example/after-regex.js');
+    expect(url.protocol).toBe('file:');
+  });
+});

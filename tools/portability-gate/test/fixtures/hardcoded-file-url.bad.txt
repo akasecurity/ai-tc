@@ -1,0 +1,8 @@
+import { describe, expect, it } from 'vitest';
+
+describe('worker bundle', () => {
+  it('resolves the built script', () => {
+    const url = new URL('file:///Users/example/repo/dist/worker.js');
+    expect(url.protocol).toBe('file:');
+  });
+});

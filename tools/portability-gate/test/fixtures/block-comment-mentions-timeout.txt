@@ -1,0 +1,11 @@
+import { describe, expect, it } from 'vitest';
+
+/*
+ * If this probe does not answer, the caller should NOT shell out to
+ * timeout 5 someCommand — that coreutil is not on macOS by default.
+ */
+describe('probe helper', () => {
+  it('resolves quickly on a healthy target', () => {
+    expect(1).toBe(1);
+  });
+});

@@ -1,0 +1,14 @@
+import { Worker } from 'node:worker_threads';
+import { describe, expect, it } from 'vitest';
+
+const CASE_TIMEOUT_MS = 20_000;
+
+describe('scan worker', () => {
+  it('scans in a real worker thread', { timeout: CASE_TIMEOUT_MS }, async () => {
+    const worker = new Worker('./scan-worker.js');
+    const result = await new Promise((resolve) => {
+      worker.once('message', resolve);
+    });
+    expect(result).toBeDefined();
+  });
+});

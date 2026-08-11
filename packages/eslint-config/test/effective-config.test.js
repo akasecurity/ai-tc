@@ -268,6 +268,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
+  '@akasecurity/portability-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',
   '@akasecurity/setup-wizard',

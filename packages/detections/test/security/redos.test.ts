@@ -1,3 +1,5 @@
+import { isMainThread } from 'node:worker_threads';
+
 import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -90,6 +92,27 @@ describe('bundled rules survive adversarial input', () => {
   it('discovers every bundled rule', () => {
     // Guards against the suite silently shrinking to zero if discovery breaks.
     expect(bundled.length).toBeGreaterThan(90);
+  });
+
+  // The premise `cpuMs` rests on, pinned rather than remembered. Charging CPU
+  // time is only a per-rule measurement while this file has the process to
+  // itself: `process.cpuUsage()` sums the whole process, so if vitest ran test
+  // FILES as threads of one process, every other suite's CPU would land inside
+  // these probe windows and the gate would start accusing rules of work another
+  // file did. Nothing above would fail — the readings would simply drift up.
+  //
+  // Under the default `forks` pool each file gets its own child process and is
+  // its main thread; under `pool: 'threads'` it is a worker and this reads
+  // false. That one config line is the whole failure mode, no package in this
+  // workspace sets `pool` today, and this is what would notice if one did.
+  it('runs as its own process, which is what makes a process-wide CPU clock a per-rule measurement', () => {
+    expect(
+      isMainThread,
+      'this suite is running as a worker thread, so process.cpuUsage() now sums every test file ' +
+        'sharing this process and the per-rule budget above is measuring other suites too. Revert ' +
+        "the pool back to per-process isolation rather than widening the budget — vitest's default " +
+        '`forks` pool is what this gate assumes.',
+    ).toBe(true);
   });
 
   it.each(bundled.map((rule) => [rule.id, rule] as const))(

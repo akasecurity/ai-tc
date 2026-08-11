@@ -927,6 +927,120 @@ from what the product writes), wraps the whole corpus in one transaction, and �
 are not there**. Without that last check a locked or full store hands back an empty one and
 every downstream measurement is a timing of nothing, reported as a fast one.
 
+### Store scale: what is bounded, and what grows for ever
+
+`packages/persistence/test/performance/` holds the scale guards, and they are **tests
+rather than benchmarks** because each asserts a size, a query plan or a row set — none
+of them a wall clock. A benchmark reports a trend and gates nothing; these fail a PR.
+
+**No gate here asserts an elapsed time against a budget, and one used to.** The two
+per-call store costs are gated as a **ratio of the same cost at two store sizes**
+(`scale-budgets.test.ts`, 5k against 50k), because a ratio cancels the runner: half the
+machine halves both sides and moves the quotient not at all. The absolute form was tried
+first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
+and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
+commit. A shared runner does not get 1/165th as fast, it gets **preempted**, and a
+preempted sample has no upper bound; no headroom multiple fixes that. Anything newly
+added here follows the ratio shape, and **`p95` is not the estimator to build one from** —
+measured across idle and 3x-oversubscribed runs, a p95 ratio spread 4.6x on capture and
+17x on open, where the same ratio over the **fastest** sample spread 1.08x and 1.06x.
+Noise only ever adds time, so the minimum of n is the estimator a loaded runner cannot
+inflate.
+
+One absolute bound survives, and only as a **gross-regression backstop** four orders of
+magnitude clear of the measurement: a ratio is blind to a constant-factor regression
+(0.06 ms → 500 ms at every size keeps a ratio of 1.0), just as the backstop is blind to a
+scaling one. They catch different defects; neither substitutes for the other.
+
+The numbers, measured on arm64 macOS / Node 24 against corpora from
+`src/test-fixtures/generate.ts`:
+
+| Property                                  | Measured                                    | Gate                    |
+| ----------------------------------------- | ------------------------------------------- | ----------------------- |
+| Store growth                              | **818 B/event** marginal, linear to 1M      | —                       |
+| `recordCapture` 5k → 50k                  | ratio **1.03** (fastest of 200, worst 1.07) | ratio < 3 ✅            |
+| `openLocalDatabase` 5k → 50k              | ratio **0.98** (fastest of 20, worst 1.03)  | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)          | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)             | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5                    | ungated (misses 2 s) ❌ |
+
+**A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
+The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
+size-dependent term to reach 2/7 of the baseline — ~17 us against `recordCapture`'s ~58 us.
+Adding a `SELECT COUNT(*)` to that path is genuinely linear and does **not** redden it
+(ratio 1.094): SQLite answers the count from a covering index in ~4 us at 50k rows. A
+forced row scan (~2.2 ms) reads 10.174 and fails. So a ratio gate catches a linear cost
+that changes what the operation costs, not one inside its noise floor.
+
+**`/security` misses its budget, and it is not a missing index.**
+`hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
+`/vault` pages issue and confirms each one runs indexed. That capture runs at 3k and
+nothing re-captures the plans above it: the store carries no `ANALYZE` statistics, so
+SQLite plans from the schema rather than from row counts and the plans are EXPECTED to
+hold at 1M — reasoning, not a second measurement, and worth wording that way. The
+cost is that FOUR of the eight never shrink with the window at all: `severitySummary`,
+`recentFindings` and `recentlyResolved` take no range argument, and `mttrTrend` takes one
+whose `EXISTS` prefilter bounds the RESULT rather than the scan (measured at 1,523 ms
+returning zero rows). All four are linear in total FINDINGS, not events. And the page's
+`Promise.all` buys nothing: every repository method here runs its SQL **synchronously**
+and returns an already-resolved promise, so the page costs the SUM of the eight.
+
+Linear past 100k at 6.19 ms per thousand events (373 ms at 100k, 5,945 ms at 1M, both
+measured), so the budget is crossed near **363k events** (~300 MB). Fixing it means
+bounding what the page reads — retention, pre-aggregation or a cap — which is a product
+decision, not tuning.
+
+**Two tables have a retention policy; six do not.**
+`BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
+`EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,
+`inspection_findings`, `inspection_definitions` and the three `secret_vault*` tables have
+none — and `audit_events.content` is a full prompt corpus, so that is 818 B for every
+prompt, response and tool-call body the machine has ever produced. The vault tables raise
+a second concern beyond size: an entry nobody will reveal again is a ciphertext that
+stays decryptable for as long as its key epoch survives. `retention-surface.test.ts` pins
+the split behaviourally, with a positive control on the swept pair, so adding retention
+for one of the unbounded tables is a deliberate edit rather than a silent one.
+
+**`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
+`openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
+store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
+measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
+checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
+the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+which is hundreds of megabytes. Nothing on the capture path does that (every
+`recordCapture` commits, and every hook is its own process), but a batch importer would.
+Do not "fix" the pragma without re-reading `store-growth.test.ts`.
+
+That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
+the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
+batching them removes the property under test — and each one is an fsync on the platform
+that charges most for it; it overran its own 180 s setup ceiling there and starved
+neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
+the event count instead is the worse trade: the count is what puts a log that never
+checkpointed several times over the ceiling, so cutting it weakens the assertion on every
+platform to buy coverage on one.
+
+**`packages/persistence/bench/` is a separate tier, and it gates nothing.** `pnpm bench`
+(turbo task `bench`, `vitest bench`) reports a TREND — the trajectory the table above was
+taken from — and carries no assertions, because this repo does not gate a PR on
+wall-clock. Its turbo task sets `cache: false`: every other task returns the same answer
+for the same inputs, but a benchmark returns a measurement, and the machine it ran on is
+not in the hash, so a cached hit would report another runner's number as this run's.
+The nightly `.github/workflows/bench.yml` runs it unattended and uploads each package's
+`bench-results.json`; the table above was taken by hand and is re-taken the same way.
+Never wire it to a PR gate. Anything that must HOLD belongs in `test/performance/`
+instead — restated as a **ratio** against a second store size, not carried over as the
+elapsed number the bench prints, which is the one form that cannot survive a shared
+runner.
+
+Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
+0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure
+corpus belongs in a `beforeAll`, where it is charged to `hookTimeout` rather than eating a
+test's own budget before the first assertion. A synchronous body cannot be interrupted, so
+one that overruns runs to completion and is then reported as a timeout, which reads as a
+budget failure and is not one. Cut the corpus rather than raising the ceiling.
+
 ### The no-network guard
 
 `test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
@@ -1050,6 +1164,23 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).
+- `corpus.ts` — `seedCaptureCorpus(db, options)`, a deterministic store of a stated SIZE
+  written through the product's own `recordCapture` inside one transaction, plus
+  `corpusConnection(db)` and the corpus clock (`CORPUS_EPOCH_MS`, and
+  `GeneratedCaptureCorpus.endsAt` — prefer the latter). Two rules. **Drive every windowed
+  read with the corpus clock**, never `Date.now()`: the corpus is stamped from a fixed
+  2024 epoch, so the wall clock puts every `WHERE … >= :from` years past the data and the
+  read matches nothing while still returning a real plan and a real, meaningless number.
+  And **reach the connection through `corpusConnection`, never `UNSAFE_TEST_ONLY_RAW_HANDLE`
+  directly, from anything outside `test/`** — `bench/` is not a `test/` path, so a
+  `*.bench.ts` naming that seam is read as a product caller and fails
+  `packages/eslint-config/test/test-only-seam.test.js`.
+- `query-plans.ts` — `recordingConnection(db, into)` captures the SQL and the bound
+  parameters as the repositories execute them, and `explain` / `classifyPlanRow` /
+  `indexOwners` turn one into a plan step (`full-table` / `full-index` / `search`). The
+  point is that no query is ever spelled twice: a plan assertion over SQL restated in a
+  test is a real plan for a query no user issues. Record at EXECUTION, not at prepare
+  time — several repositories prepare in their constructor.
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
   `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
   real error code from the real engine and refuses to run rather than take effect

@@ -44,10 +44,17 @@
     //
     // What it must NOT become is a PR gate: hosted runners vary by a large
     // factor on neighbour load alone, a flaky gate is one people learn to re-run
-    // until green, and an ignored gate is worth less than none. The timing
-    // properties that DO gate a PR are assertions on a ratio or on a bound with
-    // real headroom, and they live in the ordinary test suites beside the code
-    // they guard.
+    // until green, and an ignored gate is worth less than none.
+    //
+    // `test/performance/` is where the properties that must HOLD live, and it
+    // gates without contradicting the line above, because what it asserts is not
+    // a wall clock: it compares one cost against itself at two store sizes, and
+    // a ratio cancels the runner. The one absolute millisecond bound left there
+    // is a gross-regression backstop four orders of magnitude clear of the
+    // measurement, for the constant-factor case a ratio cannot see. An absolute
+    // bound tight enough to be interesting is exactly what does not survive
+    // here — that shape was tried, and a preempted sample on a shared runner
+    // reddened a healthy tree.
     //
     // Whether a workflow runs this is a claim about a SIBLING file, and a stale
     // justification reads exactly like a live one — three branches carried three

@@ -14,7 +14,16 @@
  * The wrapper `TempStore.open()` hands back is a spread copy, and the seam is an
  * enumerable own symbol, so it survives the spread — `test/raw-handle-seam.test.ts`
  * pins that rather than leaving it to this comment.
+ *
+ * `corpusConnection` is here for the same reason and is the only way a BENCHMARK
+ * should reach the connection. `bench/` is not a `test/` path, so that audit
+ * reads a `*.bench.ts` naming the seam as a product caller and fails the
+ * workspace — correctly, since its classifier is deliberately wrong in the
+ * excusing direction. Routing the read through this helper keeps the seam on the
+ * side of the audit that already permits it.
  */
+import type { DatabaseSync } from 'node:sqlite';
+
 import type { LocalDatabase } from '../../src/database.ts';
 import { UNSAFE_TEST_ONLY_RAW_HANDLE } from '../../src/database.ts';
 import type {
@@ -22,6 +31,20 @@ import type {
   GeneratedCaptureCorpus,
 } from '../../src/test-fixtures/index.ts';
 import { generateCaptureCorpus } from '../../src/test-fixtures/index.ts';
+
+export { CORPUS_EPOCH_MS, CORPUS_EVENT_SPACING_MS } from '../../src/test-fixtures/index.ts';
+export type { CaptureCorpusOptions, GeneratedCaptureCorpus };
+
+/**
+ * The `DatabaseSync` a `LocalDatabase` writes through.
+ *
+ * A repository constructed over this one sees exactly the rows the facade
+ * wrote — a second handle on the same file would carry none of an enclosing
+ * transaction.
+ */
+export function corpusConnection(db: LocalDatabase): DatabaseSync {
+  return db[UNSAFE_TEST_ONLY_RAW_HANDLE];
+}
 
 /**
  * Seed `db` with a generated corpus, writing through its own connection.

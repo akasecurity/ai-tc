@@ -61,5 +61,10 @@ export type {
   CaptureCorpusTarget,
   GeneratedCaptureCorpus,
 } from './generate.ts';
-export { createSeededRandom, generateCaptureCorpus } from './generate.ts';
+export {
+  CORPUS_EPOCH_MS,
+  CORPUS_EVENT_SPACING_MS,
+  createSeededRandom,
+  generateCaptureCorpus,
+} from './generate.ts';
 export { seedSampleAuditEvents, seedSampleInventory, seedSampleShares };

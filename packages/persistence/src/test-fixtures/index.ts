@@ -9,13 +9,28 @@ import { seedSampleShares } from './sample-shares.ts';
  * TEST AND BENCHMARK FIXTURES ONLY. The product seeds no sample/demo data
  * (removed by product decision — the web-ui purges the retired dataset from
  * historical stores via sample-purge.ts). These rich fully-shaped datasets
- * survive purely as fixtures for the repository read-surface tests; nothing
- * outside `test/` may import this directory, so shipped bundles never contain
- * it. The importers today are three `*.test.ts` suites plus
- * `test/helpers/corpus.ts`, which is where the benchmarks reach the generator
- * from — no `*.bench.ts` imports this directory directly, and none should:
- * seeding a corpus needs the raw connection, and reading that seam outside
- * `test/` fails `packages/eslint-config/test/test-only-seam.test.js`.
+ * survive purely as fixtures for the repository read-surface tests and the
+ * benchmark harness.
+ *
+ * Only a package's own test/ and bench/ files may import this directory, and
+ * src/index.ts never re-exports it — which is what keeps it out of shipped
+ * bundles, since `noExternal` inlines this package into the CLI and all three
+ * plugins. The rule is about DIRECTORIES, not filename suffixes: the first
+ * importer outside a spec is test/helpers/corpus.ts, which is neither a
+ * *.test.ts nor a *.bench.ts. It is derived from the tracked tree by
+ * packages/eslint-config/test/test-fixtures-imports.test.js rather than being
+ * left to this comment — the check lives there because only that task's turbo
+ * inputs hash the whole workspace.
+ *
+ * That rule PERMITS a bench importer without requiring one, and today there is
+ * none: seeding a corpus needs the raw connection, and a *.bench.ts reading
+ * that seam is classified as shipped source by test-only-seam.test.js, whose
+ * predicate accepts a test/ segment or a .test./.spec. basename and not
+ * .bench. — so both benches reach the generator through test/helpers/corpus.ts
+ * instead. Two separate questions, answered by two separate predicates: what
+ * may import fixtures, and what may read the seam. Do not fold the second into
+ * the first and conclude the directory is off limits to bench/ — the generator
+ * below exists for that tier.
  *
  * Two kinds live here and they answer different questions. `seedSampleFixtures`
  * and its parts are FIXED datasets — hand-authored rows shaped to exercise a

@@ -40,13 +40,11 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"]
     },
-    // Benchmarks. Run unattended by the nightly `.github/workflows/bench.yml`,
-    // and by hand. Never by a PR gate, whatever else changes: CI runners are too
-    // noisy for a wall-clock check, a flaky gate gets ignored, and an ignored
-    // gate is worse than none. That workflow is the authority on whether
-    // anything runs this — `bench-harness.test.js` reads both and fails when
-    // this sentence and the schedule disagree, in either direction, so do not
-    // reword one without the other.
+    // Benchmarks, run by the nightly `.github/workflows/bench.yml` and by hand.
+    //
+    // What it must NOT become is a PR gate: hosted runners vary by a large
+    // factor on neighbour load alone, a flaky gate is one people learn to re-run
+    // until green, and an ignored gate is worth less than none.
     //
     // `test/performance/` is where the properties that must HOLD live, and it
     // gates without contradicting the line above, because what it asserts is not
@@ -58,19 +56,31 @@
     // here — that shape was tried, and a preempted sample on a shared runner
     // reddened a healthy tree.
     //
-    // `cache: false` is the load-bearing line. Every other task here produces
-    // the same answer for the same inputs, which is what makes replaying one
-    // sound; a benchmark produces a MEASUREMENT, and the machine it ran on is
-    // not in the hash. A cached hit would hand the trend a number taken on
-    // another runner, at another moment, under another load, and report it as
-    // this run's — the one flavour of stale green that cannot be caught by
-    // reading the result, because the result looks exactly right.
+    // Whether a workflow runs this is a claim about a SIBLING file, and a stale
+    // justification reads exactly like a live one — three branches carried three
+    // different answers to it at once, all of them green, because the task body
+    // is byte-identical whichever comment sits above it. So it is not left to
+    // this comment: `bench-harness.test.js` reads bench.yml's schedule and this
+    // sentence together and fails when they disagree, in either direction.
     //
-    // And so there is no `outputs`. Outputs are the files turbo saves to REPLAY
-    // a cache hit with, so declaring them under `cache: false` is dead config
-    // that reads as if caching were on. `bench-results.json` is still written —
-    // by `vitest bench --outputJson`, which is what the package's own script
-    // asks for — and still gitignored; turbo simply has no part in it.
+    // `cache: false` is the load-bearing line. Every other task here derives its
+    // output from its inputs, which is what makes replaying one sound; a
+    // benchmark returns a MEASUREMENT, and the machine it ran on — its load, its
+    // CPU, its disk — is in none of the hashes. A cache hit would hand the trend
+    // another runner's number, taken at another moment, and label it this run's.
+    // It is the one stale green that cannot be spotted by reading the result,
+    // because the result looks exactly right.
+    //
+    // No `outputs` here, deliberately. Turbo consults it only to decide what to
+    // save into and restore from the cache, so on a never-cached task it does
+    // nothing while reading as if the file were tracked somewhere — the opposite
+    // of the line above it. Where `bench-results.json` lands is stated by the
+    // thing that collects it: `bench.yml`'s upload glob.
+    //
+    // `dependsOn: build` is there for the benchmarks that measure a BUNDLED
+    // artifact rather than source — where the two differ by enough that a run
+    // against an unbuilt tree would track a number no user pays. It costs the
+    // source-only benchmarks nothing: turbo skips a package with no build task.
     "bench": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "cache": false
@@ -133,6 +143,13 @@
         "$TURBO_ROOT$/.github/workflows/ci.yml",
         "$TURBO_ROOT$/.github/workflows/audit.yml",
         "$TURBO_ROOT$/.github/workflows/codeql.yml",
+        // bench.yml is read by bench-harness.test.js, which asserts the
+        // benchmark job stays ADVISORY — no pull_request trigger, and results
+        // uploaded rather than compared against a threshold. Same hazard as the
+        // three above: without this entry, adding a `pull_request:` trigger
+        // moves no hash this task can see, turbo replays the cached pass, and
+        // the assertion guarding that property never runs.
+        "$TURBO_ROOT$/.github/workflows/bench.yml",
         "$TURBO_ROOT$/tools/ci/**",
         "$TURBO_ROOT$/package.json",
         "$TURBO_ROOT$/tsconfig.root.json",

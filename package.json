@@ -11,7 +11,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint && pnpm lint:root && pnpm check:portability",
-    "lint:root": "eslint --no-config-lookup -c eslint.root.config.mjs test/setup tools/ci *.config.*",
+    "lint:root": "eslint --no-config-lookup -c eslint.root.config.mjs test/setup test/fixtures tools/ci *.config.*",
     "check:portability": "node tools/portability-gate/src/check-portability.ts",
     "typecheck": "turbo run typecheck && pnpm typecheck:root",
     "typecheck:root": "tsc --noEmit -p tsconfig.root.json",

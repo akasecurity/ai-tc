@@ -669,8 +669,8 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `tools/ci/**`, and the
+   repo-root `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -844,12 +844,27 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/`. The property that matters is that **no shipped
-source imports them**, which is not the same claim as "only `*.test.ts` imports them" —
-`test/helpers/corpus.ts` does too, and `bench/*.bench.ts` reaches them through it. Derive
-the importer set from the import specifiers rather than from the filenames if you need it:
-a `*.bench.ts` that names `src/test-fixtures/` in a comment and imports the helper counts
-as a transitive reader, not a direct one.
+`packages/persistence/src/test-fixtures/` — never shipped, because only a package's own
+`test/` and `bench/` files import it and `src/index.ts` never re-exports it. That rule is
+about DIRECTORIES rather than filename suffixes (`test/helpers/corpus.ts` is an importer
+and is neither a `*.test.ts` nor a `*.bench.ts`), and
+`packages/eslint-config/test/test-fixtures-imports.test.js` derives it from the tracked
+tree — so a product importer fails CI rather than being caught in review. Two kinds live
+there and they answer different questions: the
+`seedSample*` datasets are FIXED rows shaped to exercise a read surface, while
+`generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
+sizes that matter there cannot live in git.
+
+**Derive the importer set from import SPECIFIERS, never from filenames or a grep.** Both
+mislead, in opposite directions. A grep for the directory name counts a file that merely
+mentions it in a comment — `test/migrations.test.ts` does, and imports nothing from here,
+which is how an earlier count of this set came out one too high. Filenames miss the other
+way: a `*.bench.ts` reaching the fixtures through `test/helpers/corpus.ts` is a transitive
+reader, not a direct one. Today no `*.bench.ts` imports the directory directly, and that
+is a fact about the seam rather than a second rule — seeding needs the raw connection, and
+`test-only-seam.test.js` classifies a `.bench.` file as shipped source. The two predicates
+answer different questions and are deliberately not shared; do not collapse them into
+"`bench/` may not import fixtures".
 
 ## Documentation
 
@@ -868,6 +883,49 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
+
+### Benchmarks are a trend, never a gate
+
+```bash
+pnpm bench                                    # every package that has benchmarks
+pnpm bench --filter @akasecurity/detections   # just one
+```
+
+`vitest bench` (no second framework), one `bench/*.bench.ts` per package, a `bench` turbo
+task, and a nightly `bench.yml` on `main` that uploads each package's
+`bench-results.json` as a workflow artifact. **Nothing gates a PR on wall-clock.** Hosted
+runners vary by a large factor on neighbour load alone — this repository has retuned three
+timing assertions for exactly that — so a wall-clock check on a PR fails for reasons
+unrelated to the diff, and a check that cries wolf is one people learn to re-run until it
+is green.
+
+What DOES gate a PR is the timing **guards**, which are correctness assertions rather than
+measurements: the adversarial-rule bound in `packages/detections/test/security/redos.test.ts`
+and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
+threw would be a timing gate wearing a different name.
+
+Four properties are load-bearing, and each is enforced by
+`packages/eslint-config/test/bench-harness.test.js` rather than remembered:
+
+- **`cache: false` on the `bench` turbo task.** Every other task derives its output from
+  its inputs, so replaying one is sound; a benchmark returns a MEASUREMENT, and the machine
+  it ran on is in none of the hashes. A cache hit hands the trend another runner's number
+  and labels it this run's — the one stale green that cannot be spotted by reading it.
+- **A package holding benchmarks declares a `bench` script.** `turbo run bench` skips a
+  package without one silently and exits 0, so the nightly job goes on reporting success
+  having measured nothing.
+- **`bench/` is a lint target and a tsconfig `include` like any other source directory.** A
+  bench file imports product code; outside those, its types are stripped unchecked and the
+  network bans never apply to it.
+- **`bench.yml` has no `pull_request` trigger**, still runs nightly, and still uploads.
+
+A benchmark carries no assertions, so anything a bench file would otherwise have checked
+about its own input belongs in a test instead. `generateCaptureCorpus` is the worked
+example: it writes through the product's own `recordCapture` (so the corpus cannot drift
+from what the product writes), wraps the whole corpus in one transaction, and — because
+`recordCapture` is fail-open — **counts the rows that actually landed and throws when they
+are not there**. Without that last check a locked or full store hands back an empty one and
+every downstream measurement is a timing of nothing, reported as a fast one.
 
 ### Store scale: what is bounded, and what grows for ever
 
@@ -995,6 +1053,15 @@ see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
 
+**It covers `vitest bench` too**, and by construction rather than by a second wiring:
+bench mode resolves the same `vitest.config.ts`, so the same `setupFiles` entry loads.
+Both halves were confirmed live there — the throw on a non-loopback connect, and the
+`afterAll` backstop that fails a run where a refusal was swallowed. What that argument
+rests on is a `bench` script not steering vitest at another config, which
+`packages/eslint-config/test/bench-harness.test.js` asserts: a bench-only config missing
+the entry would run product code unguarded while every existing assertion here, all of
+which read the config the `test` script uses, stayed green.
+
 Five things about it are load-bearing:
 
 - **A refusal is recorded as well as thrown.** Almost every boundary here is
@@ -1054,6 +1121,36 @@ outcome: probe tooling missing, DNS still resolving, the target still answering,
 probe reporting itself broken, the probe file gone, started as root, and the one green
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
+
+### The adversarial fixture corpus
+
+`test/fixtures/adversarial/hostile-repo/` builds the hostile trees the tree walkers
+have to survive — symlink loops, `..`-bearing names, nesting past the depth a path can
+address, a `.gitignore` that ignores everything, 500k files ignored by directory and
+the same number ignored by pattern. It sits at the repo root for the same reason the
+no-network guard does: `project-files`, `local-ops`' folder scan and `scanner` all need
+the SAME inputs, a package wall blocks the import, and three private copies of a symlink
+loop drift apart. Only the first drives it today.
+
+Two things about it are load-bearing:
+
+- **Generators, not checked-in trees.** Most of these cannot live in git at all, and
+  the ones that could would read as a mistake in a listing. Everything goes into a temp
+  dir and comes back out through `cleanup()`.
+- **A shape that cannot be built everywhere reports `created: false` with a reason, and
+  the caller `ctx.skip`s on it** — a symlink needs a privilege on Windows, `chdir` is
+  absent in a worker thread. An early `return` would report as a pass, which is the
+  failure mode the store harness exists to remove.
+
+**Depth is the part that is easy to get expensively wrong.** Creating a directory whose
+absolute path exceeds `PATH_MAX` means descending with `process.chdir`, and the OS
+re-resolves an ever-longer working directory on every step — so that descent is
+QUADRATIC. Measured on an arm64 Mac: the first 500 levels take 35 ms, the next 1,000
+take 4.0 s, the next 2,000 take 31 s, and a 10,000-level chain costs ~348 s to build
+and ~347 s to remove. `deepChain` therefore builds the addressable part with plain
+absolute `mkdirSync` (one syscall a level) and gets PAST the ceiling by making a
+handful of NAMES 255 characters rather than the chain deep. A fixture that reaches for
+literal 10,000-deep nesting is not thorough, it is a timeout.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +

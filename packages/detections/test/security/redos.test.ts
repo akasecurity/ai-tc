@@ -34,7 +34,20 @@ import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
 // did not spend.
 //
 // Vitest's default pool gives each test file its own process and the walk is
-// synchronous, so nothing else in this process runs inside a measured window.
+// synchronous, so no other TEST shares a measured window. Be precise about what
+// that leaves, because it is not nothing: `process.cpuUsage()` sums every
+// thread in the process, and V8's background GC and compilation threads are in
+// it. Measured on a quiet machine, pairing each probe with its own window, a
+// 0.86ms probe was charged 3.69ms — 2.83ms of CPU the scanning thread did not
+// spend, attributed to whichever probe was resident.
+//
+// That residual runs in the INFLATING direction, which is the same
+// false-accusation shape wall time had, so it is bounded by margin rather than
+// removed: single-digit ms against a 100ms budget, with the fleet's own worst
+// under 7ms under load. What CPU time does remove is descheduling, and that is
+// the part with no bound at all — a thread the scheduler took the core away
+// from accumulates wall time without limit, which is what produced the
+// 105-185ms readings on rules costing under 7ms of work.
 //
 // A CPU clock's granularity is the platform's, not this process's, and it is
 // coarser on some than others — a short probe can quantize to a whole tick or to
@@ -212,21 +225,61 @@ describe('the probe battery itself', () => {
   // nothing" this whole block exists to prevent, one instrument lower down.
   // These two cases pin the clock from both sides: it must still condemn a
   // pattern that really backtracks, and it must not be fooled by elapsed time
-  // that bought no work.
+  // that bought no work. Only the first of the two catches a DEAD clock; see
+  // the liveness assertion inside it for why that is not an oversight.
   it('the CPU clock still condemns a catastrophic pattern', () => {
     const parsed = parseRegexRule('^(a+)+$');
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    // The verdict lands just past the budget by construction — the walk stops at
-    // the first probe to cross it — so this margin is thin on purpose, exactly
-    // as it is for the bundled gate. What it proves is that the clock is live:
-    // a dead or constant clock reports 0 and this goes red.
-    const { ms } = worstProbeMs(parsed.data, cpuMs);
+    const { ms, probe } = worstProbeMs(parsed.data, cpuMs);
+
+    // Liveness, asserted on its own and first, because this is the half that
+    // decides whether the 101 assertions above mean anything — and it is the
+    // only half machine speed cannot flip. `worstProbeMs` records a probe when
+    // its window beats the running maximum, so a clock stuck at ANY constant
+    // leaves this empty: `elapsed > ms` is `0 > 0`. No threshold, no budget, no
+    // comparison that gets easier on faster hardware.
+    //
+    // This matters because the two cases here are not redundant the way they
+    // look. Under a clock stubbed to return 0 the sibling below stays GREEN —
+    // its CPU half asserts a benign pattern is UNDER budget, which 0 satisfies —
+    // so the whole gate's non-vacuity rests on this file having one assertion
+    // that a dead clock cannot satisfy. That is this line.
+    //
+    // It also has a kill nothing else here has. Drop the `probe = text` line in
+    // `worstProbeMs` and the 101 assertions above stay green while every
+    // failure message they can emit reports a 0-char probe: the verdict still
+    // crosses the budget, so only an assertion that reads the ATTRIBUTION
+    // notices. Hence both causes in the message — a stuck clock and a lost
+    // attribution are the same symptom here and want telling apart.
+    expect(
+      probe,
+      'no probe was ever attributed a cost. Either the CPU clock is not advancing — in which ' +
+        'case every rule assertion in the gate above is passing vacuously against a constant 0 — ' +
+        'or worstProbeMs stopped recording which probe won, which silently empties the probe ' +
+        'length every one of those failure messages reports.',
+    ).not.toBe('');
+
+    // And the verdict itself. THIS half is machine-speed-dependent and its
+    // margin is thin, in the same way and for the same reason as the
+    // interpreted-tier case in redos-probe.test.ts. The battery's longest
+    // all-`a` probe is 25 chars and no polynomial probe is all-`a`, so there is
+    // no longer probe to escalate to when a fast machine brings the 25-char one
+    // inside the budget. Measured 151-155ms against the 100ms budget in THIS
+    // file's ordering — the ratio case above has already tiered the pattern up,
+    // so the verdict lands on the 25-char probe at its native cost — i.e. ~1.5x,
+    // and hardware around 1.5x faster flips it red. CI runners are slower than a
+    // dev machine, which is the safe direction; a bigger pattern would buy
+    // margin here and spend it on the Windows runner, where this file's
+    // neighbours put backtracking at 4-5x slower and the per-test timeout is the
+    // other cliff. Read the failure message before believing a regression.
     expect(
       ms,
-      `a catastrophic pattern must still blow the budget when the walk is charged ` +
-        `CPU time rather than wall time; it burned ${ms.toFixed(1)}ms of CPU. If this is ` +
-        `0, the clock is not reading and every rule in the gate above is passing vacuously.`,
+      `a catastrophic pattern must still blow the budget when the walk is charged CPU time ` +
+        `rather than wall time; it burned ${ms.toFixed(1)}ms of CPU on a ` +
+        `${String(probe.length)}-char probe. If the assertion above PASSED and this one failed, ` +
+        `the clock is reading fine and this machine is simply fast enough that the 25-char ` +
+        `probe no longer costs 100ms of CPU — retune the pattern, do not touch the clock.`,
     ).toBeGreaterThanOrEqual(BUDGET_MS);
   });
 

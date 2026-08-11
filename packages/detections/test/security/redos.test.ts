@@ -2,6 +2,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { scan } from '../../src/index.ts';
+import type { ProbeClock } from '../../src/security/redos-probe.ts';
 import {
   backtrackRatio,
   BUDGET_MS,
@@ -11,6 +12,42 @@ import {
   worstProbeMs,
 } from '../../src/security/redos-probe.ts';
 import { discoverBundledRuleFiles, loadRule } from '../helpers/rules.ts';
+
+// CPU time consumed by this process, in ms, as a monotonic clock for the probe
+// walk. `process.cpuUsage()` reports user+system microseconds since the process
+// started, so successive reads difference into the CPU a probe actually burned.
+//
+// This is the instrument the per-rule gate below measures with, and the reason
+// is that the gate's question is "does this pattern backtrack", which is a
+// statement about WORK, while wall time measures ELAPSED — and on a contended
+// runner the two are not the same number. A regex that backtracks is CPU-bound
+// by construction: measured here, the catastrophic patterns in the meta-tests
+// below run at 0.82-0.98 CPU-ms per wall-ms. A thread the scheduler took the
+// core away from accumulates wall time at ~0.001-0.06, having executed nothing.
+// So a wall-clock verdict is satisfiable by a stall that the rule under test had
+// no part in, and it names whichever rule was unlucky enough to be running: over
+// twelve walks of the full ruleset under 7x CPU oversubscription, five crossed
+// the 100ms budget and all five were DIFFERENT rules, none of them slower than
+// 3.6ms when measured quiet. CPU time discards exactly that and keeps the
+// signal, so this is a correction to the instrument rather than a concession to
+// CI — the gate can no longer be tripped by, or satisfied by, time this process
+// did not spend.
+//
+// Vitest's default pool gives each test file its own process and the walk is
+// synchronous, so nothing else in this process runs inside a measured window.
+//
+// A CPU clock's granularity is the platform's, not this process's, and it is
+// coarser on some than others — a short probe can quantize to a whole tick or to
+// zero. That costs sensitivity only within one tick of the threshold, which this
+// margin absorbs: under 7x oversubscription the worst rule measured 6.6ms of CPU
+// against a 100ms budget, so the fleet sits ~15x clear rather than one tick
+// clear. It is the direction that matters — a coarse clock rounds a benign rule
+// toward a tick it can afford, and the catastrophic-pattern case below is what
+// keeps the clock proven live rather than merely quiet.
+const cpuMs: ProbeClock = () => {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+};
 
 // scan() is synchronous and runs on the hook path. A rule that backtracks
 // catastrophically cannot be interrupted — the fail-open catch in the plugin
@@ -45,14 +82,17 @@ describe('bundled rules survive adversarial input', () => {
   it.each(bundled.map((rule) => [rule.id, rule] as const))(
     '%s stays within the scan budget',
     (id, rule) => {
-      const { ms, probe } = worstProbeMs(rule);
+      // CPU time, not wall time — see `cpuMs`. The budget is unchanged and so is
+      // the walk; only the resource being charged for is.
+      const { ms, probe } = worstProbeMs(rule, cpuMs);
       expect(
         ms,
-        `Rule "${id}" took ${ms.toFixed(1)}ms on a ${String(probe.length)}-char probe ` +
+        `Rule "${id}" burned ${ms.toFixed(1)}ms of CPU on a ${String(probe.length)}-char probe ` +
           `(budget ${String(BUDGET_MS)}ms). A rule this slow can exhaust the hook's 10s timeout, ` +
           `which fails open and lets the call through unscanned. Rewrite the pattern to ` +
           `remove the ambiguity — usually a quantified group whose body can match the same ` +
-          `text more than one way, e.g. (a+)+ or (\\s*\\w+)*.`,
+          `text more than one way, e.g. (a+)+ or (\\s*\\w+)*. This is CPU time, so a busy ` +
+          `runner cannot inflate it: the pattern really did this much work.`,
       ).toBeLessThan(BUDGET_MS);
     },
   );
@@ -165,6 +205,53 @@ describe('the probe battery itself', () => {
         `baseline (ratio ${ratio.toFixed(0)}×); the probe battery should drive this ` +
         `pattern to backtrack orders of magnitude past ordinary input.`,
     ).toBeGreaterThan(CATASTROPHIC_RATIO);
+  });
+
+  // The per-rule gate reads CPU time, and a clock that reads zero would report
+  // 0ms for all 101 rules and pass forever — the same "green tests that check
+  // nothing" this whole block exists to prevent, one instrument lower down.
+  // These two cases pin the clock from both sides: it must still condemn a
+  // pattern that really backtracks, and it must not be fooled by elapsed time
+  // that bought no work.
+  it('the CPU clock still condemns a catastrophic pattern', () => {
+    const parsed = parseRegexRule('^(a+)+$');
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // The verdict lands just past the budget by construction — the walk stops at
+    // the first probe to cross it — so this margin is thin on purpose, exactly
+    // as it is for the bundled gate. What it proves is that the clock is live:
+    // a dead or constant clock reports 0 and this goes red.
+    const { ms } = worstProbeMs(parsed.data, cpuMs);
+    expect(
+      ms,
+      `a catastrophic pattern must still blow the budget when the walk is charged ` +
+        `CPU time rather than wall time; it burned ${ms.toFixed(1)}ms of CPU. If this is ` +
+        `0, the clock is not reading and every rule in the gate above is passing vacuously.`,
+    ).toBeGreaterThanOrEqual(BUDGET_MS);
+  });
+
+  it('a clock that advances without work would trip the gate, which is why the gate reads CPU', () => {
+    // The failure mode this instrument replaced, made deterministic. A
+    // descheduled thread's wall clock advances while the thread executes
+    // nothing, and the walk cannot tell that from backtracking: it charges the
+    // elapsed time to whichever rule was resident. Here that is a rule with no
+    // ambiguity at all — a fixed-length AWS key matcher — and a clock that jumps
+    // 120ms per read condemns it on its first probe.
+    const parsed = parseRegexRule('AKIA[A-Z0-9]{16}');
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    let reads = 0;
+    const stalled: ProbeClock = () => reads++ * 120;
+    expect(
+      worstProbeMs(parsed.data, stalled).ms,
+      'a clock that advances without work should condemn even a benign pattern — ' +
+        'this is the wall-clock failure mode, reproduced without needing a loaded runner.',
+    ).toBeGreaterThanOrEqual(BUDGET_MS);
+    // The same rule and the same walk, charged CPU: nowhere near the budget.
+    expect(
+      worstProbeMs(parsed.data, cpuMs).ms,
+      'the same benign pattern must stay far inside the budget on CPU time',
+    ).toBeLessThan(BUDGET_MS);
   });
 
   it('the fixed alphabet alone would miss the alphabet-specific patterns', () => {

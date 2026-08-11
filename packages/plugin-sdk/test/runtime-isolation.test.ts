@@ -574,13 +574,22 @@ describe('what isolation costs when nothing is wrong', () => {
       // The start budget is not one of them, and leaving it at the default was a
       // contradiction with this case's own ceiling. It is a fail-open THRESHOLD:
       // a start that overruns it reports `unavailable`, degrades, and drops the
-      // pulled rule — so with the shipped 5s the `startupMs < 10_000` assertion
-      // below could never be reached. Anything in that 5-to-10s band failed on
-      // the worker COUNT instead, reading as "the path built the wrong number of
-      // threads" when what happened is that a contended runner was slow to start
-      // one. That is precisely the failure START_MS exists to prevent, so the
-      // grant applies here too and the assertion below — not the runner — is what
-      // decides.
+      // pulled rule.
+      //
+      // Be exact about what that cost, because the loose reading is wrong in a
+      // way that matters. `startupMs` spans BOTH cold starts plus the whole
+      // probe battery, so the 5-to-10s band IS reachable with neither start
+      // over the shipped 5s — the 10s ceiling was not unreachable. What the
+      // default cost was this case's ability to fail on that ceiling when it
+      // should: a SINGLE start overrunning 5s failed earlier and on something
+      // else, and which assertion caught it depended on which worker was slow.
+      // A slow PROBER leaves the rule unmeasured, so no scan worker is ever
+      // built and the count reads 1 — "the path built the wrong number of
+      // threads", when a contended runner was merely slow to start one. A slow
+      // SCAN WORKER keeps the count at 2 and degrades instead, which nothing
+      // here checked at all until the assertion added below. Both are the
+      // failure START_MS exists to prevent, so the grant applies here too and
+      // the assertions below — not the runner — are what decide.
       scanIsolation: { startBudgetMs: START_MS, onWorkerStart: starts.onWorkerStart },
     });
     try {

@@ -288,13 +288,18 @@ jobs:
   # two cases declared with `it.each` (which passes no TestContext) threw instead
   # of skipping, on the only platform that reaches the skip.
   #
-  # It runs its whole `test` script — all four suites, 604 assertions — and
-  # depends on no workspace package, so turbo schedules nothing upstream of it.
+  # It runs its whole `test` script — every suite in the package — and depends on
+  # no workspace package, so turbo schedules nothing upstream of it.
   #
-  # Cost, over three Windows runs (identical 604-test workload each time): the
-  # package's task 33s / 54s / 57s, effective-config.test.js 32s / 53s / 55s of
-  # that, against ~4.7s on a developer machine. Size a new case against the
-  # slower end — roughly a 10x factor, not the 3-5x the store suites see.
+  # Cost, over three Windows runs: the package's task 33s / 54s / 57s,
+  # effective-config.test.js 32s / 53s / 55s of that, against ~4.7s on a
+  # developer machine. Size a new case against the slower end — roughly a 10x
+  # factor, not the 3-5x the store suites see. Treat those figures as a FLOOR
+  # rather than the workload today: they were taken over an identical 604-test
+  # run, and the package has grown well past that since (measure the current
+  # figure with `pnpm --filter @akasecurity/eslint-config exec vitest run
+  # --reporter=json` and read `numTotalTests` — do not trust a count written
+  # here, which is what went stale last time).
   #
   # It is NOT on the critical path, and that is the number to reason about
   # rather than the job's wall clock. `@akasecurity/persistence` is the tail in
@@ -355,3 +360,89 @@ jobs:
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/web-ui
           --filter=@akasecurity/eslint-config
+
+  # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
+  # twenty packages target `*.config.*`, and so does the repo-root `lint:root`,
+  # which is the twenty-first invocation rather than a twenty-first package —
+  # and WHO EXPANDS IT is decided by the platform, not by the script. On POSIX
+  # the shell expands the pattern and hands eslint concrete filenames; `cmd.exe`
+  # does not glob at all, so eslint receives the literal pattern and runs its
+  # own expansion. Both should work. Until this job existed neither was
+  # observed on Windows, because `pnpm lint` ran on ubuntu-latest alone.
+  #
+  # It is load-bearing because `*.config.*` is the ONLY target that reaches each
+  # package's root config files (CLAUDE.md, "Adding a new workspace package",
+  # step 5). A pattern resolving to nothing there would take every ban off those
+  # files on this platform, while the guard that audits coverage went on
+  # reporting them covered — effective-config.test.js MODELS the expansion with
+  # `path.posix.matchesGlob` rather than running it, so it answers from the
+  # model on every platform and cannot see a real one that came back empty.
+  #
+  # A green run here is a real observation rather than a vacuous one, and that
+  # rests on a measured detail: eslint fails an unmatched pattern PER PATTERN,
+  # not only when every pattern is empty. Measured on eslint 9.39.4 —
+  # `eslint src 'zzz*.config.*'` exits 2 with `No files matching the pattern
+  # "zzz*.config.*" were found` even though `src` matches; the same command with
+  # the real pattern exits 0. So an expansion that silently came back empty
+  # reddens this job. It cannot pass quietly.
+  #
+  # Unfiltered, deliberately. Every lint script in the workspace carries the
+  # glob, and `pnpm lint` chains `lint:root`, whose own `*.config.*` is the only
+  # pass covering repo-root files that belong to no package.
+  #
+  # What this leg CANNOT exercise, so that nobody adds a case expecting it to:
+  # the CRLF normalization in parseWorkspaceGlobs. `.gitattributes` sets
+  # `* text=auto eol=lf`, so a Windows checkout gets LF like every other, and no
+  # `\r` ever reaches that parser here. It is covered instead by a synthetic
+  # case in effective-config.test.js that runs on every platform, which is the
+  # only place it can be covered. What this leg DOES uniquely exercise is the
+  # separator half: `globSync` yields native paths while `git ls-files` yields
+  # posix, and on Windows alone those two disagree.
+  #
+  # DELIBERATELY NO TURBO CACHE, for the same reason the no-network job has
+  # none. Turbo's hash covers file contents, dependencies and env — not the
+  # runner image, the shell, or the Node build, which are exactly the inputs
+  # this leg exists to exercise. A restored cache would let turbo replay a green
+  # `lint` task that expanded no glob on this runner at all, and the job would
+  # report success having observed nothing.
+  #
+  # Lint is the cheapest of the four task types, which is what makes a cold run
+  # affordable where a cold `test` would not be — but size the budget off the
+  # Windows factor, not off the figure below. Measured on an M-series Mac at
+  # `Cached: 0`: 72s for all twenty packages, plus 6.5s for lint:root and 0.6s
+  # for check:portability. At the ~10x factor the test leg above documents for
+  # this runner that is on the order of 13 minutes before `pnpm install`, which
+  # is the margin `timeout-minutes: 25` actually has. No Windows measurement
+  # exists yet; take one from the first green run and replace this paragraph
+  # with it rather than reasoning from the Mac number twice.
+  #
+  # It is a SEPARATE job rather than a step on the Windows test leg above, for
+  # two reasons. It runs in parallel, so it adds nothing to the critical path of
+  # what is already the slowest job here. And folding it in would make that
+  # job's NAME wrong — and that name is a required check (CONTRIBUTING.md,
+  # "Checks that gate `main`"), so renaming it stops branch protection matching
+  # anything and blocks every merge until a repo admin re-points it.
+  windows-lint:
+    name: Windows · Lint
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm lint`, not `turbo run lint`: the root script chains `lint:root`
+      # and `check:portability` after it, and the first of those is the pass
+      # that covers the repo root. Going to turbo directly would drop both.
+      - name: Lint
+        run: pnpm lint

@@ -183,3 +183,43 @@ describe('the CLI grants the id this manifest key derives', () => {
     expect(listed).toContain(extensionIdFromKey(manifest.key));
   });
 });
+
+describe('turbo hashes the CLI source these guards read', () => {
+  // Everything above reads cli/src/commands/extension.ts, and this package does
+  // not depend on cli — so nothing under cli/ is in this task's default hash. A
+  // follow-up touching only the CLI would leave the hash untouched, turbo would
+  // replay a cached pass, and the guards would not execute at exactly the moment
+  // they exist to fire. Measured before the inputs were declared: swapping the
+  // CLI's id for a different well-formed one left the hash byte-identical, and
+  // ci.yml restores .turbo/cache with restore-keys that fall back across
+  // commits, so the stale hit is reachable in CI and not just locally.
+  //
+  // Read as text with a scoped regex rather than parsed: turbo.json is JSONC and
+  // carries comments throughout, which is how the rest of this repo reads it.
+  const TURBO_JSON = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+  const task = /"@akasecurity\/plugin-browser-extension#test"\s*:\s*\{([\s\S]*?)\n {4}\}/.exec(
+    TURBO_JSON,
+  );
+
+  it('declares a task entry for this package', () => {
+    expect(
+      task,
+      'turbo.json declares no @akasecurity/plugin-browser-extension#test task, so this suite ' +
+        'falls back to the root `test` task and stops hashing the CLI source it reads',
+    ).not.toBeNull();
+  });
+
+  it('names the CLI source in its inputs', () => {
+    expect(
+      task?.[1],
+      'the task must hash cli/src/commands/extension.ts, or a CLI-only change replays a cached pass',
+    ).toContain('$TURBO_ROOT$/cli/src/commands/extension.ts');
+  });
+
+  it('names turbo.json in its inputs, so removing them re-runs this suite', () => {
+    // Self-coverage: without this, deleting the input above is invisible here
+    // for the same reason the CLI source was — the config that silences the
+    // guard is not itself hashed by it.
+    expect(task?.[1]).toContain('$TURBO_ROOT$/turbo.json');
+  });
+});

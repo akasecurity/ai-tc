@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -18,6 +17,7 @@ import { createVaultGlue, type VaultGlue } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { scrubTranscriptTail, type TailScrubDeps } from '../../src/history/tail-scrub.ts';
 import type { RedactionScope } from '../../src/remediation/redact.ts';
 
@@ -62,9 +62,9 @@ describe('scrubTranscriptTail', () => {
   });
 
   afterEach(() => {
-    rmSync(transcriptRoot, { recursive: true, force: true });
-    rmSync(outsideRoot, { recursive: true, force: true });
-    rmSync(base, { recursive: true, force: true });
+    removeTree(transcriptRoot);
+    removeTree(outsideRoot);
+    removeTree(base);
   });
 
   const transcriptFile = (name: string, content: string): string => {
@@ -145,7 +145,11 @@ describe('scrubTranscriptTail', () => {
     expect(readFileSync(outside, 'utf8')).toBe(content);
   });
 
-  it('refuses a symlink inside the root that points outside it', async () => {
+  it('refuses a symlink inside the root that points outside it', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     const content = `{"text":"key ${SECRET}"}\n`;
     const target = join(outsideRoot, 'target.jsonl');
     writeFileSync(target, content);
@@ -244,7 +248,7 @@ describe('scrubTranscriptTail', () => {
       expect(after).toContain('[REDACTED');
       expect(after).not.toContain('[[aka:');
     } finally {
-      rmSync(noConsentBase, { recursive: true, force: true });
+      removeTree(noConsentBase);
     }
   });
 });

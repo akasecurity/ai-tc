@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,6 +15,7 @@ import type {
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
 let dir: string;
@@ -24,7 +25,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 function event(overrides: Partial<IngestEvent> = {}): IngestEvent {
@@ -465,7 +466,7 @@ describe('staleBinaryNotice (prevention P2)', () => {
       expect(bare.staleBinaryNotice('0.0.2-alpha.5')).toBeNull(); // no recorded_by anywhere
       await bare.close();
     } finally {
-      rmSync(fresh, { recursive: true, force: true });
+      removeTree(fresh);
     }
   });
 });

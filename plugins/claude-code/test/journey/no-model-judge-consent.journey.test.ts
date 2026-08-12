@@ -28,9 +28,13 @@ import { readFileSync } from 'node:fs';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { SetupJourney, SURFACED_KEY } from './harness.ts';
 
-describe('/aka:setup journey — model-judge consent declined', () => {
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
+
+describeShimmed('/aka:setup journey — model-judge consent declined', () => {
   const journey = new SetupJourney();
   let triageStream = '';
   let preview: ReturnType<SetupJourney['applyPreview']>;
@@ -106,7 +110,7 @@ describe('/aka:setup journey — model-judge consent declined', () => {
 // the identical chain WITH consent and assert the spawn is detected. Without
 // this, a broken sentinel would make the no-consent assertion vacuously green:
 // the exact failure mode that let the disclosure drift in the first place.
-describe('/aka:setup journey — model-judge consent granted (control)', () => {
+describeShimmed('/aka:setup journey — model-judge consent granted (control)', () => {
   const journey = new SetupJourney();
   // Captured mid-chain: the sentinel's state after the historical grant but
   // BEFORE the model-judge consent, which is the moment that distinguishes the

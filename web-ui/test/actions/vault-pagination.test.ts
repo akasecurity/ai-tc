@@ -14,6 +14,7 @@ import {
 import type { VaultDerefReason } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreVaultInventory,
   loadMoreVaultReuse,
@@ -21,7 +22,6 @@ import {
   purgeVault,
   revealEntry,
 } from '../../app/(app)/vault/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 /**
  * The vault page's three paged READ actions.

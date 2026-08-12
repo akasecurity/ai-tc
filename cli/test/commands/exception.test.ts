@@ -24,12 +24,12 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runException } from '../../src/commands/exception.ts';
 import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with

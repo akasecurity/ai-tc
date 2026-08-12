@@ -39,8 +39,8 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
 
 import { deriveProvider } from '@akasecurity/setup-wizard';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { redactSurfacedSecrets } from '../../src/remediation/surfaced-redact.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The PRODUCTION redaction adapter: unlike `redactLeakedKeys`,
 // which trusts whatever `RedactionScope` a caller builds, `redactSurfacedSecrets`

@@ -8,11 +8,11 @@ import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/per
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreFindingInstances,
   loadMoreGroupedFindings,
 } from '../../app/(app)/findings/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 /**
  * The findings list's "Load more" actions.

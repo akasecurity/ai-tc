@@ -34,6 +34,7 @@ import type { BlockedDetectionInput, DetectionException } from '@akasecurity/sch
 import { DetectionCategory, PointerToken } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   type ActionResult,
   addException,
@@ -45,7 +46,6 @@ import {
 } from '../../app/(app)/exceptions/actions.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a

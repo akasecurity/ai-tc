@@ -7,9 +7,9 @@ import type { RunMode } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { resolveDataGateway } from '../src/resolve.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 let dir: string;
 

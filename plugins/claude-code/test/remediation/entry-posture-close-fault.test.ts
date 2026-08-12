@@ -34,8 +34,8 @@ vi.mock('@akasecurity/persistence', async (importOriginal) => {
 // The production entry's `writeSecretPosture` — guarded at the bottom of
 // entry.ts so importing it here never runs the CLI (reads stdin, calls
 // process.exit).
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { writeSecretPosture } from '../../src/remediation/entry.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 describe("entry.ts writeSecretPosture — a close() fault in the finally never rewrites the write's own result", () => {
   let home: string;

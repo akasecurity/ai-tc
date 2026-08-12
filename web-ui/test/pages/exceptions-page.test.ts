@@ -19,9 +19,9 @@ import type { BlockedDetectionInput } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The exceptions route issues TWO reads of the same blocked-detections ledger,
 // over two different windows, and hands both to the client — and which read

@@ -8,8 +8,8 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../app/(app)/scan/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 /**
  * The dashboard's folder scan against a hostile installed pack.

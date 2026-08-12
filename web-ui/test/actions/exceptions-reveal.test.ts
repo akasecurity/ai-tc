@@ -21,8 +21,8 @@ import type { DetectionException } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // `grantRevealFromPointer` mints the strictly-stronger capability: while the
 // grant is active the model may receive the value's raw form at tool

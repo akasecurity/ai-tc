@@ -8,9 +8,9 @@ import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity
 import { resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 const REMOTE_URL = 'https://github.com/acme/payments-api.git';
 

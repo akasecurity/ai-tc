@@ -7,9 +7,9 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, type PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { EXCEPTION_RETENTION_MS, handleSessionStart } from '../src/handle-session-start.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 let dir: string; // the ~/.aka data dir
 let cwd: string; // a working dir with a git origin (the "project")

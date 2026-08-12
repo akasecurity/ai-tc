@@ -21,6 +21,7 @@ import type { VaultInventoryEntry } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer, rotateKey } from '../../app/(app)/exceptions/actions.ts';
 import {
   purgeVault,
@@ -28,7 +29,6 @@ import {
   revokeRevealGrant,
   rotateVaultKey,
 } from '../../app/(app)/vault/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The vault manage surface: reveal-by-row-id, grant revocation, the purge, and
 // the key rotation. The suite pins the audit and survival properties — one

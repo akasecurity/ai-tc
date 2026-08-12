@@ -6,7 +6,12 @@
   // in a `test` task's hash — weakening or deleting it would leave every package
   // replaying a cached green produced under the OLD guard, which is a false
   // green for the guarantee it exists to enforce.
-  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
+  //
+  // test/helpers/** is there for the same reason: nine packages' teardowns
+  // import removeTree, whose retry and win32 tolerance no call site can observe,
+  // so weakening it would otherwise leave every one of them replaying a cached
+  // green taken under the old rule.
+  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**", "test/helpers/**"],
   "tasks": {
     // `native-host/**` is plugins/browser-extension's tsup outDir. An output a
     // package writes but does not declare is not restored on a cache hit, so a

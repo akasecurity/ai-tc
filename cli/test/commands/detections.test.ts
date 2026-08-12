@@ -8,8 +8,8 @@ import { dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { renderDetectionsTable, runDetections } from '../../src/commands/detections.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The refusal itself is proven against a real contended store one layer down
 // (packages/persistence/test/repositories/rule-probe-cache.test.ts, via

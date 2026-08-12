@@ -20,8 +20,8 @@ import {
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { revealPointer } from '../../app/(app)/vault/actions.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // `revealPointer` is the dashboard's reveal surface. It must return the raw
 // value ONLY for a pointer this machine minted (auditing the reveal), return

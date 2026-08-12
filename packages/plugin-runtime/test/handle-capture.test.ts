@@ -7,8 +7,8 @@ import { DatabaseSync } from 'node:sqlite';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { handleCapture } from '../src/handle-capture.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 // In standalone mode the effective ruleset is the store's INSTALLED snapshot
 // (seeded from bundledDetections() by resolveDataGateway), NOT ad-hoc packs

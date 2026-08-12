@@ -17,9 +17,9 @@ import { createVaultGlue, type VaultGlue } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { scrubTranscriptTail, type TailScrubDeps } from '../../src/history/tail-scrub.ts';
 import type { RedactionScope } from '../../src/remediation/redact.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // Canonical test AWS access-key id, composed at runtime so the repo's own secret
 // scan does not flag this test file (mirrors remediation/redact.test.ts).

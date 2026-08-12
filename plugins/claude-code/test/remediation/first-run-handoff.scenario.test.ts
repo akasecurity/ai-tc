@@ -14,12 +14,12 @@ import { SetupHandoffOffer as SetupHandoffOfferSchema } from '@akasecurity/schem
 import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import { runFirstRun } from '../../src/firstrun-core.ts';
 import { readPostureBlock } from '../../src/posture.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { frameJsonBlock, readFrameJsonBlock } from '../../src/setup-frame-json.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The first-run handoff seam, driven at the APP-LEVEL: the real frame-0.6
 // handoff-offer payload (runFirstRun → buildHandoffOffer) composed with the real

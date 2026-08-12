@@ -16,9 +16,9 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import VaultPage from '../../app/(app)/vault/page.tsx';
 import { VaultDashboardClient } from '../../app/(app)/vault/VaultDashboardClient.tsx';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The vault route issues THREE DISTINCT store reads and hands each to its own
 // prop:

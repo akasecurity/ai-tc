@@ -13,8 +13,8 @@ import {
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 // An AWS-key-SHAPED test value, assembled at runtime so no key-shaped literal
 // sits in this source file (the AKA plugin itself would flag it). Matched by

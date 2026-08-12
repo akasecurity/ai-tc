@@ -24,13 +24,13 @@ import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   looseStorePaths,
   runInit,
   symlinkedStorePaths,
   symlinkWarnings,
 } from '../../src/commands/init.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.

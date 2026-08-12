@@ -15,8 +15,8 @@ import type {
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 let dir: string;
 

@@ -9,9 +9,9 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { handleRequest } from '../../src/native-host/host.ts';
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 // The canonical AWS example key id, composed at runtime so the repo's own
 // secret scanning doesn't flag this file (see handle-capture.test.ts).

@@ -24,9 +24,9 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { createGuardedFileScanner } from '../src/guarded-scan.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 // The worker as this repo runs it: Node hands the `.ts` straight to the
 // type-stripper. The BUILT artifact the dashboard ships is a different file and

@@ -6,12 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   BIND_HOST,
   refreshUpdateMirror,
   runDashboardServer,
 } from '../../src/commands/dashboard.ts';
-import { removeTree } from '../helpers/remove-tree.ts';
 
 let dir: string;
 

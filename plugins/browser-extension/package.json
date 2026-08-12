@@ -27,7 +27,7 @@
     "@types/node": "^24.13.3",
     "esbuild": "^0.28.1",
     "eslint": "^9.0.0",
-    "jsdom": "^27.1.0",
+    "jsdom": "^30.0.1",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../app/(app)/scan/actions.ts';
 
 /**
@@ -149,8 +150,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
-  rmSync(target, { recursive: true, force: true });
+  removeTree(home);
+  removeTree(target);
 });
 
 describe('runScan — a pulled rule that never returns', () => {

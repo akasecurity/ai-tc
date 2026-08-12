@@ -15,7 +15,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { rootScripts, workspaceLintScripts } from './helpers/lint-invocations.js';
+import {
+  readPackageManifest,
+  rootScripts,
+  workspaceLintScripts,
+  workspacePackageDirs,
+} from './helpers/lint-invocations.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -58,6 +63,29 @@ function matrixValues(source, key) {
 // it does not survive is being asked for a STEP, because the cut lands above
 // them. So require both: a `runs-on:` (this is a job) and at least one step
 // list item (the body reached its end).
+//
+// COMMENT LINES ARE DROPPED, and that is load-bearing rather than tidying. Every
+// check below matches a pattern against this text, and a job's own comments
+// describe the very flags they sit next to — `# --continue: report every
+// package's failures…` sits one line above the `--continue` it explains. So a
+// reader that keeps them cannot tell a flag from a sentence about a flag, and
+// each of these passes on a job whose real step was deleted: measured, all three
+// of the Windows leg's structural checks stayed green with the flag, the filter
+// and the whole cache step removed and only the prose left behind. That is the
+// exact failure mode this file exists to prevent, one level up.
+//
+// A line whose first non-space character is `#` is a YAML comment here. The one
+// shape that would be misread is a `#` inside a `run:` block scalar, where it is
+// command text rather than a comment.
+//
+// That is safe because of WHERE this is pointed, not because the repo avoids the
+// shape: every caller passes `ci.yml`, which carries no `#`-leading line inside
+// any `run:` block. Four other workflows do — `dependabot-major-guard.yml` and
+// the three `release-plugin-*.yml` — so pointing `jobBlock` at one of those
+// makes this sentence false. It stays harmless while those lines are shell
+// comments, since dropping them changes no flag matched below; it stops being
+// harmless the first time a check wants to see something a `run:` block states
+// on a `#`-leading line.
 function jobBlock(source, key) {
   // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
   // where nothing is a metacharacter: the cost is one call, and a caller that
@@ -68,7 +96,10 @@ function jobBlock(source, key) {
     'm',
   ).exec(source);
   expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
-  const body = block[1];
+  const body = block[1]
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
   expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
   expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
   return body;
@@ -92,6 +123,27 @@ const LINT_STEP = /run: pnpm lint(?![\w:])/;
 function turboCacheKeys(block) {
   return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
 }
+
+/**
+ * Every `--filter=<name>` a job's run steps pass to turbo. Comment lines are
+ * already gone by the time a block reaches here (see jobBlock), which is what
+ * stops a filter that was moved into a comment reading as one that still runs.
+ */
+const turboFilters = (block) => [...block.matchAll(/--filter=(\S+)/g)].map(([, name]) => name);
+
+/**
+ * Every workspace package npm actually publishes — `private` absent or false.
+ * Derived from pnpm-workspace.yaml and the manifests themselves rather than
+ * listed, because a list is exactly what let the CLI and the plugin sit outside
+ * the Windows job while its name claimed the shipped surface: a fifth artifact
+ * added tomorrow would not be on it either.
+ */
+const publishedPackageNames = () =>
+  workspacePackageDirs()
+    .map((dir) => readPackageManifest(dir))
+    .filter((pkg) => pkg.private !== true && typeof pkg.name === 'string')
+    .map((pkg) => pkg.name)
+    .sort();
 
 // Every check name a workflow can emit, with matrix jobs expanded to the names
 // GitHub actually reports.
@@ -250,18 +302,42 @@ describe('the macOS leg', () => {
 
 // The two Windows legs. Between them they are the only place three things are
 // ever executed on this platform, and each is invisible in a diff once dropped:
-// the guard package's own path handling, and the glob expansion every `lint`
-// script depends on.
+// every package npm publishes, the guard package's own path handling, and the
+// glob expansion every `lint` script depends on.
+//
+// The shipped-surface leg is the mirror image of the macOS one: it is filtered ON
+// PURPOSE, so nothing about a narrow filter looks wrong in a diff — which is how
+// it spent its whole life excluding `@akasecurity/cli` and the plugins while its
+// own name promised the shipped surface and its own comment named those very
+// packages as the reason it exists. The filter is where its promise lives, so
+// that is what these pin.
 describe('the Windows legs', () => {
-  const ci = readWorkflow('ci.yml');
-
   // Read here, but BLOCKED inside each `it` — jobBlock asserts, and an assertion
   // in a describe body is a collection error that reports the whole FILE as
   // `(0 test)`, silently taking the gate-table rows with it. Reading the file is
   // safe out here; resolving a block is not.
+  const ci = readWorkflow('ci.yml');
 
   it('runs the shipped-surface tests on a Windows runner', () => {
     expect(jobBlock(ci, 'windows')).toMatch(/^ {4}runs-on: windows-latest$/m);
+  });
+
+  // THE assertion this job exists for. Derived from the workspace rather than
+  // listed, so a fifth published artifact is caught the day it lands; the
+  // count check first is what stops a broken derivation satisfying the loop
+  // with an empty set.
+  it('runs every package npm publishes', () => {
+    const published = publishedPackageNames();
+    // Positive control on the DERIVATION, not a second copy of the list: a
+    // manifest reader that broke and returned nothing — or everything — would
+    // otherwise satisfy `arrayContaining` and this check would pass forever
+    // while the filter list rotted. `cli` is the package the job's own comment
+    // names, and `persistence` is private and bundled, so one must be in the
+    // derived set and the other must not. A length floor alone cannot separate
+    // those two failures.
+    expect(published).toContain('@akasecurity/cli');
+    expect(published).not.toContain('@akasecurity/persistence');
+    expect(turboFilters(jobBlock(ci, 'windows'))).toEqual(expect.arrayContaining(published));
   });
 
   // @akasecurity/eslint-config is the one filter entry that ships nothing —
@@ -272,6 +348,9 @@ describe('the Windows legs', () => {
   // `git ls-files` yields posix, and the two are compared against each other
   // throughout effective-config.test.js. Drop this entry and those normalizations
   // go back to being a hypothesis no runner checks, with nothing red to show it.
+  //
+  // Not covered by the published-package check above, and cannot be: that set is
+  // derived from `private !== true`, which excludes this package by construction.
   it('tests the enforcement package, not just the shipped surface', () => {
     const block = jobBlock(ci, 'windows');
     expect(block).toMatch(/turbo run test/);
@@ -280,6 +359,29 @@ describe('the Windows legs', () => {
     // rename or split that repoints the filter at a sibling and takes this
     // package's Windows coverage away while the test stays green.
     expect(block).toMatch(/--filter=@akasecurity\/eslint-config(?![\w-])/);
+  });
+
+  // A filter is only a filter while there is something to filter. `turbo run
+  // test` with no --filter at all would satisfy the containment check above by
+  // running everything, which is a different job with a different cost — and it
+  // would make the assertion above unfalsifiable from then on.
+  it('is a filtered run, which is what makes the filter list load-bearing', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    expect(turboFilters(block).length).toBeGreaterThan(0);
+  });
+
+  // Without it turbo bails at the first red package, so a platform-specific
+  // failure in an early package hides every later one — and on this leg the
+  // whole point is seeing the platform's failures in one triage pass.
+  it('reports every package rather than bailing at the first failure', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/--continue/);
+  });
+
+  it('restores a Turbo cache', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
   it('runs lint on a Windows runner', () => {
@@ -343,15 +445,17 @@ describe('the Windows legs', () => {
 });
 
 // Turbo's task hash covers file contents, dependencies and env — not the
-// platform. Two jobs now restore .turbo/cache on two different OSes, so a key
-// that did not separate them would let macOS restore Linux's entry, hash-match,
-// and replay Linux's green `test` tasks: a platform leg reporting success
-// having executed nothing. `runner.os` leading every key and restore-key is the
-// whole of what prevents it, and it is one edit from being dropped.
+// platform. Three jobs now restore .turbo/cache on three different OSes, so a
+// key that did not separate them would let macOS or Windows restore Linux's
+// entry, hash-match, and replay Linux's green `test` tasks: a platform leg
+// reporting success having executed nothing. `runner.os` leading every key and
+// restore-key is the whole of what prevents it, and it is one edit from being
+// dropped. It matters most on the Windows leg, which is the newest to take a
+// cache and the one whose packages differ most by platform.
 describe('the Turbo caches in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 
-  it.each(['ci', 'macos'])('%s keys its cache per platform', (job) => {
+  it.each(['ci', 'macos', 'windows'])('%s keys its cache per platform', (job) => {
     const keys = turboCacheKeys(jobBlock(ci, job));
     // The `key:` plus two restore-keys. Pinned so a key added without the
     // prefix cannot hide behind a loop that happens to see none.

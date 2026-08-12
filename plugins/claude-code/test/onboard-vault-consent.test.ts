@@ -18,13 +18,17 @@ import { join } from 'node:path';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION, WorkspaceSettings } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { shimUnsupported } from './helpers/shim-unsupported.ts';
 import { PLUGIN_ROOT, SetupJourney } from './journey/harness.ts';
+
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
 
 function readRawSettings(journey: SetupJourney): Record<string, unknown> {
   return JSON.parse(readFileSync(journey.settingsPath, 'utf8')) as Record<string, unknown>;
 }
 
-describe('grant — records a writer-stamped VaultConsent', () => {
+describeShimmed('grant — records a writer-stamped VaultConsent', () => {
   let journey: SetupJourney;
   let stdout: string;
   let beforeMs: number;
@@ -129,7 +133,7 @@ describe('grant — the stamp cannot be smuggled in from the caller', () => {
   });
 });
 
-describe('revoke — clears the grant without touching anything else', () => {
+describeShimmed('revoke — clears the grant without touching anything else', () => {
   let journey: SetupJourney;
 
   beforeAll(() => {
@@ -159,7 +163,7 @@ describe('revoke — clears the grant without touching anything else', () => {
   });
 });
 
-describe('revoke — when no grant was ever recorded', () => {
+describeShimmed('revoke — when no grant was ever recorded', () => {
   let journey: SetupJourney;
 
   beforeAll(() => {
@@ -183,7 +187,7 @@ describe('revoke — when no grant was ever recorded', () => {
   });
 });
 
-describe('an invalid --vault-consent value', () => {
+describeShimmed('an invalid --vault-consent value', () => {
   let journey: SetupJourney;
 
   beforeAll(() => {

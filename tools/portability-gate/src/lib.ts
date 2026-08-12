@@ -446,12 +446,21 @@ function checkConcurrencyMissingTimeout(
 
 // A spec file: the unit rule 4 walks, wherever it sits in the tree.
 const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
-// Any source file under a directory named "test" or "bench" — the helpers,
-// worker entrypoints, fixture corpora and benchmark drivers rules 1-3 apply
-// to. A benchmark carries the same subject matter as a spec (chdir descent,
-// symlink loops, PATH_MAX ceilings that differ between platforms), so it is
-// covered by where it sits rather than by whichever shared fixture it happens
-// to call. The cut is by extension alone, so a fixture that deliberately holds
+// Any source file under a directory named "test", "bench" or "eval" — the
+// helpers, worker entrypoints, fixture corpora, benchmark drivers and prompt
+// contracts rules 1-3 apply to. A benchmark carries the same subject matter as
+// a spec (chdir descent, symlink loops, PATH_MAX ceilings that differ between
+// platforms), so it is covered by where it sits rather than by whichever shared
+// fixture it happens to call.
+//
+// `eval` is here for that same reason and was added after it cost something: a
+// native separator leaked out of `relative()` into a value compared against
+// posix literals in `plugins/claude-code/eval/prompt-contract.ts`, which three
+// test files import — test-support code by every measure except the name of its
+// directory. Nothing scanned it, because `eval/` matched neither this list nor
+// SPEC_FILE_RE. The rule that would have caught it already existed.
+//
+// The cut is by extension alone, so a fixture that deliberately holds
 // a bad pattern is only exempt while it is data (.txt, .json); written as real
 // .ts under one of these trees it is scanned like anything else, which is why
 // this package keeps its own violation fixtures at .txt.
@@ -462,7 +471,7 @@ const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
 // not match costs time quadratic in the number of segments. Reaching that
 // needs a committed path, since the input is git ls-files output — but this
 // gate runs on every push, so it stays linear by construction.
-const TREE_DIR_NAMES = ['test', 'bench'] as const;
+const TREE_DIR_NAMES = ['test', 'bench', 'eval'] as const;
 const SOURCE_EXT_RE = /\.(?:ts|tsx|js|mjs|cts|mts)$/;
 
 function isTreeFile(path: string): boolean {

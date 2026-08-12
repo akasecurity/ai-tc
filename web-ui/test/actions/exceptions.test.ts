@@ -34,6 +34,7 @@ import type { BlockedDetectionInput, DetectionException } from '@akasecurity/sch
 import { DetectionCategory, PointerToken } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   type ActionResult,
   addException,
@@ -277,7 +278,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('addException — the only web code touching a raw secret', () => {

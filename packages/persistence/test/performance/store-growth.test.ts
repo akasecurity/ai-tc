@@ -60,26 +60,49 @@ import { createTempStore } from '../helpers/temp-store.ts';
  * The two scales the slope is taken across. Small enough to keep the file a
  * couple of seconds, far enough apart that the fixed overhead is a minority of
  * the difference.
+ *
+ * They came down from 10k/20k, which cost 11.6 s to seed here against 2.7 s for
+ * this pair (fastest of two, arm64 macOS / Node 24.18) — and several times that
+ * on the Windows leg, which is shared, and where the corpora this file and
+ * `scale-budgets.test.ts` write are the two largest single pieces of work the
+ * package does. Nothing about the property needed the larger pair: it is a
+ * SLOPE, and a slope is stated as well by one decade as by another.
  */
-const BASE_EVENTS = 10_000;
-const DOUBLE_EVENTS = 20_000;
+const BASE_EVENTS = 5_000;
+const DOUBLE_EVENTS = 10_000;
 
 /**
- * The band the marginal cost must land in: ±15% of a measured 818.4 B/event for
+ * The band the marginal cost must land in: ±15% of a measured 797.9 B/event for
  * the generator's 240-character events.
  *
  * TIGHT, and it can be, because this is not a timing measurement. The corpus is
  * deterministic and so is SQLite's page allocation, so the figure is
- * byte-identical run to run — three consecutive runs produced 8,384,512 B at 10k
- * and 16,568,320 B at 20k, the same integers each time. Nothing here can flake
+ * byte-identical run to run — two consecutive runs produced 4,395,008 B at 5k
+ * and 8,384,512 B at 10k, the same integers each time. Nothing here can flake
  * the way a wall-clock bound does, so the band is sized to catch a regression
  * rather than to survive one.
+ *
+ * **The centre is a property of the PAIR, not of an event**, which is why it is
+ * retaken whenever the pair moves rather than carried across. Measured on the
+ * same corpus at three consecutive decades: 791.3 B/event across 2.5k→5k, 797.9
+ * across 5k→10k, 818.4 across 10k→20k. The slope creeps as the store grows —
+ * ~3.4% over that range — so the old 818.4 sits 2.5% above where this pair
+ * actually lands. Inside a ±15% band that would still have passed, which is
+ * exactly the hazard: a centre nobody re-measured drifts the band off the
+ * measurement it is supposed to bracket, one size change at a time, and the
+ * band only ever reads as green while it happens.
  *
  * A band this narrow was chosen after a loose one failed to earn its place: at
  * a 1,800 B ceiling, a mutation that wrote a SECOND copy of every event's
  * content into `attributes` — a real ~30% storage regression — still passed. The
  * ceiling has to sit below the smallest regression worth catching, not below the
  * absurd ones.
+ *
+ * That mutation is what re-earns the band at THIS pair, since a smaller corpus
+ * is where a size-derived ceiling is likeliest to have gone slack: replanted, it
+ * reads 1,129.7 B/event (6,057,984 B at 5k against 11,706,368 B at 10k) and
+ * fails the 917.6 ceiling above. Replant it, rather than trusting this
+ * paragraph, before moving the pair again.
  *
  * The 15% is for cross-platform slack, not for noise: a SQLite build with a
  * different default page size would shift the figure, and this should fail
@@ -88,7 +111,7 @@ const DOUBLE_EVENTS = 20_000;
  * the corpus stopped writing what it claims to, and a growth test over a store
  * that is not growing proves nothing.
  */
-const MEASURED_MARGINAL_BYTES_PER_EVENT = 818.4;
+const MEASURED_MARGINAL_BYTES_PER_EVENT = 797.9;
 const MARGINAL_TOLERANCE = 0.15;
 const MIN_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 - MARGINAL_TOLERANCE);
 const MAX_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 + MARGINAL_TOLERANCE);

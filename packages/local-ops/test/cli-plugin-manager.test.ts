@@ -176,3 +176,46 @@ describe('the snapshot refresh survives as best-effort prep', () => {
     ]);
   });
 });
+
+// The spawn plan is the DISCLOSURE render — what the dashboard's confirm dialog
+// promises will run. Its whole job is to omit nothing, which makes it the exact
+// opposite of a recipe: it must carry the survivable refresh that a recipe must
+// not. Getting these two backwards is silent in both directions — a dialog that
+// under-reports, or a copy-paste line that dies on a git fetch — so pin the
+// difference rather than either one alone.
+describe('the spawn plan discloses every command the automated path runs', () => {
+  it('codex: prep (both steps) then the op', () => {
+    const codex = createCliPluginManager('codex');
+    expect(codex.updateSpawnPlan('aka-codex@ai-tc', 'akasecurity/ai-tc', 'ai-tc')).toEqual([
+      'codex plugin marketplace add akasecurity/ai-tc',
+      'codex plugin marketplace upgrade ai-tc',
+      'codex plugin add aka-codex@ai-tc',
+    ]);
+  });
+
+  it('matches what apply.ts actually spawns: marketplaceSteps then the op', () => {
+    for (const bin of ['claude', 'codex'] as const) {
+      const m = createCliPluginManager(bin);
+      const rendered = (steps: readonly (readonly string[])[]) =>
+        steps.map((a) => `${bin} ${a.join(' ')}`);
+      expect(m.updateSpawnPlan('p@m', 'owner/repo', 'm')).toEqual([
+        ...rendered(m.marketplaceSteps('owner/repo', 'm')),
+        ...m.updateCommands('p@m'),
+      ]);
+      expect(m.installSpawnPlan('p@m', 'owner/repo', 'm')).toEqual([
+        ...rendered(m.marketplaceSteps('owner/repo', 'm')),
+        ...m.installCommands('p@m'),
+      ]);
+    }
+  });
+
+  it('is strictly wider than the recipe wherever a refresh exists', () => {
+    const codex = createCliPluginManager('codex');
+    const plan = codex.updateSpawnPlan('p@m', 'owner/repo', 'm');
+    const recipe = codex.updateRecipe('p@m', 'owner/repo');
+    // The refresh is the difference, and it belongs to exactly one of them.
+    expect(plan.some((l) => l.includes('marketplace upgrade'))).toBe(true);
+    expect(recipe.some((l) => l.includes('marketplace upgrade'))).toBe(false);
+    expect(plan.length).toBeGreaterThan(recipe.length);
+  });
+});

@@ -93,6 +93,16 @@ export interface CliPluginManager {
   // retypes, while the code path went on treating the same failure as harmless.
   installRecipe: (ref: string, source?: string) => string[];
   updateRecipe: (ref: string, source?: string) => string[];
+  // Everything the AUTOMATED path spawns, in order: prep (both steps) then the
+  // op. This is the disclosure render — a confirm dialog saying "this runs the
+  // following on your machine" is a promise, and naming one of three spawns
+  // breaks it in a product whose whole pitch is that you can see what runs.
+  //
+  // NOT interchangeable with a recipe, and never to be joined with `&&`: it
+  // deliberately includes the survivable refresh, whose failure the automated
+  // path ignores and `&&` would not. Join with a newline and show it as a list.
+  installSpawnPlan: (ref: string, source?: string, marketplace?: string) => string[];
+  updateSpawnPlan: (ref: string, source?: string, marketplace?: string) => string[];
   install: (ref: string) => boolean;
   update: (ref: string) => boolean;
 }
@@ -108,6 +118,12 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
   // Register-then-op only. See `installRecipe` on why the refresh stays out.
   const recipe = (steps: Step[], source: string | undefined): string[] =>
     render([...(source ? verbs.register(source) : []), ...steps]);
+  // Prep-then-op, refresh included — what `apply.ts` really spawns.
+  const spawnPlan = (
+    steps: Step[],
+    source: string | undefined,
+    marketplace: string | undefined,
+  ): string[] => render([...(source ? marketplaceSteps(source, marketplace) : []), ...steps]);
 
   return {
     available: () => binExists(bin),
@@ -123,6 +139,10 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
     updateCommands: (ref) => render(verbs.update(ref)),
     installRecipe: (ref, source) => recipe(verbs.install(ref), source),
     updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
+    installSpawnPlan: (ref, source, marketplace) =>
+      spawnPlan(verbs.install(ref), source, marketplace),
+    updateSpawnPlan: (ref, source, marketplace) =>
+      spawnPlan(verbs.update(ref), source, marketplace),
     install: (ref) => runAll(verbs.install(ref)),
     update: (ref) => runAll(verbs.update(ref)),
   };

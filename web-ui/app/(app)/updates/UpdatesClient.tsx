@@ -117,7 +117,9 @@ export function UpdatesClient({
             <DialogTitle>
               {pending?.kind === 'install' ? 'Install' : 'Update'} {pending?.name}?
             </DialogTitle>
-            <DialogDescription>This runs the following command on this machine:</DialogDescription>
+            {/* Plural: a plugin's plan is the marketplace prep plus the op, so
+                this is several lines for every host that keeps a snapshot. */}
+            <DialogDescription>This runs the following on this machine:</DialogDescription>
           </DialogHeader>
           <DialogBody>
             <pre className="overflow-x-auto rounded-lg border border-border bg-surface-2 p-3 font-mono text-xs text-text">

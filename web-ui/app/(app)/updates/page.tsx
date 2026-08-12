@@ -45,21 +45,39 @@ export default function UpdatesPage() {
     cliInstalled: cliVersion(process.cwd()),
   });
 
-  // The exact command each button runs — shown verbatim in the confirm dialog.
-  // Derived from each agent's OWN host verb table: the hosts do not share verbs
-  // (`claude plugin update` vs `codex plugin add`) and they are not even the
-  // same binary, so a hardcoded `claude …` here showed every Codex user a
-  // command that fails on both counts.
+  // EVERY command each button spawns, one per line — shown verbatim in the
+  // confirm dialog. Two things this must get right:
+  //
+  // Derived from each agent's OWN host verb table, because the hosts share
+  // neither the verbs (`claude plugin update` vs `codex plugin add`) nor the
+  // binary — a hardcoded `claude …` here showed every Codex user a command
+  // wrong on both counts.
+  //
+  // And it is the SPAWN PLAN, not the op alone: the Server Action runs the
+  // marketplace prep first, so a dialog promising "this runs the following on
+  // this machine" while naming one of three spawns is false in the direction
+  // that matters for a local-first product. Newline-joined, never `&&` — the
+  // plan carries a step whose failure the action deliberately ignores.
   const commands: Record<string, string> = {
     cli: `npm install -g ${CLI_PACKAGE}@latest`,
   };
   const installCommands: Record<string, string> = {};
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
-    if (!ref || !agent.cliBin) continue;
+    // No ref or no host binding means no automated path at all (Antigravity
+    // installs from a local directory). Leaving the entry out would render an
+    // EMPTY dialog under "this runs the following", which is a worse lie than
+    // the wrong command it replaced, so say so instead.
+    if (!ref || !agent.cliBin) {
+      const none = `No automated path for ${agent.name} — see \`aka plugins install ${agent.id}\`.`;
+      commands[agent.id] = none;
+      installCommands[agent.id] = none;
+      continue;
+    }
     const manager = createCliPluginManager(agent.cliBin);
-    commands[agent.id] = manager.updateCommands(ref).join(' && ');
-    installCommands[agent.id] = manager.installCommands(ref).join(' && ');
+    const { marketplaceSource: source, marketplace } = agent;
+    commands[agent.id] = manager.updateSpawnPlan(ref, source, marketplace).join('\n');
+    installCommands[agent.id] = manager.installSpawnPlan(ref, source, marketplace).join('\n');
   }
 
   return (

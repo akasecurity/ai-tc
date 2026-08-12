@@ -24,21 +24,15 @@
  * uncalled. Nothing can reach the model API on this path.
  */
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { assertShimResolves, shimmedPath, writeCommandShim } from '../helpers/path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/antigravity
@@ -71,13 +65,18 @@ interface StepResult {
 // POSIX, so pointing HOME at a temp dir isolates the whole chain — no
 // script-level flag or process.env read is added to shipped code. The child env
 // is built from scratch (never the host env): PATH carries only the stub-judge
-// bin dir plus node's own dir, so the stub `agy` is the ONLY resolvable judge
-// and the `#!/usr/bin/env node` shebang still finds node.
+// bin dir plus node's own dir, so a real `agy` on the developer's PATH is not
+// reachable through it, and the shebang still finds node. That is a narrower
+// claim than "the stub is the only resolvable judge" — PATH is not the whole
+// of resolution (Windows searches the working and system directories first),
+// and a stub that fails to land is answered by whatever is, not by an ENOENT.
+// assertShimResolves in run() is what closes that gap.
 class SetupJourney {
   readonly home: string;
   // The settings.json the onboarding writer records the consent into.
   readonly settingsPath: string;
   private readonly binDir: string;
+  private shimProven = false;
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-antigravity-journey-home-'));
@@ -171,13 +170,22 @@ class SetupJourney {
       USERPROFILE: this.home,
       // Stub judge first on PATH so apply-suppressions' `agy` spawn hits
       // it, never a live model; node's own dir second so the stub's
-      // `#!/usr/bin/env node` shebang resolves. Nothing else from the host
-      // environment reaches the chain.
-      // `delimiter`, not a literal `:` — Windows separates PATH entries with
-      // `;`, and a literal colon there collapses both entries into one
-      // unresolvable string, so neither the stub nor node itself is reachable.
-      PATH: `${this.binDir}${delimiter}${dirname(process.execPath)}`,
+      // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
+      // branch of writeCommandShim; on Windows the stub is a .cmd naming an
+      // absolute node, so node's dir is on PATH for POSIX's sake, not both.
+      // Nothing else from the host environment reaches the chain.
+      PATH: shimmedPath(this.binDir, dirname(process.execPath)),
     };
+    // Proven once per journey, before the first script runs. A shim that does
+    // not land does NOT fail closed: resolution keeps walking PATH and finds a
+    // real installed `agy`, so the chain would reach a live model and this
+    // suite's load-bearing `judgeWasInvoked()` assertion would pass for the
+    // wrong reason — nothing ran because nothing COULD run. spawnAgy uses no
+    // `shell`, so the probe must not either.
+    if (!this.shimProven) {
+      assertShimResolves('agy', env);
+      this.shimProven = true;
+    }
     // spawnSync (not execFileSync) so BOTH streams are captured on the success
     // path too — the stderr assertions below must see what a wizard transcript
     // would see, and execFileSync only surfaces stderr when the child fails.
@@ -202,9 +210,7 @@ class SetupJourney {
   // envelope on stdout — the first hit per (category, rule) surfaced (genuine),
   // the rest marked routine false positives. No live model is ever hit.
   private writeFakeJudge(): void {
-    const src = `#!/usr/bin/env node
-'use strict';
-// Record that the judge actually ran, so a test can prove the consent gate
+    const body = `// Record that the judge actually ran, so a test can prove the consent gate
 // stopped the egress at the process boundary (see judgeWasInvoked).
 require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, '');
 const args = process.argv.slice(2);
@@ -256,9 +262,9 @@ process.stdout.write(JSON.stringify({
   response: '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`',
 }));
 `;
-    const path = join(this.binDir, 'agy');
-    writeFileSync(path, src);
-    chmodSync(path, 0o755);
+    // writeCommandShim owns the shebang, the mode bits and — on Windows — the
+    // .cmd launcher that makes a bare `agy` resolvable at all.
+    writeCommandShim(this.binDir, 'agy', body);
   }
 }
 

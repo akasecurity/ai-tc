@@ -53,21 +53,67 @@ export function processHiddenChar(state: HiddenInputState, ch: string): HiddenIn
 // Signals that would otherwise kill the process mid-prompt with raw mode still
 // on — leaving the user's shell with echo disabled. Restored first, then the
 // signal is re-raised with its default disposition.
+//
+// SIGHUP is in the list for the terminal-closed case, which is where a stuck
+// raw mode would outlive the session that could fix it. Windows raises none of
+// these the way a unix tty does, but Node accepts the registration there, so the
+// list stays one list rather than branching on platform.
 const CLEANUP_SIGNALS: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
-export function terminalPrompter(): Prompter {
+/** Registration and re-raise for the fatal signals, seamed off the process. */
+export interface SignalHooks {
+  once(signal: NodeJS.Signals, handler: (signal: NodeJS.Signals) => void): void;
+  off(signal: NodeJS.Signals, handler: (signal: NodeJS.Signals) => void): void;
+  /** Re-raise with the default disposition, once the TTY is sane again. */
+  raise(signal: NodeJS.Signals): void;
+}
+
+/**
+ * The terminal a prompter drives. Seamed because the hidden prompt's whole
+ * behaviour — raw mode on, echo suppressed, raw mode off again on every exit —
+ * needs a TTY, and no CI runner has one on any platform. A scripted duplex
+ * stands in, so the lifecycle is asserted wherever this suite runs rather than
+ * only where somebody sits at a keyboard.
+ */
+export interface TerminalIo {
+  readonly input: NodeJS.ReadStream;
+  readonly output: NodeJS.WriteStream;
+  readonly errorOutput: NodeJS.WriteStream;
+  readonly signals: SignalHooks;
+}
+
+function processIo(): TerminalIo {
+  return {
+    input: process.stdin,
+    output: process.stdout,
+    errorOutput: process.stderr,
+    signals: {
+      once: (signal, handler) => {
+        process.once(signal, handler);
+      },
+      off: (signal, handler) => {
+        process.removeListener(signal, handler);
+      },
+      raise: (signal) => {
+        process.kill(process.pid, signal);
+      },
+    },
+  };
+}
+
+export function terminalPrompter(io: TerminalIo = processIo()): Prompter {
   return {
     out: (text) => {
-      process.stdout.write(text);
+      io.output.write(text);
     },
     err: (text) => {
-      process.stderr.write(text);
+      io.errorOutput.write(text);
     },
-    isInteractive: process.stdin.isTTY && process.stdout.isTTY,
+    isInteractive: io.input.isTTY && io.output.isTTY,
 
     ask(question) {
       return new Promise((resolve) => {
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const rl = createInterface({ input: io.input, output: io.output });
         rl.question(question, (answer) => {
           rl.close();
           resolve(answer);
@@ -83,8 +129,8 @@ export function terminalPrompter(): Prompter {
     // invoked from.
     askHidden(question) {
       return new Promise((resolve, reject) => {
-        const stdin = process.stdin;
-        process.stdout.write(question);
+        const stdin = io.input;
+        io.output.write(question);
         stdin.setRawMode(true);
         stdin.resume();
         let state: HiddenInputState = { value: '', esc: 'none' };
@@ -95,7 +141,7 @@ export function terminalPrompter(): Prompter {
           restored = true;
           stdin.removeListener('data', onData);
           stdin.removeListener('error', onError);
-          for (const sig of CLEANUP_SIGNALS) process.removeListener(sig, onSignal);
+          for (const sig of CLEANUP_SIGNALS) io.signals.off(sig, onSignal);
           try {
             stdin.setRawMode(false);
           } catch {
@@ -105,7 +151,7 @@ export function terminalPrompter(): Prompter {
         };
         const finish = (err?: Error) => {
           restore();
-          process.stdout.write('\n');
+          io.output.write('\n');
           if (err) reject(err);
           else resolve(state.value);
         };
@@ -115,7 +161,7 @@ export function terminalPrompter(): Prompter {
         const onSignal = (sig: NodeJS.Signals) => {
           restore();
           // Re-raise with default disposition now that the TTY is sane.
-          process.kill(process.pid, sig);
+          io.signals.raise(sig);
         };
         const onData = (chunk: Buffer) => {
           try {
@@ -137,13 +183,13 @@ export function terminalPrompter(): Prompter {
 
         stdin.on('data', onData);
         stdin.once('error', onError);
-        for (const sig of CLEANUP_SIGNALS) process.once(sig, onSignal);
+        for (const sig of CLEANUP_SIGNALS) io.signals.once(sig, onSignal);
       });
     },
 
     async readAllStdin() {
       const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
+      for await (const chunk of io.input) {
         chunks.push(chunk as Buffer);
       }
       return Buffer.concat(chunks).toString('utf8');

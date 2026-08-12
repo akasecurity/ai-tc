@@ -1,0 +1,15 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
+
+const binDir = mkdtempSync(join(tmpdir(), 'shim-'));
+
+const env = {
+  PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+};
+
+const alsoFine = [binDir, process.env.PATH].join(delimiter);
+const entries = env.PATH.split(delimiter);
+// A colon-joined string that names no PATH is somebody else's business.
+const label = `${file}:${line}`;
+const url = 'https://example.invalid/a:b';

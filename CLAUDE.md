@@ -935,7 +935,7 @@ of them a wall clock. A benchmark reports a trend and gates nothing; these fail 
 
 **No gate here asserts an elapsed time against a budget, and one used to.** The two
 per-call store costs are gated as a **ratio of the same cost at two store sizes**
-(`scale-budgets.test.ts`, 5k against 50k), because a ratio cancels the runner: half the
+(`scale-budgets.test.ts`, 2k against 20k), because a ratio cancels the runner: half the
 machine halves both sides and moves the quotient not at all. The absolute form was tried
 first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
 and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
@@ -955,22 +955,37 @@ scaling one. They catch different defects; neither substitutes for the other.
 The numbers, measured on arm64 macOS / Node 24 against corpora from
 `src/test-fixtures/generate.ts`:
 
-| Property                                  | Measured                                    | Gate                    |
-| ----------------------------------------- | ------------------------------------------- | ----------------------- |
-| Store growth                              | **818 B/event** marginal, linear to 1M      | —                       |
-| `recordCapture` 5k → 50k                  | ratio **1.03** (fastest of 200, worst 1.07) | ratio < 3 ✅            |
-| `openLocalDatabase` 5k → 50k              | ratio **0.98** (fastest of 20, worst 1.03)  | ratio < 3 ✅            |
-| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200)          | backstop ≤ 1,000 ms ✅  |
-| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)             | backstop ≤ 1,000 ms ✅  |
-| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5                    | ungated (misses 2 s) ❌ |
+| Property                                  | Measured                           | Gate                    |
+| ----------------------------------------- | ---------------------------------- | ----------------------- |
+| Store growth, 5k → 10k                    | **797.9 B/event** marginal         | ±15% band ✅            |
+| `recordCapture` 2k → 20k                  | ratio **1.02** (fastest of 200)    | ratio < 3 ✅            |
+| `openLocalDatabase` 2k → 20k              | ratio **0.99** (fastest of 20)     | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5           | ungated (misses 2 s) ❌ |
+
+**Both pairs came down from a decade higher, and the reason is worth carrying.** They
+were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
+pieces of work `@akasecurity/persistence` does — `scale-budgets` seeded for 117 s on a
+macOS CI run that passed and 135 s on one that did not, against a 120 s hook ceiling. A
+3% margin is not headroom, and it landed both ways inside one afternoon. The property in
+each case is a RATIO or a SLOPE, and neither needs a particular absolute size, so the
+corpus came down rather than the ceiling going up. The prices are stated where they are
+paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's centre
+had to be retaken, because the marginal creeps with size — 791.3 B/event across 2.5k→5k,
+797.9 across 5k→10k, 818.4 across 10k→20k, all measured, all byte-identical run to run.
+**Do not carry a centre across a size change**; a stale one still reads green.
 
 **A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
 The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
-size-dependent term to reach 2/7 of the baseline — ~17 us against `recordCapture`'s ~58 us.
-Adding a `SELECT COUNT(*)` to that path is genuinely linear and does **not** redden it
-(ratio 1.094): SQLite answers the count from a covering index in ~4 us at 50k rows. A
-forced row scan (~2.2 ms) reads 10.174 and fails. So a ratio gate catches a linear cost
-that changes what the operation costs, not one inside its noise floor.
+size-dependent term to reach 2/7 of the baseline — ~15 us against `recordCapture`'s ~53 us
+(measured 53.4 us at 2k and 53.0 us at 5k, i.e. flat in the corpus size),
+i.e. a per-row slope of ~7.6 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
+linear and does **not** redden it: SQLite answers the count from a covering index. The
+same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
+fails. So a ratio gate catches a linear cost that changes what the operation costs, not
+one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
+the pair by 2.5x raised it by 2.5x.
 
 **`/security` misses its budget, and it is not a missing index.**
 `hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
@@ -1034,12 +1049,31 @@ instead — restated as a **ratio** against a second store size, not carried ove
 elapsed number the bench prints, which is the one form that cannot survive a shared
 runner.
 
-Corpus scale is what decides where a scale test can live. Seeding is not flat per event —
-0.054 ms at 5k, 0.096 at 100k (9.6 s), 0.639 at 1M (10.7 minutes) — so a six-figure
-corpus belongs in a `beforeAll`, where it is charged to `hookTimeout` rather than eating a
-test's own budget before the first assertion. A synchronous body cannot be interrupted, so
-one that overruns runs to completion and is then reported as a timeout, which reads as a
-budget failure and is not one. Cut the corpus rather than raising the ceiling.
+Corpus scale is what decides where a scale test can live. Seeding is not flat per event,
+so a six-figure corpus belongs in a `beforeAll`, where it is charged to `hookTimeout`
+rather than eating a test's own budget before the first assertion. A synchronous body
+cannot be interrupted, so one that overruns runs to completion and is then reported as a
+timeout, which reads as a budget failure and is not one. Cut the corpus rather than
+raising the ceiling.
+
+**Take the rate yourself before sizing anything against it, and take the CI-to-local
+FACTOR too — that factor, not the local rate, is what has cost a red main.** Measured as
+the fastest of three seeds into a fresh store through `seedCaptureCorpus`, one warm-up
+discarded, on arm64 macOS 26.5.2 / Node 24.18.0 with nothing else running: **0.0434
+ms/event at 2k, 0.0427 at 3k, 0.0448 at 5k, 0.0558 at 20k, 0.0732 at 50k** (87 ms, 128 ms,
+224 ms, 1.12 s and 3.66 s for the corpus). Seeding is not flat per event — it creeps ~1.7x
+across that range — but there is **no step in it**, and no page-cache cliff: the rate runs
+flat straight through 2,400 events (0.0434 / 0.0434 / 0.0427 at 2k / 2.4k / 3k).
+
+What the 120 s ceiling in `scale-budgets.test.ts` was really missing is the runner
+multiple. Seeding 5k + 50k costs 3.88 s locally, which is what that pair was sized
+against and is accurate; the same hook took **116,970 ms on a macOS CI run that passed
+and 135,237 ms on one that did not**, against a 120,000 ms ceiling — a factor of **~30x**,
+not "several times". Size against the factor: 2k + 20k is 1.20 s locally, so ~36 s there.
+
+Older figures in this section (a 0.091 ms/event rate at 3k, a cliff at ~2,400 events, and
+the 100k and 1M rates of 0.096 and 0.639 ms/event) ran ~5-6x high and are retracted or
+untaken. Re-measure rather than budget from them.
 
 ### The no-network guard
 
@@ -1121,6 +1155,55 @@ outcome: probe tooling missing, DNS still resolving, the target still answering,
 probe reporting itself broken, the probe file gone, started as root, and the one green
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
+
+### The PATH shim, and why it fails OPEN
+
+A suite that drives a **built** script cannot reach that script's spawn seams — they are
+in-process, and the script is another process. So the external command is faked by putting a
+controlled executable first on the child's `PATH`: the journey harnesses' judge stub
+(`claude`/`codex`/`agy`) and `plugins/claude-code/test/provenance.test.ts`'s fake `npm`.
+
+**A shim that does not land is not an `ENOENT`.** Resolution walks the rest of `PATH` and runs
+the REAL installed binary — measured by joining `PATH` with `';'` on a POSIX host, which
+resolved and executed the live `claude` CLI. So the failure mode is a suite that looks hermetic
+while reaching a live model or the npm registry, and no gate above sees it: the ESLint ban reads
+source, the vitest guard cannot follow a child process, and the Linux `No-network` job is the
+only one that would — on the one platform where the shim happens to work.
+
+`plugins/*/test/helpers/path-shim.ts` is the shared answer, and it is a **peer copy per
+plugin** for the reason `no-echo.ts` is: a package wall blocks the import, and a copy takes its
+`path-shim.test.ts` with it — or `assertShimResolves` can be weakened back into a no-op with
+every caller staying green. Four properties are load-bearing:
+
+- **Resolution is PROVEN before a chain is driven, not assumed.** `assertShimResolves` spawns
+  the command the way the code under test will, so a miss is a red setup rather than a live
+  call. It **performs** resolution rather than modelling it, so it agrees with libuv about
+  `PATHEXT` instead of restating it.
+- **`shell` and `cwd` must mirror the spawn being stood in for**, because the probe cannot
+  discover either and PATH is not the whole of resolution. `provenance.ts` exports its
+  `USE_SHELL` so the probe imports the runner's own condition rather than re-deriving it;
+  `triage/judge.ts`'s `spawnClaude` uses no shell. **Windows searches the working directory
+  before walking PATH**, so a probe taken under a different cwd than its subject faithfully
+  performs a resolution the subject never performs — which is why the journey harness keys its
+  proof by cwd rather than latching it once, its `run()` taking a per-step cwd.
+- **The probe answer comes before anything else the stub does**, so probing is never recorded
+  as an invocation — which is what a `judgeWasInvoked()`-style sentinel assertion rests on.
+- **Three POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
+  launcher on win32 rather than an extensionless `#!` file, and no reliance on a `chmod` that
+  is a no-op there. `tools/portability-gate`'s `path-separator-literal` rule catches the first
+  returning to a call site, which is how it arrived.
+
+`writeCommandShim` takes an optional `platform` (as `judgeEnv` does), so both branches are
+driven from either host: writing the other platform's form is a resolution failure on this one.
+Pin the **artifact** as well as the refusal there — a branch that wrote nothing also refuses,
+and reads identically.
+
+Two smaller things the same reasoning decides. The probe's own deadline sits **well under the
+package's `testTimeout`**, because it runs inside a test body: equal deadlines mean vitest wins
+the race and the refusal — the whole point of failing closed — is replaced by a bare timeout.
+And `shimmedPath` returns the bin dir **alone** when there is no base PATH: an empty PATH entry
+means the current directory to execvp and to libuv, so a trailing separator quietly puts the cwd
+on a search path whose only purpose is that nothing but the shim is on it.
 
 ### The adversarial fixture corpus
 

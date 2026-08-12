@@ -39,6 +39,12 @@ function cliRoot(): string {
 // native host, so add one deliberately and drop a legacy id once it is dead.
 // plugins/browser-extension/test/manifest.test.ts derives the committed key's
 // id and fails if this list omits it.
+//
+// Adding an id here means updating cli/test/commands/extension.test.ts too: it
+// deep-equals the whole written manifest, so a new entry reddens it on an
+// allowed_origins mismatch. That literal is spelled out rather than derived on
+// purpose — widening a grant should have to be confirmed somewhere, the way the
+// host_permissions guard works — so the second edit is the point, not friction.
 const EXTENSION_IDS = [
   // Derived from the "key" in plugins/browser-extension/manifest.json.
   'mdoiaiemcnjnaokmcmgbikcdhgiemdof',

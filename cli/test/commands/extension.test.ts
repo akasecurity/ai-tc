@@ -113,6 +113,11 @@ describe('runInstall / runStatus', () => {
         'AI Traffic Control native messaging host — bridges the browser extension to the local ~/.aka SQLite store.',
       path: launcher,
       type: 'stdio',
+      // Spelled out rather than derived from EXTENSION_IDS: every origin here
+      // is a live grant to talk to the native host, so widening the list should
+      // have to be confirmed in a second place. If this reddened after you
+      // appended an id there, that is this assertion doing its job — add the
+      // matching origin. It is not an unrelated manifest regression.
       allowed_origins: ['chrome-extension://mdoiaiemcnjnaokmcmgbikcdhgiemdof/'],
     });
 

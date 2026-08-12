@@ -90,6 +90,72 @@ function extensionIdFromKey(key: string): string {
     .join('');
 }
 
+// The CLI's list is read as text, because cli and plugins/* are sibling leaf
+// packages and importing across them is a package-wall crossing.
+//
+// Comments are stripped before tokenizing. An apostrophe inside one — "the
+// Chrome Web Store's own id", the very comment the next entry invites — would
+// otherwise pair with a real opening quote and swallow the entry after it,
+// reddening this guard on a comment fragment while the CLI list is perfectly
+// correct. Matching the id SHAPE instead would hide the opposite failure:
+// every quoted entry is captured here, malformed ones included, so a typo'd id
+// still reaches the well-formedness check rather than vanishing from it.
+function parseExtensionIds(source: string): string[] {
+  const body = /const EXTENSION_IDS = \[([\s\S]*?)\];/.exec(source)?.[1];
+  if (body === undefined) return [];
+  const withoutComments = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return [...withoutComments.matchAll(/'([^']*)'/g)]
+    .map((m) => m[1])
+    .filter((id): id is string => id !== undefined);
+}
+
+describe('the EXTENSION_IDS tokenizer', () => {
+  // Driven with fixture sources rather than the committed file: these are the
+  // shapes the NEXT edit to that list introduces, so they have to be pinned
+  // before someone writes one for real.
+  it('captures every entry in a multi-id list', () => {
+    const source = `const EXTENSION_IDS = [\n  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',\n  'aaaabbbbccccddddeeeeffffgggghhhh',\n];`;
+    expect(parseExtensionIds(source)).toEqual([
+      'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+      'aaaabbbbccccddddeeeeffffgggghhhh',
+    ]);
+  });
+
+  it('is not fooled by an apostrophe in a comment', () => {
+    const source = `const EXTENSION_IDS = [
+  // Derived from the "key" in plugins/browser-extension/manifest.json.
+  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+  // The Chrome Web Store's own id.
+  'aaaabbbbccccddddeeeeffffgggghhhh',
+];`;
+    expect(parseExtensionIds(source)).toEqual([
+      'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+      'aaaabbbbccccddddeeeeffffgggghhhh',
+    ]);
+  });
+
+  it('is not fooled by an apostrophe in a block comment', () => {
+    const source = `const EXTENSION_IDS = [
+  /* The store's own id. */
+  'aaaabbbbccccddddeeeeffffgggghhhh',
+];`;
+    expect(parseExtensionIds(source)).toEqual(['aaaabbbbccccddddeeeeffffgggghhhh']);
+  });
+
+  it('captures a malformed entry rather than skipping it', () => {
+    // What a shape-matching tokenizer would lose: a typo'd id would simply not
+    // be captured, and the well-formedness check below would pass over a list
+    // that grants nothing usable.
+    const source = `const EXTENSION_IDS = [\n  'NOT-AN-ID',\n];`;
+    expect(parseExtensionIds(source)).toEqual(['NOT-AN-ID']);
+  });
+
+  it('returns nothing when the constant is renamed', () => {
+    const source = `const OTHER_IDS = [\n  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',\n];`;
+    expect(parseExtensionIds(source)).toEqual([]);
+  });
+});
+
 describe('the CLI grants the id this manifest key derives', () => {
   // `aka extension install` writes allowed_origins into the native-host
   // manifest, and Chrome refuses connectNative for any origin missing from it.
@@ -98,10 +164,7 @@ describe('the CLI grants the id this manifest key derives', () => {
   // host. Replacing the committed key (as publishing to the Chrome Web Store
   // does, since the store signs with its own) fails here until the CLI lists
   // the new id.
-  const listed = (() => {
-    const block = /const EXTENSION_IDS = \[([\s\S]*?)\];/.exec(CLI_EXTENSION_SOURCE);
-    return [...(block?.[1] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1]);
-  })();
+  const listed = parseExtensionIds(CLI_EXTENSION_SOURCE);
 
   it('parses a non-empty EXTENSION_IDS list out of the CLI source', () => {
     // Asserted on its own so a renamed constant reports THAT, rather than

@@ -5,7 +5,7 @@
 // one behaviour. Token figures + time labels are derived from the semantic
 // @akasecurity/schema `ActivitySession` (raw counts + ISO timestamps).
 import type { ActivitySession, SessionTokenReport } from '@akasecurity/schema';
-import { Button, Skeleton } from '@akasecurity/ui-kit';
+import { Button, cn, Skeleton } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
 import { MetaItem } from '../shared/DetailFields.tsx';
@@ -15,6 +15,7 @@ import {
   ArrowUpRightIcon,
   BoltIcon,
   DownloadIcon,
+  ExpandIcon,
   ListIcon,
   TerminalIcon,
 } from '../shared/icons.tsx';
@@ -49,18 +50,39 @@ function downloadSession(session: ActivitySession): void {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * A single-line meta value: truncated to its column with the whole string on
+ * hover (and exposed to assistive tech through the same `title`).
+ *
+ * Meta values here are unbounded — a working dir, a branch name, a session id —
+ * and letting one wrap costs the pane several rows of height that the audit
+ * timeline below would otherwise get. `text` is the hover/tooltip string, which
+ * is the full value even when `children` renders it decorated.
+ */
+function MetaLine({ text, mono = false }: { text: string; mono?: boolean }) {
+  return (
+    <span className={cn('block truncate', mono && 'font-mono')} title={text}>
+      {text}
+    </span>
+  );
+}
+
 function DetailBody({
   session,
   tokenReport,
   liveFindings,
   linkHref,
   toolHref,
+  onExpand,
+  overlayClose = false,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
   liveFindings?: { count: number; href: string } | null;
   linkHref?: BuildActivityLinkHref;
   toolHref?: (toolName: string) => string;
+  onExpand?: () => void;
+  overlayClose?: boolean;
 }) {
   const harness = PROVIDERS[session.harness];
   const tools = toolEntries(session.tools);
@@ -69,22 +91,44 @@ function DetailBody({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header + meta grid */}
-      <div className="shrink-0 border-b border-border px-5 py-4">
+      {/* Header + meta grid. In a slide-over the host paints its own close
+          control over the top-right corner, so the action row yields that space
+          rather than sitting under it. */}
+      <div className={cn('shrink-0 border-b border-border px-5 py-4', overlayClose && 'pr-14')}>
         <div className="flex items-start gap-3.5">
           <Provider id={session.harness} size={40} />
           <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <span className="font-display text-lg font-semibold text-text">{session.title}</span>
+            <div className="flex items-center gap-2.5">
+              <span
+                className="min-w-0 truncate font-display text-lg font-semibold text-text"
+                title={session.title}
+              >
+                {session.title}
+              </span>
               <SessionStatusBadge status={session.status} />
             </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-ui text-text-3">
-              {harness.label} · {HARNESS_KIND[session.harness]}
-              <span className="text-text-3">·</span>
-              <span className="font-mono">{session.id}</span>
+            <div className="mt-1 flex items-center gap-2 text-ui text-text-3">
+              <span className="shrink-0 whitespace-nowrap">
+                {harness.label} · {HARNESS_KIND[session.harness]}
+              </span>
+              <span className="shrink-0 text-text-3">·</span>
+              <span className="min-w-0 truncate font-mono" title={session.id}>
+                {session.id}
+              </span>
             </div>
           </div>
-          <div className="flex gap-1">
+          <div className="flex shrink-0 gap-1">
+            {onExpand && (
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Open this session in the full-width inspector"
+                aria-label="Open this session in the full-width inspector"
+                onClick={onExpand}
+              >
+                <ExpandIcon aria-hidden focusable={false} className="size-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -98,39 +142,48 @@ function DetailBody({
             </Button>
           </div>
         </div>
-        <div className="mt-4 grid 2xl:grid-cols-4 grid-cols-3 gap-x-4 gap-y-3.5 max-h-44 overflow-y-auto">
+        {/* Every cell is one line high and truncates — the full value is on hover.
+            A wrapped working dir or branch used to cost the pane rows of height
+            that the timeline below needs, and `min-w-0` on the cells is what
+            lets a grid column shrink below its content at all. */}
+        <div className="mt-3.5 grid 2xl:grid-cols-4 grid-cols-3 gap-x-4 gap-y-3 [&>*]:min-w-0">
           <MetaItem label="Working dir">
-            <span className="font-mono break-all">{session.cwd}</span>
+            <MetaLine text={session.cwd} mono />
           </MetaItem>
           <MetaItem label="Branch">
-            <MetaChips items={session.branches} mono />
+            <MetaChips items={session.branches} mono nowrap />
           </MetaItem>
           <MetaItem label="Model">
-            <MetaChips items={session.models} mono />
+            <MetaChips items={session.models} mono nowrap />
           </MetaItem>
           <MetaItem label="Started">
-            {startLabel(session.startedAt)} · {dayLabel(session.startedAt)}
+            <MetaLine text={`${startLabel(session.startedAt)} · ${dayLabel(session.startedAt)}`} />
           </MetaItem>
           <MetaItem label="Duration">
-            {durationLabel(session.startedAt, session.endedAt, session.status)}
+            <MetaLine text={durationLabel(session.startedAt, session.endedAt, session.status)} />
           </MetaItem>
           <MetaItem label="Turns">{session.turns}</MetaItem>
+          {/* In the Findings cell the tally is what yields when the column is
+              narrow — the "enforced live" link is the actionable half and stays
+              whole. */}
           <MetaItem label="Findings">
             {session.findings > 0 || liveFindings ? (
-              <span className="inline-flex flex-wrap items-center gap-x-1.5">
+              <span className="flex items-center gap-x-1.5 overflow-hidden whitespace-nowrap">
                 {session.findings > 0 && (
                   <span
-                    className="font-semibold text-sev-critical-ink"
-                    title="Detection firings across this session's transcript — the same value fires once per event it appears in"
+                    className="min-w-0 shrink truncate font-semibold text-sev-critical-ink"
+                    title={`${String(session.findings)} triggered — detection firings across this session's transcript; the same value fires once per event it appears in`}
                   >
                     {session.findings} triggered
                   </span>
                 )}
-                {session.findings > 0 && liveFindings && <span className="text-text-3">·</span>}
+                {session.findings > 0 && liveFindings && (
+                  <span className="shrink-0 text-text-3">·</span>
+                )}
                 {liveFindings && (
                   <a
                     href={liveFindings.href}
-                    className="inline-flex items-center gap-0.5 font-semibold text-sev-critical-ink underline-offset-2 hover:underline"
+                    className="inline-flex shrink-0 items-center gap-0.5 font-semibold text-sev-critical-ink underline-offset-2 hover:underline"
                     title="Unique findings recorded by live enforcement — open in Findings"
                   >
                     {liveFindings.count} enforced live
@@ -269,6 +322,8 @@ export function SessionDetailView({
   liveFindings,
   linkHref,
   toolHref,
+  onExpand,
+  overlayClose,
 }: {
   session: ActivitySession | null;
   isLoading: boolean;
@@ -289,6 +344,12 @@ export function SessionDetailView({
   /** Href for a tool chip (e.g. the findings page filtered to that tool).
    * Optional: omitted, the chips render as plain text. */
   toolHref?: (toolName: string) => string;
+  /** Opens this session in the host's full-width inspector. Omitted (and in the
+   * inspector itself, which is already expanded) hides the expand control. */
+  onExpand?: () => void;
+  /** The host paints a close control over this view's top-right corner (a
+   * slide-over does) — reserve room for it in the header's action row. */
+  overlayClose?: boolean;
 }) {
   if (error) {
     return (
@@ -321,6 +382,8 @@ export function SessionDetailView({
       liveFindings={liveFindings ?? null}
       {...(linkHref ? { linkHref } : {})}
       {...(toolHref ? { toolHref } : {})}
+      {...(onExpand ? { onExpand } : {})}
+      {...(overlayClose ? { overlayClose } : {})}
     />
   );
 }

@@ -65,8 +65,12 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # --concurrency: see the Test step in ci.yml's lint job. Bounded here for
+      # the same reason, and spelled on the turbo call rather than through
+      # `pnpm test` — `pnpm test -- --concurrency=2` would forward the flag to
+      # each TASK's own command (`vitest run --concurrency=2`), not to turbo.
       - name: Test
-        run: pnpm test
+        run: pnpm turbo run test --concurrency=2
 
   release:
     name: Build · Verify · Publish

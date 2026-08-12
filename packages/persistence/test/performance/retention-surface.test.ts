@@ -7,8 +7,8 @@
  * after 24 h and terminal `exceptions` after 90 days — and it is easy to read
  * those two constants as evidence that the store manages its own size. It does
  * not. Everything else grows for as long as the machine is used, and at the
- * measured 818 B/event `store-growth.test.ts` pins that is the difference between a store that
- * settles and one that reaches a gigabyte per million events and keeps going.
+ * measured 797.9 B/event `store-growth.test.ts` pins that is the difference between a store
+ * that settles and one that reaches a gigabyte per million events and keeps going.
  *
  * This pins the split BEHAVIOURALLY rather than by reading the source. A text
  * scan for `DELETE FROM` cannot tell a retention sweep from a cascade, a

@@ -39,7 +39,7 @@
  * schema rather than from row counts, and a 3k-event store is expected to yield
  * the same plans a 1M-event one does. That is the reasoning, not a measurement:
  * NOTHING here re-checks the plans at a larger scale. `scale-budgets.test.ts`
- * builds a 100k corpus but asserts only timings, and the 1M end is built by
+ * builds a 20k corpus but asserts only timings, and the 1M end is built by
  * hand. Say "expected" rather than "asserted" about any scale above 3k until
  * something in this directory actually captures the plans there.
  */

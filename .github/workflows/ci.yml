@@ -386,20 +386,29 @@ jobs:
   # Windows and is exactly the resolve-a-sibling-by-path code most likely to
   # differ there.
   #
-  # THE WIZARD JOURNEY SUITES were this leg's expected first failure, and are
-  # no longer — triage them first anyway, since they remain the most
-  # platform-sensitive thing here. They put a `claude`/`codex`/`agy` stub on the
-  # child PATH, and an extension-less file behind a `#!/usr/bin/env node` shebang
-  # is unrunnable on Windows, which resolves a bare command name through PATHEXT.
-  # The `.cmd` launcher that closes it now exists: `writeCommandShim`, in each
-  # plugin's `test/helpers/path-shim.ts`, together with the `path.delimiter` join
-  # and the skipped chmod — the three ways a hand-rolled shim is POSIX-only.
+  # THE WIZARD JOURNEY SUITES WERE THIS LEG'S FIRST FAILURE, exactly as predicted
+  # when the four packages were added, and they are SKIPPED here rather than
+  # merely expected to fail. What runs them is `assertShimResolves`, and the
+  # refusal is correct: a `.cmd` launcher cannot be reached by a shell-free
+  # `execFileSync` at all, because Node's CVE-2024-27980 fix refuses to spawn a
+  # `.cmd`/`.bat` without one. `writeCommandShim` writing the launcher is
+  # necessary and not sufficient — the SPAWN has to opt in too.
   #
-  # What makes that setup rather than detail: the stub fails OPEN. A shim that
-  # does not land is not an ENOENT — resolution keeps walking PATH and finds the
-  # developer's real installed CLI, so the suite reaches a live model with its
-  # seeded hits on stdin and only reports it afterwards. `assertShimResolves`
-  # probes before the chain runs, which turns that into a red setup instead.
+  # So the split is shell-vs-no-shell, not plugin-vs-plugin, and it is worth
+  # reading that way before adding a skip anywhere else here:
+  #   - `provenance.test.ts` passes `{ shell: USE_SHELL }` and RUNS on Windows,
+  #     because it mirrors `runNpmAudit`, which does the same.
+  #   - the three journey harnesses pass no shell, because they mirror
+  #     `spawnClaude`/`spawnCodex`/`spawnAgy`, which pass none either.
+  # A probe that disagreed with its subject would prove nothing, so the harnesses
+  # are RIGHT to refuse; what they are refusing is a real limitation of the code
+  # they model. That limitation is tracked separately — and until it moves, a
+  # skip here is honest and a green run would not be.
+  #
+  # The refusal itself is load-bearing and must not be softened into a warning:
+  # the stub fails OPEN, so a shim that does not land is not an ENOENT.
+  # Resolution keeps walking PATH and finds the developer's real installed CLI,
+  # and the chain would reach a live model with its seeded hits on stdin.
   #
   # It runs `test` only, and the job's name says so. Lint and typecheck read
   # source and answer identically on every OS, so the ubuntu leg covers them —

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,7 @@ vi.mock('@akasecurity/persistence', async (importOriginal) => {
 // entry.ts so importing it here never runs the CLI (reads stdin, calls
 // process.exit).
 import { writeSecretPosture } from '../../src/remediation/entry.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 describe("entry.ts writeSecretPosture — a close() fault in the finally never rewrites the write's own result", () => {
   let home: string;
@@ -69,7 +70,7 @@ describe("entry.ts writeSecretPosture — a close() fault in the finally never r
     if (originalUserProfile === undefined) delete process.env.USERPROFILE;
     // eslint-disable-next-line n/no-process-env -- restore the host USERPROFILE after the test
     else process.env.USERPROFILE = originalUserProfile;
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   });
 
   it('a db.close() fault after the posture write already succeeded still reports persisted:true — not a false failure', () => {

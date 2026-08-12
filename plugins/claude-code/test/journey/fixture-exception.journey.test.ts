@@ -20,7 +20,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { checkFpSignalContract } from '../../eval/prompt-contract.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
+import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { REPEATED_FP_KEYS, SetupJourney } from './harness.ts';
+
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
 
 // The one emitted group, asserted present by the caller first — extracted
 // without a non-null assertion so an actually-missing group fails loud with a
@@ -37,7 +41,7 @@ function soleGroup(
   return group;
 }
 
-describe('FP-pattern signal grounds end-to-end over a repeated-value false positive', () => {
+describeShimmed('FP-pattern signal grounds end-to-end over a repeated-value false positive', () => {
   let journey: SetupJourney;
   let preview: { stdout: string; stderr: string; status: number };
   let frame: CalibrationFrame;
@@ -115,7 +119,7 @@ describe('FP-pattern signal grounds end-to-end over a repeated-value false posit
   });
 });
 
-describe('FP-pattern signal fails open when no hit is marked a false positive', () => {
+describeShimmed('FP-pattern signal fails open when no hit is marked a false positive', () => {
   let journey: SetupJourney;
   let preview: { stdout: string; stderr: string; status: number };
   let rawFrame: unknown;

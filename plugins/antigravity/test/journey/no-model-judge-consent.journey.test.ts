@@ -33,6 +33,10 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { assertShimResolves, shimmedPath, writeCommandShim } from '../helpers/path-shim.ts';
+import { shimUnsupported } from '../helpers/shim-unsupported.ts';
+
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/antigravity
@@ -268,7 +272,7 @@ process.stdout.write(JSON.stringify({
   }
 }
 
-describe('aka-setup journey — model-judge consent declined', () => {
+describeShimmed('aka-setup journey — model-judge consent declined', () => {
   const journey = new SetupJourney();
   let triageStream = '';
   let preview: StepResult;
@@ -337,7 +341,7 @@ describe('aka-setup journey — model-judge consent declined', () => {
 // drive the identical chain WITH consent and assert the spawn is detected.
 // Without this, a broken sentinel would make the no-consent assertion
 // vacuously green.
-describe('aka-setup journey — model-judge consent granted (control)', () => {
+describeShimmed('aka-setup journey — model-judge consent granted (control)', () => {
   const journey = new SetupJourney();
   // Captured mid-chain: the sentinel's state after the historical grant but
   // BEFORE the model-judge consent, which is the moment that distinguishes the

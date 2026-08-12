@@ -22,9 +22,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { STORE_UNAVAILABLE_NOTE } from '../../src/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
+import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { ROUTINE_KEY, SetupJourney, SURFACED_KEY } from './harness.ts';
 
-describe('store-read failure mid-wizard completes fail-open, end-to-end', () => {
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
+
+describeShimmed('store-read failure mid-wizard completes fail-open, end-to-end', () => {
   let journey: SetupJourney;
   let preview: { stdout: string; stderr: string; status: number };
   let firstRun: { stdout: string; stderr: string; status: number };

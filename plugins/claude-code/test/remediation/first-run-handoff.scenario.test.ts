@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ import { runFirstRun } from '../../src/firstrun-core.ts';
 import { readPostureBlock } from '../../src/posture.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { frameJsonBlock, readFrameJsonBlock } from '../../src/setup-frame-json.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // The first-run handoff seam, driven at the APP-LEVEL: the real frame-0.6
 // handoff-offer payload (runFirstRun → buildHandoffOffer) composed with the real
@@ -75,7 +76,7 @@ describe('first-run handoff seam: calibration findings trigger (or skip) remedia
     dirs.length = 0;
   });
   afterEach(() => {
-    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    for (const dir of dirs) removeTree(dir);
   });
 
   // Frame 0.4: build the calibration frame the wizard emits for a preview + its

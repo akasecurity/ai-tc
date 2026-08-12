@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -20,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { scrubTranscriptTail, type TailScrubDeps } from '../../src/history/tail-scrub.ts';
 import type { RedactionScope } from '../../src/remediation/redact.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // Canonical test AWS access-key id, composed at runtime so the repo's own secret
 // scan does not flag this test file (mirrors remediation/redact.test.ts).
@@ -62,9 +62,9 @@ describe('scrubTranscriptTail', () => {
   });
 
   afterEach(() => {
-    rmSync(transcriptRoot, { recursive: true, force: true });
-    rmSync(outsideRoot, { recursive: true, force: true });
-    rmSync(base, { recursive: true, force: true });
+    removeTree(transcriptRoot);
+    removeTree(outsideRoot);
+    removeTree(base);
   });
 
   const transcriptFile = (name: string, content: string): string => {
@@ -248,7 +248,7 @@ describe('scrubTranscriptTail', () => {
       expect(after).toContain('[REDACTED');
       expect(after).not.toContain('[[aka:');
     } finally {
-      rmSync(noConsentBase, { recursive: true, force: true });
+      removeTree(noConsentBase);
     }
   });
 });

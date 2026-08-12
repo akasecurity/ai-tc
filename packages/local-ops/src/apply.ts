@@ -1,7 +1,8 @@
 import { createCliPluginManager } from './cli-plugin-manager.ts';
 import { runCapture, runInherit } from './exec.ts';
+import type { InstallChannel } from './install-channel.ts';
+import { planCliUpdate } from './install-channel.ts';
 import { findAgent, pluginRef } from './registry.ts';
-import { CLI_PACKAGE } from './updates.ts';
 
 // Apply-side of the update surface, shared by `aka update` / `aka plugins
 // install` and the web-ui's Updates page. One implementation of "validate id →
@@ -9,10 +10,16 @@ import { CLI_PACKAGE } from './updates.ts';
 // modes: 'inherit' streams to the caller's terminal (the CLI), 'capture'
 // returns the combined output (the web-ui, which has no TTY to stream to).
 //
-// SECURITY: no user-controlled string ever reaches a child process. The only
-// npm argument is the CLI_PACKAGE constant; plugin arguments are refs resolved
-// from the static AGENT_PLUGINS registry after validating the caller-supplied
-// id against it. An unknown id fails closed with no spawn.
+// SECURITY: no user-controlled string ever reaches a child process. The CLI
+// update's arguments are the CLI_PACKAGE constant plus the install root the
+// running code was found at — a path derived from the caller's own location on
+// disk, never from argv, stdin or the environment; plugin arguments are refs
+// resolved from the static AGENT_PLUGINS registry after validating the
+// caller-supplied id against it. An unknown id fails closed with no spawn.
+// The install root is the first argument here that is a PATH rather than a
+// constant, which matters on Windows: exec.ts routes through cmd.exe there to
+// resolve the `.cmd` shims, and Node does not quote argv under `shell: true`.
+// exec.ts quotes it — see `quoteForShell`. POSIX spawns are shell-free.
 
 export type ApplyMode = 'inherit' | 'capture';
 
@@ -36,9 +43,27 @@ function run(command: string, args: string[], mode: ApplyMode): ApplyResult {
   return { ok: res.ok, output: [res.stdout, res.stderr].filter(Boolean).join('\n') };
 }
 
-/** Self-update the globally installed CLI: `npm install -g @akasecurity/cli@latest`. */
-export function applyCliUpdate(mode: ApplyMode = 'capture'): ApplyResult {
-  return run('npm', ['install', '-g', `${CLI_PACKAGE}@latest`], mode);
+/**
+ * Self-update the install described by `channel`. The package manager, and the
+ * location it writes to, come from where the running code actually lives —
+ * never from `npm` on PATH, which under nvm (or alongside a standalone binary)
+ * installs a second copy the user never runs. Channels that cannot be updated
+ * in-process — the standalone binary, Homebrew, a source checkout — return the
+ * command that WOULD do it rather than running the wrong one.
+ *
+ * The channel is a parameter rather than detected here so that the plan a
+ * caller PRINTS and the plan it RUNS are the same object; detecting twice
+ * around a confirmation prompt lets the two disagree.
+ */
+export function applyCliUpdate(channel: InstallChannel, mode: ApplyMode = 'capture'): ApplyResult {
+  const plan = planCliUpdate(channel);
+  if (plan.command === null) {
+    return {
+      ok: false,
+      output: `Cannot update automatically: ${plan.reason ?? 'unsupported install'}.\nRun: ${plan.display}`,
+    };
+  }
+  return run(plan.command.bin, plan.command.args, mode);
 }
 
 // Resolve an agent id to its `<plugin>@<marketplace>` ref plus its bound

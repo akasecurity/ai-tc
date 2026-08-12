@@ -3,14 +3,17 @@ import {
   AGENT_PLUGINS,
   CLI_PACKAGE,
   cliVersion,
+  detectInstallChannel,
   gatherReport,
   installedAgentPluginVersions,
+  planCliUpdate,
   pluginRef,
   readCache,
 } from '@akasecurity/local-ops';
 import { defaultDataDir } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
+import { dashboardInstallOrigin } from '../../lib/install-origin';
 import { UpdatesClient } from './UpdatesClient';
 
 export const runtime = 'nodejs';
@@ -45,8 +48,12 @@ export default function UpdatesPage() {
   });
 
   // The exact command each button runs — shown verbatim in the confirm dialog.
+  // The CLI's command depends on how THIS copy was installed (npm global under
+  // one nvm version, a pnpm/bun store, the standalone binary…), so it is derived
+  // rather than assumed — the same plan the button will run. The origin comes
+  // from this app, never from `import.meta.url`: see app/lib/install-origin.ts.
   const commands: Record<string, string> = {
-    cli: `npm install -g ${CLI_PACKAGE}@latest`,
+    cli: planCliUpdate(detectInstallChannel(dashboardInstallOrigin())).display,
   };
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);

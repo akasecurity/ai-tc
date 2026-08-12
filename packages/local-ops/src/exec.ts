@@ -14,9 +14,33 @@ export interface RunResult {
 
 // On Windows the global `npm`/`claude` binaries are `.cmd` shims; `execFile` does no
 // PATHEXT resolution and (since the CVE-2024-27980 fix) refuses to spawn `.cmd`/`.bat`
-// without a shell. Route through cmd.exe there. Our args are package names / flags
-// with no shell metacharacters, so no quoting concern. POSIX stays shell-free.
+// without a shell. Route through cmd.exe there. POSIX stays shell-free.
 const USE_SHELL = process.platform === 'win32';
+
+// Node does NOT quote arguments when `shell: true` — it joins command and argv
+// with single spaces and hands the string to cmd.exe, so every argument is
+// re-parsed as shell syntax. That was harmless while every argument was a
+// package name or a flag, and stopped being harmless once the CLI self-update
+// began passing an install PREFIX: `C:\Users\First Last\AppData\Roaming\npm`
+// splits at the space, and a directory named with `&` or `|` would be read as
+// a command separator rather than as part of a path.
+//
+// So arguments are quoted for cmd on the shell path. Only an argument that
+// needs it is touched, which keeps every existing spawn byte-identical to what
+// it sent before. Windows forbids `"` in a path, so wrapping in double quotes
+// is sufficient to make one a single literal token; `%` is left alone, since
+// cmd expands `%VAR%` inside quotes too and no escaping of it is reliable in
+// every context — a path containing a `%name%` that matches a real environment
+// variable is the documented gap.
+const NEEDS_QUOTING = /[\s&|^<>()"]/;
+
+export function quoteForShell(arg: string): string {
+  return NEEDS_QUOTING.test(arg) ? `"${arg.replaceAll('"', '""')}"` : arg;
+}
+
+function shellArgs(args: string[]): string[] {
+  return USE_SHELL ? args.map(quoteForShell) : args;
+}
 
 // Windows resolves a bare command name by searching the child's working
 // directory BEFORE PATH (cmd.exe search order; libuv's app-name lookup does the
@@ -49,7 +73,7 @@ export function binExists(command: string): boolean {
 // update check from hanging on a slow/offline registry.
 export function runCapture(command: string, args: string[], timeoutMs = 15_000): RunResult {
   try {
-    const stdout = execFileSync(command, args, {
+    const stdout = execFileSync(command, shellArgs(args), {
       encoding: 'utf8',
       timeout: timeoutMs,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -71,7 +95,7 @@ export function runCapture(command: string, args: string[], timeoutMs = 15_000):
 // the mutating installs/updates. Returns whether it exited 0.
 export function runInherit(command: string, args: string[]): boolean {
   try {
-    execFileSync(command, args, { stdio: 'inherit', shell: USE_SHELL, ...SPAWN_CWD });
+    execFileSync(command, shellArgs(args), { stdio: 'inherit', shell: USE_SHELL, ...SPAWN_CWD });
     return true;
   } catch {
     return false;

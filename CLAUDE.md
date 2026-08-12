@@ -978,8 +978,9 @@ had to be retaken, because the marginal creeps with size — 791.3 B/event acros
 
 **A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
 The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
-size-dependent term to reach 2/7 of the baseline — ~23 us against `recordCapture`'s ~79 us,
-i.e. a per-row slope of ~11 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
+size-dependent term to reach 2/7 of the baseline — ~15 us against `recordCapture`'s ~53 us
+(measured 53.4 us at 2k and 53.0 us at 5k, i.e. flat in the corpus size),
+i.e. a per-row slope of ~7.6 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
 linear and does **not** redden it: SQLite answers the count from a covering index. The
 same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
 fails. So a ratio gate catches a linear cost that changes what the operation costs, not
@@ -1055,17 +1056,24 @@ cannot be interrupted, so one that overruns runs to completion and is then repor
 timeout, which reads as a budget failure and is not one. Cut the corpus rather than
 raising the ceiling.
 
-**Take the rate before you size anything against it — the figures below are wider apart
-than a reading of "not flat" suggests, and a stale one has already cost a red main.**
-Measured as the fastest of three seeds through `seedCaptureCorpus` on arm64 macOS /
-Node 24.18, nothing else running: **0.091 ms/event at 3k, 0.276 at 20k, 0.456 at 50k**
-(0.27 s, 5.5 s and 22.8 s for the corpus). The step is not gradual: past roughly 2,400
-events the transaction's dirty pages stop fitting SQLite's 2 MiB page cache at ~800
-B/event, and everything after that pays for a spill. An earlier figure of 0.054 ms/event
-at 5k is what `scale-budgets.test.ts` sized its 120 s ceiling against; the same seed
-measures 0.325 here, and the CI leg then found the difference. The 100k and 1M rates that
-sat beside it (0.096 and 0.639 ms/event) have NOT been retaken — treat them as suspect
-for the same reason, and re-measure rather than budget from them.
+**Take the rate yourself before sizing anything against it, and take the CI-to-local
+FACTOR too — that factor, not the local rate, is what has cost a red main.** Measured as
+the fastest of three seeds into a fresh store through `seedCaptureCorpus`, one warm-up
+discarded, on arm64 macOS 26.5.2 / Node 24.18.0 with nothing else running: **0.0434
+ms/event at 2k, 0.0427 at 3k, 0.0448 at 5k, 0.0558 at 20k, 0.0732 at 50k** (87 ms, 128 ms,
+224 ms, 1.12 s and 3.66 s for the corpus). Seeding is not flat per event — it creeps ~1.7x
+across that range — but there is **no step in it**, and no page-cache cliff: the rate runs
+flat straight through 2,400 events (0.0434 / 0.0434 / 0.0427 at 2k / 2.4k / 3k).
+
+What the 120 s ceiling in `scale-budgets.test.ts` was really missing is the runner
+multiple. Seeding 5k + 50k costs 3.88 s locally, which is what that pair was sized
+against and is accurate; the same hook took **116,970 ms on a macOS CI run that passed
+and 135,237 ms on one that did not**, against a 120,000 ms ceiling — a factor of **~30x**,
+not "several times". Size against the factor: 2k + 20k is 1.20 s locally, so ~36 s there.
+
+Older figures in this section (a 0.091 ms/event rate at 3k, a cliff at ~2,400 events, and
+the 100k and 1M rates of 0.096 and 0.639 ms/event) ran ~5-6x high and are retracted or
+untaken. Re-measure rather than budget from them.
 
 ### The no-network guard
 

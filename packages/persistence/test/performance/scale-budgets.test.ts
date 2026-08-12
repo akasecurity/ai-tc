@@ -64,19 +64,38 @@
  * ceiling. Any pair an order of magnitude apart states that property, so the
  * pair is chosen at the cheapest scale that still measures real work.
  *
- * It used to be 5k -> 50k, and that is the mistake worth naming, because it was
- * not sized wrongly so much as sized against a seeding rate that does not hold.
- * The corpus is written one `recordCapture` at a time inside one transaction,
- * and past roughly 2,400 events — a 2 MiB page cache at ~818 B/event — the
- * transaction's dirty pages stop fitting in that cache and every further event
- * pays for a spill. So the per-event cost is not one number: measured here as
- * the fastest of three runs, 0.091 ms/event at 3k against 0.456 at 50k.
- * Seeding 5k + 50k therefore cost 24.4 s on this machine, not the ~3.5 s the
- * pair was chosen against — and a CI leg several times slower turned that into
- * 117 s on a run that passed and 135 s on one that did not, against the 120 s
- * ceiling below. 2k + 20k is 6.0 s by the same measurement, which is where the
- * headroom came from. Both figures are the fastest of three seeds through
- * `seedCaptureCorpus` on arm64 macOS / Node 24.18 with nothing else running.
+ * It used to be 5k -> 50k, and the mistake worth naming is NOT that it was
+ * sized against a bad local rate. The local figure it was chosen against —
+ * "about 3.5 s to seed both" — is accurate; this pair measures 3.88 s. What was
+ * never accounted for is how much slower the CI leg is, and that factor is far
+ * larger than "several times": 116,970 ms on a macOS run that passed and
+ * 135,237 ms on one that did not, against the 120,000 ms ceiling below, is
+ * **~30x** the 3.88 s measured here. State it as a FACTOR, because that is the
+ * form the next sizer needs — a local seed time means nothing on its own.
+ *
+ * Seeding is not flat per event, but it has no step in it either. Measured as
+ * the fastest of three seeds into a FRESH store, one warm-up discarded, row
+ * counts read back, on arm64 macOS 26.5.2 / Node 24.18.0 with nothing else
+ * running:
+ *
+ * |  events | seed time | ms/event |
+ * | ------: | --------: | -------: |
+ * |   2,000 |     87 ms |   0.0434 |
+ * |   3,000 |    128 ms |   0.0427 |
+ * |   5,000 |    224 ms |   0.0448 |
+ * |  20,000 |  1,117 ms |   0.0558 |
+ * |  50,000 |  3,659 ms |   0.0732 |
+ *
+ * So 5k + 50k is 3.88 s here and 2k + 20k is 1.20 s — a 3.2x improvement, which
+ * is where the headroom came from, and ~36 s once the 30x CI factor is applied.
+ *
+ * An earlier revision of this comment claimed a page-cache cliff at ~2,400
+ * events and a 0.091 ms/event rate at 3k. Neither reproduces: the rate is flat
+ * straight through that boundary (0.0434 at 2k, 0.0434 at 2.4k, 0.0427 at 3k)
+ * and creeps ~1.7x across the whole 2k->50k range. The old numbers ran ~5-6x
+ * high and could not be reproduced warm or cold — a first, unwarmed seed costs
+ * only ~8% more here — so they are retracted rather than re-explained. Take the
+ * rate yourself before sizing anything against it.
  *
  * The 1M end is exercised by hand and reported in `bench/queries.bench.ts`.
  *
@@ -85,13 +104,24 @@
  * "Reads ~10x" holds only once the size-dependent term DOMINATES the baseline,
  * and that is a real limit rather than a quibble. The ratio is
  * `(base + 10k) / (base + k)` for a per-row cost `k` at the small size, so
- * clearing a ceiling of 3 needs `k >= 2/7` of the baseline — about 23 us against
- * the ~79 us `recordCapture` costs here, i.e. a per-row slope of ~11 ns, or a
- * linear term of ~0.22 ms by 20k rows.
+ * clearing a ceiling of 3 needs `k >= 2/7` of the baseline — about 15 us against
+ * the ~53 us `recordCapture` costs here, i.e. a per-row slope of ~7.6 ns, or a
+ * linear term of ~0.15 ms by 20k rows.
  *
  * **That floor moved by 2.5x when the pair came down**, in exactly the
  * proportion the small size did, and it is the price the section above bought
  * its headroom with. Do not read the cut as free.
+ *
+ * The baseline is what makes that proportion exact, so it is measured at BOTH
+ * sizes rather than assumed: fastest-of-200 `recordCapture` is 53.4 us at 2k and
+ * 53.0 us at 5k (three runs each, spreads 53.4-59.5 and 53.0-61.1 — overlapping,
+ * i.e. flat). Because the baseline does not move with the corpus, the floor
+ * moves only with the small size, and 2.5x is the whole of it. An earlier
+ * revision put this baseline at ~79 us and the one before it at ~58 us; both
+ * were single unreplicated readings, and a 58 -> 79 "move" read out of them
+ * would make the floor look like it had shifted 3.4x. It had not — a smaller
+ * corpus making `recordCapture` dearer is backwards, and that is the tell that
+ * such a number is load, not signal.
  *
  * Both ends of the range are measured, on this machine and at THIS pair — the
  * numbers a smaller pair invalidates are the numbers most likely to be carried
@@ -122,7 +152,7 @@
  *
  * ## The corpora are built in a HOOK, under a SETUP-sized ceiling
  *
- * Seeding both stores costs 6.0 s on arm64 macOS against measured work of
+ * Seeding both stores costs 1.20 s on arm64 macOS against measured work of
  * roughly 30 ms — the setup is orders of magnitude more expensive than
  * everything asserted, so it lives in `beforeAll` where the test's own budget
  * covers the measurement and nothing else. Left in an `it()` body it would spend
@@ -183,9 +213,9 @@ const GROSS_REGRESSION_MS = 1_000;
  * The ceiling on CORPUS SETUP, distinct from the properties under test.
  *
  * A corpus is not a measurement, so this is sized for the slowest runner rather
- * than tuned: 6.0 s of work on this machine, against a CI leg documented as
- * several times slower. Nothing is asserted against it — a hook that overran
- * would report a setup failure, which is what it would be.
+ * than tuned: 1.20 s of work on this machine, against a CI leg measured at ~30x
+ * that. Nothing is asserted against it — a hook that overran would report a
+ * setup failure, which is what it would be.
  *
  * The number to watch is the RATIO of the two, not this constant. At the pair
  * this file used to seed it was 3%, measured — 117 s of a 120 s ceiling on the

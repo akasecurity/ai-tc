@@ -87,13 +87,19 @@ function resolveRef(agentId: string):
     // almost certainly never been registered, and a line starting at
     // `plugin add` would fail on the unregistered marketplace.
     const source = agent.marketplaceSource;
+    const install = manager.installRecipe(ref, source).join(' && ');
+    const update = manager.updateRecipe(ref, source).join(' && ');
+    // A host with no distinct update verb renders both identically (Codex
+    // installs and updates with the same `plugin add`). Printing the same ~120
+    // characters twice under "(or update with …)" reads as a rendering bug and
+    // carries no information, so say it once and name what it covers.
+    const how =
+      install === update
+        ? `\`${install}\` (that installs or updates)`
+        : `\`${install}\` (or update with \`${update}\`)`;
     return {
       ok: false,
-      output:
-        `the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, then run ` +
-        `\`${manager.installRecipe(ref, source, agent.marketplace).join(' && ')}\` ` +
-        `(or update with ` +
-        `\`${manager.updateRecipe(ref, source, agent.marketplace).join(' && ')}\`).`,
+      output: `the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, then run ${how}.`,
     };
   }
   return {

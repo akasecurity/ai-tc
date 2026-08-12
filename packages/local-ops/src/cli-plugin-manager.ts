@@ -31,14 +31,22 @@ type Step = readonly string[];
 interface HostVerbs {
   install: (ref: string) => Step[];
   update: (ref: string) => Step[];
-  marketplace: (source: string, marketplace: string | undefined) => Step[];
+  // Registering the marketplace. REQUIRED before the op — without it the op
+  // fails on an unknown marketplace — so a failure here genuinely should stop
+  // whatever follows.
+  register: (source: string) => Step[];
+  // Refreshing an already-registered snapshot. Optional, and empty on a host
+  // that keeps no snapshot. A failure here is survivable: the cached snapshot
+  // stays in place and the op can still run against it.
+  refresh: (marketplace: string) => Step[];
 }
 
 const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
   claude: {
     install: (ref) => [['plugin', 'install', ref]],
     update: (ref) => [['plugin', 'update', ref]],
-    marketplace: (source) => [['plugin', 'marketplace', 'add', source]],
+    register: (source) => [['plugin', 'marketplace', 'add', source]],
+    refresh: () => [],
   },
   codex: {
     install: (ref) => [['plugin', 'add', ref]],
@@ -46,15 +54,10 @@ const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
     // from the marketplace manifest, which for this repo's entries names an npm
     // package with no version pin, so `add` picks up a published bump on its
     // own. Refreshing the git snapshot is about the MANIFEST (a renamed package,
-    // a newly listed plugin), which is why it sits in the prep below rather than
-    // gating the op.
+    // a newly listed plugin), which is why it is a separate, optional step.
     update: (ref) => [['plugin', 'add', ref]],
-    marketplace: (source, marketplace) => [
-      ['plugin', 'marketplace', 'add', source],
-      // Only names a configured marketplace, so it is skipped when the caller
-      // has no name to pass.
-      ...(marketplace ? [['plugin', 'marketplace', 'upgrade', marketplace] as Step] : []),
-    ],
+    register: (source) => [['plugin', 'marketplace', 'add', source]],
+    refresh: (marketplace) => [['plugin', 'marketplace', 'upgrade', marketplace]],
   },
 };
 
@@ -76,12 +79,20 @@ export interface CliPluginManager {
   // The same steps rendered as copy-pasteable command lines.
   installCommands: (ref: string) => string[];
   updateCommands: (ref: string) => string[];
-  // The whole recipe — marketplace prep followed by the plugin op — for the
-  // hints shown when the host CLI is NOT on PATH. That branch is reached on a
-  // machine where the marketplace has almost certainly never been registered,
-  // so a hint carrying only the op hands the user a line that cannot work.
-  installRecipe: (ref: string, source?: string, marketplace?: string) => string[];
-  updateRecipe: (ref: string, source?: string, marketplace?: string) => string[];
+  // The MANUAL EQUIVALENT: what a user runs by hand to reach the same state —
+  // register the marketplace, then the op. Shown where the automated path can't
+  // run or may be interrupted, so every caller joins it with `&&`.
+  //
+  // Which means it must carry ONLY steps whose failure should stop the chain.
+  // The snapshot refresh is deliberately absent: it is the one step this module
+  // treats as survivable, and `&&` cannot express that — a git-fetch error on
+  // `marketplace upgrade` would short-circuit the `plugin add` that is the whole
+  // point. It is also redundant here, because `marketplace add` clones the
+  // snapshot fresh on the machine this copy is written for. Leaving it in was a
+  // real defect: it made best-effort prep fatal in exactly the line a user
+  // retypes, while the code path went on treating the same failure as harmless.
+  installRecipe: (ref: string, source?: string) => string[];
+  updateRecipe: (ref: string, source?: string) => string[];
   install: (ref: string) => boolean;
   update: (ref: string) => boolean;
 }
@@ -90,13 +101,13 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
   const verbs = HOST_VERBS[bin];
   const runAll = (steps: Step[]): boolean => steps.every((args) => runInherit(bin, [...args]));
   const render = (steps: Step[]): string[] => steps.map((args) => `${bin} ${args.join(' ')}`);
-  const marketplaceSteps = (source: string, marketplace?: string): Step[] =>
-    verbs.marketplace(source, marketplace);
-  const recipe = (
-    steps: Step[],
-    source: string | undefined,
-    marketplace: string | undefined,
-  ): string[] => render([...(source ? marketplaceSteps(source, marketplace) : []), ...steps]);
+  const marketplaceSteps = (source: string, marketplace?: string): Step[] => [
+    ...verbs.register(source),
+    ...(marketplace ? verbs.refresh(marketplace) : []),
+  ];
+  // Register-then-op only. See `installRecipe` on why the refresh stays out.
+  const recipe = (steps: Step[], source: string | undefined): string[] =>
+    render([...(source ? verbs.register(source) : []), ...steps]);
 
   return {
     available: () => binExists(bin),
@@ -110,8 +121,8 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
     updateSteps: (ref) => verbs.update(ref),
     installCommands: (ref) => render(verbs.install(ref)),
     updateCommands: (ref) => render(verbs.update(ref)),
-    installRecipe: (ref, source, marketplace) => recipe(verbs.install(ref), source, marketplace),
-    updateRecipe: (ref, source, marketplace) => recipe(verbs.update(ref), source, marketplace),
+    installRecipe: (ref, source) => recipe(verbs.install(ref), source),
+    updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
     install: (ref) => runAll(verbs.install(ref)),
     update: (ref) => runAll(verbs.update(ref)),
   };

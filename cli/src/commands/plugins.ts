@@ -102,7 +102,7 @@ function installPlugin(argv: string[]): void {
   // `claude plugin install` and `codex plugin add` are not interchangeable, and
   // naming the wrong one hands the user a command their CLI rejects.
   const manager = createCliPluginManager(cliBin);
-  const recipe = manager.installRecipe(ref, agent.marketplaceSource, agent.marketplace);
+  const recipe = manager.installRecipe(ref, agent.marketplaceSource);
   if (!manager.available()) {
     process.stdout.write(
       `Installing ${agent.name}…\n\n` +

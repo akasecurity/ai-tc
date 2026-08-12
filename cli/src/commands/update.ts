@@ -123,19 +123,24 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
-  // Both strings come from the host's own verb table. A hardcoded `plugin
-  // update` is wrong for Codex, which has no such subcommand — and the announce
-  // line below is the one a user retypes after an interrupted run, so it has to
-  // name the commands that actually get spawned.
+  // Both strings come from the host's own verb table — a hardcoded `plugin
+  // update` is wrong for Codex, which has no such subcommand. Both are the
+  // MANUAL EQUIVALENT rather than a spawn log: the announce line is what a user
+  // retypes after an interrupted run, and `available()` only proves the binary
+  // is on PATH — it says nothing about whether the marketplace was ever
+  // registered, so a line starting at the bare op can fail on an unknown
+  // marketplace. The recipe leads with `marketplace add`, which is a no-op
+  // reporting success when the marketplace is already there.
   const manager = createCliPluginManager(cliBin);
+  const recipe = manager.updateRecipe(ref, agent.marketplaceSource).join(' && ');
   if (!manager.available()) {
     process.stderr.write(
       `✗ ${status.name}: the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, ` +
-        `then run \`${manager.updateRecipe(ref, agent.marketplaceSource, agent.marketplace).join(' && ')}\`.\n`,
+        `then run \`${recipe}\`.\n`,
     );
     return false;
   }
-  process.stdout.write(`Updating ${status.name} (${manager.updateCommands(ref).join(' && ')})…\n`);
+  process.stdout.write(`Updating ${status.name} (${recipe})…\n`);
   const { ok } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
   return ok;

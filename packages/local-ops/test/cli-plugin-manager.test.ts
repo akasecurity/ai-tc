@@ -30,6 +30,12 @@ describe('claude verbs', () => {
       ['plugin', 'marketplace', 'add', 'akasecurity/marketplace'],
     ]);
   });
+
+  it('renders a distinct install and update recipe — it has both verbs', () => {
+    expect(claude.installRecipe('ai-tc@akasecurity', 'akasecurity/marketplace')).not.toEqual(
+      claude.updateRecipe('ai-tc@akasecurity', 'akasecurity/marketplace'),
+    );
+  });
 });
 
 describe('codex verbs', () => {
@@ -121,30 +127,33 @@ describe('hint copy is the command that runs', () => {
   }
 });
 
-// The recipes are the hints shown when the host CLI is NOT on PATH — a machine
-// where the marketplace has almost certainly never been registered. A recipe
-// that starts at the plugin op hands the user a line whose first command fails
-// on an unregistered marketplace, and `&&` then swallows the rest.
-describe('an off-PATH recipe registers the marketplace before using it', () => {
+// A recipe is the MANUAL EQUIVALENT — what a user runs by hand — and every
+// caller joins it with `&&`. Two things follow, and the second is the one that
+// bit: a recipe must reach the op (a line that only registers a marketplace
+// achieves nothing), and it must carry ONLY steps whose failure should stop
+// everything after them. `&&` cannot express "this one is survivable", so a
+// best-effort step spliced into a recipe becomes fatal in exactly the copy the
+// user retypes — a git-fetch error on `marketplace upgrade` short-circuiting
+// the `plugin add` that is the entire point.
+describe('a recipe is safe to join with &&', () => {
   for (const bin of ['claude', 'codex'] as const) {
     it(bin, () => {
       const manager = createCliPluginManager(bin);
       const cases = [
-        {
-          recipe: manager.installRecipe('p@m', 'owner/repo', 'm'),
-          op: manager.installCommands('p@m'),
-        },
-        {
-          recipe: manager.updateRecipe('p@m', 'owner/repo', 'm'),
-          op: manager.updateCommands('p@m'),
-        },
+        { recipe: manager.installRecipe('p@m', 'owner/repo'), op: manager.installCommands('p@m') },
+        { recipe: manager.updateRecipe('p@m', 'owner/repo'), op: manager.updateCommands('p@m') },
       ];
       for (const { recipe, op } of cases) {
+        // Registers first — the op fails on an unknown marketplace without it.
         expect(recipe[0]).toBe(`${bin} plugin marketplace add owner/repo`);
-        // …and it still ENDS with the op, so a recipe is prep PLUS the thing the
+        // …and still ENDS with the op, so a recipe is prep PLUS the thing the
         // user asked for, never prep instead of it.
         expect(recipe.slice(-op.length)).toEqual(op);
         expect(recipe.length).toBeGreaterThan(op.length);
+        // No survivable step anywhere in it. `marketplace upgrade` is the one
+        // this module treats as best-effort, so it is the one that must not be
+        // here — its failure would take the op down with it.
+        for (const line of recipe) expect(line).not.toContain('marketplace upgrade');
       }
     });
   }
@@ -152,5 +161,18 @@ describe('an off-PATH recipe registers the marketplace before using it', () => {
   it('omits the prep when there is no marketplace source to name', () => {
     const codex = createCliPluginManager('codex');
     expect(codex.installRecipe('p@m')).toEqual(codex.installCommands('p@m'));
+  });
+});
+
+// The survivable step still has to RUN somewhere, or moving it out of the op
+// silently deleted it. It belongs to the automated path alone, which captures
+// and discards each result instead of chaining on success.
+describe('the snapshot refresh survives as best-effort prep', () => {
+  it('codex keeps it in marketplaceSteps, which ensureMarketplace runs', () => {
+    const codex = createCliPluginManager('codex');
+    expect(codex.marketplaceSteps('akasecurity/ai-tc', 'ai-tc')).toEqual([
+      ['plugin', 'marketplace', 'add', 'akasecurity/ai-tc'],
+      ['plugin', 'marketplace', 'upgrade', 'ai-tc'],
+    ]);
   });
 });

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,13 +82,76 @@ describe('native host name stays in sync with the CLI installer', () => {
 // SHA-256 over the DER bytes, first 16 bytes, each nibble mapped 0-f -> a-p.
 // Computing it here rather than restating the id means the manifest's "key" is
 // the single source of truth for the identity the CLI has to grant.
+//
+// The input is checked rather than decoded best-effort. Buffer.from ignores
+// non-base64 characters instead of failing, so a PEM-wrapped or truncated key
+// still decodes — to DIFFERENT bytes — and derives an id that matches
+// /^[a-p]{32}$/ like any other. Nothing downstream can tell the two apart, so
+// this guard would name a plausible wrong id as the one to grant, and the
+// obvious fix is to add it: an origin matching no extension, committed and
+// green, while the real id is still missing. That is the silent connectNative
+// failure this whole suite exists to prevent, reached through the guard.
+//
+// Both checks are load-bearing; measured against the committed key, neither
+// catches what the other does. A PEM wrapper fails the round-trip. Line-wrapping
+// alone also fails it while decoding to the RIGHT bytes — still rejected,
+// because Chrome wants bare base64 too. And a truncated key round-trips TRUE,
+// because a shorter string is still valid base64; only the SPKI parse rejects
+// that one.
 function extensionIdFromKey(key: string): string {
-  const digest = createHash('sha256').update(Buffer.from(key, 'base64')).digest();
+  const der = Buffer.from(key, 'base64');
+  if (der.toString('base64') !== key) {
+    throw new Error('manifest.json "key" is not bare base64 (PEM header or line breaks?)');
+  }
+  try {
+    createPublicKey({ key: der, format: 'der', type: 'spki' });
+  } catch {
+    throw new Error('manifest.json "key" is not a valid SPKI public key (truncated or corrupt?)');
+  }
+  const digest = createHash('sha256').update(der).digest();
   return [...digest.subarray(0, 16)]
     .flatMap((byte) => [byte >> 4, byte & 0x0f])
     .map((nibble) => String.fromCharCode(97 + nibble))
     .join('');
 }
+
+describe('extensionIdFromKey requires a bare base64 SPKI key', () => {
+  // Driven with derived fixtures rather than the committed value: every case
+  // here is a way the NEXT key lands wrong, and the store's key is pasted by
+  // hand. Each malformed input below derives a well-formed-looking id, so the
+  // shape check downstream cannot stand in for any of this.
+  const KEY = manifest.key;
+  const wrapped = (KEY.match(/.{1,64}/g) ?? []).join('\n');
+
+  it('accepts the committed key', () => {
+    expect(() => extensionIdFromKey(KEY)).not.toThrow();
+  });
+
+  it('rejects a PEM-wrapped key', () => {
+    const pem = `-----BEGIN PUBLIC KEY-----\n${wrapped}\n-----END PUBLIC KEY-----`;
+    // The likeliest way this goes wrong: a public key copied out of a
+    // certificate tool arrives in PEM form, and Buffer.from drops the headers.
+    expect(() => extensionIdFromKey(pem)).toThrow(/bare base64/);
+  });
+
+  it('rejects a line-wrapped key even though it decodes to the right bytes', () => {
+    expect(() => extensionIdFromKey(wrapped)).toThrow(/bare base64/);
+  });
+
+  it('rejects a truncated key, which round-trips as valid base64', () => {
+    // The case the round-trip alone misses: still valid base64, so it decodes
+    // and derives a plausible wrong id. Only the SPKI parse rejects it.
+    const truncated = KEY.slice(0, -8);
+    expect(Buffer.from(truncated, 'base64').toString('base64')).toBe(truncated);
+    expect(() => extensionIdFromKey(truncated)).toThrow(/SPKI public key/);
+  });
+
+  it('rejects a key that is not a public key at all', () => {
+    expect(() => extensionIdFromKey(Buffer.from('nonsense').toString('base64'))).toThrow(
+      /SPKI public key/,
+    );
+  });
+});
 
 // The CLI's list is read as text, because cli and plugins/* are sibling leaf
 // packages and importing across them is a package-wall crossing.

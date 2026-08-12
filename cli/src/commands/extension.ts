@@ -19,16 +19,30 @@ function cliRoot(): string {
   return isSea() ? dirname(process.execPath) : join(here, '..');
 }
 
-// Mirrors plugins/browser-extension/src/constants.ts — the extension id is
+// Mirrors plugins/browser-extension/src/constants.ts — an extension id is
 // derived from the "key" field committed in plugins/browser-extension/
 // manifest.json (a public key, not a secret), which pins it across every
 // machine that builds the extension from source. Duplicated here rather than
 // imported: cli and plugins/* are sibling leaf packages (see CLAUDE.md's
 // package dependency rules — neither depends on the other), and the CLI
 // already hardcodes small per-plugin facts this way (see AGENT_PLUGINS in
-// packages/local-ops/src/registry.ts). If the extension's signing key ever
-// changes, both copies need updating together.
-const EXTENSION_ID = 'mdoiaiemcnjnaokmcmgbikcdhgiemdof';
+// packages/local-ops/src/registry.ts).
+//
+// A LIST rather than one id: the Chrome Web Store signs a listing with a key
+// it holds and ignores the committed one, so a store build and an unpacked
+// from-source build have DIFFERENT ids. Granting both is what lets an already
+// installed unpacked build keep reaching the native host across that switch —
+// an id missing here is not a build error but a silent runtime one, since
+// Chrome refuses connectNative for an origin the host manifest omits.
+//
+// Every entry is a live grant: an extension whose id is listed may talk to the
+// native host, so add one deliberately and drop a legacy id once it is dead.
+// plugins/browser-extension/test/manifest.test.ts derives the committed key's
+// id and fails if this list omits it.
+const EXTENSION_IDS = [
+  // Derived from the "key" in plugins/browser-extension/manifest.json.
+  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+];
 const NATIVE_HOST_NAME = 'com.akasecurity.aka';
 
 function nativeHostManifest(hostPath: string): Record<string, unknown> {
@@ -38,7 +52,7 @@ function nativeHostManifest(hostPath: string): Record<string, unknown> {
       'AI Traffic Control native messaging host — bridges the browser extension to the local ~/.aka SQLite store.',
     path: hostPath,
     type: 'stdio',
-    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
+    allowed_origins: EXTENSION_IDS.map((id) => `chrome-extension://${id}/`),
   };
 }
 

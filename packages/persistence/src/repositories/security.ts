@@ -59,19 +59,29 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // the CLI; the IDE fires no hooks at all (see
 // plugins/antigravity/skills/setup/SKILL.md).
 // The two web-chat surfaces sit lowest of the supported rows. The browser
-// extension intercepts the SUBMIT gesture on each site's composer, so a prompt
-// is scanned — and blocked, redacted or warned — before it leaves the page
-// (plugins/browser-extension/src/interceptor.ts, the only site that relays a
-// capture, and it relays kind 'prompt'). Assistant responses are not read back
-// out of the DOM, so half of a web chat's two-way traffic is outside coverage;
-// web chat has no tool calls or file writes, so those are not a further gap.
+// extension intercepts the SUBMIT gesture on each site's composer, so the typed
+// prompt is scanned — and blocked, redacted or warned — before it leaves the
+// page (plugins/browser-extension/src/interceptor.ts, the only site that relays
+// a capture, and it relays kind 'prompt'). Two of the three channels a web chat
+// egresses on are outside that: assistant responses are never read back out of
+// the DOM, and an ATTACHMENT is a sibling node rather than composer text, so a
+// file added by paperclip, drag-drop or paste leaves the page with no scan, no
+// event and no finding — `extractText` is `extractContentEditableText` on both
+// adapters and reads the composer element alone. One channel of three is why
+// this is 40 and not 50: the earlier number counted only the response gap.
+//
+// This row also rests on weaker footing than the rows above it, which are
+// backed by a documented hook contract. Each adapter's selectors are
+// best-effort against a vendor's DOM, and a miss is silent by design
+// (findComposer() returns null and the adapter does nothing), so a redesign can
+// take coverage to zero without changing this table.
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
   { provider: 'codex', coverage: 80, supported: true },
   { provider: 'antigravity', coverage: 60, supported: true },
-  { provider: 'claudeai', coverage: 50, supported: true },
-  { provider: 'chatgpt', coverage: 50, supported: true },
+  { provider: 'claudeai', coverage: 40, supported: true },
+  { provider: 'chatgpt', coverage: 40, supported: true },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },
 ];

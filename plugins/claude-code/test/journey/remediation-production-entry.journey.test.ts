@@ -54,7 +54,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
+import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { planPathFromPreview, PLUGIN_ROOT, SetupJourney, SURFACED_KEY } from './harness.ts';
+
+// See shim-unsupported.ts for why these suites cannot run on win32.
+const describeShimmed = describe.skipIf(shimUnsupported);
 
 // No route ever writes a rotation-checklist.md relative to the invocation's
 // working directory (only the built script's own cwd) unless the
@@ -74,153 +78,156 @@ function readPosture(storeDir: string): string | undefined {
   }
 }
 
-describe('frame 0.6 -> remediation decision -> option routing: production entry driven from a real calibration frame', () => {
-  let journey: SetupJourney;
-  let transcriptPath: string;
-  let preview: string;
-  let calibrationFrame: CalibrationFrame;
-  let firstRun: string;
-  let presentOut: string;
-  let decision: BatchedRemediationDecision;
+describeShimmed(
+  'frame 0.6 -> remediation decision -> option routing: production entry driven from a real calibration frame',
+  () => {
+    let journey: SetupJourney;
+    let transcriptPath: string;
+    let preview: string;
+    let calibrationFrame: CalibrationFrame;
+    let firstRun: string;
+    let presentOut: string;
+    let decision: BatchedRemediationDecision;
 
-  beforeAll(() => {
-    journey = new SetupJourney();
-    transcriptPath = journey.seedTranscript();
+    beforeAll(() => {
+      journey = new SetupJourney();
+      transcriptPath = journey.seedTranscript();
 
-    journey.intro();
-    journey.onboardHistorical('full');
-    journey.onboardModelJudge();
-    const triage = journey.backfillTriage().stdout;
-    preview = journey.applyPreview(triage).stdout;
-    calibrationFrame = CalibrationFrame.parse(readFrameJsonBlock(preview));
-    journey.applyConfirm(planPathFromPreview(preview));
+      journey.intro();
+      journey.onboardHistorical('full');
+      journey.onboardModelJudge();
+      const triage = journey.backfillTriage().stdout;
+      preview = journey.applyPreview(triage).stdout;
+      calibrationFrame = CalibrationFrame.parse(readFrameJsonBlock(preview));
+      journey.applyConfirm(planPathFromPreview(preview));
 
-    // Frame 0.6: the built firstrun.js, fed the real surfaced counts this
-    // calibration frame carries — the same frame the production remediation
-    // entry below reads.
-    firstRun = journey.firstRun(
-      calibrationFrame.counts.important,
-      calibrationFrame.maskedFindings?.length ?? 0,
-    ).stdout;
+      // Frame 0.6: the built firstrun.js, fed the real surfaced counts this
+      // calibration frame carries — the same frame the production remediation
+      // entry below reads.
+      firstRun = journey.firstRun(
+        calibrationFrame.counts.important,
+        calibrationFrame.maskedFindings?.length ?? 0,
+      ).stdout;
 
-    // The user chooses "Review leaked keys" at frame 0.6: the wizard runs the
-    // built remediate.js, piping in the SAME calibration frame text frame 0.6
-    // itself was derived from.
-    presentOut = journey.remediationPresent(preview).stdout;
-    decision = BatchedRemediationDecision.parse(readFrameJsonBlock(presentOut));
-  }, 120_000);
+      // The user chooses "Review leaked keys" at frame 0.6: the wizard runs the
+      // built remediate.js, piping in the SAME calibration frame text frame 0.6
+      // itself was derived from.
+      presentOut = journey.remediationPresent(preview).stdout;
+      decision = BatchedRemediationDecision.parse(readFrameJsonBlock(presentOut));
+    }, 120_000);
 
-  afterAll(() => {
-    journey.cleanup();
-  });
+    afterAll(() => {
+      journey.cleanup();
+    });
 
-  it('frame 0.6 offers the chain entry exactly when live keys surfaced, and the SAME persisted frame drives remediate.js to a real remediation decision agreeing on N', () => {
-    expect(calibrationFrame.maskedFindings).toHaveLength(1);
-    const offer = SetupHandoffOffer.parse(readFrameJsonBlock(firstRun));
-    expect(offer.liveKeys).toBe(1);
-    expect(offer.options.map((o) => o.id)).toEqual([
-      'enter-remediation',
-      'open-dashboard',
-      'not-now',
-    ]);
+    it('frame 0.6 offers the chain entry exactly when live keys surfaced, and the SAME persisted frame drives remediate.js to a real remediation decision agreeing on N', () => {
+      expect(calibrationFrame.maskedFindings).toHaveLength(1);
+      const offer = SetupHandoffOffer.parse(readFrameJsonBlock(firstRun));
+      expect(offer.liveKeys).toBe(1);
+      expect(offer.options.map((o) => o.id)).toEqual([
+        'enter-remediation',
+        'open-dashboard',
+        'not-now',
+      ]);
 
-    // The production entry, driven from the SAME frame text, produces a real
-    // decision whose count agrees with frame 0.6's live-key count — two
-    // separately-spawned built scripts reading the one persisted frame.
-    expect(decision.kind).toBe('decision');
-    expect(decision.secretCount).toBe(offer.liveKeys);
-  });
+      // The production entry, driven from the SAME frame text, produces a real
+      // decision whose count agrees with frame 0.6's live-key count — two
+      // separately-spawned built scripts reading the one persisted frame.
+      expect(decision.kind).toBe('decision');
+      expect(decision.secretCount).toBe(offer.liveKeys);
+    });
 
-  it('the real-count leg: the remediation-decision presentation is the full four-option layout over the real finding, masked-only, no "case" vocabulary', () => {
-    // The count is templated from the real surfaced finding (1), never hardcoded.
-    expect(decision.secretCount).toBe(1);
-    expect(decision.prompt).toBe('I found 1 exposed secret key sitting in old transcripts.');
-    expect(decision.options.map((o) => o.id)).toEqual([
-      'redact-rotation-checklist',
-      'redact-only',
-      'set-secret-redact',
-      'leave',
-    ]);
-    expect(decision.options.map((o) => o.label)).toEqual([
-      'Redact + rotation checklist',
-      'Redact only',
-      "Set 'secret' to redact",
-      'Leave',
-    ]);
+    it('the real-count leg: the remediation-decision presentation is the full four-option layout over the real finding, masked-only, no "case" vocabulary', () => {
+      // The count is templated from the real surfaced finding (1), never hardcoded.
+      expect(decision.secretCount).toBe(1);
+      expect(decision.prompt).toBe('I found 1 exposed secret key sitting in old transcripts.');
+      expect(decision.options.map((o) => o.id)).toEqual([
+        'redact-rotation-checklist',
+        'redact-only',
+        'set-secret-redact',
+        'leave',
+      ]);
+      expect(decision.options.map((o) => o.label)).toEqual([
+        'Redact + rotation checklist',
+        'Redact only',
+        "Set 'secret' to redact",
+        'Leave',
+      ]);
 
-    // The full remediation-decision layout: the masked finding table, the recommendation
-    // line, and the registry-driven chaining line — reached from the built
-    // script's own stdout, not a re-composed module.
-    expect(presentOut).toContain('PROVIDER');
-    expect(presentOut).toContain('TOKEN');
-    expect(presentOut).toContain('STATE');
-    expect(presentOut).toContain('unknown');
-    expect(presentOut).not.toContain('still valid');
-    expect(presentOut).toContain("I'd redact them and get you rotating, most-exposed first");
-    expect(presentOut).toContain(`run ${selectSecretScanContinuation()}`);
+      // The full remediation-decision layout: the masked finding table, the recommendation
+      // line, and the registry-driven chaining line — reached from the built
+      // script's own stdout, not a re-composed module.
+      expect(presentOut).toContain('PROVIDER');
+      expect(presentOut).toContain('TOKEN');
+      expect(presentOut).toContain('STATE');
+      expect(presentOut).toContain('unknown');
+      expect(presentOut).not.toContain('still valid');
+      expect(presentOut).toContain("I'd redact them and get you rotating, most-exposed first");
+      expect(presentOut).toContain(`run ${selectSecretScanContinuation()}`);
 
-    // The Where column carries the REAL transcript path the pipeline recorded —
-    // not a '(location unavailable)' placeholder — so the finding the user sees
-    // is the same on-disk artifact the redact path below actually strikes.
-    expect(calibrationFrame.maskedFindings?.[0]?.where.filePath).toBe(transcriptPath);
-    expect(presentOut).not.toContain('(location unavailable)');
+      // The Where column carries the REAL transcript path the pipeline recorded —
+      // not a '(location unavailable)' placeholder — so the finding the user sees
+      // is the same on-disk artifact the redact path below actually strikes.
+      expect(calibrationFrame.maskedFindings?.[0]?.where.filePath).toBe(transcriptPath);
+      expect(presentOut).not.toContain('(location unavailable)');
 
-    // No raw leaked key crosses into the production entry's output — masked only.
-    expect(presentOut).not.toContain(SURFACED_KEY);
+      // No raw leaked key crosses into the production entry's output — masked only.
+      expect(presentOut).not.toContain(SURFACED_KEY);
 
-    // No "case" vocabulary anywhere the production entry prints.
-    expect(presentOut.toLowerCase()).not.toContain('case');
-  });
+      // No "case" vocabulary anywhere the production entry prints.
+      expect(presentOut.toLowerCase()).not.toContain('case');
+    });
 
-  it("choosing 'Leave' through the built script exits cleanly — no redaction, no posture, no deliverable", () => {
-    const before = readFileSync(transcriptPath, 'utf8');
-    const postureBefore = readPosture(journey.storeDir);
+    it("choosing 'Leave' through the built script exits cleanly — no redaction, no posture, no deliverable", () => {
+      const before = readFileSync(transcriptPath, 'utf8');
+      const postureBefore = readPosture(journey.storeDir);
 
-    const leaveOut = journey.remediationRoute(preview, 'leave').stdout;
+      const leaveOut = journey.remediationRoute(preview, 'leave').stdout;
 
-    // The built script actually reports the clean exit — not a silently empty
-    // stdout that would vacuously satisfy the observables below.
-    expect(leaveOut.trim().length).toBeGreaterThan(0);
-    expect(leaveOut.toLowerCase()).not.toContain('case');
-    // The transcript artifact is untouched — the raw key is still readable.
-    expect(readFileSync(transcriptPath, 'utf8')).toBe(before);
-    expect(readFileSync(transcriptPath, 'utf8')).toContain(SURFACED_KEY);
-    // No posture change and no rotation-checklist.md deliverable.
-    expect(readPosture(journey.storeDir)).toBe(postureBefore);
-    expect(existsSync(STRAY_ROTATION_CHECKLIST)).toBe(false);
-  });
+      // The built script actually reports the clean exit — not a silently empty
+      // stdout that would vacuously satisfy the observables below.
+      expect(leaveOut.trim().length).toBeGreaterThan(0);
+      expect(leaveOut.toLowerCase()).not.toContain('case');
+      // The transcript artifact is untouched — the raw key is still readable.
+      expect(readFileSync(transcriptPath, 'utf8')).toBe(before);
+      expect(readFileSync(transcriptPath, 'utf8')).toContain(SURFACED_KEY);
+      // No posture change and no rotation-checklist.md deliverable.
+      expect(readPosture(journey.storeDir)).toBe(postureBefore);
+      expect(existsSync(STRAY_ROTATION_CHECKLIST)).toBe(false);
+    });
 
-  it("'Redact only' through the built script fails loud on a missing --posture — no redaction, no posture write", () => {
-    // Runs AFTER 'Leave' (which does not mutate), so the raw key is still on disk.
-    const before = readFileSync(transcriptPath, 'utf8');
-    const postureBefore = readPosture(journey.storeDir);
+    it("'Redact only' through the built script fails loud on a missing --posture — no redaction, no posture write", () => {
+      // Runs AFTER 'Leave' (which does not mutate), so the raw key is still on disk.
+      const before = readFileSync(transcriptPath, 'utf8');
+      const postureBefore = readPosture(journey.storeDir);
 
-    const result = journey.remediationRoute(preview, 'redact-only');
+      const result = journey.remediationRoute(preview, 'redact-only');
 
-    expect(result.status).not.toBe(0);
-    expect(readFileSync(transcriptPath, 'utf8')).toBe(before);
-    expect(readFileSync(transcriptPath, 'utf8')).toContain(SURFACED_KEY);
-    expect(readPosture(journey.storeDir)).toBe(postureBefore);
-  });
+      expect(result.status).not.toBe(0);
+      expect(readFileSync(transcriptPath, 'utf8')).toBe(before);
+      expect(readFileSync(transcriptPath, 'utf8')).toContain(SURFACED_KEY);
+      expect(readPosture(journey.storeDir)).toBe(postureBefore);
+    });
 
-  it('an unreadable calibration frame degrades to an honest read-failure note — never a false all-clear or a false "redacted 0 keys" success', () => {
-    // The wizard mis-pipes a block that is not the calibration frame: the loader
-    // returns undefined (a read/parse fault, distinct from a clean empty read),
-    // so neither mode may claim an all-clear or a success off a frame it never read.
-    const brokenFrame = 'this is not a calibration frame block';
+    it('an unreadable calibration frame degrades to an honest read-failure note — never a false all-clear or a false "redacted 0 keys" success', () => {
+      // The wizard mis-pipes a block that is not the calibration frame: the loader
+      // returns undefined (a read/parse fault, distinct from a clean empty read),
+      // so neither mode may claim an all-clear or a success off a frame it never read.
+      const brokenFrame = 'this is not a calibration frame block';
 
-    const presentOutBroken = journey.remediationPresent(brokenFrame).stdout;
-    expect(presentOutBroken).toContain("I couldn't pull up what I found just now");
-    expect(presentOutBroken).not.toContain("No exposed keys to deal with — you're clear");
+      const presentOutBroken = journey.remediationPresent(brokenFrame).stdout;
+      expect(presentOutBroken).toContain("I couldn't pull up what I found just now");
+      expect(presentOutBroken).not.toContain("No exposed keys to deal with — you're clear");
 
-    // A valid --posture, so the route clears posture validation (which precedes
-    // the frame read) and the unreadable frame itself is what degrades honestly.
-    const redactOutBroken = journey.remediationRoute(brokenFrame, 'redact-only', 'redact').stdout;
-    expect(redactOutBroken).toContain("I couldn't pull up what I found just now");
-    expect(redactOutBroken).not.toContain(renderRedactionConfirmation(0));
-    expect(redactOutBroken.toLowerCase()).not.toContain('redacted');
-  });
-});
+      // A valid --posture, so the route clears posture validation (which precedes
+      // the frame read) and the unreadable frame itself is what degrades honestly.
+      const redactOutBroken = journey.remediationRoute(brokenFrame, 'redact-only', 'redact').stdout;
+      expect(redactOutBroken).toContain("I couldn't pull up what I found just now");
+      expect(redactOutBroken).not.toContain(renderRedactionConfirmation(0));
+      expect(redactOutBroken.toLowerCase()).not.toContain('redacted');
+    });
+  },
+);
 
 // The 'Redact only' -> standing-posture leg re-proven from the BUILT
 // remediate.js and PARAMETERIZED over all four palette choices — replacing an
@@ -230,62 +237,65 @@ describe('frame 0.6 -> remediation decision -> option routing: production entry 
 // key, so proving all four choices at N=1 each needs its own fresh transcript
 // + calibration frame per choice, not one shared spine reused across four
 // mutating runs.
-describe("'Redact only' presents the standing-posture step, parameterized over all four choices, driven from the built remediate.js", () => {
-  it('the standing-posture prompt offers exactly Redact / Warn / Block / Monitor, in that order', () => {
-    const step = presentStandingSecretPosture();
-    expect(step.prompt).toContain("Set the 'secret' detection level");
-    expect(step.options.map((o) => o.level)).toEqual(['redact', 'warn', 'block', 'monitor']);
-    expect(step.options.map((o) => o.label)).toEqual(['Redact', 'Warn', 'Block', 'Monitor']);
-  });
+describeShimmed(
+  "'Redact only' presents the standing-posture step, parameterized over all four choices, driven from the built remediate.js",
+  () => {
+    it('the standing-posture prompt offers exactly Redact / Warn / Block / Monitor, in that order', () => {
+      const step = presentStandingSecretPosture();
+      expect(step.prompt).toContain("Set the 'secret' detection level");
+      expect(step.options.map((o) => o.level)).toEqual(['redact', 'warn', 'block', 'monitor']);
+      expect(step.options.map((o) => o.label)).toEqual(['Redact', 'Warn', 'Block', 'Monitor']);
+    });
 
-  it.each<BuiltinPolicyId>(['redact', 'warn', 'block', 'monitor'])(
-    "'Redact only' through the built script honors the user's standing-posture selection (%s): strikes the real key and persists the corresponding posture",
-    (level) => {
-      const run = new SetupJourney();
-      try {
-        const transcript = run.seedTranscript();
-        run.intro();
-        run.onboardHistorical('full');
-        run.onboardModelJudge();
-        const triage = run.backfillTriage().stdout;
-        const runPreview = run.applyPreview(triage).stdout;
-        CalibrationFrame.parse(readFrameJsonBlock(runPreview));
-        run.applyConfirm(planPathFromPreview(runPreview));
+    it.each<BuiltinPolicyId>(['redact', 'warn', 'block', 'monitor'])(
+      "'Redact only' through the built script honors the user's standing-posture selection (%s): strikes the real key and persists the corresponding posture",
+      (level) => {
+        const run = new SetupJourney();
+        try {
+          const transcript = run.seedTranscript();
+          run.intro();
+          run.onboardHistorical('full');
+          run.onboardModelJudge();
+          const triage = run.backfillTriage().stdout;
+          const runPreview = run.applyPreview(triage).stdout;
+          CalibrationFrame.parse(readFrameJsonBlock(runPreview));
+          run.applyConfirm(planPathFromPreview(runPreview));
 
-        // The confirm write's recommended posture seeds 'secret'->warn — the
-        // same baseline every fresh run starts from. Overwrite it (the real
-        // onboard.ts writer, not a store-internal poke) to a level that
-        // genuinely differs from the level under test, so a passing readback
-        // below can only mean THIS run's write landed — never a pre-existing
-        // value that happens to already match (a real risk for the Warn case,
-        // since Warn IS the seeded baseline).
-        const distinctSeed: BuiltinPolicyId = level === 'monitor' ? 'block' : 'monitor';
-        run.onboardPosture({ secret: distinctSeed });
-        // getCategoryAction reads back the stored ActionTaken, not the palette
-        // id — monitor maps to 'log' (builtinPolicyToAction), the rest are
-        // identity-mapped.
-        expect(readPosture(run.storeDir)).toBe(builtinPolicyToAction(distinctSeed));
+          // The confirm write's recommended posture seeds 'secret'->warn — the
+          // same baseline every fresh run starts from. Overwrite it (the real
+          // onboard.ts writer, not a store-internal poke) to a level that
+          // genuinely differs from the level under test, so a passing readback
+          // below can only mean THIS run's write landed — never a pre-existing
+          // value that happens to already match (a real risk for the Warn case,
+          // since Warn IS the seeded baseline).
+          const distinctSeed: BuiltinPolicyId = level === 'monitor' ? 'block' : 'monitor';
+          run.onboardPosture({ secret: distinctSeed });
+          // getCategoryAction reads back the stored ActionTaken, not the palette
+          // id — monitor maps to 'log' (builtinPolicyToAction), the rest are
+          // identity-mapped.
+          expect(readPosture(run.storeDir)).toBe(builtinPolicyToAction(distinctSeed));
 
-        const redactOut = run.remediationRoute(runPreview, 'redact-only', level).stdout;
+          const redactOut = run.remediationRoute(runPreview, 'redact-only', level).stdout;
 
-        // A real frame-0.4 preview seeds a single leaked key, so the
-        // redaction count stays at N=1 across every choice — the sweep is
-        // over the four posture choices, not the finding count.
-        expect(redactOut).toContain(renderRedactionConfirmation(1));
-        expect(redactOut).toContain(`✓ From now on, I'll treat secrets like these as ${level}.`);
-        const after = readFileSync(transcript, 'utf8');
-        expect(after).not.toContain(SURFACED_KEY);
-        expect(after).toContain('[REDACTED:SECRET]');
+          // A real frame-0.4 preview seeds a single leaked key, so the
+          // redaction count stays at N=1 across every choice — the sweep is
+          // over the four posture choices, not the finding count.
+          expect(redactOut).toContain(renderRedactionConfirmation(1));
+          expect(redactOut).toContain(`✓ From now on, I'll treat secrets like these as ${level}.`);
+          const after = readFileSync(transcript, 'utf8');
+          expect(after).not.toContain(SURFACED_KEY);
+          expect(after).toContain('[REDACTED:SECRET]');
 
-        // Persisted durably — read on a FRESH connection — to the level the
-        // user actually chose, not hardcoded to Redact. 'Redact only' still
-        // generates no deliverable.
-        expect(readPosture(run.storeDir)).toBe(builtinPolicyToAction(level));
-        expect(existsSync(STRAY_ROTATION_CHECKLIST)).toBe(false);
-      } finally {
-        run.cleanup();
-      }
-    },
-    30_000,
-  );
-});
+          // Persisted durably — read on a FRESH connection — to the level the
+          // user actually chose, not hardcoded to Redact. 'Redact only' still
+          // generates no deliverable.
+          expect(readPosture(run.storeDir)).toBe(builtinPolicyToAction(level));
+          expect(existsSync(STRAY_ROTATION_CHECKLIST)).toBe(false);
+        } finally {
+          run.cleanup();
+        }
+      },
+      30_000,
+    );
+  },
+);

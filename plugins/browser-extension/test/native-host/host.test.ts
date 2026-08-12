@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { handleRequest } from '../../src/native-host/host.ts';
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
 
@@ -23,7 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 function config(tool: WebSourceTool | undefined): PluginConfig {

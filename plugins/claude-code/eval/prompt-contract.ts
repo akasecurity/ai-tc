@@ -30,6 +30,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+import { toPosix } from '@akasecurity/plugin-sdk';
 import type {
   BuiltinPolicyId,
   CalibrationFrame,
@@ -296,7 +297,11 @@ export function deriveRepoFactFixture(rootDir: string): {
     for (const entry of readdirSync(modelsDir)) {
       const filePath = join(modelsDir, entry);
       if (!entry.endsWith('.ts') || !statSync(filePath).isFile()) continue;
-      const relPath = relative(rootDir, filePath);
+      // `relative` yields native separators, so this reads `src\models\x.ts` on
+      // Windows — and both the fact string and the read-boundary path are
+      // compared against posix literals by every caller. Normalize at the one
+      // site that produces them rather than at each comparison.
+      const relPath = toPosix(relative(rootDir, filePath));
       reads.push({ source: 'working-tree', path: relPath });
       const content = readFileSync(filePath, 'utf8');
       const match = /\b(?:class|interface)\s+(\w+)\b/.exec(content);

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/per
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreFindingInstances,
   loadMoreGroupedFindings,
@@ -56,7 +57,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 /** Seed `n` findings through a second handle, then drop the memoised one. */

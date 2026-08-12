@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,6 +13,7 @@ import {
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
 
 // An AWS-key-SHAPED test value, assembled at runtime so no key-shaped literal
@@ -79,8 +80,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
+  removeTree(root);
+  removeTree(store);
 });
 
 describe('collectFiles', () => {

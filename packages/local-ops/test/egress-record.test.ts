@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,7 @@ import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity
 import { resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 
@@ -93,9 +94,9 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
-  rmSync(base, { recursive: true, force: true });
+  removeTree(root);
+  removeTree(store);
+  removeTree(base);
 });
 
 describe('recordProjectEgress — git project', () => {

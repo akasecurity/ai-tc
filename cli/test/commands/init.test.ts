@@ -24,6 +24,7 @@ import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   looseStorePaths,
   runInit,
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
   if (stdinTTY) Object.defineProperty(process.stdin, 'isTTY', stdinTTY);
   else delete (process.stdin as { isTTY?: boolean }).isTTY;
   vi.restoreAllMocks();
@@ -131,16 +132,19 @@ describe('runInit contract', () => {
     expect(out).not.toMatch(/historical access/i);
   });
 
-  it('leaves ~/.aka owner-only: 0700 dirs (base, settings/, data/) and 0600 files (settings.json, aka.db)', async () => {
+  it('leaves ~/.aka owner-only: 0700 dirs (base, settings/, data/) and 0600 files (settings.json, aka.db)', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     // Start from a loose home so this proves init TIGHTENS it, not merely that a
     // fresh mkdir happens to land at 0700. These modes are the store's only
     // at-rest control (see the "Data at rest" note in SECURITY.md).
-    if (process.platform !== 'win32') chmodSync(dir, 0o777);
+    chmodSync(dir, 0o777);
 
     await runInit(['--home', dir]);
 
-    if (process.platform === 'win32') return;
     for (const [path, expected] of documentedModes(dir)) expect(mode(path)).toBe(expected);
   });
 
@@ -208,9 +212,12 @@ describe('runInit contract', () => {
     }
   });
 
-  it('re-tightens a pre-existing loose settings.json on re-run (tighten is not gated on creating it)', async () => {
+  it('re-tightens a pre-existing loose settings.json on re-run (tighten is not gated on creating it)', async (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-    if (process.platform === 'win32') return;
     // Simulate a user who hit the pre-fix leftover-.tmp bug: settings.json exists
     // at 0666, so `settingsCreated` is false and the write block is skipped. The
     // re-run must still repair the mode — settings.json self-heals like the dirs,
@@ -288,8 +295,11 @@ describe('runInit contract', () => {
 });
 
 describe('looseStorePaths', () => {
-  it('reports the store paths that are not owner-only, and none when all are tight', () => {
-    if (process.platform === 'win32') return;
+  it('reports the store paths that are not owner-only, and none when all are tight', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const settings = settingsDir(dir);
     mkdirSync(settings, { recursive: true });
     mkdirSync(dataDir(dir), { recursive: true });

@@ -6,6 +6,12 @@ import { delimiter, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { assertShimResolves, shimMarker, shimmedPath, writeCommandShim } from './path-shim.ts';
+import { shimUnsupported } from './shim-unsupported.ts';
+
+// See shim-unsupported.ts: these five cases each need a shim that actually
+// resolves, which win32 cannot do for a shell-free spawn. Their siblings assert
+// a REFUSAL and keep running there — that is the half worth protecting.
+const itShimmed = it.skipIf(shimUnsupported);
 
 // A name no real binary on any developer machine or runner answers to, so a
 // resolution MISS in this suite can only ever fail — never reach a live tool.
@@ -101,7 +107,7 @@ describe('shimmedPath', () => {
 });
 
 describe('writeCommandShim + assertShimResolves', () => {
-  it('resolves the shim written for the running platform', () => {
+  itShimmed('resolves the shim written for the running platform', () => {
     const binDir = tempDir();
     writeCommandShim(binDir, COMMAND, bodyWritingSentinel(join(binDir, 'ran')));
     const env = { PATH: shimmedPath(binDir, NODE_DIR) };
@@ -113,27 +119,30 @@ describe('writeCommandShim + assertShimResolves', () => {
     ).toBeUndefined();
   });
 
-  it('answers the probe WITHOUT recording an invocation, and records one when really run', () => {
-    const binDir = tempDir();
-    const sentinel = join(binDir, 'ran');
-    writeCommandShim(binDir, COMMAND, bodyWritingSentinel(sentinel));
-    const env = { PATH: shimmedPath(binDir, NODE_DIR) };
+  itShimmed(
+    'answers the probe WITHOUT recording an invocation, and records one when really run',
+    () => {
+      const binDir = tempDir();
+      const sentinel = join(binDir, 'ran');
+      writeCommandShim(binDir, COMMAND, bodyWritingSentinel(sentinel));
+      const env = { PATH: shimmedPath(binDir, NODE_DIR) };
 
-    assertShimResolves(COMMAND, env);
-    // The property a `judgeWasInvoked()`-style sentinel depends on: probing is
-    // not invoking. Lose the ordering in the prologue and every "the egress
-    // never happened" assertion starts failing for a reason that is not the
-    // one under test.
-    expect(existsSync(sentinel)).toBe(false);
+      assertShimResolves(COMMAND, env);
+      // The property a `judgeWasInvoked()`-style sentinel depends on: probing is
+      // not invoking. Lose the ordering in the prologue and every "the egress
+      // never happened" assertion starts failing for a reason that is not the
+      // one under test.
+      expect(existsSync(sentinel)).toBe(false);
 
-    // Positive control: the sentinel IS written when the shim runs for real, so
-    // the absence above is the ordering rather than a shim that never runs.
-    const out = execFileSync(COMMAND, [], { env, encoding: 'utf8', timeout: 20_000 });
-    expect(out).toContain('SHIM-BODY-RAN');
-    expect(existsSync(sentinel)).toBe(true);
-  });
+      // Positive control: the sentinel IS written when the shim runs for real, so
+      // the absence above is the ordering rather than a shim that never runs.
+      const out = execFileSync(COMMAND, [], { env, encoding: 'utf8', timeout: 20_000 });
+      expect(out).toContain('SHIM-BODY-RAN');
+      expect(existsSync(sentinel)).toBe(true);
+    },
+  );
 
-  it('performs the probe under the cwd it is given, not this process s', () => {
+  itShimmed('performs the probe under the cwd it is given, not this process s', () => {
     const binDir = tempDir();
     writeCommandShim(binDir, COMMAND, bodyWritingSentinel(join(binDir, 'ran')));
     const env = { PATH: shimmedPath(binDir, NODE_DIR) };
@@ -170,7 +179,7 @@ describe('writeCommandShim + assertShimResolves', () => {
     expect(err?.message).toContain(`PATH shim for "${COMMAND}" did not resolve`);
   });
 
-  it('refuses when another executable of the same name answers first', () => {
+  itShimmed('refuses when another executable of the same name answers first', () => {
     // The fail-open shape itself: something DOES resolve and DOES run, it is
     // just not the stub. A judge stub that missed this way would be the real
     // CLI, and the call would reach a live model.
@@ -236,7 +245,7 @@ describe('the platform branch, driven from either host', () => {
     expect(err?.message).toContain('did not resolve to the test stub');
   });
 
-  it('writes the running platform form under an explicit platform argument too', () => {
+  itShimmed('writes the running platform form under an explicit platform argument too', () => {
     // Guards the parameter itself: a `platform` argument the writer ignores
     // would leave the case above passing for the wrong reason — every shim
     // would be the running platform's, and a `.cmd` would never be written.

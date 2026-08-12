@@ -19,6 +19,7 @@ import type { BlockedDetectionInput } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
 
@@ -154,7 +155,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('the exceptions route wires each ledger read to the consumer that needs it', () => {

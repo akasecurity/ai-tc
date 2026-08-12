@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,7 @@ import type { RunMode } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { resolveDataGateway } from '../src/resolve.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
@@ -17,7 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 function makeConfig(runMode: RunMode): PluginConfig {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,6 +7,7 @@ import { DB_FILENAME } from '@akasecurity/persistence';
 import type { RecordProjectEgressInput, ResolvedEgressHit } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
 let dir: string;
@@ -16,7 +17,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 /** One resolved hit with recognized-provider defaults; every field is overridable. */

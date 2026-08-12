@@ -407,14 +407,18 @@ jobs:
   # report success having observed nothing.
   #
   # Lint is the cheapest of the four task types, which is what makes a cold run
-  # affordable where a cold `test` would not be — but size the budget off the
-  # Windows factor, not off the figure below. Measured on an M-series Mac at
-  # `Cached: 0`: 72s for all twenty packages, plus 6.5s for lint:root and 0.6s
-  # for check:portability. At the ~10x factor the test leg above documents for
-  # this runner that is on the order of 13 minutes before `pnpm install`, which
-  # is the margin `timeout-minutes: 25` actually has. No Windows measurement
-  # exists yet; take one from the first green run and replace this paragraph
-  # with it rather than reasoning from the Mac number twice.
+  # affordable where a cold `test` would not be. Measured on THIS runner rather
+  # than extrapolated (`gh run view 31536100993 --repo akasecurity/ai-tc`): the
+  # Lint step 1m49s, the whole job 2m41s. The same `pnpm lint` at `Cached: 0` on
+  # an M-series Mac is 72s for all twenty packages plus 6.5s for lint:root and
+  # 0.6s for check:portability.
+  #
+  # So the ~10x factor the test leg above documents does NOT transfer to lint —
+  # here it is about 1.5x. Size a lint budget off a lint measurement; the factor
+  # is a property of the task type, not of the runner. That leaves
+  # `timeout-minutes: 25` roughly 9x headroom, not the ~2x an estimate carried
+  # over from the test leg predicts. One run is not a stable figure — re-take it
+  # with the command above rather than trusting this line indefinitely.
   #
   # It is a SEPARATE job rather than a step on the Windows test leg above, for
   # two reasons. It runs in parallel, so it adds nothing to the critical path of

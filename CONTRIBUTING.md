@@ -148,6 +148,7 @@ a name in it no longer belongs to a real job.
 | `No-network · Full suite, egress blocked` | `ci.yml`     |
 | `macOS · Full suite`                      | `ci.yml`     |
 | `Windows · Unit tests (shipped surface)`  | `ci.yml`     |
+| `Windows · Lint`                          | `ci.yml`     |
 | `Dependency audit`                        | `audit.yml`  |
 | `CodeQL (javascript-typescript)`          | `codeql.yml` |
 | `CodeQL (actions)`                        | `codeql.yml` |
@@ -160,6 +161,19 @@ knowing since the branch-protection REST endpoint 404s to non-admins and reads l
 ```bash
 gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequest(number:PR){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:50){nodes{... on CheckRun{name isRequired(pullRequestNumber:PR)}}}}}}}}}}'
 ```
+
+**Measured 2026-08-12: only two of the eight are actually required** —
+`Lint · Typecheck · Test · Build` and `Windows · Unit tests (shipped surface)`. The other
+six run on every PR and block nothing. Two of those six are asserted as enforced
+elsewhere in this repository: CLAUDE.md presents `No-network · Full suite, egress blocked`
+as one of the three gates gating the no-network guarantee, and describes `Dependency
+audit` as the reason a high or critical advisory "will not merge". Neither holds until an
+admin marks them required — a PR that reaches the network on a shell-out, or that carries
+a critical advisory, goes red there and stays mergeable.
+
+This paragraph is a hand-recorded observation, not something the tree derives, so it goes
+stale in the safe direction only until someone fixes the setting. Re-run the query above
+rather than trusting it.
 
 By contributing you agree that your contributions are licensed under the
 repository's [LICENSE](LICENSE). Please also read our

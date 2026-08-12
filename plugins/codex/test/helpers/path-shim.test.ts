@@ -1,0 +1,272 @@
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { assertShimResolves, shimMarker, shimmedPath, writeCommandShim } from './path-shim.ts';
+import { shimUnsupported } from './shim-unsupported.ts';
+
+// See shim-unsupported.ts: these five cases each need a shim that actually
+// resolves, which win32 cannot do for a shell-free spawn. Their siblings assert
+// a REFUSAL and keep running there — that is the half worth protecting.
+const itShimmed = it.skipIf(shimUnsupported);
+
+// A name no real binary on any developer machine or runner answers to, so a
+// resolution MISS in this suite can only ever fail — never reach a live tool.
+// That matters more here than anywhere else: this file exists to drive the miss
+// case on purpose.
+const COMMAND = 'aka-shim-fixture-cmd';
+
+// The shim body every case writes: records that it ran, then prints a word the
+// caller can match. Written behind the helper's prologue, so the probe answer
+// sits ahead of the sentinel write.
+const bodyWritingSentinel = (sentinelPath: string): string =>
+  `require('node:fs').writeFileSync(${JSON.stringify(sentinelPath)}, '');
+process.stdout.write('SHIM-BODY-RAN');
+`;
+
+// A third-party binary that happens to answer to the same name — what the real
+// installed CLI is to a judge stub. Deliberately NOT written through
+// writeCommandShim: the whole point is that it runs cleanly and answers the
+// probe with something other than this suite's marker.
+const writeForeignBinary = (dir: string, command: string): void => {
+  const js = "process.stdout.write('FOREIGN-TOOL 1.2.3');\n";
+  if (process.platform === 'win32') {
+    writeFileSync(join(dir, `${command}-foreign.js`), js);
+    writeFileSync(
+      join(dir, `${command}.cmd`),
+      `@echo off\r\n"${process.execPath}" "%~dp0${command}-foreign.js" %*\r\n`,
+    );
+    return;
+  }
+  const binPath = join(dir, command);
+  writeFileSync(binPath, `#!/usr/bin/env node\n${js}`);
+  chmodSync(binPath, 0o755);
+};
+
+const dirs: string[] = [];
+const tempDir = (): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'aka-path-shim-test-'));
+  dirs.push(dir);
+  return dir;
+};
+
+// node's own dir, so a POSIX shim's `#!/usr/bin/env node` line resolves without
+// dragging the whole host PATH (and its real binaries) into these cases.
+const NODE_DIR = dirname(process.execPath);
+
+afterEach(() => {
+  while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
+});
+
+const errorFrom = (fn: () => unknown): Error | undefined => {
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    return e as Error;
+  }
+};
+
+// The weaker check this helper replaced: "the spawn worked". Kept as the paired
+// control — a case is only evidence that identity is being checked if the
+// spawn-succeeded form would have passed on the same input.
+const spawnSucceeded = (command: string, env: NodeJS.ProcessEnv): boolean => {
+  try {
+    execFileSync(command, ['--version'], {
+      env,
+      encoding: 'utf8',
+      timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+describe('shimmedPath', () => {
+  it('prepends the shim dir as a real first entry under the platform delimiter', () => {
+    const base = ['/first/base', '/second/base'].join(delimiter);
+    const entries = shimmedPath('/shim/dir', base).split(delimiter);
+    expect(entries[0]).toBe('/shim/dir');
+    expect(entries.slice(1)).toEqual(['/first/base', '/second/base']);
+  });
+
+  it('yields the shim dir ALONE when there is no base PATH, leaving no empty entry', () => {
+    // Asserting entry [0] would pass on a trailing delimiter too, which is the
+    // bug: an empty PATH element is read as the CURRENT DIRECTORY by execvp and
+    // by libuv's own search, so `${binDir}${delimiter}` quietly adds the cwd to
+    // a search path whose whole purpose is that only the shim is on it.
+    expect(shimmedPath('/shim/dir', undefined)).toBe('/shim/dir');
+    expect(shimmedPath('/shim/dir', '')).toBe('/shim/dir');
+    expect(shimmedPath('/shim/dir', undefined).split(delimiter)).toEqual(['/shim/dir']);
+  });
+});
+
+describe('writeCommandShim + assertShimResolves', () => {
+  itShimmed('resolves the shim written for the running platform', () => {
+    const binDir = tempDir();
+    writeCommandShim(binDir, COMMAND, bodyWritingSentinel(join(binDir, 'ran')));
+    const env = { PATH: shimmedPath(binDir, NODE_DIR) };
+
+    expect(
+      errorFrom(() => {
+        assertShimResolves(COMMAND, env);
+      }),
+    ).toBeUndefined();
+  });
+
+  itShimmed(
+    'answers the probe WITHOUT recording an invocation, and records one when really run',
+    () => {
+      const binDir = tempDir();
+      const sentinel = join(binDir, 'ran');
+      writeCommandShim(binDir, COMMAND, bodyWritingSentinel(sentinel));
+      const env = { PATH: shimmedPath(binDir, NODE_DIR) };
+
+      assertShimResolves(COMMAND, env);
+      // The property a `judgeWasInvoked()`-style sentinel depends on: probing is
+      // not invoking. Lose the ordering in the prologue and every "the egress
+      // never happened" assertion starts failing for a reason that is not the
+      // one under test.
+      expect(existsSync(sentinel)).toBe(false);
+
+      // Positive control: the sentinel IS written when the shim runs for real, so
+      // the absence above is the ordering rather than a shim that never runs.
+      const out = execFileSync(COMMAND, [], { env, encoding: 'utf8', timeout: 20_000 });
+      expect(out).toContain('SHIM-BODY-RAN');
+      expect(existsSync(sentinel)).toBe(true);
+    },
+  );
+
+  itShimmed('performs the probe under the cwd it is given, not this process s', () => {
+    const binDir = tempDir();
+    writeCommandShim(binDir, COMMAND, bodyWritingSentinel(join(binDir, 'ran')));
+    const env = { PATH: shimmedPath(binDir, NODE_DIR) };
+
+    // A real cwd changes nothing on POSIX (only Windows searches it), so the
+    // decisive check is a cwd that cannot be entered: the spawn itself fails,
+    // which can only happen if the option reached the spawn. Drop the cwd from
+    // assertShimResolves and this resolves cleanly and the case goes red —
+    // asserting a successful resolution under a valid cwd would not, since
+    // ignoring the option produces exactly the same pass.
+    const err = errorFrom(() => {
+      assertShimResolves(COMMAND, env, { cwd: join(binDir, 'no-such-dir') });
+    });
+    expect(err?.message).toContain(`PATH shim for "${COMMAND}" did not resolve`);
+    expect(err?.message).toContain('the spawn failed');
+
+    // Positive control on the same shim: with no cwd override it resolves, so
+    // the refusal above is the cwd and not a shim that never worked.
+    expect(
+      errorFrom(() => {
+        assertShimResolves(COMMAND, env);
+      }),
+    ).toBeUndefined();
+  });
+
+  it('refuses when the shim dir is not on PATH at all', () => {
+    const binDir = tempDir();
+    writeCommandShim(binDir, COMMAND, bodyWritingSentinel(join(binDir, 'ran')));
+    const env = { PATH: NODE_DIR };
+
+    const err = errorFrom(() => {
+      assertShimResolves(COMMAND, env);
+    });
+    expect(err?.message).toContain(`PATH shim for "${COMMAND}" did not resolve`);
+  });
+
+  itShimmed('refuses when another executable of the same name answers first', () => {
+    // The fail-open shape itself: something DOES resolve and DOES run, it is
+    // just not the stub. A judge stub that missed this way would be the real
+    // CLI, and the call would reach a live model.
+    const decoyDir = tempDir();
+    writeForeignBinary(decoyDir, COMMAND);
+    const shimDir = tempDir();
+    writeCommandShim(shimDir, COMMAND, bodyWritingSentinel(join(shimDir, 'ran')));
+    const env = { PATH: shimmedPath(decoyDir, shimmedPath(shimDir, NODE_DIR)) };
+
+    const err = errorFrom(() => {
+      assertShimResolves(COMMAND, env);
+    });
+    expect(err?.message).toContain('did not resolve to the test stub');
+    // Paired control: the weaker "did the spawn work?" check passes here. The
+    // decoy answers the probe cleanly — it just is not ours — so only an
+    // identity check can tell this case from the passing one above.
+    expect(spawnSucceeded(COMMAND, env)).toBe(true);
+  });
+
+  it('names the live-call consequence and the Windows cause in its refusal', () => {
+    const err = errorFrom(() => {
+      assertShimResolves(COMMAND, { PATH: NODE_DIR });
+    });
+    // A setup failure is only useful if it says why continuing is unsafe.
+    expect(err?.message).toContain('does NOT fail closed');
+    expect(err?.message).toContain('PATHEXT');
+  });
+});
+
+describe('the platform branch, driven from either host', () => {
+  // The win32 shim is a `.cmd` launcher, which POSIX cannot execute; the POSIX
+  // shim is an extensionless file, which Windows will not resolve for a bare
+  // name. So writing the OTHER platform's form is a resolution failure on this
+  // one — which is exactly what makes it a live check of the refusal path
+  // rather than an assertion about a string.
+  const otherPlatform = process.platform === 'win32' ? 'linux' : 'win32';
+
+  it(`refuses a shim written for ${otherPlatform} while running on ${process.platform}`, () => {
+    const binDir = tempDir();
+    const written = writeCommandShim(
+      binDir,
+      COMMAND,
+      bodyWritingSentinel(join(binDir, 'ran')),
+      otherPlatform,
+    );
+
+    // Pin the ARTIFACT, not just the refusal. A branch that wrote nothing at all
+    // would also refuse, and would look identical here — so a POSIX runner
+    // checking only the throw proves nothing about what win32 gets.
+    if (otherPlatform === 'win32') {
+      expect(written.endsWith(`${COMMAND}.cmd`)).toBe(true);
+      expect(existsSync(written)).toBe(true);
+      expect(existsSync(join(binDir, `${COMMAND}-shim.js`))).toBe(true);
+    } else {
+      expect(written).toBe(join(binDir, COMMAND));
+      expect(existsSync(written)).toBe(true);
+    }
+
+    const env = { PATH: shimmedPath(binDir, NODE_DIR) };
+    const err = errorFrom(() => {
+      assertShimResolves(COMMAND, env);
+    });
+    expect(err?.message).toContain('did not resolve to the test stub');
+  });
+
+  itShimmed('writes the running platform form under an explicit platform argument too', () => {
+    // Guards the parameter itself: a `platform` argument the writer ignores
+    // would leave the case above passing for the wrong reason — every shim
+    // would be the running platform's, and a `.cmd` would never be written.
+    const binDir = tempDir();
+    const written = writeCommandShim(
+      binDir,
+      COMMAND,
+      bodyWritingSentinel(join(binDir, 'ran')),
+      process.platform,
+    );
+    expect(written.endsWith('.cmd')).toBe(process.platform === 'win32');
+    expect(
+      errorFrom(() => {
+        assertShimResolves(COMMAND, { PATH: shimmedPath(binDir, NODE_DIR) });
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe('shimMarker', () => {
+  it('is per command, so one command s shim cannot satisfy another s probe', () => {
+    expect(shimMarker('alpha')).not.toBe(shimMarker('beta'));
+  });
+});

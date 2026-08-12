@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,7 @@ import { dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { renderDetectionsTable, runDetections } from '../../src/commands/detections.ts';
 
 // The refusal itself is proven against a real contended store one layer down
@@ -102,7 +103,7 @@ describe('quarantined rules', () => {
   afterEach(() => {
     refuse.clear = false;
     vi.restoreAllMocks();
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
     process.exitCode = undefined;
   });
 

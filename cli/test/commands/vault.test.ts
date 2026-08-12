@@ -18,6 +18,7 @@ import {
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runVault } from '../../src/commands/vault.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 
@@ -64,7 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

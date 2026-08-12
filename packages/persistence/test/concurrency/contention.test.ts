@@ -34,6 +34,7 @@ import { describe, expect, it } from 'vitest';
 import { openLocalDatabase } from '../../src/database.ts';
 import { captureId } from '../../src/ids.ts';
 import { applyMigrations } from '../../src/migrations.ts';
+import { captureCount } from '../helpers/capture-fixtures.ts';
 import { lockStore, primaryCode, SQLITE_BUSY } from '../helpers/fault-injection.ts';
 import { withTempStore } from '../helpers/temp-store.ts';
 import { assertNoOpenTransaction } from '../helpers/transactions.ts';
@@ -77,19 +78,6 @@ function finding(distinct: string = randomUUID()): DetectedFindingWithKey {
     actionTaken: 'block',
     confidence: 0.9,
   };
-}
-
-// `ensureSessionRoot` plants an event_type = 'session' row per session before
-// the capture's own row FKs onto it, so counting captures means excluding those
-// structural roots rather than counting the table. Stated as "not a root" rather
-// than "is a prompt": pinning the fixture's own `kind` default here would make a
-// test that captures some other kind read as loss.
-function captureCount(db: DatabaseSync): number {
-  return (
-    db.prepare("SELECT count(*) AS n FROM audit_events WHERE event_type != 'session'").get() as {
-      n: number;
-    }
-  ).n;
 }
 
 function hasCapture(db: DatabaseSync, contentHash: string): boolean {

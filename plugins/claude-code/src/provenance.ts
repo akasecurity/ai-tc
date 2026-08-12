@@ -35,7 +35,12 @@ export type NpmRunner = (args: readonly string[]) => NpmRunResult;
 // On Windows the global `npm` binary is `npm.cmd`; execFile refuses to spawn a
 // `.cmd` without a shell (post CVE-2024-27980). Route through the shell there.
 // The args are fixed flags with no shell metacharacters, so no quoting concern.
-const USE_SHELL = process.platform === 'win32';
+//
+// Exported because a suite that stands a fake `npm` in front of this runner has
+// to probe resolution under the SAME spawn shape — a shell-free probe against a
+// shelled runner reports a false miss, and the reverse reports a false pass.
+// Re-deriving the condition there would let the two drift silently apart.
+export const USE_SHELL = process.platform === 'win32';
 
 // Real subprocess runner. When the budget elapses the child is force-killed with
 // SIGKILL (which a child cannot trap or ignore), so a hung shell-out is bounded

@@ -15,6 +15,13 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  readPackageManifest,
+  rootScripts,
+  workspaceLintScripts,
+  workspacePackageDirs,
+} from './helpers/lint-invocations.js';
+
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
 
@@ -56,6 +63,29 @@ function matrixValues(source, key) {
 // it does not survive is being asked for a STEP, because the cut lands above
 // them. So require both: a `runs-on:` (this is a job) and at least one step
 // list item (the body reached its end).
+//
+// COMMENT LINES ARE DROPPED, and that is load-bearing rather than tidying. Every
+// check below matches a pattern against this text, and a job's own comments
+// describe the very flags they sit next to — `# --continue: report every
+// package's failures…` sits one line above the `--continue` it explains. So a
+// reader that keeps them cannot tell a flag from a sentence about a flag, and
+// each of these passes on a job whose real step was deleted: measured, all three
+// of the Windows leg's structural checks stayed green with the flag, the filter
+// and the whole cache step removed and only the prose left behind. That is the
+// exact failure mode this file exists to prevent, one level up.
+//
+// A line whose first non-space character is `#` is a YAML comment here. The one
+// shape that would be misread is a `#` inside a `run:` block scalar, where it is
+// command text rather than a comment.
+//
+// That is safe because of WHERE this is pointed, not because the repo avoids the
+// shape: every caller passes `ci.yml`, which carries no `#`-leading line inside
+// any `run:` block. Four other workflows do — `dependabot-major-guard.yml` and
+// the three `release-plugin-*.yml` — so pointing `jobBlock` at one of those
+// makes this sentence false. It stays harmless while those lines are shell
+// comments, since dropping them changes no flag matched below; it stops being
+// harmless the first time a check wants to see something a `run:` block states
+// on a `#`-leading line.
 function jobBlock(source, key) {
   // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
   // where nothing is a metacharacter: the cost is one call, and a caller that
@@ -66,11 +96,25 @@ function jobBlock(source, key) {
     'm',
   ).exec(source);
   expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
-  const body = block[1];
+  const body = block[1]
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
   expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
   expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
   return body;
 }
+
+// The windows-lint step, which must be `pnpm lint` and nothing else. The
+// boundary is `(?![\w:])` rather than `\b` because `:` is a NON-word character,
+// so `pnpm lint\b` also matches `pnpm lint:root` — and that is not a hypothetical
+// spelling, it is a script this repo really has. Swapping the step to it drops
+// `turbo run lint` (all twenty packages) and `check:portability`, leaving only
+// the repo-root pass, while every assertion below goes on passing. The negative
+// class deliberately excludes a SPACE, so an argument appended after the script
+// name still matches: that is what lets this double as the positive control for
+// the absence checks, which is the property the comments below turn on.
+const LINT_STEP = /run: pnpm lint(?![\w:])/;
 
 // Every Turbo cache key a job declares — the `key:` and each line under
 // `restore-keys:`, which are bare values rather than `key: `-prefixed.
@@ -79,6 +123,27 @@ function jobBlock(source, key) {
 function turboCacheKeys(block) {
   return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
 }
+
+/**
+ * Every `--filter=<name>` a job's run steps pass to turbo. Comment lines are
+ * already gone by the time a block reaches here (see jobBlock), which is what
+ * stops a filter that was moved into a comment reading as one that still runs.
+ */
+const turboFilters = (block) => [...block.matchAll(/--filter=(\S+)/g)].map(([, name]) => name);
+
+/**
+ * Every workspace package npm actually publishes — `private` absent or false.
+ * Derived from pnpm-workspace.yaml and the manifests themselves rather than
+ * listed, because a list is exactly what let the CLI and the plugin sit outside
+ * the Windows job while its name claimed the shipped surface: a fifth artifact
+ * added tomorrow would not be on it either.
+ */
+const publishedPackageNames = () =>
+  workspacePackageDirs()
+    .map((dir) => readPackageManifest(dir))
+    .filter((pkg) => pkg.private !== true && typeof pkg.name === 'string')
+    .map((pkg) => pkg.name)
+    .sort();
 
 // Every check name a workflow can emit, with matrix jobs expanded to the names
 // GitHub actually reports.
@@ -118,10 +183,10 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   const rows = requiredChecks();
 
   // A table that parsed to nothing would satisfy every per-row assertion below
-  // without checking anything, so pin the count first. The four CI jobs, the
+  // without checking anything, so pin the count first. The five CI jobs, the
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     expect(rows.map((row) => row.file)).toEqual(
       expect.arrayContaining(['ci.yml', 'audit.yml', 'codeql.yml']),
     );
@@ -235,16 +300,162 @@ describe('the macOS leg', () => {
   });
 });
 
+// The two Windows legs. Between them they are the only place three things are
+// ever executed on this platform, and each is invisible in a diff once dropped:
+// every package npm publishes, the guard package's own path handling, and the
+// glob expansion every `lint` script depends on.
+//
+// The shipped-surface leg is the mirror image of the macOS one: it is filtered ON
+// PURPOSE, so nothing about a narrow filter looks wrong in a diff — which is how
+// it spent its whole life excluding `@akasecurity/cli` and the plugins while its
+// own name promised the shipped surface and its own comment named those very
+// packages as the reason it exists. The filter is where its promise lives, so
+// that is what these pin.
+describe('the Windows legs', () => {
+  // Read here, but BLOCKED inside each `it` — jobBlock asserts, and an assertion
+  // in a describe body is a collection error that reports the whole FILE as
+  // `(0 test)`, silently taking the gate-table rows with it. Reading the file is
+  // safe out here; resolving a block is not.
+  const ci = readWorkflow('ci.yml');
+
+  it('runs the shipped-surface tests on a Windows runner', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/^ {4}runs-on: windows-latest$/m);
+  });
+
+  // THE assertion this job exists for. Derived from the workspace rather than
+  // listed, so a fifth published artifact is caught the day it lands; the
+  // count check first is what stops a broken derivation satisfying the loop
+  // with an empty set.
+  it('runs every package npm publishes', () => {
+    const published = publishedPackageNames();
+    // Positive control on the DERIVATION, not a second copy of the list: a
+    // manifest reader that broke and returned nothing — or everything — would
+    // otherwise satisfy `arrayContaining` and this check would pass forever
+    // while the filter list rotted. `cli` is the package the job's own comment
+    // names, and `persistence` is private and bundled, so one must be in the
+    // derived set and the other must not. A length floor alone cannot separate
+    // those two failures.
+    expect(published).toContain('@akasecurity/cli');
+    expect(published).not.toContain('@akasecurity/persistence');
+    expect(turboFilters(jobBlock(ci, 'windows'))).toEqual(expect.arrayContaining(published));
+  });
+
+  // @akasecurity/eslint-config is the one filter entry that ships nothing —
+  // `private: true`, bundled by no artifact — so it is the first thing anyone
+  // trimming this list back to "the shipped surface" would strike, and the job's
+  // NAME invites exactly that. It is also the only place the guard's own
+  // Windows path handling ever runs: globSync yields native separators while
+  // `git ls-files` yields posix, and the two are compared against each other
+  // throughout effective-config.test.js. Drop this entry and those normalizations
+  // go back to being a hypothesis no runner checks, with nothing red to show it.
+  //
+  // Not covered by the published-package check above, and cannot be: that set is
+  // derived from `private !== true`, which excludes this package by construction.
+  it('tests the enforcement package, not just the shipped surface', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    // `(?![\w-])` rather than `\b`: a hyphen is a non-word character, so `\b`
+    // would also accept `--filter=@akasecurity/eslint-config-legacy`, i.e. a
+    // rename or split that repoints the filter at a sibling and takes this
+    // package's Windows coverage away while the test stays green.
+    expect(block).toMatch(/--filter=@akasecurity\/eslint-config(?![\w-])/);
+  });
+
+  // A filter is only a filter while there is something to filter. `turbo run
+  // test` with no --filter at all would satisfy the containment check above by
+  // running everything, which is a different job with a different cost — and it
+  // would make the assertion above unfalsifiable from then on.
+  it('is a filtered run, which is what makes the filter list load-bearing', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    expect(turboFilters(block).length).toBeGreaterThan(0);
+  });
+
+  // Without it turbo bails at the first red package, so a platform-specific
+  // failure in an early package hides every later one — and on this leg the
+  // whole point is seeing the platform's failures in one triage pass.
+  it('reports every package rather than bailing at the first failure', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/--continue/);
+  });
+
+  it('restores a Turbo cache', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/path: \.turbo\/cache$/m);
+  });
+
+  it('runs lint on a Windows runner', () => {
+    expect(jobBlock(ci, 'windows-lint')).toMatch(/^ {4}runs-on: windows-latest$/m);
+  });
+
+  // `pnpm lint`, not `turbo run lint`: the root script chains `lint:root` after
+  // it, which is the only pass covering the repo-root files that belong to no
+  // package. Going to turbo directly drops that half while still reading as a
+  // lint pass.
+  it('runs the root lint script, so the repo-root pass runs too', () => {
+    expect(jobBlock(ci, 'windows-lint')).toMatch(LINT_STEP);
+  });
+
+  // Unfiltered is the whole point: every lint script in the workspace targets
+  // `*.config.*`, so a filter narrows what expansion is observed while leaving a
+  // green check that reads as covering all of it. Absence-only, so it is paired
+  // with the positive control above — without a `pnpm lint` in the same body
+  // this passes on a block that captured no run step at all.
+  //
+  // That control stops at a boundary rather than end-of-line, and the difference
+  // is the whole value of the pair. Anchored with `$`, appending `--filter=…` to
+  // the step breaks the CONTROL, so this test goes red for the wrong reason and
+  // its own assertion — the one naming the property — is never reached. The
+  // absence check has to be the thing that fires on the mutation it describes, or
+  // it is unproven however green the suite is. See LINT_STEP for why that
+  // boundary is not `\b`.
+  it('lints the whole workspace rather than a filtered subset', () => {
+    const block = jobBlock(ci, 'windows-lint');
+    expect(block).toMatch(LINT_STEP);
+    expect(block).not.toMatch(/--filter/);
+  });
+
+  // Same reasoning as the macOS leg: a job-level `if:` does not save a PR the
+  // wait, because GitHub reports a skipped job as PENDING for a required check.
+  it.each(['windows', 'windows-lint'])('%s carries no condition that could skip it', (job) => {
+    expect(jobBlock(ci, job)).not.toMatch(/^ {4}if:/m);
+  });
+
+  // The windows-lint job's whole justification is that a `lint` script carries a
+  // glob whose expansion is decided by the platform. That premise is a claim
+  // about the tree, so derive it rather than asserting it in a comment: a package
+  // whose lint script drops `*.config.*` takes its root config files out of every
+  // lint pass on every platform, and this job would stay green throughout —
+  // twenty other scripts still expand, so nothing here reddens.
+  //
+  // The count is pinned first for the usual reason: an empty list satisfies a
+  // `for` loop over it without checking anything. It is a floor AND a ceiling, so
+  // a package added without a lint script is caught by the same assertion.
+  it('every lint script carries the glob this job exists to observe', () => {
+    const scripts = workspaceLintScripts();
+    expect(scripts).toHaveLength(20);
+    for (const { dir, lintScript } of scripts) {
+      expect(lintScript, `${dir} declares no lint script`).not.toBe('');
+      expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');
+    }
+    // And the repo-root pass, which is the twenty-first invocation rather than a
+    // twenty-first package — it is the only one covering files no package owns.
+    expect(rootScripts()['lint:root']).toContain('*.config.*');
+  });
+});
+
 // Turbo's task hash covers file contents, dependencies and env — not the
-// platform. Two jobs now restore .turbo/cache on two different OSes, so a key
-// that did not separate them would let macOS restore Linux's entry, hash-match,
-// and replay Linux's green `test` tasks: a platform leg reporting success
-// having executed nothing. `runner.os` leading every key and restore-key is the
-// whole of what prevents it, and it is one edit from being dropped.
+// platform. Three jobs now restore .turbo/cache on three different OSes, so a
+// key that did not separate them would let macOS or Windows restore Linux's
+// entry, hash-match, and replay Linux's green `test` tasks: a platform leg
+// reporting success having executed nothing. `runner.os` leading every key and
+// restore-key is the whole of what prevents it, and it is one edit from being
+// dropped. It matters most on the Windows leg, which is the newest to take a
+// cache and the one whose packages differ most by platform.
 describe('the Turbo caches in ci.yml', () => {
   const ci = readWorkflow('ci.yml');
 
-  it.each(['ci', 'macos'])('%s keys its cache per platform', (job) => {
+  it.each(['ci', 'macos', 'windows'])('%s keys its cache per platform', (job) => {
     const keys = turboCacheKeys(jobBlock(ci, job));
     // The `key:` plus two restore-keys. Pinned so a key added without the
     // prefix cannot hide behind a loop that happens to see none.
@@ -268,6 +479,23 @@ describe('the Turbo caches in ci.yml', () => {
   it('leaves the no-network job uncached', () => {
     const block = jobBlock(ci, 'no-network');
     expect(block).toMatch(/no-network-test\.sh/);
+    expect(block).not.toMatch(/uses: actions\/cache@/);
+  });
+
+  // And the Windows lint leg, for the same reason one step further out. What it
+  // exists to observe is who expands `*.config.*` on this platform — a property
+  // of the runner image, the shell and the Node build, none of which turbo
+  // hashes. So a restored cache is not merely stale here, it is the failure:
+  // turbo replays a green `lint` task that expanded no glob on this runner at
+  // all, and the check reports success having observed nothing. `runner.os` in
+  // the key does not help — the replay it would license is a WINDOWS entry from
+  // an earlier commit, which is exactly the run being skipped.
+  //
+  // Paired with the lint step for the same reason as above: the assertion is an
+  // absence, and an absence passes on a body that captured nothing.
+  it('leaves the Windows lint job uncached', () => {
+    const block = jobBlock(ci, 'windows-lint');
+    expect(block).toMatch(LINT_STEP);
     expect(block).not.toMatch(/uses: actions\/cache@/);
   });
 });

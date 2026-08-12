@@ -926,3 +926,20 @@ pointer inside a shell command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
+
+**The model-judge step cannot run on native Windows.** The judge spawns the
+`agy` CLI through a shell-free `execFileSync`, and an npm-installed CLI is a
+`.cmd` shim on Windows, which Node has refused to spawn without a shell since
+the CVE-2024-27980 fix. So a user who grants model-judge consent gets a spawn
+failure at that step rather than a rated set of findings, and the step exits
+non-zero instead of completing. Everything before it is unaffected — the
+calibration questions, the consent-gated historical read, and the local ruleset
+scan all run, and every finding is still detected and redacted locally. What is
+unavailable is only the model pass that rates false positives and severity.
+
+Say this plainly if a Windows user asks why setup stopped there, and do not
+offer to retry it: the fix is a code change, tracked separately. Two things
+worth getting right if it comes up — running under WSL2 is Linux rather than
+Windows and is not affected, and declining model-judge consent is not a
+workaround so much as the other supported path, since the local scan is what
+produces the findings in the first place.

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +38,7 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => {
 import { deriveProvider } from '@akasecurity/setup-wizard';
 
 import { redactSurfacedSecrets } from '../../src/remediation/surfaced-redact.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // The PRODUCTION redaction adapter: unlike `redactLeakedKeys`,
 // which trusts whatever `RedactionScope` a caller builds, `redactSurfacedSecrets`
@@ -98,7 +99,7 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
 
   afterEach(() => {
     for (const dir of [home, dataDirBase, legitTempRoot, projectRoot]) {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     }
   });
 

@@ -58,7 +58,7 @@ jobs:
 
       # Fixtures are the correctness gate — a rule whose fixtures fail never ships.
       - name: Test detection engine (fixtures)
-        run: pnpm turbo run test --filter=@akasecurity/detections
+        run: pnpm turbo run test --filter=@akasecurity/detections --concurrency=2
 
       # Publishing runs in the repo configured via the RULES_PUBLISHER_REPO
       # variable — it holds the registry credentials. Once the fixtures pass,

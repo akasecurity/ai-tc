@@ -110,8 +110,23 @@ jobs:
       - name: Typecheck (repo root)
         run: pnpm typecheck:root
 
+      # --concurrency bounds how many PACKAGE test tasks run at once. Two layers
+      # of parallelism multiply here: turbo runs packages concurrently (default
+      # 10) and each package's vitest spawns its own worker pool sized to the
+      # machine, so an unbounded run puts tens of processes on a hosted runner
+      # with 4 cores. They are not competing for CPU so much as for DISK: this
+      # repo never mocks node:sqlite or the filesystem, so every store test does
+      # real fsync-heavy I/O in a real temp dir. Under that contention a hook
+      # timeout stops measuring the code and starts measuring queue depth, which
+      # is what made the Windows and macOS legs fail on a rotating cast of
+      # unrelated files.
+      #
+      # It is spelled on the turbo call rather than through `pnpm test`, and that
+      # is load-bearing: `pnpm test -- --concurrency=2` forwards the flag to each
+      # TASK's command (`vitest run --concurrency=2`), not to turbo — the same
+      # trap the no-network job documents for `--force`.
       - name: Test
-        run: pnpm test
+        run: pnpm turbo run test --concurrency=2
 
       - name: Build
         run: pnpm build
@@ -156,7 +171,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and test with egress blocked
-        run: tools/ci/no-network-test.sh pnpm exec turbo run test --force
+        # --concurrency: see the Test step in the lint job. Bounded here too,
+        # because this leg runs the whole workspace inside the namespace and is
+        # subject to the same contention; the flag goes to turbo directly for
+        # the same reason --force does.
+        run: tools/ci/no-network-test.sh pnpm exec turbo run test --force --concurrency=2
 
   # macOS leg: the primary platform for a Claude Code plugin's users, and until
   # this job existed the only tier-1 platform whose tests never ran. macOS did
@@ -238,7 +257,10 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Test
-        run: pnpm turbo run test --continue
+        # --concurrency: see the Test step in the lint job. This leg runs all 20
+        # packages on a hosted macOS runner and was one of the two that failed
+        # on rotating unrelated files.
+        run: pnpm turbo run test --continue --concurrency=2
 
   # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
@@ -341,9 +363,14 @@ jobs:
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
+        #
+        # --concurrency: see the Test step in the lint job. This is the leg that
+        # needed it most — Windows has the most expensive fsync of the three, so
+        # it is where disk contention turned into timeouts first and worst.
         run: >
           pnpm turbo run test
           --continue
+          --concurrency=2
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections

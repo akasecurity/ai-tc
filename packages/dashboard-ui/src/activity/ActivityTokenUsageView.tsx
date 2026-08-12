@@ -1,15 +1,24 @@
 'use client';
-// The Activity page's token-usage panel: a collapsible Card that folds the token
-// report (the plugin's `/aka:tokens` view) into the Activity surface instead of
-// giving it its own page. Collapsed, it's a one-line glance — sessions, total
-// tokens, estimated cost. Expanded, it's the per-(provider, model) breakdown.
-// Props-driven off the shared @akasecurity/schema `TokenUsageSummary`
-// (built by `aggregateTokenUsage`), so token counts are exact truth and cost is a
+// The Activity page's token-usage control: a compact chip that sits in the page's
+// filter bar beside the range picker and opens the per-(provider, model)
+// breakdown in a slide-over. It reads as a glance — total tokens + estimated
+// cost — and costs one row of the filter bar rather than a full-width card, so
+// the session list/detail below it keeps the viewport.
+//
+// It opens SIDEWAYS rather than expanding down on purpose: an inline expansion
+// pushes the master/detail panes off-screen, which is the space the panel exists
+// to summarise.
+//
+// Props-driven off the shared @akasecurity/schema `TokenUsageSummary` (built by
+// `aggregateTokenUsage`), so token counts are exact truth and cost is a
 // read-time estimate (`~$X`, or `≥ $X` when some calls have unknown pricing).
 import type { TokenUsageSummary } from '@akasecurity/schema';
 import {
-  Card,
-  cn,
+  Button,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
   Skeleton,
   Table,
   TableBody,
@@ -20,19 +29,11 @@ import {
 } from '@akasecurity/ui-kit';
 import { useState } from 'react';
 
-import { AnalyticsIcon, ChevronDownIcon } from '../shared/icons.tsx';
-import { WidgetError } from '../shared/widget-state.tsx';
+import { AnalyticsIcon } from '../shared/icons.tsx';
+import { WidgetEmpty, WidgetError } from '../shared/widget-state.tsx';
 import { formatCostTotal, formatUsd, tokenLabel } from './format.ts';
 
-function HeaderIcon() {
-  return (
-    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary-tint text-primary">
-      <AnalyticsIcon aria-hidden focusable={false} className="size-4" />
-    </span>
-  );
-}
-
-/** Per-model rows table — the expanded body. Token counts are compact; a model
+/** Per-model rows table — the slide-over body. Token counts are compact; a model
  * with no known price shows `—` in the cost column. */
 function ModelTable({ summary }: { summary: TokenUsageSummary }) {
   return (
@@ -52,7 +53,9 @@ function ModelTable({ summary }: { summary: TokenUsageSummary }) {
         {summary.models.map((m) => (
           <TableRow key={`${m.provider} ${m.model}`}>
             <TableCell className="text-text-2">{m.provider}</TableCell>
-            <TableCell className="font-mono text-text">{m.model}</TableCell>
+            <TableCell className="max-w-40 truncate font-mono text-text" title={m.model}>
+              {m.model}
+            </TableCell>
             <TableCell className="text-right tabular-nums text-text-2">
               {tokenLabel(m.inputTokens)}
             </TableCell>
@@ -89,88 +92,98 @@ export function ActivityTokenUsageView({
 }) {
   const [open, setOpen] = useState(false);
 
-  if (error) {
-    return (
-      <Card className="mb-3.5 shrink-0 px-5 py-3.5 shadow-sm">
-        <WidgetError message={error} />
-      </Card>
-    );
-  }
-
   if (isLoading && !summary) {
-    return (
-      <Card className="mb-3.5 flex shrink-0 items-center gap-2.5 px-5 py-3.5 shadow-sm" aria-busy>
-        <Skeleton className="size-8 shrink-0 rounded-lg" />
-        <Skeleton className="h-5 w-64" />
-      </Card>
-    );
+    return <Skeleton className="h-9 w-44 rounded-lg" aria-busy />;
   }
 
   const hasUsage = summary !== null && summary.models.length > 0;
 
-  if (!hasUsage) {
-    return (
-      <Card className="mb-3.5 flex shrink-0 items-center gap-2.5 px-5 py-3.5 shadow-sm">
-        <HeaderIcon />
-        <div className="min-w-0">
-          <div className="text-ui font-semibold text-text">Token usage</div>
-          <div className="text-xs text-text-3">
-            No token usage recorded yet — sessions are reconciled as you work.
-          </div>
-        </div>
-      </Card>
-    );
-  }
+  // The chip renders on every state so the control never moves; which of the
+  // three bodies the slide-over shows is what varies.
+  const chipLabel = error
+    ? 'Token usage'
+    : hasUsage
+      ? `${tokenLabel(summary.totalTokens)} tokens · ${formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}`
+      : 'No token usage';
 
-  const sessions = `${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}`;
-  const cost = formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial);
+  const chipTitle = error
+    ? `Token usage could not be read — ${error}`
+    : hasUsage
+      ? `Token usage${rangeLabel ? ` · ${rangeLabel}` : ''} — ${String(summary.sessionCount)} session${summary.sessionCount === 1 ? '' : 's'}. Open the per-model breakdown.`
+      : 'No token usage recorded yet — open for details';
 
   return (
-    <Card className="mb-3.5 shrink-0 overflow-hidden shadow-sm">
-      <button
-        type="button"
+    <>
+      <Button
+        variant="outline"
+        size="md"
+        title={chipTitle}
+        aria-label="Token usage — open the per-model breakdown"
         onClick={() => {
-          setOpen((v) => !v);
+          setOpen(true);
         }}
-        aria-expanded={open}
-        aria-controls="activity-token-usage-body"
-        className="flex w-full cursor-pointer items-center gap-2.5 px-5 py-3.5 text-left transition-colors hover:bg-surface-2"
       >
-        <HeaderIcon />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-ui font-semibold text-text">Token usage</span>
-            {rangeLabel && <span className="text-xs text-text-3">· {rangeLabel}</span>}
-          </div>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-text-3">
-            <span>{sessions}</span>
-            <span className="text-text-3">·</span>
-            <span className="font-semibold tabular-nums text-text-2">
-              {tokenLabel(summary.totalTokens)} tokens
-            </span>
-            <span className="text-text-3">·</span>
-            <span className="font-semibold tabular-nums text-text-2">{cost}</span>
-          </div>
-        </div>
-        <ChevronDownIcon
+        <AnalyticsIcon
           aria-hidden
           focusable={false}
-          className={cn('size-4 shrink-0 text-text-3 transition-transform', open && 'rotate-180')}
+          className={error ? 'size-4 text-sev-critical-ink' : 'size-4 text-primary'}
         />
-      </button>
-      {open && (
-        <div
-          id="activity-token-usage-body"
-          className="max-h-64 overflow-y-auto border-t border-border px-2 py-2"
+        <span className="max-w-56 truncate tabular-nums">{chipLabel}</span>
+      </Button>
+
+      <Sheet open={open} onOpenChange={setOpen}>
+        {/* No description in this panel — opt out of Radix's aria-describedby. */}
+        <SheetContent
+          className="w-200 max-w-[94%] gap-0 overflow-hidden p-0"
+          aria-describedby={undefined}
         >
-          <ModelTable summary={summary} />
-          {summary.costIsPartial && (
-            <p className="px-3 pb-1 pt-2 text-xs text-text-3">
-              — = unknown pricing (a local or non-Anthropic model); the cost total is a lower bound.
-            </p>
-          )}
-        </div>
-      )}
-    </Card>
+          <SheetHeader className="shrink-0 border-b border-border px-5 py-4">
+            <SheetTitle className="flex items-center gap-2">
+              <AnalyticsIcon aria-hidden focusable={false} className="size-4 text-primary" />
+              Token usage
+              {rangeLabel && (
+                <span className="text-ui font-normal text-text-3">· {rangeLabel}</span>
+              )}
+            </SheetTitle>
+            {hasUsage && (
+              <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-text-3">
+                <span>
+                  {summary.sessionCount} session{summary.sessionCount === 1 ? '' : 's'}
+                </span>
+                <span>·</span>
+                <span className="font-semibold tabular-nums text-text-2">
+                  {tokenLabel(summary.totalTokens)} tokens
+                </span>
+                <span>·</span>
+                <span className="font-semibold tabular-nums text-text-2">
+                  {formatCostTotal(summary.estimatedCostUsd, summary.costIsPartial)}
+                </span>
+              </div>
+            )}
+          </SheetHeader>
+          <div className="min-h-0 flex-1 overflow-auto px-2 py-2">
+            {error ? (
+              <div className="p-3">
+                <WidgetError message={error} />
+              </div>
+            ) : hasUsage ? (
+              <>
+                <ModelTable summary={summary} />
+                {summary.costIsPartial && (
+                  <p className="px-3 pb-1 pt-2 text-xs text-text-3">
+                    — = unknown pricing (a local or non-Anthropic model); the cost total is a lower
+                    bound.
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="p-3">
+                <WidgetEmpty message="No token usage recorded yet — sessions are reconciled as you work." />
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }

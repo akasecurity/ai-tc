@@ -21,6 +21,7 @@ import { ActivityClient } from './ActivityClient';
 import {
   type ActivitySearchParams,
   parseActivityRange,
+  parseExpanded,
   parseHarness,
   parseQuery,
   parseSelectedId,
@@ -50,6 +51,7 @@ export default async function ActivityPage({
   const range = parseActivityRange(sp);
   const requestedId = parseSelectedId(sp);
   const showEmpty = parseShowEmpty(sp);
+  const expanded = parseExpanded(sp);
 
   const activity = db().activity;
 
@@ -132,20 +134,26 @@ export default async function ActivityPage({
 
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
+      {/* Token usage sits in the filter bar beside the range picker rather than
+          in a card of its own: it is a per-range summary like the range itself,
+          and the vertical band it used to occupy is the session list's. */}
       <PageHead
         title="Activity"
         sub="Your local harness sessions, reconstructed from the audit log"
-        actions={<RangeSelect value={range} />}
+        actions={
+          <>
+            <ActivityTokenUsageView
+              summary={tokenUsage}
+              isLoading={false}
+              error={null}
+              rangeLabel={label}
+            />
+            <RangeSelect value={range} />
+          </>
+        }
       />
 
       <ActivitySummaryStripView items={items} isLoading={false} error={null} />
-
-      <ActivityTokenUsageView
-        summary={tokenUsage}
-        isLoading={false}
-        error={null}
-        rangeLabel={label}
-      />
 
       <ActivityClient
         sessions={list.items}
@@ -160,6 +168,7 @@ export default async function ActivityPage({
         hasMore={Boolean(list.nextCursor)}
         emptyCount={list.emptyCount}
         showEmpty={showEmpty}
+        expanded={expanded}
       />
     </div>
   );

@@ -67,16 +67,31 @@ export function ToolChip({ name, n, href }: { name: string; n: number; href?: st
   return <span className={className}>{content}</span>;
 }
 
-/** A wrap of small chips for a multi-valued meta field (branches, models). */
-export function MetaChips({ items, mono = false }: { items: string[]; mono?: boolean }) {
+/** A row of small chips for a multi-valued meta field (branches, models).
+ *
+ * `nowrap` keeps the row one line high — each chip truncates and carries its own
+ * `title`, so a long branch name is readable on hover instead of wrapping the
+ * meta grid onto extra rows. Wrapping stays the default for callers with the
+ * vertical space to spend. */
+export function MetaChips({
+  items,
+  mono = false,
+  nowrap = false,
+}: {
+  items: string[];
+  mono?: boolean;
+  nowrap?: boolean;
+}) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className={cn('flex gap-1.5', nowrap ? 'min-w-0 overflow-hidden' : 'flex-wrap')}>
       {items.map((item) => (
         <span
           key={item}
+          title={item}
           className={cn(
             'rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-xs text-text',
             mono && 'font-mono',
+            nowrap && 'min-w-0 truncate',
           )}
         >
           {item}

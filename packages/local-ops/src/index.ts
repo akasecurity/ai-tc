@@ -6,7 +6,7 @@ export {
   installClaudePlugin,
   updateClaudePlugin,
 } from './claude-plugin.ts';
-export type { CliPluginManager } from './cli-plugin-manager.ts';
+export type { CliPluginBin, CliPluginManager } from './cli-plugin-manager.ts';
 export { createCliPluginManager } from './cli-plugin-manager.ts';
 export {
   codexAvailable,

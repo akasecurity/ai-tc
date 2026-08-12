@@ -76,8 +76,16 @@ function matrixValues(source, key) {
 //
 // A line whose first non-space character is `#` is a YAML comment here. The one
 // shape that would be misread is a `#` inside a `run:` block scalar, where it is
-// command text — no run command in these workflows contains one, and a shell
-// comment inside a CI command would be dead text anyway.
+// command text rather than a comment.
+//
+// That is safe because of WHERE this is pointed, not because the repo avoids the
+// shape: every caller passes `ci.yml`, which carries no `#`-leading line inside
+// any `run:` block. Four other workflows do — `dependabot-major-guard.yml` and
+// the three `release-plugin-*.yml` — so pointing `jobBlock` at one of those
+// makes this sentence false. It stays harmless while those lines are shell
+// comments, since dropping them changes no flag matched below; it stops being
+// harmless the first time a check wants to see something a `run:` block states
+// on a `#`-leading line.
 function jobBlock(source, key) {
   // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
   // where nothing is a metacharacter: the cost is one call, and a caller that

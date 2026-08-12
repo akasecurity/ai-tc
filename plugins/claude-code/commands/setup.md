@@ -892,3 +892,26 @@ declined, or a failed install you already reported — end with one warm close:
 
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.
+
+## Known limitations
+
+Be honest about every one of these if the user asks why something wasn't caught
+— never imply coverage this plugin does not have.
+
+**The model-judge step in step 3 cannot run on native Windows.** The judge
+spawns the `claude` CLI through a shell-free `execFileSync`, and an
+npm-installed CLI is a `.cmd` shim on Windows, which Node has refused to spawn
+without a shell since the CVE-2024-27980 fix. So a user who grants model-judge
+consent gets a spawn failure at that step rather than a rated set of findings,
+and the step exits non-zero instead of completing. Everything before it is
+unaffected — the posture check, the consent-gated historical read, and the local
+ruleset scan all run, and every finding is still detected and redacted locally.
+What is unavailable is only the model pass that rates false positives and
+severity.
+
+Say this plainly if a Windows user asks why setup stopped there, and do not
+offer to retry it: the fix is a code change, tracked separately. Two things
+worth getting right if it comes up — running under WSL2 is Linux rather than
+Windows and is not affected, and declining model-judge consent in step 1 is not
+a workaround so much as the other supported path, since the local scan is what
+produces the findings in the first place.

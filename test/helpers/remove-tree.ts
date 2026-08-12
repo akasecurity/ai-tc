@@ -9,6 +9,14 @@
 //   tolerate  on win32 only, handing the tree to the OS temp sweeper rather
 //             than failing a test whose assertions already passed.
 //
+// Those two are not the same width, and reading them as one pair overstates the
+// first. `maxRetries` is Node's, and Node documents it as applying to `EBUSY`,
+// `EMFILE`, `ENFILE`, `ENOTEMPTY` and `EPERM` — so of the four codes tolerated
+// below, `EACCES` gets NO retries and is tolerated on its first throw. It is
+// kept in the set anyway: the tolerate half is what the helper is for, and a
+// Windows `EACCES` on a temp tree is the same "handle not yet released" story
+// arriving under a different code. Do not read the retry window as covering it.
+//
 // POSIX keeps throwing. There, these codes mean a cleanup genuinely did not run
 // — a store left unclosed, say — and that is a defect in the test, not a
 // property of the platform.

@@ -282,11 +282,25 @@ jobs:
   # matching no package, so a typo here fails the job rather than quietly
   # narrowing it.
   #
-  # What is deliberately NOT here: `dashboard-ui` and `ui-kit` (presentational,
-  # no I/O — `ui-kit` has no `test` script at all), `plugin-browser-extension`
-  # (private, and its Node half is a native-messaging host whose Windows install
-  # path `cli`'s extension suite already covers), and `audit-gate` (repo tooling,
-  # never shipped).
+  # Whose `test` is deliberately NOT here: `dashboard-ui` and `ui-kit`
+  # (presentational, no I/O — `ui-kit` has no `test` script at all),
+  # `plugin-browser-extension` (private, and its Node half is a native-messaging
+  # host whose Windows install path `cli`'s extension suite already covers), and
+  # `audit-gate` (repo tooling, never shipped).
+  #
+  # Say `test` rather than "excluded", because `plugin-browser-extension` is not
+  # absent from this leg: `cli` devDepends on it and the `test` task
+  # `dependsOn: ["build", "^build", "^typecheck"]`, so `--filter=@akasecurity/cli`
+  # drags its `build` and `typecheck` in. Turbo's `Packages in scope:` line does
+  # not list it while the log carries both as executed task groups — which is
+  # exactly how a reader concludes it never runs here.
+  #
+  # That distinction had a cost attached. `plugins/browser-extension/test/
+  # global-setup.ts` was the one of four `global-setup.ts` files without
+  # `shell: USE_SHELL`, which was safe only for as long as its `test` stayed off
+  # this leg. It now carries the flag like its three siblings, so adding that
+  # filter is a one-line change rather than a debugging session — the shim would
+  # otherwise fail before a single test ran.
   #
   # setup-wizard is included for
   # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
@@ -416,15 +430,35 @@ jobs:
   # platform-sensitive part of the lint surface is `@akasecurity/eslint-config`'s
   # own path handling, and that is a `test` task, already in this filter.
   # The budget moved 25 -> 35 with the four packages, and that number is a
-  # HEADROOM JUDGEMENT rather than a measurement — nothing here has timed this
-  # job on Windows since they were added. What it is sized against: turbo's
-  # `test` dependsOn `build`/`^build`/`^typecheck`, so each new package brings a
-  # tsup build with it on the first (cold-cache) run; the plugin suites are the
-  # heaviest thing added and spend most of their time spawning real child
-  # processes, which is the single slowest operation on this runner; and the
-  # macOS leg runs every package inside 25. Windows is the slowest of the three,
-  # so it gets more than macOS, not less. Re-measure and tighten this once a few
-  # real runs exist rather than leaving it as folklore.
+  # HEADROOM JUDGEMENT that a first measurement now supports. What it was sized
+  # against: turbo's `test` dependsOn `build`/`^build`/`^typecheck`, so each new
+  # package brings a tsup build with it on the first (cold-cache) run; the
+  # plugin suites are the heaviest thing added and spend most of their time
+  # spawning real child processes, which is the single slowest operation on this
+  # runner; and the macOS leg runs every package inside 25. Windows is the
+  # slowest of the three, so it gets more than macOS, not less.
+  #
+  # The one run that has completed with all four packages in it, cold:
+  #
+  #   Tasks:    35 successful, 35 total
+  #   Cached:    0 cached, 35 total
+  #     Time:    10m28.395s
+  #
+  # Nothing replayed, so that is the honest cost of a run that finishes — 3.3x
+  # inside the ceiling, and the Turbo cache restored above only widens it.
+  #
+  # Read it as ONE sample, not as a settled figure, and keep 35: a contended
+  # runner takes longer than this one did, and the headroom is what absorbs that
+  # along with the first cold run after a lockfile bump. Tightening toward the
+  # measured number would trade a real margin for a cosmetic one.
+  #
+  # What this budget does NOT address, and should not be reached for: this leg
+  # also fails intermittently with per-test `Test`/`Hook timed out in 20000ms`,
+  # a different test file each run, which is a starved runner rather than a
+  # broken test. Those failures land well inside the job budget — the failing
+  # run measured here took 12m07s of its 35 — so moving this number in either
+  # direction does nothing about them. The per-test timeout is the knob that
+  # governs those, not this one.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest

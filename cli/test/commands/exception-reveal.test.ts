@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runException } from '../../src/commands/exception.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // `aka exception approve <pointer> --reveal` is the sanctioned door for "the
 // agent legitimately needs this raw value": it mints a reveal_to_model grant
@@ -74,7 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

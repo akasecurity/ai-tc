@@ -28,6 +28,7 @@ import {
   revokeRevealGrant,
   rotateVaultKey,
 } from '../../app/(app)/vault/actions.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // The vault manage surface: reveal-by-row-id, grant revocation, the purge, and
 // the key rotation. The suite pins the audit and survival properties — one
@@ -76,7 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // The construction every action performs — the vault over the local store with

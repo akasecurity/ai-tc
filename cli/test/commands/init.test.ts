@@ -30,6 +30,7 @@ import {
   symlinkedStorePaths,
   symlinkWarnings,
 } from '../../src/commands/init.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
   if (stdinTTY) Object.defineProperty(process.stdin, 'isTTY', stdinTTY);
   else delete (process.stdin as { isTTY?: boolean }).isTTY;
   vi.restoreAllMocks();

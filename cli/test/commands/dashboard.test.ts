@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -11,6 +11,7 @@ import {
   refreshUpdateMirror,
   runDashboardServer,
 } from '../../src/commands/dashboard.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 let dir: string;
 
@@ -19,7 +20,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
   vi.restoreAllMocks();
 });
 

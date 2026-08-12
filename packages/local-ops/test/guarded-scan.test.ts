@@ -14,7 +14,7 @@
  * real text (only the scan deadline catches it), the other hangs the battery
  * itself (only a killable measurement catches it).
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { createGuardedFileScanner } from '../src/guarded-scan.ts';
+import { removeTree } from './helpers/remove-tree.ts';
 
 // The worker as this repo runs it: Node hands the `.ts` straight to the
 // type-stripper. The BUILT artifact the dashboard ships is a different file and
@@ -156,8 +157,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   db.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
+  removeTree(root);
+  removeTree(store);
 });
 
 // Walk `root` exactly as the dashboard's Scan action does.

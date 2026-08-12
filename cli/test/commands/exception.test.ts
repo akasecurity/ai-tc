@@ -29,6 +29,7 @@ import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with
@@ -195,7 +196,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('aka exception add → enforcement full loop', () => {

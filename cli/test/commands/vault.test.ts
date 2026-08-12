@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runVault } from '../../src/commands/vault.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // `aka vault show` is the terminal reveal surface: it must print the raw value
 // for a pointer this machine minted, write the explicit-reveal audit row while
@@ -64,7 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

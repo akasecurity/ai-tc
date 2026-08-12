@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // `grantRevealFromPointer` mints the strictly-stronger capability: while the
 // grant is active the model may receive the value's raw form at tool
@@ -69,7 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

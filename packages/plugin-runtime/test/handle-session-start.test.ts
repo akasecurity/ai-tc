@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EXCEPTION_RETENTION_MS, handleSessionStart } from '../src/handle-session-start.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
+import { removeTree } from './helpers/remove-tree.ts';
 
 let dir: string; // the ~/.aka data dir
 let cwd: string; // a working dir with a git origin (the "project")
@@ -26,9 +27,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-  rmSync(cwd, { recursive: true, force: true });
-  rmSync(home, { recursive: true, force: true });
+  removeTree(dir);
+  removeTree(cwd);
+  removeTree(home);
 });
 
 // Every session-start below threads the hermetic fake home dir.

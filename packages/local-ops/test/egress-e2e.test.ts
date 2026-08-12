@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
+import { removeTree } from './helpers/remove-tree.ts';
 
 // End-to-end acceptance for the CLI/web egress pipeline: walk a planted corpus
 // with `scanPathIntoStore`, record it with `recordProjectEgress`, then read the
@@ -264,9 +265,9 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
-  rmSync(base, { recursive: true, force: true });
+  removeTree(root);
+  removeTree(store);
+  removeTree(base);
 });
 
 describe('egress acceptance corpus — destination ledger', () => {
@@ -426,7 +427,7 @@ describe('egress acceptance corpus — plaintext posture covers ws', () => {
       ]);
       expect((await db.shares.stats()).insecure).toBe(1);
     } finally {
-      rmSync(solo, { recursive: true, force: true });
+      removeTree(solo);
     }
   });
 });

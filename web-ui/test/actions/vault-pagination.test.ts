@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import {
   purgeVault,
   revealEntry,
 } from '../../app/(app)/vault/actions.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 /**
  * The vault page's three paged READ actions.
@@ -73,7 +74,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Every case here drives a READ, so the fixture is written straight through the

@@ -45,6 +45,7 @@ import {
 } from '../../app/(app)/exceptions/actions.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
@@ -277,7 +278,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('addException — the only web code touching a raw secret', () => {

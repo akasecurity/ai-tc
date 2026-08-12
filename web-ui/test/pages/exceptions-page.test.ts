@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 // The exceptions route issues TWO reads of the same blocked-detections ledger,
 // over two different windows, and hands both to the client — and which read
@@ -154,7 +155,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('the exceptions route wires each ledger read to the consumer that needs it', () => {

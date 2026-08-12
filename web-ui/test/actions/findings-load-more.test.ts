@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import {
   loadMoreFindingInstances,
   loadMoreGroupedFindings,
 } from '../../app/(app)/findings/actions.ts';
+import { removeTree } from '../helpers/remove-tree.ts';
 
 /**
  * The findings list's "Load more" actions.
@@ -56,7 +57,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 /** Seed `n` findings through a second handle, then drop the memoised one. */

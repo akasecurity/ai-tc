@@ -58,13 +58,20 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // and PostToolUse is record-only. Tool calls are covered across every tool in
 // the CLI; the IDE fires no hooks at all (see
 // plugins/antigravity/skills/setup/SKILL.md).
+// The two web-chat surfaces sit lowest of the supported rows. The browser
+// extension intercepts the SUBMIT gesture on each site's composer, so a prompt
+// is scanned — and blocked, redacted or warned — before it leaves the page
+// (plugins/browser-extension/src/interceptor.ts, the only site that relays a
+// capture, and it relays kind 'prompt'). Assistant responses are not read back
+// out of the DOM, so half of a web chat's two-way traffic is outside coverage;
+// web chat has no tool calls or file writes, so those are not a further gap.
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
   { provider: 'codex', coverage: 80, supported: true },
   { provider: 'antigravity', coverage: 60, supported: true },
-  { provider: 'claudeai', coverage: 0, supported: false },
-  { provider: 'chatgpt', coverage: 0, supported: false },
+  { provider: 'claudeai', coverage: 50, supported: true },
+  { provider: 'chatgpt', coverage: 50, supported: true },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },
 ];

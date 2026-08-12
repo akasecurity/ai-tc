@@ -123,14 +123,19 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
-  if (!createCliPluginManager(cliBin).available()) {
+  // Both strings come from the host's own verb table. A hardcoded `plugin
+  // update` is wrong for Codex, which has no such subcommand — and the announce
+  // line below is the one a user retypes after an interrupted run, so it has to
+  // name the commands that actually get spawned.
+  const manager = createCliPluginManager(cliBin);
+  if (!manager.available()) {
     process.stderr.write(
       `✗ ${status.name}: the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, ` +
-        `then run \`${cliBin} plugin update ${ref}\`.\n`,
+        `then run \`${manager.updateRecipe(ref, agent.marketplaceSource, agent.marketplace).join(' && ')}\`.\n`,
     );
     return false;
   }
-  process.stdout.write(`Updating ${status.name} (${cliBin} plugin update ${ref})…\n`);
+  process.stdout.write(`Updating ${status.name} (${manager.updateCommands(ref).join(' && ')})…\n`);
   const { ok } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
   return ok;

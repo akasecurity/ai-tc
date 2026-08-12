@@ -102,16 +102,13 @@ function installPlugin(argv: string[]): void {
   // `claude plugin install` and `codex plugin add` are not interchangeable, and
   // naming the wrong one hands the user a command their CLI rejects.
   const manager = createCliPluginManager(cliBin);
+  const recipe = manager.installRecipe(ref, agent.marketplaceSource, agent.marketplace);
   if (!manager.available()) {
     process.stdout.write(
       `Installing ${agent.name}…\n\n` +
         `The \`${cliBin}\` CLI isn't on your PATH, so I can't install it automatically.\n` +
         `Install it from inside ${agent.name}:\n` +
-        `  ${cliBin} plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
-        manager
-          .installCommands(ref)
-          .map((c) => `  ${c}\n`)
-          .join('') +
+        recipe.map((c) => `  ${c}\n`).join('') +
         `\nThen run \`aka init\` to set up the local store.\n`,
     );
     return;
@@ -128,7 +125,7 @@ function installPlugin(argv: string[]): void {
   } else {
     process.stderr.write(
       `\n✗ Install failed — see the output above, or add it in ${agent.name} with ` +
-        `\`${manager.installCommands(ref).join(' && ')}\`.\n`,
+        `\`${recipe.join(' && ')}\`.\n`,
     );
     process.exitCode = 1;
   }

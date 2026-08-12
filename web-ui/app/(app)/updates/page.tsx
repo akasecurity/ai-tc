@@ -3,6 +3,7 @@ import {
   AGENT_PLUGINS,
   CLI_PACKAGE,
   cliVersion,
+  createCliPluginManager,
   gatherReport,
   installedAgentPluginVersions,
   pluginRef,
@@ -45,17 +46,20 @@ export default function UpdatesPage() {
   });
 
   // The exact command each button runs — shown verbatim in the confirm dialog.
+  // Derived from each agent's OWN host verb table: the hosts do not share verbs
+  // (`claude plugin update` vs `codex plugin add`) and they are not even the
+  // same binary, so a hardcoded `claude …` here showed every Codex user a
+  // command that fails on both counts.
   const commands: Record<string, string> = {
     cli: `npm install -g ${CLI_PACKAGE}@latest`,
   };
-  for (const agent of AGENT_PLUGINS) {
-    const ref = pluginRef(agent);
-    if (ref) commands[agent.id] = `claude plugin update ${ref}`;
-  }
   const installCommands: Record<string, string> = {};
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
-    if (ref) installCommands[agent.id] = `claude plugin install ${ref}`;
+    if (!ref || !agent.cliBin) continue;
+    const manager = createCliPluginManager(agent.cliBin);
+    commands[agent.id] = manager.updateCommands(ref).join(' && ');
+    installCommands[agent.id] = manager.installCommands(ref).join(' && ');
   }
 
   return (

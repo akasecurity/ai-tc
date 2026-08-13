@@ -1,7 +1,7 @@
 {
   "name": "@akasecurity/plugin-browser-extension",
   "version": "0.9.4",
-  "description": "AI Traffic Control \u2014 inspect and govern AI prompts in ChatGPT and Claude.ai web chat",
+  "description": "AI Traffic Control — inspect and govern AI prompts in ChatGPT and Claude.ai web chat",
   "private": true,
   "type": "module",
   "repository": {
@@ -25,6 +25,7 @@
     "@akasecurity/schema": "workspace:*",
     "@types/chrome": "^0.1.15",
     "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.28.1",
     "eslint": "^9.0.0",
     "jsdom": "^30.0.1",

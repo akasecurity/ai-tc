@@ -40,11 +40,7 @@ import {
   STORE_UNAVAILABLE_NOTE,
 } from '../../src/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
-import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { PLUGIN_ROOT, SetupJourney } from './harness.ts';
-
-// See shim-unsupported.ts for why these suites cannot run on win32.
-const describeShimmed = describe.skipIf(shimUnsupported);
 
 // The real installed plugin version, so the provenance assertion tracks the
 // shipped manifest instead of a hardcoded literal.
@@ -68,7 +64,7 @@ function readPosture(storeDir: string): Record<string, string | undefined> {
   }
 }
 
-describeShimmed('Not-now start-light path, end-to-end', () => {
+describe('Not-now start-light path, end-to-end', () => {
   let journey: SetupJourney;
   // Frame outputs captured once across the whole Not-now spine run.
   let intro: string;

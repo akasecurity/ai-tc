@@ -24,7 +24,7 @@ import { delimiter, join } from 'node:path';
  * So a caller asserts resolution BEFORE it drives anything —
  * `assertShimResolves` — and a failure there is a red setup, never a live call.
  *
- * ## Three ways a hand-rolled shim is POSIX-only
+ * ## Four ways a hand-rolled shim is POSIX-only
  *
  * 1. **Separator.** PATH is `:`-joined on POSIX and `;`-joined on Windows. A
  *    `:`-joined PATH on Windows is one malformed entry, so the shim dir is not
@@ -34,6 +34,11 @@ import { delimiter, join } from 'node:path';
  *    through `PATHEXT`. `writeCommandShim` writes a `.cmd` launcher there.
  * 3. **Mode bits.** `chmodSync(…, 0o755)` is a no-op on Windows, so a shim that
  *    relies on it has no executable bit to rely on. It is skipped there.
+ * 4. **Where the launcher looks for its script.** `%~dp0` reads as "the
+ *    directory this batch file is in" and is not that: `%0` holds the name AS
+ *    TYPED, so for a batch cmd.exe resolved from PATH under a bare name it
+ *    expands against the CURRENT DIRECTORY. `writeCommandShim` writes an
+ *    absolute path instead.
  *
  * Shared by this package's suites because they sit behind one package wall.
  * Across a wall it cannot be imported, so `plugins/claude-code` and
@@ -52,6 +57,50 @@ import { delimiter, join } from 'node:path';
  * rejected — usually harmlessly — by an argument parser this repo does not own.
  */
 export const SHIM_PROBE_ARG = '--version';
+
+/**
+ * Whether a shim written by {@link writeCommandShim} needs a shell to be reached
+ * at all on this platform.
+ *
+ * A win32 shim is a `.cmd` launcher, and libuv's own executable search tries
+ * `.com` and `.exe` and stops — so a shell-free spawn cannot reach one, however
+ * correctly it was written. This is a property of the ARTIFACT this module
+ * writes, which is why it lives here rather than being re-derived by each
+ * caller; a caller standing in for shipped code should read its subject's own
+ * plan instead (see `planBareCommand`).
+ */
+export const SHIM_NEEDS_SHELL = process.platform === 'win32';
+
+/**
+ * The Windows system bits a child needs before a shelled spawn works at all,
+ * for a caller that builds its child env from scratch rather than inheriting.
+ *
+ * `cmd.exe` and the `where.exe` a plan resolves with both live under System32,
+ * and Node reads the interpreter's own location out of COMSPEC. A scrubbed env
+ * carries none of them, so the child cannot spawn even a stub the caller wrote
+ * itself. Opt in explicitly — this module will not widen a caller's env behind
+ * its back, because the narrowness of that env is usually the point.
+ *
+ * Both are empty off win32.
+ */
+// eslint-disable-next-line n/no-process-env -- Windows reaches a .cmd only via System32 + COMSPEC
+const HOST_ENV = process.env;
+export const WINDOWS_SYSTEM_DIRS: readonly string[] =
+  SHIM_NEEDS_SHELL && HOST_ENV.SystemRoot !== undefined
+    ? [join(HOST_ENV.SystemRoot, 'System32'), HOST_ENV.SystemRoot]
+    : [];
+export const WINDOWS_SYSTEM_ENV: NodeJS.ProcessEnv = SHIM_NEEDS_SHELL
+  ? {
+      // Read case-insensitively on win32 by Node's own env proxy, so the OS's
+      // stored casing (`SystemRoot`, `ComSpec`) does not have to be guessed.
+      SystemRoot: HOST_ENV.SystemRoot,
+      windir: HOST_ENV.windir,
+      COMSPEC: HOST_ENV.COMSPEC,
+      // cmd.exe defaults this when unset, but a child env that carries it is one
+      // fewer thing between a `.cmd` and being found.
+      PATHEXT: HOST_ENV.PATHEXT,
+    }
+  : {};
 
 /**
  * How long the probe may take before the resolved binary is force-killed.
@@ -91,7 +140,7 @@ if (process.argv.slice(2).includes(${JSON.stringify(SHIM_PROBE_ARG)})) {
 
 /**
  * `basePath` with `binDir` prepended, joined the way the RUNNING platform joins
- * PATH. A literal `':'` here is the first of the three POSIX-only defects
+ * PATH. A literal `':'` here is the first of the four POSIX-only defects
  * above.
  *
  * An absent or empty `basePath` yields the bin dir ALONE, with no trailing
@@ -130,12 +179,18 @@ export function writeCommandShim(
     const scriptPath = join(binDir, `${command}-shim.js`);
     writeFileSync(scriptPath, source);
     const launcherPath = join(binDir, `${command}.cmd`);
-    // CRLF, because a batch file is read by cmd.exe. %~dp0 carries its own
-    // trailing separator; %* forwards argv, and stdin passes through untouched.
-    writeFileSync(
-      launcherPath,
-      `@echo off\r\n"${process.execPath}" "%~dp0${command}-shim.js" %*\r\n`,
-    );
+    // CRLF, because a batch file is read by cmd.exe. %* forwards argv, and
+    // stdin passes through untouched.
+    //
+    // The script is named by ABSOLUTE path, not via %~dp0, and the difference
+    // is what made every shim-driven suite fail on Windows. %0 holds the batch
+    // file's name AS TYPED, and cmd.exe resolved this one from PATH under a
+    // bare name — so %~dp0 expands that name against the CURRENT DIRECTORY
+    // rather than against the directory the batch file actually sits in. The
+    // spawn under test is anchored at the user's home, so `%~dp0<cmd>-shim.js`
+    // resolved to a path in the home dir that nothing ever wrote, and node
+    // answered `Cannot find module`. An absolute path has no such dependency.
+    writeFileSync(launcherPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
     // No chmod: it is a no-op on Windows, and PATHEXT decides what runs.
     return launcherPath;
   }

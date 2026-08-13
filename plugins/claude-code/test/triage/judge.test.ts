@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import type { BareCommandUnsupportedError } from '@akasecurity/plugin-sdk/bare-command';
 import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { TriageHit } from '@akasecurity/schema';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
 import {
@@ -75,6 +75,45 @@ function ownedDir(): string {
 }
 afterEach(() => {
   while (OWNED.length > 0) rmSync(OWNED.pop() ?? '', { recursive: true, force: true });
+});
+
+// The real platform in the two forms it is needed in, both read at module load,
+// before anything can have faked it: the plain value is what a case compares
+// against, and the DESCRIPTOR is what the restore puts back. It has to be the
+// descriptor rather than the value, because `process.platform` is a non-writable
+// own property — a case that fakes it must redefine it, so undoing that means
+// reinstating the original definition, not assigning the old string.
+const REAL_PLATFORM: NodeJS.Platform = process.platform;
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+if (!realPlatform) {
+  // Refuse rather than restore nothing: a fake that is never undone leaks into
+  // every later case in this worker — including the cleanup helpers below, which
+  // read `process.platform` to decide whether a dir needs removing.
+  throw new Error('process.platform has no own property descriptor to restore');
+}
+
+// Both defaults under test read `process.platform` at CALL time, so redefining
+// it here reaches them. Only 'darwin' and 'linux' are ever faked: node captures
+// `isWindows` at module load, so `tmpdir()` and `path` keep the host's real
+// behaviour underneath the fake and a real temp dir is still minted on any host.
+function stubPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+}
+
+// Unconditional, and file-scoped rather than scoped to the block that fakes:
+// a case that throws mid-body would otherwise hand its fake to every case after
+// it. A no-op for every case that never faked.
+afterEach(() => {
+  Object.defineProperty(process, 'platform', realPlatform);
+});
+
+// The order-INDEPENDENT half of that guarantee. A single case asserting the
+// platform was restored only covers the cases declared before it, so appending
+// a new faking case below it silently moves that case outside the guard. This
+// runs before every case in the file instead, so a fake leaked from anywhere
+// fails the next case rather than quietly steering it.
+beforeEach(() => {
+  expect(process.platform).toBe(REAL_PLATFORM);
 });
 
 // The dir the child was pointed at, for the cases that write into it as a real
@@ -1127,6 +1166,179 @@ describe('runJudge — darwin CLAUDE_CONFIG_DIR lifecycle', () => {
       expect(existsSync(join(real, 'settings.json'))).toBe(true);
     },
   );
+});
+
+// -------------------------------------------------------------------------
+// The two platform defaults resolve to the REAL platform — on every runner
+// -------------------------------------------------------------------------
+
+// Two blocks above already take the defaults, and both gate on
+// `it.runIf(process.platform === …)`. That pins each default in exactly ONE
+// direction — the one that contradicts the host — and leaves the other
+// invisible. Measured on a macOS host: with `judgeEnv`'s default and
+// `deps.platform ??` both hardcoded to `'darwin'`, the whole package stays
+// green. A Linux runner has the same blind spot pointing the other way, at
+// `'linux'` — which is the hardcode a reviewer would actually write, since
+// "collapse the indirection" reaches for the value the branch does NOT use.
+//
+// These cases redefine `process.platform` instead of branching on it, so both
+// directions are asserted wherever the suite runs. Neither set replaces the
+// other: the runIf cases buy a real mkdtemp/rm against a real APFS volume,
+// these buy the binding.
+//
+// The two defaults are independent and are pinned separately, because no
+// runJudge test can reach `judgeEnv`'s: runJudge always calls `judgeEnv(platform)`
+// WITH an argument, so its parameter default is never taken on that path.
+describe('the platform defaults bind to the real process.platform', () => {
+  // Build the env under a faked platform, assert against it, then remove
+  // anything it minted. CLAUDE_CONFIG_DIR is cleared inside the helper, so the
+  // only way it can be set below is that judgeEnv minted it — which is what
+  // makes the removal safe to do unconditionally, including under the mutation
+  // that mints where it must not.
+  function withDefaultEnvOn(
+    platform: NodeJS.Platform,
+    assert: (env: NodeJS.ProcessEnv) => void,
+  ): void {
+    vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
+    stubPlatform(platform);
+    const env = judgeEnv();
+    try {
+      assert(env);
+    } finally {
+      if (env.CLAUDE_CONFIG_DIR) rmSync(env.CLAUDE_CONFIG_DIR, { recursive: true, force: true });
+    }
+  }
+
+  it('judgeEnv() mints a throwaway config dir when the real platform is darwin', () => {
+    withDefaultEnvOn('darwin', (env) => {
+      const dir = env.CLAUDE_CONFIG_DIR;
+      // Not "is a string": the branch's whole value is that the child writes its
+      // config somewhere disposable, so the dir has to exist here and be empty
+      // when the child gets it.
+      expect(dir).toBeTruthy();
+      expect(existsSync(dir ?? '')).toBe(true);
+      expect(statSync(dir ?? '').isDirectory()).toBe(true);
+      expect(readdirSync(dir ?? '')).toEqual([]);
+    });
+  });
+
+  it('judgeEnv() mints nothing when the real platform is linux', () => {
+    withDefaultEnvOn('linux', (env) => {
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      // The positive control, and the reason the absence above is not vacuous:
+      // judgeEnv really ran and really built an env, so what is being observed
+      // is the darwin branch declining to fire rather than nothing happening.
+      expect(env.CLAUDE_CODE_SKIP_PROMPT_HISTORY).toBe('1');
+    });
+  });
+
+  // Run the judge with NO deps.platform under a faked real platform, reporting
+  // the dir the child was handed and whether it existed while the child ran.
+  // The dir is read straight off the env rather than through `mintedDir`: under
+  // the mutation these cases exist to catch there is no dir, and a throw inside
+  // the spawn callback would surface as the judge's own raw-free wrapper error
+  // instead of naming the binding that broke.
+  function runWithDefaultPlatform(
+    platform: NodeJS.Platform,
+    inherited: string | undefined,
+    outcome: () => string,
+  ): {
+    seen: string | undefined;
+    seenValues: (string | undefined)[];
+    existedDuringCall: boolean;
+    threw: unknown;
+  } {
+    // Seeded here rather than at each call site, so the helper is self-contained
+    // the way its judgeEnv sibling above is: `undefined` clears the var, and a
+    // path stands in for the user's own config dir.
+    vi.stubEnv('CLAUDE_CONFIG_DIR', inherited);
+    stubPlatform(platform);
+    let seen: string | undefined;
+    let seenValues: (string | undefined)[] = [];
+    let existedDuringCall = false;
+    let threw: unknown;
+    try {
+      runJudge([hit], {
+        spawn: (_argv, env) => {
+          // Two reads, because the two cases need different ones. A dir judgeEnv
+          // MINTED is assigned under this exact key, so the bare read is right
+          // for those. An INHERITED one arrives through the spread of
+          // process.env, and Windows' block is case-INSENSITIVE but
+          // case-PRESERVING — it can land as `Claude_Config_Dir`, where a bare
+          // read is undefined and an equality assertion fails on the runner
+          // rather than on the code.
+          seen = env.CLAUDE_CONFIG_DIR;
+          seenValues = envValues(env, 'CLAUDE_CONFIG_DIR');
+          existedDuringCall = seen !== undefined && existsSync(seen);
+          return outcome();
+        },
+        loadRubric: () => 'RUBRIC',
+      });
+    } catch (err) {
+      threw = err;
+    }
+    return { seen, seenValues, existedDuringCall, threw };
+  }
+
+  it('runJudge with no deps.platform mints and then removes a dir on a real darwin', () => {
+    const { seen, existedDuringCall, threw } = runWithDefaultPlatform('darwin', undefined, () =>
+      envelope(VERDICT_FENCE),
+    );
+
+    expect(threw).toBeUndefined();
+    // Existed DURING the call, not merely absent after it: an absence check
+    // alone cannot tell a dir that was created and removed from one that was
+    // never created at all — which is exactly the mutation under test.
+    expect(seen).toBeTruthy();
+    expect(existedDuringCall).toBe(true);
+    expect(existsSync(seen ?? '')).toBe(false);
+  });
+
+  it('runJudge removes the minted dir through the `finally` when the spawn throws', () => {
+    // A judge run that fails is when a leftover dir is most likely, and it is
+    // the path a `catch`-based cleanup would miss — so this is what pins the
+    // removal to the `finally` rather than to the happy return.
+    const { seen, existedDuringCall, threw } = runWithDefaultPlatform('darwin', undefined, () => {
+      throw Object.assign(new Error('Command failed: claude'), { status: 1 });
+    });
+
+    expect(threw).toBeInstanceOf(Error);
+    expect(seen).toBeTruthy();
+    expect(existedDuringCall).toBe(true);
+    expect(existsSync(seen ?? '')).toBe(false);
+  });
+
+  it('runJudge with no deps.platform leaves an inherited dir alone on a real linux', () => {
+    // Off darwin CLAUDE_CONFIG_DIR is whatever the parent carried — a real
+    // config dir the user may point at their own Claude install. A default that
+    // resolved to 'darwin' would hand the child a throwaway instead, and the
+    // user's `claude` would run against an empty config.
+    const real = ownedDir();
+    writeFileSync(join(real, 'settings.json'), '{"theme":"dark"}');
+
+    const { seenValues, threw } = runWithDefaultPlatform('linux', real, () =>
+      envelope(VERDICT_FENCE),
+    );
+
+    expect(threw).toBeUndefined();
+    // Through envValues, not a bare read: this value rides in through the spread
+    // of process.env, so on Windows it can arrive under a different casing.
+    expect(seenValues).toContain(real);
+    // …and nothing removed it on the way out.
+    expect(existsSync(join(real, 'settings.json'))).toBe(true);
+  });
+
+  it('the fake takes, and is handed back to the restore', () => {
+    // The file-scoped `beforeEach` is what proves no fake LEAKED into this case,
+    // and it does that for every case rather than only the ones declared after a
+    // particular point. What it cannot show is that faking works at all — a
+    // `stubPlatform` that silently did nothing would satisfy it everywhere, and
+    // with it every "when the real platform is …" case above would be asserting
+    // against this host instead of the platform it names. So pin that here, and
+    // leave the fake in place on purpose for the `afterEach` to undo.
+    stubPlatform(REAL_PLATFORM === 'darwin' ? 'linux' : 'darwin');
+    expect(process.platform).not.toBe(REAL_PLATFORM);
+  });
 });
 
 // -------------------------------------------------------------------------

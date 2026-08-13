@@ -432,10 +432,21 @@ through to `assertShimResolves` for that reason.
 
 `packages/plugin-sdk/test/bare-command.test.ts` drives every branch from any host — the planner
 takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` take a platform.
-Two sites deliberately do NOT go through it and are not oversights: `cli/src/lib/external-dispatch.ts`
-is POSIX-only by design, and `plugins/claude-code/src/provenance.ts` shells out to `npm` with its
-own `USE_SHELL` because `npm audit signatures` reads the caller's project — it therefore carries
-the shell half without the cwd anchor, which is a live gap tracked separately.
+**Three** sites deliberately do NOT go through it, and they are unsafe to different degrees:
+
+- `cli/src/lib/external-dispatch.ts` is POSIX-only by design, so none of the three facts apply.
+- `plugins/claude-code/src/provenance.ts` shells out to `npm` with its own `USE_SHELL` because
+  `npm audit signatures` reads the caller's project — it therefore carries the shell half
+  **without** the cwd anchor, which is a live gap tracked separately.
+- `packages/local-ops/src/exec.ts` carries `USE_SHELL` **and** the `homedir()` anchor, so it has
+  both halves of the cwd defence — but no quoting and no refusal, so on the shell path Node
+  concatenates its argv unescaped exactly as DEP0190 describes. It is not exploitable today, and
+  the reason is written into `apply.ts`: the only `npm` argument is the `CLI_PACKAGE` constant,
+  and plugin arguments are refs resolved from the static `AGENT_PLUGINS` registry. That is a
+  **hand-maintained invariant in a comment** — the precise class this module converts into a
+  structural one everywhere else — and `local-ops` already depends on `@akasecurity/plugin-sdk`,
+  so routing it through `planBareCommand` is available rather than blocked by a package wall.
+  Migrating it is tracked separately.
 
 ## Dependency advisories
 

@@ -158,6 +158,17 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // When `agy` resolves to a real executable the planner skips cmd.exe entirely
 // and spawns it by absolute path with no shell, which is the path this judge
 // takes on a Windows host that installs it as one.
+// `timeout` MEANS SOMETHING WEAKER ON THE SHELL PATH, and the difference is not
+// cosmetic. Node applies it to the process it started, so where `plan.options`
+// carries `shell: true` the process killed at 180s is `cmd.exe` — `agy` is a
+// grandchild and survives it. It also still holds the inherited stdout handle,
+// so the synchronous read here waits for that pipe to close rather than for the
+// kill, and can outlast the timeout it looks bounded by.
+//
+// Not repaired here, because the repair is to not need the shell: whenever `agy`
+// resolves to a real executable the planner spawns it directly and the timeout
+// bounds the real process. Written down so the next reader does not assume the
+// 180s survives an interpreter it does not.
 export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv): string {
   const plan = planBareCommand('agy', argv, { env });
   return execFileSync(plan.file, [...plan.args], {

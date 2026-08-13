@@ -20,6 +20,34 @@ const CHILD = fileURLToPath(new URL('./settings-writer-child.ts', import.meta.ur
 /** How long to wait for every writer to report itself loaded and ready. */
 const READY_TIMEOUT_MS = 30_000;
 
+/**
+ * The ceiling on how long a parked writer waits to be released.
+ *
+ * Derived from the readiness timeout rather than chosen, because a legitimate
+ * wait at the barrier is exactly the time the SLOWEST sibling takes to boot,
+ * which is what `READY_TIMEOUT_MS` already bounds. Doubling it leaves the
+ * failsafe unreachable on any run this helper would not already have failed,
+ * so it can only ever fire on a parent that stopped releasing at all.
+ */
+const BARRIER_TIMEOUT_MS = READY_TIMEOUT_MS * 2;
+
+/**
+ * Every writer spawned by this process and not yet reaped.
+ *
+ * A run's own `finally` covers every path the event loop reaches. This covers
+ * the one it does not: the runner tearing this process down mid-run — a suite
+ * timeout, a `--bail`, a failed sibling file — which leaves a child parked at
+ * the barrier to be reparented and poll on. That is how this helper's children
+ * were last found still running a week later. The child's own barrier deadline
+ * bounds it regardless; this ends it at once when the teardown is graceful
+ * enough to run exit handlers at all.
+ */
+const liveWriters = new Set<ChildProcess>();
+
+process.on('exit', () => {
+  for (const child of liveWriters) child.kill('SIGKILL');
+});
+
 /** What one writer applies. */
 export interface WriterJob {
   /** Fields to set, with the values to set them to. */
@@ -44,6 +72,14 @@ export interface WriterOutcome {
   readyAt: number;
   startedAt: number;
   endedAt: number;
+  /**
+   * The barrier ceiling this writer actually ran under.
+   *
+   * Reported back so a test can show the harness passed one, rather than the
+   * child having fallen back to its own default — under which the bound still
+   * holds, but at a value nothing here chose.
+   */
+  barrierTimeoutMs: number;
 }
 
 /** One concurrent run: what each writer reported, and when they were released. */
@@ -65,9 +101,23 @@ interface ChildResult {
 }
 
 function spawnWriter(base: string, job: WriterJob, readyFile: string, goFile: string): Writer {
-  const child = spawn(process.execPath, [CHILD, base, JSON.stringify(job), readyFile, goFile], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    [
+      CHILD,
+      base,
+      JSON.stringify(job),
+      readyFile,
+      goFile,
+      String(BARRIER_TIMEOUT_MS),
+      // Named, not left for the child to observe: if this process dies while
+      // the child is still booting, the child's own first read of `ppid` is
+      // already the adoptive parent and its liveness check can never fire.
+      String(process.pid),
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  liveWriters.add(child);
   const done = new Promise<ChildResult>((resolve, reject) => {
     let stdout = '';
     let stderr = '';
@@ -79,8 +129,12 @@ function spawnWriter(base: string, job: WriterJob, readyFile: string, goFile: st
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      liveWriters.delete(child);
+      reject(err);
+    });
     child.on('close', (code) => {
+      liveWriters.delete(child);
       resolve({ code, stdout, stderr });
     });
   });
@@ -143,11 +197,18 @@ export async function runConcurrentSettingsWriters(
     releasedAt = Date.now();
     writeFileSync(goFile, '');
     results = await Promise.all(writers.map((w) => w.done));
-  } catch (err) {
+  } finally {
+    // Unconditional, and ahead of the sync dir going: a writer parks by polling
+    // for goFile, so removing that directory while one is still waiting leaves
+    // it polling a path that can never appear. On the success path every child
+    // has already exited and both calls are no-ops — which is what lets this be
+    // one path rather than a catch that has to be kept in step with it.
+    //
+    // It reaches every way OUT of the try. It cannot reach a teardown that never
+    // runs it at all; that case is the exit sweep above, and behind it the
+    // child's own barrier deadline.
     for (const w of writers) w.child.kill('SIGKILL');
     await Promise.allSettled(writers.map((w) => w.done));
-    throw err;
-  } finally {
     rmSync(sync, { recursive: true, force: true });
   }
   const outcomes = results.map((result, index) => {

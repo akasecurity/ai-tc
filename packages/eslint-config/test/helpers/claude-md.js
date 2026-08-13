@@ -127,7 +127,19 @@ export function codeSpansOf(cell) {
 
 // Written out rather than pulled from Intl: the doc spells these in prose, and a
 // locale-dependent list would make the guard's expectation depend on the runner.
-const CARDINALS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+const CARDINALS = [
+  'zero',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+];
 const ORDINALS = [
   'zeroth',
   'first',
@@ -139,6 +151,7 @@ const ORDINALS = [
   'seventh',
   'eighth',
   'ninth',
+  'tenth',
 ];
 
 /** The English word for `n`. Throws past the list rather than returning undefined. */

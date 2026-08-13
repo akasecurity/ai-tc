@@ -5,6 +5,16 @@
     "shouldMatch": true
   },
   {
+    "label": "passport number in prose",
+    "text": "Applicant passport number Z98765432 was verified.",
+    "shouldMatch": true
+  },
+  {
+    "label": "passport label follows the number",
+    "text": "M40928311 appears on the passport bio page.",
+    "shouldMatch": true
+  },
+  {
     "label": "bare number without passport context",
     "text": "Document A12345678 is ready",
     "shouldMatch": false

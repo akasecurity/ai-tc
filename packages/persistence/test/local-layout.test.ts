@@ -44,22 +44,28 @@ describe('ensureLayoutDirSync', () => {
     const dir = dataDir(base);
     ensureLayoutDirSync(dir);
     expect(existsSync(dir)).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
 
-  it('tightens an existing loose base directory to 0700', () => {
+  it('tightens an existing loose base directory to 0700', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // An ~/.aka created by an older release (or the user) with looser
     // permissions must be tightened, not left as it was found.
     const home = join(base, 'loose-home');
     mkdirSync(home);
     chmodSync(home, 0o755);
     ensureLayoutDirSync(home);
-    if (process.platform === 'win32') return;
     expect(statSync(home).mode & 0o777).toBe(0o700);
   });
 
-  it('leaves the whole ~/.aka layout owner-only (0700 base, settings/, data/) — the `aka init` shape', () => {
+  it('leaves the whole ~/.aka layout owner-only (0700 base, settings/, data/) — the `aka init` shape', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // Mirrors what `aka init` composes: ensure the base, then settings/, then
     // data/ (the last via openLocalDatabase). All three are the store's only
     // at-rest control and must all end 0700.
@@ -67,7 +73,6 @@ describe('ensureLayoutDirSync', () => {
     ensureLayoutDirSync(home);
     ensureLayoutDirSync(settingsDir(home));
     ensureLayoutDirSync(dataDir(home));
-    if (process.platform === 'win32') return;
     expect(statSync(home).mode & 0o777).toBe(0o700);
     expect(statSync(settingsDir(home)).mode & 0o777).toBe(0o700);
     expect(statSync(dataDir(home)).mode & 0o777).toBe(0o700);
@@ -105,8 +110,7 @@ describe('migrateLegacyLayout', () => {
     migrateLegacyLayout(base);
 
     expect(existsSync(join(settingsDir(base), 'config.json'))).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(statSync(settingsDir(base)).mode & 0o777).toBe(0o700);
+    if (process.platform !== 'win32') expect(statSync(settingsDir(base)).mode & 0o777).toBe(0o700);
   });
 
   it('tightens a moved legacy config.json to 0600 (it can carry a token)', () => {
@@ -121,7 +125,6 @@ describe('migrateLegacyLayout', () => {
 
     const moved = join(settingsDir(base), 'config.json');
     expect(existsSync(moved)).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(statSync(moved).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(moved).mode & 0o777).toBe(0o600);
   });
 });

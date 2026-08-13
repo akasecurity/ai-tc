@@ -396,13 +396,17 @@ describe('looseStorePaths', () => {
     expect(looseStorePaths(dir)).toEqual([]);
   });
 
-  it('makes `aka init` print a warning when a mode could not be applied', async () => {
+  it('makes `aka init` print a warning when a mode could not be applied', async (ctx) => {
     // macOS-only fault injection: chflags freezes the settings dir so init's
     // tighten of settings.json fails, and init must surface that (data/ stays
     // writable, so the store still initializes). Runs on the `macOS · Full
-    // suite` leg in ci.yml — the only leg it executes on, since the early return
-    // below reports a pass everywhere else.
-    if (process.platform !== 'darwin') return;
+    // suite` leg in ci.yml — the only leg it executes on, which is why the
+    // guard below skips rather than returning: this case reaches no assertion
+    // elsewhere, and a bare `return` reports that as a pass.
+    if (process.platform !== 'darwin') {
+      ctx.skip('needs chflags to freeze the settings dir, which is macOS-only');
+      return;
+    }
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     const settings = settingsDir(dir);
     mkdirSync(settings, { recursive: true });

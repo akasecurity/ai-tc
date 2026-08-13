@@ -1358,9 +1358,29 @@ times slower, and a timing assertion there is a flake. Compare with `primaryCode
 
 Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
 An early `return` reports as a pass, which is the failure mode the store harness exists
-to remove. Some older suites in this package still use
-`if (process.platform === 'win32') return;` — leave them be unless you are already
-changing that test for another reason, and do not convert a neighbour in passing.
+to remove — and it is worse than a missing test, because a green tick is read as
+coverage. The macOS-only `O_EXCL` case in `paths.test.ts` is the one that shows the cost:
+it is the only thing anywhere pinning `flag: 'wx'`, so while it returned, deleting that
+flag left every other leg green.
+
+**Which of the two shapes to write is decided by what the test still asserts on the
+guarded platform, not by taste.** A guard that ends the body before any assertion runs
+must `ctx.skip(reason)`, because a pass there is a claim the run never checked. A guard
+that only gates a subset — the test still verifies something real on that platform — is
+written as a positive conditional, `if (process.platform !== 'win32') expect(…)`, and
+**must not** become a skip: `ctx.skip` throws, so a skip at the tail discards a result
+that genuinely held and reports the case as uncovered where it was not. Both shapes are
+the same edit to make, and neither leaves an `if (process.platform …) return;` behind.
+
+That last part is enforced rather than asked: `tools/portability-gate`'s
+`platform-guard-early-return` (rule 6, spec files only) fails `pnpm lint` on the shape.
+Three older suites predate it — `settings.test.ts`, `fingerprint.test.ts` and
+`plugin-sdk`'s `config.test.ts` — and are exempt through `GRANDFATHERED_PLATFORM_GUARDS`,
+which records the exact count each may keep. Leave them be unless you are already changing
+that test for another reason, and do not convert a neighbour in passing; the allowance is a
+ratchet, so converting one means lowering its number in the same commit, and a file that
+reaches zero leaves the map. All three carry the top-of-body shape, so each is a real
+`ctx.skip` still owed.
 
 ### Testing a web-ui Server Action
 

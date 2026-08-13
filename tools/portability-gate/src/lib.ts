@@ -96,11 +96,18 @@ export const RULES: Record<RuleId, RuleInfo> = {
 // rule exempts them rather than reporting a backlog nobody is going to clear in
 // one go.
 //
-// An allowance is a RATCHET, not a floor. Exceeding it is a violation, so a new
-// guard cannot hide inside an exempt file; falling below it is a violation too
-// (`platform-guard-stale-allowance`), so converting one guard means lowering the
-// number in the same commit and the exemption can only ever shrink. A file that
-// reaches zero leaves the map entirely.
+// An allowance is an exact COUNT, pinned in both directions: exceeding it is a
+// violation, and falling below it is one too (`platform-guard-stale-allowance`),
+// so converting a guard means lowering the number in the same commit. A file
+// that reaches zero leaves the map entirely.
+//
+// That makes the NUMBER a ratchet, never the set of guards behind it. A commit
+// converting one guard and adding another holds the count at the allowance and
+// passes both rules, so a new guard CAN land in an exempt file when it arrives
+// paired with a conversion. Closing that needs guard identity — either a line
+// number, which shifts on any unrelated edit, or the enclosing test name — so
+// the count stands and the limit is written down instead. The exposure is the
+// map: a file with no allowance reports every guard in it.
 //
 // An allowance is keyed by PATH, so a rename leaves it behind: the entry then
 // covers nothing and the file arrives with an allowance of zero, which reports

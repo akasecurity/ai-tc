@@ -1379,8 +1379,10 @@ Three older suites predate it — `settings.test.ts`, `fingerprint.test.ts` and
 which records the exact count each may keep. Leave them be unless you are already changing
 that test for another reason, and do not convert a neighbour in passing; the allowance is a
 ratchet, so converting one means lowering its number in the same commit, and a file that
-reaches zero leaves the map. All three carry the top-of-body shape, so each is a real
-`ctx.skip` still owed.
+reaches zero leaves the map. The ratchet is on the COUNT, though, not on which guards make
+it up: converting one and adding another in the same commit holds the number and passes
+both rules, so the gate cannot tell that pairing from an honest conversion. All three carry
+the top-of-body shape, so each is a real `ctx.skip` still owed.
 
 ### Testing a web-ui Server Action
 

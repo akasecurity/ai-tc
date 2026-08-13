@@ -19,8 +19,9 @@ import { dirname, join, sep } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
 import { cachePath, writeCache } from '@akasecurity/local-ops';
-import { keysDir } from '@akasecurity/persistence';
-import { dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
+import { keysDir, openLocalDatabase } from '@akasecurity/persistence';
+import { bundledDetections, dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
+import type { DetectionDetail } from '@akasecurity/schema';
 import { defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,6 +32,8 @@ import {
   symlinkedStorePaths,
   symlinkWarnings,
 } from '../../src/commands/init.ts';
+import { runPlugins } from '../../src/commands/plugins.ts';
+import { cliStderr } from '../helpers/cli-stderr.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
@@ -38,6 +41,29 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
   const actual = await importActual<typeof LocalOps>();
   return { ...actual, installedPluginVersions: vi.fn(() => new Map<string, string>()) };
 });
+
+// The install is stubbed for the whole file, not just the cases that reach it.
+// `runPlugins(['install', 'claude-code'])` shells out to `claude plugin install`
+// — a real, machine-wide side effect on whoever runs the suite — so the only
+// safe place to observe the `--yes` path is behind a stand-in. A file-scoped
+// mock also means a case that reaches the installer by accident records a call
+// instead of installing something.
+vi.mock('../../src/commands/plugins.ts', () => ({ runPlugins: vi.fn(() => Promise.resolve()) }));
+
+// The confirm prompt, recorded rather than answered from a terminal. `answer` is
+// what `rl.question` resolves to, so a case picks the branch it wants; `asked`
+// is every prompt string put to the user, which is what "--yes skips the prompt"
+// is a claim about.
+const prompt = vi.hoisted(() => ({ asked: [] as string[], answer: 'n' }));
+vi.mock('node:readline/promises', () => ({
+  createInterface: () => ({
+    question: (question: string) => {
+      prompt.asked.push(question);
+      return Promise.resolve(prompt.answer);
+    },
+    close: () => undefined,
+  }),
+}));
 
 let dir: string;
 let stdinTTY: PropertyDescriptor | undefined;
@@ -48,6 +74,9 @@ beforeEach(() => {
   // prints the offer copy without blocking on a confirm prompt.
   stdinTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+  prompt.asked.length = 0;
+  prompt.answer = 'n';
+  vi.mocked(runPlugins).mockClear();
 });
 
 afterEach(() => {
@@ -141,7 +170,16 @@ describe('runInit contract', () => {
     // Start from a loose home so this proves init TIGHTENS it, not merely that a
     // fresh mkdir happens to land at 0700. These modes are the store's only
     // at-rest control (see the "Data at rest" note in SECURITY.md).
-    chmodSync(dir, 0o777);
+    //
+    // All THREE directories are pre-created loose, not just the base. `mkdir`
+    // with `recursive: true` is a no-op on a path that already exists and its
+    // `mode` is ignored there, so a pre-existing dir can only be repaired by the
+    // explicit tighten — and with just the base planted, two of the three paths
+    // this case names were reached by the create path instead.
+    for (const d of [dir, settingsDir(dir), dataDir(dir)]) {
+      mkdirSync(d, { recursive: true });
+      chmodSync(d, 0o777);
+    }
 
     await runInit(['--home', dir]);
 
@@ -240,13 +278,56 @@ describe('runInit contract', () => {
 
     await runInit(['--home', dir]);
     const file = join(settingsDir(dir), 'settings.json');
-    const first = readFileSync(file, 'utf8');
+
+    // What the FIRST run wrote, checked before it is replaced below. Capturing
+    // it and comparing the two runs was all this case used to do, and that
+    // comparison could not fail — both runs write defaults, so a clobbering
+    // init produced byte-identical output and passed. Replacing the file with
+    // non-default answers is what makes the comparison bite, but doing only
+    // that would leave the fresh write asserted by nothing at all.
+    const firstRun = readFileSync(file, 'utf8');
+    expect(JSON.parse(firstRun)).toEqual(defaultWorkspaceSettings());
+
+    // The answers have to DIFFER from what init would write, or the comparison
+    // below holds however the second run behaves. Onboarding is exactly what
+    // puts a non-default value here, so stand in for it.
+    const answers = `${JSON.stringify({ ...defaultWorkspaceSettings(), policy: 'warn' }, null, 2)}\n`;
+    expect(answers).not.toBe(firstRun);
+    writeFileSync(file, answers);
     stdout.mockClear();
 
     await runInit(['--home', dir]);
 
     // A re-run re-applies no migration and must not overwrite the user's answers.
-    expect(readFileSync(file, 'utf8')).toBe(first);
+    expect(readFileSync(file, 'utf8')).toBe(answers);
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('(kept existing)');
+  });
+
+  it('leaves a CORRUPT settings.json exactly as it found it, and still initializes', async () => {
+    // init never READS settings.json — the only question it asks is whether the
+    // path exists — so a file that no parser would accept is preserved by the
+    // same branch that preserves a good one. Pinned because the tempting
+    // "repair" (parse it, fall back to defaults when it throws) would silently
+    // destroy the one copy of answers a user could still hand-edit back into
+    // shape, and it would do so on the command people are told to re-run when
+    // something looks wrong.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    mkdirSync(settingsDir(dir), { recursive: true });
+    const file = join(settingsDir(dir), 'settings.json');
+    // Truncated mid-object: valid JSON up to the cut, which is what a crash
+    // during a non-atomic write leaves behind.
+    const corrupt = '{\n  "specVersion": 1,\n  "runMode": "standalone",\n  "policy": "wa';
+    writeFileSync(file, corrupt);
+
+    await runInit(['--home', dir]);
+
+    // Byte-for-byte, not merely "still parses as the same thing" — there is
+    // nothing here that parses.
+    expect(readFileSync(file, 'utf8')).toBe(corrupt);
+    // ...and the run completed rather than dying on the unreadable file: the
+    // store is there, and the file is reported as kept rather than created.
+    expect(existsSync(dbPath(dir))).toBe(true);
     const out = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(out).toContain('(kept existing)');
   });
@@ -291,6 +372,241 @@ describe('runInit contract', () => {
     // true if it clobbered somebody.
     const out = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(out).toContain('(kept existing)');
+  });
+});
+
+// What `aka init` does to the detection tables. Two separate claims live here
+// and they pull in opposite directions: the binary's inventory has to reach the
+// store (or a fresh install scans with nothing), while a pack the user already
+// has must come through untouched (or an `aka init` — the command people re-run
+// when something looks wrong — silently reverts a pack they updated on purpose,
+// or worse, downgrades one to whatever an older CLI on the same machine ships).
+describe('runInit and the bundled detection inventory', () => {
+  // The row this reads back, projected off the schema's own DetectionDetail
+  // rather than restated: `update` in particular is a shape @akasecurity/schema
+  // already describes, and spelling it `unknown` here would leave the
+  // toMatchObject below unchecked against a rename of its fields.
+  type PackRow = Pick<DetectionDetail, 'version' | 'name' | 'update'> & { rules: number };
+
+  interface StoreInventory {
+    packs: number;
+    updates: number;
+    rows: Map<string, PackRow>;
+  }
+
+  // Read back through the same ports the dashboard and `aka detections` use, so
+  // this asserts what a user would actually see rather than raw rows. The handle
+  // is opened and closed around the read: init closes its own, and a second live
+  // one would keep the temp tree busy for the teardown.
+  async function inventory(home: string): Promise<StoreInventory> {
+    const db = openLocalDatabase(dataDir(home));
+    try {
+      const rows: StoreInventory['rows'] = new Map();
+      for (const pack of bundledDetections()) {
+        const id = `${pack.namespace}/${pack.packId}`;
+        const row = await db.detections.getDetectionDetail(id);
+        if (row) {
+          rows.set(id, {
+            version: row.version,
+            name: row.name,
+            rules: row.rules.length,
+            update: row.update,
+          });
+        }
+      }
+      return {
+        packs: (await db.installedPacks.counts()).packs,
+        updates: (await db.detections.listDetections({ filter: 'all' })).counts.updates,
+        rows,
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  // A pack that is missing is a different failure from a pack whose columns
+  // moved, so say which — `undefined.version` names neither.
+  function installed(store: StoreInventory, id: string): PackRow {
+    const row = store.rows.get(id);
+    if (!row) throw new Error(`pack ${id} is not installed`);
+    return row;
+  }
+
+  it('installs the whole bundled inventory on a fresh home, and says how many', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const bundled = bundledDetections();
+    expect(bundled.length).toBeGreaterThan(0); // precondition: there is an inventory to record
+
+    await runInit(['--home', dir]);
+
+    const store = await inventory(dir);
+    expect(store.packs).toBe(bundled.length);
+    // Each one at the version and rule count THIS binary ships, so a pack that
+    // landed truncated or at the wrong version is caught rather than counted.
+    for (const pack of bundled) {
+      const row = installed(store, `${pack.namespace}/${pack.packId}`);
+      expect(row.version).toBe(pack.version);
+      expect(row.rules).toBe(pack.rules.length);
+    }
+    // Nothing is offered as an update on a fresh install: installed and
+    // available were written from the same inventory in the same call.
+    expect(store.updates).toBe(0);
+
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain(`${String(bundled.length)} detection pack(s)`);
+    expect(out).not.toContain('update(s) available');
+  });
+
+  it('never modifies a pack the user already has — it offers an update instead', async () => {
+    // The user's ACTIVE snapshot is theirs. `recordInventory` is install-if-absent
+    // (ON CONFLICT DO NOTHING), so a pack already in installed_packs keeps its
+    // version, name and rules whatever this binary ships; the available_packs
+    // mirror moves to the binary's inventory, and the difference is what the
+    // manual update flow presents. Standing this up needs a pack that is present
+    // and DIFFERENT, which is what an older binary on the same machine leaves.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    // Bound once: the seeded pack and the count asserted at the end have to come
+    // from the same list, or the case compares against a value re-derived rather
+    // than the one it reasoned about.
+    const bundled = bundledDetections();
+    const stale = bundled[0];
+    if (!stale) throw new Error('no bundled packs to drive this case');
+    const staleId = `${stale.namespace}/${stale.packId}`;
+    const seededRules = stale.rules.slice(0, 1);
+    // Older than anything shipped, so the mirror's downgrade guard treats the
+    // bundled copy as newer and really does refresh — at an equal or higher
+    // seeded version the guard would leave the mirror alone and the update
+    // assertion below would be measuring the guard, not this command.
+    const seeded = { ...stale, version: '0.0.1', name: 'older local copy', rules: seededRules };
+    {
+      const db = openLocalDatabase(dataDir(dir));
+      try {
+        db.installedPacks.recordInventory([seeded]);
+      } finally {
+        db.close();
+      }
+    }
+    const before = await inventory(dir);
+    // Precondition: the pack really is present and really does differ from what
+    // this binary ships, or "unchanged" below holds for the wrong reason.
+    expect(installed(before, staleId)).toMatchObject({
+      version: '0.0.1',
+      rules: seededRules.length,
+    });
+    expect(stale.version).not.toBe('0.0.1');
+
+    await runInit(['--home', dir]);
+
+    const after = await inventory(dir);
+    const row = installed(after, staleId);
+    // Untouched on every column recordInventory could have moved.
+    expect(row.version).toBe('0.0.1');
+    expect(row.name).toBe('older local copy');
+    expect(row.rules).toBe(seededRules.length);
+    // ...while the mirror DID take this binary's inventory, which is the half
+    // that makes "never modified" a deferral rather than a dead end.
+    expect(row.update).toMatchObject({ available: true, latestVersion: stale.version });
+    expect(after.updates).toBe(1);
+    // The packs this store did NOT already have are still installed — the guard
+    // is per pack, not a blanket "skip the whole inventory".
+    expect(after.packs).toBe(bundled.length);
+
+    // And the user is told, with the command that applies it.
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('1 detection pack update(s) available');
+    expect(out).toContain('aka detections update --all');
+  });
+});
+
+// The offer that runs after the store is scaffolded. Three branches, and the
+// only one that reaches a real installer is `--yes` — which is why runPlugins is
+// stubbed for this whole file.
+describe('the plugin-install offer', () => {
+  const asTTY = (isTTY: boolean): void => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: isTTY, configurable: true });
+  };
+
+  it('prints the marketplace commands and asks nothing when stdin is not a TTY', async () => {
+    // Piped stdin (CI, `aka init | tee`, a wrapper script) has nobody to answer
+    // a prompt, so the offer degrades to copy-pasteable instructions. Blocking
+    // on a read that never returns would hang the command instead.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    asTTY(false);
+    // Captured and restored around the run: `process.exitCode` is process-wide,
+    // so a value left set here would fail the whole vitest run at exit.
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+
+    try {
+      await runInit(['--home', dir]);
+
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain('No Claude Code plugin detected');
+      // The two commands are the whole point of the branch — a reader has to be
+      // able to paste them.
+      expect(out).toContain('/plugin marketplace add akasecurity/marketplace');
+      expect(out).toContain('/plugin install ai-tc@akasecurity');
+      expect(out).toContain('aka init --yes');
+      // Nothing was asked and nothing was installed.
+      expect(prompt.asked).toEqual([]);
+      expect(runPlugins).not.toHaveBeenCalled();
+      // "…and exits 0" — asserted on the SAME run that printed the instructions.
+      // A missing plugin is not an error condition, so this branch may neither
+      // throw (the await above) nor mark the process failed. The bin entry's own
+      // half of that chain is spawned separately below; this is the half that
+      // ties the exit status to the branch that produced the copy.
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('asks before installing when stdin IS a TTY', async () => {
+    // The control that makes `--yes` mean something: without it there is a
+    // prompt to skip. Answering no must leave the machine as it was and say how
+    // to change your mind.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    asTTY(true);
+    prompt.answer = 'n';
+
+    await runInit(['--home', dir]);
+
+    expect(prompt.asked).toHaveLength(1);
+    expect(prompt.asked[0]).toContain('[y/N]');
+    expect(runPlugins).not.toHaveBeenCalled();
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain('Skipped.');
+    expect(out).toContain('aka plugins install claude-code');
+  });
+
+  it('installs when the TTY answer is yes', async () => {
+    // The other half of the same branch, so "no installs happened" above is a
+    // decision this code makes rather than a path it cannot reach at all.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    asTTY(true);
+    prompt.answer = 'y';
+
+    await runInit(['--home', dir]);
+
+    expect(prompt.asked).toHaveLength(1);
+    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code']);
+  });
+
+  it.each([['--yes'], ['-y']])('%s installs without asking, even on a TTY', async (flag) => {
+    // Driven on a TTY deliberately. On a pipe the prompt is skipped by the
+    // non-TTY branch anyway, so the case would pass with the flag ignored
+    // entirely — the skip is only observable where a prompt would otherwise be
+    // put.
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    asTTY(true);
+    // Set to the answer that DECLINES, so a prompt that is somehow reached
+    // cannot be mistaken for the flag working.
+    prompt.answer = 'n';
+
+    await runInit(['--home', dir, flag]);
+
+    expect(prompt.asked).toEqual([]);
+    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code']);
   });
 });
 
@@ -953,4 +1269,168 @@ describe('runInit on a ~/.aka it cannot create', () => {
     expect(existsSync(dbPath(home))).toBe(true);
     expect(statSync(home).mode & 0o777).toBe(0o700);
   });
+});
+
+// The EXIT CODE is `src/cli.ts`'s contract, not runInit's. runInit throws; the
+// four-line bin shim is what turns that into a message on stderr and a non-zero
+// exit, and nothing can import that shim without running the CLI. So these
+// cases spawn the real entry point — the only place the whole chain (parse →
+// refuse → report → exit) is observable, and the only thing that would catch a
+// refactor that swallowed a throw and exited 0 with an empty store.
+describe('aka init through the real bin entry', () => {
+  // vitest's own per-test budget, not a `timeout(1)` shell-out — the package
+  // default is 20s and a cold tsx transform of the whole workspace graph on a
+  // loaded Windows runner has no business fitting inside it.
+  const SPAWN_BUDGET_MS = 90_000;
+  // Comfortably inside the budget above, so the in-band deadline wins the race
+  // and gets to kill the child; equal values would let vitest fail the test
+  // first and abandon the wait, which is the case this exists to avoid.
+  const CLOSE_DEADLINE_MS = 75_000;
+  const CLI_ROOT = join(import.meta.dirname, '..', '..');
+
+  // Spawned via `node --import <tsx> <entry>` rather than a built artifact:
+  // nothing here builds the CLI, and `node <entry>` alone dies on the first
+  // parameter property in @akasecurity/persistence (strip-only mode).
+  //
+  // Two POSIX-only shapes are avoided deliberately. It never execs
+  // `node_modules/.bin/tsx`, which on win32 is a `.cmd` launcher a bare spawn
+  // cannot run without a shell; and the loader is resolved to a URL here rather
+  // than passed as the bare specifier `tsx`, which Node would resolve against
+  // the CHILD's cwd. `import.meta.resolve` asks the loader that is really
+  // present, from this file's own position in the package, so nothing is
+  // hand-written as a `file://` string.
+  const TSX_LOADER = import.meta.resolve('tsx');
+
+  async function runCli(
+    args: string[],
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    const child = spawn(
+      process.execPath,
+      ['--import', TSX_LOADER, join(CLI_ROOT, 'src', 'cli.ts'), ...args],
+      { cwd: CLI_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    // A ChildProcess `error` with no listener is rethrown as an UNCAUGHT
+    // exception, which kills the vitest worker and takes the rest of the file
+    // with it. Recorded and reported through the normal return instead, so a
+    // spawn that never starts fails this case with something readable.
+    let spawnError: Error | undefined;
+    child.on('error', (err: Error) => (spawnError = err));
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.on('data', (chunk: string) => (stderr += chunk));
+    // The wait is bounded HERE rather than left to vitest's per-test budget.
+    // A vitest timeout rejects the test but does not cancel this function, so an
+    // `await` on a child that never exits stays pending for ever and a `finally`
+    // that kills it is never reached — leaving a live `node` holding the temp
+    // store open, which on Windows turns one timeout into an EBUSY teardown
+    // failure for every case after it. Losing this race is also a clearer
+    // report than a bare timeout: it names what did not exit.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const overdue = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(`aka ${args.join(' ')} did not exit within ${String(CLOSE_DEADLINE_MS)}ms`),
+        );
+      }, CLOSE_DEADLINE_MS);
+    });
+    try {
+      const [code] = (await Promise.race([once(child, 'close'), overdue])) as [number | null];
+      if (spawnError) throw spawnError;
+      return { code, stdout, stderr };
+    } finally {
+      // Cleared whichever way the race went, so a settled call leaves no pending
+      // timer to reject unobserved and no handle holding the event loop open.
+      clearTimeout(timer);
+      child.kill(); // a no-op on a child that has already exited
+    }
+  }
+
+  it(
+    'exits 0 and puts the store under --home, not the default home',
+    async () => {
+      // `--home` is the only way to point the CLI somewhere else — there is no
+      // env override by design — so this is also what stands behind every other
+      // case in this file being able to run against a temp dir at all.
+      const home = join(dir, 'store');
+
+      const { code, stdout, stderr } = await runCli(['init', '--home', home]);
+
+      // The CLI said nothing on stderr — Node's own warnings are not the CLI's
+      // output and must not decide this case (see cliStderr).
+      expect(cliStderr(stderr)).toBe('');
+      expect(code).toBe(0);
+      expect(stdout).toContain(`Initialized AKA at ${home}`);
+      expect(existsSync(dbPath(home))).toBe(true);
+      expect(existsSync(join(settingsDir(home), 'settings.json'))).toBe(true);
+      // Deliberately no assertion about the plugin offer here: which branch it
+      // takes depends on whether the HOST running this suite has the Claude Code
+      // plugin installed, and the copy is pinned in-process above, where
+      // installedPluginVersions is stubbed. Both branches exit 0, which is the
+      // claim this case makes.
+    },
+    SPAWN_BUDGET_MS,
+  );
+
+  it(
+    'exits 1 with the actionable message when ~/.aka is a regular file',
+    async () => {
+      const home = join(dir, 'filehome');
+      writeFileSync(home, 'someone else owns this path\n');
+
+      const { code, stdout, stderr } = await runCli(['init', '--home', home]);
+
+      expect(code).toBe(1);
+      // Named before anything is asserted absent: this is the refusal that was
+      // reached, not merely some non-zero exit.
+      expect(stderr).toContain('exists but is not a directory');
+      expect(stderr).toContain(home);
+      expect(stderr).toContain('move that file aside');
+      // A refusal must not also claim success on stdout.
+      expect(stdout).not.toContain('Initialized AKA');
+      // ...and the occupying file is still there to be moved.
+      expect(readFileSync(home, 'utf8')).toBe('someone else owns this path\n');
+    },
+    SPAWN_BUDGET_MS,
+  );
+
+  it(
+    'exits 1 on a corrupt store, and offers NO way to recover from it',
+    async () => {
+      // Pinned as CURRENT behaviour, not as behaviour worth having. A store
+      // SQLite cannot open takes `aka init` down with a bare engine string —
+      // the command a user is told to re-run when something is wrong is exactly
+      // the command that cannot repair this, and nothing in the output says so
+      // or names the file to move aside. The absence assertions below are the
+      // pin: improving this is a deliberate edit that turns them red, rather
+      // than a silent change nobody notices.
+      const home = join(dir, 'corrupthome');
+      mkdirSync(dataDir(home), { recursive: true });
+      writeFileSync(dbPath(home), 'not a sqlite file, just bytes\n');
+
+      const { code, stdout, stderr } = await runCli(['init', '--home', home]);
+
+      const said = cliStderr(stderr);
+      expect(code).toBe(1);
+      // The positive control. Without it every absence check below is satisfied
+      // by an empty stderr, which is the one outcome that would mean the guard
+      // never ran.
+      expect(said).toContain('file is not a database');
+      expect(stdout).not.toContain('Initialized AKA');
+      // What a recovery path would have to say, and none of it is said: which
+      // file is broken, and what to do about it.
+      //
+      // Matched as WORDS, not substrings. A bare `not.toContain('move')` is
+      // satisfied by nothing the CLI wrote and broken by anything that happens
+      // to say "removed" — the word is inside it — so the pin would report a
+      // recovery hint that does not exist.
+      expect(said).not.toContain(dbPath(home));
+      for (const word of ['move', 'moving', 're-run', 'rerun', 'backup', 'delete', 'recover']) {
+        expect(said).not.toMatch(new RegExp(`\\b${word}\\b`, 'iu'));
+      }
+    },
+    SPAWN_BUDGET_MS,
+  );
 });

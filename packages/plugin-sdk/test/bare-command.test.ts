@@ -332,6 +332,57 @@ describe('quoteForCmd', () => {
       String.raw`"codex" "exec" "C:\tmp\a b\out.txt"`,
     );
   });
+
+  // The trailing run is found by counting backwards, and the alternative that
+  // reads more naturally — /\\*$/ — is QUADRATIC on the one input shape this
+  // function is most likely to be handed a lot of: a long backslash run that is
+  // not at the end. Unanchored, the pattern restarts at every position and
+  // consumes the whole remaining run before `$` fails.
+  //
+  // Nothing upstream bounds the length. cmdLineHazard's 8,191-character ceiling
+  // looks like one and is not: it is derived FROM the quoted line, so the
+  // quoting is already paid for by the time the refusal fires.
+  it('scales linearly in the length of a backslash run it cannot match', () => {
+    // A RATIO, not a budget. The quotient cancels the runner — half the machine
+    // halves both sides — where an absolute ceiling on a shared CI box measures
+    // preemption. Copying the value is genuinely linear, so a linear
+    // implementation doubles (~2) and a backtracking one quadruples (~4); 3
+    // separates them with room on both sides.
+    const cost = (n: number): number => {
+      const value = '\\'.repeat(n) + 'a';
+      // Fastest of 5. Noise only ever ADDS time, so the minimum is the estimator
+      // a loaded runner cannot inflate — a p95 here would measure the neighbours.
+      let best = Infinity;
+      for (let i = 0; i < 5; i += 1) {
+        const started = process.cpuUsage();
+        quoteForCmd(value);
+        const spent = process.cpuUsage(started);
+        best = Math.min(best, spent.user + spent.system);
+      }
+      return best;
+    };
+
+    // Warm the function so the first measured call is not paying for its own
+    // compilation, which would land on whichever size ran first.
+    cost(1_000);
+
+    const small = cost(50_000);
+    const large = cost(100_000);
+
+    // The backstop, asserted unconditionally. A ratio is blind to a constant
+    // factor and division needs something to divide, so this carries the case
+    // on its own: copying 100k characters is microseconds, while the
+    // backtracking form measured ~3,500,000us at this size. Four orders of
+    // magnitude of headroom, and still 7x under the defect.
+    expect(large).toBeLessThan(500_000);
+
+    // The scaling half, which catches a regression that stays under the
+    // backstop. Skipped only where the clock is too coarse to divide — and
+    // measuring below the floor at 100k is itself incompatible with
+    // backtracking, so nothing is waved through by the branch.
+    const FLOOR_US = 200;
+    if (large >= FLOOR_US) expect(large / Math.max(small, 1)).toBeLessThan(3);
+  });
 });
 
 describe('isDirectlyExecutable', () => {

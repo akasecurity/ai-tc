@@ -1260,10 +1260,18 @@ every caller staying green. Four properties are load-bearing:
   proof by cwd rather than latching it once, its `run()` taking a per-step cwd.
 - **The probe answer comes before anything else the stub does**, so probing is never recorded
   as an invocation — which is what a `judgeWasInvoked()`-style sentinel assertion rests on.
-- **Three POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
-  launcher on win32 rather than an extensionless `#!` file, and no reliance on a `chmod` that
-  is a no-op there. `tools/portability-gate`'s `path-separator-literal` rule catches the first
-  returning to a call site, which is how it arrived.
+- **Four POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
+  launcher on win32 rather than an extensionless `#!` file, no reliance on a `chmod` that
+  is a no-op there, and the launcher naming its script by ABSOLUTE path rather than through
+  `%~dp0`. `tools/portability-gate`'s `path-separator-literal` rule catches the first
+  returning to a call site, which is how it arrived. The fourth is the one that reads as
+  correct and is not: `%~dp0` means "the directory of the running batch file" only when `%0`
+  holds a path, and for a batch cmd.exe resolved from PATH under a bare name `%0` is the name
+  AS TYPED — so `%~dp0` expands against the CURRENT DIRECTORY instead. It went unnoticed for
+  as long as nothing anchored the spawn's cwd; the moment §7's Windows anchor landed, every
+  shim-driven suite in all three plugins failed with node reporting `Cannot find module` for a
+  path under the anchor that nothing had written. Each plugin's `path-shim.test.ts` pins the
+  launcher's bytes under an explicit `'win32'`, so a POSIX runner catches its return.
 
 `writeCommandShim` takes an optional `platform` (as `judgeEnv` does), so both branches are
 driven from either host: writing the other platform's form is a resolution failure on this one.

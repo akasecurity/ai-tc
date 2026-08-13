@@ -119,12 +119,18 @@ export function judgeEnv(platform: NodeJS.Platform = process.platform): NodeJS.P
 // user's home, because Windows searches the working directory before PATH and a
 // `claude.cmd` in a cloned repo would otherwise win. The argv here is fixed
 // flags — the prompt rides stdin — so it crosses cmd.exe intact.
+//
+// `platform` is a parameter for the same reason `judgeEnv` takes one: the two
+// plans differ in shape (POSIX spawns the bare name, Windows may pre-join the
+// whole line and pass it as the file), so a test pinning one of them has to say
+// which, rather than asserting whatever the runner happens to be.
 export function spawnClaude(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
   stdin: string,
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  const plan = planBareCommand('claude', argv, { env });
+  const plan = planBareCommand('claude', argv, { env, platform });
   return execFileSync(plan.file, [...plan.args], {
     env,
     input: stdin,

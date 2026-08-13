@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 
@@ -45,10 +45,13 @@ process.stdout.write('SHIM-BODY-RAN');
 const writeForeignBinary = (dir: string, command: string): void => {
   const js = "process.stdout.write('FOREIGN-TOOL 1.2.3');\n";
   if (process.platform === 'win32') {
-    writeFileSync(join(dir, `${command}-foreign.js`), js);
+    const foreignScript = join(dir, `${command}-foreign.js`);
+    writeFileSync(foreignScript, js);
+    // Absolute, for the reason writeCommandShim spells out: %~dp0 expands
+    // against the cwd for a batch file cmd.exe resolved from PATH by name.
     writeFileSync(
       join(dir, `${command}.cmd`),
-      `@echo off\r\n"${process.execPath}" "%~dp0${command}-foreign.js" %*\r\n`,
+      `@echo off\r\n"${process.execPath}" "${foreignScript}" %*\r\n`,
     );
     return;
   }
@@ -285,6 +288,30 @@ describe('the platform branch, driven from either host', () => {
       assertShimResolves(COMMAND, env, shimShell);
     });
     expect(err?.message).toContain('did not resolve to the test stub');
+  });
+
+  // The launcher names its script by absolute path, and this is a real defect
+  // that shipped: %~dp0 reads as "the directory this batch file is in" and is
+  // not that. %0 holds the name AS TYPED, so for a batch cmd.exe resolved from
+  // PATH under a bare name, %~dp0 expands against the CURRENT DIRECTORY. Every
+  // shim-driven suite in this package went red on Windows the moment the spawn
+  // under test grew a cwd anchor, with node reporting `Cannot find module` for
+  // a path in the anchored directory that nothing had written.
+  //
+  // Driven with an explicit platform so it runs on every host: the bug is in
+  // the bytes written, and a POSIX runner can read those.
+  it('names the shim script by absolute path, never through %~dp0', () => {
+    const binDir = tempDir();
+    const written = writeCommandShim(
+      binDir,
+      COMMAND,
+      bodyWritingSentinel(join(binDir, 'ran')),
+      'win32',
+    );
+
+    const launcher = readFileSync(written, 'utf8');
+    expect(launcher).toContain(join(binDir, `${COMMAND}-shim.js`));
+    expect(launcher).not.toContain('%~dp0');
   });
 
   it('writes the running platform form under an explicit platform argument too', () => {

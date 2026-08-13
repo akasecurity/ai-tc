@@ -24,7 +24,7 @@ import { delimiter, join } from 'node:path';
  * So a caller asserts resolution BEFORE it drives anything —
  * `assertShimResolves` — and a failure there is a red setup, never a live call.
  *
- * ## Three ways a hand-rolled shim is POSIX-only
+ * ## Four ways a hand-rolled shim is POSIX-only
  *
  * 1. **Separator.** PATH is `:`-joined on POSIX and `;`-joined on Windows. A
  *    `:`-joined PATH on Windows is one malformed entry, so the shim dir is not
@@ -34,6 +34,11 @@ import { delimiter, join } from 'node:path';
  *    through `PATHEXT`. `writeCommandShim` writes a `.cmd` launcher there.
  * 3. **Mode bits.** `chmodSync(…, 0o755)` is a no-op on Windows, so a shim that
  *    relies on it has no executable bit to rely on. It is skipped there.
+ * 4. **Where the launcher looks for its script.** `%~dp0` reads as "the
+ *    directory this batch file is in" and is not that: `%0` holds the name AS
+ *    TYPED, so for a batch cmd.exe resolved from PATH under a bare name it
+ *    expands against the CURRENT DIRECTORY. `writeCommandShim` writes an
+ *    absolute path instead.
  *
  * Shared by this package's suites because they sit behind one package wall.
  * Across a wall it cannot be imported, so `plugins/claude-code` and
@@ -135,7 +140,7 @@ if (process.argv.slice(2).includes(${JSON.stringify(SHIM_PROBE_ARG)})) {
 
 /**
  * `basePath` with `binDir` prepended, joined the way the RUNNING platform joins
- * PATH. A literal `':'` here is the first of the three POSIX-only defects
+ * PATH. A literal `':'` here is the first of the four POSIX-only defects
  * above.
  *
  * An absent or empty `basePath` yields the bin dir ALONE, with no trailing
@@ -174,12 +179,18 @@ export function writeCommandShim(
     const scriptPath = join(binDir, `${command}-shim.js`);
     writeFileSync(scriptPath, source);
     const launcherPath = join(binDir, `${command}.cmd`);
-    // CRLF, because a batch file is read by cmd.exe. %~dp0 carries its own
-    // trailing separator; %* forwards argv, and stdin passes through untouched.
-    writeFileSync(
-      launcherPath,
-      `@echo off\r\n"${process.execPath}" "%~dp0${command}-shim.js" %*\r\n`,
-    );
+    // CRLF, because a batch file is read by cmd.exe. %* forwards argv, and
+    // stdin passes through untouched.
+    //
+    // The script is named by ABSOLUTE path, not via %~dp0, and the difference
+    // is what made every shim-driven suite fail on Windows. %0 holds the batch
+    // file's name AS TYPED, and cmd.exe resolved this one from PATH under a
+    // bare name — so %~dp0 expands that name against the CURRENT DIRECTORY
+    // rather than against the directory the batch file actually sits in. The
+    // spawn under test is anchored at the user's home, so `%~dp0<cmd>-shim.js`
+    // resolved to a path in the home dir that nothing ever wrote, and node
+    // answered `Cannot find module`. An absolute path has no such dependency.
+    writeFileSync(launcherPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
     // No chmod: it is a no-op on Windows, and PATHEXT decides what runs.
     return launcherPath;
   }

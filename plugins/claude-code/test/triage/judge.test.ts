@@ -434,12 +434,19 @@ describe('judgeEnv on this platform', () => {
 // PATH shim, but reaching the shim does not depend on the env, so only a direct
 // assertion on the call shape pins it.
 describe('spawnClaude', () => {
+  // Driven at an explicit 'linux' rather than at the runner's own platform. The
+  // Windows plan legitimately has a different shape — the bare name may be
+  // pre-joined into one quoted line and passed as the FILE with empty args — and
+  // it reaches that shape through a `where.exe` probe, which this file's mock
+  // intercepts along with every other child-process entry point. Left implicit,
+  // this case asserted `file === 'claude'` against the recorded probe and read
+  // `where`, so it failed on Windows CI while testing nothing about the judge.
   it('passes the judge env and the prompt on stdin to execFileSync', () => {
     const env = judgeEnv('linux');
     const argv = ['-p', '--no-session-persistence', '--output-format', 'json'] as const;
     try {
       // The spy throws by design; the call it recorded is what is under test.
-      expect(() => spawnClaude(argv, env, 'RUBRIC + raw hits')).toThrow();
+      expect(() => spawnClaude(argv, env, 'RUBRIC + raw hits', 'linux')).toThrow();
 
       const [call] = liveSpawn.mock.calls;
       if (call === undefined) throw new Error('spawnClaude reached no child-process function');

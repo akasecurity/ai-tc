@@ -100,6 +100,9 @@ const CMD_HAZARDS: readonly (readonly [string, string])[] = [
   ['\0', 'a NUL byte'],
 ];
 
+/** `\`, compared by code unit so the trailing-run scan allocates nothing. */
+const BACKSLASH = 0x5c;
+
 /** The error code a refused argv carries, so a caller can recognise it. */
 export const BARE_COMMAND_ERROR_CODE = 'ERR_AKA_WINDOWS_ARGV';
 
@@ -165,10 +168,22 @@ export function cmdLineHazard(command: string, args: readonly string[]): string 
  * reads `\"` as an escaped quote: without it, `"C:\dir\"` reaches the child as
  * `C:\dir"` and the next argument is swallowed. Embedded quotes need no rule
  * here — {@link cmdLineHazard} has already refused them.
+ *
+ * Counted BACKWARDS from the end rather than matched with `/\\*$/`, and the
+ * difference is quadratic. An unanchored `\\*$` restarts at every position, and
+ * at each one it consumes the whole remaining run before `$` fails, so a value
+ * carrying a long backslash run that is NOT at the end costs O(n²): 64k
+ * backslashes followed by one other character measured 1,431 ms against 0.0000
+ * ms for this loop. Nothing upstream bounds that length — {@link cmdLineHazard}
+ * derives its ceiling FROM the quoted line, so the quoting is already paid for
+ * by the time the refusal fires. This walks the trailing run once and touches
+ * nothing before it.
  */
 export function quoteForCmd(value: string): string {
-  const trailingBackslashes = /\\*$/.exec(value)?.[0] ?? '';
-  const body = value.slice(0, value.length - trailingBackslashes.length);
+  let runStart = value.length;
+  while (runStart > 0 && value.charCodeAt(runStart - 1) === BACKSLASH) runStart -= 1;
+  const trailingBackslashes = value.slice(runStart);
+  const body = value.slice(0, runStart);
   return `"${body}${trailingBackslashes}${trailingBackslashes}"`;
 }
 

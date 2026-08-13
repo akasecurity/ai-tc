@@ -178,22 +178,40 @@ describe('the built dashboard launcher', () => {
       expect(stdout).toContain('http://localhost:5099/security');
       expect(stdout).not.toContain('npm i -g');
 
-      // The half no unit test can reach: what was actually spawned, twice.
-      const [probe, launch] = readCalls(recordPath, 2);
+      // The half no unit test can reach: what was actually spawned.
+      //
+      // HOW MANY spawns there are is a property of the plan, not a constant.
+      // `akaMissing` returns `plan.resolved === undefined` outright on the shell
+      // path and never runs its probe there — a `.cmd` shim cannot answer a
+      // shell-free ENOENT probe, and asking through a second cmd.exe would cost
+      // a process to learn what the plan already knows. So the Windows shim leg
+      // records ONE call and every other leg records two. Asserting two
+      // unconditionally is a POSIX assumption, and it read as `recorded 1 call(s),
+      // wanted 2` on Windows CI.
+      const probed = !plan.viaShell;
+      const calls = readCalls(recordPath, probed ? 2 : 1);
+      const launch = calls[probed ? 1 : 0];
 
-      // The probe asked the same `aka` the launch then ran, and asked it the one
-      // question it is for. A launcher that probed a bare name of its own while
-      // spawning the plan's would still print a URL and still start the server —
-      // and would report a false miss on Windows, where only one of the two shapes
-      // can reach a `.cmd` at all.
-      expect(probe?.argv).toEqual(['--help']);
+      if (probed) {
+        // The probe asked the same `aka` the launch then ran, and asked it the one
+        // question it is for. A launcher that probed a bare name of its own while
+        // spawning the plan's would still print a URL and still start the server.
+        const probe = calls[0];
+        expect(probe?.argv).toEqual(['--help']);
+        expect(probe?.cwd).toBe(plan.options.cwd ?? process.cwd());
+      } else {
+        // The shell leg's positive control: silence has to be the DOCUMENTED
+        // silence. Without this the branch above is simply skipped there, and a
+        // launcher that stopped probing on every platform would still pass.
+        expect(calls).toHaveLength(1);
+        expect(plan.resolved).toBeDefined();
+      }
+
       // The flags reach the CLI untouched, in order.
       expect(launch?.argv).toEqual(['dashboard', '--port', '5099', '--no-open']);
       // The Windows cwd anchor, asserted against the plan rather than a platform
       // branch — so the POSIX leg checks the inherited cwd really is inherited and
-      // the Windows leg checks the anchor really is applied. Asserted on BOTH
-      // calls: `...plan.options` dropped from either one loses it silently there.
-      expect(probe?.cwd).toBe(plan.options.cwd ?? process.cwd());
+      // the Windows leg checks the anchor really is applied.
       expect(launch?.cwd).toBe(plan.options.cwd ?? process.cwd());
     },
     CASE_TIMEOUT_MS,

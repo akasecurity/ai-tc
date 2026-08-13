@@ -19,6 +19,24 @@ Every rule is a JSON file named `<rule-name>.json` inside a pack directory:
 }
 ```
 
+### A misspelled key fails the parse — it is not dropped
+
+Every object in the rule tree is **strict**: an unrecognized key is a parse error naming the key,
+at whatever depth it sits. This holds for the rule itself, for `matcher`, `appliesTo`,
+`requiresNearby`, the object form of a `postValidators` entry, and for fixture files including each
+entry of `expectedSpans`.
+
+The reason is that the old behaviour was to strip the key and carry on, which is the worst outcome
+available: the rule still parses, still loads and still fires, with whatever the key was meant to
+configure simply gone. `postValidator` for `postValidators` dropped a false-positive guard.
+`capture_group` for `captureGroup` widened the redacted span from the value to the whole match.
+`windowChar` for `windowChars` left a proximity gate at the 160-character default while the author
+believed they had narrowed it. None of these produce a failing fixture, so nothing caught them.
+
+So a rule that parses is a rule whose every key was understood. If you get `Unrecognized key`,
+check the spelling against `Rule` in `packages/schema/src/zod/rule.ts` — the field is real but named
+something else, or it belongs one level up or down.
+
 ### Matcher types
 
 **keyword** — fast literal or phrase match, good for high-recall low-precision terms:
@@ -34,6 +52,13 @@ Every rule is a JSON file named `<rule-name>.json` inside a pack directory:
 ```
 
 `captureGroup` (integer) extracts a subgroup as the matching span. `flags` defaults to `gi`.
+
+**`captureGroup` is checked against the pattern's real group count.** Group 0 is the whole match,
+so a pattern with two groups accepts `0`, `1` or `2` and nothing higher. Only _capturing_ groups
+count — `(?:…)` and lookarounds do not — which is exactly what is easy to miscount. An index past
+the last group is `undefined` at match time, so the matcher records no span and the rule never
+fires; that used to parse cleanly and look, from the outside, identical to a pattern that simply
+did not match. The refusal names the count so you can correct the index.
 
 **A whole-match pattern must not be able to match the empty string.** `Rule.parse` rejects
 `\d*`, `a?`, `(?:)` and the like: under `g` (part of the `gi` default) a zero-length match never
@@ -107,7 +132,12 @@ The engine (`packages/detections/src/engine.ts`) implements exactly two:
 - `luhn` — credit/debit card number check digit
 - `entropy` — Shannon entropy >= 3.5 over a run of 20+ characters (distinguishes random secrets from low-entropy words; pair it with a `captureGroup` so entropy is measured on the token, not surrounding context). Config: `threshold`, `minLength`.
 
-**Do not reference any other validator name.** Unknown names are silently ignored — the rule still fires, but the missing validator is a no-op, so the false-positive guard you thought you added does nothing.
+**Any other name fails the parse.** `PostValidatorName` in `packages/schema/src/zod/rule.ts` enumerates
+the two, and the engine keys its validator table on that type — so the pair cannot drift, and a
+misspelling (`Luhn`, `luhnn`) or a plausible-but-unimplemented name (`ssn-checksum`, which is real in
+the `validator` **matcher** enum and is not a post-validator) is refused with a message naming what
+does exist. This used to be a silent no-op: the rule parsed, loaded and fired with the
+false-positive guard simply absent.
 
 ## Pack structure
 

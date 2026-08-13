@@ -12,7 +12,15 @@ export type MatcherType = z.infer<typeof MatcherType>;
 export const RuleProbeVerdict = z.enum(['safe', 'quarantined']).meta({ id: 'RuleProbeVerdict' });
 export type RuleProbeVerdict = z.infer<typeof RuleProbeVerdict>;
 
-export const KeywordMatcher = z.object({
+// Every object in the Rule tree is STRICT: an unrecognized key fails the parse
+// rather than being stripped. A stripped key is the worst possible outcome for a
+// rule author, because the rule still parses, still loads and still fires — with
+// whatever the key was meant to configure simply absent. `postValidator` for
+// `postValidators` silently drops a false-positive guard; `capture_group` for
+// `captureGroup` silently widens the redacted span to the whole match; and a
+// typo in `matcher` changes which side of the isolation boundary the rule lands
+// on, since that partition reads `matcher.type`.
+export const KeywordMatcher = z.strictObject({
   type: z.literal('keyword'),
   // An empty keyword matches at every position, yielding one zero-length span
   // per character. Rejected here because a keyword that matches everything is
@@ -40,12 +48,47 @@ function isValidRegex(pattern: string, flags: string): boolean {
 // published or bundled. Scoped to whole-match only: a captureGroup rule may
 // legitimately use "*"/"?" around its capture (e.g. `key=(\w*)`), since the
 // overall match still requires the literal "key=" to advance.
+// Flags for a one-shot probe. `g`/`y` are dropped so exec() always starts at
+// index 0 rather than wherever a previous call left `lastIndex` — shared by
+// every probe below, since all of them exec once and read the first match.
+function probeFlags(flags: string): string {
+  return flags.replace(/[gy]/g, '');
+}
+
 function matchesEmptyString(pattern: string, flags: string): boolean {
   try {
-    const re = new RegExp(pattern, flags.replace(/[gy]/g, ''));
+    const re = new RegExp(pattern, probeFlags(flags));
     return re.exec('')?.[0].length === 0;
   } catch {
     return false;
+  }
+}
+
+// Does this matcher's span come from the whole match? Group 0 IS the whole
+// match, so `captureGroup: 0` is spelled differently from omitting the field
+// but means exactly the same thing — and must therefore face the same
+// empty-string check, which it used to sidestep purely by being present.
+function spansWholeMatch(captureGroup: number | undefined): boolean {
+  return captureGroup === undefined || captureGroup === 0;
+}
+
+// How many capture groups `pattern` declares. Appending an empty alternative
+// makes the pattern match the empty string whatever else it does, so exec()
+// always returns a result — and its length, minus the whole-match entry at
+// index 0, is the group count. Non-capturing groups and lookarounds are not
+// counted, which is the point: they are exactly what an author miscounts.
+//
+// Returns undefined when the probe cannot be built. A pattern this cannot
+// analyze is left alone rather than rejected — the validity refine above is
+// what rejects a pattern that is genuinely malformed, and a limitation here
+// must not read as an authoring error.
+function captureGroupCount(pattern: string, flags: string): number | undefined {
+  try {
+    const probe = new RegExp(`${pattern}|`, probeFlags(flags));
+    const result = probe.exec('');
+    return result ? result.length - 1 : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -58,7 +101,7 @@ function matchesEmptyString(pattern: string, flags: string): boolean {
 const MAX_PATTERN_LENGTH = 2000;
 
 export const RegexMatcher = z
-  .object({
+  .strictObject({
     type: z.literal('regex'),
     pattern: z.string().min(1).max(MAX_PATTERN_LENGTH),
     flags: z.string().default('gi'),
@@ -68,13 +111,35 @@ export const RegexMatcher = z
     message: 'pattern/flags do not form a valid JavaScript regular expression',
     path: ['pattern'],
   })
-  .refine((v) => v.captureGroup !== undefined || !matchesEmptyString(v.pattern, v.flags), {
+  .refine((v) => !spansWholeMatch(v.captureGroup) || !matchesEmptyString(v.pattern, v.flags), {
     message:
       'a whole-match regex that can match the empty string (e.g. "\\d*", "a?", "(?:)") can hang the matcher — scope the quantifier to a captureGroup, or require at least one character',
     path: ['pattern'],
+  })
+  // A group index past the last group is `undefined` at match time, so the
+  // matcher records no span and the rule silently never fires — the one failure
+  // mode a fixture suite catches only if the author wrote a positive fixture,
+  // and nothing catches at all for a rule shipped without one. Rejecting it here
+  // turns a rule that quietly detects nothing into a parse error that names the
+  // group count.
+  //
+  // superRefine rather than refine so the count is computed once and the message
+  // reads it from the validated value: a `refine` has to rebuild the count in a
+  // separate error callback, off an `issue.input` it can only reach through an
+  // unchecked cast — and a cast that ever missed would report "declares 0
+  // capture group(s)", since `new RegExp('undefined|')` is itself valid.
+  .superRefine((v, ctx) => {
+    if (v.captureGroup === undefined) return;
+    const groups = captureGroupCount(v.pattern, v.flags);
+    if (groups === undefined || v.captureGroup <= groups) return;
+    ctx.addIssue({
+      code: 'custom',
+      path: ['captureGroup'],
+      message: `captureGroup ${String(v.captureGroup)} is out of range — the pattern declares ${String(groups)} capture group(s), so valid values are 0-${String(groups)}. An out-of-range group never matches, which would make the rule silently never fire.`,
+    });
   });
 
-export const ValidatorMatcher = z.object({
+export const ValidatorMatcher = z.strictObject({
   type: z.literal('validator'),
   name: z.enum(['luhn', 'entropy', 'ssn-checksum']),
   config: z.record(z.string(), z.unknown()).optional(),
@@ -91,24 +156,50 @@ export type Matcher = z.infer<typeof Matcher>;
 // in a prompt has no knowable language. Additive + optional, so specVersion
 // stays 1 and existing/community rules remain valid.
 export const AppliesTo = z
-  .object({
+  .strictObject({
     // Dot-prefixed, e.g. ".py" — matches the scanner's SOURCE_EXTENSIONS shape.
     extensions: z.array(z.string().regex(/^\.[A-Za-z0-9]+$/)).min(1),
   })
   .meta({ id: 'AppliesTo' });
 export type AppliesTo = z.infer<typeof AppliesTo>;
 
+// The post-validators the detection engine implements. Enumerated rather than
+// left as a free string because a post-validator is a FALSE-POSITIVE guard: an
+// unrecognized name used to parse happily and then be skipped at eval, so the
+// rule went on firing with the check the author asked for simply absent — noisy
+// in a way that reads as the rule working. `engine.ts` keys its validator table
+// on this type, so a name here with no implementation (and an implementation
+// here with no name) is a compile error rather than a silent runtime no-op.
+export const PostValidatorName = z.enum(['entropy', 'luhn']).meta({ id: 'PostValidatorName' });
+export type PostValidatorName = z.infer<typeof PostValidatorName>;
+
 // A post-validator reference: the bare name (engine defaults), or name + config
 // for per-rule tuning (e.g. entropy over short password values). Additive — the
 // bare-string form stays valid for existing rules.
 export const PostValidatorRef = z
-  .union([
-    z.string(),
-    z.object({
-      name: z.string(),
-      config: z.record(z.string(), z.unknown()).optional(),
-    }),
-  ])
+  .union(
+    [
+      PostValidatorName,
+      z.strictObject({
+        name: PostValidatorName,
+        config: z.record(z.string(), z.unknown()).optional(),
+      }),
+    ],
+    {
+      // A union reports one collapsed issue for every way its arms can fail, so
+      // this has to describe the whole shape rather than just the name — it is
+      // what an author sees for a misspelled name AND for a stray key in the
+      // object form. The names come from the enum so the message cannot go
+      // stale. Without it Zod says only "Invalid input", which is precisely the
+      // no-feedback outcome this schema exists to remove.
+      error: () =>
+        `not a valid post-validator: use a bare name (${PostValidatorName.options
+          .map((name) => JSON.stringify(name))
+          .join(
+            ' or ',
+          )}) or { "name": ..., "config": { ... } }. An unrecognized name would be a false-positive guard that never runs.`,
+    },
+  )
   .meta({ id: 'PostValidatorRef' });
 export type PostValidatorRef = z.infer<typeof PostValidatorRef>;
 
@@ -119,7 +210,7 @@ export type PostValidatorRef = z.infer<typeof PostValidatorRef>;
 // surrounding text window. Additive + optional, so specVersion stays 1 and
 // existing/community rules remain valid.
 export const RequiresNearby = z
-  .object({
+  .strictObject({
     // Each array, when present, must be non-empty and contain non-empty strings —
     // an empty/blank criterion would either never fire or (for labels) match
     // everything.
@@ -141,20 +232,20 @@ export const RequiresNearby = z
 export type RequiresNearby = z.infer<typeof RequiresNearby>;
 
 export const RuleFixture = z
-  .object({
+  .strictObject({
     label: z.string(),
     text: z.string().max(50_000),
     shouldMatch: z.boolean(),
     // Simulated file context for the scan, so fixtures can assert `appliesTo`
     // gating (e.g. a Python-only pattern must NOT fire in a .ts file).
     filePath: z.string().optional(),
-    expectedSpans: z.array(z.object({ start: z.number(), end: z.number() })).optional(),
+    expectedSpans: z.array(z.strictObject({ start: z.number(), end: z.number() })).optional(),
   })
   .meta({ id: 'RuleFixture' });
 export type RuleFixture = z.infer<typeof RuleFixture>;
 
 export const Rule = z
-  .object({
+  .strictObject({
     specVersion: z.literal(1),
     // `packId/ruleName` (e.g. `secrets/aws-access-key`). NOTE the first segment is
     // the PACK id, NOT a namespace — this is a DIFFERENT slug space from a

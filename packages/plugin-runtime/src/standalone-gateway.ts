@@ -201,10 +201,15 @@ export class StandaloneDataGateway implements DataGateway {
   //   - ANY invalid rule among enabled packs (all-invalid, partial corruption,
   //     or a single malformed entry) → undefined → bundled fallback. Serving a
   //     reduced "complete" set would silently drop exactly the corrupted rules
-  //     with no fallback; the bundled packs are a superset, so falling back
-  //     never loses coverage. Steady-state installed rules are all valid
-  //     (generated + Zod-checked), so this only fires on a genuinely
-  //     malformed/foreign store;
+  //     with no fallback. The bundled packs are a superset of AKA's OWN packs,
+  //     so falling back never loses coverage there — but they contain no
+  //     pulled or custom pack, so for those this trades a partial ruleset for
+  //     none of them plus the loss of every pack's per-detection enforcement
+  //     action. That is deliberate (a store this machine cannot fully validate
+  //     is not authoritative), and it is why the cost of REJECTING a rule
+  //     matters: `Rule` is strict, so one unrecognized key in one custom rule
+  //     reaches this branch, not just a genuinely malformed or foreign store.
+  //     `installed-packs.test.ts` pins that per-rule counting;
   //   - enabled packs that produce ZERO rules with no invalids (e.g. every
   //     enabled pack's rules_json is `[]`) → undefined → bundled fallback: an
   //     enabled pack contributing nothing is untrustworthy, not a real

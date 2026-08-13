@@ -1,4 +1,4 @@
-import type { Rule } from '@akasecurity/schema';
+import type { PostValidatorName, Rule } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
@@ -14,11 +14,18 @@ const regexMatcher = new RegexMatcher();
 const packs = new Map<string, RulePack>();
 
 // Post-validators run against each candidate match (the captured span) and must
-// all pass for the match to become a finding. Unknown validator names are
-// ignored so rules can reference validators a given engine build doesn't ship.
-// A validator may take per-rule config (the object form of PostValidatorRef).
+// all pass for the match to become a finding. A validator may take per-rule
+// config (the object form of PostValidatorRef).
+//
+// Keyed on the schema's PostValidatorName rather than on `string`, which is what
+// binds the two together: a name the schema accepts and this table does not
+// implement fails to compile, and so does an entry here the schema would reject.
+// While the key was `string` the pair could drift in either direction in
+// silence, and drift in the schema's direction meant a rule that referenced a
+// nonexistent validator parsed, loaded and fired with its false-positive guard
+// absent — the guard the author believed they had added doing nothing at all.
 const POST_VALIDATORS: Record<
-  string,
+  PostValidatorName,
   (value: string, config?: Record<string, unknown>) => boolean
 > = {
   entropy: (value, config) =>
@@ -42,8 +49,13 @@ function passesPostValidators(rule: Rule, value: string): boolean {
   for (const ref of validators) {
     const name = typeof ref === 'string' ? ref : ref.name;
     const config = typeof ref === 'string' ? undefined : ref.config;
-    const validate = POST_VALIDATORS[name];
-    if (validate && !validate(value, config)) return false;
+    // Unconditional: `name` is a PostValidatorName, so the table has an entry
+    // for it by type. This used to be guarded by `validate && …`, and that
+    // guard WAS the defect — it turned a name the table did not know into a
+    // silently skipped check rather than an error, which is how a rule shipped
+    // with its false-positive guard absent. The schema refuses such a name now,
+    // so there is no longer a missing entry to fall through.
+    if (!POST_VALIDATORS[name](value, config)) return false;
   }
   return true;
 }

@@ -295,6 +295,32 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  it('counts a stored rule carrying an unrecognized key as invalid', () => {
+    // `Rule` is strict, so a key that an older binary would have stripped now
+    // fails the parse on READ. This is the largest blast radius the strictness
+    // has: `invalidRules > 0` makes the standalone gateway discard the WHOLE
+    // snapshot and fall back to the bundled packs, which do NOT contain a
+    // user's custom rules. Pinned here so that cost is a deliberate choice
+    // rather than something a future schema tweak changes by accident.
+    const db = openLocalDatabase(dir);
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const stored = [rule('custom/a'), { ...rule('custom/b'), postValidator: ['luhn'] }];
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES (?, 'custom', ?, '1.0.0', ?, ?, 1, 0, 0)`,
+      )
+      .run('c1', 'mine', 'Mine', JSON.stringify(stored));
+    raw.close();
+
+    const snapshot = db.installedPacks.installedRuleset();
+    // The good rule still parses — only the typo'd one is rejected, so the
+    // count is per-RULE here, unlike the JSON-level corruption above.
+    expect(snapshot.rules.map((r) => r.id)).toEqual(['custom/a']);
+    expect(snapshot.invalidRules).toBe(1);
+    db.close();
+  });
+
   // Read the current available_packs mirror row for `secrets`.
   function mirrorSecrets(): { version: string; n: number } {
     const raw = new DatabaseSync(join(dir, DB_FILENAME));

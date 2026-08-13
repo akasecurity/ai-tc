@@ -1,25 +1,35 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { Rule, RuleFixture } from '@akasecurity/schema';
-import { Rule as RuleSchema, RuleFixture as RuleFixtureSchema } from '@akasecurity/schema';
+import type { PostValidatorName, Rule, RuleFixture } from '@akasecurity/schema';
+import {
+  PostValidatorName as PostValidatorNameSchema,
+  Rule as RuleSchema,
+  RuleFixture as RuleFixtureSchema,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../src/engine.ts';
 import type { MatchResult } from '../src/types.ts';
-import { bundledPackDirs, discoverBundledRuleFiles, loadRule, RULES_DIR } from './helpers/rules.ts';
+import {
+  bundledPackDirs,
+  discoverBundledRuleFiles,
+  fixturePath,
+  loadRule,
+  RULES_DIR,
+} from './helpers/rules.ts';
 
 type Fixture = RuleFixture;
 
-function loadFixtures(packDir: string, ruleFile: string): Fixture[] {
-  const fixturePath = resolve(packDir, 'fixtures', `${ruleFile}.json`);
-  if (!existsSync(fixturePath)) {
+function loadFixtures(packDirAbs: string, ruleFile: string): Fixture[] {
+  const path = fixturePath(packDirAbs, ruleFile);
+  if (!existsSync(path)) {
     throw new Error(
-      `Missing fixture file for rule "${ruleFile}" — expected at ${fixturePath}. ` +
+      `Missing fixture file for rule "${ruleFile}" — expected at ${path}. ` +
         'Every rule must have a fixture file per skills/write-detection-rule/SKILL.md.',
     );
   }
-  const raw = JSON.parse(readFileSync(fixturePath, 'utf-8')) as unknown;
+  const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
   return (raw as unknown[]).map((f) => RuleFixtureSchema.parse(f));
 }
 
@@ -119,8 +129,11 @@ describe('postValidators', () => {
     expect(scan('card 4111111111111111 end', [luhnRule]).length).toBeGreaterThan(0);
   });
 
-  it('ignores unknown validator names', () => {
-    const rule = RuleSchema.parse({
+  it('refuses an unknown validator name at parse instead of skipping it at eval', () => {
+    // This used to parse and then fire: the lookup missed, the validator was
+    // skipped, and the rule shipped with its false-positive guard absent. The
+    // schema is the gate now, so the broken rule never reaches scan() at all.
+    const parsed = RuleSchema.safeParse({
       specVersion: 1,
       id: 'test/unknown',
       name: 'unknown validator',
@@ -129,8 +142,48 @@ describe('postValidators', () => {
       matcher: { type: 'keyword', keywords: ['hello'], caseSensitive: false },
       postValidators: ['does-not-exist'],
     });
-    expect(scan('hello world', [rule]).length).toBeGreaterThan(0);
+    expect(parsed.success).toBe(false);
   });
+
+  // Each implemented validator, with an input that satisfies its matcher but
+  // must FAIL the check, and one that must survive it. Keyed on the schema enum
+  // so a name added there without a case here fails the exhaustiveness check.
+  const wiring: Record<PostValidatorName, { pattern: string; rejected: string; kept: string }> = {
+    entropy: {
+      pattern: '\\b[A-Za-z0-9+/]{40}\\b',
+      rejected: 'x'.repeat(40),
+      kept: 'AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMIK7MDENG',
+    },
+    luhn: {
+      pattern: '\\b\\d{16}\\b',
+      rejected: '1234567890123456',
+      kept: '4111111111111111',
+    },
+  };
+
+  it('has a wiring case for every post-validator the schema accepts', () => {
+    expect(Object.keys(wiring).sort()).toEqual([...PostValidatorNameSchema.options].sort());
+  });
+
+  for (const [name, { pattern, rejected, kept }] of Object.entries(wiring)) {
+    it(`${name} filters for real — it is not an unwired entry in the table`, () => {
+      // Record<PostValidatorName, …> makes a MISSING implementation a compile
+      // error, but a compile-time link cannot tell an implementation from a
+      // stub: `() => true` satisfies the type and is exactly the no-op this
+      // replaced. Only driving the validator through scan() separates them.
+      const rule = RuleSchema.parse({
+        specVersion: 1,
+        id: `test/${name}-wiring`,
+        name: `${name} wiring`,
+        category: 'secret',
+        severity: 'high',
+        matcher: { type: 'regex', pattern, flags: 'g' },
+        postValidators: [name],
+      });
+      expect(scan(rejected, [rule]), `${name} must reject`).toHaveLength(0);
+      expect(scan(kept, [rule]).length, `${name} must keep`).toBeGreaterThan(0);
+    });
+  }
 });
 
 describe('requiresNearby (co-occurrence gating)', () => {

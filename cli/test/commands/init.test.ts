@@ -33,6 +33,7 @@ import {
   symlinkWarnings,
 } from '../../src/commands/init.ts';
 import { runPlugins } from '../../src/commands/plugins.ts';
+import { cliStderr } from '../helpers/cli-stderr.ts';
 
 // Force the offer's non-interactive branch to emit: report no installed plugin so
 // offerPluginInstall reaches the print path, independent of the host's ~/.claude.
@@ -1342,18 +1343,6 @@ describe('aka init through the real bin entry', () => {
       child.kill(); // a no-op on a child that has already exited
     }
   }
-
-  // The child's stderr with Node's own diagnostics filtered out. Asserting a
-  // spawned Node process writes NOTHING there is a promise the runtime does not
-  // make: an ExperimentalWarning from the loader, or any deprecation notice,
-  // lands on stderr beside whatever the CLI itself said. What these cases are
-  // about is the CLI's own output, which the bin entry prefixes with `aka:`.
-  const cliStderr = (stderr: string): string =>
-    stderr
-      .split('\n')
-      .filter((line) => !/^\((?:node|tsx):\d+\)/u.test(line) && !/^\s*(?:at |Warning:)/u.test(line))
-      .join('\n')
-      .trim();
 
   it(
     'exits 0 and puts the store under --home, not the default home',

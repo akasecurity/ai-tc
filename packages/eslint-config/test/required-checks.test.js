@@ -433,7 +433,7 @@ describe('the Windows legs', () => {
   // a package added without a lint script is caught by the same assertion.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(20);
+    expect(scripts).toHaveLength(21);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');
@@ -441,6 +441,83 @@ describe('the Windows legs', () => {
     // And the repo-root pass, which is the twenty-first invocation rather than a
     // twenty-first package — it is the only one covering files no package owns.
     expect(rootScripts()['lint:root']).toContain('*.config.*');
+  });
+});
+
+// The installer trust chain is the one shipped surface whose ENTIRE mechanism is
+// two files ESLint does not lint and tsc does not read, so nothing about them
+// moves a hash or fails a build. What executes them is the suite in
+// tools/installer, and what runs that suite is these two wirings — each one line
+// long, each invisible in a diff once removed, and each restoring the exact hole
+// the suite was written to close: a shipped security control that no runner ever
+// runs. So they are pinned rather than trusted.
+//
+// They cover different halves and neither substitutes for the other. `ci.yml`
+// has no path filter, so it runs the suite against a STUB archive on every PR —
+// that is what makes an installer-only PR exercised at all, and on the Windows
+// leg it is the only thing that reaches install.ps1's junction and user-PATH
+// flow. `build-binaries.yml` is the only place a REAL archive meets the real
+// installer, and it is path-filtered, so an installer-only PR reaches it only
+// because `tools/installer/**` is listed.
+describe('the installer trust chain is wired into CI', () => {
+  const ci = readWorkflow('ci.yml');
+  const binaries = readWorkflow('build-binaries.yml');
+
+  // The half of this that is an ABSENCE, and so the half nothing would otherwise
+  // notice. build-binaries.yml reaches an installer-only PR because it now lists
+  // the path; ci.yml reaches one because it filters no path at all. The second is
+  // a property of what is NOT written, so adding a `paths:` filter here — the
+  // ordinary way to make a workflow cheaper — would take the whole stub tier away
+  // on every platform at once, leaving the entry above pointing at a job that
+  // never starts.
+  it('runs on an installer-only PR at all, because it filters no path', () => {
+    // Same block shape as the audit/codeql trigger check above, and stopping at
+    // a sibling KEY rather than any two-space token for the same reason: a
+    // `paths:` written under a comment line must still land inside the block.
+    const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)^ {2}[^\s#]/m.exec(ci);
+    expect(trigger, 'ci.yml has no parseable pull_request trigger').not.toBeNull();
+    expect(trigger[1]).not.toMatch(/^\s*paths(?:-ignore)?:/m);
+  });
+
+  // `(?![\w-])` for the reason the eslint-config filter above uses it: a hyphen
+  // is a non-word character, so `\b` would also accept a rename that repointed
+  // the filter at a sibling and took install.ps1's coverage away while staying
+  // green.
+  it('runs the installer suite on the Windows leg, the only one that reaches install.ps1 whole', () => {
+    expect(turboFilters(jobBlock(ci, 'windows'))).toContain('@akasecurity/installer');
+    expect(jobBlock(ci, 'windows')).toMatch(/--filter=@akasecurity\/installer(?![\w-])/);
+  });
+
+  it('builds a binary when only the installer changed', () => {
+    // Read off the `paths:` list rather than the whole file, so the entry cannot
+    // be satisfied by the word appearing in a comment or a step.
+    const paths = /^on:$[\s\S]*?^ {4}paths:$([\s\S]*?)^\S/m.exec(binaries)?.[1] ?? '';
+    expect(paths, 'build-binaries.yml has no parseable pull_request paths list').toMatch(
+      /^ {6}- '/m,
+    );
+    expect(paths).toMatch(/^ {6}- 'tools\/installer\/\*\*'$/m);
+  });
+
+  it('drives the real archive through the real installer after building it', () => {
+    const block = jobBlock(binaries, 'build');
+    // The env var is what switches the suite off its stub fixture and onto the
+    // artifact `archive:sea` just wrote; without it the step still passes, having
+    // skipped the only case that touches a real binary.
+    expect(block).toMatch(/AKA_INSTALLER_REAL_DIST:/);
+    expect(block).toMatch(/pnpm --filter @akasecurity\/installer test/);
+    // After archive:sea, or there is nothing for it to find. Both indices are
+    // asserted FOUND first: `indexOf` returns -1 for a string that is not there,
+    // and -1 is less than every real index, so a bare `toBeLessThan` would go on
+    // passing after the archive:sea step was deleted — the one edit this
+    // ordering check exists to catch.
+    const archived = block.indexOf('archive:sea');
+    const verified = block.indexOf('AKA_INSTALLER_REAL_DIST');
+    expect(archived, 'build-binaries.yml no longer runs archive:sea').toBeGreaterThanOrEqual(0);
+    expect(
+      verified,
+      'build-binaries.yml no longer sets AKA_INSTALLER_REAL_DIST',
+    ).toBeGreaterThanOrEqual(0);
+    expect(archived).toBeLessThan(verified);
   });
 });
 

@@ -331,7 +331,22 @@ jobs:
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.
   #
-  # @akasecurity/eslint-config is the one entry that ships nothing — it is
+  # Two entries here are `private: true` and bundled by no artifact, so both are
+  # the first thing anyone trimming this list back to "the shipped surface"
+  # would strike. Each is here because this leg is the ONLY runner that can
+  # execute what it covers.
+  #
+  # @akasecurity/installer is the second of them. install.ps1 is a shipped
+  # security control — the thing an `irm … | iex` user runs — and Windows is
+  # the only platform that reaches its whole flow: the junction, the user-PATH
+  # rewrite and `aka.exe --version` all no-op or throw anywhere else, so the
+  # happy-path case SKIPS on the other two legs and the two refusal cases are
+  # all they can run. Drop this filter and the ps1 half of the trust chain is
+  # back to being source nobody executes. The sh half is the mirror image and
+  # skips here: `uname -s` under Git Bash reports MINGW and install.sh refuses
+  # that OS by design.
+  #
+  # @akasecurity/eslint-config is the other one — it is
   # `private: true` and no artifact bundles it. It runs here as the ENFORCEMENT
   # HALF of the no-network guarantee (CLAUDE.md §4): its suites are what fail the
   # workspace when a package drops its config, its `lint` script stops covering a
@@ -517,6 +532,7 @@ jobs:
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/web-ui
           --filter=@akasecurity/eslint-config
+          --filter=@akasecurity/installer
 
   # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
   # twenty packages target `*.config.*`, and so does the repo-root `lint:root`,

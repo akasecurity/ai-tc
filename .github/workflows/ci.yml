@@ -513,6 +513,16 @@ jobs:
         # --concurrency: see the Test step in the lint job. This is the leg that
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
+        #
+        # AKA_INSTALLER_ALLOW_USER_PATH is the consent to let install.ps1 reach
+        # its HKCU `Path` write, which this throwaway runner may give and a
+        # contributor's workstation may not — the mutating cases skip without it,
+        # so THIS is what makes the ps1 happy path run anywhere at all. It is
+        # declared in turbo.json's `test` env: turbo hashes only the env it is
+        # told about, so undeclared it would hash-match a cached run without it
+        # and replay a green in which the case skipped.
+        env:
+          AKA_INSTALLER_ALLOW_USER_PATH: '1'
         run: >
           pnpm turbo run test
           --continue

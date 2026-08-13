@@ -519,6 +519,30 @@ describe('the installer trust chain is wired into CI', () => {
     ).toBeGreaterThanOrEqual(0);
     expect(archived).toBeLessThan(verified);
   });
+
+  // install.ps1's happy path writes HKCU's `Path`, so it is opt-in: the cases
+  // skip unless AKA_INSTALLER_ALLOW_USER_PATH=1, which keeps a contributor's
+  // workstation out of it. That makes the variable the ONLY thing standing
+  // between CI and a green run in which the ps1 happy path never executed —
+  // exactly the state this whole package was written to end. Three separate
+  // one-line edits can reach that state, so all three are pinned.
+  it('grants the ps1 happy path its user-PATH opt-in on both Windows runners', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/AKA_INSTALLER_ALLOW_USER_PATH: *'1'/);
+    expect(jobBlock(binaries, 'build')).toMatch(/AKA_INSTALLER_ALLOW_USER_PATH: *'1'/);
+  });
+
+  it('declares that opt-in to turbo, so setting it cannot replay a cached skip', () => {
+    // ci.yml reaches the suite through `turbo run test`, and turbo hashes only
+    // the env it is told about. Undeclared, a run WITH the variable hash-matches
+    // one without it and replays a green in which the case skipped — the same
+    // trap build-binaries.yml routes around by not using turbo at all. Read off
+    // the `test` task's own `env`, not the file, so the entry cannot be satisfied
+    // by the name appearing under some other task.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const testTask = /^ {4}"test": \{$([\s\S]*?)^ {4}\},$/m.exec(turbo)?.[1] ?? '';
+    expect(testTask, 'turbo.json has no parseable `test` task').not.toBe('');
+    expect(testTask).toMatch(/"env": *\[[^\]]*"AKA_INSTALLER_ALLOW_USER_PATH"/);
+  });
 });
 
 // Turbo's task hash covers file contents, dependencies and env — not the

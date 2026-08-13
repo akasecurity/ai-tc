@@ -17,15 +17,23 @@
 //     is a different script, silently missing the step that puts `aka` on PATH.
 //     Un-gating it here would assert a behaviour Windows does not have.
 //
-// ONE CAVEAT, because the happy path has a real side effect and there is no
-// override for it. install.ps1 rewrites HKCU's `Path` — that is the feature — so
-// this suite snapshots it and puts it back in a `finally`. The restore is exact
-// for the entries themselves (the install dir is a temp dir, so nothing real is
-// dropped), but it cannot undo one thing: reading and rewriting the value
-// through [Environment] expands any `%VAR%` reference and stores the result as a
-// plain string. That is what the shipped script does to every user who installs,
-// not something this suite introduces — but it is why the happy path is worth
-// knowing about before running this package's tests on a Windows workstation.
+// ONE CAVEAT, because the happy path has a real side effect: install.ps1
+// rewrites HKCU's `Path` — that is the feature. This suite snapshots it and puts
+// it back in a `finally`, and the restore is exact for the entries themselves
+// (the install dir is a temp dir, so nothing real is dropped), but it cannot
+// undo one thing: reading and rewriting the value through [Environment] expands
+// any `%VAR%` reference and stores the result as a plain string. That is what
+// the shipped script does to every user who installs, not something this suite
+// introduces — it is a defect in install.ps1's own PATH handling, tracked
+// separately — but it means a Windows contributor running `pnpm test` would have
+// their `Path` silently flattened by a suite they only meant to run, and a run
+// killed before the `finally` would leave a temp directory on it too.
+//
+// So every case that lets install.ps1 reach step 6 is OPT-IN, gated on
+// `userPathOptIn()` (AKA_INSTALLER_ALLOW_USER_PATH=1) exactly as the real-archive
+// case is gated on AKA_INSTALLER_REAL_DIST. CI sets it and keeps the coverage; a
+// workstation does not and skips. A footgun a contributor has to have read this
+// comment to avoid is one they will step on, so the comment is not the guard.
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +58,7 @@ import {
   readUserPath,
   realDistDir,
   runInstallPs1,
+  userPathOptIn,
   writeUserPath,
 } from './helpers/run-installer.ts';
 import { type ReleaseServer, serveRelease } from './helpers/serve-release.ts';
@@ -57,6 +66,10 @@ import { type ReleaseServer, serveRelease } from './helpers/serve-release.ts';
 const PS = powershellExe();
 const REAL_DIST = realDistDir();
 const IS_WIN = process.platform === 'win32';
+// Whether a case may let install.ps1 reach its HKCU `Path` write. See the
+// header: this is consent to mutate a persistent user-scope variable, so it is
+// never inferred from the platform.
+const MAY_WRITE_USER_PATH = IS_WIN && userPathOptIn();
 // The triple install.ps1 derives. Off Windows the harness reports AMD64 so the
 // script reaches step 4 at all, so the asset it asks for is still the win32 one.
 const TRIPLE = 'win32-x64';
@@ -83,6 +96,11 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
     installDir = join(root, 'local-appdata', 'aka');
     mkdirSync(base, { recursive: true });
     server = await serveRelease(base);
+    // Snapshotted on any Windows host, because reading is harmless and the
+    // refusal cases assert against it that nothing touched PATH. It is the
+    // RESTORE that is gated: rewriting the value is itself what expands `%VAR%`,
+    // so an unconditional one would flatten a contributor's PATH even on a run
+    // where no case wrote to it.
     userPathBefore = IS_WIN ? readUserPath(exe) : null;
   });
 
@@ -95,7 +113,7 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
       await server?.close();
     } finally {
       server = undefined;
-      if (IS_WIN) writeUserPath(exe, userPathBefore);
+      if (MAY_WRITE_USER_PATH) writeUserPath(exe, userPathBefore);
       removeTree(root);
     }
   });
@@ -111,26 +129,29 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
   const run = async (version = FIXTURE_VERSION) =>
     await runInstallPs1(exe, { base: serverBase(), version, installDir });
 
-  it.skipIf(!IS_WIN)('downloads, verifies, extracts and links a good release', async () => {
-    writeRelease(base, { banner: FIXTURE_VERSION, triple: TRIPLE });
+  it.skipIf(!MAY_WRITE_USER_PATH)(
+    'downloads, verifies, extracts and links a good release',
+    async () => {
+      writeRelease(base, { banner: FIXTURE_VERSION, triple: TRIPLE });
 
-    const result = await run();
+      const result = await run();
 
-    expect(result.stderr).toBe('');
-    expect(result.status).toBe(0);
-    // The script runs `aka.exe --version` itself and prints what it got, so this
-    // asserts the extracted binary was reached and ran.
-    expect(result.stdout).toContain(expectedVersionOutput(FIXTURE_VERSION));
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      // The script runs `aka.exe --version` itself and prints what it got, so
+      // this asserts the extracted binary was reached and ran.
+      expect(result.stdout).toContain(expectedVersionOutput(FIXTURE_VERSION));
 
-    // Linked onto PATH: the stable `current` junction exists, runs, and is the
-    // entry the persisted user Path now leads with.
-    const current = join(installDir, 'current');
-    expect(existsSync(current)).toBe(true);
-    const viaJunction = spawnSync(join(current, 'aka.exe'), ['--version'], { encoding: 'utf8' });
-    expect(viaJunction.status).toBe(0);
-    expect(viaJunction.stdout.trim()).toBe(expectedVersionOutput(FIXTURE_VERSION));
-    expect((readUserPath(exe) ?? '').split(';')).toContain(current);
-  });
+      // Linked onto PATH: the stable `current` junction exists, runs, and is the
+      // entry the persisted user Path now leads with.
+      const current = join(installDir, 'current');
+      expect(existsSync(current)).toBe(true);
+      const viaJunction = spawnSync(join(current, 'aka.exe'), ['--version'], { encoding: 'utf8' });
+      expect(viaJunction.status).toBe(0);
+      expect(viaJunction.stdout.trim()).toBe(expectedVersionOutput(FIXTURE_VERSION));
+      expect((readUserPath(exe) ?? '').split(';')).toContain(current);
+    },
+  );
 
   it('refuses a tampered archive, and installs nothing', async () => {
     // A complete, correct release…
@@ -179,25 +200,32 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
   // Skipped unless a real `archive:sea` output is pointed at; see the sibling
   // suite. build-binaries.yml sets AKA_INSTALLER_REAL_DIST on the Windows target
   // too, so the shipped script installs the zip a user downloads.
-  it.skipIf(REAL_DIST === undefined || !IS_WIN)('installs a real release archive', async () => {
-    const dist = REAL_DIST ?? '';
-    const real = findRealArchive(dist, hostTriple());
-    expect(real, `no aka-*-${hostTriple()} archive in ${dist}`).toBeDefined();
-    if (real === undefined) return;
+  //
+  // Gated on the user-PATH opt-in as well: this case installs FULLY, so it
+  // reaches the same HKCU write the happy path does. Pointing REAL_DIST at a
+  // local sea-dist must not be a second, quieter way to mutate a workstation.
+  it.skipIf(REAL_DIST === undefined || !MAY_WRITE_USER_PATH)(
+    'installs a real release archive',
+    async () => {
+      const dist = REAL_DIST ?? '';
+      const real = findRealArchive(dist, hostTriple());
+      expect(real, `no aka-*-${hostTriple()} archive in ${dist}`).toBeDefined();
+      if (real === undefined) return;
 
-    copyFileSync(real.path, join(base, real.name));
-    writeSums(base, [{ name: real.name, sha: sha256OfFile(real.path) }]);
+      copyFileSync(real.path, join(base, real.name));
+      writeSums(base, [{ name: real.name, sha: sha256OfFile(real.path) }]);
 
-    const result = await run(real.version);
+      const result = await run(real.version);
 
-    expect(result.stderr).toBe('');
-    expect(result.status).toBe(0);
-    // `aka --version` prints a bare X.Y.Z, and it has to be the version the
-    // asset name claimed — the installer resolved the asset from that string.
-    expect(result.stdout).toContain(real.version);
-    const viaJunction = spawnSync(join(installDir, 'current', 'aka.exe'), ['--version'], {
-      encoding: 'utf8',
-    });
-    expect(viaJunction.stdout.trim()).toBe(real.version);
-  });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      // `aka --version` prints a bare X.Y.Z, and it has to be the version the
+      // asset name claimed — the installer resolved the asset from that string.
+      expect(result.stdout).toContain(real.version);
+      const viaJunction = spawnSync(join(installDir, 'current', 'aka.exe'), ['--version'], {
+        encoding: 'utf8',
+      });
+      expect(viaJunction.stdout.trim()).toBe(real.version);
+    },
+  );
 });

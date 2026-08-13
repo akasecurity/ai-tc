@@ -8,10 +8,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // tools/installer — the two scripts under test sit at this package's root.
-// Module-local: the harness spawns them, and nothing outside needs the paths.
+// Exported because script-encoding.test.ts reads the same two files rather than
+// spawning them, and a second derivation of where they live is a guard that can
+// silently start checking nothing.
 const INSTALLER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const INSTALL_SH = join(INSTALLER_DIR, 'install.sh');
-const INSTALL_PS1 = join(INSTALLER_DIR, 'install.ps1');
+export const INSTALL_SH = join(INSTALLER_DIR, 'install.sh');
+export const INSTALL_PS1 = join(INSTALLER_DIR, 'install.ps1');
 
 // The host env, read once so the spawned scripts inherit PATH and find curl /
 // tar / shasum — the one sanctioned reason to touch it here (mirrors
@@ -40,6 +42,28 @@ export function realDistDir(): string | undefined {
   // eslint-disable-next-line n/no-process-env -- see HOST_ENV above; this is the same boundary
   const dir = process.env.AKA_INSTALLER_REAL_DIST;
   return dir === undefined || dir === '' ? undefined : dir;
+}
+
+/**
+ * Whether the caller has consented to install.ps1 rewriting the HKCU `Path`.
+ *
+ * Every case that lets install.ps1 reach step 6 mutates a real, persistent
+ * user-scope environment variable, and the restore this suite performs is not
+ * quite lossless: reading through `[Environment]::GetEnvironmentVariable`
+ * expands any `%VAR%` reference, and writing back stores the expanded result as
+ * a plain string. A Windows contributor running `pnpm test` would have their
+ * `Path` flattened by a suite they only meant to run, and a run killed before
+ * the `finally` would leave a temp directory on it as well.
+ *
+ * So the mutating cases are opt-in, exactly as {@link realDistDir} gates the
+ * real-archive case: CI sets this and keeps the coverage, a workstation does
+ * not and skips it. The expansion itself is install.ps1's own behaviour on
+ * every user who installs, not something this suite introduces — that is a
+ * separate defect, tracked separately.
+ */
+export function userPathOptIn(): boolean {
+  // eslint-disable-next-line n/no-process-env -- see HOST_ENV above; this is the same boundary
+  return process.env.AKA_INSTALLER_ALLOW_USER_PATH === '1';
 }
 
 export interface InstallerRun {

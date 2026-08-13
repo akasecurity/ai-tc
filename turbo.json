@@ -41,8 +41,15 @@
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
+    // `env` is part of the hash, and this entry is the only reason the Windows
+    // leg's installer coverage is real. AKA_INSTALLER_ALLOW_USER_PATH switches
+    // on the install.ps1 cases that write HKCU's `Path`; turbo hashes only the
+    // env it is told about, so without this line a run WITH the variable set
+    // hash-matches a cached run without it and replays a green in which those
+    // cases skipped. Undeclared, the variable would silently buy nothing.
     "test": {
       "dependsOn": ["build", "^build", "^typecheck"],
+      "env": ["AKA_INSTALLER_ALLOW_USER_PATH"],
       "outputs": ["coverage/**"]
     },
     // Benchmarks, run by the nightly `.github/workflows/bench.yml` and by hand.

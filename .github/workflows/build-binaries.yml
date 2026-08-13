@@ -96,9 +96,16 @@ jobs:
       # replay a green in which the real archive was never installed. Routing
       # around turbo is what keeps this step's result its own. required-checks
       # .test.js pins the spelling for that reason.
+      #
+      # AKA_INSTALLER_ALLOW_USER_PATH is the consent to let install.ps1 reach its
+      # HKCU `Path` write. A throwaway runner is exactly where that is fine and a
+      # contributor's workstation is exactly where it is not, so the mutating
+      # cases skip unless it is set — see tools/installer/test/install-ps1.test.ts.
+      # It is inert off Windows; the sh half writes no persistent state.
       - name: Verify the installer trust chain against the real archive
         env:
           AKA_INSTALLER_REAL_DIST: ${{ github.workspace }}/cli/sea-dist
+          AKA_INSTALLER_ALLOW_USER_PATH: '1'
         run: pnpm --filter @akasecurity/installer test
       - uses: actions/upload-artifact@v4
         with:

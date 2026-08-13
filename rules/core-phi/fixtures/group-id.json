@@ -5,6 +5,16 @@
     "shouldMatch": true
   },
   {
+    "label": "group number corroborated by the subscriber label",
+    "text": "Subscriber: Jane Roe - Group Number 88213004",
+    "shouldMatch": true
+  },
+  {
+    "label": "group no corroborated by the health plan label",
+    "text": "Health plan enrollment, Group No HP4471902",
+    "shouldMatch": true
+  },
+  {
     "label": "group id alone, no member context (gated out)",
     "text": "Group ID: GRP12345678",
     "shouldMatch": false

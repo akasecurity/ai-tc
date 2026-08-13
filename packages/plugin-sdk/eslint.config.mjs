@@ -41,4 +41,15 @@ export default [
       'n/no-process-env': 'off',
     },
   },
+  {
+    // bare-command.ts resolves the Windows `where.exe` against the environment
+    // the spawn will actually inherit. A caller passing no env gets a child
+    // inheriting this process's, so systemWhere reads process.env in exactly
+    // that case — resolving against anything else would describe a lookup
+    // nobody performs. Same file-scoped opt-out as the three above.
+    files: ['src/bare-command.ts'],
+    rules: {
+      'n/no-process-env': 'off',
+    },
+  },
 ];

@@ -118,8 +118,8 @@ from our dependency tree, add a waiver to `.github/audit-waivers.json`:
 
 ## Contributing detection rules
 
-Detection rules live in [`rules/`](rules/). Every rule ships with **positive and
-negative fixtures**; a rule PR without fixtures will not pass CI. See
+Detection rules live in [`rules/`](rules/). Every rule ships with **at least 2 positive
+and 2 negative fixtures**; a rule PR below that bar will not pass CI. See
 `skills/write-detection-rule/SKILL.md` for the format.
 
 Rules merged here are published as **first-party, verified** packs, so rule PRs get

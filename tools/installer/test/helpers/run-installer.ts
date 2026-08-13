@@ -27,6 +27,33 @@ const HOST_ENV = process.env;
 const NO_PROXY = { no_proxy: '127.0.0.1,localhost', NO_PROXY: '127.0.0.1,localhost' } as const;
 
 /**
+ * The host env with `PSModulePath` removed, for a Windows PowerShell child.
+ *
+ * PowerShell autoloads its own core modules off `PSModulePath`, and the two
+ * editions do NOT share one: pwsh 7 points it at `…\PowerShell\7\Modules` while
+ * Windows PowerShell 5.1 needs `…\WindowsPowerShell\v1.0\Modules`. Inheriting
+ * one edition's value into the other therefore costs the child its own standard
+ * library — `Get-FileHash` (Microsoft.PowerShell.Utility) stops resolving, and
+ * the script dies at the hashing step with `CommandNotFoundException`.
+ *
+ * That is not hypothetical here: GitHub Actions runs Windows `run:` steps under
+ * pwsh by DEFAULT, so every spawn from this suite handed 5.1 a pwsh-7 module
+ * path until this existed. Dropping the variable lets each edition compute its
+ * own default, which is what a user's own shell gives it — and this harness's
+ * whole contract is to spawn the scripts as a user's shell would.
+ *
+ * Deleted case-insensitively on purpose. Windows env names are case-insensitive
+ * and `process.env` preserves whatever casing the parent used, but a spread copy
+ * is a plain object where `delete env.PSModulePath` matches one spelling only.
+ */
+export function powershellEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...HOST_ENV, ...extra };
+  return Object.fromEntries(
+    Object.entries(merged).filter(([key]) => key.toLowerCase() !== 'psmodulepath'),
+  );
+}
+
+/**
  * A directory holding REAL release archives, or undefined.
  *
  * The suite's own fixture packs a stub, which is all the installer's plumbing
@@ -182,7 +209,7 @@ function probePowershell(): string | undefined {
   for (const command of process.platform === 'win32' ? ['powershell', 'pwsh'] : ['pwsh']) {
     const probe = spawnSync(command, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
       encoding: 'utf8',
-      env: HOST_ENV,
+      env: powershellEnv(),
     });
     if (probe.error === undefined && probe.status === 0) return command;
   }
@@ -197,8 +224,7 @@ export async function runInstallPs1(
   return await runScript(
     exe,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', INSTALL_PS1],
-    {
-      ...HOST_ENV,
+    powershellEnv({
       ...NO_PROXY,
       AKA_DOWNLOAD_BASE: base,
       AKA_VERSION: version,
@@ -208,7 +234,7 @@ export async function runInstallPs1(
       // the script is entitled to make. Off win32 there is no such variable,
       // and the refusal cases need step 1 to pass to reach step 4 at all.
       ...(process.platform === 'win32' ? {} : { PROCESSOR_ARCHITECTURE: 'AMD64' }),
-    },
+    }),
   );
 }
 
@@ -228,7 +254,7 @@ export function readUserPath(exe: string): string | null {
       '-Command',
       "$p = [Environment]::GetEnvironmentVariable('Path', 'User'); if ($null -eq $p) { 'ABSENT' } else { 'PRESENT' + $p }",
     ],
-    { encoding: 'utf8', env: HOST_ENV },
+    { encoding: 'utf8', env: powershellEnv() },
   );
   const run = toRun(`${exe} (read user Path)`, result);
   if (run.status !== 0) throw new Error(`could not read the user Path: ${run.stderr}`);
@@ -251,11 +277,10 @@ export function writeUserPath(exe: string, value: string | null): void {
     ],
     {
       encoding: 'utf8',
-      env: {
-        ...HOST_ENV,
+      env: powershellEnv({
         AKA_RESTORE_ABSENT: value === null ? '1' : '0',
         AKA_RESTORE_VALUE: value ?? '',
-      },
+      }),
     },
   );
   const run = toRun(`${exe} (restore user Path)`, result);

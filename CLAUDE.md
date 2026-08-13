@@ -669,8 +669,9 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `test/fixtures/**`, `tools/ci/**`, and the
-   repo-root `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `test/helpers/**`,
+   `tools/ci/**`, and the repo-root `*.config.*`. `typecheck:root` runs
+   `tsc -p tsconfig.root.json`.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's

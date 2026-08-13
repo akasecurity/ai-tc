@@ -158,6 +158,19 @@ describe('the project walk terminates on a hostile tree', () => {
     // made this whole case skip on Windows, where the chain builds fine and only
     // the `chdir` past the ceiling is refused.
     if (!chain.created) ctx.skip(chain.reason);
+    // The clock and the ceiling both shorten the chain, and only one of them is
+    // a fact about this platform. `deepChain` stops on whichever comes first, so
+    // a depth that fell short ON THE BUDGET says the runner was busy — measured
+    // at 26 levels on a contended Windows leg, against a ceiling that allows far
+    // more — while the same depth reached at the ceiling is a real constant.
+    //
+    // Skipped rather than asserted, for the reason `created: false` is: a wall
+    // clock must not decide a correctness assertion. The floor below still fires
+    // whenever the chain stopped for any NON-timing reason, so this narrows the
+    // guard to the case it can actually speak about instead of disabling it.
+    if (chain.budgetSpent && chain.addressable <= 50) {
+      ctx.skip(`${chain.reason} — a contended runner, not a walker defect`);
+    }
     expect(
       chain.addressable,
       'no addressable depth at all — every assertion below would hold vacuously',

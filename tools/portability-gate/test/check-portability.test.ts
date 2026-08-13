@@ -4,7 +4,13 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { formatReport, isRelevantPath, type ScannedFile, scanTree } from '../src/lib.ts';
+import {
+  formatReport,
+  GRANDFATHERED_PLATFORM_GUARDS,
+  isRelevantPath,
+  type ScannedFile,
+  scanTree,
+} from '../src/lib.ts';
 
 // Fixtures live in their own directory with a non-".test.ts" extension on
 // purpose: a real run of check-portability.ts walks the tracked test tree, so
@@ -240,6 +246,110 @@ describe('concurrency-missing-timeout', () => {
     const violations = scanTree(files);
     expect(violations).toHaveLength(1);
     expect(violations[0]?.file).toBe('pkg-a/test/scan.test.ts');
+  });
+});
+
+describe('platform-guard-early-return', () => {
+  // A real spec path: the allowance cases below all assert on a SHORT violation
+  // list, so a path scanTree skips outright satisfies them without the rule ever
+  // running. The bytes are built here rather than read from a fixture because
+  // the string literal is masked out of this file's own scan.
+  const SPEC = 'pkg/test/legacy.test.ts';
+  const guards = (n: number): string =>
+    Array.from({ length: n }, () => "if (process.platform === 'win32') return;").join('\n');
+
+  // The last two are the comment-bearing blocks. They matter because a comment
+  // is the most natural thing to write next to a bail-out, and the rule locates
+  // its candidate on masked text precisely so one cannot hide the defect —
+  // matching structure against the raw source instead leaves both unflagged.
+  it('flags the one-line form, the block form, the !== form and a commented block', () => {
+    const violations = scanTree([
+      testFile('paths.test.ts', fixture('platform-guard-return.bad.txt')),
+    ]);
+    expect(violations.map((v) => v.line)).toEqual([7, 12, 19, 26, 34]);
+    expect(violations.every((v) => v.rule === 'platform-guard-early-return')).toBe(true);
+    expect(violations[0]?.message).toContain('ctx.skip');
+  });
+
+  // Five shapes at once, and each is load-bearing. ctx.skip + return is the
+  // fixed form, so flagging it would make the rule unsatisfiable. The positive
+  // conditional is the fix for a test that still asserts something on the
+  // guarded platform. it.skipIf reports as a skip already. And `return
+  // '<reason>';` is a helper handing back a value — in both the one-line and the
+  // block spelling, which pull against each other: the block is only reachable
+  // by matching on masked text, and only reading the RAW source there keeps the
+  // returned literal visible enough to exempt it.
+  it('does not flag ctx.skip, a positive conditional, it.skipIf, or a returned value', () => {
+    expect(
+      scanTree([testFile('paths.test.ts', fixture('platform-guard-return.clean.txt'))]),
+    ).toEqual([]);
+  });
+
+  it('does not flag the same shape inside a comment', () => {
+    const violations = scanTree([
+      testFile(
+        'paths.test.ts',
+        [
+          "// if (process.platform === 'win32') return; is what this rule catches.",
+          'const x = 1;',
+        ].join('\n'),
+      ),
+    ]);
+    expect(violations).toEqual([]);
+  });
+
+  // The defect is a TEST reporting a pass, which a helper does not do. The same
+  // bytes at a spec path are the control: without it this case would pass on a
+  // rule that had stopped firing anywhere.
+  it('does not apply to a non-spec file, but still does at a spec path', () => {
+    const bytes = fixture('platform-guard-return.bad.txt');
+    expect(scanTree([testFile('pkg/test/helpers/modes.ts', bytes)])).toEqual([]);
+    expect(scanTree([testFile('pkg/test/modes.test.ts', bytes)])).toHaveLength(5);
+  });
+
+  it('exempts a grandfathered file up to its allowance', () => {
+    const files = [testFile(SPEC, guards(3))];
+    expect(scanTree(files, { grandfatheredPlatformGuards: { [SPEC]: 3 } })).toEqual([]);
+  });
+
+  // Reported at the LAST guard rather than the first: the allowance covers what
+  // was already there, so the new one is on the end, and that is the line whose
+  // author needs to read the message.
+  it('flags the guard past the allowance, at its own line', () => {
+    const violations = scanTree([testFile(SPEC, guards(3))], {
+      grandfatheredPlatformGuards: { [SPEC]: 2 },
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ rule: 'platform-guard-early-return', line: 3 });
+  });
+
+  // The ratchet's other direction. Without this an allowance stays at its
+  // original number for ever, so converting two of three guards silently leaves
+  // room for two new ones — an exemption that grows back.
+  it('reports a stale allowance when the file carries fewer than it allows', () => {
+    const violations = scanTree([testFile(SPEC, guards(1))], {
+      grandfatheredPlatformGuards: { [SPEC]: 3 },
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ rule: 'platform-guard-stale-allowance', line: 1 });
+    expect(violations[0]?.message).toContain('carries 1');
+  });
+
+  // Everything above drives an injected map, so all of it would still pass with
+  // the shipped one unused. This is what pins that omitting the option reads the
+  // real GRANDFATHERED_PLATFORM_GUARDS, with the empty-map scan as its control.
+  it('reads the shipped allowance map when no override is passed', () => {
+    const entries = Object.entries(GRANDFATHERED_PLATFORM_GUARDS);
+    // Once this map empties the allowance branch is dead and this case should go
+    // with it — an empty map runs the loop zero times, so every assertion in it
+    // holds vacuously and only this line says so.
+    expect(entries.length).toBeGreaterThan(0);
+
+    for (const [path, allowance] of entries) {
+      const files = [testFile(path, guards(allowance))];
+      expect(scanTree(files), path).toEqual([]);
+      expect(scanTree(files, { grandfatheredPlatformGuards: {} }), path).toHaveLength(allowance);
+    }
   });
 });
 

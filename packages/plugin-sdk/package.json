@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./scan-worker": "./src/scan-worker.ts",
+    "./bare-command": "./src/bare-command.ts",
     "./browser": "./src/mask.ts"
   },
   "scripts": {

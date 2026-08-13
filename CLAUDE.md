@@ -109,20 +109,21 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eight places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                              | Mechanism                         | Why                                                        |
-| ------------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
-| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
-| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                              |
-| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
-| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
-| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
-| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth  |
-| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation  |
+| Site                                              | Mechanism                         | Why                                                         |
+| ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                     |
+| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart               |
+| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                               |
+| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips      |
+| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                 |
+| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth  |
+| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth   |
+| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
+| `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a ninth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a tenth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -370,6 +371,84 @@ revocation is resurrected. It uses processes rather than worker threads delibera
 shares `process.pid`, and the atomic write's tmp path is per-process, so two threads meet a
 collision two processes never can, which is the wrong axis.
 
+### 7. A command spawned by BARE NAME goes through the planner
+
+`planBareCommand` (`packages/plugin-sdk/src/bare-command.ts`, the `./bare-command` subpath)
+is how every bare-name spawn in the plugins is built. Three facts have to hold together, and
+handling any one of them alone makes things worse rather than better:
+
+- **libuv does no PATHEXT.** Its own executable search tries `.com` and `.exe` and stops, so a
+  shell-free `execFileSync('claude', …)` never sees the `claude.cmd` an npm global install put
+  on PATH. It fails **ENOENT** — the same code a genuinely-absent CLI produces, which is why
+  this read as "not installed" rather than as a batch-file problem for as long as it did.
+  Reaching the shim needs a shell, exactly as `packages/local-ops/src/exec.ts` says.
+- **Windows searches the working directory BEFORE PATH.** So the moment a shell is involved, a
+  `claude.cmd` in a cloned repo runs instead of the real CLI. Every Windows spawn is anchored at
+  `homedir()`; nothing spawned this way depends on the caller's cwd. POSIX never consults the
+  cwd, and no anchor is added there.
+- **A shell RE-PARSES the argv.** Node joins `[file, ...args]` with a space and hands the result
+  to `cmd.exe` verbatim — it says so itself, in DEP0190: "the arguments are not escaped, only
+  concatenated". So `shell: true` on its own is not a fix, it is a command-injection surface
+  wherever an argument carries content this repo did not choose.
+
+The planner's answers to the third are what must not be softened. It quotes each argument
+itself and passes the joined line as the FILE with an empty args array, so Node has nothing left
+to concatenate; it **refuses** — `BareCommandUnsupportedError`, never a best-effort escape — an
+argument carrying `"`, `%`, `!`, a line break or a NUL, or a line over cmd.exe's 8,191
+characters; and its refusal `reason` names an argv INDEX and a character class, never a value,
+because the one caller that reaches it in practice is refusing a raw-bearing prompt. It also
+skips the shell entirely when the bare name resolves (via `where.exe`) to a real executable,
+which removes the re-parse, the 8 KiB ceiling and the extra `cmd.exe` process at once — the
+binary channel's `aka.exe` takes that path.
+
+**Two measurements inside that are easy to get subtly wrong, and both fail SILENTLY.** What
+counts as "a real executable" is an **allowlist** — `.exe` and `.com`, what `CreateProcessW`
+loads as an image — never a `.cmd`/`.bat` denylist. An npm global install writes an
+EXTENSIONLESS launcher (a Bourne script, for Git Bash) beside the shim, and `where` prints that
+line FIRST: `…\npm\aka` before `…\npm\aka.cmd`. A denylist therefore takes the direct path and
+hands a shell script to `CreateProcessW`, which fails **ENOEXEC** — a different code from the
+ENOENT every caller here tests for, so the CLI reads as installed and the spawn then does
+nothing at all. And the 8,191 ceiling is charged against the line **cmd.exe is handed**, which
+is Node's `<COMSPEC> /d /s /c "<line>"` and not `<line>`; measuring the inner line alone admits
+one that is then truncated rather than refused, which is the whole failure the refusal exists to
+prevent. `where.exe` also runs under its own timeout, because a PATH entry on an unreachable
+network share blocks that search for as long as the OS takes to give up — and it runs in front
+of a launcher meant to return at once, and before the judge's own spawn timeout, which cannot
+bound something that has not spawned yet.
+
+**Antigravity's judge is the case that cannot be made to work through `cmd.exe`, and the reason
+is worth keeping.** Its prompt rides ARGV (§4), so it is multi-line, several KiB, and built from
+scanned transcript text — three independent reasons a Windows command line cannot carry it. It
+therefore runs on Windows only where `agy` resolves to a real executable, and refuses loudly
+otherwise. `plugins/antigravity/test/helpers/judge-argv-unsupported.ts` is the gate that keeps
+that plugin's wizard-journey suite off the Windows leg (its stub can only be a `.cmd`), and its
+suite pins the justification behaviourally, against the real planner and the real argv, so the
+gate goes red the day the prompt stops riding argv.
+
+**A probe in front of such a spawn reads the plan rather than re-deriving it.** A shell-free
+probe ahead of a shelled spawn reports a false miss and the reverse a false pass, and the PATH
+shims fail OPEN (see [Testing](#testing)), so a false pass reaches the developer's real
+installed CLI. The journey harnesses pass `plan.viaShell` and `plan.options.cwd` straight
+through to `assertShimResolves` for that reason.
+
+`packages/plugin-sdk/test/bare-command.test.ts` drives every branch from any host — the planner
+takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` take a platform.
+**Three** sites deliberately do NOT go through it, and they are unsafe to different degrees:
+
+- `cli/src/lib/external-dispatch.ts` is POSIX-only by design, so none of the three facts apply.
+- `plugins/claude-code/src/provenance.ts` shells out to `npm` with its own `USE_SHELL` because
+  `npm audit signatures` reads the caller's project — it therefore carries the shell half
+  **without** the cwd anchor, which is a live gap tracked separately.
+- `packages/local-ops/src/exec.ts` carries `USE_SHELL` **and** the `homedir()` anchor, so it has
+  both halves of the cwd defence — but no quoting and no refusal, so on the shell path Node
+  concatenates its argv unescaped exactly as DEP0190 describes. It is not exploitable today, and
+  the reason is written into `apply.ts`: the only `npm` argument is the `CLI_PACKAGE` constant,
+  and plugin arguments are refs resolved from the static `AGENT_PLUGINS` registry. That is a
+  **hand-maintained invariant in a comment** — the precise class this module converts into a
+  structural one everywhere else — and `local-ops` already depends on `@akasecurity/plugin-sdk`,
+  so routing it through `planBareCommand` is available rather than blocked by a package wall.
+  Migrating it is tracked separately.
+
 ## Dependency advisories
 
 CI gates every PR (and a daily run) on two audits via `tools/audit-gate`: `pnpm audit`
@@ -469,6 +548,11 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      so `src/bundled-packs.generated.ts` — 101 JSON imports without import
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
+                     `src/bare-command.ts` is the shared bare-name spawn planner
+                     (Architecture principles §7), exported as the `./bare-command`
+                     subpath rather than off the index so the plugins' dashboard
+                     launcher can reach it without inlining the bundled packs. It
+                     imports node:child_process/os/path and nothing else.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 @akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
                      (the harness-agnostic core of the /aka:setup calibration →
@@ -590,7 +674,12 @@ the live examples); and a class assembled from a non-literal.
 
 ## Detection rules
 
-See `skills/write-detection-rule/SKILL.md`. A rule PR without fixtures is rejected by CI.
+See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or
+2 negative fixtures is rejected by CI — `packages/detections/test/engine.test.ts` asserts
+the bar per rule, and `packages/detections/test/posture/config-posture.test.ts` asserts it
+for posture rules. Both read it from `packages/detections/test/helpers/fixture-bar.ts`, so
+the number and its message live in one place; the count is of DISTINCT cases, because a
+repeated fixture exercises nothing the first one did not.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
 legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it
@@ -669,8 +758,9 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `test/fixtures/**`, `tools/ci/**`, and the
-   repo-root `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `test/helpers/**`,
+   `tools/ci/**`, and the repo-root `*.config.*`. `typecheck:root` runs
+   `tsc -p tsconfig.root.json`.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -1188,10 +1278,18 @@ every caller staying green. Four properties are load-bearing:
   proof by cwd rather than latching it once, its `run()` taking a per-step cwd.
 - **The probe answer comes before anything else the stub does**, so probing is never recorded
   as an invocation — which is what a `judgeWasInvoked()`-style sentinel assertion rests on.
-- **Three POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
-  launcher on win32 rather than an extensionless `#!` file, and no reliance on a `chmod` that
-  is a no-op there. `tools/portability-gate`'s `path-separator-literal` rule catches the first
-  returning to a call site, which is how it arrived.
+- **Four POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
+  launcher on win32 rather than an extensionless `#!` file, no reliance on a `chmod` that
+  is a no-op there, and the launcher naming its script by ABSOLUTE path rather than through
+  `%~dp0`. `tools/portability-gate`'s `path-separator-literal` rule catches the first
+  returning to a call site, which is how it arrived. The fourth is the one that reads as
+  correct and is not: `%~dp0` means "the directory of the running batch file" only when `%0`
+  holds a path, and for a batch cmd.exe resolved from PATH under a bare name `%0` is the name
+  AS TYPED — so `%~dp0` expands against the CURRENT DIRECTORY instead. It went unnoticed for
+  as long as nothing anchored the spawn's cwd; the moment §7's Windows anchor landed, every
+  shim-driven suite in all three plugins failed with node reporting `Cannot find module` for a
+  path under the anchor that nothing had written. Each plugin's `path-shim.test.ts` pins the
+  launcher's bytes under an explicit `'win32'`, so a POSIX runner catches its return.
 
 `writeCommandShim` takes an optional `platform` (as `judgeEnv` does), so both branches are
 driven from either host: writing the other platform's form is a resolution failure on this one.
@@ -1358,9 +1456,31 @@ times slower, and a timing assertion there is a flake. Compare with `primaryCode
 
 Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
 An early `return` reports as a pass, which is the failure mode the store harness exists
-to remove. Some older suites in this package still use
-`if (process.platform === 'win32') return;` — leave them be unless you are already
-changing that test for another reason, and do not convert a neighbour in passing.
+to remove — and it is worse than a missing test, because a green tick is read as
+coverage. The macOS-only `O_EXCL` case in `paths.test.ts` is the one that shows the cost:
+it is the only thing anywhere pinning `flag: 'wx'`, so while it returned, deleting that
+flag left every other leg green.
+
+**Which of the two shapes to write is decided by what the test still asserts on the
+guarded platform, not by taste.** A guard that ends the body before any assertion runs
+must `ctx.skip(reason)`, because a pass there is a claim the run never checked. A guard
+that only gates a subset — the test still verifies something real on that platform — is
+written as a positive conditional, `if (process.platform !== 'win32') expect(…)`, and
+**must not** become a skip: `ctx.skip` throws, so a skip at the tail discards a result
+that genuinely held and reports the case as uncovered where it was not. Both shapes are
+the same edit to make, and neither leaves an `if (process.platform …) return;` behind.
+
+That last part is enforced rather than asked: `tools/portability-gate`'s
+`platform-guard-early-return` (rule 6, spec files only) fails `pnpm lint` on the shape.
+Three older suites predate it — `settings.test.ts`, `fingerprint.test.ts` and
+`plugin-sdk`'s `config.test.ts` — and are exempt through `GRANDFATHERED_PLATFORM_GUARDS`,
+which records the exact count each may keep. Leave them be unless you are already changing
+that test for another reason, and do not convert a neighbour in passing; the allowance is a
+ratchet, so converting one means lowering its number in the same commit, and a file that
+reaches zero leaves the map. The ratchet is on the COUNT, though, not on which guards make
+it up: converting one and adding another in the same commit holds the number and passes
+both rules, so the gate cannot tell that pairing from an honest conversion. All three carry
+the top-of-body shape, so each is a real `ctx.skip` still owed.
 
 ### Testing a web-ui Server Action
 

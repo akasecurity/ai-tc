@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { maskText } from '@akasecurity/plugin-sdk';
+import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 import { parseRecommendation } from '@akasecurity/setup-wizard';
 
@@ -101,14 +102,24 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // The stdio option is explicit because execFileSync's default writes the
 // child's stderr through to the parent's stderr, which flows into the wizard
 // conversation — the transcript --ephemeral exists to keep raw content out of.
+// planBareCommand owns the Windows half: `codex` is a `.cmd` shim there, which
+// libuv's own PATHEXT-less search never finds, so a shell-free spawn fails with
+// a bare ENOENT that reads as "not installed". It also anchors the spawn in the
+// user's home, because Windows searches the working directory before PATH and a
+// `codex.cmd` in a cloned repo would otherwise win — `--skip-git-repo-check` is
+// already on argv precisely because this run does not depend on the caller's
+// cwd. The prompt rides stdin, so the only argv value here is the temp
+// last-message path, which the planner quotes.
 export function spawnCodex(argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): void {
-  execFileSync('codex', [...argv], {
+  const plan = planBareCommand('codex', argv, { env });
+  execFileSync(plan.file, [...plan.args], {
     env,
     input: stdin,
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['pipe', 'pipe', 'pipe'],
+    ...plan.options,
   });
 }
 
@@ -119,6 +130,11 @@ export function spawnCodex(argv: readonly string[], env: NodeJS.ProcessEnv, stdi
 // we surface ONLY the non-content metadata (exit status / signal / node error
 // code), never `.message`, `.stdout`, or `.stderr`.
 function spawnFailureMeta(err: unknown): string {
+  // planBareCommand's refusal is the one failure here that carries an
+  // explanation worth reading, and it is raw-free by construction — it names an
+  // argv index and a character class, never a value. Everything below is exit
+  // metadata, which is all any other failure may contribute.
+  if (isBareCommandUnsupported(err)) return err.reason;
   const e = err as { status?: number | null; signal?: string | null; code?: string };
   const parts: string[] = [];
   if (typeof e.status === 'number') parts.push(`exit ${String(e.status)}`);

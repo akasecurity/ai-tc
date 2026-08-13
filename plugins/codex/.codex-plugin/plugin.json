@@ -1,6 +1,6 @@
 {
   "name": "aka-codex",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "AI Traffic Control \u2014 inspect and govern AI prompts in Codex CLI. Detection runs locally; events are recorded to a local SQLite store on your machine.",
   "hooks": "./hooks/hooks.json",
   "skills": "./skills",

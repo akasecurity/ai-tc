@@ -13,6 +13,7 @@ import {
   quoteCommandLine,
   quoteForCmd,
   resolveWindowsCommand,
+  systemWhere,
 } from '../src/bare-command.ts';
 
 // A stand-in home, distinct from the real one so an assertion about the anchor
@@ -438,6 +439,52 @@ describe('resolveWindowsCommand', () => {
 
     expect(plan.viaShell).toBe(true);
     expect(plan.resolved).toBeUndefined();
+  });
+});
+
+describe('systemWhere — the resolver is not itself decided by a search order', () => {
+  const SYSTEM32_WHERE = 'C:\\Windows\\System32\\where.exe';
+
+  it('names where.exe absolutely so a planted copy cannot answer for it', () => {
+    // The point of the whole module is that Windows searches the cwd first. A
+    // resolver spawned by bare name is subject to that rule too, so the file it
+    // runs is pinned rather than searched for.
+    expect(systemWhere({ SystemRoot: 'C:\\Windows' })).toBe(SYSTEM32_WHERE);
+  });
+
+  it('finds SystemRoot whatever case the environment spelled it in', () => {
+    // `{ ...process.env }` is a plain object: Node's case-insensitive env proxy
+    // does not survive the spread, and `judgeEnv` passes exactly such a copy. A
+    // lookup for the canonical spelling alone would miss a valid environment and
+    // silently fall back to the bare name.
+    for (const key of ['SystemRoot', 'SYSTEMROOT', 'systemroot', 'SystemROOT']) {
+      expect(systemWhere({ [key]: 'C:\\Windows' }), key).toBe(SYSTEM32_WHERE);
+    }
+  });
+
+  it('falls back to the bare name rather than building a nonsense path', () => {
+    // Each of these would produce a path that resolves to nothing if joined
+    // blindly — `undefined` is what routes the caller back to the bare name,
+    // which is where this started and is no worse than it was.
+    expect(systemWhere(undefined)).toBe(undefined);
+    expect(systemWhere({})).toBe(undefined);
+    expect(systemWhere({ SystemRoot: '' })).toBe(undefined);
+    expect(systemWhere({ SystemRoot: '   ' })).toBe(undefined);
+    expect(systemWhere({ SystemRoot: undefined })).toBe(undefined);
+  });
+
+  it('is reached by resolveWindowsCommand rather than being dead code', () => {
+    // Nothing is asserted about the RESULT here — this suite runs on POSIX,
+    // where no `where.exe` exists either way. What is asserted is that passing a
+    // SystemRoot does not throw and does not change the fallback answer, i.e.
+    // the absolute-path branch is executed rather than skipped.
+    expect(
+      resolveWindowsCommand(
+        'definitely-not-a-real-command',
+        { SystemRoot: 'C:\\Windows' },
+        homedir(),
+      ),
+    ).toBe(undefined);
   });
 });
 

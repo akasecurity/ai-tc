@@ -215,6 +215,10 @@ const RESOLVE_TIMEOUT_MS = 5_000;
  * working directory first too, so an unanchored probe would happily report a
  * planted shim.
  *
+ * The probe BINARY is resolved absolutely where the environment allows it (see
+ * {@link systemWhere}), so the resolver is not itself decided by the search
+ * order it exists to describe.
+ *
  * Returns the FIRST line only, which is the one cmd.exe would pick; what that
  * line can be spawned as is {@link isDirectlyExecutable}'s question, not this
  * one's.
@@ -222,13 +226,45 @@ const RESOLVE_TIMEOUT_MS = 5_000;
  * Best effort: an unresolvable name yields `undefined` and the caller falls
  * back to letting the shell report it.
  */
+/**
+ * Absolute path to the system `where.exe`, or `undefined` when the environment
+ * does not say where Windows is installed.
+ *
+ * This module's whole thesis is that Windows searches the working directory
+ * before PATH — and the resolver is itself spawned by bare name, so it is
+ * subject to the rule it exists to defeat. A `where.exe` in the anchor directory
+ * would win the lookup and then get to answer every question asked of it. The
+ * home anchor already makes that a far weaker position than a cloned repo
+ * (planting there means write access to `$HOME`), so this is hardening rather
+ * than a fix — but naming the file outright costs the same and leaves nothing in
+ * the path depending on a search order.
+ *
+ * Looked up case-INSENSITIVELY. Windows' own case-insensitive `process.env` is a
+ * Node proxy that a spread copy does not preserve: `{ ...process.env }` is a
+ * plain object keyed however the OS spelled it, and callers here pass exactly
+ * such a copy (`judgeEnv`). A lookup for the canonical `SystemRoot` alone would
+ * therefore miss a perfectly valid environment and silently fall back.
+ *
+ * Falls back to the bare name when the variable is absent, which is where this
+ * started — no worse than before, and still anchored.
+ */
+export function systemWhere(env: NodeJS.ProcessEnv | undefined): string | undefined {
+  if (env === undefined) return undefined;
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() !== 'systemroot') continue;
+    if (typeof value !== 'string' || value.trim() === '') return undefined;
+    return win32.join(value, 'System32', 'where.exe');
+  }
+  return undefined;
+}
+
 export function resolveWindowsCommand(
   command: string,
   env: NodeJS.ProcessEnv | undefined,
   home: string,
 ): string | undefined {
   try {
-    const probe = spawnSync('where', [command], {
+    const probe = spawnSync(systemWhere(env) ?? 'where', [command], {
       encoding: 'utf8',
       cwd: home,
       windowsHide: true,

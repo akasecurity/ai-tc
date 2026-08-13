@@ -22,7 +22,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readRegisteredCommands } from '../../src/command-registry.ts';
 import { renderCategoriesTuned, STORE_UNAVAILABLE_NOTE } from '../../src/render.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
-import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import {
   planPathFromPreview,
   PLUGIN_ROOT,
@@ -30,9 +29,6 @@ import {
   SetupJourney,
   SURFACED_KEY,
 } from './harness.ts';
-
-// See shim-unsupported.ts for why these suites cannot run on win32.
-const describeShimmed = describe.skipIf(shimUnsupported);
 
 // The real installed plugin version, so the provenance assertion tracks the
 // shipped manifest instead of a hardcoded literal.
@@ -55,7 +51,7 @@ function readPosture(storeDir: string): Record<string, string | undefined> {
   }
 }
 
-describeShimmed('Yes-scan happy path, end-to-end', () => {
+describe('Yes-scan happy path, end-to-end', () => {
   let journey: SetupJourney;
   // Frame outputs captured once across the whole spine run.
   let intro: string;
@@ -241,7 +237,7 @@ describeShimmed('Yes-scan happy path, end-to-end', () => {
   });
 });
 
-describeShimmed('no-downgrade invariant end-to-end', () => {
+describe('no-downgrade invariant end-to-end', () => {
   let journey: SetupJourney;
 
   beforeAll(() => {

@@ -95,6 +95,9 @@ const EXPECTED_INLINE_DISABLES = {
   // these deliberately out of its scope — which left them inventoried by
   // NOTHING, in the one part of the tree where a new one is easiest to add
   // without anyone weighing it.
+  'plugins/claude-code/test/helpers/path-shim.ts': [ENV_RULE],
+  'plugins/codex/test/helpers/path-shim.ts': [ENV_RULE],
+  'plugins/antigravity/test/helpers/path-shim.ts': [ENV_RULE],
   'plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/claude-code/test/helpers/run-hook.ts': [ENV_RULE],
   'plugins/claude-code/test/journey/harness.ts': [ENV_RULE],

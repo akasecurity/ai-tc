@@ -119,11 +119,11 @@ rules/<pack-id>/
     <rule-name>.json    # REQUIRED: array of { label, text, shouldMatch: bool }
 ```
 
-**A rule without fixtures will be rejected by CI.**
+**A rule without fixtures will be rejected by CI** — see the bar below.
 
 ## Fixture requirements
 
-Every rule must have labeled **positive** fixtures (where `shouldMatch: true`) and **negative** fixtures (where `shouldMatch: false`). Aim for at least 2 of each. Negatives are as important as positives — they prove your pattern doesn't over-match.
+Every rule must have labeled **positive** fixtures (where `shouldMatch: true`) and **negative** fixtures (where `shouldMatch: false`). **At least 2 distinct cases of each — CI enforces this**, and a rule below the bar fails the build. Distinct means a different scanned `text`/`filePath`, so a repeated fixture does not count twice. Negatives are as important as positives — they prove your pattern doesn't over-match.
 
 ```json
 [

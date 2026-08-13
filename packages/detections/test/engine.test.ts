@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../src/engine.ts';
 import type { MatchResult } from '../src/types.ts';
+import { expectFixtureBar, MIN_FIXTURES_PER_POLARITY } from './helpers/fixture-bar.ts';
 import { bundledPackDirs, discoverBundledRuleFiles, loadRule, RULES_DIR } from './helpers/rules.ts';
 
 type Fixture = RuleFixture;
@@ -21,6 +22,13 @@ function loadFixtures(packDir: string, ruleFile: string): Fixture[] {
   }
   const raw = JSON.parse(readFileSync(fixturePath, 'utf-8')) as unknown;
   return (raw as unknown[]).map((f) => RuleFixtureSchema.parse(f));
+}
+
+// What makes one fixture a distinct case: the text actually scanned, plus the
+// file context that gates `appliesTo`. Two fixtures may share a `text` and
+// still be separate cases when only one carries a `filePath`.
+function fixtureIdentity(fixture: Fixture): string {
+  return JSON.stringify([fixture.text, fixture.filePath ?? null]);
 }
 
 const packDirs = bundledPackDirs();
@@ -54,8 +62,8 @@ for (const { packDir, ruleFile, rule, fixtures } of discovered) {
   const ruleset = gated ? allRules : [rule];
 
   describe(`${packDir}/${ruleFile}`, () => {
-    it('has at least one fixture', () => {
-      expect(fixtures.length).toBeGreaterThan(0);
+    it(`has at least ${String(MIN_FIXTURES_PER_POLARITY)} positive and ${String(MIN_FIXTURES_PER_POLARITY)} negative fixtures`, () => {
+      expectFixtureBar(`${packDir}/${ruleFile}`, fixtures, fixtureIdentity);
     });
 
     for (const fixture of fixtures) {

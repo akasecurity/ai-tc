@@ -245,12 +245,19 @@ const RESOLVE_TIMEOUT_MS = 5_000;
  * such a copy (`judgeEnv`). A lookup for the canonical `SystemRoot` alone would
  * therefore miss a perfectly valid environment and silently fall back.
  *
- * Falls back to the bare name when the variable is absent, which is where this
- * started — no worse than before, and still anchored.
+ * An ABSENT `env` reads `process.env` rather than giving up. A caller that
+ * passes none gets a child that inherits this process's environment, so that is
+ * exactly the environment the later spawn will search — resolving against
+ * anything else would describe a lookup nobody performs. Without it the three
+ * plugin dashboard launchers, which pass no env, were the only callers left on
+ * the bare name: the ones a user triggers from a slash command in whatever
+ * directory they happen to be in, while the consent-gated judges were hardened.
+ *
+ * Falls back to the bare name when the variable is absent from BOTH, which is
+ * where this started — no worse than before, and still anchored.
  */
 export function systemWhere(env: NodeJS.ProcessEnv | undefined): string | undefined {
-  if (env === undefined) return undefined;
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(env ?? process.env)) {
     if (key.toLowerCase() !== 'systemroot') continue;
     if (typeof value !== 'string' || value.trim() === '') return undefined;
     return win32.join(value, 'System32', 'where.exe');

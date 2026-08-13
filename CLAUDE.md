@@ -109,20 +109,21 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eight places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
 
-| Site                                              | Mechanism                         | Why                                                        |
-| ------------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
-| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
-| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                              |
-| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
-| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
-| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
-| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth  |
-| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation  |
+| Site                                              | Mechanism                         | Why                                                         |
+| ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                     |
+| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart               |
+| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                               |
+| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips      |
+| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                 |
+| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth  |
+| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth   |
+| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
+| `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a ninth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a tenth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 

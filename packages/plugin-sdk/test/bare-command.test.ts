@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   BARE_COMMAND_ERROR_CODE,
@@ -445,6 +445,13 @@ describe('resolveWindowsCommand', () => {
 describe('systemWhere — the resolver is not itself decided by a search order', () => {
   const SYSTEM32_WHERE = 'C:\\Windows\\System32\\where.exe';
 
+  // systemWhere reads process.env when the caller passes none, so a stub that
+  // outlived its test would decide the answer for every case below it — and on
+  // a Windows runner it would be overriding a real SystemRoot.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('names where.exe absolutely so a planted copy cannot answer for it', () => {
     // The point of the whole module is that Windows searches the cwd first. A
     // resolver spawned by bare name is subject to that rule too, so the file it
@@ -466,11 +473,37 @@ describe('systemWhere — the resolver is not itself decided by a search order',
     // Each of these would produce a path that resolves to nothing if joined
     // blindly — `undefined` is what routes the caller back to the bare name,
     // which is where this started and is no worse than it was.
-    expect(systemWhere(undefined)).toBe(undefined);
     expect(systemWhere({})).toBe(undefined);
     expect(systemWhere({ SystemRoot: '' })).toBe(undefined);
     expect(systemWhere({ SystemRoot: '   ' })).toBe(undefined);
     expect(systemWhere({ SystemRoot: undefined })).toBe(undefined);
+  });
+
+  it('reads process.env when the caller passes none, since that is what the spawn inherits', () => {
+    // The three plugin dashboard launchers call planBareCommand with no deps,
+    // so an absent env used to route them straight back to the bare name — the
+    // callers a user triggers from a slash command in an arbitrary directory,
+    // left un-hardened while the consent-gated judges were not. A caller that
+    // passes no env gets a child inheriting THIS process's, so resolving
+    // against process.env describes the lookup the spawn actually performs.
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    expect(systemWhere(undefined)).toBe(SYSTEM32_WHERE);
+  });
+
+  it('still yields the bare name when neither the caller nor the process says', () => {
+    // The fallback is to process.env, not to a guess: an environment that names
+    // no SystemRoot is the one case that legitimately reaches `?? 'where'`.
+    vi.stubEnv('SystemRoot', '');
+    expect(systemWhere(undefined)).toBe(undefined);
+  });
+
+  it('prefers an explicit env over process.env rather than merging them', () => {
+    // A caller that passes an env is describing the child's environment
+    // exactly; reading the ambient one as well would resolve against a
+    // variable the spawn will not have.
+    vi.stubEnv('SystemRoot', 'C:\\Ambient');
+    expect(systemWhere({ SystemRoot: 'C:\\Windows' })).toBe(SYSTEM32_WHERE);
+    expect(systemWhere({})).toBe(undefined);
   });
 
   it('is reached by resolveWindowsCommand rather than being dead code', () => {

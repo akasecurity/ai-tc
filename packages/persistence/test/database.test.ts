@@ -91,22 +91,28 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     expect(policies.every((p) => p.enabled)).toBe(true);
   });
 
-  it('writes the db file owner-only (0600) where POSIX modes apply', () => {
+  it('writes the db file owner-only (0600) where POSIX modes apply', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const db = openLocalDatabase(dir);
     db.close();
-    if (process.platform === 'win32') return;
     const mode = statSync(join(dir, 'aka.db')).mode & 0o777;
     expect(mode).toBe(0o600);
   });
 
-  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', () => {
+  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // The sidecars hold prompt/file content just like the main db, so they must
     // carry the same 0600 mode. They exist only while a WAL-mode handle is open
     // (a clean close checkpoints and removes them), so assert before closing.
     const db = openLocalDatabase(dir);
     const dbFile = join(dir, 'aka.db');
     try {
-      if (process.platform === 'win32') return;
       // WAL mode creates exactly the -wal/-shm pair (no rollback -journal).
       for (const sidecar of [`${dbFile}-wal`, `${dbFile}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
@@ -117,18 +123,24 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     }
   });
 
-  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', () => {
+  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // Every hook after the first init reopens an already-migrated store. The
     // sidecars are removed on close and recreated by the reopen's writes; SQLite
     // gives a new sidecar the main db's mode, so a store loosened out of band
     // must be re-tightened on open — not only at first creation.
     openLocalDatabase(dir).close();
     const file = join(dir, 'aka.db');
-    if (process.platform !== 'win32') chmodSync(file, 0o644); // simulate a loosened store
+    // Unguarded because the ctx.skip at the top of this body already returned on
+    // Windows, where chmod is a no-op; narrowing that skip means restoring a
+    // platform guard here.
+    chmodSync(file, 0o644); // simulate a loosened store
 
     const db = openLocalDatabase(dir);
     try {
-      if (process.platform === 'win32') return;
       expect(statSync(file).mode & 0o777).toBe(0o600);
       for (const sidecar of [`${file}-wal`, `${file}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
@@ -289,8 +301,7 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     raw.close();
 
     expect(existsSync(backup)).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(statSync(backup).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(backup).mode & 0o777).toBe(0o600);
   });
 });
 

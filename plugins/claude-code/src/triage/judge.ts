@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { maskText } from '@akasecurity/plugin-sdk';
+import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 import { parseRecommendation } from '@akasecurity/setup-wizard';
 
@@ -112,17 +113,25 @@ export function judgeEnv(platform: NodeJS.Platform = process.platform): NodeJS.P
 // ceiling (ARG_MAX, ~1MB on most platforms) that a large hit set can exceed,
 // failing the spawn with E2BIG; stdin has no such limit. Returns raw stdout
 // (the JSON envelope) for parseVerdict.
+// planBareCommand owns the Windows half: `claude` is a `.cmd` shim there, which
+// libuv's own PATHEXT-less search never finds, so a shell-free spawn fails with
+// a bare ENOENT that reads as "not installed". It also anchors the spawn in the
+// user's home, because Windows searches the working directory before PATH and a
+// `claude.cmd` in a cloned repo would otherwise win. The argv here is fixed
+// flags — the prompt rides stdin — so it crosses cmd.exe intact.
 export function spawnClaude(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
   stdin: string,
 ): string {
-  return execFileSync('claude', [...argv], {
+  const plan = planBareCommand('claude', argv, { env });
+  return execFileSync(plan.file, [...plan.args], {
     env,
     input: stdin,
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 32 * 1024 * 1024,
+    ...plan.options,
   });
 }
 
@@ -133,6 +142,11 @@ export function spawnClaude(
 // suspenders: we surface ONLY the non-content metadata (exit status / signal /
 // node error code), never `.message`, `.stdout`, or `.stderr`.
 function spawnFailureMeta(err: unknown): string {
+  // planBareCommand's refusal is the one failure here that carries an
+  // explanation worth reading, and it is raw-free by construction — it names an
+  // argv index and a character class, never a value. Everything below is exit
+  // metadata, which is all any other failure may contribute.
+  if (isBareCommandUnsupported(err)) return err.reason;
   const e = err as { status?: number | null; signal?: string | null; code?: string };
   const parts: string[] = [];
   if (typeof e.status === 'number') parts.push(`exit ${String(e.status)}`);

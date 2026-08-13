@@ -54,6 +54,50 @@ import { delimiter, join } from 'node:path';
 export const SHIM_PROBE_ARG = '--version';
 
 /**
+ * Whether a shim written by {@link writeCommandShim} needs a shell to be reached
+ * at all on this platform.
+ *
+ * A win32 shim is a `.cmd` launcher, and libuv's own executable search tries
+ * `.com` and `.exe` and stops — so a shell-free spawn cannot reach one, however
+ * correctly it was written. This is a property of the ARTIFACT this module
+ * writes, which is why it lives here rather than being re-derived by each
+ * caller; a caller standing in for shipped code should read its subject's own
+ * plan instead (see `planBareCommand`).
+ */
+export const SHIM_NEEDS_SHELL = process.platform === 'win32';
+
+/**
+ * The Windows system bits a child needs before a shelled spawn works at all,
+ * for a caller that builds its child env from scratch rather than inheriting.
+ *
+ * `cmd.exe` and the `where.exe` a plan resolves with both live under System32,
+ * and Node reads the interpreter's own location out of COMSPEC. A scrubbed env
+ * carries none of them, so the child cannot spawn even a stub the caller wrote
+ * itself. Opt in explicitly — this module will not widen a caller's env behind
+ * its back, because the narrowness of that env is usually the point.
+ *
+ * Both are empty off win32.
+ */
+// eslint-disable-next-line n/no-process-env -- Windows reaches a .cmd only via System32 + COMSPEC
+const HOST_ENV = process.env;
+export const WINDOWS_SYSTEM_DIRS: readonly string[] =
+  SHIM_NEEDS_SHELL && HOST_ENV.SystemRoot !== undefined
+    ? [join(HOST_ENV.SystemRoot, 'System32'), HOST_ENV.SystemRoot]
+    : [];
+export const WINDOWS_SYSTEM_ENV: NodeJS.ProcessEnv = SHIM_NEEDS_SHELL
+  ? {
+      // Read case-insensitively on win32 by Node's own env proxy, so the OS's
+      // stored casing (`SystemRoot`, `ComSpec`) does not have to be guessed.
+      SystemRoot: HOST_ENV.SystemRoot,
+      windir: HOST_ENV.windir,
+      COMSPEC: HOST_ENV.COMSPEC,
+      // cmd.exe defaults this when unset, but a child env that carries it is one
+      // fewer thing between a `.cmd` and being found.
+      PATHEXT: HOST_ENV.PATHEXT,
+    }
+  : {};
+
+/**
  * How long the probe may take before the resolved binary is force-killed.
  *
  * Deliberately well under the 20s `testTimeout` every plugin package sets: the

@@ -15,16 +15,12 @@ import { CalibrationFrame } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
-import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import { SetupJourney } from './harness.ts';
-
-// See shim-unsupported.ts for why these suites cannot run on win32.
-const describeShimmed = describe.skipIf(shimUnsupported);
 
 const NO_HISTORY_COPY = 'Nothing to learn from yet';
 const SCAN_CLEAN_COPY = 'nothing needs your attention';
 
-describeShimmed('empty-history backfill renders the no-history calibration copy end-to-end', () => {
+describe('empty-history backfill renders the no-history calibration copy end-to-end', () => {
   let journey: SetupJourney;
   let triageStream: string;
   let preview: { stdout: string; stderr: string; status: number };
@@ -59,40 +55,35 @@ describeShimmed('empty-history backfill renders the no-history calibration copy 
   });
 });
 
-describeShimmed(
-  'scanned-clean-with-history backfill still renders the scan-clean copy end-to-end',
-  () => {
-    let journey: SetupJourney;
-    let triageStream: string;
-    let preview: { stdout: string; stderr: string; status: number };
+describe('scanned-clean-with-history backfill still renders the scan-clean copy end-to-end', () => {
+  let journey: SetupJourney;
+  let triageStream: string;
+  let preview: { stdout: string; stderr: string; status: number };
 
-    beforeAll(() => {
-      journey = new SetupJourney();
-      // History exists and is examined, but nothing surfaces: scan-clean, not no-history.
-      journey.seedCleanTranscript();
-      journey.intro();
-      journey.onboardHistorical('full');
-      triageStream = journey.backfillTriage().stdout;
-      preview = journey.applyPreview(triageStream);
-    });
+  beforeAll(() => {
+    journey = new SetupJourney();
+    // History exists and is examined, but nothing surfaces: scan-clean, not no-history.
+    journey.seedCleanTranscript();
+    journey.intro();
+    journey.onboardHistorical('full');
+    triageStream = journey.backfillTriage().stdout;
+    preview = journey.applyPreview(triageStream);
+  });
 
-    afterAll(() => {
-      journey.cleanup();
-    });
+  afterAll(() => {
+    journey.cleanup();
+  });
 
-    it('the producer emits the scan-clean signal when history was examined', () => {
-      expect(triageStream.trim()).toBe(
-        JSON.stringify({ done: true, count: 0, status: 'complete' }),
-      );
-    });
+  it('the producer emits the scan-clean signal when history was examined', () => {
+    expect(triageStream.trim()).toBe(JSON.stringify({ done: true, count: 0, status: 'complete' }));
+  });
 
-    it('the shipped preview renders the scan-clean copy, not no-history', () => {
-      expect(preview.status).toBe(0);
-      expect(preview.stdout).toContain(SCAN_CLEAN_COPY);
-      expect(preview.stdout).not.toContain(NO_HISTORY_COPY);
-      expect(preview.stdout).not.toContain('No triage hits to review');
-      const frame = CalibrationFrame.parse(readFrameJsonBlock(preview.stdout));
-      expect(frame.counts).toEqual({ total: 0, important: 0, routine: 0 });
-    });
-  },
-);
+  it('the shipped preview renders the scan-clean copy, not no-history', () => {
+    expect(preview.status).toBe(0);
+    expect(preview.stdout).toContain(SCAN_CLEAN_COPY);
+    expect(preview.stdout).not.toContain(NO_HISTORY_COPY);
+    expect(preview.stdout).not.toContain('No triage hits to review');
+    const frame = CalibrationFrame.parse(readFrameJsonBlock(preview.stdout));
+    expect(frame.counts).toEqual({ total: 0, important: 0, routine: 0 });
+  });
+});

@@ -10,6 +10,7 @@ import {
   configPostureDefinitions,
   evaluateConfigPosture,
 } from '../../src/posture/config-posture.ts';
+import { expectFixtureBar, MIN_FIXTURES_PER_POLARITY } from '../helpers/fixture-bar.ts';
 
 const fixturesDir = join(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -37,14 +38,13 @@ function scan(hooks: HookScanEntry[]): ConfigScanResult {
   };
 }
 
-// The same bar the rule-pack CI gate sets: every rule has labeled positive AND
-// negative fixtures, and every fixture passes.
+// The same bar the rule-pack CI gate sets, from the same constant: every rule
+// has labeled positive AND negative fixtures, and every fixture passes.
 describe.each(CONFIG_POSTURE_RULES.map((r) => r.ruleId))('fixtures: %s', (ruleId) => {
   const cases = loadFixtures(ruleId);
 
-  it('has at least 2 positive and 2 negative cases', () => {
-    expect(cases.filter((c) => c.shouldMatch).length).toBeGreaterThanOrEqual(2);
-    expect(cases.filter((c) => !c.shouldMatch).length).toBeGreaterThanOrEqual(2);
+  it(`has at least ${String(MIN_FIXTURES_PER_POLARITY)} positive and ${String(MIN_FIXTURES_PER_POLARITY)} negative cases`, () => {
+    expectFixtureBar(ruleId, cases, (c) => JSON.stringify(c.hooks));
   });
 
   it.each(cases.map((c) => [c.label, c] as const))('%s', (_label, c) => {

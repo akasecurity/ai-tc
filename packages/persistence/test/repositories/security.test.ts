@@ -1,8 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type {
   ActionTaken,
@@ -12,33 +8,22 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 const DAY_MS = 86_400_000;
 // A fixed midday clock so window/bucket math is deterministic. Its UTC day is
 // 2026-06-29; windows align to UTC midnight (00:00) of that day.
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-security-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-security-'));
-  db = openLocalDatabase(dir);
-});
-
-// Raw second connections handed to repos under test — closed before rmSync
-// (Windows cannot delete a directory while a DB handle is open).
-const rawConnections: DatabaseSync[] = [];
-
-afterEach(() => {
-  for (const raw of rawConnections.splice(0)) raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 // Record one event + one finding. `daysAgo` is relative to NOW (fractional ok).
@@ -95,8 +80,7 @@ function record(opts: {
 // A SecurityViews bound to a second read connection with the fixed clock (the
 // facade's own repo uses the wall clock — window math must be pinned in tests).
 function security(): SqliteSecurityRepository {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  rawConnections.push(raw);
+  const raw = store.openRaw();
   return new SqliteSecurityRepository(raw, () => NOW);
 }
 

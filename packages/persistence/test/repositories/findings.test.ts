@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -13,11 +11,14 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { captureId } from '../../src/ids.ts';
 import { DB_FILENAME } from '../../src/paths.ts';
+import type { OwnedTempStore } from '../helpers/temp-store.ts';
+import { createTempStore, useTempStore } from '../helpers/temp-store.ts';
+import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
 // Mirrors @akasecurity/plugin-sdk's computeFindingKey formula
 // (sha256(ruleId + '\0' + normalizedPath + '\0' + valueFingerprint)) —
@@ -28,17 +29,11 @@ function findingKeyFor(ruleId: string, filePath: string, valueFingerprint: strin
   return createHash('sha256').update(`${ruleId}\0${filePath}\0${valueFingerprint}`).digest('hex');
 }
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-findings-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-findings-'));
-  db = openLocalDatabase(dir);
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 // Record one event + one finding. Distinct `occurredAt` (ISO) keeps ordering
@@ -308,7 +303,7 @@ describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () 
   // Activity page's per-session "N triggered" tally. Written raw (the write
   // gateway lives in plugin-runtime, out of this package's reach).
   function seedTranscriptFirings(sessionId: string, ruleId: string, firings: number): void {
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       raw
         .prepare(
@@ -423,7 +418,7 @@ function recordAtRest(opts: {
 // Raw inspection_findings rows for a finding_key, read over a second
 // connection to the same file (mirrors resolutions.test.ts's pattern).
 function findingRowsByKey(key: string): { id: string; event_id: string; action_taken: string }[] {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
+  const raw = store.openRaw();
   try {
     return raw
       .prepare(
@@ -492,7 +487,7 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
       filePath: 'a.ts',
     });
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       const rows = raw
         .prepare('SELECT id FROM inspection_findings WHERE finding_key IS NULL')
@@ -864,6 +859,10 @@ function seedBulk(intoDir: string, opts: { ruleId?: string } = {}): void {
       );
     }
     raw.exec('COMMIT');
+    // A seeder that returns still inside its BEGIN has committed nothing, and
+    // every read below would then measure an empty store and report it as a
+    // result. Assert the commit landed rather than trust that it did.
+    assertNoOpenTransaction(raw);
   } finally {
     raw.close();
   }
@@ -874,18 +873,25 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
   // writes, so it is seeded ONCE here rather than per test: re-seeding 2600 rows
   // seven times is enough disk traffic to time out the workers running beside
   // this file. Deliberately its own store, not the outer per-test `db`.
-  let bulkDir: string;
-  let bulkDb: ReturnType<typeof openLocalDatabase>;
+  //
+  // Its lifetime is the block rather than the test, so neither hook-driven shape
+  // of the harness fits — `useTempStore` registers a beforeEach. That is what
+  // `createTempStore` is for: the caller owns the lifetime, and `destroy()`
+  // closes every handle it handed out before draining the tree.
+  // Optional because `afterAll` runs even when `beforeAll` threw: a failed
+  // `createTempStore` would otherwise make the teardown report
+  // `Cannot read properties of undefined` in place of the real cause.
+  let bulkStore: OwnedTempStore | undefined;
+  let bulkDb: LocalDatabase;
 
   beforeAll(() => {
-    bulkDir = mkdtempSync(join(tmpdir(), 'aka-findings-bulk-'));
-    bulkDb = openLocalDatabase(bulkDir);
-    seedBulk(bulkDir);
+    bulkStore = createTempStore('aka-findings-bulk-');
+    bulkDb = bulkStore.open();
+    seedBulk(bulkStore.dataDir);
   });
 
   afterAll(() => {
-    bulkDb.close();
-    rmSync(bulkDir, { recursive: true, force: true });
+    bulkStore?.destroy();
   });
 
   it('counts every instance rather than saturating at the old 2000-row cap', async () => {
@@ -973,7 +979,7 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
       repo: 'acme/buried',
       filePath: 'old.ts',
     });
-    seedBulk(dir);
+    seedBulk(store.dataDir);
 
     const res = await db.findings.listGroupedFindings({});
 

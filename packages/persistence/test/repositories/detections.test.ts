@@ -1,36 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent, InstalledPackInput, Rule } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteDetectionsRepository } from '../../src/repositories/detections.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 const DAY_MS = 86_400_000;
 // A fixed clock so the 30-day findings window is deterministic.
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-detections-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-detections-'));
-  db = openLocalDatabase(dir);
-});
-
-// Raw second connections handed to repos under test — closed before rmSync
-// (Windows cannot delete a directory while a DB handle is open).
-const rawConnections: DatabaseSync[] = [];
-
-afterEach(() => {
-  for (const raw of rawConnections.splice(0)) raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 function regexRule(id: string): Rule {
@@ -86,8 +71,7 @@ function recordFinding(ruleId: string, daysAgo: number): void {
 
 // A detections repo on a second read connection with the fixed clock.
 function detections(): SqliteDetectionsRepository {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  rawConnections.push(raw);
+  const raw = store.openRaw();
   return new SqliteDetectionsRepository(raw, () => NOW);
 }
 
@@ -206,7 +190,7 @@ describe('SqliteDetectionsRepository.getDetectionDetail', () => {
 
   it('reports update=null for an installed pack with no available mirror row', async () => {
     // A foreign/custom pack recorded outside the bundled inventory.
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(
         `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
@@ -261,7 +245,7 @@ describe('SqliteDetectionsRepository malformed-row tolerance', () => {
   // JSON, bypassing the validated write path. SQL json_array_length() would throw
   // "malformed JSON" on this row; the reads parse in JS instead and must survive.
   function insertBrokenPack(): void {
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(
         `INSERT INTO installed_packs
@@ -298,7 +282,7 @@ describe('SqliteDetectionsRepository malformed-row tolerance', () => {
   // The 30-day findings count must skip it, not bind `undefined` into the SQL
   // IN (…) list (node:sqlite throws on an undefined bind, crashing the read).
   it('tolerates a valid rules_json whose rule has no id in getDetectionDetail', async () => {
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(
         `INSERT INTO installed_packs

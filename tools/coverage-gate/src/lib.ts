@@ -8,10 +8,13 @@
  * while the untested Server Action beside it stays untested. The number that
  * describes a change is the one taken over the change.
  *
- * This module is pure over its inputs — a diff string and a set of coverage
- * reports — so every branch is drivable from a fixture. The I/O lives in
- * check-diff-coverage.ts.
+ * Everything here is pure over its inputs — a diff string, a set of coverage
+ * reports, an argv array — or pure over INJECTED seams (see GateIo), so every
+ * branch is drivable from a fixture. The CLI entry (check-diff-coverage.ts)
+ * owns all I/O — running git, reading files, writing stdout — and decides
+ * nothing, so the decisions stay next to the tests that drive them.
  */
+import { relative, resolve, sep } from 'node:path';
 
 /** A file's added/modified line numbers, keyed by repo-relative posix path. */
 export type AddedLines = Map<string, Set<number>>;
@@ -381,4 +384,207 @@ export function formatLineRanges(lines: readonly number[]): string {
   flush();
 
   return ranges.join(', ');
+}
+
+/** Default floor for the covered fraction of changed lines. */
+export const DEFAULT_FLOOR = 80;
+
+/**
+ * Below this many eligible lines the percentage is reported but not enforced —
+ * see GateOptions.minimumLines. A one-line fix cannot be asked for 80%.
+ */
+export const DEFAULT_MINIMUM_LINES = 25;
+
+/**
+ * A `--name value` or `--name=value` flag, looked up in an argv array.
+ *
+ * Both forms are supported because both are typed, and the two off-by-ones live
+ * here rather than in the value parsing: `--name` as the LAST argv entry has no
+ * value after it (hence the bounds check), and the inline form's value starts
+ * after `--`, the name and `=` — `name.length + 3` characters in.
+ */
+export function findFlag(name: string, argv: readonly string[]): string | undefined {
+  const index = argv.indexOf(`--${name}`);
+  if (index !== -1 && index + 1 < argv.length) return argv[index + 1];
+  const inline = argv.find((a) => a.startsWith(`--${name}=`));
+  return inline?.slice(name.length + 3);
+}
+
+/**
+ * A numeric flag resolved straight from argv. `null` means SUPPLIED and
+ * unreadable — see parseNumericFlag for why that is not a fallback.
+ */
+export function resolveNumericFlag(
+  name: string,
+  argv: readonly string[],
+  fallback: number,
+): number | null {
+  return parseNumericFlag(findFlag(name, argv), fallback);
+}
+
+/** An absolute path as a repo-relative POSIX path, whatever the host separator. */
+export function toRepoRelative(absolute: string, root: string): string {
+  return relative(root, absolute).split(sep).join('/');
+}
+
+/**
+ * The manifest paths in `git ls-files` output, minus vendored ones.
+ *
+ * Derived from the manifests rather than globbed, so a package whose suite did
+ * not run is reported as a MISSING report rather than silently skipped — the
+ * difference between "nothing changed there" and "nothing measured it".
+ */
+export function parseManifestList(lsFiles: string): string[] {
+  return lsFiles.split('\n').filter((f) => f && !f.includes('node_modules'));
+}
+
+/** Which packages reported coverage, and which owe a report. */
+export interface ReportSelection {
+  /** Absolute paths to each `coverage-final.json` that exists. */
+  readonly reports: string[];
+  /** Repo-relative paths to each report a test-running package did not write. */
+  readonly missing: string[];
+}
+
+/** The seams `selectCoverageReports` needs — a JSON reader and an existence test. */
+export interface ReportLookup {
+  readonly root: string;
+  readFile(path: string): string;
+  exists(path: string): boolean;
+}
+
+/**
+ * Split the packages that declare a `test` script into those that wrote a
+ * coverage report and those that did not.
+ *
+ * `missing` is kept separate rather than folded into an empty list because the
+ * caller must be able to tell "a package did not report" from "no package runs
+ * tests" — the first is fatal, the second is not.
+ */
+export function selectCoverageReports(
+  manifests: readonly string[],
+  lookup: ReportLookup,
+): ReportSelection {
+  const reports: string[] = [];
+  const missing: string[] = [];
+
+  for (const manifest of manifests) {
+    const pkg = JSON.parse(lookup.readFile(resolve(lookup.root, manifest))) as {
+      scripts?: Record<string, string>;
+    };
+    if (!pkg.scripts?.test) continue;
+    const report = resolve(lookup.root, manifest, '..', 'coverage', 'coverage-final.json');
+    if (lookup.exists(report)) reports.push(report);
+    else missing.push(toRepoRelative(report, lookup.root));
+  }
+
+  return { reports, missing };
+}
+
+/**
+ * Everything the gate needs from the outside world. The CLI entry supplies the
+ * real implementations; a test supplies canned ones, which is what makes every
+ * branch below reachable without a git repository or a filesystem.
+ */
+export interface GateIo extends ReportLookup {
+  readonly argv: readonly string[];
+  git(args: readonly string[]): string;
+  writeOut(text: string): void;
+  writeErr(text: string): void;
+  appendSummary(file: string, text: string): void;
+}
+
+/**
+ * Run the gate and return the process exit code: 0 clear, 1 below the floor or
+ * a broken environment, 2 a flag that was supplied and could not be read.
+ */
+export function runGate(io: GateIo): number {
+  const base = findFlag('base', io.argv) ?? 'origin/main';
+
+  const numeric = (name: string, fallback: number): number | null => {
+    const value = resolveNumericFlag(name, io.argv, fallback);
+    if (value === null) {
+      io.writeErr(
+        `coverage-gate: --${name} must be a non-negative number, ` +
+          `got "${String(findFlag(name, io.argv))}".\n`,
+      );
+    }
+    return value;
+  };
+
+  const floor = numeric('floor', DEFAULT_FLOOR);
+  if (floor === null) return 2;
+  const minimumLines = numeric('minimum-lines', DEFAULT_MINIMUM_LINES);
+  if (minimumLines === null) return 2;
+  const summaryFile = findFlag('summary', io.argv);
+
+  let selection: ReportSelection;
+  try {
+    selection = selectCoverageReports(
+      parseManifestList(io.git(['ls-files', '*/package.json', '*/*/package.json'])),
+      io,
+    );
+  } catch (error) {
+    // git absent, or not a work tree. Without this the failure surfaces as a
+    // raw execFileSync stack trace naming node:child_process, which points at
+    // this tool rather than at the environment that actually broke.
+    io.writeErr(`coverage-gate: cannot enumerate packages: ${String(error)}\n`);
+    return 1;
+  }
+
+  if (selection.missing.length > 0) {
+    // Loud, and fatal. A gate that quietly measures 12 of 21 packages reports a
+    // number that looks like coverage and is not one: every changed file in a
+    // package whose report is absent lands in `unmeasured`, which reads as
+    // "excluded on purpose".
+    io.writeErr('coverage-gate: no coverage report for:\n');
+    for (const path of selection.missing) io.writeErr(`  ${path}\n`);
+    io.writeErr('Run `pnpm turbo run test` first — it is what writes them.\n');
+    return 1;
+  }
+
+  // `diff` against the merge base, not the base tip: a two-dot diff against a
+  // moved base attributes every line that landed on main since the branch
+  // started to this PR, so an unrelated merge can redden it — or, with the
+  // arithmetic running the other way, dilute a genuinely untested change into a
+  // passing percentage.
+  let mergeBase: string;
+  try {
+    mergeBase = io.git(['merge-base', base, 'HEAD']).trim();
+  } catch {
+    io.writeErr(`coverage-gate: cannot resolve a merge base with "${base}".\n`);
+    io.writeErr('Fetch it first (actions/checkout uses depth 1 by default).\n');
+    return 1;
+  }
+
+  // The prefixes and --no-ext-diff are pinned rather than inherited. A user's
+  // `diff.external` replaces this output with another tool's format, and
+  // `diff.noprefix` drops the a/ b/ that stripDiffPrefix strips — and BOTH
+  // degrade to an unparseable diff, which reads as "no lines changed" and exits
+  // 0. A gate whose local configuration can silently switch it off is not one.
+  const diff = io.git([
+    'diff',
+    '--unified=0',
+    '--no-color',
+    '--no-ext-diff',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+    `${mergeBase}...HEAD`,
+  ]);
+  const added = parseUnifiedDiff(diff);
+
+  const indexes: CoverageIndex[] = selection.reports.map((report) =>
+    indexIstanbulReport(
+      JSON.parse(io.readFile(report)) as Record<string, IstanbulFileCoverage>,
+      (absolute) => toRepoRelative(absolute, io.root),
+    ),
+  );
+
+  const result = diffCoverage(added, mergeCoverageIndexes(indexes));
+  const verdict = evaluateGate(result, { floor, minimumLines });
+  const report = formatReport(result, verdict);
+
+  io.writeOut(report);
+  if (summaryFile !== undefined) io.appendSummary(summaryFile, report);
+  return verdict.passed ? 0 : 1;
 }

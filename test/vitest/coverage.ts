@@ -80,15 +80,15 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/scanner': 95, //                    96.80
   '@akasecurity/extract': 95, //                    96.61
   '@akasecurity/persistence': 94, //                95.97
+  // Everything but the CLI entry, which is I/O wiring and decides nothing —
+  // every decision sits in lib.ts, where the suite drives it.
+  '@akasecurity/coverage-gate': 93, //              94.80
   '@akasecurity/plugin-sdk': 91, //                 92.37
   '@akasecurity/setup-wizard': 89, //               90.38
   '@akasecurity/schema': 84, //                     85.59
   '@akasecurity/portability-gate': 84, //           85.58
   '@akasecurity/plugin-runtime': 76, //             77.25
   '@akasecurity/ai-tc-claude-code': 71, //          72.84
-  // The pure half (lib.ts) is thoroughly covered; check-diff-coverage.ts is
-  // argv/git/fs glue with no suite, and it is what holds this number down.
-  '@akasecurity/coverage-gate': 63, //              64.70
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96

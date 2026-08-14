@@ -153,8 +153,9 @@ export type Matcher = z.infer<typeof Matcher>;
 // Optional language/file scoping. When present, the engine runs the rule only
 // against text whose file extension is in `extensions` — and still runs it when
 // no file context exists at all (live prompt/response hooks), since pasted code
-// in a prompt has no knowable language. Additive + optional, so specVersion
-// stays 1 and existing/community rules remain valid.
+// in a prompt has no knowable language. Optional, so a rule authored before this
+// field existed still parses — see `Rule.specVersion` for why an optional field
+// here is the only way the shape grows.
 export const AppliesTo = z
   .strictObject({
     // Dot-prefixed, e.g. ".py" — matches the scanner's SOURCE_EXTENSIONS shape.
@@ -174,8 +175,11 @@ export const PostValidatorName = z.enum(['entropy', 'luhn']).meta({ id: 'PostVal
 export type PostValidatorName = z.infer<typeof PostValidatorName>;
 
 // A post-validator reference: the bare name (engine defaults), or name + config
-// for per-rule tuning (e.g. entropy over short password values). Additive — the
-// bare-string form stays valid for existing rules.
+// for per-rule tuning (e.g. entropy over short password values). The bare-string
+// form stays valid for rules already using it. Either form closes over the same
+// name (see PostValidatorName above), so a name that exists only in the
+// `validator` MATCHER enum — `ssn-checksum` — is refused here, where it names no
+// post-validator at all.
 export const PostValidatorRef = z
   .union(
     [
@@ -207,8 +211,9 @@ export type PostValidatorRef = z.infer<typeof PostValidatorRef>;
 // kept only if corroborated by another signal within `windowChars` of its span:
 // another match whose category is in `categories`, another match whose ruleId is
 // in `ruleIds`, or one of `labels` appearing (case-insensitively) in the
-// surrounding text window. Additive + optional, so specVersion stays 1 and
-// existing/community rules remain valid.
+// surrounding text window. Optional, so a rule authored before this field
+// existed still parses — see `Rule.specVersion` for why an optional field here
+// is the only way the shape grows.
 export const RequiresNearby = z
   .strictObject({
     // Each array, when present, must be non-empty and contain non-empty strings —
@@ -246,6 +251,13 @@ export type RuleFixture = z.infer<typeof RuleFixture>;
 
 export const Rule = z
   .strictObject({
+    // A pinned literal over a STRICT object, and the two together decide how this
+    // format may grow. A rule carrying a key not listed below is refused with
+    // `unrecognized_keys`; a rule declaring `specVersion: 2` is refused with
+    // `invalid_value`. So the only additive path is adding an OPTIONAL field here
+    // — that keeps every rule authored before it valid — and a rule author has no
+    // way to introduce a field of their own or to opt into a later version.
+    // Widening the format means changing this literal and every consumer of it.
     specVersion: z.literal(1),
     // `packId/ruleName` (e.g. `secrets/aws-access-key`). NOTE the first segment is
     // the PACK id, NOT a namespace — this is a DIFFERENT slug space from a

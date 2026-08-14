@@ -37,6 +37,55 @@ export interface InstalledPackCounts {
   enabled: number;
 }
 
+// The failure half of `Rule.safeParse`, derived from the schema rather than
+// imported: this package depends on `@akasecurity/schema`, not on zod.
+type RuleParseError = Extract<ReturnType<typeof Rule.safeParse>, { success: false }>['error'];
+
+// The entry's own `id`, but only when it satisfies the schema's own id pattern.
+// Asking `Rule.shape.id` rather than restating that regex keeps the check from
+// drifting away from the rule it mirrors.
+function printableRuleId(entry: unknown): string | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const candidate: unknown = (entry as { id?: unknown }).id;
+  return Rule.shape.id.safeParse(candidate).success ? (candidate as string) : null;
+}
+
+// `<dotted path>: <issue code>` for the first issue — path and code only. An
+// issue with no path (the entry was the wrong shape entirely) reports the code
+// alone.
+//
+// NOT `issue.message`. Most messages describe the expectation rather than the
+// input ("expected one of ..."), but the commonest rejection here does the
+// opposite: an unrecognized key reports `Unrecognized key: "<the key>"`, quoting
+// a name straight out of an entry that never passed validation. Path and code
+// are schema-side and cannot carry any of the entry's own bytes.
+function firstIssueReason(error: RuleParseError): string {
+  const issue = error.issues[0];
+  if (!issue) return 'unknown';
+  const path = issue.path.map((segment) => String(segment)).join('.');
+  return path ? `${path}: ${issue.code}` : issue.code;
+}
+
+// How many rejected rules `rejectedRules` describes before it stops growing.
+// One corrupt pack can hold thousands of entries; the list feeds an operator
+// notice, so it is a sample rather than a ledger. `invalidRules` stays exact.
+export const REJECTED_RULE_DETAIL_CAP = 10;
+
+// Why one rule under an enabled pack was rejected, in terms safe to print.
+export interface RejectedRule {
+  // `namespace/packId` of the pack the entry came from.
+  pack: string;
+  // The entry's own `id`, and ONLY when it satisfies the schema's own id
+  // pattern — that alphabet (lowercase, digits, hyphen, one slash) cannot carry
+  // a secret. Anything else, including a missing or non-string id, reports null
+  // rather than echoing unvalidated input.
+  ruleId: string | null;
+  // Dotted schema path plus the Zod issue code, e.g. `postValidators.0:
+  // invalid_union`. Built from `issue.path` and `issue.code` ALONE — see
+  // firstIssueReason on why the human-readable message is not usable here.
+  reason: string;
+}
+
 // The scan-time view of the installed inventory: every valid rule from every
 // ENABLED pack, plus the row counts the caller's fail-open ladder needs to tell
 // "empty/foreign store" (fall back to bundled rules) apart from "the user
@@ -48,6 +97,12 @@ export interface InstalledRuleset {
   // Rules under enabled packs that failed Rule validation (foreign/corrupt
   // rows). All-invalid ⇒ the caller treats the snapshot as unusable.
   invalidRules: number;
+  // Identifying detail for the first REJECTED_RULE_DETAIL_CAP of those, in
+  // encounter order. Rejecting ONE rule costs the caller the whole snapshot, so
+  // without this a user loses every custom rule and every per-detection
+  // enforcement action with nothing naming the entry responsible. May be
+  // shorter than `invalidRules`; never longer.
+  rejectedRules: RejectedRule[];
   // Per valid rule (by id): the enforcement action its pack's assigned policy
   // resolves to (see policyIdToAction). The standalone gateway turns these into
   // ruleId-targeted policies so a detection's Monitor/Warn/Redact/Block choice
@@ -394,9 +449,13 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       policyId: string | null;
       rulesJson: string;
       version: string;
+      namespace: string;
+      packId: string;
     }>(
       this.db.prepare(
-        `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson, version FROM installed_packs`,
+        `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson, version,
+                namespace, pack_id AS packId
+           FROM installed_packs`,
       ),
     );
 
@@ -405,23 +464,34 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       enabledPacks: 0,
       rules: [],
       invalidRules: 0,
+      rejectedRules: [],
       ruleActions: new Map(),
       ruleVersions: new Map(),
+    };
+    // Records a rejection without ever copying the entry's own bytes. Callers
+    // still bump `invalidRules` themselves — that count is exact, this list is
+    // capped.
+    const reject = (pack: string, ruleId: string | null, reason: string): void => {
+      if (out.rejectedRules.length >= REJECTED_RULE_DETAIL_CAP) return;
+      out.rejectedRules.push({ pack, ruleId, reason });
     };
     for (const row of rows) {
       if (!intToBool(row.enabled)) continue;
       out.enabledPacks += 1;
       // The whole pack shares one policy; each of its valid rules inherits it.
       const action = policyIdToAction(row.policyId);
+      const pack = `${row.namespace}/${row.packId}`;
       let raw: unknown;
       try {
         raw = JSON.parse(row.rulesJson);
       } catch {
         out.invalidRules += 1; // whole pack unusable (malformed JSON)
+        reject(pack, null, 'rules_json: malformed JSON');
         continue;
       }
       if (!Array.isArray(raw)) {
         out.invalidRules += 1; // whole pack unusable (not a rule array)
+        reject(pack, null, 'rules_json: not an array');
         continue;
       }
       for (const entry of raw) {
@@ -430,7 +500,10 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
           out.rules.push(parsed.data);
           out.ruleActions.set(parsed.data.id, action);
           out.ruleVersions.set(parsed.data.id, row.version);
-        } else out.invalidRules += 1;
+        } else {
+          out.invalidRules += 1;
+          reject(pack, printableRuleId(entry), firstIssueReason(parsed.error));
+        }
       }
     }
     return out;

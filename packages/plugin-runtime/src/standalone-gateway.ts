@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   BlockedDetectionInput,
+  InstalledRuleset,
   LocalDatabase,
   ResolutionInput,
 } from '@akasecurity/persistence';
@@ -65,6 +66,8 @@ export class StandaloneDataGateway implements DataGateway {
   private readonly db: LocalDatabase;
   // Kept for the fingerprint key lookup (exception.key lives beside the store).
   private readonly dataDir: string;
+  // One notice per gateway — see warnRulesetDiscarded.
+  private warnedRulesetDiscarded = false;
 
   constructor(
     dataDir: string,
@@ -215,6 +218,40 @@ export class StandaloneDataGateway implements DataGateway {
   //     enabled pack contributing nothing is untrustworthy, not a real
   //     "detect nothing" (that is expressed by disabling packs, handled above);
   //   - otherwise → the enabled packs' validated rules, marked complete.
+  /**
+   * The discard above is the one ruleset decision this gateway reaches on its
+   * own, and it is the most expensive one here: ONE rejected entry costs the
+   * user every custom rule and every per-detection enforcement action, replaced
+   * by bundled packs that contain neither. Nothing else reports it — a hook is a
+   * short-lived process whose stderr is the only channel it has — so name what
+   * was rejected and where the rest of the list lives.
+   *
+   * Unlike a quarantine verdict this caches nothing: the rejection is re-derived
+   * from the store on every run, so the recovery is to fix or reinstall the pack,
+   * and no line here may offer a command that clears a stored verdict.
+   *
+   * Written at most once per gateway — a second getPolicyBundle() in the same
+   * process would re-report the same finding.
+   */
+  private warnRulesetDiscarded(snapshot: InstalledRuleset): void {
+    if (this.warnedRulesetDiscarded) return;
+    this.warnedRulesetDiscarded = true;
+    // Each entry is `pack "ruleId" (reason)`, with the id omitted where the
+    // snapshot could not vouch for it. Every field here is schema-derived; see
+    // RejectedRule on why none of them can carry the entry's own bytes.
+    const listed = snapshot.rejectedRules
+      .map((r) => `${r.pack}${r.ruleId === null ? '' : ` "${r.ruleId}"`} (${r.reason})`)
+      .join(', ');
+    const undisclosed = snapshot.invalidRules - snapshot.rejectedRules.length;
+    const more = undisclosed > 0 ? `, and ${String(undisclosed)} more` : '';
+    process.stderr.write(
+      `[aka] installed ruleset not used: ${String(snapshot.invalidRules)} rule(s) under enabled packs ` +
+        `failed validation, so scanning fell back to the bundled packs and no custom rule or ` +
+        `per-detection action is enforced — rejected: ${listed}${more}; ` +
+        'review them with `aka detections`\n',
+    );
+  }
+
   private installedScanRules():
     | {
         rules: Rule[];
@@ -229,7 +266,10 @@ export class StandaloneDataGateway implements DataGateway {
       if (snapshot.enabledPacks === 0) {
         return { rules: [], ruleActions: new Map(), ruleVersions: new Map(), complete: true };
       }
-      if (snapshot.invalidRules > 0) return undefined;
+      if (snapshot.invalidRules > 0) {
+        this.warnRulesetDiscarded(snapshot);
+        return undefined;
+      }
       if (snapshot.rules.length === 0) return undefined;
       return {
         rules: snapshot.rules,

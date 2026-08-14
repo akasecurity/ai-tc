@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
 import { DB_FILENAME } from '../../src/paths.ts';
+import { REJECTED_RULE_DETAIL_CAP } from '../../src/repositories/installed-packs.ts';
 
 let dir: string;
 
@@ -319,6 +320,136 @@ describe('installedRuleset (scan-time snapshot)', () => {
     expect(snapshot.rules.map((r) => r.id)).toEqual(['custom/a']);
     expect(snapshot.invalidRules).toBe(1);
     db.close();
+  });
+
+  // Rejecting ONE rule costs the caller its whole snapshot, so the count alone
+  // leaves a user with no custom rules, no per-detection enforcement action,
+  // and nothing naming the entry responsible. These pin what is reported and,
+  // just as importantly, what is not.
+  describe('rejectedRules', () => {
+    // A rejected entry never passed validation, so any of its own bytes may be
+    // a live credential. High-entropy but deliberately matching no rule.
+    const PLANTED = 'zQf7Kp2Wx9Lm4Nv8Rt6Yh3Bd5Gj1Sc0Ae';
+
+    function seedRejections(entries: unknown[], packRules = 'mine'): DatabaseSync {
+      const raw = new DatabaseSync(join(dir, DB_FILENAME));
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES (?, 'custom', ?, '1.0.0', ?, ?, 1, 0, 0)`,
+        )
+        .run('c1', packRules, 'Mine', JSON.stringify(entries));
+      return raw;
+    }
+
+    it('names the pack, the rule and the schema key for each kind of rejection', () => {
+      const db = openLocalDatabase(dir);
+      const raw = seedRejections([
+        rule('custom/a'), // valid — must not appear
+        { ...rule('custom/b'), postValidator: ['luhn'] }, // unknown key
+        { ...rule('custom/c'), postValidators: ['nope'] }, // unimplemented validator
+      ]);
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES ('c2', 'custom', 'broken', '1.0.0', 'Broken', '[{"id":', 1, 0, 0)`,
+        )
+        .run();
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.rejectedRules).toEqual([
+        { pack: 'custom/mine', ruleId: 'custom/b', reason: 'unrecognized_keys' },
+        { pack: 'custom/mine', ruleId: 'custom/c', reason: 'postValidators.0: invalid_union' },
+        { pack: 'custom/broken', ruleId: null, reason: 'rules_json: malformed JSON' },
+      ]);
+      db.close();
+    });
+
+    it('reports a non-array rules_json against its own pack', () => {
+      const db = openLocalDatabase(dir);
+      const raw = new DatabaseSync(join(dir, DB_FILENAME));
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES ('o1', 'custom', 'object', '1.0.0', 'Object', '{}', 1, 0, 0)`,
+        )
+        .run();
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.rejectedRules).toEqual([
+        { pack: 'custom/object', ruleId: null, reason: 'rules_json: not an array' },
+      ]);
+      db.close();
+    });
+
+    it('never carries a rejected entry’s own bytes — not even its id', () => {
+      const db = openLocalDatabase(dir);
+      // The id is itself invalid, so echoing it would echo unvalidated input;
+      // the secret rides a field the parse never reached.
+      const raw = seedRejections([
+        { ...rule('custom/x'), id: `not a valid id ${PLANTED}`, examples: [PLANTED] },
+      ]);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      const [detail] = snapshot.rejectedRules;
+      expect(detail).toBeDefined();
+
+      // Positive control first: without it every absence check below is
+      // satisfied by an empty list.
+      expect(snapshot.invalidRules).toBe(1);
+      expect(detail?.reason).toBe('id: invalid_format');
+      expect(detail?.pack).toBe('custom/mine');
+
+      // An id is echoed ONLY when it satisfies the schema's own pattern, so an
+      // invalid one drops to null rather than being quoted back.
+      expect(detail?.ruleId).toBeNull();
+
+      // An allowlist, not just an absence check: it holds for every secret
+      // shape rather than the one planted here. `reason` is a dotted schema
+      // path plus a Zod code, and neither alphabet can carry a credential.
+      expect(detail?.reason).toMatch(/^[A-Za-z0-9_.]+(: [A-Za-z_ ]+)?$/);
+      expect(JSON.stringify(snapshot.rejectedRules)).not.toContain(PLANTED);
+      db.close();
+    });
+
+    it('never carries the offending KEY either, which is the message that would leak', () => {
+      // Most Zod messages describe the expectation ("expected one of ..."), but
+      // the commonest rejection here is the opposite: an unrecognized key
+      // reports `Unrecognized key: "<the key>"`. That is the realistic leak — a
+      // rule whose key, not value, carries the secret — so it is pinned apart
+      // from the value case above.
+      const db = openLocalDatabase(dir);
+      const raw = seedRejections([{ ...rule('custom/k'), [PLANTED]: true }]);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      const [detail] = snapshot.rejectedRules;
+      expect(detail).toEqual({
+        pack: 'custom/mine',
+        ruleId: 'custom/k',
+        reason: 'unrecognized_keys',
+      });
+      expect(JSON.stringify(snapshot.rejectedRules)).not.toContain(PLANTED);
+      db.close();
+    });
+
+    it('caps the detail list while invalidRules stays exact', () => {
+      const db = openLocalDatabase(dir);
+      const tooMany = Array.from({ length: REJECTED_RULE_DETAIL_CAP + 5 }, (_, i) => ({
+        ...rule(`custom/r${String(i)}`),
+        postValidator: ['luhn'],
+      }));
+      const raw = seedRejections(tooMany);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.invalidRules).toBe(REJECTED_RULE_DETAIL_CAP + 5); // exact
+      expect(snapshot.rejectedRules).toHaveLength(REJECTED_RULE_DETAIL_CAP); // sampled
+      db.close();
+    });
   });
 
   // Read the current available_packs mirror row for `secrets`.

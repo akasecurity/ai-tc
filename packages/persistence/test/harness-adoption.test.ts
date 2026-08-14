@@ -10,7 +10,9 @@
  * than left to review, which is where it went unnoticed for as long as it did.
  *
  * The file set is derived from `git ls-files`, never listed here — a suite added
- * tomorrow is covered without an edit, which is the whole point.
+ * tomorrow is covered without an edit, which is the whole point. Exactly one
+ * file is held out of it, this one, for the reason recorded at `SELF` below; the
+ * hole that opens is bounded by a case of its own rather than by trust.
  *
  * Comments are stripped before anything is matched, and that is not tidiness. A
  * plain grep over this directory counts prose as a call: `paths.test.ts` and
@@ -20,12 +22,35 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * This file, as `git ls-files` reports it — held out of the walk below.
+ *
+ * The detector strips comments but not STRING LITERALS, and this suite's own
+ * controls are literals holding the very tokens it searches for: a control that
+ * did not look like real code would not be a control. So this is the one file
+ * the detector cannot be pointed at — it reports itself as both hand-rolling a
+ * tree and opening a store, and no edit short of disfiguring the controls
+ * changes that.
+ *
+ * This went unnoticed until the file was COMMITTED, because `git ls-files` reads
+ * the index: while it was untracked the walk never returned it and the suite ran
+ * green. A guard that reads the tree has to be re-run once it is part of the
+ * tree.
+ *
+ * Derived rather than written out, so a rename carries the exclusion with it
+ * instead of stranding it on a name no file has. `split(sep).join('/')` is the
+ * inverse of `toNative` — git prints posix paths on every platform.
+ */
+const SELF = relative(PACKAGE_ROOT, fileURLToPath(import.meta.url))
+  .split(sep)
+  .join('/');
 
 // A floor on the recorded reasons below, not a quality bar — length cannot tell
 // a real justification from a long placeholder. It is here only to stop an entry
@@ -70,7 +95,8 @@ function storeSetup(source: string): { mkdtemp: boolean; open: boolean } {
 /** git reports posix paths on every platform; `join` yields native ones. */
 const toNative = (p: string): string => p.split('/').join(sep);
 
-function trackedTestFiles(): string[] {
+/** Every tracked test file, this one included. */
+function allTrackedTestFiles(): string[] {
   const out = execFileSync('git', ['ls-files', 'test'], {
     cwd: PACKAGE_ROOT,
     encoding: 'utf8',
@@ -87,6 +113,11 @@ function trackedTestFiles(): string[] {
       .filter((p) => p.endsWith('.test.ts'))
       .sort()
   );
+}
+
+/** The suites the adoption rules apply to — every tracked one but this. */
+function trackedTestFiles(): string[] {
+  return allTrackedTestFiles().filter((p) => p !== SELF);
 }
 
 function read(relativePath: string): string {
@@ -217,6 +248,30 @@ describe('store harness adoption', () => {
         "import { useTempStore } from './helpers/temp-store.ts';",
       ].join('\n');
       expect(storeSetup(source)).toEqual({ mkdtemp: false, open: false });
+    });
+
+    it('holds out itself and nothing else, and really does open no store', () => {
+      // The exclusion is the one hole in an otherwise exception-free walk, so it
+      // is checked twice.
+
+      // It is exactly one file. A second name added to the filter would take a
+      // real suite out of the exact-set assertions above without failing
+      // anything — the set would simply be smaller and still match a map that
+      // had shrunk to meet it.
+      const held = allTrackedTestFiles().filter((p) => !trackedTestFiles().includes(p));
+      expect(held).toEqual([SELF]);
+
+      // And the held-out file is checked by the one means the detector cannot
+      // be: its IMPORTS. A suite that genuinely opened a store would have to
+      // import `openLocalDatabase`, and one that built its own tree would have
+      // to import `mkdtempSync` — neither of which a string literal can supply.
+      // So the exclusion cannot quietly cover a real regression in this file.
+      const imports = stripComments(read(SELF))
+        .split('\n')
+        .filter((line) => line.startsWith('import '))
+        .join('\n');
+      expect(imports).not.toContain('openLocalDatabase');
+      expect(imports).not.toContain('mkdtempSync');
     });
 
     it('still sees a call sharing a line with a URL literal', () => {

@@ -3,7 +3,12 @@ import { z } from 'zod';
 
 import { DetectionCategory, Severity } from './finding.ts';
 
-export const MatcherType = z.enum(['keyword', 'regex', 'validator']).meta({ id: 'MatcherType' });
+// The discriminants of `Matcher` below, as a standalone enum for callers that
+// need the names without the shapes. It is written out rather than derived, so
+// it can drift from the union — `MATCHER_TYPES` at the bottom of the file is
+// what stops that, and anything keying a lookup table off a matcher kind should
+// prefer `Matcher['type']`, which cannot drift at all.
+export const MatcherType = z.enum(['keyword', 'regex']).meta({ id: 'MatcherType' });
 export type MatcherType = z.infer<typeof MatcherType>;
 
 // The ReDoS timing verdict for a regex rule. 'safe' means the rule passed
@@ -139,16 +144,31 @@ export const RegexMatcher = z
     });
   });
 
-export const ValidatorMatcher = z.strictObject({
-  type: z.literal('validator'),
-  name: z.enum(['luhn', 'entropy', 'ssn-checksum']),
-  config: z.record(z.string(), z.unknown()).optional(),
-});
-
+// A matcher's job is to PRODUCE candidate spans; a checksum or entropy test can
+// only filter spans something else already found, which is why a validator is a
+// `postValidators` entry and never a matcher. A third `validator` arm used to sit
+// here, and it was the same footgun as an unimplemented post-validator name wearing
+// a different hat: `engine.ts` dispatches keyword and regex, so a rule declaring one
+// parsed, loaded, and then matched nothing at all — indistinguishable from a pattern
+// that simply found no secrets. Nothing implemented it and no pack shipped one.
+//
+// `engine.ts` keys its matcher table on this union, so a fourth arm added here
+// without a matcher behind it is a compile error rather than a silent dead rule.
 export const Matcher = z
-  .discriminatedUnion('type', [KeywordMatcher, RegexMatcher, ValidatorMatcher])
+  .discriminatedUnion('type', [KeywordMatcher, RegexMatcher])
   .meta({ id: 'Matcher' });
 export type Matcher = z.infer<typeof Matcher>;
+
+// Pins the hand-written `MatcherType` enum to the union's real discriminants.
+// The element type collapses to `never` the moment the two disagree, and
+// `MatcherType.options` is then unassignable — so adding an arm to one without
+// the other stops compiling instead of leaving a lookup table with a key for a
+// matcher that does not exist, or missing one for a matcher that does.
+export const MATCHER_TYPES: readonly (Matcher['type'] extends MatcherType
+  ? MatcherType extends Matcher['type']
+    ? MatcherType
+    : never
+  : never)[] = MatcherType.options;
 
 // Optional language/file scoping. When present, the engine runs the rule only
 // against text whose file extension is in `extensions` — and still runs it when

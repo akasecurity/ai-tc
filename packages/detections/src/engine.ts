@@ -1,4 +1,4 @@
-import type { PostValidatorName, Rule } from '@akasecurity/schema';
+import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
@@ -10,6 +10,18 @@ import { luhnCheck } from './validators/luhn.ts';
 
 const keywordMatcher = new KeywordMatcher();
 const regexMatcher = new RegexMatcher();
+
+// A matcher PRODUCES the candidate spans a rule then filters. Keyed on the
+// schema's own matcher union for the reason POST_VALIDATORS is keyed on
+// PostValidatorName: while this was an if/else chain ending in `continue`, an
+// arm the schema accepted and this file did not handle fell straight through and
+// contributed nothing, so the rule parsed, loaded and matched NOTHING — a dead
+// rule that reads from the outside exactly like a pattern finding no secrets.
+// An arm added to the union without an entry here now fails to compile.
+const MATCHERS: Record<Rule['matcher']['type'], (text: string, rule: Rule) => Span[]> = {
+  keyword: (text, rule) => keywordMatcher.match(text, rule),
+  regex: (text, rule) => regexMatcher.match(text, rule),
+};
 
 const packs = new Map<string, RulePack>();
 
@@ -181,14 +193,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
     if (!ruleApplies(rule, extension)) continue;
-    let spans;
-    if (rule.matcher.type === 'keyword') {
-      spans = keywordMatcher.match(text, rule);
-    } else if (rule.matcher.type === 'regex') {
-      spans = regexMatcher.match(text, rule);
-    } else {
-      continue;
-    }
+    const spans = MATCHERS[rule.matcher.type](text, rule);
 
     for (const span of spans) {
       const rawMatch = text.slice(span.start, span.end);

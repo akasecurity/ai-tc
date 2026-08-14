@@ -203,6 +203,36 @@ describe('Rule rejects unrecognized keys at every level', () => {
 // name used to leave the rule firing with the check absent — noise that reads
 // as the rule working. The engine keys its table on PostValidatorName, so this
 // enum is the same list the engine implements, by construction.
+describe('Rule rejects a validator matcher', () => {
+  // A matcher PRODUCES candidate spans; a checksum can only filter spans
+  // something else found. `validator` was a third arm of the union that nothing
+  // implemented, so a rule declaring one parsed, loaded and then matched nothing
+  // at all — the same footgun as an unimplemented post-validator name, and
+  // indistinguishable from a pattern that legitimately found no secrets.
+  it('refuses the matcher form of every validator name, including implemented ones', () => {
+    // `luhn` and `entropy` ARE implemented as post-validators, which is exactly
+    // what made the matcher form read as legitimate. The name existing is not
+    // the point — there is no matcher behind any of them.
+    for (const name of ['luhn', 'entropy', 'ssn-checksum']) {
+      const parsed = Rule.safeParse(validRule({ matcher: { type: 'validator', name } }));
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  it('still accepts the two matcher kinds the engine implements', () => {
+    // The positive control: without it a schema rejecting every matcher would
+    // satisfy the case above.
+    expect(
+      Rule.safeParse(validRule({ matcher: { type: 'regex', pattern: 'x', flags: 'g' } })).success,
+    ).toBe(true);
+    expect(
+      Rule.safeParse(
+        validRule({ matcher: { type: 'keyword', keywords: ['a'], caseSensitive: false } }),
+      ).success,
+    ).toBe(true);
+  });
+});
+
 describe('Rule rejects an unknown post-validator name', () => {
   it('accepts every name the engine implements, bare and in object form', () => {
     for (const name of PostValidatorName.options) {
@@ -212,9 +242,9 @@ describe('Rule rejects an unknown post-validator name', () => {
   });
 
   it('rejects a name the engine does not implement', () => {
-    // `ssn-checksum` is the sharpest case: it is a real name in the schema's
-    // ValidatorMatcher enum, so it reads as legitimate — but nothing implements
-    // it as a POST-validator, so referencing it here was always a no-op.
+    // `ssn-checksum` is the sharpest case: it names a real checksum, so it reads
+    // as legitimate — but nothing implements it as a post-validator, so
+    // referencing it here was always a no-op.
     const parsed = Rule.safeParse(validRule({ postValidators: ['ssn-checksum'] }));
     expect(reasons(parsed)).toContain('not a valid post-validator');
     expect(parsed.success).toBe(false);

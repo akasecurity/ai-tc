@@ -216,11 +216,45 @@ function probePowershell(): string | undefined {
   return undefined;
 }
 
+/**
+ * Refuse a win32 run whose host reports no architecture, by name.
+ *
+ * {@link runInstallPs1} deliberately does not supply `PROCESSOR_ARCHITECTURE`
+ * on win32 — it inherits the runner's real one, so an unsupported host still
+ * gets the refusal install.ps1 is entitled to make. That inheritance is silent
+ * when it works and silent when it does NOT: a filtered environment hands the
+ * child an empty string, install.ps1 refuses at step 1, and three cases then
+ * fail against a message none of them asked for. The symptom names the script;
+ * the cause is the environment.
+ *
+ * Asserted non-empty rather than equal to a value, so a genuine arm64 runner
+ * still reaches the script's own refusal instead of this one.
+ *
+ * `env` and `platform` are injectable for the same reason the shim writers take
+ * a platform: both branches have to be drivable from either host.
+ */
+export function assertHostArchitecture(
+  env: NodeJS.ProcessEnv = HOST_ENV,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== 'win32') return;
+  const arch = env.PROCESSOR_ARCHITECTURE;
+  if (arch !== undefined && arch !== '') return;
+  throw new Error(
+    `PROCESSOR_ARCHITECTURE is ${arch === undefined ? 'unset' : 'empty'} on this win32 host, so ` +
+      'install.ps1 would refuse at step 1 with an architecture it was never told. This harness ' +
+      'inherits the variable rather than supplying it, so something filtered the environment: ' +
+      'under `turbo run test` that is strict env mode, which needs the name in `passThroughEnv` ' +
+      'on the `test` task in turbo.json. This is a setup failure, not an install.ps1 defect.',
+  );
+}
+
 /** Run the real install.ps1 against a fixture base, under `exe`. */
 export async function runInstallPs1(
   exe: string,
   { base, version, installDir }: InstallerOverrides,
 ): Promise<InstallerRun> {
+  assertHostArchitecture();
   return await runScript(
     exe,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', INSTALL_PS1],

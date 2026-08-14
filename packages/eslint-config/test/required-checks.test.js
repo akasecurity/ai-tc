@@ -543,6 +543,34 @@ describe('the installer trust chain is wired into CI', () => {
     expect(testTask, 'turbo.json has no parseable `test` task').not.toBe('');
     expect(testTask).toMatch(/"env": *\[[^\]]*"AKA_INSTALLER_ALLOW_USER_PATH"/);
   });
+
+  // The host variables the Windows installer cases need, which turbo's `strict`
+  // env mode does NOT pass by default. These are `passThroughEnv` rather than
+  // `env` on purpose: they describe the RUNNER, so hashing one would fork the
+  // cache per machine while saying nothing about the inputs.
+  //
+  // Pinned as a set because the two halves fail differently and only one of them
+  // says so. Dropping PROCESSOR_ARCHITECTURE is caught at the spawn by
+  // `assertHostArchitecture`, which names the variable and this very field.
+  // Dropping a system variable is caught by nothing: Windows PowerShell loses
+  // the module path it derives from %SystemRoot%, `Compress-Archive` never
+  // autoloads, and the case spends its whole timeout before failing as a
+  // 120-second hang that names no variable at all.
+  it.each([
+    'PROCESSOR_ARCHITECTURE',
+    'SystemRoot',
+    'windir',
+    'ComSpec',
+    'SystemDrive',
+    'LOCALAPPDATA',
+  ])('passes %s through to the Windows test child', (name) => {
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const testTask = /^ {4}"test": \{$([\s\S]*?)^ {4}\},$/m.exec(turbo)?.[1] ?? '';
+    expect(testTask, 'turbo.json has no parseable `test` task').not.toBe('');
+    const passThrough = /"passThroughEnv": *\[([\s\S]*?)\]/.exec(testTask)?.[1] ?? '';
+    expect(passThrough, 'the `test` task declares no `passThroughEnv`').not.toBe('');
+    expect(passThrough).toContain(`"${name}"`);
+  });
 });
 
 // Turbo's task hash covers file contents, dependencies and env — not the

@@ -14,7 +14,7 @@
 // trusting the Windows leg to notice.
 import { describe, expect, it } from 'vitest';
 
-import { powershellEnv } from './run-installer.ts';
+import { assertHostArchitecture, powershellEnv } from './run-installer.ts';
 
 describe('powershellEnv', () => {
   // `extra` is merged before the strip runs, so a key supplied here goes through
@@ -50,3 +50,64 @@ describe('powershellEnv', () => {
     expect(powershellEnv({ AKA_VERSION: '9.9.9' }).AKA_VERSION).toBe('9.9.9');
   });
 });
+
+// Both branches are driven with an injected platform rather than gated on the
+// real one, so the win32 half is covered from every runner. A platform guard
+// here would leave the case that matters unexercised on the two legs that run
+// most of the suite.
+describe('assertHostArchitecture', () => {
+  const ARCH = 'PROCESSOR_ARCHITECTURE';
+
+  it.each([
+    ['unset', {}, 'unset'],
+    ['empty', { [ARCH]: '' }, 'empty'],
+  ])('refuses a win32 host whose architecture is %s', (_label, env, word) => {
+    const error = errorFrom(() => {
+      assertHostArchitecture(env, 'win32');
+    });
+
+    // What it SAYS before what it omits: a never-thrown error arrives as
+    // undefined, and every `toContain` below would then read as vacuous.
+    expect(error).toBeDefined();
+    expect(error?.message).toContain(ARCH);
+    expect(error?.message).toContain(word);
+    // The refusal has to point at the cause, or it is one more message that
+    // names the script and leaves the reader where they started.
+    expect(error?.message).toContain('passThroughEnv');
+    expect(error?.message).toContain('setup failure');
+  });
+
+  it('accepts a win32 host that reports an architecture', () => {
+    expect(() => {
+      assertHostArchitecture({ [ARCH]: 'AMD64' }, 'win32');
+    }).not.toThrow();
+  });
+
+  // Asserted non-empty rather than equal to AMD64 on purpose: an arm64 runner
+  // must reach install.ps1's own unsupported-architecture refusal, which is a
+  // property of the script this harness is not entitled to pre-empt.
+  it('accepts an unsupported architecture, leaving the refusal to the script', () => {
+    expect(() => {
+      assertHostArchitecture({ [ARCH]: 'ARM64' }, 'win32');
+    }).not.toThrow();
+  });
+
+  it.each<NodeJS.Platform>(['darwin', 'linux'])(
+    'says nothing on %s, where the variable does not exist',
+    (platform) => {
+      expect(() => {
+        assertHostArchitecture({}, platform);
+      }).not.toThrow();
+    },
+  );
+});
+
+/** The error a thunk threw, captured OUTSIDE its own catch. */
+function errorFrom(fn: () => void): Error | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (err) {
+    return err as Error;
+  }
+}

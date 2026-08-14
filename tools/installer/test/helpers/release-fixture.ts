@@ -25,7 +25,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { powershellExe } from './run-installer.ts';
+import { powershellEnv, powershellExe } from './run-installer.ts';
 
 /** A version no real release carries, so a fixture can never be mistaken for one. */
 export const FIXTURE_VERSION = '0.0.0-fixture';
@@ -167,7 +167,13 @@ export function writeArchive(
           '-Command',
           `Compress-Archive -Force -CompressionLevel Fastest -Path '${root}' -DestinationPath '${archivePath}'`,
         ],
-        { stdio: 'pipe' },
+        // The same env every other PowerShell child here gets, rather than a
+        // bare inherit. `Compress-Archive` is an autoloaded module, so this
+        // child depends on the module path exactly as the script under test
+        // does; a bare inherit hands Windows PowerShell whatever PSModulePath
+        // the parent had -- pwsh 7's, under Actions' default shell -- which is
+        // the one value that costs it its own standard library.
+        { stdio: 'pipe', env: powershellEnv() },
       );
     } else {
       const stub = join(root, 'aka');

@@ -245,6 +245,18 @@ export interface DeepChain extends ShapeOutcome {
   beyond: number;
   /** Whether those levels really did become unaddressable. */
   unaddressable: boolean;
+  /**
+   * Whether the build stopped on the CLOCK rather than on the path ceiling.
+   *
+   * The distinction decides whether a shallow `addressable` is a fact about the
+   * platform or about the runner. At the ceiling the depth is a constant worth
+   * asserting against; on the budget it is whatever a contended box managed in
+   * `budgetMs`, and on a busy Windows leg that has measured 26 levels where the
+   * ceiling allows far more. A caller asserting a depth floor must skip on this
+   * rather than fail — the alternative is a wall clock deciding a correctness
+   * assertion, which is the one thing a guard must never rest on.
+   */
+  budgetSpent: boolean;
 }
 
 /**
@@ -323,6 +335,7 @@ export function deepChain(
     deepest,
     beyond: 0,
     unaddressable: false,
+    budgetSpent,
   };
   // Whatever happens next, the addressable part still has to come back out.
   let unwindBeyond: () => void = () => undefined;
@@ -418,6 +431,7 @@ export function deepChain(
     deepest,
     beyond,
     unaddressable,
+    budgetSpent,
   };
 }
 

@@ -39,7 +39,6 @@ import { buildChecklistEntries, renderChecklistMarkdown } from '@akasecurity/set
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
-import { shimUnsupported } from '../helpers/shim-unsupported.ts';
 import {
   REMEDIATION_LEAK_RAW_KEYS,
   type RemediationDrive,
@@ -47,14 +46,11 @@ import {
   type StepResult,
 } from './harness.ts';
 
-// See shim-unsupported.ts for why these suites cannot run on win32.
-const describeShimmed = describe.skipIf(shimUnsupported);
-
 // The chaining line names one 'N more worth a look' figure; the count itself is
 // the caller's, so the harness just threads a fixed one and asserts the command.
 const MORE_COUNT = 1;
 
-describeShimmed('direct-invocation remediation chain, no wizard state', () => {
+describe('direct-invocation remediation chain, no wizard state', () => {
   let journey: SetupJourney;
   let drive: RemediationDrive;
   // The isolated temp git repository the built script is spawned with as its

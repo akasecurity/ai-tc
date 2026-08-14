@@ -24,11 +24,7 @@ import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence
 import { WorkspaceSettings } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { shimUnsupported } from './helpers/shim-unsupported.ts';
 import { SetupJourney } from './journey/harness.ts';
-
-// See shim-unsupported.ts for why these suites cannot run on win32.
-const describeShimmed = describe.skipIf(shimUnsupported);
 
 // The onboardedAt stamp is a wall-clock time that differs between two runs, so
 // strip it before comparing the recorded consent scope across surfaces.
@@ -38,82 +34,75 @@ function consentScope(settings: WorkspaceSettings): Omit<WorkspaceSettings, 'onb
   return scope;
 }
 
-describeShimmed(
-  'Leg 1 — "Yes, scan" records the historical-review consent without broadening it',
-  () => {
-    let journey: SetupJourney;
-    let baselineHome: string;
-    let onboardStdout: string;
-    // The consent the single-question surface persisted, read back from disk.
-    let persistedRaw: Record<string, unknown>;
-    let persisted: WorkspaceSettings;
-    // What the prior historical-review flow records for the same 'full' answer:
-    // the same applyOnboarding writer, into an independent temp home.
-    let baseline: WorkspaceSettings;
+describe('Leg 1 — "Yes, scan" records the historical-review consent without broadening it', () => {
+  let journey: SetupJourney;
+  let baselineHome: string;
+  let onboardStdout: string;
+  // The consent the single-question surface persisted, read back from disk.
+  let persistedRaw: Record<string, unknown>;
+  let persisted: WorkspaceSettings;
+  // What the prior historical-review flow records for the same 'full' answer:
+  // the same applyOnboarding writer, into an independent temp home.
+  let baseline: WorkspaceSettings;
 
-    beforeAll(() => {
-      journey = new SetupJourney();
-      onboardStdout = journey.onboardHistorical('full').stdout;
-      persistedRaw = JSON.parse(readFileSync(journey.settingsPath, 'utf8')) as Record<
-        string,
-        unknown
-      >;
-      persisted = WorkspaceSettings.parse(persistedRaw);
+  beforeAll(() => {
+    journey = new SetupJourney();
+    onboardStdout = journey.onboardHistorical('full').stdout;
+    persistedRaw = JSON.parse(readFileSync(journey.settingsPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    persisted = WorkspaceSettings.parse(persistedRaw);
 
-      baselineHome = mkdtempSync(join(tmpdir(), 'aka-consent-baseline-'));
-      baseline = applyOnboarding({ historicalAccess: 'full' }, join(baselineHome, '.aka'));
-    });
+    baselineHome = mkdtempSync(join(tmpdir(), 'aka-consent-baseline-'));
+    baseline = applyOnboarding({ historicalAccess: 'full' }, join(baselineHome, '.aka'));
+  });
 
-    afterAll(() => {
-      journey.cleanup();
-      rmSync(baselineHome, { recursive: true, force: true });
-    });
+  afterAll(() => {
+    journey.cleanup();
+    rmSync(baselineHome, { recursive: true, force: true });
+  });
 
-    it('records the historicalAccess=full grant', () => {
-      expect(persisted.historicalAccess).toBe('full');
-      // The confirmation is user-facing copy, not a dev-internal key=value dump —
-      // it never echoes the raw historicalAccess value.
-      expect(onboardStdout).toContain(
-        "Got it — I'll look over Claude's recent work to tune things.",
-      );
-    });
+  it('records the historicalAccess=full grant', () => {
+    expect(persisted.historicalAccess).toBe('full');
+    // The confirmation is user-facing copy, not a dev-internal key=value dump —
+    // it never echoes the raw historicalAccess value.
+    expect(onboardStdout).toContain("Got it — I'll look over Claude's recent work to tune things.");
+  });
 
-    it('records a consent scope provably identical to the prior historical-review flow', () => {
-      expect(consentScope(persisted)).toEqual(consentScope(baseline));
-    });
+  it('records a consent scope provably identical to the prior historical-review flow', () => {
+    expect(consentScope(persisted)).toEqual(consentScope(baseline));
+  });
 
-    it('persists no scope field beyond the schema — nothing broadened', () => {
-      // Every persisted key is a known WorkspaceSettings field, so the
-      // single-question surface grants no extra scope key. historicalAccess is the
-      // sole consent-bearing field this leg records; the schema encodes the
-      // one-time/revocable semantics in that enum value, not in any additional
-      // marker. Optional consent fields the schema defines but this leg never
-      // grants are legitimately ABSENT here, so this is a subset check, not
-      // equality.
-      const schemaKeys = new Set(Object.keys(WorkspaceSettings.shape));
-      expect(Object.keys(persistedRaw).filter((key) => !schemaKeys.has(key))).toEqual([]);
-      // And this leg specifically did NOT broaden into the model-judge egress.
-      expect(Object.keys(persistedRaw)).not.toContain('modelJudgeConsent');
-    });
+  it('persists no scope field beyond the schema — nothing broadened', () => {
+    // Every persisted key is a known WorkspaceSettings field, so the
+    // single-question surface grants no extra scope key. historicalAccess is the
+    // sole consent-bearing field this leg records; the schema encodes the
+    // one-time/revocable semantics in that enum value, not in any additional
+    // marker. Optional consent fields the schema defines but this leg never
+    // grants are legitimately ABSENT here, so this is a subset check, not
+    // equality.
+    const schemaKeys = new Set(Object.keys(WorkspaceSettings.shape));
+    expect(Object.keys(persistedRaw).filter((key) => !schemaKeys.has(key))).toEqual([]);
+    // And this leg specifically did NOT broaden into the model-judge egress.
+    expect(Object.keys(persistedRaw)).not.toContain('modelJudgeConsent');
+  });
 
-    it('grants no vault consent — storing recoverable secrets is a separate decision', () => {
-      // Agreeing to a historical review authorizes READING local transcripts. It
-      // must never imply consent to keep a recoverable encrypted copy of every
-      // detected value, which is a custody change the user opts into on its own.
-      expect(persistedRaw).not.toHaveProperty('vaultConsent');
-      expect(persisted.vaultConsent).toBeUndefined();
-    });
+  it('grants no vault consent — storing recoverable secrets is a separate decision', () => {
+    // Agreeing to a historical review authorizes READING local transcripts. It
+    // must never imply consent to keep a recoverable encrypted copy of every
+    // detected value, which is a custody change the user opts into on its own.
+    expect(persistedRaw).not.toHaveProperty('vaultConsent');
+    expect(persisted.vaultConsent).toBeUndefined();
+  });
 
-    it('leaves the full-access grant revocable at the same onboarding surface', () => {
-      journey.onboardHistorical('session-only');
-      expect(readWorkspaceSettings(join(journey.home, '.aka')).historicalAccess).toBe(
-        'session-only',
-      );
-    });
-  },
-);
+  it('leaves the full-access grant revocable at the same onboarding surface', () => {
+    journey.onboardHistorical('session-only');
+    expect(readWorkspaceSettings(join(journey.home, '.aka')).historicalAccess).toBe('session-only');
+  });
+});
 
-describeShimmed('Leg 2 — "Not now" performs zero historical access', () => {
+describe('Leg 2 — "Not now" performs zero historical access', () => {
   let journey: SetupJourney;
   let backfillHuman: string;
   let backfillMachine: string;

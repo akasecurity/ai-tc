@@ -165,6 +165,12 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
  * Named one file at a time rather than sniffed for, because "a raw handle on the
  * harness's own store file" is not a thing a regex can tell from a raw handle on
  * a `:memory:` database or a bare fixture file — several suites here open both.
+ *
+ * So this is a FLOOR, and deliberately unlike `OWN_TEMP_TREE`'s exact set. Do not
+ * "fix" the asymmetry: an exact set needs a DERIVED set to compare against, and
+ * the paragraph above is the reason no such set can be derived here. Pinning one
+ * anyway would mean hand-writing both sides and asserting a list against itself.
+ * What the floor still buys is that removing an entry is a visible act.
  */
 const RAW_BY_HAND: Readonly<Record<string, string>> = {
   'test/repositories/legacy-writers.test.ts':
@@ -207,7 +213,17 @@ describe('store harness adoption', () => {
     //
     // It reads the file with comments STRIPPED, so the note at the top of the
     // subject explaining why it does not use openRaw() is not mistaken for a call.
+    const tracked = new Set(trackedTestFiles());
     for (const [file, reason] of Object.entries(RAW_BY_HAND)) {
+      // Held to the same two checks as `OWN_TEMP_TREE`'s entries. The maps read
+      // as symmetric and were not: `reason` reached only an assertion MESSAGE
+      // here, so an entry could land with `''` and pass — and a name that no
+      // longer exists surfaced as a bare ENOENT out of `read` rather than saying
+      // which map it came from. Being a floor is the deliberate asymmetry (see
+      // the note on the map); an unreviewed entry was not.
+      expect(tracked.has(file), `${file} is not a tracked test file`).toBe(true);
+      expect(reason.length, `${file} has no reason recorded`).toBeGreaterThan(MIN_REASON_CHARS);
+
       const code = stripComments(read(file));
       expect(code, `${file}: ${reason}`).not.toContain('store.openRaw(');
       expect(code, `${file} no longer opens a raw connection at all`).toContain(

@@ -848,6 +848,19 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
    way, since every entry is a hole in the guarantee.
 
+**Both of those guards enumerate the tree at RUN time, which is what makes adding a
+package the action most exposed to a stale base.** A `pull_request` check runs against a
+merge commit GitHub built when the branch was last pushed and never rebuilds as `main`
+moves, so a package added on one branch and a file it would judge added on another are
+each green against a tree the other has already changed. Neither diff contains the
+mismatch and the first run to see both is the post-merge run on `main` — which is how a
+new package's unlinted root config file reddened `main` from a PR whose own diff was
+innocent. Deriving is still right; a pinned list stays green through exactly the drift
+these exist to catch. What closes it is a repository setting rather than anything in this
+tree, and CONTRIBUTING.md's "Branch freshness" section records which one is in use and
+what it obliges `.github/workflows/` to carry. Read it before assuming a green PR check
+saw your package.
+
 ## Commit messages
 
 Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refactor:`. Enforced by commitlint on commit-msg.

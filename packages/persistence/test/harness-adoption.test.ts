@@ -95,24 +95,48 @@ function storeSetup(source: string): { mkdtemp: boolean; open: boolean } {
 /** git reports posix paths on every platform; `join` yields native ones. */
 const toNative = (p: string): string => p.split('/').join(sep);
 
+/**
+ * The walk and the reads are memoized for the life of the module.
+ *
+ * Both are safe to cache because the tree cannot change under a run: nothing
+ * here writes to it, and every mutation test restarts the process, so a fresh
+ * module load takes a fresh snapshot. What it buys is paid on the platform that
+ * charges most — the walk spawned `git ls-files` SEVEN times per run and the
+ * whole tracked tree was read twice over, which measured 2,294 ms on the Windows
+ * leg, where process spawn is the expensive operation and that leg is already
+ * the one starved for time.
+ *
+ * The consequence to know: editing a file mid-run does not change what these
+ * return. No test here does that, and one that needed to would have to reach
+ * past the cache deliberately.
+ */
+let trackedFilesCache: readonly string[] | undefined;
+const readCache = new Map<string, string>();
+
 /** Every tracked test file, this one included. */
 function allTrackedTestFiles(): string[] {
-  const out = execFileSync('git', ['ls-files', 'test'], {
-    cwd: PACKAGE_ROOT,
-    encoding: 'utf8',
-  });
-  return (
-    out
-      .split('\n')
-      // Trimmed before the suffix test, not after: a line arriving as
-      // `…/x.test.ts\r` fails `endsWith` and drops out, and if every line did the
-      // set would come back EMPTY — which satisfies the two exact-set assertions
-      // below by having nothing to compare. The `length > 50` control is what
-      // would catch that, and it should never have to.
-      .map((p) => p.trim())
-      .filter((p) => p.endsWith('.test.ts'))
-      .sort()
-  );
+  trackedFilesCache ??= (() => {
+    const out = execFileSync('git', ['ls-files', 'test'], {
+      cwd: PACKAGE_ROOT,
+      encoding: 'utf8',
+    });
+    return (
+      out
+        .split('\n')
+        // Trimmed before the suffix test, not after: a line arriving as
+        // `…/x.test.ts\r` fails `endsWith` and drops out, and if every line did the
+        // set would come back EMPTY — which satisfies the two exact-set assertions
+        // below by having nothing to compare. The `length > 50` control is what
+        // would catch that, and it should never have to.
+        .map((p) => p.trim())
+        .filter((p) => p.endsWith('.test.ts'))
+        .sort()
+    );
+  })();
+  // A copy, so the cache cannot be reordered or emptied by a caller — an
+  // in-place `sort()` on a shared array would rewrite what every later
+  // assertion compares against, and nothing would report it.
+  return [...trackedFilesCache];
 }
 
 /** The suites the adoption rules apply to — every tracked one but this. */
@@ -121,7 +145,12 @@ function trackedTestFiles(): string[] {
 }
 
 function read(relativePath: string): string {
-  return readFileSync(join(PACKAGE_ROOT, toNative(relativePath)), 'utf8');
+  let source = readCache.get(relativePath);
+  if (source === undefined) {
+    source = readFileSync(join(PACKAGE_ROOT, toNative(relativePath)), 'utf8');
+    readCache.set(relativePath, source);
+  }
+  return source;
 }
 
 /**
@@ -274,7 +303,12 @@ describe('store harness adoption', () => {
       // real suite out of the exact-set assertions above without failing
       // anything — the set would simply be smaller and still match a map that
       // had shrunk to meet it.
-      const held = allTrackedTestFiles().filter((p) => !trackedTestFiles().includes(p));
+      // Both walks hoisted out of the callback. Called inside it, they ran once
+      // per FILE — 78 `git ls-files` spawns for one assertion, which is where
+      // most of this file's Windows cost went. The memo above would hide that,
+      // so the call site is fixed too rather than left leaning on it.
+      const applied = new Set(trackedTestFiles());
+      const held = allTrackedTestFiles().filter((p) => !applied.has(p));
       expect(held).toEqual([SELF]);
 
       // And the held-out file is checked by the one means the detector cannot

@@ -433,7 +433,7 @@ describe('the Windows legs', () => {
   // a package added without a lint script is caught by the same assertion.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(20);
+    expect(scripts).toHaveLength(21);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');

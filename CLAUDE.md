@@ -700,8 +700,10 @@ packages/             the workspace libraries (schema · persistence · local-op
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
-tools/                repo tooling: installer one-liners + the audit-gate workspace
-                      package (the CI dependency-audit gate; never shipped)
+tools/                repo tooling, never shipped: installer one-liners plus the
+                      audit-gate (CI dependency-audit), portability-gate
+                      (cross-platform test rules) and coverage-gate (per-PR diff
+                      coverage) workspace packages
 ```
 
 ## Adding a new workspace package
@@ -759,8 +761,8 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
    the full ruleset over `test/setup/**`, `test/fixtures/**`, `test/helpers/**`,
-   `tools/ci/**`, and the repo-root `*.config.*`. `typecheck:root` runs
-   `tsc -p tsconfig.root.json`.
+   `test/vitest/**`, `tools/ci/**`, and the repo-root `*.config.*`.
+   `typecheck:root` runs `tsc -p tsconfig.root.json` over the same set.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -973,6 +975,51 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
+
+### Coverage: per-package floors, no global threshold
+
+Every package's `vitest.config.ts` spreads one shared block —
+`coverageOptions(import.meta.url)` from `test/vitest/coverage.ts` — which carries the
+provider, the reporters, the exclude list and **that package's floor**. A package with no
+entry in `COVERAGE_FLOORS` throws rather than defaulting to zero, because an unlisted
+package is one nobody chose a floor for.
+
+Four properties are load-bearing:
+
+- **Coverage is always on, not behind `--coverage`.** `turbo.json` declares
+  `outputs: ["coverage/**"]` for the `test` task, and an output a task produces only
+  sometimes is worse than one it never produces: turbo restores outputs on a cache hit, so
+  a hit taken from a run without the flag hands back a report belonging to another commit.
+  Unconditional is what makes that declaration true — and what makes a floor bind locally
+  rather than only on the machine that remembered the flag.
+- **There is NO global or aggregate threshold, and adding one is a regression.** It would
+  be satisfied by covering `dashboard-ui`'s SVG icon sheet while a mutating Server Action
+  stayed at zero — the number rises, the risk is untouched. Floors are per package and
+  cannot be paid off that way. `coverage-config.test.js` pins the floors table as an
+  **exact** set against the packages that run tests, so a global threshold has nowhere to
+  live in it.
+- **`test/vitest/**` is in `globalDependencies`.** It holds the floors, which are what
+  `test` is allowed to pass with. Outside the hash, lowering one would move no package's
+  hash and every package would replay a cached green taken under the stricter floor.
+- **Floors are MEASURED, never estimated.** Each is one point below what its suite actually
+  reported, with the measurement in a comment beside it. The estimates this replaced were
+  wrong in both directions — `scanner` read ~75% and measures 96.8%, while four packages
+  measured _below_ the floor their estimate implied, which would have failed CI on the
+  first run. Numbers were taken on macOS/Node 24; platform-gated code (the macOS keychain
+  backend most clearly) can read lower on another leg, and the fix there is to re-take that
+  package's number on the platform that reports lowest — not to widen every floor.
+
+The second half is **diff coverage**: of the lines a PR adds, how many does the suite
+execute? A global percentage on a repo this size moves by fractions on any one PR, so it
+can neither pass nor fail one honestly. `tools/coverage-gate` reads the reports
+`turbo run test` already wrote, intersects them with the diff against the merge base, and
+reports to the PR's step summary. It is a workspace tool rather than a third-party
+uploader, so no coverage data leaves the runner.
+
+```bash
+pnpm turbo run test          # writes every package's coverage/ report
+pnpm check:diff-coverage     # then measures the diff against origin/main
+```
 
 ### Benchmarks are a trend, never a gate
 

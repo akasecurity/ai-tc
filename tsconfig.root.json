@@ -3,7 +3,9 @@
   // the shared adversarial fixture corpus (whose whole point is that three
   // packages' walkers drive the SAME hostile trees, so it can live inside none of
   // them), the shared temp-tree teardown helper (nine packages' teardowns need
-  // the SAME win32 rule, for the same reason), the CI egress probe, and
+  // the SAME win32 rule, for the same reason), the shared vitest coverage block
+  // and per-package floor table (every package's vitest config imports it), the
+  // CI egress probe, and
   // lint:root's own ESLint config (a root-level file, not a directory — it
   // carries `// @ts-check`, which is decorative unless something runs tsc over
   // it). Every package's tsconfig covers only its own tree, so without this those
@@ -36,5 +38,12 @@
     "declarationMap": false,
     "types": ["node"]
   },
-  "include": ["test/setup", "test/fixtures", "test/helpers", "tools/ci", "eslint.root.config.mjs"]
+  "include": [
+    "test/setup",
+    "test/fixtures",
+    "test/helpers",
+    "test/vitest",
+    "tools/ci",
+    "eslint.root.config.mjs"
+  ]
 }

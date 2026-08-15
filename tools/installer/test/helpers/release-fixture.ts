@@ -94,23 +94,38 @@ export function expectedVersionOutput(banner: string): string {
 /**
  * Put an `aka.exe` in a win32 fixture root.
  *
- * On Windows it is a copy of the Node executable — the installer RUNS it, so it
- * has to be a genuine PE, and the only one guaranteed present is the one this
- * suite is running under. Off Windows there is no PE to copy and none is needed:
- * every case that runs the binary is win32-gated, and what the other hosts
- * exercise is the verification step, which happens before the extract. The
- * placeholder says so in its own bytes rather than leaving a reader to wonder
- * why an `.exe` did not start.
+ * A genuine PE is copied only when the caller says a case will RUN the binary,
+ * and the only one guaranteed present is the Node executable this suite runs
+ * under — ~115 MB of it. Copying that, zipping it and expanding it again is the
+ * most expensive thing this package does, and it is why the flag defaults to
+ * OFF: of the archives the Windows leg builds, exactly one is ever executed.
+ *
+ * Every other case is refused BEFORE the extract, so all it needs of `aka.exe`
+ * is that it exist and move the archive's bytes — not that it start. Those
+ * cases assert the install dir was never created, and that assertion keeps its
+ * whole discriminating power with an inert payload: `install.ps1` creates the
+ * dir and extracts into it (L66-68) well before it runs the binary (L94), and
+ * removes only its download temp on the way out, never the install dir. So a
+ * verification that got skipped still leaves the dir behind and still fails the
+ * case — the control does not rest on the payload being startable.
+ *
+ * Defaulting the other way would be the quiet failure: a refusal case added
+ * later would pay 115 MB and nothing would say so. This way a case that really
+ * does need to run the binary gets a loud, immediate refusal to start instead.
+ *
+ * Off Windows there is no PE to copy and none is needed, so the placeholder is
+ * written whatever the caller asked for. It says what it is in its own bytes
+ * rather than leaving a reader to wonder why an `.exe` did not start.
  */
-function writeWindowsPayload(root: string, banner: string): void {
+function writeWindowsPayload(root: string, banner: string, runnable: boolean): void {
   const exePath = join(root, 'aka.exe');
-  if (process.platform === 'win32') {
+  if (runnable && process.platform === 'win32') {
     copyFileSync(process.execPath, exePath);
     return;
   }
   writeFileSync(
     exePath,
-    `not a PE — fixture placeholder for a win32 archive built on ${process.platform} (${banner})\n`,
+    `not a PE — inert fixture payload for a win32 archive on ${process.platform} (${banner})\n`,
   );
 }
 
@@ -123,6 +138,11 @@ function writeWindowsPayload(root: string, banner: string): void {
  * with different CONTENTS under the same name — which is what tampering with a
  * release after its SHA256SUMS was written looks like on the wire.
  *
+ * `runnable` asks for a win32 payload that will actually START, and costs a
+ * ~115 MB copy of the Node executable to provide — pass it only from a case
+ * that runs the installed binary, which today is one case in this package. See
+ * `writeWindowsPayload` for why the refusal cases lose nothing without it.
+ *
  * THE FORMAT FOLLOWS THE TRIPLE, NOT THE HOST, and that is not a detail. The
  * NAME already follows the triple (`archiveNameFor`), so a host-keyed format
  * writes a gzipped tar called `.zip` the moment the ps1 suite runs anywhere but
@@ -132,7 +152,12 @@ function writeWindowsPayload(root: string, banner: string): void {
  */
 export function writeArchive(
   intoDir: string,
-  { version, triple, banner }: { version: string; triple: string; banner: string },
+  {
+    version,
+    triple,
+    banner,
+    runnable = false,
+  }: { version: string; triple: string; banner: string; runnable?: boolean },
 ): string {
   const archivePath = join(intoDir, archiveNameFor(version, triple));
   const stage = mkdtempSync(join(tmpdir(), 'aka-fixture-stage-'));
@@ -144,7 +169,7 @@ export function writeArchive(
     // bytes even where the executable itself cannot.
     writeFileSync(join(root, 'payload.txt'), `${banner}\n`);
     if (triple.startsWith('win32')) {
-      writeWindowsPayload(root, banner);
+      writeWindowsPayload(root, banner, runnable);
       // Whatever PowerShell this host has, rather than `powershell` — which is
       // Windows-only, while `Compress-Archive` ships with pwsh everywhere. The
       // ps1 suite skips outright without one, so a caller that got here has one.
@@ -156,16 +181,21 @@ export function writeArchive(
         );
       }
       // Mirrors archive-sea.mjs's Compress-Archive, with -CompressionLevel
-      // Fastest added: the installer only hashes and extracts, so deflating a
-      // ~100 MB Node binary at the default level would buy the fixture nothing
-      // but wall clock.
+      // NoCompression added: the installer only hashes the archive and expands
+      // it, and neither step cares whether the entries were deflated, so every
+      // cycle spent compressing buys the fixture nothing but wall clock. This
+      // read `Fastest` first, which reasons the same way but stops one step
+      // short — `Fastest` still deflates, and it is deflating the ~115 MB Node
+      // binary the runnable archive carries, on the platform with the most
+      // expensive fsync of the three. `NoCompression` stores instead, and
+      // `Expand-Archive` reads a stored zip exactly the same way.
       execFileSync(
         exe,
         [
           '-NoProfile',
           '-NonInteractive',
           '-Command',
-          `Compress-Archive -Force -CompressionLevel Fastest -Path '${root}' -DestinationPath '${archivePath}'`,
+          `Compress-Archive -Force -CompressionLevel NoCompression -Path '${root}' -DestinationPath '${archivePath}'`,
         ],
         // The same env every other PowerShell child here gets, rather than a
         // bare inherit. `Compress-Archive` is an autoloaded module, so this
@@ -224,9 +254,10 @@ export function writeRelease(
     version = FIXTURE_VERSION,
     triple = hostTriple(),
     banner,
-  }: { version?: string; triple?: string; banner: string },
+    runnable = false,
+  }: { version?: string; triple?: string; banner: string; runnable?: boolean },
 ): { archivePath: string; archiveName: string; version: string; triple: string } {
-  const archivePath = writeArchive(intoDir, { version, triple, banner });
+  const archivePath = writeArchive(intoDir, { version, triple, banner, runnable });
   const archiveName = archiveNameFor(version, triple);
   writeSums(intoDir, [{ name: archiveName, sha: sha256OfFile(archivePath) }]);
   return { archivePath, archiveName, version, triple };

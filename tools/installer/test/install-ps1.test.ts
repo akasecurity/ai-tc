@@ -132,7 +132,13 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
   it.skipIf(!MAY_WRITE_USER_PATH)(
     'downloads, verifies, extracts and links a good release',
     async () => {
-      writeRelease(base, { banner: FIXTURE_VERSION, triple: TRIPLE });
+      // The only case in this package that RUNS the installed binary, so the
+      // only one that needs a real PE in the archive — every other case is
+      // refused before the extract and takes the inert payload, which is what
+      // keeps the ~115 MB Node copy off four of this suite's five win32
+      // archives. Dropping `runnable` here fails loudly (the junction's
+      // `aka.exe --version` will not start), never silently.
+      writeRelease(base, { banner: FIXTURE_VERSION, triple: TRIPLE, runnable: true });
 
       const result = await run();
 
@@ -157,9 +163,14 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
     // A complete, correct release…
     writeRelease(base, { banner: FIXTURE_VERSION, triple: TRIPLE });
     // …whose archive is then replaced with a valid one carrying different
-    // contents, under the same name, after SHA256SUMS was written. The archive
-    // still extracts, so an installer that skipped verification would SUCCEED
-    // rather than fail on a corrupt file.
+    // contents, under the same name, after SHA256SUMS was written. Still a
+    // well-formed zip, so an installer that skipped verification would get PAST
+    // the extract rather than tripping over a corrupt file — which is what
+    // makes the installDir assertion below attributable to verification and
+    // nothing else. That holds with the inert payload these cases take: the
+    // script creates the install dir and extracts into it before it ever runs
+    // the binary, and removes only its download temp afterwards, so a skipped
+    // verification leaves the dir behind whether or not the payload starts.
     writeArchive(base, { version: FIXTURE_VERSION, triple: TRIPLE, banner: 'tampered-payload' });
 
     const result = await run();

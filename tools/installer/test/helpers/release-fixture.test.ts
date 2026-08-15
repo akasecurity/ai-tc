@@ -11,7 +11,7 @@
 // and the one case that would open it is Windows-only, where the bug does not
 // occur. It would simply have stopped being a zip, in the suite whose whole job
 // is to be honest about what the installer is handed.
-import { closeSync, mkdtempSync, openSync, readSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -81,6 +81,38 @@ describe('the release fixture', () => {
     // this read `1f8b…` on every non-Windows host.
     expect(magicOf(path)).toBe(ZIP);
   });
+
+  // `runnable` defaults to OFF, and this is what keeps it there. A win32
+  // archive that packs the real PE carries a copy of the Node executable —
+  // ~115 MB — and building, zipping and expanding that is the most expensive
+  // thing this package does. Exactly one case in the suite runs the installed
+  // binary and so asks for it; every other archive is refused before the
+  // extract and needs nothing startable.
+  //
+  // Flipping the default back is a one-word edit that no other assertion here
+  // would notice, because a runnable archive is CORRECT — just enormous. Only
+  // wall-clock would move, and this repo deliberately gates on no wall clock.
+  // So the pin is a SIZE, which is deterministic and does not flake: an inert
+  // archive is a few hundred bytes and the bound is four orders of magnitude
+  // above it, so it can only ever be tripped by a real PE landing in there.
+  //
+  // One-sided on purpose — it never builds a runnable archive to compare
+  // against, since paying the 115 MB once to prove the fixture avoids paying
+  // it four times is a poor trade. Windows-gated because that is the only host
+  // where the runnable branch does anything: everywhere else the placeholder is
+  // written whatever the caller asked, so the assertion would pass vacuously.
+  it.skipIf(PS === undefined || process.platform !== 'win32')(
+    'leaves the real PE out of a win32 archive unless the caller asks to run it',
+    () => {
+      const path = writeArchive(root, {
+        version: FIXTURE_VERSION,
+        triple: 'win32-x64',
+        banner: 'inert-payload',
+      });
+      expect(magicOf(path)).toBe(ZIP);
+      expect(statSync(path).size).toBeLessThan(1_000_000);
+    },
+  );
 
   it('rewrites the same asset with a different hash when the payload changes', () => {
     // Exactly what the tampered case rests on, and worth asserting here rather

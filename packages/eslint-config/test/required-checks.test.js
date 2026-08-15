@@ -124,6 +124,15 @@ function turboCacheKeys(block) {
   return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
 }
 
+// Any spelling of the cache action: the combined one and both sub-actions. The
+// absence checks below need all three, and that is not a stylistic preference —
+// after the restore/save split no cached job spells the bare `actions/cache@` at
+// all, so a guard still looking only for that would go on passing while a cache
+// was added to a job whose whole point is not having one. An omitted alternative
+// in an absence guard is invisible rather than noisy: nothing reports the
+// candidate it failed to match.
+const ANY_CACHE_ACTION = /uses: actions\/cache(?:\/(?:restore|save))?@/;
+
 /**
  * Every `--filter=<name>` a job's run steps pass to turbo. Comment lines are
  * already gone by the time a block reaches here (see jobBlock), which is what
@@ -281,7 +290,7 @@ describe('the macOS leg', () => {
 
   it('restores a Turbo cache', () => {
     const block = jobBlock(ci, 'macos');
-    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
@@ -380,7 +389,7 @@ describe('the Windows legs', () => {
 
   it('restores a Turbo cache', () => {
     const block = jobBlock(ci, 'windows');
-    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
@@ -586,12 +595,42 @@ describe('the Turbo caches in ci.yml', () => {
 
   it.each(['ci', 'macos', 'windows'])('%s keys its cache per platform', (job) => {
     const keys = turboCacheKeys(jobBlock(ci, job));
-    // The `key:` plus two restore-keys. Pinned so a key added without the
-    // prefix cannot hide behind a loop that happens to see none.
-    expect(keys).toHaveLength(3);
+    // The restore `key:`, its two restore-keys, and the save `key:`. Pinned so a
+    // key added without the prefix cannot hide behind a loop that happens to see
+    // none.
+    expect(keys).toHaveLength(4);
     for (const key of keys) {
       expect(key.startsWith('turbo-${{ runner.os }}-')).toBe(true);
     }
+    // Restore and save must name the SAME key, or the run uploads its cache
+    // under a key no later run ever looks up — which reads as caching and
+    // caches nothing. Positional because the length above is pinned: the
+    // restore step's `key:` comes first and the save step's last.
+    const [restoreKey, , , saveKey] = keys;
+    expect(saveKey).toBe(restoreKey);
+  });
+
+  // The combined `actions/cache` saves in a post step that GitHub skips once an
+  // earlier step has failed, so under it a leg that goes RED saves nothing, and
+  // the next run finds no entry for its own lockfile lineage, falls back to an
+  // older one and misses on every task. That is a loop rather than a one-off:
+  // the cold run is slower, a slower run is likelier to time out, and a
+  // timed-out run saves nothing again. Windows sat in it at 0 of 36 cached
+  // tasks while the two green legs cached normally — the leg that needed a warm
+  // cache most was the one structurally guaranteed not to get one.
+  //
+  // Three things break the loop and all three are pinned, because any one of
+  // them alone restores it silently: the combined action must be GONE (it is
+  // the trap), a save step must exist, and its `if:` must not fall back to the
+  // default `success()` — which is precisely what skips it on a red job.
+  it.each(['ci', 'macos', 'windows'])('%s saves its cache even when the job fails', (job) => {
+    const block = jobBlock(ci, job);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
+    expect(block).not.toMatch(/uses: actions\/cache@/);
+
+    const save = /- name: Save Turbo cache\n([\s\S]*?)uses: actions\/cache\/save@/.exec(block);
+    expect(save, `\`${job}\` has no Save Turbo cache step`).not.toBeNull();
+    expect(save[1]).toMatch(/if: \$\{\{ !cancelled\(\)/);
   });
 
   // The inverse, and the reason the two cached jobs are named rather than
@@ -608,7 +647,7 @@ describe('the Turbo caches in ci.yml', () => {
   it('leaves the no-network job uncached', () => {
     const block = jobBlock(ci, 'no-network');
     expect(block).toMatch(/no-network-test\.sh/);
-    expect(block).not.toMatch(/uses: actions\/cache@/);
+    expect(block).not.toMatch(ANY_CACHE_ACTION);
   });
 
   // And the Windows lint leg, for the same reason one step further out. What it
@@ -625,6 +664,6 @@ describe('the Turbo caches in ci.yml', () => {
   it('leaves the Windows lint job uncached', () => {
     const block = jobBlock(ci, 'windows-lint');
     expect(block).toMatch(LINT_STEP);
-    expect(block).not.toMatch(/uses: actions\/cache@/);
+    expect(block).not.toMatch(ANY_CACHE_ACTION);
   });
 });

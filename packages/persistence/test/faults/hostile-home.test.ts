@@ -13,46 +13,50 @@ import {
   chmodSync,
   constants,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
 import { dataDir } from '../../src/local-layout.ts';
 import { ensureDataDirSync } from '../../src/paths.ts';
 import { errorFrom } from '../helpers/errors.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let parent: string;
+// The store's own `~/.aka` is a subdirectory of the harness's temp tree rather
+// than the tree itself: every case here needs a home that does not exist yet, or
+// exists as something other than a directory, and the harness creates its own
+// `settings/` and `data/` up front.
+const store = useTempStore('aka-fault-home-');
 let home: string;
 
 beforeEach(() => {
-  parent = mkdtempSync(join(tmpdir(), 'aka-fault-home-'));
-  home = join(parent, '.aka');
-});
-
-afterEach(() => {
+  home = join(store.home, '.aka');
   // Widen before removing, OUTERMOST first: chmod needs traverse on every
   // parent, so a 0000 home makes the inner call fail before it can widen
   // anything. (The unlink dependency runs the other way — a directory without
   // write permission cannot have its entries removed, and `force` forgives
   // ENOENT, not EACCES — which is why both levels have to come back at all.)
   // Both are restored because cases here tighten either one.
-  for (const dir of [home, dataDir(home)]) {
-    try {
-      chmodSync(dir, 0o700);
-    } catch {
-      // Absent, a regular file, or a platform that never applied the mode.
+  //
+  // Registered through `onCleanup` rather than an afterEach of our own: the
+  // harness drains these before it removes the tree, which is the ordering this
+  // suite needs and the one it used to hand-roll.
+  store.onCleanup(() => {
+    for (const dir of [home, dataDir(home)]) {
+      try {
+        chmodSync(dir, 0o700);
+      } catch {
+        // Absent, a regular file, or a platform that never applied the mode.
+      }
     }
-  }
-  rmSync(parent, { recursive: true, force: true });
+  });
 });
 
 /**

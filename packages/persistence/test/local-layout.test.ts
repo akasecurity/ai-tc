@@ -1,17 +1,7 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   dataDir,
@@ -20,15 +10,22 @@ import {
   migrateLegacyLayout,
   settingsDir,
 } from '../src/local-layout.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
+// The harness owns the temp tree, for the retrying removal and the teardown
+// failure it demotes to a `cause` rather than reporting in place of the body's
+// own error — cases below leave a directory at 0777 and one at 0755.
+//
+// `base` is a subdirectory rather than the store's own root: this suite is what
+// tests the layout helpers, so it has to create `settings/` and `data/` itself
+// (one case pre-creates a LOOSE settings/ and asserts the migration tightens it),
+// and the harness has already created both under its root.
+const store = useTempStore('aka-datadir-');
 let base: string;
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), 'aka-datadir-'));
-});
-
-afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  base = join(store.home, 'base');
+  mkdirSync(base);
 });
 
 describe('layout helpers', () => {

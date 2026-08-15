@@ -25,26 +25,22 @@
 //      recordInventory generation that writes it (alpha.6+). A raw legacy
 //      writer bypassing that guard can at worst mis-advertise an update; it
 //      cannot change what scans.
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { InstalledPackInput, Rule } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
 import { DB_FILENAME } from '../../src/paths.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-legacy-writers-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+// The temp tree is the harness's; the raw connections below are deliberately
+// NOT. `store.openRaw()` keeps every handle it hands out open until teardown,
+// and what this suite replays is a legacy PROCESS: one connection, opened for a
+// single statement and closed again, never overlapping another. Tracking them
+// would leave several live at once, which is a shape no shipped binary ever
+// produced and is the opposite of the sequence under test.
+const store = useTempStore('aka-legacy-writers-');
 
 function rule(id: string): Rule {
   return {
@@ -108,7 +104,7 @@ function replayRaw(
   statement: string,
   packRow: { packId: string; version: string; ruleIds: string[] },
 ): void {
-  const legacy = new DatabaseSync(join(dir, DB_FILENAME));
+  const legacy = new DatabaseSync(join(store.dataDir, DB_FILENAME));
   try {
     legacy.prepare(statement).run({
       id: `legacy-${packRow.packId}-${packRow.version}`,
@@ -125,7 +121,7 @@ function replayRaw(
 }
 
 function installedRow(packId: string): { version: string; rules: number } {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
+  const raw = new DatabaseSync(join(store.dataDir, DB_FILENAME));
   const row = raw
     .prepare(
       `SELECT version, json_array_length(rules_json) AS rules FROM installed_packs WHERE pack_id = ?`,
@@ -136,7 +132,7 @@ function installedRow(packId: string): { version: string; rules: number } {
 }
 
 function mirrorRow(packId: string): { version: string; rules: number } {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
+  const raw = new DatabaseSync(join(store.dataDir, DB_FILENAME));
   const row = raw
     .prepare(
       `SELECT version, json_array_length(rules_json) AS rules FROM available_packs WHERE pack_id = ?`,
@@ -150,7 +146,7 @@ function mirrorRow(packId: string): { version: string; rules: number } {
 
 describe('legacy alpha.5 upsert vs installed_packs (write gate)', () => {
   it('cannot clobber a manually applied update — and raises no error', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
@@ -170,7 +166,7 @@ describe('legacy alpha.5 upsert vs installed_packs (write gate)', () => {
   it('cannot rewrite an installed pack even when no update was ever applied', () => {
     // The gate is unconditional, not "only after applyUpdate": a legacy binary
     // must not auto-sync installed content in EITHER direction (up or down).
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.close();
 
@@ -188,7 +184,7 @@ describe('legacy alpha.5 upsert vs installed_packs (write gate)', () => {
   });
 
   it('still auto-installs a brand-new pack (INSERTs stay open to every generation)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.close();
 
@@ -205,7 +201,7 @@ describe('legacy alpha.5 upsert vs installed_packs (write gate)', () => {
 
 describe('legacy alpha.6 mirror upsert vs available_packs (downgrade guard boundary)', () => {
   it('current-generation recordInventory refuses a mirror downgrade (the app-level guard holds)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     // An older binary re-records its narrower inventory through the CURRENT
     // repository code — the isMirrorDowngrade guard must leave the mirror alone.
@@ -224,7 +220,7 @@ describe('legacy alpha.6 mirror upsert vs available_packs (downgrade guard bound
     // guard-less writer to pin the blast radius: the mirror mis-advertises,
     // but installed_packs (what actually scans) is untouched, and applying the
     // "update" would need a deliberate user action.
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     db.close();
 

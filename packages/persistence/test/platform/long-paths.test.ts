@@ -25,8 +25,7 @@
  * journal over it: the main file opens and the journal it needs to commit
  * cannot be created.
  */
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -37,6 +36,7 @@ import { dataDir, dbPath } from '../../src/local-layout.ts';
 import { dbSidecars, ensureDataDirSync } from '../../src/paths.ts';
 import { captureCount, captureEvent, captureFinding } from '../helpers/capture-fixtures.ts';
 import { errorFrom } from '../helpers/errors.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 /** Windows' classic path ceiling. */
 const MAX_PATH = 260;
@@ -46,28 +46,38 @@ const MAX_PATH = 260;
 // directory remove — and it is length, not depth, that MAX_PATH bounds.
 const SEGMENT = 'nested-workspace-directory';
 
+// The temp tree comes from the harness, which is also what removes it — a deep
+// tree is the case where a hand-rolled `rmSync` in a `finally` is least worth
+// re-deriving. The store's own `open()` is not usable here, though: it opens
+// `<store.home>/data`, and the whole point of this suite is a data dir several
+// hundred characters further down. So `openDeep` below opens by hand and closes
+// in a `finally`; only the tree's lifetime is the harness's.
+const store = useTempStore('aka-long-path-');
+
+// Bumped per `deepHome` call so each gets a disjoint root. Never reset between
+// tests: it only has to be unique, and a per-test store makes reuse harmless
+// anyway — resetting it would be one more thing to keep in step with the hooks.
+let roots = 0;
+
 /**
- * A home whose `<home>/data/aka.db` is at least `target` characters, plus the
- * removal that pairs with it. Built by appending whole segments and then one
- * trimmed segment, so the length lands where the caller asked rather than
- * wherever the loop happened to stop.
+ * A home whose `<home>/data/aka.db` is at least `target` characters. Built by
+ * appending whole segments to the store's own root and then one trimmed segment,
+ * so the length lands where the caller asked rather than wherever the loop
+ * happened to stop.
  */
-function deepHome(target: number): { home: string; dbFile: string; remove: () => void } {
-  const root = mkdtempSync(join(tmpdir(), 'aka-long-path-'));
-  let home = root;
+function deepHome(target: number): { home: string; dbFile: string } {
+  // Each call gets its own root under the store, so two calls in one body build
+  // disjoint trees. Sharing `store.home` directly would make the shorter home a
+  // prefix DIRECTORY of the longer one — both descend through identical SEGMENT
+  // names — and the two stores would then sit inside each other.
+  let home = join(store.home, `deep-${String(roots++)}`);
   while (dbPath(join(home, SEGMENT)).length < target) home = join(home, SEGMENT);
 
   const shortfall = target - dbPath(home).length;
   if (shortfall > 0) home = join(home, SEGMENT.slice(0, Math.max(shortfall - 1, 1)));
 
   mkdirSync(home, { recursive: true });
-  return {
-    home,
-    dbFile: dbPath(home),
-    remove: () => {
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { home, dbFile: dbPath(home) };
 }
 
 /** Open the store under `home`, or report why it could not be opened. */
@@ -123,23 +133,15 @@ describe('a store in a deep tree', () => {
     // The control. Without it every case below is satisfied by a store that
     // refuses everything, and the suite would report the ceiling as reached at
     // any length at all.
-    const { home, dbFile, remove } = deepHome(80);
-    try {
-      expect(dbFile.length).toBeLessThan(MAX_PATH);
-      expect(roundTripsOrRefuses(home)).toBe('stored');
-    } finally {
-      remove();
-    }
+    const { home, dbFile } = deepHome(80);
+    expect(dbFile.length).toBeLessThan(MAX_PATH);
+    expect(roundTripsOrRefuses(home)).toBe('stored');
   });
 
   it('either stores or refuses loudly past MAX_PATH — never silently', () => {
-    const { home, dbFile, remove } = deepHome(MAX_PATH + 40);
-    try {
-      expect(dbFile.length).toBeGreaterThan(MAX_PATH);
-      roundTripsOrRefuses(home);
-    } finally {
-      remove();
-    }
+    const { home, dbFile } = deepHome(MAX_PATH + 40);
+    expect(dbFile.length).toBeGreaterThan(MAX_PATH);
+    roundTripsOrRefuses(home);
   });
 
   it('either stores or refuses loudly where only the SIDECAR crosses MAX_PATH', () => {
@@ -147,15 +149,11 @@ describe('a store in a deep tree', () => {
     // eight characters longer than the file it belongs to, so this store's main
     // file is inside the ceiling and its journal is outside it. A platform that
     // opens the one and cannot create the other commits nothing.
-    const { home, dbFile, remove } = deepHome(MAX_PATH - 4);
-    try {
-      expect(dbFile.length).toBeLessThan(MAX_PATH);
-      const longest = Math.max(...dbSidecars(dbFile).map((path) => path.length));
-      expect(longest).toBeGreaterThan(MAX_PATH);
-      roundTripsOrRefuses(home);
-    } finally {
-      remove();
-    }
+    const { home, dbFile } = deepHome(MAX_PATH - 4);
+    expect(dbFile.length).toBeLessThan(MAX_PATH);
+    const longest = Math.max(...dbSidecars(dbFile).map((path) => path.length));
+    expect(longest).toBeGreaterThan(MAX_PATH);
+    roundTripsOrRefuses(home);
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -166,17 +164,13 @@ describe('a store in a deep tree', () => {
       // short components is inside both. So here the outcome is not a choice:
       // anything but 'stored' is a real defect, and this is what stops the
       // permissive shape above from being the only thing asserted anywhere.
-      const { home, dbFile, remove } = deepHome(MAX_PATH + 40);
-      try {
-        expect(dbFile.length).toBeGreaterThan(MAX_PATH);
-        expect(roundTripsOrRefuses(home)).toBe('stored');
+      const { home, dbFile } = deepHome(MAX_PATH + 40);
+      expect(dbFile.length).toBeGreaterThan(MAX_PATH);
+      expect(roundTripsOrRefuses(home)).toBe('stored');
 
-        // And the at-rest control still applies at this length — a chmod that
-        // silently missed a long path would leave the store world-readable.
-        expect(statSync(dbFile).mode & 0o777).toBe(0o600);
-      } finally {
-        remove();
-      }
+      // And the at-rest control still applies at this length — a chmod that
+      // silently missed a long path would leave the store world-readable.
+      expect(statSync(dbFile).mode & 0o777).toBe(0o600);
     },
   );
 
@@ -188,18 +182,14 @@ describe('a store in a deep tree', () => {
     // exists so the answer is visible in the log rather than inferred from a
     // green run, since the two outcomes have very different consequences for a
     // user with a deep profile.
-    const { home, dbFile, remove } = deepHome(MAX_PATH + 40);
-    try {
-      expect(dbFile.length).toBeGreaterThan(MAX_PATH);
-      // roundTripsOrRefuses carries this case's real assertions: it requires a
-      // round-trip on the store it opened, or a thrown Error with a message on
-      // the one it could not. Asserting its return value against the union it is
-      // typed as would add nothing — that comparison is true by construction and
-      // could never go red. What is left here is the report.
-      const outcome = roundTripsOrRefuses(home);
-      await ctx.annotate(`store at ${String(dbFile.length)} chars on win32: ${outcome}`);
-    } finally {
-      remove();
-    }
+    const { home, dbFile } = deepHome(MAX_PATH + 40);
+    expect(dbFile.length).toBeGreaterThan(MAX_PATH);
+    // roundTripsOrRefuses carries this case's real assertions: it requires a
+    // round-trip on the store it opened, or a thrown Error with a message on
+    // the one it could not. Asserting its return value against the union it is
+    // typed as would add nothing — that comparison is true by construction and
+    // could never go red. What is left here is the report.
+    const outcome = roundTripsOrRefuses(home);
+    await ctx.annotate(`store at ${String(dbFile.length)} chars on win32: ${outcome}`);
   });
 });

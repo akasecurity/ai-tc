@@ -5,18 +5,15 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   classifyOccupant,
@@ -31,6 +28,7 @@ import {
   tightenPerms,
   writeOwnerOnlyFileSync,
 } from '../src/paths.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
 // The POSIX file/dir modes are the ONLY at-rest control on the store — see the
 // "Data at rest" note in SECURITY.md. These tests pin the success modes (the
@@ -39,14 +37,21 @@ import {
 // exercised in database/settings fault cases rather than here. All mode
 // assertions skip on Windows, where POSIX modes are a no-op.
 
+// The harness owns the temp tree — its removal retries, and it demotes a
+// teardown failure to the `cause` of the body's own error rather than speaking
+// over it. Both matter here: several cases below tighten a directory to 0000 or
+// set the macOS immutable flag, and a restore that does not run leaves a tree
+// `rmSync` cannot remove.
+//
+// `base` is a subdirectory rather than the store's own root because these cases
+// assert on the tree's exact contents (`readdirSync(base)`) and create the layout
+// subdirs themselves — both of which the harness has already done to its root.
+const store = useTempStore('aka-paths-');
 let base: string;
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), 'aka-paths-'));
-});
-
-afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  base = join(store.home, 'base');
+  mkdirSync(base);
 });
 
 const mode = (p: string): number => statSync(p).mode & 0o777;
@@ -559,6 +564,19 @@ describe('classifyOccupant', () => {
       mkdirSync(dir);
       const target = join(dir, 'exception.key');
       writeFileSync(target, 'data\n');
+      // Registered BEFORE the tighten, so the widen runs even on the paths the
+      // in-body restores below cannot reach: a `classifyOccupant` that throws,
+      // or an assertion that fails ahead of one. Removing an entry needs write
+      // and execute on its PARENT, so a 0000 directory left behind is a tree
+      // `rmSync` refuses — and the rm's own EACCES is then the only thing
+      // reported, in place of whatever actually went wrong here.
+      store.onCleanup(() => {
+        try {
+          chmodSync(dir, 0o700);
+        } catch {
+          // Already widened by the body, or a platform that never applied it.
+        }
+      });
       chmodSync(dir, 0o000);
 
       let readable = true;

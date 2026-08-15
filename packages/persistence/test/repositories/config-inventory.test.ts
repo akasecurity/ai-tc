@@ -1,26 +1,16 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { ConfigScanRecord, ConfigScanResult } from '@akasecurity/schema';
 import { configInventoryInputs } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { openLocalDatabase } from '../../src/database.ts';
 import { inventoryId as inventoryIdOf } from '../../src/ids.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let dir: string;
+const store = useTempStore('aka-config-inv-');
 let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-config-inv-'));
-  db = openLocalDatabase(dir);
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 function scanResult(overrides?: Partial<ConfigScanResult>): ConfigScanResult {

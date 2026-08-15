@@ -1692,8 +1692,9 @@ stays green if a branch echoes a _truncated_ value, which is still a live creden
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
-`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts` and
-`packages/setup-wizard/test/helpers/no-echo.ts`. A plain
+`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
+`packages/setup-wizard/test/helpers/no-echo.ts` and
+`packages/persistence/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -1712,7 +1713,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All six packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -1726,9 +1727,15 @@ without which an `undefined` message satisfies the loop vacuously.
 **A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built
 literal asserts that a string the test constructed lacks a run of another string the test
 constructed — true by construction, and it stays true however `maskMatch` changes. Each
-`no-echo.test.ts` calls `maskMatch` itself (`@akasecurity/plugin-sdk` re-exports it, so the
-plugin crosses no package wall), which is what makes widening its generic branch go red where
-the reason is written down.
+`no-echo.test.ts` that has a masked-preview case calls `maskMatch` itself
+(`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
+makes widening its generic branch go red where the reason is written down.
+
+`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
+omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
+`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
+a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

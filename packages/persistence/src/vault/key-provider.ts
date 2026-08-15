@@ -408,19 +408,129 @@ function tightenFileMode(file: string): void {
 
 // ─── Keychain custody ────────────────────────────────────────────────────────
 
-/** Invokes the platform `security` binary with the given argv, returning stdout. */
-export type SecurityExec = (args: string[]) => string;
+/**
+ * Invokes the platform `security` binary with the given argv, returning stdout.
+ * `stdin` feeds the child's standard input, which is how the write paths keep
+ * key material off the command line — see {@link writeCommand}.
+ */
+export type SecurityExec = (args: string[], stdin?: string) => string;
 
-const runSecurity: SecurityExec = (args) =>
+/**
+ * Ceiling on a single `security` call.
+ *
+ * A LOCKED keychain does not fail: `security` blocks on an unlock dialog —
+ * measured, with no exit status and no stderr — and nothing on this thread can
+ * interrupt it. The callers are a hook with its own harness deadline, a CLI
+ * command and a dashboard action, so an unbounded wait is a wedged session
+ * rather than a slow one, and on a hook it is a scan that never happens. The
+ * bound is what turns "blocks for ever" into a loud, catchable failure.
+ *
+ * Well clear of an honest call, which is milliseconds against a local binary,
+ * and inside the plugin harness's own 10s budget so the hook still gets to
+ * fail rather than being killed mid-read.
+ *
+ * It bounds WRITES as well, which is not free: a write killed part-way can
+ * leave a half-written item. That is the better end of the trade — a locked
+ * keychain blocks writes exactly as it blocks reads, so an unbounded write
+ * hangs just as hard — and the damage is contained, because a keyring that
+ * will not parse is refused rather than minted over. Lowering this bound
+ * raises the odds of that partial write; it is not a free dial to turn.
+ */
+const SECURITY_TIMEOUT_MS = 5_000;
+
+const runSecurity: SecurityExec = (args, stdin) =>
   execFileSync('/usr/bin/security', args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+    input: stdin,
+    timeout: SECURITY_TIMEOUT_MS,
+    // stderr is discarded rather than captured, and that is deliberate: a
+    // captured stream rides out on an execFileSync error's `.stderr`, and the
+    // write paths here carry the keyring. Exit status is the only thing any
+    // branch below reads.
+    stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
   });
 
 // `security find-generic-password` exit status for "no matching item exists"
 // (errSecItemNotFound). Every other non-zero exit — a locked keychain, a
 // denied ACL — is a failure, not absence.
 const SECURITY_ITEM_NOT_FOUND = 44;
+
+/**
+ * Why a stored item would not parse, without quoting it.
+ *
+ * `parseKeyring`'s own refusals name a field and carry no value, so they pass
+ * through. A `JSON.parse` SyntaxError is replaced rather than forwarded, for
+ * two reasons — and NOT because it currently leaks. Measured on this Node, its
+ * structural messages carry a position and no snippet ("Unterminated string in
+ * JSON at position 67"), and the one form that does quote input quotes the
+ * START, which for a keyring is always `{"current":…`. So:
+ *
+ * - a bare SyntaxError names neither the vault nor the backend, and reads as a
+ *   fault in whatever called it rather than as a damaged keychain item;
+ * - the quoting form is V8's choice, not this code's, and the input it would be
+ *   handed is key material. Depending on where a future runtime decides to cut
+ *   that window is not a bet worth taking for a message nobody needs.
+ */
+function corruptReason(err: unknown): string {
+  if (err instanceof SyntaxError) return 'malformed JSON';
+  return err instanceof Error ? err.message : 'unknown';
+}
+
+/**
+ * Raw-free description of a `security` failure: exit metadata only.
+ *
+ * An `execFileSync` error's `.message` echoes the argv it was given, and its
+ * `.stdout`/`.stderr` carry whatever the child produced. On the read path
+ * stdout IS the keyring, so none of it may cross into a thrown message — nor
+ * ride out as `cause`, which would re-attach the whole error object and
+ * re-expose exactly what this strips.
+ */
+function securityFailureMeta(err: unknown): string {
+  const e = err as { status?: number | null; signal?: string | null; code?: string };
+  const parts: string[] = [];
+  if (typeof e.status === 'number') parts.push(`exit ${String(e.status)}`);
+  if (typeof e.signal === 'string' && e.signal) parts.push(`signal ${e.signal}`);
+  if (typeof e.code === 'string' && e.code) parts.push(e.code);
+  return parts.length > 0 ? parts.join(', ') : 'unknown error';
+}
+
+/**
+ * Builds an `add-generic-password` line for `security -i`, which reads
+ * COMMANDS on stdin.
+ *
+ * `add-generic-password` has no stdin option of its own: `-w`, `-p` and `-X`
+ * all take their value on the command line, and a bare `-w` prompts on a
+ * terminal. Interactive mode is therefore what keeps the keyring out of argv,
+ * where a failed exec's `.message` would echo it.
+ *
+ * The keyring is hex-encoded and passed with `-X`, so the only payload token is
+ * `[0-9a-f]` — no quoting question can arise from it however the interactive
+ * tokenizer behaves. The keychain path is the one variable token and is
+ * single-quoted; a path carrying a quote or a line break is refused rather than
+ * escaped, since a mangled line would write the keyring somewhere unintended.
+ */
+function writeCommand(keyring: Keyring, update: boolean, keychain?: string): string {
+  const hex = Buffer.from(serializeKeyring(keyring), 'utf8').toString('hex');
+  const parts = [
+    'add-generic-password',
+    ...(update ? ['-U'] : []),
+    '-s',
+    KEYCHAIN_SERVICE,
+    '-a',
+    KEYCHAIN_ACCOUNT,
+    '-X',
+    hex,
+  ];
+  if (keychain !== undefined) {
+    if (/['\n\r]/.test(keychain)) {
+      throw new Error(
+        'vault: keychain path contains a quote or line break, which security -i cannot carry',
+      );
+    }
+    parts.push(`'${keychain}'`);
+  }
+  return `${parts.join(' ')}\n`;
+}
 
 /**
  * Opt-in OS-keychain custody: the same versioned keyring JSON held as one
@@ -438,8 +548,24 @@ const SECURITY_ITEM_NOT_FOUND = 44;
 export class KeychainKeyProvider implements KeyProvider {
   readonly #keysDir: string;
   readonly #exec: SecurityExec;
+  readonly #keychain: string | undefined;
+  /**
+   * The trailing keychain argument, or nothing. Every subcommand used here
+   * takes it last (`add-generic-password [keychain]`,
+   * `find-generic-password [keychain...]`), and omitting it means the default
+   * search list. Fixed at construction, so it is built once rather than per
+   * call on the capture path.
+   */
+  readonly #target: readonly string[];
 
-  constructor(keysDir: string, exec: SecurityExec = runSecurity) {
+  /**
+   * `keychain` names the keychain to operate on, as `security`'s trailing
+   * argument. Production passes nothing and gets the user's default keychain,
+   * which is the whole point of the backend. A test driving the REAL binary
+   * passes a throwaway one, because the alternative is writing vault key
+   * material into the developer's own login keychain and leaving it there.
+   */
+  constructor(keysDir: string, exec: SecurityExec = runSecurity, keychain?: string) {
     // The platform guard applies only to the real binary; an injected exec
     // carries its own platform expectations.
     if (exec === runSecurity && process.platform !== 'darwin') {
@@ -449,6 +575,8 @@ export class KeychainKeyProvider implements KeyProvider {
     }
     this.#keysDir = keysDir;
     this.#exec = exec;
+    this.#keychain = keychain;
+    this.#target = keychain === undefined ? [] : [keychain];
   }
 
   /** Where a fallback file provider for the same vault would keep its keyring. */
@@ -495,20 +623,31 @@ export class KeychainKeyProvider implements KeyProvider {
         '-a',
         KEYCHAIN_ACCOUNT,
         '-w',
+        ...this.#target,
       ]);
     } catch (err) {
       // Only "no such item" may read as absence. A locked keychain or a
       // denied ACL also exits non-zero, and reading those as absence would
       // route into the mint path and orphan every existing ciphertext.
       if ((err as { status?: unknown }).status === SECURITY_ITEM_NOT_FOUND) return null;
+      // Exit metadata only, and no `cause`: on this path the child's stdout is
+      // the keyring itself, so the caught error is not something to carry along.
+      // eslint-disable-next-line preserve-caught-error -- caught error's stdout is the keyring; see securityFailureMeta
       throw new Error(
-        `vault: keychain read failed (${err instanceof Error ? err.message : String(err)}); refusing to treat the failure as an absent keyring`,
-        { cause: err },
+        `vault: keychain read failed (${securityFailureMeta(err)}); refusing to treat the failure as an absent keyring`,
       );
     }
     const body = raw.trim();
     if (body.length === 0) return null;
-    return parseKeyring(body);
+    try {
+      return parseKeyring(body);
+    } catch (err) {
+      // Refuses rather than returning null: a keyring that will not parse is
+      // not an absent one, and minting over it orphans every ciphertext sealed
+      // under whatever it held.
+      // eslint-disable-next-line preserve-caught-error -- a JSON.parse error quotes the keyring; see corruptReason
+      throw new Error(`vault: keychain item is not a usable keyring (${corruptReason(err)})`);
+    }
   }
 
   /**
@@ -517,21 +656,17 @@ export class KeychainKeyProvider implements KeyProvider {
    * keyring — the loser re-reads and adopts it instead.
    */
   #create(keyring: Keyring): Keyring {
-    const args = [
-      'add-generic-password',
-      '-s',
-      KEYCHAIN_SERVICE,
-      '-a',
-      KEYCHAIN_ACCOUNT,
-      '-w',
-      serializeKeyring(keyring),
-    ];
+    // Built OUTSIDE the try: its refusal is a caller/config fault, and the
+    // catch below reads any throw as a lost mint race and re-reports it as a
+    // write failure, which would bury the reason.
+    const line = writeCommand(keyring, false, this.#keychain);
     try {
-      this.#exec(args);
+      this.#exec(['-i'], line);
     } catch (err) {
       const winner = this.#read();
       if (winner) return winner;
-      throw asError(err);
+      // eslint-disable-next-line preserve-caught-error -- caught error may echo the write payload; see securityFailureMeta
+      throw new Error(`vault: keychain write failed (${securityFailureMeta(err)})`);
     }
     return keyring;
   }
@@ -539,16 +674,15 @@ export class KeychainKeyProvider implements KeyProvider {
   // `-U` updates the item in place, deliberately replacing the stored map with
   // one that contains it — used only for rotation, under the rotation lock.
   #replace(keyring: Keyring): Keyring {
-    this.#exec([
-      'add-generic-password',
-      '-U',
-      '-s',
-      KEYCHAIN_SERVICE,
-      '-a',
-      KEYCHAIN_ACCOUNT,
-      '-w',
-      serializeKeyring(keyring),
-    ]);
+    const line = writeCommand(keyring, true, this.#keychain);
+    try {
+      this.#exec(['-i'], line);
+    } catch (err) {
+      // Exit metadata only: a rotation failure must not carry the payload it
+      // was writing out to whatever logs it.
+      // eslint-disable-next-line preserve-caught-error -- caught error may echo the write payload; see securityFailureMeta
+      throw new Error(`vault: keychain write failed (${securityFailureMeta(err)})`);
+    }
     return keyring;
   }
 }

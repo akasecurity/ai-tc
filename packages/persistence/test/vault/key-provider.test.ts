@@ -398,20 +398,22 @@ describe('KeychainKeyProvider', () => {
   // A locked keychain or a denied ACL must fail the load, not read as absence:
   // minting over the real keyring would orphan every existing ciphertext.
   it('throws when the keychain read is denied rather than minting', async () => {
-    const calls: string[][] = [];
-    const provider = new KeychainKeyProvider(dir, (args) => {
-      calls.push(args);
+    const calls: { args: string[]; stdin: string | undefined }[] = [];
+    const provider = new KeychainKeyProvider(dir, (args, stdin) => {
+      calls.push({ args, stdin });
       return denied();
     });
 
     await expect(provider.loadOrCreate()).rejects.toThrow(/keychain read failed/);
-    expect(calls.some((args) => args[0] === 'add-generic-password')).toBe(false);
+    // A write now rides stdin as a `security -i` command, so looking for
+    // `add-generic-password` in ARGV would be true however this behaved.
+    expect(calls.some((c) => c.stdin !== undefined)).toBe(false);
   });
 
   it('mints on item-not-found (exit 44), without -U', async () => {
-    const calls: string[][] = [];
-    const provider = new KeychainKeyProvider(dir, (args) => {
-      calls.push(args);
+    const calls: { args: string[]; stdin: string | undefined }[] = [];
+    const provider = new KeychainKeyProvider(dir, (args, stdin) => {
+      calls.push({ args, stdin });
       if (args[0] === 'find-generic-password') notFound();
       return '';
     });
@@ -419,11 +421,13 @@ describe('KeychainKeyProvider', () => {
     const key = await provider.loadOrCreate();
 
     expect(key.version).toBe(1);
-    const add = calls.find((args) => args[0] === 'add-generic-password');
-    expect(add).toBeDefined();
+    const write = calls.find((c) => c.stdin?.startsWith('add-generic-password'));
+    expect(write).toBeDefined();
+    // The command itself rides stdin; argv carries only interactive mode.
+    expect(write?.args).toEqual(['-i']);
     // A plain add fails on an existing item, so a lost first-mint race cannot
     // overwrite the winner's keyring; -U belongs to rotation only.
-    expect(add).not.toContain('-U');
+    expect(write?.stdin).not.toContain('-U');
   });
 
   it('adopts the winning keyring when its first mint loses the race', async () => {
@@ -447,9 +451,9 @@ describe('KeychainKeyProvider', () => {
   });
 
   it('rotates by replacing the item in place (-U) under the rotation lock', async () => {
-    const calls: string[][] = [];
-    const provider = new KeychainKeyProvider(dir, (args) => {
-      calls.push(args);
+    const calls: { args: string[]; stdin: string | undefined }[] = [];
+    const provider = new KeychainKeyProvider(dir, (args, stdin) => {
+      calls.push({ args, stdin });
       if (args[0] === 'find-generic-password') return keyringJson(Buffer.alloc(32, 7));
       return '';
     });
@@ -457,9 +461,41 @@ describe('KeychainKeyProvider', () => {
     const rotated = await provider.rotate();
 
     expect(rotated.version).toBe(2);
-    const add = calls.find((args) => args[0] === 'add-generic-password');
-    expect(add).toContain('-U');
+    const write = calls.find((c) => c.stdin?.startsWith('add-generic-password'));
+    expect(write).toBeDefined();
+    expect(write?.stdin).toContain('-U');
     expect(existsSync(join(dir, `${VAULT_KEY_FILENAME}.lock`))).toBe(false);
+  });
+
+  // The defect this backend carried: the keyring rode argv (`-w <json>`), and
+  // an execFileSync error's `.message` echoes argv — so a failed write put the
+  // key in an error that outlives the process and travels into logs. It rides
+  // stdin now, and nothing about the payload may reach the command line.
+  it('keeps the keyring off argv on both write paths', async () => {
+    const calls: { args: string[]; stdin: string | undefined }[] = [];
+    let reads = 0;
+    const provider = new KeychainKeyProvider(dir, (args, stdin) => {
+      calls.push({ args, stdin });
+      if (args[0] === 'find-generic-password') {
+        reads += 1;
+        if (reads === 1) notFound();
+        return keyringJson(Buffer.alloc(32, 9));
+      }
+      return '';
+    });
+
+    await provider.loadOrCreate();
+    await provider.rotate();
+
+    // Positive control: both writes really happened, on stdin.
+    const writes = calls.filter((c) => c.stdin?.startsWith('add-generic-password'));
+    expect(writes).toHaveLength(2);
+
+    const argv = calls.map((c) => c.args.join(' ')).join('\n');
+    expect(argv).not.toContain('add-generic-password');
+    // The hex-encoded keyring is the payload's on-the-wire form; a 32-byte key
+    // alone is 64 hex characters, so any such run in argv is the leak itself.
+    expect(argv).not.toMatch(/[0-9a-f]{64}/);
   });
 
   it('refuses a rotation while another is in flight', async () => {

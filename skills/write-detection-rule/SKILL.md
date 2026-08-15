@@ -134,8 +134,8 @@ The engine (`packages/detections/src/engine.ts`) implements exactly two:
 
 **Any other name fails the parse.** `PostValidatorName` in `packages/schema/src/zod/rule.ts` enumerates
 the two, and the engine keys its validator table on that type — so the pair cannot drift, and a
-misspelling (`Luhn`, `luhnn`) or a plausible-but-unimplemented name (`ssn-checksum`, which is real in
-the `validator` **matcher** enum and is not a post-validator) is refused with a message naming what
+misspelling (`Luhn`, `luhnn`) or a plausible-but-unimplemented name (`ssn-checksum` names a real
+checksum, so it reads as legitimate, but nothing implements it) is refused with a message naming what
 does exist. This used to be a silent no-op: the rule parsed, loaded and fired with the
 false-positive guard simply absent.
 

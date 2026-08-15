@@ -197,9 +197,10 @@ export type PostValidatorName = z.infer<typeof PostValidatorName>;
 // A post-validator reference: the bare name (engine defaults), or name + config
 // for per-rule tuning (e.g. entropy over short password values). The bare-string
 // form stays valid for rules already using it. Either form closes over the same
-// name (see PostValidatorName above), so a name that exists only in the
-// `validator` MATCHER enum — `ssn-checksum` — is refused here, where it names no
-// post-validator at all.
+// name (see PostValidatorName above), so a plausible-but-unimplemented one is
+// refused here rather than parsing and then guarding nothing. `ssn-checksum` is
+// the case worth naming: it names a real checksum, so it reads as legitimate,
+// and nothing implements it as a post-validator.
 export const PostValidatorRef = z
   .union(
     [

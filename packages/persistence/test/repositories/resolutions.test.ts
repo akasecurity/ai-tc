@@ -1,39 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, EventMetadata, IngestEvent } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteResolutionsRepository } from '../../src/repositories/resolutions.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-resolutions-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-resolutions-'));
-  db = openLocalDatabase(dir);
-});
-
-// Raw second connections handed to repos under test — closed before rmSync
-// (Windows cannot delete a directory while a DB handle is open).
-const rawConnections: DatabaseSync[] = [];
-
-afterEach(() => {
-  for (const raw of rawConnections.splice(0)) raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 // A second raw connection to the same file (mirrors SqliteSecurityRepository's
 // test pattern) — `now` is injectable so created_at ordering is deterministic.
 function resolutions(now: () => number = () => Date.now()): SqliteResolutionsRepository {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  rawConnections.push(raw);
+  const raw = store.openRaw();
   return new SqliteResolutionsRepository(raw, now);
 }
 
@@ -67,7 +51,7 @@ function recordAtRestFinding(path: string, findingKey: string): void {
   };
   db.recordCapture(event, [finding]);
 
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
+  const raw = store.openRaw();
   raw.prepare('UPDATE inspection_findings SET finding_key = :findingKey WHERE id = :id').run({
     findingKey,
     id: finding.id,

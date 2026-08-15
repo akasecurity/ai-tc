@@ -1382,8 +1382,50 @@ literal 10,000-deep nesting is not thorough, it is a timeout.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
-cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
-`local-ops`, `plugin-runtime`, `plugins/claude-code` and `web-ui` still roll their own.
+cleanup dance, and that is enforced rather than asked:
+`packages/persistence/test/harness-adoption.test.ts` derives the file set from
+`git ls-files` and fails on any suite that opens a store and builds its own temp tree.
+It carries **no** exception for that pair. The suites that build a tree and open no store
+are pinned as an EXACT set with a reason each — a floor would forbid removals while
+letting the next hand-rolled teardown in, which is the direction this actually drifts.
+That guard strips comments before it matches anything, because the count this replaced
+was taken with a plain grep and came out two files high: `paths.test.ts` and
+`local-layout.test.ts` name `openLocalDatabase` in prose and open nothing.
+
+**Reach for `store.openRaw()` by default; a bare `new DatabaseSync` needs a reason written
+at the top of the file.** `openRaw()` keeps every handle it hands out open until teardown,
+so it is wrong in exactly two places. Where the CLOSE is part of the setup:
+`legacy-writers.test.ts` replays a legacy _process_ — one connection, one statement, closed
+again, never overlapping — and `legacy-compat-views.test.ts`'s fixture handles leave the
+store at one point in a migration and close before the next pass drains further, so a live
+handle changes what that pass does. And where the file is not the store at all: `openRaw()`
+only ever opens `<home>/data/aka.db`, so a `.legacy.` backup copy or a moved-aside store has
+to be opened by hand (`database.test.ts` has both).
+
+**What is NOT a reason, though it reads like one, is a descriptor probe.**
+`descriptorProbe().leakedBy` measures a delta around a **synchronous window**, so a fixture
+handle opened outside that window sits in the before-count and the after-count alike and
+moves the number not at all — only a handle opened _inside_ the window can. Measured rather
+than reasoned: converting `database.test.ts`'s fixture handles to `openRaw()` left all 24 of
+its cases green, which is what retired an earlier version of this paragraph claiming the
+opposite.
+
+**Outside `packages/persistence` the harness is deliberately NOT available, and the
+decision is not "nobody got round to it".** It lives under `test/`, and the package's
+`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
+`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
+package would gain a supported route to the raw `DatabaseSync`, and
+`test-only-seam.test.js` would stay green throughout because the new callers are tests.
+The harness also imports `vitest` at module scope, and `noExternal: [/^@akasecurity\//]`
+inlines whatever a shipped entry reaches. So store tests in `cli`, `local-ops`,
+`plugin-runtime`, the three plugins and `web-ui` still roll their own, and each of those
+is a teardown re-derived rather than reused. Closing that means a **separate dev-only
+workspace package** built on the public index (the one route that keeps both properties),
+with the full "Adding a new workspace package" checklist — its own lint config and script,
+tsconfig, a vitest config wiring the no-network guard, and entries in
+`EXPECTED_WORKSPACE_PACKAGE_NAMES` and `EXPECTED_VITEST_PACKAGES`. Tracked separately; do
+not reach for a `./testing` export instead.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
@@ -1451,6 +1493,14 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+  **It belongs at two shapes, not only after a fault.** After a path that REFUSES inside a
+  transaction — `applyMigrations` on a partially-present migration, a `runInTransaction`
+  that drops a malformed leaf — because refusing is half the requirement and containing the
+  refusal is the other half; a handle left inside its `BEGIN` makes every later write on it
+  join a transaction nobody started, and the store reads as healthy from outside. And after
+  a fixture SEEDER's `COMMIT`, because a seeder that returns still inside its `BEGIN` has
+  committed nothing, and every read below it then measures an empty store and reports the
+  number as a result.
 - `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
   [Testing](#testing) on why the try/catch form asserts on the test's own guard).
 - `descriptorProbe()` — how many OS descriptors a synchronous thunk left behind. A

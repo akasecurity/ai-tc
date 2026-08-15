@@ -288,9 +288,18 @@ const requiredWorkflows = () => [...new Set((requiredCheckRows() ?? []).map((row
 // alternative "Require branches to be up to date", and a maintainer switching the
 // decision will copy that spelling; a case-sensitive lookup would then fail with
 // a message about an unknown mechanism rather than about the thing they changed.
+//
+// `in use` and `chosen` are both accepted, and the line is NOT anchored at its
+// end. A mechanism that is recorded but not yet switched on has to say so on the
+// same line — the bolded record is where a reader stops, so a caveat four
+// paragraphs down is one they never reach — and that trailing text is exactly
+// what an end-anchored pattern rejects. Dropping `$` is therefore half the
+// widening rather than a tidy-up: keeping it while adding the alternation parses
+// `Mechanism chosen: …` only while nothing follows the bold, which is the one
+// case the wording exists to cover.
 function branchFreshness() {
   const contributing = readContributing();
-  const mechanism = /^\*\*Mechanism in use: ([^.*]+)\.\*\*$/m.exec(contributing);
+  const mechanism = /^\*\*Mechanism (?:in use|chosen): ([^.*]+)\.\*\*/m.exec(contributing);
   return {
     documented: /^### Branch freshness$/m.test(contributing),
     mechanism: mechanism === null ? null : mechanism[1].trim().toLowerCase(),
@@ -718,7 +727,10 @@ describe('the branch-freshness decision in CONTRIBUTING.md', () => {
 
   it('is recorded where a contributor reading about branch protection will find it', () => {
     expect(documented, 'CONTRIBUTING.md carries no `### Branch freshness` section').toBe(true);
-    expect(mechanism, 'CONTRIBUTING.md carries no `**Mechanism in use: …**` line').not.toBeNull();
+    expect(
+      mechanism,
+      'CONTRIBUTING.md carries no `**Mechanism in use/chosen: …**` line',
+    ).not.toBeNull();
     expect(MECHANISMS, `"${mechanism}" is not one of the mechanisms`).toContain(mechanism);
   });
 

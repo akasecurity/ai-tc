@@ -207,7 +207,11 @@ enforce either:
 | **Merge queue** on `main`                               | Tests each entry against `main`'s tip plus everything queued ahead of it, then merges only what passed that exact tree. Contributors never update a branch by hand |
 | Branch protection's _Require branches to be up to date_ | Blocks the merge button until the branch has been updated, so the checks re-run against the current `main`. Every merge invalidates every other open PR            |
 
-**Mechanism in use: merge queue.**
+**Mechanism chosen: merge queue.** **Not yet enabled** — it needs repository-admin rights
+and cannot be turned on from a PR. Until it is, the hole described above is still open: a
+green PR check here may have been computed against a `main` that has since moved. Verify
+the current state with the query at the end of this section rather than reading this line
+as the answer.
 
 Chosen for the merge rate here: with several PRs landing on a busy day, the up-to-date
 setting turns every merge into an update-and-re-run for each remaining open PR, while the

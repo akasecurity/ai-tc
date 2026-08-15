@@ -1,7 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import type {
   ActionTaken,
@@ -11,26 +8,21 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { captureId } from '../../src/ids.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // The instance-level reads: listFindingInstances (flat, keyset-paged) and
 // listFindingLocations (folded by repo → file). Both run against a real store,
 // like every other repository suite here.
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-findings-flat-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-findings-flat-'));
-  db = openLocalDatabase(dir);
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 function record(opts: {

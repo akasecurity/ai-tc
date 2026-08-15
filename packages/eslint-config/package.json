@@ -23,6 +23,7 @@
     "typescript-eslint": "^8.65.0"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.0.0",
     "vitest": "^4.1.10"
   },

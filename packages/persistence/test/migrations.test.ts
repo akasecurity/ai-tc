@@ -13,6 +13,7 @@ import {
   runLegacyHistoryBackfill,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
+import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
 // The six token-usage generated columns are defined in THREE places that must stay
 // in lockstep: the canonical `0001_adorable_marten_broadcloak` migration in
@@ -188,6 +189,12 @@ describe('applyMigrations tag ledger', () => {
       expect(() => {
         applyMigrations(db);
       }).toThrow(/0003_rich_sage/);
+      // Refusing is half the requirement; the other half is that the refusal is
+      // contained. The applier runs each migration inside a transaction, so a
+      // throw that skipped the rollback would leave this handle holding its
+      // locks — and every later write on it would silently join a transaction
+      // nobody started, with the store looking healthy from outside.
+      assertNoOpenTransaction(db);
     } finally {
       db.close();
     }

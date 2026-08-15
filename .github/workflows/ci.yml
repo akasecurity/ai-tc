@@ -59,7 +59,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # fetch-depth: 0 for the Diff coverage step below. The default depth-1
+      # checkout has no merge base to diff against, so the gate could only be
+      # given the base TIP — a two-dot diff against which attributes every line
+      # that landed on main since the branch started to this PR. That is wrong in
+      # both directions: an unrelated merge can redden a clean PR, and enough
+      # well-covered churn can dilute a genuinely untested change into a pass.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -155,6 +163,46 @@ jobs:
       # trap the no-network job documents for `--force`.
       - name: Test
         run: pnpm turbo run test --concurrency=2
+
+      # Coverage is written by the step above, not by this one: every package's
+      # vitest config turns it on unconditionally (test/vitest/coverage.ts says
+      # why), which is what finally makes turbo's long-declared
+      # `outputs: ["coverage/**"]` describe something real. Re-running the suite
+      # instrumented here would measure a second, differently-cached run.
+      #
+      # Per-package FLOORS are enforced in that step too — a package below its
+      # floor fails its own `vitest run`. There is deliberately no aggregate
+      # threshold anywhere: one would be satisfied by covering an icon sheet
+      # while a mutating Server Action stayed at zero.
+      #
+      # This step answers the other question — is the code this PR ADDS tested?
+      # It reads the reports already on disk and needs no network: the gate is a
+      # workspace tool, not a third-party uploader, so no coverage data leaves
+      # the runner.
+      - name: Diff coverage
+        if: github.event_name == 'pull_request'
+        run: >
+          node tools/coverage-gate/src/check-diff-coverage.ts
+          --base ${{ github.event.pull_request.base.sha }}
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      # `always()` so a package that fell BELOW its floor still uploads the
+      # report explaining which lines it lost — the coverage block sets
+      # `reportOnFailure`, so the report exists precisely when it is most wanted.
+      # `if-no-files-found: ignore` keeps a genuinely earlier failure (a crashed
+      # suite that wrote nothing) reporting as itself rather than as a missing
+      # artifact.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            */coverage/
+            */*/coverage/
+            !**/node_modules/**
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Build
         run: pnpm build

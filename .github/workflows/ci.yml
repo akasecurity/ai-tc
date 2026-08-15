@@ -635,6 +635,22 @@ jobs:
     name: Windows · Lint
     runs-on: windows-latest
     timeout-minutes: 25
+    # `pnpm lint` fans `turbo run lint` across every package, and this was the one
+    # lint-or-test step in this file with no bound on that — every Test step
+    # carries `--concurrency=2`, and this leg needs it for the same reason the
+    # Windows test leg does. Unbounded, each package spawns its own ESLint (several
+    # spawn two, for the src+test pass split), and Windows answers a process storm
+    # of that size with STATUS_DLL_INIT_FAILED (0xC0000142, surfacing as exit
+    # 3221225794) rather than a lint error: the child never starts, so no lint
+    # output precedes it and the victim moves between runs.
+    #
+    # Bounded through the environment rather than the flag because the run step has
+    # to stay exactly `pnpm lint`. Going to turbo directly drops `lint:root` and
+    # `check:portability`, which the root script chains and which are the only
+    # coverage the repo root gets — required-checks.test.js pins that step for that
+    # reason, and this bound is pinned beside it.
+    env:
+      TURBO_CONCURRENCY: 2
     steps:
       - uses: actions/checkout@v7
 

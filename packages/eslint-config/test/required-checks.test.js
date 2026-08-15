@@ -415,6 +415,37 @@ describe('the Windows legs', () => {
     expect(block).not.toMatch(/--filter/);
   });
 
+  // Unfiltered AND unbounded is what this leg cannot be. `pnpm lint` fans
+  // `turbo run lint` across every package, and each spawns its own ESLint —
+  // several spawn two, for the src+test pass split. Windows answers a process
+  // storm of that size with STATUS_DLL_INIT_FAILED (0xC0000142, exit 3221225794):
+  // the child never starts, so there is no lint output to read and the package
+  // that dies moves between runs, which is what distinguishes it from a real
+  // violation. Every `turbo run test` invocation in this file is bounded for the
+  // same reason; this leg was the one that never got it.
+  //
+  // The bound is asserted through `env:` rather than a flag on the step, and that
+  // is forced rather than chosen: the two assertions above pin the step as exactly
+  // `pnpm lint`, because going to turbo directly drops `lint:root` and
+  // `check:portability`. `TURBO_CONCURRENCY` is turbo's own spelling of the flag —
+  // verified against the pinned turbo, where an invalid value fails with the same
+  // `--concurrency` parse error the flag produces, which an unread variable could
+  // not do.
+  //
+  // Paired with the positive control for the reason the filter check is: a block
+  // that captured nothing satisfies an absence, and it would satisfy a bare
+  // presence check here too if the value were never read. So read the value and
+  // require it to be a small positive integer — `TURBO_CONCURRENCY: 0` is refused
+  // by turbo at startup, and a large one is the unbounded case wearing a number.
+  it('bounds how many packages lint at once', () => {
+    const block = jobBlock(ci, 'windows-lint');
+    expect(block).toMatch(LINT_STEP);
+    const bound = /^ {6}TURBO_CONCURRENCY: (\d+)$/m.exec(block);
+    expect(bound, 'the Windows lint job declares no TURBO_CONCURRENCY bound').not.toBeNull();
+    expect(Number(bound[1])).toBeGreaterThan(0);
+    expect(Number(bound[1])).toBeLessThanOrEqual(4);
+  });
+
   // Same reasoning as the macOS leg: a job-level `if:` does not save a PR the
   // wait, because GitHub reports a skipped job as PENDING for a required check.
   it.each(['windows', 'windows-lint'])('%s carries no condition that could skip it', (job) => {

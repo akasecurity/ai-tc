@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
+import { coverageOptions } from '../../test/vitest/coverage.ts';
+
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
 // per package because each one runs its own vitest;
@@ -19,11 +21,13 @@ const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', i
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
+    coverage: coverageOptions(import.meta.url),
     environment: 'node',
     // These cases spawn a real shell, build a real archive and extract it. On
-    // Windows the fixture packs a copy of the Node executable (the only real PE
-    // guaranteed present), so both the zip and the expand are tens of MB — well
-    // past vitest's 5 s default, and slower again on a contended runner.
+    // Windows the one archive that must carry a startable binary packs a copy of
+    // the Node executable (the only real PE guaranteed present), so both the zip
+    // and the expand are over a hundred MB — well past vitest's 5 s default, and
+    // slower again on a contended runner.
     testTimeout: 120_000,
     hookTimeout: 120_000,
   },

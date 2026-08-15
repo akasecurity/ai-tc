@@ -259,6 +259,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
+  '@akasecurity/coverage-gate',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',
   '@akasecurity/eslint-config',
@@ -598,6 +599,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/helpers/remove-tree.ts',
   'test/setup/no-network.ts',
+  'test/vitest/coverage.ts',
   'tools/ci/egress-probe.mjs',
 ];
 

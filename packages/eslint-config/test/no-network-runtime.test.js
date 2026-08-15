@@ -185,6 +185,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
+  '@akasecurity/coverage-gate',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',
   '@akasecurity/eslint-config',
@@ -199,6 +200,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/scanner',
   '@akasecurity/schema',
   '@akasecurity/setup-wizard',
+  '@akasecurity/ui-kit',
   '@akasecurity/web-ui',
 ];
 

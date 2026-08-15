@@ -11,20 +11,19 @@ import { coverageOptions } from '../../test/vitest/coverage.ts';
 // if a package drops the entry or points it at the wrong path.
 const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', import.meta.url));
 
-// globalSetup builds scripts/*.js once, in the main process, before any worker
-// runs — the onboard and start-light suites drive those built scripts.
+// ui-kit had no test script at all until coverage landed, which is why its zero
+// was invisible: `turbo run test` skips a package with no `test` script and
+// exits 0, so the package reported nothing rather than reporting none.
 //
-// Those tests spawn the built scripts as real child processes, which runs
-// slowly under Turbo's parallel task load, so raise the per-test AND per-hook
-// timeouts above vitest's 5s/10s defaults (mirrors
-// plugins/claude-code/vitest.config.ts).
+// `environment: 'node'` is deliberate and is NOT an oversight to be "fixed" by
+// switching to jsdom. Nothing here mounts a component — the suite covers the
+// one piece of behaviour in the package that is logic rather than markup. A
+// renderer tier is the right way to cover the components themselves, and it is
+// a different job from making this package's number visible.
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
     coverage: coverageOptions(import.meta.url),
     environment: 'node',
-    globalSetup: ['./test/global-setup.ts'],
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
   },
 });

@@ -1,20 +1,15 @@
 {
-  "name": "@akasecurity/plugin-runtime",
-  "version": "0.8.0",
+  "name": "@akasecurity/coverage-gate",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/lib.ts"
   },
   "scripts": {
     "lint": "eslint src test *.config.*",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@akasecurity/persistence": "workspace:*",
-    "@akasecurity/plugin-sdk": "workspace:*",
-    "@akasecurity/schema": "workspace:*"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

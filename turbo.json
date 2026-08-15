@@ -11,7 +11,21 @@
   // import removeTree, whose retry and win32 tolerance no call site can observe,
   // so weakening it would otherwise leave every one of them replaying a cached
   // green taken under the old rule.
-  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**", "test/helpers/**"],
+  //
+  // test/vitest/** is the third, and the sharpest of them: it holds the shared
+  // coverage block AND every package's coverage FLOOR. A floor is a threshold
+  // the package's own test run enforces, so lowering one — or widening an
+  // exclude so a file stops counting — changes what `test` is allowed to pass
+  // with. Outside the hash, every package would go on replaying a cached green
+  // taken under the STRICTER rule, which is a false green for the one thing a
+  // floor exists to prevent.
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "rules/**",
+    "test/setup/**",
+    "test/helpers/**",
+    "test/vitest/**"
+  ],
   "tasks": {
     // `native-host/**` is plugins/browser-extension's tsup outDir. An output a
     // package writes but does not declare is not restored on a cache hit, so a
@@ -199,6 +213,15 @@
         "$TURBO_ROOT$/.github/workflows/*.yml",
         "$TURBO_ROOT$/tools/ci/**",
         "$TURBO_ROOT$/package.json",
+        // THIS file is read by coverage-config.test.js, which asserts that the
+        // `test` task still declares `coverage/**` and that the shared coverage
+        // module is still in globalDependencies. Both live here, so without this
+        // entry the two edits that break them — deleting the output declaration,
+        // dropping the module out of the hash — would move no hash at all, and
+        // turbo would replay a cached green at the one moment those assertions
+        // exist to fire. Same hazard the CLAUDE.md and workflow entries carry:
+        // no extension glob above reaches a .json at the repo root.
+        "$TURBO_ROOT$/turbo.json",
         "$TURBO_ROOT$/tsconfig.root.json",
         "$TURBO_ROOT$/eslint.root*.config.mjs",
         "$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",

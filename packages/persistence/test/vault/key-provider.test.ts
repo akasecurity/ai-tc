@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type * as FsModule from 'node:fs';
 import {
   chmodSync,
@@ -23,6 +24,8 @@ import {
   VAULT_KEY_FILENAME,
   VaultKeyEpochMissingError,
 } from '../../src/vault/key-provider.ts';
+import { rejectionFrom } from '../helpers/errors.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // Lets a test simulate the first-mint race: one read of the key file reports
 // ENOENT even though the file exists, putting the provider on its mint path
@@ -505,6 +508,156 @@ describe('KeychainKeyProvider', () => {
     mkdirSync(join(dir, `${VAULT_KEY_FILENAME}.lock`));
 
     await expect(provider.rotate()).rejects.toThrow(/already in progress/);
+  });
+
+  // ─── raw-free refusals, driven WITHOUT the real binary ────────────────────
+  //
+  // The constructor's platform guard only fires for the real `runSecurity`, so
+  // an injected exec reaches every branch below on any host. That matters: the
+  // cases in keychain-real-binary.test.ts skip off darwin, which left these —
+  // the raw-free throw sites, i.e. the property this whole change exists to
+  // establish — unexecuted on the legs that gate every PR.
+  describe('refusals, on every platform', () => {
+    // The payload a leak would carry, in the form the write path actually
+    // sends. Distinct per test so no assertion can pass on a stale value.
+    const hexPayload = (): string => randomBytes(32).toString('hex');
+
+    // A spawn failure whose OWN message embeds the payload, the way a real
+    // execFileSync error's argv echo would. Without that the absence
+    // assertions below hold because there was nothing there to leak.
+    const failsCarrying = (payload: string, status: number): never => {
+      throw Object.assign(new Error(`add-generic-password -X ${payload}`), { status });
+    };
+
+    it('refuses a failed FIRST MINT without echoing the payload', async () => {
+      const payload = hexPayload();
+      const provider = new KeychainKeyProvider(dir, (args) => {
+        // Both reads come back empty, so the lost-race adoption path cannot
+        // return and the mint's own failure message is what surfaces.
+        if (args[0] === 'find-generic-password') notFound();
+        return failsCarrying(payload, 45);
+      });
+
+      const err = await rejectionFrom(provider.loadOrCreate());
+
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/keychain write failed/);
+      // Positive control: the metadata IS there, so the absence checks below
+      // are not passing on an empty or generic message.
+      expect(err?.message).toContain('exit 45');
+      expectNoEchoOf(err?.message, payload);
+      expectNoEchoOf(err?.stack, payload);
+      // Two leak shapes, and `payload` only sees the first. It catches the
+      // caught error's own message riding out (the argv echo). It cannot catch
+      // the OTHER shape — interpolating the write line this call built — whose
+      // hex is the freshly minted keyring, a value no assertion here holds.
+      // Any 64-character hex run in a message whose legitimate content is
+      // `exit 45` is one of the two.
+      expect(err?.message).not.toMatch(/[0-9a-f]{64}/);
+    });
+
+    it('refuses a failed ROTATION without echoing the payload', async () => {
+      const payload = hexPayload();
+      const material = Buffer.alloc(32, 3);
+      const provider = new KeychainKeyProvider(dir, (args) => {
+        if (args[0] === 'find-generic-password') return keyringJson(material);
+        return failsCarrying(payload, 45);
+      });
+
+      const err = await rejectionFrom(provider.rotate());
+
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/keychain write failed/);
+      expect(err?.message).toContain('exit 45');
+      expectNoEchoOf(err?.message, payload);
+      expectNoEchoOf(err?.stack, payload);
+      // The retained epoch is in the payload a rotation writes, so it is the
+      // value that call genuinely handled.
+      expectNoEchoOf(err?.message, material.toString('base64'));
+      // …and the hex form that actually crosses to the child, which neither
+      // base64 assertion above can see. See the mint case for why both.
+      expect(err?.message).not.toMatch(/[0-9a-f]{64}/);
+    });
+
+    it('refuses a stored item that is not a keyring', async () => {
+      const provider = new KeychainKeyProvider(dir, () => '{"current":"not-a-number","keys":{}}');
+
+      const err = await rejectionFrom(provider.loadOrCreate());
+
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/not a usable keyring/);
+    });
+
+    it('refuses a TRUNCATED keyring without quoting it back', async () => {
+      const secret = randomBytes(32).toString('base64');
+      const provider = new KeychainKeyProvider(dir, () => `{"current":1,"keys":{"1":"${secret}`);
+
+      const err = await rejectionFrom(provider.loadOrCreate());
+
+      expect(err).toBeDefined();
+      // The JSON.parse branch: replaced with a fixed label rather than
+      // forwarded, so nothing V8 chose to quote can ride out.
+      expect(err?.message).toMatch(/malformed JSON/);
+      expectNoEchoOf(err?.message, secret);
+      expectNoEchoOf(err?.stack, secret);
+    });
+
+    it('describes a non-Error spawn failure without inventing detail', async () => {
+      const provider = new KeychainKeyProvider(dir, () => {
+        // Not an Error at all, so every field securityFailureMeta reads is
+        // absent — the arm that must still produce a message rather than
+        // interpolating `undefined`. Throwing a non-Error is the case under
+        // test, which is why the rule is waived here rather than satisfied.
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- a non-Error throw is the input under test
+        throw 'a bare string';
+      });
+
+      const err = await rejectionFrom(provider.loadOrCreate());
+
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/keychain read failed/);
+    });
+
+    it('quotes a benign keychain path into the interactive line', async () => {
+      const target = join(dir, 'throwaway.keychain');
+      const calls: { args: string[]; stdin: string | undefined }[] = [];
+      const provider = new KeychainKeyProvider(
+        dir,
+        (args, stdin) => {
+          calls.push({ args, stdin });
+          if (args[0] === 'find-generic-password') notFound();
+          return '';
+        },
+        target,
+      );
+
+      await provider.loadOrCreate();
+
+      const write = calls.find((c) => c.stdin?.startsWith('add-generic-password'));
+      expect(write).toBeDefined();
+      // Single-quoted and last, which is where every subcommand here takes it.
+      expect(write?.stdin?.trimEnd().endsWith(`'${target}'`)).toBe(true);
+      // …and the read was aimed at it too, as a bare trailing argument.
+      const read = calls.find((c) => c.args[0] === 'find-generic-password');
+      expect(read?.args.at(-1)).toBe(target);
+    });
+
+    // Measured, not guessed: `security -i` treats a backslash as an escape even
+    // inside single quotes, so a path carrying one is consumed rather than
+    // carried and the write lands on a keychain other than the one named.
+    it.each([
+      ['a quote', "/tmp/it's.keychain"],
+      ['a backslash', '/tmp/back\\slash.keychain'],
+      ['a line break', '/tmp/two\nlines.keychain'],
+      ['a NUL', '/tmp/nul\0byte.keychain'],
+    ])('refuses a keychain path carrying %s', async (_label, target) => {
+      const provider = new KeychainKeyProvider(dir, notFound, target);
+
+      const err = await rejectionFrom(provider.loadOrCreate());
+
+      expect(err).toBeDefined();
+      expect(err?.message).toMatch(/quote, backslash, line break or NUL/);
+    });
   });
 });
 

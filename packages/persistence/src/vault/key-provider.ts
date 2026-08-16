@@ -506,8 +506,10 @@ function securityFailureMeta(err: unknown): string {
  * The keyring is hex-encoded and passed with `-X`, so the only payload token is
  * `[0-9a-f]` — no quoting question can arise from it however the interactive
  * tokenizer behaves. The keychain path is the one variable token and is
- * single-quoted; a path carrying a quote or a line break is refused rather than
- * escaped, since a mangled line would write the keyring somewhere unintended.
+ * single-quoted; a path carrying a character the tokenizer would act on is
+ * refused rather than escaped, since a mangled line writes the keyring to a
+ * keychain other than the one named. The refused set is listed at the check
+ * itself, because which characters those are is measured, not obvious.
  */
 function writeCommand(keyring: Keyring, update: boolean, keychain?: string): string {
   const hex = Buffer.from(serializeKeyring(keyring), 'utf8').toString('hex');
@@ -522,9 +524,16 @@ function writeCommand(keyring: Keyring, update: boolean, keychain?: string): str
     hex,
   ];
   if (keychain !== undefined) {
-    if (/['\n\r]/.test(keychain)) {
+    // A BACKSLASH belongs in this set and reads as though it should not: the
+    // interactive tokenizer treats it as an escape even inside single quotes,
+    // so it is consumed rather than carried. Measured — a keychain at
+    // `back\slash-….keychain` is reported by `security` as
+    // `backslash-….keychain`, and the write misses the keychain it named.
+    // That is the failure this refusal exists to prevent, not a variant of it.
+    // NUL is here for the ordinary reason: it terminates the token.
+    if (/['\\\n\r\0]/.test(keychain)) {
       throw new Error(
-        'vault: keychain path contains a quote or line break, which security -i cannot carry',
+        'vault: keychain path contains a quote, backslash, line break or NUL, which security -i cannot carry intact',
       );
     }
     parts.push(`'${keychain}'`);
@@ -540,10 +549,20 @@ function writeCommand(keyring: Keyring, update: boolean, keychain?: string): str
  * process — an OS service on this machine, not a network hop. Elsewhere the
  * constructor throws so the caller can fall back to file custody.
  *
- * On writes the keyring JSON rides in the child's argv (`-w <json>`), which is
- * observable by same-UID processes for the duration of the exec. That is an
- * accepted exposure under the local threat model: a same-UID process can
- * already read the keychain item itself.
+ * **No secret is on the command line, on any path.** Writes cross on STDIN:
+ * `#create` and `#replace` both run `security -i`, which reads commands on
+ * stdin, and {@link writeCommand} hex-encodes the keyring into `-X` so nothing
+ * about the payload can be re-tokenized. Putting it back in argv would put it
+ * in an `execFileSync` error's `.message`, which echoes the argv it was given
+ * — an error outlives the process and travels into logs and bug reports, which
+ * a same-UID observer of a running exec does not.
+ *
+ * The read path's `-w` is not a counter-example, and it is worth naming because
+ * the flag appears on both sides: on `find-generic-password` it is an OUTPUT
+ * flag asking for the value on stdout, not a value being passed in.
+ *
+ * `test/vault/key-provider.test.ts`'s `keeps the keyring off argv on both write
+ * paths` is what holds this.
  */
 export class KeychainKeyProvider implements KeyProvider {
   readonly #keysDir: string;

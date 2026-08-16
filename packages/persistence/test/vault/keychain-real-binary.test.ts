@@ -305,6 +305,6 @@ describe('KeychainKeyProvider when security cannot be run', () => {
     const err = await rejectionFrom(provider.loadOrCreate());
 
     expect(err).toBeDefined();
-    expect(err?.message).toMatch(/quote or line break/);
+    expect(err?.message).toMatch(/quote, backslash, line break or NUL/);
   });
 });

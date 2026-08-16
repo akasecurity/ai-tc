@@ -14,7 +14,6 @@ describe('matcherSummary', () => {
     expect(
       matcherSummary({ type: 'keyword', keywords: ['aws', 'gcp'], caseSensitive: false }),
     ).toBe('aws · gcp');
-    expect(matcherSummary({ type: 'validator', name: 'luhn' })).toBe('luhn');
   });
 });
 

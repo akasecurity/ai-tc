@@ -108,6 +108,11 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/antigravity/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/antigravity/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
 
+  // The same boundary one step out: a harness that spawns a real shipped
+  // SCRIPT rather than a real hook. install.sh needs the host PATH to find
+  // curl, tar and shasum at all.
+  'tools/installer/test/helpers/run-installer.ts': [ENV_RULE],
+
   // CLAUDE.md §4's one global opt-out, tabled there as `fetch` (inline): the
   // runtime suite's deliberate fetch(), which the guard must refuse for that
   // suite to prove anything. It is an inline disable rather than a config `allow`

@@ -365,6 +365,25 @@ describe('platform-guard-early-return', () => {
     const injected = { [SPEC]: 1 };
     expect(resolveGrandfatheredGuards({ grandfatheredPlatformGuards: injected })).toBe(injected);
   });
+
+  // ...and that the scan actually goes through it, which the case above does NOT
+  // cover: it never calls scanTree, and scanTree inlining `?? {}` instead is
+  // invisible in its output for the same reason the helper exists. So the last
+  // link is asserted against the source, the shape this repo reaches for where
+  // behaviour cannot (plugin-sdk's data-dir.test.ts pins its mode constants the
+  // same way). Ugly, and load-bearing only while the shipped map is empty — once
+  // an exemption is added, a behavioural case can replace this outright.
+  it('resolves the allowance map through that helper, not a second inline default', () => {
+    const source = readFileSync(new URL('../src/lib.ts', import.meta.url), 'utf8');
+    expect(source).toContain('const grandfathered = resolveGrandfatheredGuards(options);');
+    // Exactly one place resolves the default, so a second one reintroduced beside
+    // the call above is caught too. Both assertions read RAW source, comments
+    // included — an absence assertion here would fire on prose that merely names
+    // the shape it forbids, which is why this pins what must be PRESENT instead.
+    // (The gate masks comments before matching for the same reason; that
+    // machinery is internal, and a two-line guard does not earn exporting it.)
+    expect(source.match(/\?\? GRANDFATHERED_PLATFORM_GUARDS/g)).toHaveLength(1);
+  });
 });
 
 describe('regex literals', () => {

@@ -101,6 +101,13 @@ export const RULES: Record<RuleId, RuleInfo> = {
 // switched off instead. Filling it again is a deliberate edit, and the ratchet
 // below is what makes it a shrinking one.
 //
+// One consequence of the map being empty: `platform-guard-stale-allowance` can no
+// longer fire on a real scan at all — every allowance resolves to 0, and its
+// condition is `lines.length < 0`. That is a ratchet with nothing left to ratchet,
+// NOT dead code, and its coverage now rests entirely on the injected-map cases in
+// the unit suite. Deleting it because no real file reaches it would remove the
+// half of the ratchet that stops an exemption growing back the day one is added.
+//
 // An allowance is an exact COUNT, pinned in both directions: exceeding it is a
 // violation, and falling below it is one too (`platform-guard-stale-allowance`),
 // so converting a guard means lowering the number in the same commit. A file
@@ -661,21 +668,29 @@ export interface ScanOptions {
   grandfatheredPlatformGuards?: Readonly<Record<string, number>>;
 }
 
-// files is the whole set the caller found worth handing in — vitest configs
-// are needed to resolve rule 4's package-level override and are silently
-// skipped by the SPEC_FILE_RE filter below, so passing every tracked file is
-// fine and expected.
 // Which allowance map a scan runs under: the caller's, else the shipped one.
-// Split out so that binding is assertable by IDENTITY. It cannot be observed
-// through scanTree's output while the shipped map is empty — an empty map and a
-// missing default produce byte-identical violations — so the only thing standing
-// behind `?? GRANDFATHERED_PLATFORM_GUARDS` would otherwise be that nobody
-// rewrote it. Re-adding an exemption to a map the scan never reads would exempt
-// nothing, and the entry would look like it had.
+// Split out so that binding is assertable by IDENTITY, which is the only way to
+// reach it while the shipped map is empty — an empty map and a missing default
+// produce byte-identical violations, so nothing about the scan's OUTPUT can
+// separate them.
+//
+// Be precise about how far that reaches, because the gap it leaves is exactly
+// the one it looks like it closed. The identity test pins that THIS function
+// reads the constant. It does not pin that `scanTree` still calls this function:
+// rewrite the call below to `options.grandfatheredPlatformGuards ?? {}` and the
+// whole suite stays green, for the same unobservability reason. What covers that
+// is the source assertion in the unit suite, which is reaching for the shape this
+// repo uses where behaviour cannot get there (see plugin-sdk's data-dir.test.ts).
+// Re-filling the map retires both workarounds: an exemption that exempts
+// something is observable again, and a behavioural case should replace them.
 export function resolveGrandfatheredGuards(options: ScanOptions): Readonly<Record<string, number>> {
   return options.grandfatheredPlatformGuards ?? GRANDFATHERED_PLATFORM_GUARDS;
 }
 
+// files is the whole set the caller found worth handing in — vitest configs
+// are needed to resolve rule 4's package-level override and are silently
+// skipped by the SPEC_FILE_RE filter below, so passing every tracked file is
+// fine and expected.
 export function scanTree(files: ScannedFile[], options: ScanOptions = {}): Violation[] {
   const grandfathered = resolveGrandfatheredGuards(options);
   const packages = derivePackageTimeouts(files);

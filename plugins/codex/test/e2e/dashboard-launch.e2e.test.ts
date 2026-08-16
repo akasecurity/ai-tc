@@ -15,7 +15,16 @@
  * these arguments, from the directory the plan chose".
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +44,8 @@ import {
 // test/e2e -> plugins/codex
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LAUNCHER = join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
-const NODE_DIR = dirname(process.execPath);
+// The name a POSIX shim's `#!/usr/bin/env node` line looks node up under.
+const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
 
 // The launcher spawns DETACHED and unrefs, then exits without waiting — so the
 // stub's record appears after the parent has already returned. Poll for it
@@ -95,15 +105,62 @@ function writeAkaStub(binDir: string, recordPath: string): void {
   );
 }
 
-// PATH carries the stub, node's own dir (a POSIX shim's shebang needs it) and —
-// on win32 only — the system dirs cmd.exe and where.exe are found through.
-// Nothing else from the host: a real `aka` on the developer's PATH must not be
-// reachable, since this suite's whole subject is which one gets spawned.
+// A fresh dir holding this process's own node and NOTHING else, for the PATH
+// the launcher gets. `dirname(process.execPath)` is not that: under nvm — or any
+// prefix shared between node and its global installs — `npm i -g` puts its bin
+// shims beside the binary, so a PATH carrying node's own dir for the shebang's
+// sake carries a real `aka` too, and the "genuinely not there" case then finds
+// it. A symlink where the platform grants one, a copy where it does not; either
+// way only the interpreter is reachable through it.
+function nodeOnlyDir(): string {
+  const dir = tempDir();
+  const target = join(dir, NODE_BIN);
+  try {
+    symlinkSync(process.execPath, target);
+  } catch {
+    copyFileSync(process.execPath, target);
+    chmodSync(target, 0o755);
+  }
+  return dir;
+}
+
+// PATH carries the stub, a dir holding node ALONE (a POSIX shim's shebang needs
+// the interpreter — never what happens to live beside it) and — on win32 only —
+// the system dirs cmd.exe and where.exe are found through. Nothing else from
+// the host: a real `aka` on the developer's PATH must not be reachable, since
+// this suite's whole subject is which one gets spawned.
 function launcherEnv(binDir: string): NodeJS.ProcessEnv {
   return {
     ...WINDOWS_SYSTEM_ENV,
-    PATH: shimmedPath(binDir, [NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+    PATH: shimmedPath(binDir, [nodeOnlyDir(), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
   };
+}
+
+// Refuse unless NO dir on `env.PATH` holds anything the bare name `aka` could
+// resolve to. The negative case's premise, proven before anything is driven —
+// the mirror of `assertShimResolves` in the positive one. A miss here is worse
+// than a wrong message: the launcher finds a real `aka` and starts a real
+// dashboard server on the developer's machine, detached, before the assertion
+// can say why. Listing rather than spawning, so the check itself can never run
+// the CLI it is looking for; the match is deliberately wide (`aka` plus any
+// `aka.*` — a `.cmd`, `.exe` or extensionless launcher), since over-refusing
+// names a file to look at and under-refusing starts a server.
+function assertNoAkaOnPath(env: NodeJS.ProcessEnv): void {
+  for (const dir of (env.PATH ?? '').split(delimiter)) {
+    const hits = readdirSync(dir).filter((name) => {
+      const lower = name.toLowerCase();
+      return lower === 'aka' || lower.startsWith('aka.');
+    });
+    if (hits.length > 0) {
+      throw new Error(
+        `a real "aka" is reachable from the launcher's PATH: ${join(dir, hits[0] ?? '')}. ` +
+          'This is a SETUP failure: driving the launcher from here would start a real ' +
+          'dashboard server on this machine. The PATH must carry only the shim dir, a dir ' +
+          'holding node alone and (win32) the system dirs — never node’s own bin dir, ' +
+          'which under a shared install prefix is where `npm i -g` puts `aka` too.',
+      );
+    }
+  }
 }
 
 function runLauncher(env: NodeJS.ProcessEnv, args: string[]): string {
@@ -220,12 +277,17 @@ describe('the built dashboard launcher', () => {
   it(
     'prints the install hint, and spawns nothing, when `aka` genuinely is not there',
     () => {
-      // An empty bin dir: no stub, and the host PATH is not inherited, so the name
-      // resolves nowhere. The case above is this one's control — it shows the
-      // harness CAN see a spawn, so "no record" here means none happened.
+      // An empty bin dir: no stub, and neither the host PATH nor node's own bin
+      // dir is inherited, so the name resolves nowhere. The case above is this
+      // one's control — it shows the harness CAN see a spawn, so "no record"
+      // here means none happened.
       const binDir = tempDir();
       const recordPath = join(binDir, 'spawned.json');
       const env = launcherEnv(binDir);
+      // Proven, not assumed: a real `aka` reachable from here would be spawned
+      // for real, and this case would then fail on the message — after the
+      // server was already running.
+      assertNoAkaOnPath(env);
 
       const stdout = runLauncher(env, ['--no-open']);
 

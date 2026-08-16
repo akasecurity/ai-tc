@@ -109,7 +109,7 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks — or the real installer scripts — carry inline disables of their own and are out of this table's scope:
 
 | Site                                              | Mechanism                         | Why                                                         |
 | ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
@@ -148,15 +148,16 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Five files carry a genuine local-only opt-out:
+Six files carry a genuine local-only opt-out:
 
-| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
-| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
+| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                                  |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                                  |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                        |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                      |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable      |
+| `tools/installer/test/helpers/serve-release.ts` (via `tools/installer/eslint.config.mjs`)                       | `node:http`                                            | the installer suite serves its fixture release over loopback so the shipped `install.sh`/`install.ps1` run against a local base — the only base BOTH take, since PowerShell rejects a `file://` URI |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
@@ -700,8 +701,11 @@ packages/             the workspace libraries (schema · persistence · local-op
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
-tools/                repo tooling: installer one-liners + the audit-gate workspace
-                      package (the CI dependency-audit gate; never shipped)
+tools/                repo tooling, never shipped: the installer one-liners and
+                      the installer workspace package whose suite drives them end
+                      to end, plus audit-gate (CI dependency-audit),
+                      portability-gate (cross-platform test rules) and
+                      coverage-gate (per-PR diff coverage)
 ```
 
 ## Adding a new workspace package
@@ -759,8 +763,8 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
    the full ruleset over `test/setup/**`, `test/fixtures/**`, `test/helpers/**`,
-   `tools/ci/**`, and the repo-root `*.config.*`. `typecheck:root` runs
-   `tsc -p tsconfig.root.json`.
+   `test/vitest/**`, `tools/ci/**`, and the repo-root `*.config.*`.
+   `typecheck:root` runs `tsc -p tsconfig.root.json` over the same set.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -847,6 +851,19 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    and fails on any that is not vitest, so such a package has to be argued into
    `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
    way, since every entry is a hole in the guarantee.
+
+**Both of those guards enumerate the tree at RUN time, which is what makes adding a
+package the action most exposed to a stale base.** A `pull_request` check runs against a
+merge commit GitHub built when the branch was last pushed and never rebuilds as `main`
+moves, so a package added on one branch and a file it would judge added on another are
+each green against a tree the other has already changed. Neither diff contains the
+mismatch and the first run to see both is the post-merge run on `main` — which is how a
+new package's unlinted root config file reddened `main` from a PR whose own diff was
+innocent. Deriving is still right; a pinned list stays green through exactly the drift
+these exist to catch. What closes it is a repository setting rather than anything in this
+tree, and CONTRIBUTING.md's "Branch freshness" section records which one is in use and
+what it obliges `.github/workflows/` to carry. Read it before assuming a green PR check
+saw your package.
 
 ## Commit messages
 
@@ -973,6 +990,51 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
+
+### Coverage: per-package floors, no global threshold
+
+Every package's `vitest.config.ts` spreads one shared block —
+`coverageOptions(import.meta.url)` from `test/vitest/coverage.ts` — which carries the
+provider, the reporters, the exclude list and **that package's floor**. A package with no
+entry in `COVERAGE_FLOORS` throws rather than defaulting to zero, because an unlisted
+package is one nobody chose a floor for.
+
+Four properties are load-bearing:
+
+- **Coverage is always on, not behind `--coverage`.** `turbo.json` declares
+  `outputs: ["coverage/**"]` for the `test` task, and an output a task produces only
+  sometimes is worse than one it never produces: turbo restores outputs on a cache hit, so
+  a hit taken from a run without the flag hands back a report belonging to another commit.
+  Unconditional is what makes that declaration true — and what makes a floor bind locally
+  rather than only on the machine that remembered the flag.
+- **There is NO global or aggregate threshold, and adding one is a regression.** It would
+  be satisfied by covering `dashboard-ui`'s SVG icon sheet while a mutating Server Action
+  stayed at zero — the number rises, the risk is untouched. Floors are per package and
+  cannot be paid off that way. `coverage-config.test.js` pins the floors table as an
+  **exact** set against the packages that run tests, so a global threshold has nowhere to
+  live in it.
+- **`test/vitest/**` is in `globalDependencies`.** It holds the floors, which are what
+  `test` is allowed to pass with. Outside the hash, lowering one would move no package's
+  hash and every package would replay a cached green taken under the stricter floor.
+- **Floors are MEASURED, never estimated.** Each is one point below what its suite actually
+  reported, with the measurement in a comment beside it. The estimates this replaced were
+  wrong in both directions — `scanner` read ~75% and measures 96.8%, while four packages
+  measured _below_ the floor their estimate implied, which would have failed CI on the
+  first run. Numbers were taken on macOS/Node 24; platform-gated code (the macOS keychain
+  backend most clearly) can read lower on another leg, and the fix there is to re-take that
+  package's number on the platform that reports lowest — not to widen every floor.
+
+The second half is **diff coverage**: of the lines a PR adds, how many does the suite
+execute? A global percentage on a repo this size moves by fractions on any one PR, so it
+can neither pass nor fail one honestly. `tools/coverage-gate` reads the reports
+`turbo run test` already wrote, intersects them with the diff against the merge base, and
+reports to the PR's step summary. It is a workspace tool rather than a third-party
+uploader, so no coverage data leaves the runner.
+
+```bash
+pnpm turbo run test          # writes every package's coverage/ report
+pnpm check:diff-coverage     # then measures the diff against origin/main
+```
 
 ### Benchmarks are a trend, never a gate
 
@@ -1335,8 +1397,50 @@ literal 10,000-deep nesting is not thorough, it is a timeout.
 
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
-cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
-`local-ops`, `plugin-runtime`, `plugins/claude-code` and `web-ui` still roll their own.
+cleanup dance, and that is enforced rather than asked:
+`packages/persistence/test/harness-adoption.test.ts` derives the file set from
+`git ls-files` and fails on any suite that opens a store and builds its own temp tree.
+It carries **no** exception for that pair. The suites that build a tree and open no store
+are pinned as an EXACT set with a reason each — a floor would forbid removals while
+letting the next hand-rolled teardown in, which is the direction this actually drifts.
+That guard strips comments before it matches anything, because the count this replaced
+was taken with a plain grep and came out two files high: `paths.test.ts` and
+`local-layout.test.ts` name `openLocalDatabase` in prose and open nothing.
+
+**Reach for `store.openRaw()` by default; a bare `new DatabaseSync` needs a reason written
+at the top of the file.** `openRaw()` keeps every handle it hands out open until teardown,
+so it is wrong in exactly two places. Where the CLOSE is part of the setup:
+`legacy-writers.test.ts` replays a legacy _process_ — one connection, one statement, closed
+again, never overlapping — and `legacy-compat-views.test.ts`'s fixture handles leave the
+store at one point in a migration and close before the next pass drains further, so a live
+handle changes what that pass does. And where the file is not the store at all: `openRaw()`
+only ever opens `<home>/data/aka.db`, so a `.legacy.` backup copy or a moved-aside store has
+to be opened by hand (`database.test.ts` has both).
+
+**What is NOT a reason, though it reads like one, is a descriptor probe.**
+`descriptorProbe().leakedBy` measures a delta around a **synchronous window**, so a fixture
+handle opened outside that window sits in the before-count and the after-count alike and
+moves the number not at all — only a handle opened _inside_ the window can. Measured rather
+than reasoned: converting `database.test.ts`'s fixture handles to `openRaw()` left all 24 of
+its cases green, which is what retired an earlier version of this paragraph claiming the
+opposite.
+
+**Outside `packages/persistence` the harness is deliberately NOT available, and the
+decision is not "nobody got round to it".** It lives under `test/`, and the package's
+`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
+`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
+package would gain a supported route to the raw `DatabaseSync`, and
+`test-only-seam.test.js` would stay green throughout because the new callers are tests.
+The harness also imports `vitest` at module scope, and `noExternal: [/^@akasecurity\//]`
+inlines whatever a shipped entry reaches. So store tests in `cli`, `local-ops`,
+`plugin-runtime`, the three plugins and `web-ui` still roll their own, and each of those
+is a teardown re-derived rather than reused. Closing that means a **separate dev-only
+workspace package** built on the public index (the one route that keeps both properties),
+with the full "Adding a new workspace package" checklist — its own lint config and script,
+tsconfig, a vitest config wiring the no-network guard, and entries in
+`EXPECTED_WORKSPACE_PACKAGE_NAMES` and `EXPECTED_VITEST_PACKAGES`. Tracked separately; do
+not reach for a `./testing` export instead.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
@@ -1404,6 +1508,14 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+  **It belongs at two shapes, not only after a fault.** After a path that REFUSES inside a
+  transaction — `applyMigrations` on a partially-present migration, a `runInTransaction`
+  that drops a malformed leaf — because refusing is half the requirement and containing the
+  refusal is the other half; a handle left inside its `BEGIN` makes every later write on it
+  join a transaction nobody started, and the store reads as healthy from outside. And after
+  a fixture SEEDER's `COMMIT`, because a seeder that returns still inside its `BEGIN` has
+  committed nothing, and every read below it then measures an empty store and reports the
+  number as a result.
 - `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
   [Testing](#testing) on why the try/catch form asserts on the test's own guard).
 - `descriptorProbe()` — how many OS descriptors a synchronous thunk left behind. A

@@ -259,10 +259,12 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
+  '@akasecurity/coverage-gate',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',
   '@akasecurity/eslint-config',
   '@akasecurity/extract',
+  '@akasecurity/installer',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
   '@akasecurity/plugin-browser-extension',
@@ -597,6 +599,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/helpers/remove-tree.ts',
   'test/setup/no-network.ts',
+  'test/vitest/coverage.ts',
   'tools/ci/egress-probe.mjs',
 ];
 
@@ -2061,6 +2064,10 @@ describe('ignore flags subtract from what an invocation covers', () => {
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
       ['eslint src *.config.*', ['src']],
+      // tools/installer ships no `src` at all: the thing under test is the
+      // two shell scripts at the package root, which ESLint does not lint,
+      // and `test/` is the whole of its JavaScript.
+      ['eslint test *.config.*', ['test']],
       [
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
         ['src', 'test', 'scripts'],

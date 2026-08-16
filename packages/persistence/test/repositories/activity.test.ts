@@ -1,18 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import {
   LIVE_ACTIVITY_WINDOW_MS,
   SqliteActivityRepository,
 } from '../../src/repositories/activity.ts';
 import { purgeSampleData } from '../../src/sample-purge.ts';
 import { seedSampleFixtures } from '../../src/test-fixtures/index.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -20,22 +17,15 @@ const HOUR_MS = 3_600_000;
 // deterministic: [2026-06-29T00:00Z, 2026-06-30T00:00Z).
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-activity-');
+let db: LocalDatabase;
 let raw: DatabaseSync;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-activity-'));
-  db = openLocalDatabase(dir);
+  db = store.open();
   // A second raw connection: fixtures are inserted through it and the repo under
   // test binds to it with the fixed clock (the facade's own repo uses wall time).
-  raw = new DatabaseSync(join(dir, DB_FILENAME));
-});
-
-afterEach(() => {
-  raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  raw = store.openRaw();
 });
 
 function activity(): SqliteActivityRepository {

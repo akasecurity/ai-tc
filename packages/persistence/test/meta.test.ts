@@ -1,24 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { AuditEventInput, InventoryInput, SourceProjectInput } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { type InventoryContext, openLocalDatabase } from '../src/database.ts';
+import type { InventoryContext } from '../src/database.ts';
 import { inspectionFindingId } from '../src/ids.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-meta-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+const store = useTempStore('aka-meta-');
 
 const host: InventoryInput = {
   objectType: 'host',
@@ -45,7 +35,7 @@ const context: InventoryContext = { host, harness, project };
 // A second read connection to the same WAL file, for COUNT / EXPLAIN that the
 // repository surface doesn't expose.
 function raw(): DatabaseSync {
-  return new DatabaseSync(join(dir, 'aka.db'));
+  return store.openRaw();
 }
 function count(db: DatabaseSync, table: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -53,7 +43,7 @@ function count(db: DatabaseSync, table: string): number {
 
 describe('ensureInventory', () => {
   it('upserts one host/harness/account/project row and resolves their ids', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const resolved = db.ensureInventory(context);
 
     expect(resolved.hostId).toBeTypeOf('string');
@@ -72,7 +62,7 @@ describe('ensureInventory', () => {
   });
 
   it('is idempotent: a second session no-ops the inserts and advances last_seen', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const first = db.ensureInventory(context);
     const second = db.ensureInventory(context);
 
@@ -96,7 +86,7 @@ describe('ensureInventory', () => {
   });
 
   it('overwrites volatile attributes to latest while pinning first_seen (Type-1)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const id = db.inventory.upsert(host, 1000);
     const before = db.inventory.findById(id);
     expect(before?.os_version).toBe('25.5.0');
@@ -112,11 +102,11 @@ describe('ensureInventory', () => {
   });
 
   it('produces stable ids across separate opens of the same store', () => {
-    const d1 = openLocalDatabase(dir);
+    const d1 = store.open();
     const r1 = d1.ensureInventory(context);
     d1.close();
 
-    const d2 = openLocalDatabase(dir);
+    const d2 = store.open();
     const r2 = d2.ensureInventory(context);
     const r = raw();
     expect(r2).toEqual(r1);
@@ -128,7 +118,7 @@ describe('ensureInventory', () => {
 
 describe('audit events + inspection findings', () => {
   it('stamps the resolved inventory FKs onto a Session audit row and its children', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const resolved = db.ensureInventory(context);
 
     const sessionId = randomUUID();
@@ -168,7 +158,7 @@ describe('audit events + inspection findings', () => {
   });
 
   it('insertLlmCall mints a deterministic id from the natural key and is idempotent', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
     const sessionId = randomUUID();
     db.auditEvents.insertAuditEvent({
@@ -190,7 +180,7 @@ describe('audit events + inspection findings', () => {
     // Re-inserting the same natural key is a no-op (deterministic id + INSERT OR IGNORE).
     db.auditEvents.insertLlmCall(input);
 
-    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    const raw = store.openRaw();
     const n = raw
       .prepare("SELECT COUNT(*) AS n FROM audit_events WHERE event_type = 'llm_call'")
       .get() as { n: number };
@@ -203,7 +193,7 @@ describe('audit events + inspection findings', () => {
   });
 
   it('insertLlmCall takes MAX(output_tokens) on conflict — converges up, never down', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
     const sessionId = randomUUID();
     db.auditEvents.insertAuditEvent({
@@ -226,7 +216,7 @@ describe('audit events + inspection findings', () => {
       },
     });
 
-    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    const raw = store.openRaw();
     const readOutput = (): number =>
       (
         raw
@@ -256,7 +246,7 @@ describe('audit events + inspection findings', () => {
   });
 
   it('records a finding referencing its audit event, definition version and class', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
 
     const auditEventId = randomUUID();
@@ -314,7 +304,7 @@ describe('audit events + inspection findings', () => {
   // refresh the stale definition reference rather than leaving it pointed at
   // the pre-bump row.
   it('insertFinding refreshes inspection_definition_id on conflict (re-detection under a bumped rule version)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
 
     const auditEventId = randomUUID();
@@ -380,7 +370,7 @@ describe('audit events + inspection findings', () => {
 
 describe('facets (read from the dimension, not the fact)', () => {
   it('returns distinct hosts/os_versions from inventory', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
     db.ensureInventory({
       host: {
@@ -397,7 +387,7 @@ describe('facets (read from the dimension, not the fact)', () => {
   });
 
   it('serves the os_version facet from an inventory index, not a scan of the fact', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.ensureInventory(context);
     db.close();
 

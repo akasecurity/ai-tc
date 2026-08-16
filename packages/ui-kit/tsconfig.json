@@ -1,9 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src"]
+  // `test` joins `src` now the package has a suite. `rootDir` went with it: it
+  // only ever constrained an output layout this package does not emit, and it
+  // rejects an include that reaches outside itself.
+  "include": ["src", "test"]
 }

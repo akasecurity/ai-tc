@@ -14,6 +14,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue reaches this workflow through `merge_group` and no other event.
+  # This check is meant to be required, and a required check missing this trigger
+  # does not fail in the queue — it never reports, so the entry waits on it for
+  # ever. See ci.yml for the same reasoning at length.
+  merge_group:
   schedule:
     - cron: '30 5 * * *'
   workflow_dispatch:
@@ -23,9 +28,14 @@ permissions:
 
 # The group includes the event name so a scheduled run never cancels (or is
 # cancelled by) a push run sharing the main ref.
+#
+# Only a PR run is cancellable. Every push to main shares `refs/heads/main`, so a
+# ref-keyed group let a second merge cancel the first commit's audit outright and
+# leave that commit unaudited; keying non-PR events by SHA gives each merged
+# commit its own group, which drops neither run nor queues one behind the other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:

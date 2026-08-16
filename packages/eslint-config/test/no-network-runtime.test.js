@@ -190,6 +190,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/detections',
   '@akasecurity/eslint-config',
   '@akasecurity/extract',
+  '@akasecurity/installer',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
   '@akasecurity/plugin-browser-extension',

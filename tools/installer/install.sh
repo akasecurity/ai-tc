@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# AKA installer — downloads the self-contained `aka` binary. No Node.js required.
+# AKA installer -- downloads the self-contained `aka` binary. No Node.js required.
 #
 #   curl -fsSL <raw>/install.sh | sh                 # install the latest `aka`
 #   AKA_INSTALL_REF=bin-v0.8.1 curl ... | sh          # pin an exact release
@@ -7,14 +7,14 @@
 # The `aka` binary embeds its own runtime, so nothing else needs to be installed.
 # Overrides: AKA_INSTALL_DIR (default ~/.local/share/aka), AKA_BIN_DIR (~/.local/bin),
 # AKA_INSTALL_REF (bin-v<version>, default = latest bin-v* release),
-# AKA_DOWNLOAD_BASE + AKA_VERSION (fetch archives from a local/mirror base — testing).
+# AKA_DOWNLOAD_BASE + AKA_VERSION (fetch archives from a local/mirror base -- testing).
 set -eu
 
 REPO="${AKA_INSTALL_REPO:-akasecurity/ai-tc}"
 INSTALL_DIR="${AKA_INSTALL_DIR:-${HOME}/.local/share/aka}"
 BIN_DIR="${AKA_BIN_DIR:-${HOME}/.local/bin}"
 
-# 1. Detect platform → target triple (must match the release asset names).
+# 1. Detect platform -> target triple (must match the release asset names).
 os=$(uname -s)
 arch=$(uname -m)
 case "$os" in
@@ -67,7 +67,7 @@ tmp=$(mktemp -d) || { echo "aka: mktemp failed." >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
 # 3. Download the archive + checksums.
-echo "aka: downloading ${archive}…"
+echo "aka: downloading ${archive}..."
 dl "${base}/${archive}" "${tmp}/${archive}"
 dl "${base}/SHA256SUMS" "${tmp}/SHA256SUMS"
 
@@ -82,7 +82,7 @@ fi
 want=$(awk -v f="$archive" '$2 == f {print $1}' "${tmp}/SHA256SUMS")
 [ -n "$want" ] || { echo "aka: ${archive} not listed in SHA256SUMS." >&2; exit 1; }
 if [ "$got" != "$want" ]; then
-  echo "aka: checksum mismatch for ${archive} — refusing to install." >&2
+  echo "aka: checksum mismatch for ${archive} -- refusing to install." >&2
   echo "aka: expected ${want}" >&2
   echo "aka: got      ${got}" >&2
   exit 1
@@ -104,7 +104,7 @@ echo "aka: linked ${BIN_DIR}/aka"
 "${binroot}/aka" --version >/dev/null 2>&1 && ver=$("${binroot}/aka" --version) || ver="?"
 case ":${PATH}:" in
   *":${BIN_DIR}:"*)
-    echo "aka: ${ver} ready — run 'aka init' to set up your local store." ;;
+    echo "aka: ${ver} ready -- run 'aka init' to set up your local store." ;;
   *)
     echo "aka: ${ver} installed. Add ${BIN_DIR} to your PATH, then run 'aka init':"
     echo "     export PATH=\"${BIN_DIR}:\$PATH\"" ;;

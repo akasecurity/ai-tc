@@ -1584,15 +1584,19 @@ the same edit to make, and neither leaves an `if (process.platform …) return;`
 
 That last part is enforced rather than asked: `tools/portability-gate`'s
 `platform-guard-early-return` (rule 6, spec files only) fails `pnpm lint` on the shape.
-Three older suites predate it — `settings.test.ts`, `fingerprint.test.ts` and
-`plugin-sdk`'s `config.test.ts` — and are exempt through `GRANDFATHERED_PLATFORM_GUARDS`,
-which records the exact count each may keep. Leave them be unless you are already changing
-that test for another reason, and do not convert a neighbour in passing; the allowance is a
-ratchet, so converting one means lowering its number in the same commit, and a file that
-reaches zero leaves the map. The ratchet is on the COUNT, though, not on which guards make
-it up: converting one and adding another in the same commit holds the number and passes
-both rules, so the gate cannot tell that pairing from an honest conversion. All three carry
-the top-of-body shape, so each is a real `ctx.skip` still owed.
+Three older suites predated it — `settings.test.ts`, `fingerprint.test.ts` and
+`plugin-sdk`'s `config.test.ts` — and were exempt through `GRANDFATHERED_PLATFORM_GUARDS`
+while their six guards were owed. All six are converted, so **that map is now empty and
+nothing is exempt**: a guard in any spec file is reported. The mechanism stays, because it
+is what lets a rule of this kind land on a tree that already carries its shape, and an
+allowance is a ratchet in both directions — exceeding it is a violation, falling below it is
+`platform-guard-stale-allowance`, so converting a guard means lowering the number in the
+same commit and a file that reaches zero leaves the map. The ratchet is on the COUNT,
+though, not on which guards make it up: converting one and adding another in the same
+commit holds the number and passes both rules, so the gate cannot tell that pairing from an
+honest conversion. That is the reason to keep the map empty rather than to re-open it —
+with no entry at all, every guard in every spec file is reported and the pairing has
+nowhere to hide.
 
 ### Testing a web-ui Server Action
 

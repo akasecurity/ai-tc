@@ -175,6 +175,91 @@ This paragraph is a hand-recorded observation, not something the tree derives, s
 stale in the safe direction only until someone fixes the setting. Re-run the query above
 rather than trusting it.
 
+### Branch freshness
+
+A `pull_request` check does not run against your branch. It runs against a merge commit
+GitHub builds by merging your branch into `main` — and GitHub rebuilds that commit when
+the **branch** is pushed, never when `main` moves. A branch that has sat for a few hours
+is therefore checked against a `main` that no longer exists, and its green tick describes
+a tree nobody will ever merge.
+
+For most changes that is harmless, because two diffs touching different files compose. It
+stops being harmless for the guards here that **derive** their expectations from the tree
+at run time instead of carrying a hardcoded list. Several do, and the list below is
+illustrative rather than complete — `packages/eslint-config/test/` enumerates workspace
+packages, lintable non-package files and inline disables straight out of `git ls-files`;
+`tools/portability-gate` scans the tracked test and bench trees; and the fixture bar in
+`packages/detections/test/engine.test.ts` fails at collection time when a rule ships
+without fixtures. Deriving is precisely what makes those guards worth having — a pinned
+list stays green through the drift they exist to catch — and it is also what makes them
+read a base that has moved.
+
+So: add a workspace package on one branch, and on another add a file that the package
+guard would judge. Neither diff contains the mismatch. Both PRs go green, both merge, and
+the first run that ever sees both trees is the post-merge run on `main`. Review cannot
+catch it, because there is nothing in either diff to review.
+
+Two repository settings close it, and they are settings — nothing in this tree can
+enforce either:
+
+| Mechanism                                               | What it does                                                                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Merge queue** on `main`                               | Tests each entry against `main`'s tip plus everything queued ahead of it, then merges only what passed that exact tree. Contributors never update a branch by hand |
+| Branch protection's _Require branches to be up to date_ | Blocks the merge button until the branch has been updated, so the checks re-run against the current `main`. Every merge invalidates every other open PR            |
+
+**Mechanism chosen: merge queue.** **Not yet enabled** — it needs repository-admin rights
+and cannot be turned on from a PR. Until it is, the hole described above is still open: a
+green PR check here may have been computed against a `main` that has since moved. Verify
+the current state with the query at the end of this section rather than reading this line
+as the answer.
+
+Chosen for the merge rate here: with several PRs landing on a busy day, the up-to-date
+setting turns every merge into an update-and-re-run for each remaining open PR, while the
+queue does that work with nobody in the loop.
+
+Two consequences follow for `.github/workflows/`, and
+`packages/eslint-config/test/required-checks.test.js` holds both against this section. It
+applies them to every **gating** workflow — one that runs both on `pull_request` and on a
+push to `main` — rather than to the workflows named in the required-check table above. The
+table lists more checks than are actually required, so it is neither the enforced set nor
+a superset of the workflows a queue affects; `internal-path-guard.yml` is absent from it
+and is the workflow where being skipped leaks an internal path into a public repository
+rather than merely losing a verdict.
+
+- **A gating workflow triggers on `merge_group`.** The queue reaches a workflow through
+  that event and no other. A required check missing it does not fail in the queue — it
+  never reports at all, so the entry waits on it indefinitely instead of being rejected.
+  That is a wedged queue rather than a degraded one. A guard that is not required but is
+  meant to gate has the worse failure: the queue merges a tree it never inspected.
+- **A `push` or `merge_group` run is never cancelled or queued by a later one.** These
+  workflows used to key their concurrency group on `github.ref`, which every push to
+  `main` shares, so a merge landing a couple of minutes behind another cancelled the
+  earlier commit's run outright — leaving that commit with no verdict, and making the
+  first red run on `main` carry a SHA whose own change was not the cause. Switching
+  cancelling off is only half of it: with the group still keyed on the ref the second run
+  is queued rather than dropped, and waits out the first in full. Non-PR events are keyed
+  by `github.sha` instead, so each merged commit gets a group of its own — and by the
+  event name too, since the queue advances `main` to the merge-group commit and so the
+  `merge_group` run and the `push` that follows it carry the same SHA.
+
+Enabling the queue also multiplies the work each change costs: a queued entry re-runs
+every gating workflow against the queued tree, on top of the `pull_request` run and the
+post-merge `push` run. CodeQL is the one to watch, since it is two matrix legs with a
+45-minute budget each and sits on the critical path of every merge.
+
+Turning the queue on needs repository-admin rights and cannot be done from a PR. It is
+also only as strong as the set of checks that are actually required — the measured gap
+noted above — since the queue merges an entry once the required checks pass, and a check
+that is not required is not one of them. Enabling it while only two of the eight are
+required buys the freshness guarantee for those two and nothing else. Raising that set is
+tracked separately.
+
+To verify the setting once an admin has made it, from any account:
+
+```bash
+gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){mergeQueue{id}}}'
+```
+
 By contributing you agree that your contributions are licensed under the
 repository's [LICENSE](LICENSE). Please also read our
 [Code of Conduct](CODE_OF_CONDUCT.md).

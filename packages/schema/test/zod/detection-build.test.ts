@@ -21,19 +21,19 @@ function row(rules: Rule[]): DetectionRowInput {
 }
 
 describe('rowToDetectionDetail', () => {
-  it('exposes regex, keyword, and validator rules alike, with ruleCount matching the list', () => {
+  it('exposes every matcher kind alike, with ruleCount matching the list', () => {
     const detail = rowToDetectionDetail(
       row([
         rule('mixed/re', { type: 'regex', pattern: 'x', flags: 'g' }),
         rule('mixed/kw', { type: 'keyword', keywords: ['a'], caseSensitive: false }),
-        rule('mixed/val', { type: 'validator', name: 'luhn' }),
+        rule('mixed/cap', { type: 'regex', pattern: 'k=(\\w+)', flags: 'g', captureGroup: 1 }),
       ]),
       0,
       null,
     );
 
-    expect(detail.rules.map((r) => r.id)).toEqual(['mixed/re', 'mixed/kw', 'mixed/val']);
-    expect(detail.rules.map((r) => r.matcher.type)).toEqual(['regex', 'keyword', 'validator']);
+    expect(detail.rules.map((r) => r.id)).toEqual(['mixed/re', 'mixed/kw', 'mixed/cap']);
+    expect(detail.rules.map((r) => r.matcher.type)).toEqual(['regex', 'keyword', 'regex']);
     // For a well-formed pack the header count equals the rules actually shown.
     expect(detail.ruleCount).toBe(3);
     expect(detail.rules.length).toBe(detail.ruleCount);

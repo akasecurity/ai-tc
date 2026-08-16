@@ -13,7 +13,7 @@ import type {
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
@@ -227,6 +227,115 @@ describe('StandaloneDataGateway', () => {
     expect(bundle.rulesComplete).toBeUndefined();
     expect(bundle.rules).toEqual([]);
     await gw.close();
+  });
+
+  // The fallback above is correct but was SILENT, and it is the most expensive
+  // decision this gateway makes on its own: one rejected entry costs the user
+  // every custom rule and every per-detection enforcement action. A hook is a
+  // short-lived process, so its stderr is the only channel that reaches anyone.
+  describe('reports the discarded ruleset on stderr', () => {
+    // High-entropy, and deliberately matching no rule — a rejected entry never
+    // passed validation, so any of its own bytes may be a live credential.
+    const PLANTED = 'zQf7Kp2Wx9Lm4Nv8Rt6Yh3Bd5Gj1Sc0Ae';
+
+    function seedPack(entries: unknown[]): void {
+      const raw = new DatabaseSync(join(dir, DB_FILENAME));
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES ('c1', 'custom', 'mine', '1.0.0', 'Mine', ?, 1, 0, 0)`,
+        )
+        .run(JSON.stringify(entries));
+      raw.close();
+    }
+
+    function scanRule(id: string): Record<string, unknown> {
+      return {
+        specVersion: 1,
+        id,
+        name: id,
+        category: 'secret',
+        severity: 'high',
+        matcher: { type: 'regex', pattern: 'x', flags: 'g' },
+      };
+    }
+
+    async function stderrDuring(fn: () => Promise<void>): Promise<string> {
+      const chunks: string[] = [];
+      const spy = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation((chunk: string | Uint8Array) => {
+          chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+          return true;
+        });
+      try {
+        await fn();
+      } finally {
+        spy.mockRestore();
+      }
+      return chunks.join('');
+    }
+
+    it('says NOTHING when the snapshot is clean', async () => {
+      // The positive control for every absence assertion below: without it, a
+      // gateway that had stopped writing entirely would satisfy them all.
+      const gw = new StandaloneDataGateway(dir);
+      seedPack([scanRule('custom/a')]);
+      let complete: boolean | undefined;
+      const noise = await stderrDuring(async () => {
+        complete = (await gw.getPolicyBundle()).rulesComplete;
+      });
+      expect(complete).toBe(true); // the snapshot really was authoritative
+      expect(noise).toBe('');
+      await gw.close();
+    });
+
+    it('names the pack, the rule, the reason, the cost and where to look', async () => {
+      const gw = new StandaloneDataGateway(dir);
+      seedPack([scanRule('custom/a'), { ...scanRule('custom/b'), postValidator: ['luhn'] }]);
+      let complete: boolean | undefined;
+      const noise = await stderrDuring(async () => {
+        complete = (await gw.getPolicyBundle()).rulesComplete;
+      });
+
+      // The DECISION is unchanged — this is about the silence, not the ladder.
+      expect(complete).toBeUndefined();
+      expect(noise).toContain('custom/mine "custom/b"');
+      expect(noise).toContain('unrecognized_keys');
+      // The cost, which is the part a bare count never conveyed.
+      expect(noise).toContain('bundled packs');
+      expect(noise).toContain('per-detection action is enforced');
+      expect(noise).toContain('aka detections');
+      // One line, so a hook's stderr stays readable.
+      expect(noise.trimEnd().split('\n')).toHaveLength(1);
+      await gw.close();
+    });
+
+    it('never carries a rejected entry’s own bytes', async () => {
+      const gw = new StandaloneDataGateway(dir);
+      seedPack([{ ...scanRule('custom/x'), id: `not a valid id ${PLANTED}`, examples: [PLANTED] }]);
+      const noise = await stderrDuring(async () => {
+        await gw.getPolicyBundle();
+      });
+
+      // Positive control on THESE bytes before asserting what they omit.
+      expect(noise).toContain('id: invalid_format');
+      expect(noise).not.toContain(PLANTED);
+      // The id was unvalidated, so it is reported as absent rather than quoted.
+      expect(noise).not.toContain('not a valid id');
+      await gw.close();
+    });
+
+    it('reports once per gateway, not once per bundle read', async () => {
+      const gw = new StandaloneDataGateway(dir);
+      seedPack([{ ...scanRule('custom/b'), postValidator: ['luhn'] }]);
+      const noise = await stderrDuring(async () => {
+        await gw.getPolicyBundle();
+        await gw.getPolicyBundle();
+      });
+      expect(noise.trimEnd().split('\n')).toHaveLength(1);
+      await gw.close();
+    });
   });
 
   it('records the detections inventory into installed_packs on open', async () => {

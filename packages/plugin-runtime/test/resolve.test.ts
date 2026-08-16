@@ -78,11 +78,14 @@ describe('resolveDataGateway', () => {
     expect(resolveDataGateway(makeConfig('standalone'), undefined, () => other)).toBe(other);
   });
 
-  it('reads the default on every call, not once at import', () => {
-    // The first resolve happens BEFORE the setter — this is the property the
-    // composition root depends on, and a captured default would break it.
-    const first = resolveDataGateway(makeConfig('standalone'), undefined, () => stub);
-    expect(first).toBe(stub);
+  it('reads the default on every call, not once at import', async () => {
+    // The first resolve passes no factory argument, so it reads whatever the
+    // default is at that moment — still the standalone default here, since no
+    // setter has run yet.
+    const first = resolveDataGateway(makeConfig('standalone'));
+    expect(first).toBeInstanceOf(StandaloneDataGateway);
+    await first.close();
+    // Setting the default now changes what the NEXT no-argument call sees.
     setDefaultGatewayFactory(() => stub);
     expect(resolveDataGateway(makeConfig('standalone'))).toBe(stub);
   });

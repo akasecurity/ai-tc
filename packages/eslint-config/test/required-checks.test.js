@@ -161,6 +161,15 @@ function turboCacheKeys(block) {
   return [...block.matchAll(/^[^\S\n]+(?:key: )?(turbo-.+)$/gm)].map(([, key]) => key);
 }
 
+// Any spelling of the cache action: the combined one and both sub-actions. The
+// absence checks below need all three, and that is not a stylistic preference —
+// after the restore/save split no cached job spells the bare `actions/cache@` at
+// all, so a guard still looking only for that would go on passing while a cache
+// was added to a job whose whole point is not having one. An omitted alternative
+// in an absence guard is invisible rather than noisy: nothing reports the
+// candidate it failed to match.
+const ANY_CACHE_ACTION = /uses: actions\/cache(?:\/(?:restore|save))?@/;
+
 /**
  * Every `--filter=<name>` a job's run steps pass to turbo. Comment lines are
  * already gone by the time a block reaches here (see jobBlock), which is what
@@ -416,7 +425,7 @@ describe('the macOS leg', () => {
 
   it('restores a Turbo cache', () => {
     const block = jobBlock(ci, 'macos');
-    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
@@ -515,7 +524,7 @@ describe('the Windows legs', () => {
 
   it('restores a Turbo cache', () => {
     const block = jobBlock(ci, 'windows');
-    expect(block).toMatch(/uses: actions\/cache@/);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
     expect(block).toMatch(/path: \.turbo\/cache$/m);
   });
 
@@ -561,21 +570,155 @@ describe('the Windows legs', () => {
   // about the tree, so derive it rather than asserting it in a comment: a package
   // whose lint script drops `*.config.*` takes its root config files out of every
   // lint pass on every platform, and this job would stay green throughout —
-  // twenty other scripts still expand, so nothing here reddens.
+  // twenty-one other scripts still expand, so nothing here reddens.
   //
   // The count is pinned first for the usual reason: an empty list satisfies a
   // `for` loop over it without checking anything. It is a floor AND a ceiling, so
   // a package added without a lint script is caught by the same assertion.
+  //
+  // It is also the one number here that two branches can both raise to the SAME
+  // value for different reasons and merge clean: one adding a package and one
+  // adding another both write 21, git sees identical text, and the merged truth
+  // is 22. Re-derive it after a merge rather than trusting that it merged.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(21);
+    expect(scripts).toHaveLength(22);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');
     }
-    // And the repo-root pass, which is the twenty-first invocation rather than a
-    // twenty-first package — it is the only one covering files no package owns.
+    // And the repo-root pass, which is the twenty-third invocation rather than a
+    // twenty-third package — it is the only one covering files no package owns.
     expect(rootScripts()['lint:root']).toContain('*.config.*');
+  });
+});
+
+// The installer trust chain is the one shipped surface whose ENTIRE mechanism is
+// two files ESLint does not lint and tsc does not read, so nothing about them
+// moves a hash or fails a build. What executes them is the suite in
+// tools/installer, and what runs that suite is these two wirings — each one line
+// long, each invisible in a diff once removed, and each restoring the exact hole
+// the suite was written to close: a shipped security control that no runner ever
+// runs. So they are pinned rather than trusted.
+//
+// They cover different halves and neither substitutes for the other. `ci.yml`
+// has no path filter, so it runs the suite against a STUB archive on every PR —
+// that is what makes an installer-only PR exercised at all, and on the Windows
+// leg it is the only thing that reaches install.ps1's junction and user-PATH
+// flow. `build-binaries.yml` is the only place a REAL archive meets the real
+// installer, and it is path-filtered, so an installer-only PR reaches it only
+// because `tools/installer/**` is listed.
+describe('the installer trust chain is wired into CI', () => {
+  const ci = readWorkflow('ci.yml');
+  const binaries = readWorkflow('build-binaries.yml');
+
+  // The half of this that is an ABSENCE, and so the half nothing would otherwise
+  // notice. build-binaries.yml reaches an installer-only PR because it now lists
+  // the path; ci.yml reaches one because it filters no path at all. The second is
+  // a property of what is NOT written, so adding a `paths:` filter here — the
+  // ordinary way to make a workflow cheaper — would take the whole stub tier away
+  // on every platform at once, leaving the entry above pointing at a job that
+  // never starts.
+  it('runs on an installer-only PR at all, because it filters no path', () => {
+    // Same block shape as the audit/codeql trigger check above, and stopping at
+    // a sibling KEY rather than any two-space token for the same reason: a
+    // `paths:` written under a comment line must still land inside the block.
+    const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)^ {2}[^\s#]/m.exec(ci);
+    expect(trigger, 'ci.yml has no parseable pull_request trigger').not.toBeNull();
+    expect(trigger[1]).not.toMatch(/^\s*paths(?:-ignore)?:/m);
+  });
+
+  // `(?![\w-])` for the reason the eslint-config filter above uses it: a hyphen
+  // is a non-word character, so `\b` would also accept a rename that repointed
+  // the filter at a sibling and took install.ps1's coverage away while staying
+  // green.
+  it('runs the installer suite on the Windows leg, the only one that reaches install.ps1 whole', () => {
+    expect(turboFilters(jobBlock(ci, 'windows'))).toContain('@akasecurity/installer');
+    expect(jobBlock(ci, 'windows')).toMatch(/--filter=@akasecurity\/installer(?![\w-])/);
+  });
+
+  it('builds a binary when only the installer changed', () => {
+    // Read off the `paths:` list rather than the whole file, so the entry cannot
+    // be satisfied by the word appearing in a comment or a step.
+    const paths = /^on:$[\s\S]*?^ {4}paths:$([\s\S]*?)^\S/m.exec(binaries)?.[1] ?? '';
+    expect(paths, 'build-binaries.yml has no parseable pull_request paths list').toMatch(
+      /^ {6}- '/m,
+    );
+    expect(paths).toMatch(/^ {6}- 'tools\/installer\/\*\*'$/m);
+  });
+
+  it('drives the real archive through the real installer after building it', () => {
+    const block = jobBlock(binaries, 'build');
+    // The env var is what switches the suite off its stub fixture and onto the
+    // artifact `archive:sea` just wrote; without it the step still passes, having
+    // skipped the only case that touches a real binary.
+    expect(block).toMatch(/AKA_INSTALLER_REAL_DIST:/);
+    expect(block).toMatch(/pnpm --filter @akasecurity\/installer test/);
+    // After archive:sea, or there is nothing for it to find. Both indices are
+    // asserted FOUND first: `indexOf` returns -1 for a string that is not there,
+    // and -1 is less than every real index, so a bare `toBeLessThan` would go on
+    // passing after the archive:sea step was deleted — the one edit this
+    // ordering check exists to catch.
+    const archived = block.indexOf('archive:sea');
+    const verified = block.indexOf('AKA_INSTALLER_REAL_DIST');
+    expect(archived, 'build-binaries.yml no longer runs archive:sea').toBeGreaterThanOrEqual(0);
+    expect(
+      verified,
+      'build-binaries.yml no longer sets AKA_INSTALLER_REAL_DIST',
+    ).toBeGreaterThanOrEqual(0);
+    expect(archived).toBeLessThan(verified);
+  });
+
+  // install.ps1's happy path writes HKCU's `Path`, so it is opt-in: the cases
+  // skip unless AKA_INSTALLER_ALLOW_USER_PATH=1, which keeps a contributor's
+  // workstation out of it. That makes the variable the ONLY thing standing
+  // between CI and a green run in which the ps1 happy path never executed —
+  // exactly the state this whole package was written to end. Three separate
+  // one-line edits can reach that state, so all three are pinned.
+  it('grants the ps1 happy path its user-PATH opt-in on both Windows runners', () => {
+    expect(jobBlock(ci, 'windows')).toMatch(/AKA_INSTALLER_ALLOW_USER_PATH: *'1'/);
+    expect(jobBlock(binaries, 'build')).toMatch(/AKA_INSTALLER_ALLOW_USER_PATH: *'1'/);
+  });
+
+  it('declares that opt-in to turbo, so setting it cannot replay a cached skip', () => {
+    // ci.yml reaches the suite through `turbo run test`, and turbo hashes only
+    // the env it is told about. Undeclared, a run WITH the variable hash-matches
+    // one without it and replays a green in which the case skipped — the same
+    // trap build-binaries.yml routes around by not using turbo at all. Read off
+    // the `test` task's own `env`, not the file, so the entry cannot be satisfied
+    // by the name appearing under some other task.
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const testTask = /^ {4}"test": \{$([\s\S]*?)^ {4}\},$/m.exec(turbo)?.[1] ?? '';
+    expect(testTask, 'turbo.json has no parseable `test` task').not.toBe('');
+    expect(testTask).toMatch(/"env": *\[[^\]]*"AKA_INSTALLER_ALLOW_USER_PATH"/);
+  });
+
+  // The host variables the Windows installer cases need, which turbo's `strict`
+  // env mode does NOT pass by default. These are `passThroughEnv` rather than
+  // `env` on purpose: they describe the RUNNER, so hashing one would fork the
+  // cache per machine while saying nothing about the inputs.
+  //
+  // Pinned as a set because the two halves fail differently and only one of them
+  // says so. Dropping PROCESSOR_ARCHITECTURE is caught at the spawn by
+  // `assertHostArchitecture`, which names the variable and this very field.
+  // Dropping a system variable is caught by nothing: Windows PowerShell loses
+  // the module path it derives from %SystemRoot%, `Compress-Archive` never
+  // autoloads, and the case spends its whole timeout before failing as a
+  // 120-second hang that names no variable at all.
+  it.each([
+    'PROCESSOR_ARCHITECTURE',
+    'SystemRoot',
+    'windir',
+    'ComSpec',
+    'SystemDrive',
+    'LOCALAPPDATA',
+  ])('passes %s through to the Windows test child', (name) => {
+    const turbo = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
+    const testTask = /^ {4}"test": \{$([\s\S]*?)^ {4}\},$/m.exec(turbo)?.[1] ?? '';
+    expect(testTask, 'turbo.json has no parseable `test` task').not.toBe('');
+    const passThrough = /"passThroughEnv": *\[([\s\S]*?)\]/.exec(testTask)?.[1] ?? '';
+    expect(passThrough, 'the `test` task declares no `passThroughEnv`').not.toBe('');
+    expect(passThrough).toContain(`"${name}"`);
   });
 });
 
@@ -592,12 +735,42 @@ describe('the Turbo caches in ci.yml', () => {
 
   it.each(['ci', 'macos', 'windows'])('%s keys its cache per platform', (job) => {
     const keys = turboCacheKeys(jobBlock(ci, job));
-    // The `key:` plus two restore-keys. Pinned so a key added without the
-    // prefix cannot hide behind a loop that happens to see none.
-    expect(keys).toHaveLength(3);
+    // The restore `key:`, its two restore-keys, and the save `key:`. Pinned so a
+    // key added without the prefix cannot hide behind a loop that happens to see
+    // none.
+    expect(keys).toHaveLength(4);
     for (const key of keys) {
       expect(key.startsWith('turbo-${{ runner.os }}-')).toBe(true);
     }
+    // Restore and save must name the SAME key, or the run uploads its cache
+    // under a key no later run ever looks up — which reads as caching and
+    // caches nothing. Positional because the length above is pinned: the
+    // restore step's `key:` comes first and the save step's last.
+    const [restoreKey, , , saveKey] = keys;
+    expect(saveKey).toBe(restoreKey);
+  });
+
+  // The combined `actions/cache` saves in a post step that GitHub skips once an
+  // earlier step has failed, so under it a leg that goes RED saves nothing, and
+  // the next run finds no entry for its own lockfile lineage, falls back to an
+  // older one and misses on every task. That is a loop rather than a one-off:
+  // the cold run is slower, a slower run is likelier to time out, and a
+  // timed-out run saves nothing again. Windows sat in it at 0 of 36 cached
+  // tasks while the two green legs cached normally — the leg that needed a warm
+  // cache most was the one structurally guaranteed not to get one.
+  //
+  // Three things break the loop and all three are pinned, because any one of
+  // them alone restores it silently: the combined action must be GONE (it is
+  // the trap), a save step must exist, and its `if:` must not fall back to the
+  // default `success()` — which is precisely what skips it on a red job.
+  it.each(['ci', 'macos', 'windows'])('%s saves its cache even when the job fails', (job) => {
+    const block = jobBlock(ci, job);
+    expect(block).toMatch(/uses: actions\/cache\/restore@/);
+    expect(block).not.toMatch(/uses: actions\/cache@/);
+
+    const save = /- name: Save Turbo cache\n([\s\S]*?)uses: actions\/cache\/save@/.exec(block);
+    expect(save, `\`${job}\` has no Save Turbo cache step`).not.toBeNull();
+    expect(save[1]).toMatch(/if: \$\{\{ !cancelled\(\)/);
   });
 
   // The inverse, and the reason the two cached jobs are named rather than
@@ -614,7 +787,7 @@ describe('the Turbo caches in ci.yml', () => {
   it('leaves the no-network job uncached', () => {
     const block = jobBlock(ci, 'no-network');
     expect(block).toMatch(/no-network-test\.sh/);
-    expect(block).not.toMatch(/uses: actions\/cache@/);
+    expect(block).not.toMatch(ANY_CACHE_ACTION);
   });
 
   // And the Windows lint leg, for the same reason one step further out. What it
@@ -631,7 +804,7 @@ describe('the Turbo caches in ci.yml', () => {
   it('leaves the Windows lint job uncached', () => {
     const block = jobBlock(ci, 'windows-lint');
     expect(block).toMatch(LINT_STEP);
-    expect(block).not.toMatch(/uses: actions\/cache@/);
+    expect(block).not.toMatch(ANY_CACHE_ACTION);
   });
 });
 

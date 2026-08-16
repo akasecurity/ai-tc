@@ -105,8 +105,33 @@ jobs:
       # per-commit suffix keeps entries immutable. restore-keys warm-start
       # from the newest compatible prior cache. GitHub's 10 GB LRU + 7-day
       # eviction bounds total growth.
+      #
+      # RESTORE AND SAVE ARE SEPARATE STEPS, and that split is the whole of what
+      # keeps a red leg from staying cold for ever. The combined `actions/cache`
+      # saves in a post step that GitHub skips once an earlier step has failed,
+      # so a leg that goes red saves NOTHING. The next run then finds no entry
+      # for its own lockfile lineage, falls through restore-keys to an older
+      # one, misses on every task and runs the whole workspace from scratch.
+      # That is a loop rather than a one-off: the cold run is slower, a slower
+      # run is likelier to time out, and a timed-out run saves nothing again.
+      # Measured on one run of this workflow: the two green legs each saved an
+      # entry under the current lockfile hash, while the red Windows leg had
+      # none at all — so it fell back to a stale entry from an older lockfile
+      # lineage, whose every task hash differed, and hit 0 of its 36 tasks.
+      #
+      # Saving from a RED job is sound, and for a reason worth stating rather
+      # than assuming: turbo writes a cache entry only for a task that exited 0.
+      # A failed task leaves no entry behind and cannot be replayed as green by
+      # any later run. So what a red job uploads is exactly what a green one
+      # would have, minus the tasks that failed — never a false green.
+      #
+      # `!cancelled()` rather than `always()`: this workflow cancels superseded
+      # runs on every push, and a cancelled job is killed mid-step on a short
+      # grace period, so `always()` would routinely upload a cache still being
+      # written. Failure is the case this fixes; cancellation is not.
       - name: Restore Turbo cache
-        uses: actions/cache@v6
+        id: turbo-cache
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -206,6 +231,16 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # Last step in the job, so it captures every task above it. The `cache-hit`
+      # guard skips a re-run of the same commit, whose exact key already exists —
+      # a save there is a no-op that only logs a scary "already exists".
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
   # No-network leg: the product's headline claim is that nothing leaves the
   # machine. The lint ban (@akasecurity/eslint-config) stops a network primitive
@@ -322,9 +357,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Same shape as the ubuntu leg's cache, and deliberately a separate lineage
-      # — see the runner.os note above.
+      # — see the runner.os note above. Split into restore + save for the reason
+      # given there too: the combined action saves nothing when the job is red.
       - name: Restore Turbo cache
-        uses: actions/cache@v6
+        id: turbo-cache
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -337,6 +374,13 @@ jobs:
         # packages on a hosted macOS runner and was one of the two that failed
         # on rotating unrelated files.
         run: pnpm turbo run test --continue --concurrency=2
+
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
   # Windows leg: the CLI and plugins advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
@@ -407,7 +451,22 @@ jobs:
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.
   #
-  # @akasecurity/eslint-config is the one entry that ships nothing — it is
+  # Two entries here are `private: true` and bundled by no artifact, so both are
+  # the first thing anyone trimming this list back to "the shipped surface"
+  # would strike. Each is here because this leg is the ONLY runner that can
+  # execute what it covers.
+  #
+  # @akasecurity/installer is the second of them. install.ps1 is a shipped
+  # security control — the thing an `irm … | iex` user runs — and Windows is
+  # the only platform that reaches its whole flow: the junction, the user-PATH
+  # rewrite and `aka.exe --version` all no-op or throw anywhere else, so the
+  # happy-path case SKIPS on the other two legs and the two refusal cases are
+  # all they can run. Drop this filter and the ps1 half of the trust chain is
+  # back to being source nobody executes. The sh half is the mirror image and
+  # skips here: `uname -s` under Git Bash reports MINGW and install.sh refuses
+  # that OS by design.
+  #
+  # @akasecurity/eslint-config is the other one — it is
   # `private: true` and no artifact bundles it. It runs here as the ENFORCEMENT
   # HALF of the no-network guarantee (CLAUDE.md §4): its suites are what fail the
   # workspace when a package drops its config, its `lint` script stops covering a
@@ -558,8 +617,13 @@ jobs:
       # legs — see the runner.os note above the macOS job. This leg re-ran every
       # package from scratch on every push until it had one, which is also what
       # paid for the four packages added below.
+      #
+      # This is the leg the restore/save split was written for: it is the one
+      # that goes red, so under the combined action it was the one that never
+      # saved — the cache mattered most exactly where it was guaranteed absent.
       - name: Restore Turbo cache
-        uses: actions/cache@v6
+        id: turbo-cache
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -574,6 +638,9 @@ jobs:
         # --concurrency: see the Test step in the lint job. This is the leg that
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
+        #
+        # The installer suite is deliberately NOT in this list — it runs in its
+        # own invocation below, for the reason given there.
         run: >
           pnpm turbo run test
           --continue
@@ -594,9 +661,52 @@ jobs:
           --filter=@akasecurity/web-ui
           --filter=@akasecurity/eslint-config
 
+      # The installer suite runs in its OWN turbo invocation, AFTER the fifteen
+      # above rather than beside them. It is by far the most disk-expensive
+      # suite in the workspace on this platform — it copies, zips and expands a
+      # real ~115 MB PE — and under `--concurrency=2` it was therefore always
+      # running alongside one of the shipped-surface packages. What that
+      # produced was not its own failure so much as everyone else's:
+      # `Hook timed out in 20000ms` in plugin-sdk, persistence and claude-code,
+      # a different file each run, which is the signature of a starved runner
+      # rather than of any of those diffs.
+      #
+      # A second STEP rather than a second JOB, and that is the whole reason it
+      # is spelled this way: a new job is a new status check, and a check that
+      # branch protection does not require reads as covered while gating
+      # nothing. This needs no protection change and no new job name for
+      # CONTRIBUTING.md's table to carry.
+      #
+      # `!cancelled()` so a red shipped-surface step still leaves this one
+      # reporting, for the same reason that step takes `--continue`.
+      #
+      # AKA_INSTALLER_ALLOW_USER_PATH is the consent to let install.ps1 reach
+      # its HKCU `Path` write, which this throwaway runner may give and a
+      # contributor's workstation may not — the mutating cases skip without it,
+      # so THIS is what makes the ps1 happy path run anywhere at all. It is
+      # declared in turbo.json's `test` env: turbo hashes only the env it is
+      # told about, so undeclared it would hash-match a cached run without it
+      # and replay a green in which the case skipped. It sits on this step
+      # alone rather than the whole job because this is the only package that
+      # reads it — the other fifteen were being hashed against a variable none
+      # of them consults.
+      - name: Test the installer scripts
+        if: ${{ !cancelled() }}
+        env:
+          AKA_INSTALLER_ALLOW_USER_PATH: '1'
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer
+
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+
   # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
-  # twenty packages target `*.config.*`, and so does the repo-root `lint:root`,
-  # which is the twenty-first invocation rather than a twenty-first package —
+  # twenty-two packages target `*.config.*`, and so does the repo-root
+  # `lint:root`, which is the twenty-third invocation rather than a
+  # twenty-third package —
   # and WHO EXPANDS IT is decided by the platform, not by the script. On POSIX
   # the shell expands the pattern and hands eslint concrete filenames; `cmd.exe`
   # does not glob at all, so eslint receives the literal pattern and runs its

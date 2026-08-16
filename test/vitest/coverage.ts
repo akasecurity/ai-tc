@@ -98,6 +98,16 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/dashboard-ui': 23, //               24.56
   '@akasecurity/web-ui': 23, //                     24.04
   '@akasecurity/ui-kit': 1, //                       2.13
+  // No instrumentable source, which is why this reads 0 rather than a measured
+  // percentage. What this package ships is install.sh and install.ps1, which v8
+  // cannot see, and everything else under it is test/**, which SHARED_EXCLUDES
+  // drops — so the denominator is genuinely empty (0/0, reported as "Unknown%")
+  // and a floor has nothing to describe. It is listed because the table is
+  // pinned as an EXACT set against the packages that run tests, and this one
+  // does. Give it a real measured floor the moment it grows a src/: an empty
+  // denominator is the one case where 0 is not a surrendered floor, and that
+  // stops being true as soon as there is something to count.
+  '@akasecurity/installer': 0, //                     0/0
 });
 
 /**

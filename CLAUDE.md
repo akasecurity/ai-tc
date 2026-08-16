@@ -109,7 +109,7 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks — or the real installer scripts — carry inline disables of their own and are out of this table's scope:
 
 | Site                                              | Mechanism                         | Why                                                         |
 | ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
@@ -148,15 +148,16 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Five files carry a genuine local-only opt-out:
+Six files carry a genuine local-only opt-out:
 
-| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
-| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
+| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                                  |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                                  |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                        |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                      |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable      |
+| `tools/installer/test/helpers/serve-release.ts` (via `tools/installer/eslint.config.mjs`)                       | `node:http`                                            | the installer suite serves its fixture release over loopback so the shipped `install.sh`/`install.ps1` run against a local base — the only base BOTH take, since PowerShell rejects a `file://` URI |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
@@ -700,10 +701,11 @@ packages/             the workspace libraries (schema · persistence · local-op
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
-tools/                repo tooling, never shipped: installer one-liners plus the
-                      audit-gate (CI dependency-audit), portability-gate
-                      (cross-platform test rules) and coverage-gate (per-PR diff
-                      coverage) workspace packages
+tools/                repo tooling, never shipped: the installer one-liners and
+                      the installer workspace package whose suite drives them end
+                      to end, plus audit-gate (CI dependency-audit),
+                      portability-gate (cross-platform test rules) and
+                      coverage-gate (per-PR diff coverage)
 ```
 
 ## Adding a new workspace package

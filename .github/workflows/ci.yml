@@ -774,13 +774,26 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     # `pnpm lint` fans `turbo run lint` across every package, and this was the one
-    # lint-or-test step in this file with no bound on that — every Test step
-    # carries `--concurrency=2`, and this leg needs it for the same reason the
-    # Windows test leg does. Unbounded, each package spawns its own ESLint (several
-    # spawn two, for the src+test pass split), and Windows answers a process storm
-    # of that size with STATUS_DLL_INIT_FAILED (0xC0000142, surfacing as exit
-    # 3221225794) rather than a lint error: the child never starts, so no lint
-    # output precedes it and the victim moves between runs.
+    # lint-or-test step on the WINDOWS legs with no bound on that — every
+    # `turbo run test` invocation carries `--concurrency=2`, and this leg needs it
+    # for the same reason the Windows test leg does. Unbounded, each package task
+    # runs its own ESLint, and Windows answers a process storm of that size with
+    # STATUS_DLL_INIT_FAILED (0xC0000142, surfacing as exit 3221225794) rather than
+    # a lint error: the child never starts, so no lint output precedes it and the
+    # victim moves between runs.
+    #
+    # Scoped to the Windows legs deliberately, because the file-wide claim is false
+    # and the next person debugging this class of failure would be misdirected by
+    # it: the Linux `Lint · Typecheck · Test · Build` job fans turbo unbounded three
+    # times over — `pnpm lint`, `pnpm typecheck` and `pnpm build` each expand to a
+    # bare `turbo run …`. It fans the same package count this leg did and gets away
+    # with it on a far larger process budget than the Windows desktop heap, not
+    # because anything bounds it.
+    #
+    # Peak parallelism is turbo's concurrency and nothing else. A package whose
+    # lint script makes two ESLint passes chains them with `&&`, so they are
+    # sequential and add nothing to the peak — which is exactly what makes
+    # TURBO_CONCURRENCY the whole lever here rather than one of two.
     #
     # Bounded through the environment rather than the flag because the run step has
     # to stay exactly `pnpm lint`. Going to turbo directly drops `lint:root` and

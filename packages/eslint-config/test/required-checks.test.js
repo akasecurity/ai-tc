@@ -560,13 +560,18 @@ describe('the Windows legs', () => {
   });
 
   // Unfiltered AND unbounded is what this leg cannot be. `pnpm lint` fans
-  // `turbo run lint` across every package, and each spawns its own ESLint —
-  // several spawn two, for the src+test pass split. Windows answers a process
-  // storm of that size with STATUS_DLL_INIT_FAILED (0xC0000142, exit 3221225794):
-  // the child never starts, so there is no lint output to read and the package
-  // that dies moves between runs, which is what distinguishes it from a real
-  // violation. Every `turbo run test` invocation in this file is bounded for the
-  // same reason; this leg was the one that never got it.
+  // `turbo run lint` across every package, and each package task runs its own
+  // ESLint. Windows answers a process storm of that size with
+  // STATUS_DLL_INIT_FAILED (0xC0000142, exit 3221225794): the child never starts,
+  // so there is no lint output to read and the package that dies moves between
+  // runs, which is what distinguishes it from a real violation. Every
+  // `turbo run test` invocation in this file is bounded for the same reason; this
+  // leg was the one that never got it.
+  //
+  // Peak parallelism is turbo's concurrency and nothing else — a package making
+  // two ESLint passes chains them with `&&`, so they are sequential and add
+  // nothing to the peak. That is what makes the env var the whole lever, and it
+  // is why this asserts a bound rather than counting passes.
   //
   // The bound is asserted through `env:` rather than a flag on the step, and that
   // is forced rather than chosen: the two assertions above pin the step as exactly

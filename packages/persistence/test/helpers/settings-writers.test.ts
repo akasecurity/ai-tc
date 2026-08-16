@@ -383,18 +383,26 @@ describe('barrierReport', () => {
     );
   });
 
-  it('tolerates a writer scheduled late AFTER the release, which is not a defect', () => {
-    // A released child can sit unscheduled for longer than another writer's
-    // whole call on a loaded runner. Only readiness is the barrier's business,
-    // so that must not read as a broken barrier — otherwise the suite fails on
-    // machine load rather than on the product. Enforced by shape rather than by
-    // this case: startedAt/endedAt are unreachable from barrierReport, so the
-    // case can only show the fields exist. It is kept for the reader.
-    const late = run(100, [{ observedAt: 20 }, { observedAt: 60 }]);
-    const scheduledLate = late.outcomes.map((o, i) =>
-      i === 1 ? { ...o, startedAt: 9_000, endedAt: 9_010 } : o,
+  it('reads no child stamp, however impossible that stamp looks', () => {
+    // Two writers with child stamps that cannot both be true of a barrier that
+    // held: one descheduled so long it started 9s late, and one reporting a
+    // start BEFORE the release it was waiting on. Neither is a defect. The
+    // first is ordinary runner load, and the second is the cross-process clock
+    // disagreement this whole harness was rewritten for — startedAt is stamped
+    // by the child, releasedAt by the parent, so their arithmetic means
+    // nothing even though the causal order is certain.
+    //
+    // Both values are the point. A version of barrierReport that reached for
+    // startedAt at all fails here whichever direction it compared: `>=
+    // releasedAt` rejects writer 0, `<=` rejects writer 1. Without the early
+    // stamp the case was a tautology — a late-only fixture satisfies a
+    // `startedAt >= releasedAt` conjunct, so the conjunct could be added with
+    // the suite green.
+    const run_ = run(100, [{ observedAt: 20 }, { observedAt: 60 }]);
+    const impossible = run_.outcomes.map((o, i) =>
+      i === 0 ? { ...o, startedAt: 50, endedAt: 70 } : { ...o, startedAt: 9_000, endedAt: 9_010 },
     );
-    expect(barrierReport({ ...late, outcomes: scheduledLate })).toBe(BARRIER_HELD);
+    expect(barrierReport({ ...run_, outcomes: impossible })).toBe(BARRIER_HELD);
   });
 
   it('fails for no writers at all', () => {

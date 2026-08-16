@@ -12,6 +12,11 @@ on:
       - 'cli/**'
       - 'web-ui/**'
       - 'packages/**'
+      # The installer scripts are the last link of the binary channel's trust
+      # chain, and the step below is the only place they meet a REAL archive.
+      # Without this entry an installer-only PR built no binary and exercised no
+      # installer behaviour on any runner.
+      - 'tools/installer/**'
       - '.github/workflows/build-binaries.yml'
 
 jobs:
@@ -76,6 +81,32 @@ jobs:
             Write-Error "archive did not root at aka-${{ matrix.target }}/aka.exe"
             exit 1
           }
+      # The third link of the trust chain, against the artifact a user actually
+      # downloads. `archive:sea` hashed it and release-binaries.yml aggregates
+      # those hashes; until this step, nothing anywhere executed the half that
+      # VERIFIES a download and refuses a bad one. The suite serves the archive
+      # over loopback (no egress) and runs the shipped script unmodified — on
+      # Windows that is install.ps1, everywhere else install.sh. Its tampered and
+      # not-listed cases run here too, on their own stub fixture.
+      #
+      # `pnpm --filter`, NOT `turbo run test`, and that is load-bearing.
+      # AKA_INSTALLER_REAL_DIST is what switches the suite off its stub fixture,
+      # and turbo hashes only the env it is told about — so under turbo this task
+      # would hash-match the run ci.yml already cached WITHOUT the variable, and
+      # replay a green in which the real archive was never installed. Routing
+      # around turbo is what keeps this step's result its own. required-checks
+      # .test.js pins the spelling for that reason.
+      #
+      # AKA_INSTALLER_ALLOW_USER_PATH is the consent to let install.ps1 reach its
+      # HKCU `Path` write. A throwaway runner is exactly where that is fine and a
+      # contributor's workstation is exactly where it is not, so the mutating
+      # cases skip unless it is set — see tools/installer/test/install-ps1.test.ts.
+      # It is inert off Windows; the sh half writes no persistent state.
+      - name: Verify the installer trust chain against the real archive
+        env:
+          AKA_INSTALLER_REAL_DIST: ${{ github.workspace }}/cli/sea-dist
+          AKA_INSTALLER_ALLOW_USER_PATH: '1'
+        run: pnpm --filter @akasecurity/installer test
       - uses: actions/upload-artifact@v4
         with:
           name: aka-${{ matrix.target }}

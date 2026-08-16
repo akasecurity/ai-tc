@@ -10,6 +10,9 @@
     "directory": "plugins/claude-code"
   },
   "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/claude-code",
+  "exports": {
+    "./src/*": "./src/*"
+  },
   "files": [
     ".claude-plugin",
     "hooks",

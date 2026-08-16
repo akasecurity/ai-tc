@@ -964,3 +964,84 @@ describe('the branch-freshness decision in CONTRIBUTING.md', () => {
     }
   });
 });
+
+// A step that shells a root script fans turbo at its DEFAULT of 10 unless
+// something bounds it, and the bound cannot be a flag on the step: `pnpm lint --
+// --concurrency=4` appends to the end of a `&&` chain, landing on
+// `check:portability` rather than on turbo. The job-level environment is the only
+// lever that reaches every fan in a job at once.
+//
+// Derived rather than listed. The Windows lint leg was bounded on its own after a
+// real 0xC0000142, and the file-wide claim written beside it was wrong — the Linux
+// job fanned unbounded three separate times and nobody noticed, because nothing
+// asked. Naming the two jobs here would repeat that: the property is "a job that
+// fans turbo unbounded declares a bound", and a third job added tomorrow is
+// covered by it on the day it lands.
+describe('the turbo fans in ci.yml are bounded', () => {
+  const ci = readWorkflow('ci.yml');
+
+  // Which root scripts expand to a `turbo run` carrying no `--concurrency` of its
+  // own. Read from the manifest rather than listed, so a script that grows or
+  // loses a bound is reflected here without an edit.
+  const unboundedScripts = Object.entries(rootScripts())
+    .filter(([, cmd]) => /\bturbo run\b/.test(cmd) && !/--concurrency/.test(cmd))
+    .map(([name]) => name);
+
+  // Scope is computed OUT here rather than branched on inside the test body. A
+  // body that returns before asserting reports as a pass, so looping over every
+  // job and returning early for the ones out of scope would have three of the five
+  // claiming a check the run never made — the shape this repo requires a
+  // `ctx.skip` for, and `it.each` passes no context to skip with. Deriving the
+  // in-scope set instead means every registered case asserts, and the set itself
+  // is what the vacuity test pins.
+  //
+  // This reader does NOT assert, deliberately: it runs in the `describe` body, and
+  // an assertion there is a collection error that reports the whole FILE as
+  // `(0 test)`. Each `it` re-resolves its block through `jobBlock`, which does
+  // assert, where a failure is a test failure.
+  const jobNames = [...ci.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)]
+    .map(([, name]) => name)
+    .filter((name) => name !== 'push');
+
+  // `pnpm <script>` as the WHOLE command — `pnpm turbo run test --concurrency=2`
+  // is a direct call carrying its own flag, and `pnpm lint:root` is a different
+  // script that fans nothing, so the boundary excludes `:` and `-`.
+  const fansOf = (block) =>
+    unboundedScripts.filter((s) => new RegExp(`run: pnpm ${s}(?![\\w:-])`).test(block));
+
+  const jobsWithFans = jobNames.filter((job) => {
+    const raw = new RegExp(
+      `^ {2}${job}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|\\s*$(?![\\s\\S]))`,
+      'm',
+    ).exec(ci)?.[1];
+    return raw !== undefined && fansOf(dropComments(raw)).length > 0;
+  });
+
+  // Pins the derivation from both ends. The scripts must include the three that
+  // really are unbounded, and the in-scope jobs must be exactly the two that run
+  // them — an EXACT set, because a floor would stay green if the scoping regex
+  // quietly stopped matching a job, which is the failure that empties the loop.
+  it('derives the scripts and jobs to check, so the loop below is not vacuous', () => {
+    expect(unboundedScripts).toEqual(expect.arrayContaining(['lint', 'typecheck', 'build']));
+    expect(jobsWithFans).toEqual(['ci', 'windows-lint']);
+  });
+
+  // The property, over jobs that are all genuinely in scope. `jobBlock` strips
+  // comments first, so a bound that has been commented out reads as absent —
+  // which is the point.
+  it.each(jobsWithFans)('%s bounds every turbo fan it runs', (job) => {
+    const block = jobBlock(ci, job);
+    const fans = fansOf(block);
+    expect(
+      fans.length,
+      `${job} was selected as fanning turbo but runs none of the scripts`,
+    ).toBeGreaterThan(0);
+    const bound = /^ {6}TURBO_CONCURRENCY: (\d+)$/m.exec(block);
+    expect(
+      bound,
+      `${job} runs ${fans.map((f) => `\`pnpm ${f}\``).join(', ')} but declares no TURBO_CONCURRENCY`,
+    ).not.toBeNull();
+    expect(Number(bound[1]), `${job}'s bound must be a positive integer`).toBeGreaterThan(0);
+    expect(Number(bound[1]), `${job}'s bound is high enough to be no bound`).toBeLessThanOrEqual(8);
+  });
+});

@@ -48,7 +48,23 @@ export const SQLITE_BUSY = 5;
 export const SQLITE_READONLY = 8;
 export const SQLITE_CORRUPT = 11;
 export const SQLITE_FULL = 13;
+/**
+ * SQLITE_CONSTRAINT — a schema constraint refused the write. Unlike the codes
+ * around it this one is not injected: it is what the engine answers when the
+ * schema does its job, so it is the comparison a test asserting a constraint
+ * refusal reaches for.
+ *
+ * It is also the code where the primary/extended distinction bites hardest.
+ * FOREIGNKEY (787), UNIQUE (2067) and CHECK (275) ALL reduce to 19, so this
+ * constant says a constraint fired and never which one. A test whose subject is
+ * a particular constraint wants the extended code below instead — otherwise the
+ * only thing separating a foreign-key refusal from a UNIQUE one is the message
+ * text, which is what this section tells callers not to assert on.
+ */
+export const SQLITE_CONSTRAINT = 19;
 export const SQLITE_NOTADB = 26;
+/** SQLITE_CONSTRAINT_FOREIGNKEY — a reference pointed at a row that is not there. */
+export const SQLITE_CONSTRAINT_FOREIGNKEY = 787;
 /** SQLITE_READONLY_DIRECTORY — the db is fine, its directory is not writable. */
 export const SQLITE_READONLY_DIRECTORY = 1544;
 

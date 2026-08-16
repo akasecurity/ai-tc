@@ -21,6 +21,7 @@ import type { VaultInventoryEntry } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer, rotateKey } from '../../app/(app)/exceptions/actions.ts';
 import {
   purgeVault,
@@ -76,7 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // The construction every action performs — the vault over the local store with

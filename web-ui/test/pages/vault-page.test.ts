@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import VaultPage from '../../app/(app)/vault/page.tsx';
 import { VaultDashboardClient } from '../../app/(app)/vault/VaultDashboardClient.tsx';
 
@@ -113,7 +114,7 @@ afterAll(() => {
     expect(props.derefs.hiddenBatched).toBe(BATCHED_DEREFS);
   } finally {
     dropMemoisedDb();
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 });
 

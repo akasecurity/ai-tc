@@ -34,6 +34,26 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //                         written for the project, null when nothing was recorded)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
+//
+// Exit codes: 0 or 1, and 1 is OVERLOADED — by FOUR paths, not three.
+// `--fail-on` raises it for findings at or above the threshold; three error
+// paths below raise the same 1 by returning early (an unknown --format, an
+// unknown --fail-on, and a target that does not exist); and a fourth never
+// reaches this function's own error handling at all — `parseArgs` THROWS on an
+// unknown option name (`--frmat`) or an option given no value (`--format` at
+// the end of argv), and that propagates out of runScan to cli.ts's
+// `main().catch`, which also sets 1.
+//
+// A CI gate reading only the exit status therefore cannot tell a real detection
+// from a mistyped flag or a wrong path; a scanner that reserved a distinct code
+// (2 is the usual choice) for usage errors could. Nor is the stream a complete
+// discriminator, though it separates the first four cases: an early-return
+// error writes a message to stderr and nothing to stdout, and a --fail-on trip
+// writes its report to stdout and nothing to stderr — but the parseArgs throw
+// writes to NEITHER from here, surfacing as whatever cli.ts prints for an
+// unhandled rejection. Changing any of this changes the contract for anything
+// already gating on it, so it is pinned as-is in
+// cli/test/commands/scan.test.ts and tracked separately.
 
 // Severity.options is ordered most→least severe; lower index = more severe.
 function severityRank(s: Severity): number {

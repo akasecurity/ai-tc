@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-codex",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "AI Traffic Control \u2014 inspect and govern AI prompts in Codex CLI",
   "license": "Apache-2.0",
   "type": "module",
@@ -37,6 +37,7 @@
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/setup-wizard": "workspace:*",
     "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",

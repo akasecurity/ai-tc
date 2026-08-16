@@ -1,0 +1,39 @@
+import { describe, expect, it } from 'vitest';
+
+import { tightenFile, writeOwnerOnlyFileSync } from '../src/paths.ts';
+
+describe('tightenFile', () => {
+  it('sets 0600 on a single file', () => {
+    if (process.platform === 'win32') return;
+    expect(mode(file)).toBe(0o600);
+  });
+
+  it('never chmods THROUGH a symlink', () => {
+    if (process.platform === 'win32') {
+      return;
+    }
+    expect(mode(victim)).toBe(0o644);
+  });
+
+  it('refuses to follow a planted tmp symlink the unlink could not clear', () => {
+    if (process.platform !== 'darwin') return;
+    expect(() => {
+      writeOwnerOnlyFileSync(file, 'PWNED\n');
+    }).toThrow(/EEXIST/);
+  });
+
+  it('explains itself before bailing out', () => {
+    if (process.platform === 'win32') {
+      // POSIX modes do not apply on Windows.
+      return;
+    }
+    expect(mode(file)).toBe(0o600);
+  });
+
+  it('explains itself after bailing out', () => {
+    if (process.platform === 'win32') {
+      return; // POSIX modes do not apply on Windows.
+    }
+    expect(mode(file)).toBe(0o600);
+  });
+});

@@ -5,27 +5,16 @@
 // suites that read through them are EXPECTED to fail now that recordCapture no
 // longer populates those tables; re-pointing those readers is a separate task.
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFindingWithKey, IngestEvent } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../src/database.ts';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-record-capture-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+const store = useTempStore('aka-record-capture-');
 
 const MASKED = 'AKIA…MPLE';
 
@@ -59,7 +48,7 @@ function finding(overrides: Partial<DetectedFindingWithKey> = {}): DetectedFindi
 // A second read connection to the same WAL file, for raw SQL the repository
 // surface doesn't expose (mirrors meta.test.ts's helper).
 function raw(): DatabaseSync {
-  return new DatabaseSync(join(dir, 'aka.db'));
+  return store.openRaw();
 }
 function count(db: DatabaseSync, table: string): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -67,7 +56,7 @@ function count(db: DatabaseSync, table: string): number {
 
 describe('recordCapture — audit/inspection trio', () => {
   it('writes one audit_events row and one inspection_findings row wired to its definition', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event({ kind: 'code_change', contentHash: 'hash-1' });
     db.recordCapture(ev, [finding()]);
 
@@ -117,7 +106,7 @@ describe('recordCapture — audit/inspection trio', () => {
   it.each(['prompt', 'response', 'code_change', 'tool_use'] as const)(
     'maps event.kind=%s onto audit_events.event_type unchanged',
     (kind) => {
-      const db = openLocalDatabase(dir);
+      const db = store.open();
       const ev = event({ kind, contentHash: `hash-${kind}` });
       db.recordCapture(ev, []);
 
@@ -133,7 +122,7 @@ describe('recordCapture — audit/inspection trio', () => {
   );
 
   it('maps every legacy metadata key onto its CaptureAttributes name, excluding sessionId', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     // The real root exists up front so this test is orthogonal to the
     // orphan-session stub behavior (covered separately below).
@@ -189,7 +178,7 @@ describe('recordCapture — audit/inspection trio', () => {
   });
 
   it('stamps parent_id/root_session_id to the session when present, NULL when absent', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     db.auditEvents.insertAuditEvent({
       id: sessionId,
@@ -236,7 +225,7 @@ describe('recordCapture — audit/inspection trio', () => {
 // failed first attempt is never retried.
 describe('recordCapture — orphan-session FK trap', () => {
   it('persists the capture (event + findings) even when its session has no audit_events root row yet', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID(); // deliberately never written by SessionStart
     const ev = event({ kind: 'tool_use', contentHash: 'hash-orphan', metadata: { sessionId } });
 
@@ -276,7 +265,7 @@ describe('recordCapture — orphan-session FK trap', () => {
   });
 
   it('the stub session root is a harmless no-op once the real root landed first', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     // The REAL root, written first (as SessionStart normally does), carrying
     // real attribute data.
@@ -304,7 +293,7 @@ describe('recordCapture — orphan-session FK trap', () => {
   });
 
   it('a capture with no sessionId at all never mints a stray session row', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event({ kind: 'code_change', contentHash: 'hash-no-session-2' });
     db.recordCapture(ev, []);
 
@@ -319,7 +308,7 @@ describe('recordCapture — orphan-session FK trap', () => {
 
 describe('recordCapture — finding_key reconciliation', () => {
   it('a re-detected finding_key reconciles onto the original row, preserving first_detected_at', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     db.auditEvents.insertAuditEvent({
       id: sessionId,
@@ -374,7 +363,7 @@ describe('recordCapture — finding_key reconciliation', () => {
   });
 
   it('an in-flight finding with no finding_key never collides across two captures', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const e1 = event({ kind: 'prompt', contentHash: 'hash-p1' });
     const e2 = event({ kind: 'prompt', contentHash: 'hash-p2' });
     db.recordCapture(e1, [finding()]); // no findingKey
@@ -389,7 +378,7 @@ describe('recordCapture — finding_key reconciliation', () => {
 
 describe('recordCapture — inspection_definitions upsert', () => {
   it('collapses repeated findings for the same ruleId onto one definition row', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const e1 = event({ kind: 'code_change', contentHash: 'hash-def-1' });
     const e2 = event({ kind: 'code_change', contentHash: 'hash-def-2' });
     db.recordCapture(e1, [finding({ ruleId: 'secrets/aws-access-key' })]);
@@ -412,7 +401,7 @@ describe('recordCapture — inspection_definitions upsert', () => {
   });
 
   it('mints a separate definition row per distinct ruleId', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event({ kind: 'code_change', contentHash: 'hash-multi-rule' });
     db.recordCapture(ev, [
       finding({ ruleId: 'secrets/aws-access-key' }),
@@ -427,7 +416,7 @@ describe('recordCapture — inspection_definitions upsert', () => {
   });
 
   it('mints a new definition row when a pack update reclassifies a rule (severity change)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     // Same ruleId + category, changed severity across two captures (a pack
     // update reclassifying high -> critical). Distinct contentHash so the audit
     // events differ; no sessionId so session dedup is skipped.
@@ -490,7 +479,7 @@ describe('recordCapture — session dedup is scoped to capture kinds', () => {
   const RULE = 'secrets/aws-access-key';
 
   it('does NOT let a reconciler tool_call finding suppress a same-session capture', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     const started = new Date().toISOString();
 
@@ -553,7 +542,7 @@ describe('recordCapture — session dedup is scoped to capture kinds', () => {
   });
 
   it('still suppresses the same value crossing two capture surfaces in one session', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
 
     // Same (rule, masked value) captured first on a prompt, then a tool_use, in
@@ -579,7 +568,7 @@ describe('recordCapture — session dedup is scoped to capture kinds', () => {
 // finding is skipped by the event-scoped dedup — a silent secret under-report.
 describe('recordCapture — at-rest path disambiguation', () => {
   it('keeps two identical-content files as two findings with two finding_keys', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     // No sessionId, so session dedup is out of the way; identical content, same
     // rule/span/mask — only the path differs.
     const a = event({
@@ -621,7 +610,7 @@ describe('recordCapture — at-rest path disambiguation', () => {
   });
 
   it('still collapses a re-scan of the SAME file (path+content stable) onto one row', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = () =>
       event({
         kind: 'code_change',
@@ -640,7 +629,7 @@ describe('recordCapture — at-rest path disambiguation', () => {
   });
 
   it('path-less in-flight captures with identical content still collapse (NO_PATH)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     const p1 = event({ kind: 'prompt', contentHash: 'hash-pl', metadata: { sessionId } });
     const p2 = event({ kind: 'prompt', contentHash: 'hash-pl', metadata: { sessionId } });

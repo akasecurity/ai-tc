@@ -1,23 +1,12 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { InstalledPackInput, Rule } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import { REJECTED_RULE_DETAIL_CAP } from '../../src/repositories/installed-packs.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-packs-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+const store = useTempStore('aka-packs-');
 
 function rule(id: string): Rule {
   return {
@@ -36,7 +25,7 @@ function pack(packId: string, version: string, ruleIds: string[]): InstalledPack
 
 describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', () => {
   it('records the inventory and rolls up detections / rules / active counts', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
@@ -46,7 +35,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('NEVER auto-updates an installed pack — a newer inventory only refreshes the available mirror', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     // A binary upgrade re-records with a newer version + more rules…
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
@@ -56,7 +45,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     expect(counts.packs).toBe(1);
     expect(counts.rules).toBe(1); // still the v2.0.0 single-rule snapshot
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const installed = raw
       .prepare(`SELECT version FROM installed_packs WHERE pack_id = 'secrets'`)
       .get() as { version: string };
@@ -70,7 +59,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('auto-installs a pack the user does not have yet (insert-only)', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     // A later release ships a brand-new pack alongside the existing one.
     db.installedPacks.recordInventory([
@@ -84,7 +73,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('applyUpdate copies the available snapshot onto the installed pack, preserving user state', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.installedPacks.setEnabled('aka', 'secrets', false);
     db.installedPacks.setPolicy('aka', 'secrets', 'redact');
@@ -93,7 +82,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
 
     expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const row = raw
       .prepare(
         `SELECT version, enabled, policy_id AS policyId, json_array_length(rules_json) AS rules
@@ -109,12 +98,12 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('applyUpdate returns false for an unknown pack or one with no available counterpart', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     expect(db.installedPacks.applyUpdate('aka', 'nope')).toBe(false);
 
     // A foreign installed row with no available mirror row: not updatable.
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(
         `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
@@ -127,14 +116,14 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('prunes available rows for packs the binary no longer ships', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws']),
       pack('legacy', '1.0.0', ['legacy/a']),
     ]);
     db.installedPacks.recordInventory([pack('secrets', '2.1.0', ['secrets/aws'])]);
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const rows = raw.prepare(`SELECT pack_id AS packId FROM available_packs`).all() as {
       packId: string;
     }[];
@@ -144,49 +133,49 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('persists the inventory across reopen', async () => {
-    const a = openLocalDatabase(dir);
+    const a = store.open();
     a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
-    const b = openLocalDatabase(dir);
+    const b = store.open();
     expect((await b.installedPacks.counts()).packs).toBe(1);
     b.close();
   });
 
   it('leaves updated_at untouched when re-recording an unchanged inventory (no churn)', () => {
-    const a = openLocalDatabase(dir);
+    const a = store.open();
     a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
     // Stamp a sentinel updated_at; an unchanged re-record must NOT overwrite it
     // (the record runs on every gateway open, so a no-op here is what prevents
     // write amplification on the hook path).
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw.exec('UPDATE installed_packs SET updated_at = 0');
     raw.close();
 
-    const b = openLocalDatabase(dir);
+    const b = store.open();
     b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]); // identical
     b.close();
 
-    const check = new DatabaseSync(join(dir, DB_FILENAME));
+    const check = store.openRaw();
     const row = check.prepare('SELECT updated_at AS t FROM installed_packs').get() as { t: number };
     check.close();
     expect(row.t).toBe(0); // guard held — no rewrite
   });
 
   it('surfaces a rules-only change (same version) as available without touching the install', () => {
-    const a = openLocalDatabase(dir);
+    const a = store.open();
     a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
 
     // Same version, but the rule set grew (coverage added without a version
     // bump). The signature hashes rule content, so the mirror refreshes — but
     // the installed snapshot must stay at one rule until a manual update.
-    const b = openLocalDatabase(dir);
+    const b = store.open();
     b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh'])]);
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const installedRules = raw
       .prepare(`SELECT json_array_length(rules_json) AS n FROM installed_packs`)
       .get() as { n: number };
@@ -198,7 +187,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
     expect(availableRules.n).toBe(2);
 
     expect(b.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
-    const after = new DatabaseSync(join(dir, DB_FILENAME));
+    const after = store.openRaw();
     const n = (
       after.prepare(`SELECT json_array_length(rules_json) AS n FROM installed_packs`).get() as {
         n: number;
@@ -210,13 +199,13 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
   });
 
   it('preserves a user-disabled detection across re-records and updates', async () => {
-    const a = openLocalDatabase(dir);
+    const a = store.open();
     a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.installedPacks.setEnabled('aka', 'secrets', false);
     a.close();
 
     // A later session re-records the (now newer) inventory.
-    const b = openLocalDatabase(dir);
+    const b = store.open();
     b.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     const counts = await b.installedPacks.counts();
     expect(counts.enabled).toBe(0); // stays disabled
@@ -227,7 +216,7 @@ describe('SqliteInstalledPacksRepository (via LocalDatabase.installedPacks)', ()
 
 describe('installedRuleset (scan-time snapshot)', () => {
   it('returns only rules from ENABLED packs, with the ladder counts', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
@@ -243,7 +232,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('maps each rule to its pack policy (unassigned ⇒ monitor/log, assigned ⇒ its action)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
@@ -261,7 +250,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('maps each rule to its installed pack version', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.3.1', ['secrets/aws', 'secrets/gh']),
       pack('core-pii', '1.0.0', ['core-pii/email']),
@@ -278,8 +267,8 @@ describe('installedRuleset (scan-time snapshot)', () => {
     // The display-tolerant parseRules silently returns [] for these — at scan
     // time that would masquerade as "no rules" and let the ladder authorize an
     // empty ruleset. installedRuleset must surface them as invalid instead.
-    const db = openLocalDatabase(dir);
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const db = store.open();
+    const raw = store.openRaw();
     const insert = raw.prepare(
       `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
        VALUES (?, 'aka', ?, '1.0.0', ?, ?, 1, 0, 0)`,
@@ -295,9 +284,165 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  it('counts a stored rule carrying an unrecognized key as invalid', () => {
+    // `Rule` is strict, so a key that an older binary would have stripped now
+    // fails the parse on READ. This is the largest blast radius the strictness
+    // has: `invalidRules > 0` makes the standalone gateway discard the WHOLE
+    // snapshot and fall back to the bundled packs, which do NOT contain a
+    // user's custom rules. Pinned here so that cost is a deliberate choice
+    // rather than something a future schema tweak changes by accident.
+    const db = store.open();
+    const raw = store.openRaw();
+    const stored = [rule('custom/a'), { ...rule('custom/b'), postValidator: ['luhn'] }];
+    raw
+      .prepare(
+        `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+         VALUES (?, 'custom', ?, '1.0.0', ?, ?, 1, 0, 0)`,
+      )
+      .run('c1', 'mine', 'Mine', JSON.stringify(stored));
+    raw.close();
+
+    const snapshot = db.installedPacks.installedRuleset();
+    // The good rule still parses — only the typo'd one is rejected, so the
+    // count is per-RULE here, unlike the JSON-level corruption above.
+    expect(snapshot.rules.map((r) => r.id)).toEqual(['custom/a']);
+    expect(snapshot.invalidRules).toBe(1);
+    db.close();
+  });
+
+  // Rejecting ONE rule costs the caller its whole snapshot, so the count alone
+  // leaves a user with no custom rules, no per-detection enforcement action,
+  // and nothing naming the entry responsible. These pin what is reported and,
+  // just as importantly, what is not.
+  describe('rejectedRules', () => {
+    // A rejected entry never passed validation, so any of its own bytes may be
+    // a live credential. High-entropy but deliberately matching no rule.
+    const PLANTED = 'zQf7Kp2Wx9Lm4Nv8Rt6Yh3Bd5Gj1Sc0Ae';
+
+    function seedRejections(entries: unknown[], packRules = 'mine'): DatabaseSync {
+      const raw = store.openRaw();
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES (?, 'custom', ?, '1.0.0', ?, ?, 1, 0, 0)`,
+        )
+        .run('c1', packRules, 'Mine', JSON.stringify(entries));
+      return raw;
+    }
+
+    it('names the pack, the rule and the schema key for each kind of rejection', () => {
+      const db = store.open();
+      const raw = seedRejections([
+        rule('custom/a'), // valid — must not appear
+        { ...rule('custom/b'), postValidator: ['luhn'] }, // unknown key
+        { ...rule('custom/c'), postValidators: ['nope'] }, // unimplemented validator
+      ]);
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES ('c2', 'custom', 'broken', '1.0.0', 'Broken', '[{"id":', 1, 0, 0)`,
+        )
+        .run();
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.rejectedRules).toEqual([
+        { pack: 'custom/mine', ruleId: 'custom/b', reason: 'unrecognized_keys' },
+        { pack: 'custom/mine', ruleId: 'custom/c', reason: 'postValidators.0: invalid_union' },
+        { pack: 'custom/broken', ruleId: null, reason: 'rules_json: malformed JSON' },
+      ]);
+      db.close();
+    });
+
+    it('reports a non-array rules_json against its own pack', () => {
+      const db = store.open();
+      const raw = store.openRaw();
+      raw
+        .prepare(
+          `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
+           VALUES ('o1', 'custom', 'object', '1.0.0', 'Object', '{}', 1, 0, 0)`,
+        )
+        .run();
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.rejectedRules).toEqual([
+        { pack: 'custom/object', ruleId: null, reason: 'rules_json: not an array' },
+      ]);
+      db.close();
+    });
+
+    it('never carries a rejected entry’s own bytes — not even its id', () => {
+      const db = store.open();
+      // The id is itself invalid, so echoing it would echo unvalidated input;
+      // the secret rides a field the parse never reached.
+      const raw = seedRejections([
+        { ...rule('custom/x'), id: `not a valid id ${PLANTED}`, examples: [PLANTED] },
+      ]);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      const [detail] = snapshot.rejectedRules;
+      expect(detail).toBeDefined();
+
+      // Positive control first: without it every absence check below is
+      // satisfied by an empty list.
+      expect(snapshot.invalidRules).toBe(1);
+      expect(detail?.reason).toBe('id: invalid_format');
+      expect(detail?.pack).toBe('custom/mine');
+
+      // An id is echoed ONLY when it satisfies the schema's own pattern, so an
+      // invalid one drops to null rather than being quoted back.
+      expect(detail?.ruleId).toBeNull();
+
+      // An allowlist, not just an absence check: it holds for every secret
+      // shape rather than the one planted here. `reason` is a dotted schema
+      // path plus a Zod code, and neither alphabet can carry a credential.
+      expect(detail?.reason).toMatch(/^[A-Za-z0-9_.]+(: [A-Za-z_ ]+)?$/);
+      expect(JSON.stringify(snapshot.rejectedRules)).not.toContain(PLANTED);
+      db.close();
+    });
+
+    it('never carries the offending KEY either, which is the message that would leak', () => {
+      // Most Zod messages describe the expectation ("expected one of ..."), but
+      // the commonest rejection here is the opposite: an unrecognized key
+      // reports `Unrecognized key: "<the key>"`. That is the realistic leak — a
+      // rule whose key, not value, carries the secret — so it is pinned apart
+      // from the value case above.
+      const db = store.open();
+      const raw = seedRejections([{ ...rule('custom/k'), [PLANTED]: true }]);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      const [detail] = snapshot.rejectedRules;
+      expect(detail).toEqual({
+        pack: 'custom/mine',
+        ruleId: 'custom/k',
+        reason: 'unrecognized_keys',
+      });
+      expect(JSON.stringify(snapshot.rejectedRules)).not.toContain(PLANTED);
+      db.close();
+    });
+
+    it('caps the detail list while invalidRules stays exact', () => {
+      const db = store.open();
+      const tooMany = Array.from({ length: REJECTED_RULE_DETAIL_CAP + 5 }, (_, i) => ({
+        ...rule(`custom/r${String(i)}`),
+        postValidator: ['luhn'],
+      }));
+      const raw = seedRejections(tooMany);
+      raw.close();
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.invalidRules).toBe(REJECTED_RULE_DETAIL_CAP + 5); // exact
+      expect(snapshot.rejectedRules).toHaveLength(REJECTED_RULE_DETAIL_CAP); // sampled
+      db.close();
+    });
+  });
+
   // Read the current available_packs mirror row for `secrets`.
   function mirrorSecrets(): { version: string; n: number } {
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const row = raw
       .prepare(
         `SELECT version, json_array_length(rules_json) AS n FROM available_packs WHERE pack_id = 'secrets'`,
@@ -308,7 +453,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   }
 
   it('never rewrites the mirror to an OLDER pack version (downgrade guard)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     // A newer binary records v2.5.0 with two rules…
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     // …then an OLDER binary (version skew: plugin vs CLI) records v2.0.0.
@@ -321,7 +466,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('at an EQUAL version, refuses a content regression but accepts a superset', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     // Mirror is 2.0.0 = [aws, gh, slack] (a newer binary shipped more rules at
     // the same manifest version — coverage growth).
     db.installedPacks.recordInventory([
@@ -342,7 +487,7 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('fails CLOSED on an unparsable INCOMING version (refuses the rewrite)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     // A malformed version ('v2.6.0') must not be trusted to overwrite the mirror
     // in either direction — the guard distrusts exactly the input it exists to catch.
@@ -352,10 +497,10 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('lets a VALID incoming version heal an unparsable stored mirror row', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     // Corrupt the stored version directly.
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw.exec(`UPDATE available_packs SET version = 'garbage' WHERE pack_id = 'secrets'`);
     raw.close();
     // A well-formed incoming record replaces the bad row (stored-unparsable path).
@@ -365,9 +510,9 @@ describe('installedRuleset (scan-time snapshot)', () => {
   });
 
   it('counts invalid rules instead of throwing on a corrupt row', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(
         `INSERT INTO installed_packs (id, namespace, pack_id, version, name, rules_json, enabled, created_at, updated_at)
@@ -396,45 +541,44 @@ describe('installedRuleset (scan-time snapshot)', () => {
 // here; the frozen legacy-SQL replays live in legacy-writers.test.ts (the
 // prevention-P1 class suite — extend it for any write-semantics change).
 
-function installedRow(storeDir: string, packId: string): { version: string; rules: number } {
-  const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
-  const row = raw
+// Read through the harness's own raw handle: the close it used to do by hand
+// sat after the `.get()`, so a row shape that failed to match left the handle
+// open and the temp tree undeletable on Windows.
+function installedRow(packId: string): { version: string; rules: number } {
+  return store
+    .openRaw()
     .prepare(
       `SELECT version, json_array_length(rules_json) AS rules FROM installed_packs WHERE pack_id = ?`,
     )
     .get(packId) as { version: string; rules: number };
-  raw.close();
-  return row;
 }
 
-function gateState(storeDir: string): number {
-  const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
-  const row = raw.prepare(`SELECT open FROM _pack_write_gate WHERE id = 1`).get() as {
+function gateState(): number {
+  const row = store.openRaw().prepare(`SELECT open FROM _pack_write_gate WHERE id = 1`).get() as {
     open: number;
   };
-  raw.close();
   return row.open;
 }
 
 describe('installed_packs write gate (migration 0006)', () => {
   it('applyUpdate works end-to-end post-migration and leaves the gate closed', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
     expect(db.installedPacks.applyUpdate('aka', 'secrets')).toBe(true);
     db.close();
-    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.5.0', rules: 2 });
-    expect(gateState(dir)).toBe(0);
+    expect(installedRow('secrets')).toEqual({ version: '2.5.0', rules: 2 });
+    expect(gateState()).toBe(0);
   });
 
   it('resets the gate when applyUpdate fails mid-transaction (rollback reverts the open)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     db.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])]);
 
     // Sabotage: a second trigger that aborts the UPDATE only while the gate is
     // open — i.e. exactly when applyUpdate's inner write runs.
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw.exec(
       `CREATE TRIGGER test_sabotage BEFORE UPDATE OF version ON installed_packs
        WHEN (SELECT open FROM _pack_write_gate WHERE id = 1) = 1
@@ -444,18 +588,18 @@ describe('installed_packs write gate (migration 0006)', () => {
     try {
       expect(() => db.installedPacks.applyUpdate('aka', 'secrets')).toThrow(/sabotage/);
     } finally {
-      const cleanup = new DatabaseSync(join(dir, DB_FILENAME));
+      const cleanup = store.openRaw();
       cleanup.exec('DROP TRIGGER test_sabotage');
       cleanup.close();
       db.close();
     }
     // ROLLBACK reverted both the row write AND the gate open — no dangling gate.
-    expect(gateState(dir)).toBe(0);
-    expect(installedRow(dir, 'secrets')).toEqual({ version: '2.0.0', rules: 1 });
+    expect(gateState()).toBe(0);
+    expect(installedRow('secrets')).toEqual({ version: '2.0.0', rules: 1 });
   });
 
   it('setEnabled / setPolicy are untouched by the column-scoped trigger', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
 
     expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
@@ -463,7 +607,7 @@ describe('installed_packs write gate (migration 0006)', () => {
     expect(db.installedPacks.setPolicy('aka', 'secrets', 'redact')).toBe(true);
     db.close();
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     const row = raw
       .prepare(`SELECT enabled, policy_id AS policyId FROM installed_packs WHERE pack_id = ?`)
       .get('secrets') as { enabled: number; policyId: string };
@@ -473,53 +617,52 @@ describe('installed_packs write gate (migration 0006)', () => {
 });
 
 describe('recordInventory recorded_by stamp', () => {
-  function recordedBy(storeDir: string, packId: string): string | null {
-    const raw = new DatabaseSync(join(storeDir, DB_FILENAME));
-    const row = raw
+  function recordedBy(packId: string): string | null {
+    const row = store
+      .openRaw()
       .prepare(`SELECT recorded_by AS recordedBy FROM available_packs WHERE pack_id = ?`)
       .get(packId) as { recordedBy: string | null };
-    raw.close();
     return row.recordedBy;
   }
 
   it('stamps the recording binary on mirror rows it changes', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
       recordedBy: 'plugin@0.0.2-alpha.8',
     });
     db.close();
-    expect(recordedBy(dir, 'secrets')).toBe('plugin@0.0.2-alpha.8');
+    expect(recordedBy('secrets')).toBe('plugin@0.0.2-alpha.8');
   });
 
   it('leaves recorded_by null for versionless writers, and unchanged on identical re-records', () => {
-    const a = openLocalDatabase(dir);
+    const a = store.open();
     a.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     a.close();
-    expect(recordedBy(dir, 'secrets')).toBeNull();
+    expect(recordedBy('secrets')).toBeNull();
 
     // Identical content from a versioned binary: the signature gate (and the
     // change-detection WHERE, which excludes recorded_by) keep it a no-op —
     // recorded_by names who last CHANGED the mirror, not who last looked.
-    const b = openLocalDatabase(dir);
+    const b = store.open();
     b.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])], {
       recordedBy: 'aka-cli@0.0.2-alpha.8',
     });
     b.close();
-    expect(recordedBy(dir, 'secrets')).toBeNull();
+    expect(recordedBy('secrets')).toBeNull();
 
     // Changed content DOES take the new stamp.
-    const c = openLocalDatabase(dir);
+    const c = store.open();
     c.installedPacks.recordInventory([pack('secrets', '2.5.0', ['secrets/aws', 'secrets/gh'])], {
       recordedBy: 'aka-cli@0.0.2-alpha.8',
     });
     c.close();
-    expect(recordedBy(dir, 'secrets')).toBe('aka-cli@0.0.2-alpha.8');
+    expect(recordedBy('secrets')).toBe('aka-cli@0.0.2-alpha.8');
   });
 });
 
 describe('newestRecordedBinary', () => {
   function stampRecordedBy(packId: string, recordedBy: string | null): void {
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     raw
       .prepare(`UPDATE available_packs SET recorded_by = ? WHERE pack_id = ?`)
       .run(recordedBy, packId);
@@ -527,7 +670,7 @@ describe('newestRecordedBinary', () => {
   }
 
   it('returns the newest recorded binary across mirror rows, skipping nulls and garbage', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
@@ -545,7 +688,7 @@ describe('newestRecordedBinary', () => {
   });
 
   it('returns null on a pre-hardening store (no recorded_by anywhere)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     expect(db.installedPacks.newestRecordedBinary()).toBeNull();
     db.close();
@@ -556,7 +699,7 @@ describe('newestRecordedBinary', () => {
     // It compares *equal* to everything, so if it were kept as the running max a
     // genuinely-newer parseable stamp (which is not `> 0` against it) could never
     // displace it. It must be skipped outright, whatever the row order.
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([
       pack('secrets', '2.0.0', ['secrets/aws']),
       pack('core-pii', '2.0.0', ['core-pii/email']),
@@ -572,7 +715,7 @@ describe('newestRecordedBinary', () => {
   });
 
   it('returns null when every stamp has an unparseable version (never surfaces garbage)', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
     stampRecordedBy('secrets', 'aka-cli@garbage');
     expect(db.installedPacks.newestRecordedBinary()).toBeNull();

@@ -26,6 +26,7 @@ import {
   snapshotStore,
 } from '../../src/internal/snapshot.ts';
 import { corruptStore, primaryCode, SQLITE_CORRUPT } from '../helpers/fault-injection.ts';
+import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
 let dir: string;
 
@@ -52,6 +53,20 @@ function openStore(file: string, rows = 1): DatabaseSync {
     insert.run(`prompt-${String(i)}`);
   }
   db.exec('COMMIT');
+  // The handle is handed back still open, so a transaction left open here would
+  // travel with it: every snapshot taken below would be of a store whose rows
+  // are not committed, and an empty copy passes a "the backup exists" assertion
+  // exactly as a full one does.
+  //
+  // Closed before the throw escapes, because the caller never receives the handle
+  // on that path and this suite removes its own tree — a handle nobody can close
+  // makes the rm fail on Windows and reports THAT instead of the defect here.
+  try {
+    assertNoOpenTransaction(db);
+  } catch (err) {
+    db.close();
+    throw err;
+  }
   return db;
 }
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { handleCapture } from '../src/handle-capture.ts';
 
 // In standalone mode the effective ruleset is the store's INSTALLED snapshot
@@ -23,7 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+  removeTree(dir);
 });
 
 function config(dataDir: string): PluginConfig {

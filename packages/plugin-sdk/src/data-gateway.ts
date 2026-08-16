@@ -12,9 +12,11 @@ import type {
   InventoryFacets,
   LlmCallInput,
   PolicyBundle,
+  ProjectFilesScan,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
+  SimpleDetectionPolicy,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -185,4 +187,52 @@ export interface DataGateway {
   // resolutions ledger is local, like the scan ledger it derives from.
   insertResolution(input: ResolutionInput): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * Maintenance a gateway can offer when it owns a local store of its own.
+ *
+ * Deliberately NOT part of `DataGateway`: these are retention passes and
+ * read-model repairs, not data recording, and they only mean something to an
+ * implementation with a store to maintain. A gateway that has none simply does
+ * not provide them, and callers skip the work.
+ *
+ * Two members are synchronous — they complete inside a single store
+ * transaction and have nothing to await.
+ */
+export interface LocalStoreMaintenance {
+  /** Purge terminal exception rows past retention. Returns the row count. */
+  sweepTerminalExceptions(retentionMs: number): Promise<number>;
+  /** One-shot cap of block/redact enforcement rows to warn. */
+  capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number };
+  /** Commit one project-file scan into the local file tree. */
+  recordProjectFiles(projectId: string, scan: ProjectFilesScan): Promise<void>;
+  /** Fold checkout-path project rows into the repo's canonical row. */
+  reconcileWorktreeProjects(
+    canonicalId: string,
+    headRoot: string,
+    worktreeRoot: string,
+  ): Promise<void>;
+  /** The stale-session notice, or null when this session is current. */
+  staleBinaryNotice(currentVersion: string): string | null;
+}
+
+/**
+ * Whether a gateway offers local-store maintenance.
+ *
+ * Structural rather than an `instanceof` check: any implementation providing
+ * all five members qualifies, including a wrapper that forwards them to an
+ * inner gateway. Callers gate the optional maintenance work on this.
+ */
+export function hasLocalStoreMaintenance(
+  gateway: DataGateway,
+): gateway is DataGateway & LocalStoreMaintenance {
+  const candidate = gateway as Partial<LocalStoreMaintenance>;
+  return (
+    typeof candidate.sweepTerminalExceptions === 'function' &&
+    typeof candidate.capWarnEraEnforcement === 'function' &&
+    typeof candidate.recordProjectFiles === 'function' &&
+    typeof candidate.reconcileWorktreeProjects === 'function' &&
+    typeof candidate.staleBinaryNotice === 'function'
+  );
 }

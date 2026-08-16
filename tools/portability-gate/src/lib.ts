@@ -91,10 +91,15 @@ export const RULES: Record<RuleId, RuleInfo> = {
 };
 
 // Files that already carried rule 6's shape when it was written, with the exact
-// number of guards each may keep. CLAUDE.md's "older suites" note grandfathers
-// these — converting a neighbour in passing is explicitly not wanted — so the
-// rule exempts them rather than reporting a backlog nobody is going to clear in
-// one go.
+// number of guards each may keep. It held three suites when the rule landed, all
+// six of their guards have since been converted, and it is now EMPTY — so rule 6
+// reports every guard in every spec file, with nothing exempt.
+//
+// The mechanism stays because the map is the only way to add a rule of this kind
+// to a tree that already carries its shape: a backlog nobody can clear in one go
+// is exempted here rather than turned into a wall of violations that gets
+// switched off instead. Filling it again is a deliberate edit, and the ratchet
+// below is what makes it a shrinking one.
 //
 // An allowance is an exact COUNT, pinned in both directions: exceeding it is a
 // violation, and falling below it is one too (`platform-guard-stale-allowance`),
@@ -107,18 +112,15 @@ export const RULES: Record<RuleId, RuleInfo> = {
 // paired with a conversion. Closing that needs guard identity — either a line
 // number, which shifts on any unrelated edit, or the enclosing test name — so
 // the count stands and the limit is written down instead. The exposure is the
-// map: a file with no allowance reports every guard in it.
+// map: a file with no allowance reports every guard in it, which is now every
+// file.
 //
 // An allowance is keyed by PATH, so a rename leaves it behind: the entry then
 // covers nothing and the file arrives with an allowance of zero, which reports
 // every guard in it. That is loud and correct. A DELETED file's entry is the one
 // case nothing reports — it is dead weight rather than a hole, since it can only
 // ever exempt a path the scan never sees.
-export const GRANDFATHERED_PLATFORM_GUARDS: Readonly<Record<string, number>> = {
-  'packages/persistence/test/fingerprint.test.ts': 1,
-  'packages/persistence/test/settings.test.ts': 2,
-  'packages/plugin-sdk/test/config.test.ts': 3,
-};
+export const GRANDFATHERED_PLATFORM_GUARDS: Readonly<Record<string, number>> = {};
 
 export interface Violation {
   rule: RuleId;
@@ -663,8 +665,19 @@ export interface ScanOptions {
 // are needed to resolve rule 4's package-level override and are silently
 // skipped by the SPEC_FILE_RE filter below, so passing every tracked file is
 // fine and expected.
+// Which allowance map a scan runs under: the caller's, else the shipped one.
+// Split out so that binding is assertable by IDENTITY. It cannot be observed
+// through scanTree's output while the shipped map is empty — an empty map and a
+// missing default produce byte-identical violations — so the only thing standing
+// behind `?? GRANDFATHERED_PLATFORM_GUARDS` would otherwise be that nobody
+// rewrote it. Re-adding an exemption to a map the scan never reads would exempt
+// nothing, and the entry would look like it had.
+export function resolveGrandfatheredGuards(options: ScanOptions): Readonly<Record<string, number>> {
+  return options.grandfatheredPlatformGuards ?? GRANDFATHERED_PLATFORM_GUARDS;
+}
+
 export function scanTree(files: ScannedFile[], options: ScanOptions = {}): Violation[] {
-  const grandfathered = options.grandfatheredPlatformGuards ?? GRANDFATHERED_PLATFORM_GUARDS;
+  const grandfathered = resolveGrandfatheredGuards(options);
   const packages = derivePackageTimeouts(files);
   const violations: Violation[] = [];
   for (const file of files) {

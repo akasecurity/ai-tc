@@ -8,6 +8,7 @@ import {
   formatReport,
   GRANDFATHERED_PLATFORM_GUARDS,
   isRelevantPath,
+  resolveGrandfatheredGuards,
   type ScannedFile,
   scanTree,
 } from '../src/lib.ts';
@@ -335,21 +336,34 @@ describe('platform-guard-early-return', () => {
     expect(violations[0]?.message).toContain('carries 1');
   });
 
-  // Everything above drives an injected map, so all of it would still pass with
-  // the shipped one unused. This is what pins that omitting the option reads the
-  // real GRANDFATHERED_PLATFORM_GUARDS, with the empty-map scan as its control.
-  it('reads the shipped allowance map when no override is passed', () => {
-    const entries = Object.entries(GRANDFATHERED_PLATFORM_GUARDS);
-    // Once this map empties the allowance branch is dead and this case should go
-    // with it — an empty map runs the loop zero times, so every assertion in it
-    // holds vacuously and only this line says so.
-    expect(entries.length).toBeGreaterThan(0);
+  // The shipped map is empty, so nothing distinguishes omitting the option from
+  // passing {} — both exempt nothing — and a case driving the default through it
+  // could only hold vacuously. What is left to pin is the emptiness itself: an
+  // entry here exempts a real guard in a real spec file, so re-adding one is a
+  // deliberate edit with a reason rather than a line that slips in beside a
+  // conversion. The arithmetic behind the allowance is covered by the injected-map
+  // cases above, which is why emptying this does not retire the mechanism.
+  it('ships an empty allowance map — no spec file is exempt from rule 6', () => {
+    // Object.keys rather than toEqual({}), which is satisfied by an entry whose
+    // value is undefined — the declared type is otherwise all that rules one out.
+    expect(Object.keys(GRANDFATHERED_PLATFORM_GUARDS)).toEqual([]);
+    // The control: with nothing exempt, a guard at any spec path is reported on
+    // the default map, which is the behaviour an entry would take away. It pins
+    // the RULE and not just the count — these bytes are also a same-line path
+    // comparison, so a count alone would survive rule 6 going silent while rule 4
+    // fired in its place.
+    const violations = scanTree([testFile(SPEC, guards(1))]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ rule: 'platform-guard-early-return', line: 1 });
+  });
 
-    for (const [path, allowance] of entries) {
-      const files = [testFile(path, guards(allowance))];
-      expect(scanTree(files), path).toEqual([]);
-      expect(scanTree(files, { grandfatheredPlatformGuards: {} }), path).toHaveLength(allowance);
-    }
+  // The default above is unobservable through scanTree's output while the map is
+  // empty, so the binding is pinned by identity instead: `{}` is not the shipped
+  // constant, and Object.is separates them where a value comparison could not.
+  it('defaults to the shipped allowance map, and prefers an explicit one', () => {
+    expect(resolveGrandfatheredGuards({})).toBe(GRANDFATHERED_PLATFORM_GUARDS);
+    const injected = { [SPEC]: 1 };
+    expect(resolveGrandfatheredGuards({ grandfatheredPlatformGuards: injected })).toBe(injected);
   });
 });
 

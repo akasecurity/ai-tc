@@ -96,14 +96,28 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function run(releasedAt: number, readies: number[]): ConcurrentRun {
+/**
+ * One writer's timings, as the two clocks see it.
+ *
+ * `observedAt` is the parent's — omitted for a writer it never saw park.
+ * `readyAt` is the child's own claim, which the barrier check must ignore; it
+ * defaults to the parent's reading so a case that says nothing about the child
+ * clock is not quietly asserting the two agree.
+ */
+interface WriterTiming {
+  observedAt?: number;
+  readyAt?: number;
+}
+
+function run(releasedAt: number, writers: WriterTiming[]): ConcurrentRun {
   return {
     releasedAt,
-    outcomes: readies.map((readyAt) => ({
+    readyObservedAt: writers.map((w) => w.observedAt),
+    outcomes: writers.map((w) => ({
       ok: true,
-      readyAt,
+      readyAt: w.readyAt ?? w.observedAt ?? 0,
       // Every writer starts after the release; that is true by construction and
-      // is precisely why the barrier check reads readyAt instead.
+      // is precisely why the barrier check does not read startedAt.
       startedAt: releasedAt + 1,
       endedAt: releasedAt + 11,
       barrierTimeoutMs: 60_000,
@@ -302,14 +316,37 @@ describe('a writer that is never released', () => {
 
 describe('allReleasedTogether', () => {
   it('is true when every writer was parked before the release', () => {
-    expect(allReleasedTogether(run(100, [20, 60, 100]))).toBe(true);
+    expect(
+      allReleasedTogether(run(100, [{ observedAt: 20 }, { observedAt: 60 }, { observedAt: 100 }])),
+    ).toBe(true);
   });
 
   it('is false when a writer was still loading at the release', () => {
     // The failure mode it exists to catch: a barrier that stopped holding, so
     // the writers ran as each finished booting, one after another — under which
-    // "no answer was lost" is trivially true.
-    expect(allReleasedTogether(run(100, [20, 140]))).toBe(false);
+    // "no answer was lost" is trivially true. The parent never saw that writer
+    // park, so its observation is the gap rather than a late number.
+    expect(allReleasedTogether(run(100, [{ observedAt: 20 }, {}]))).toBe(false);
+  });
+
+  it('is false when the parent released without watching every writer', () => {
+    // A handshake that waits for the first ready file and then releases leaves
+    // the rest unobserved. Reported per writer, that is a short set — which is
+    // why the check counts observations against outcomes rather than trusting
+    // the ones it got.
+    const partial = run(100, [{ observedAt: 20 }, { observedAt: 40 }]);
+    expect(allReleasedTogether({ ...partial, readyObservedAt: [20] })).toBe(false);
+  });
+
+  it('ignores a child clock that disagrees with the parent’s', () => {
+    // Two processes stamping Date.now() ask two independently-maintained
+    // clocks, and on Windows they routinely differ by a few milliseconds. A
+    // child that parked before the release can therefore REPORT a readyAt after
+    // it. Deciding the barrier on that comparison is what reddened main from a
+    // green tree; the parent's own observation is what settles it.
+    expect(
+      allReleasedTogether(run(100, [{ observedAt: 20, readyAt: 118 }, { observedAt: 60 }])),
+    ).toBe(true);
   });
 
   it('tolerates a writer scheduled late AFTER the release, which is not a defect', () => {
@@ -317,7 +354,7 @@ describe('allReleasedTogether', () => {
     // whole call on a loaded runner. Only readiness is the barrier's business,
     // so that must not read as a broken barrier — otherwise the suite fails on
     // machine load rather than on the product.
-    const late = run(100, [20, 60]);
+    const late = run(100, [{ observedAt: 20 }, { observedAt: 60 }]);
     const scheduledLate = late.outcomes.map((o, i) =>
       i === 1 ? { ...o, startedAt: 9_000, endedAt: 9_010 } : o,
     );

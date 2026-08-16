@@ -68,7 +68,14 @@ export interface WriterOutcome {
   ok: boolean;
   /** `Name: message` when it threw; absent when it returned. */
   error?: string;
-  /** When this writer finished loading and parked at the barrier. */
+  /**
+   * When this writer finished loading and parked at the barrier, on ITS clock.
+   *
+   * Diagnostic only — it says how long this writer took to boot, which is worth
+   * having when a run fails. It is not comparable with anything stamped by the
+   * parent; `ConcurrentRun.readyObservedAt` is the parent-clock counterpart the
+   * barrier check reads.
+   */
   readyAt: number;
   startedAt: number;
   endedAt: number;
@@ -87,6 +94,15 @@ export interface ConcurrentRun {
   outcomes: WriterOutcome[];
   /** The instant the parent released every parked writer. */
   releasedAt: number;
+  /**
+   * When THIS process first saw each writer's ready file, by writer index, and
+   * `undefined` for one it never saw park at all.
+   *
+   * Stamped here rather than taken from the writer's own `readyAt` because the
+   * barrier check compares these against `releasedAt`, and two stamps only
+   * order each other when one clock took them both. See allReleasedTogether.
+   */
+  readyObservedAt: (number | undefined)[];
 }
 
 interface Writer {
@@ -141,25 +157,47 @@ function spawnWriter(base: string, job: WriterJob, readyFile: string, goFile: st
   return { child, done };
 }
 
-// Poll until every writer has announced itself, or give up loudly.
+// Poll until every writer has announced itself, or give up loudly, and report
+// WHEN each one was seen — on this process's clock, which is also the clock that
+// stamps the release.
 //
 // A silent give-up would release the ones that are ready and leave the rest to
 // arrive afterwards — the serialised run this handshake exists to rule out. A
 // writer that DIED is the other way to wait forever, so an exited child ends the
 // wait at once rather than at the timeout: its readiness is never coming, and
-// the caller has a real failure to report.
-async function waitForAllReady(writers: Writer[], readyFiles: string[]): Promise<void> {
+// the caller has a real failure to report. It returns what it saw either way,
+// so a writer left unobserved is visible as a gap rather than inferred from a
+// timestamp that never arrived.
+async function waitForAllReady(
+  writers: Writer[],
+  readyFiles: string[],
+): Promise<(number | undefined)[]> {
   const deadline = Date.now() + READY_TIMEOUT_MS;
-  while (!readyFiles.every((f) => existsSync(f))) {
-    if (writers.some((w) => w.child.exitCode !== null || w.child.signalCode !== null)) return;
+  const observedAt: (number | undefined)[] = readyFiles.map(() => undefined);
+  const seen = (): boolean => observedAt.every((at) => at !== undefined);
+  // Stamped on the first pass that finds each file, not once at the end: a
+  // single stamp for the whole set would say when the LAST writer parked and
+  // claim it for every one of them.
+  const sweep = (): void => {
+    readyFiles.forEach((f, i) => {
+      if (observedAt[i] === undefined && existsSync(f)) observedAt[i] = Date.now();
+    });
+  };
+  sweep();
+  while (!seen()) {
+    if (writers.some((w) => w.child.exitCode !== null || w.child.signalCode !== null)) {
+      return observedAt;
+    }
     if (Date.now() >= deadline) {
-      const missing = readyFiles.filter((f) => !existsSync(f)).length;
+      const missing = observedAt.filter((at) => at === undefined).length;
       throw new Error(
         `${String(missing)} of ${String(readyFiles.length)} settings writers never reported ready`,
       );
     }
     await delay(5);
+    sweep();
   }
+  return observedAt;
 }
 
 /**
@@ -187,8 +225,9 @@ export async function runConcurrentSettingsWriters(
   const writers = jobs.map((job, i) => spawnWriter(base, job, readyFiles[i] ?? '', goFile));
   let results: ChildResult[];
   let releasedAt: number;
+  let readyObservedAt: (number | undefined)[];
   try {
-    await waitForAllReady(writers, readyFiles);
+    readyObservedAt = await waitForAllReady(writers, readyFiles);
     // Released only once every writer is loaded and waiting. Timing the barrier
     // instead ties the contention to Node's boot time, which under a full
     // parallel suite can outrun any deadline — and a barrier that expired early
@@ -226,7 +265,7 @@ export async function runConcurrentSettingsWriters(
       );
     }
   });
-  return { outcomes, releasedAt };
+  return { outcomes, releasedAt, readyObservedAt };
 }
 
 /**
@@ -237,11 +276,26 @@ export async function runConcurrentSettingsWriters(
  * would let each writer run as it finished booting, one after another. Every
  * no-loss assertion downstream then holds for want of a race, silently.
  *
- * It compares `readyAt` — stamped by each child as it parks — against the
- * instant the parent released them. Comparing `startedAt` instead cannot fail:
- * a child stamps that only after it observes the release, so `startedAt >=
- * releasedAt` is true by construction and stays true with the handshake deleted.
- * `readyAt` is the one of the two the barrier actually decides.
+ * It reads the PARENT's observations — the instant this process saw each ready
+ * file — against the instant this process released them. Both stamps come off
+ * one clock, which is what makes the comparison mean anything.
+ *
+ * It used to compare the child's own `readyAt` against `releasedAt`, and that
+ * is a cross-process comparison: two processes stamping `Date.now()` are asking
+ * two independently-maintained clocks, and on Windows those disagree by a few
+ * milliseconds routinely. The causal order was never in doubt — a child stamps
+ * `readyAt` BEFORE writing the file the parent then waits for — so a run this
+ * check failed was one where the clocks disagreed, not one where the barrier
+ * did. It reddened main from a genuinely green tree. The child's `readyAt` is
+ * still reported, for reading a slow boot out of a failure; do not decide the
+ * barrier on it again.
+ *
+ * The file is the evidence, not the timestamp, and it is evidence of the whole
+ * property: the ready file exists only because the child wrote it on its way
+ * into the park loop. So requiring one observation per writer, all of them
+ * before the release, is the handshake itself. Delete the handshake and there
+ * are no observations; break it so it waits for only the first writer, or
+ * returns early on a child that died, and the gaps are what this reads.
  *
  * What it deliberately does NOT assert is that the calls overlapped in wall
  * clock. A released child can be descheduled — on a runner with more test
@@ -250,5 +304,8 @@ export async function runConcurrentSettingsWriters(
  */
 export function allReleasedTogether(run: ConcurrentRun): boolean {
   if (run.outcomes.length === 0) return false;
-  return run.outcomes.every((o) => o.readyAt <= run.releasedAt);
+  // Per WRITER, not merely as many observations as writers: a run that saw one
+  // writer park twice would otherwise count as a full set.
+  if (run.readyObservedAt.length !== run.outcomes.length) return false;
+  return run.readyObservedAt.every((at) => at !== undefined && at <= run.releasedAt);
 }

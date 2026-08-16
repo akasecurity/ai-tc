@@ -4,10 +4,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { bundledDetections, type PluginConfig } from '@akasecurity/plugin-sdk';
+import { bundledDetections, type DataGateway, type PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleSessionStart } from '../src/handle-session-start.ts';
+import { setDefaultGatewayFactory } from '../src/resolve.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
 let dir: string; // the ~/.aka data dir
@@ -475,6 +476,69 @@ describe('handleSessionStart stale-session notice (return value)', () => {
       config(dir),
     );
 
+    expect(result.staleBinaryNotice).toBeNull();
+  });
+});
+
+// A plain object that forwards every method to a real gateway. Not an instance
+// of anything — which is the whole point: `instanceof StandaloneDataGateway` is
+// false for it while the capability check is true.
+function delegatingGateway(
+  inner: StandaloneDataGateway,
+  calls: string[],
+  omit: readonly string[] = [],
+): DataGateway {
+  const out: Record<string, unknown> = {};
+  const proto = Object.getPrototypeOf(inner) as object;
+  for (const name of Object.getOwnPropertyNames(proto)) {
+    if (name === 'constructor' || omit.includes(name)) continue;
+    const member = (inner as unknown as Record<string, unknown>)[name];
+    if (typeof member !== 'function') continue;
+    out[name] = (...args: unknown[]) => {
+      calls.push(name);
+      return (member as (...a: unknown[]) => unknown).apply(inner, args);
+    };
+  }
+  return out as unknown as DataGateway;
+}
+
+describe('handleSessionStart — local-store maintenance capability', () => {
+  afterEach(() => {
+    setDefaultGatewayFactory();
+  });
+
+  it('runs maintenance on a non-Standalone gateway that offers the capability', async () => {
+    // The project-file walk needs at least one file under cwd to yield a scan.
+    writeFileSync(join(cwd, 'main.ts'), '');
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const calls: string[] = [];
+    const gateway = delegatingGateway(inner, calls);
+    expect(gateway).not.toBeInstanceOf(StandaloneDataGateway);
+    setDefaultGatewayFactory(() => gateway);
+
+    await handleSessionStart(start('s-capability'), config(dir));
+
+    expect(calls).toContain('sweepTerminalExceptions');
+    expect(calls).toContain('capWarnEraEnforcement');
+    expect(calls).toContain('recordProjectFiles');
+  });
+
+  it('skips maintenance on a gateway that does not offer the capability', async () => {
+    const inner = new StandaloneDataGateway(dir, bundledDetections());
+    const calls: string[] = [];
+    const gateway = delegatingGateway(inner, calls, [
+      'sweepTerminalExceptions',
+      'capWarnEraEnforcement',
+      'recordProjectFiles',
+      'reconcileWorktreeProjects',
+      'staleBinaryNotice',
+    ]);
+    setDefaultGatewayFactory(() => gateway);
+
+    const result = await handleSessionStart(start('s-no-capability'), config(dir));
+
+    expect(calls).not.toContain('sweepTerminalExceptions');
+    expect(calls).toContain('ensureInventory');
     expect(result.staleBinaryNotice).toBeNull();
   });
 });

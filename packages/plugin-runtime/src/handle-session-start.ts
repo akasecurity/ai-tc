@@ -5,6 +5,7 @@ import {
   claimSessionStart,
   configPostureDefinitions,
   evaluateConfigPosture,
+  hasLocalStoreMaintenance,
   loadConfig,
   resolveConfigInventory,
   resolveGitBranch,
@@ -24,7 +25,6 @@ import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
-import { StandaloneDataGateway } from './standalone-gateway.ts';
 
 // How long TERMINAL exception rows (revoked / expired / use-budget exhausted)
 // are retained before the SessionStart sweep purges them — 90 days, aligned
@@ -101,10 +101,10 @@ export async function handleSessionStart(
       // session claim. Guarded separately: a scanner bug must not take the
       // just-written session root down with it.
       await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
-      // Best-effort store maintenance, standalone only: purge terminal
+      // Best-effort store maintenance, gated on the capability: purge terminal
       // exception rows past retention. Swallowed — a failed sweep must never
       // break SessionStart, and evaluation never depends on it.
-      if (gateway instanceof StandaloneDataGateway) {
+      if (hasLocalStoreMaintenance(gateway)) {
         try {
           await gateway.sweepTerminalExceptions(EXCEPTION_RETENTION_MS);
         } catch {

@@ -16,10 +16,12 @@ export {
 export type {
   CaptureRecord,
   DataGateway,
+  LocalStoreMaintenance,
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
 } from './data-gateway.ts';
+export { hasLocalStoreMaintenance } from './data-gateway.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
 export type { FindingKeyInput } from './finding-key.ts';

@@ -26,7 +26,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyOnboarding, readWorkspaceSettings, SETTINGS_FILENAME } from '../../src/settings.ts';
 import type { WriterJob } from '../helpers/settings-writers.ts';
-import { allReleasedTogether, runConcurrentSettingsWriters } from '../helpers/settings-writers.ts';
+import {
+  BARRIER_HELD,
+  barrierReport,
+  runConcurrentSettingsWriters,
+} from '../helpers/settings-writers.ts';
 
 let base: string;
 
@@ -77,7 +81,7 @@ describe('concurrent applyOnboarding', () => {
     // Positive control on the barrier itself. Writers that ran one after
     // another would satisfy every assertion below without a race ever having
     // happened, so the contention is asserted before its consequences are.
-    expect(allReleasedTogether(run)).toBe(true);
+    expect(barrierReport(run)).toBe(BARRIER_HELD);
     expect(run.outcomes.filter((o) => !o.ok).map((o) => o.error)).toEqual([]);
 
     const settings = readWorkspaceSettings(base);
@@ -111,7 +115,7 @@ describe('concurrent applyOnboarding', () => {
       { set: { vaultInlineReveal: 'off' } },
     ]);
 
-    expect(allReleasedTogether(run)).toBe(true);
+    expect(barrierReport(run)).toBe(BARRIER_HELD);
     expect(run.outcomes.filter((o) => !o.ok).map((o) => o.error)).toEqual([]);
     expect(readWorkspaceSettings(base).modelJudgeConsent).toBeUndefined();
     // The revoke is the only answer under test; the rest must still be there,
@@ -168,7 +172,7 @@ describe('concurrent applyOnboarding', () => {
       { set: { policy: 'warn' } },
       { set: { historicalAccess: 'full' } },
     ]);
-    expect(allReleasedTogether(run)).toBe(true);
+    expect(barrierReport(run)).toBe(BARRIER_HELD);
 
     const raw: unknown = JSON.parse(readFileSync(settingsFile(), 'utf8'));
     expect(raw).toMatchObject({ policy: 'warn', historicalAccess: 'full' });

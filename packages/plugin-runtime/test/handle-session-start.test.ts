@@ -32,6 +32,12 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+afterEach(() => {
+  // The seam is process-global: a test that leaves it set would leak into the
+  // next one.
+  setDefaultGatewayFactory();
+});
+
 // Every session-start below threads the hermetic fake home dir.
 function start(sessionId: string | undefined, extra: Record<string, unknown> = {}) {
   return { sessionId, cwd, tool: 'claude-code', homeDir: home, ...extra };
@@ -503,10 +509,6 @@ function delegatingGateway(
 }
 
 describe('handleSessionStart — local-store maintenance capability', () => {
-  afterEach(() => {
-    setDefaultGatewayFactory();
-  });
-
   it('runs maintenance on a non-Standalone gateway that offers the capability', async () => {
     // The project-file walk needs at least one file under cwd to yield a scan.
     writeFileSync(join(cwd, 'main.ts'), '');

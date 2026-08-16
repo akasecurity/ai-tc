@@ -126,8 +126,8 @@ export async function handleSessionStart(
           // Fail-open: a failed cap drops the migration, never the session.
         }
         // The project-file inventory pass (the Inventory page's file tree),
-        // standalone-only like the sweep. Guarded separately: a walk bug must
-        // never take the session root or config scan down with it.
+        // gated on the capability like the sweep. Guarded separately: a walk
+        // bug must never take the session root or config scan down with it.
         try {
           if (resolved.sourceProjectId) {
             const filesScan = resolveProjectFiles(input.cwd);
@@ -152,7 +152,8 @@ export async function handleSessionStart(
           // Fail-open: ghosts linger until the next session, nothing breaks.
         }
         // The stale-session check (P2): only meaningful when this session
-        // knows its own version; internally fail-open (null on any error).
+        // knows its own version; a failing check here falls through to the
+        // outer fail-open.
         if (input.harnessVersion !== undefined) {
           return { staleBinaryNotice: gateway.staleBinaryNotice(input.harnessVersion) };
         }

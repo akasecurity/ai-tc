@@ -1,18 +1,20 @@
 // Pure scanning logic for the cross-platform portability gate: a lightweight,
-// non-parsing scanner over the tracked test and bench trees looking for five
+// non-parsing scanner over the tracked test and bench trees looking for six
 // known failure shapes — a hardcoded file:/// URL (POSIX-only, breaks on Windows),
 // a bare GNU `timeout` shell command (absent on macOS), a path comparison
 // with no case normalization (macOS/Windows are case-insensitive, Linux is
-// not), a worker/concurrency test with no explicit timeout, and a PATH built
-// with a literal ':' (Windows joins with ';'). The CLI entry
-// (check-portability.ts) owns all I/O — git ls-files, reading file contents —
-// so the unit suite can drive this with canned file lists.
+// not), a worker/concurrency test with no explicit timeout, a PATH built
+// with a literal ':' (Windows joins with ';'), and a platform guard that ends a
+// test body with a bare `return` (reported as a PASS on every platform that
+// cannot run it). The CLI entry (check-portability.ts) owns all I/O — git
+// ls-files, reading file contents — so the unit suite can drive this with
+// canned file lists.
 //
 // Rules 1-3 and 5 describe primitives, not test structure, so they apply to every
 // source file in a test or bench tree — the helpers, fixtures-in-code, worker
 // entrypoints and benchmark drivers that carry the worker/platform/path code a
-// spec file usually only calls. Rule 4 keys on an `it()`/`test()` call and so
-// stays scoped to spec files, which a `.bench.ts` is not. isRelevantPath is
+// spec file usually only calls. Rules 4 and 6 are about what a TEST reports, so
+// both stay scoped to spec files, which a `.bench.ts` is not. isRelevantPath is
 // the single definition of what the scan reaches; the CLI entry imports it
 // rather than keeping a second copy, since a filter that pre-selects paths and
 // a filter that scans them are one decision.
@@ -23,13 +25,20 @@
 // e.g. /["']/ — would otherwise be misread as the start of a string), then
 // pattern-matches within each. Rules 1 and 2 are mechanical and reliable:
 // they only fire on characters that are unambiguously part of a string
-// literal. Rules 3, 4 and 5 are best-effort: they cannot see a comparison split
+// literal. Rules 3, 4, 5 and 6 are best-effort: they cannot see a comparison split
 // across lines or routed through an intermediate variable, and rule 3 in
 // particular only catches two path-producing expressions compared directly on
 // one line. Rule 5 needs the word PATH to be code on the separator's own line
 // or on the line its literal opens, so a separator held in a named constant, or
 // a PATH assembled several statements away from the ':' it is joined with, goes
-// unseen. Treat their silence as "found nothing," not "there is nothing."
+// unseen. Rule 6 locates its guard on the masked text, so a comment between the
+// guard and the `return` does NOT hide it; what it cannot see is a condition
+// carrying a call (the condition class stops at the first `)`) or a guard moved
+// into a helper the test calls. Rule 6 is also the one rule here that
+// OVER-reports: it matches text, not scope, so a `return` under a platform guard
+// inside a nested callback — a loop `continue`, which neither ends the test nor
+// skips an assertion — is reported as though it were the defect. Treat their
+// silence as "found nothing," not "there is nothing."
 
 export interface ScannedFile {
   path: string;
@@ -41,7 +50,9 @@ export type RuleId =
   | 'bare-timeout-command'
   | 'path-comparison-case'
   | 'concurrency-missing-timeout'
-  | 'path-separator-literal';
+  | 'path-separator-literal'
+  | 'platform-guard-early-return'
+  | 'platform-guard-stale-allowance';
 
 export interface RuleInfo {
   title: string;
@@ -69,6 +80,44 @@ export const RULES: Record<RuleId, RuleInfo> = {
     title: "PATH joined or split on a literal ':'",
     help: "Windows joins PATH with ';', so a ':'-joined value is one malformed entry there and a prepended bin dir is not on PATH at all. Use path.delimiter. This one fails OPEN, which is why it is worth a rule: a test shim that does not land is not an ENOENT — resolution walks on and runs the REAL installed binary, so the suite reaches a live tool while still looking hermetic (see plugins/*/test/helpers/path-shim.ts).",
   },
+  'platform-guard-early-return': {
+    title: 'Platform guard that ends the test body with a bare return',
+    help: "a returning test is a PASSING test, so on every platform the guard excludes this case reports as covered while reaching no assertion at all — and the property it exists to pin can then be deleted with CI still green. Say so instead: take the test context and call ctx.skip('<why this platform cannot run it>') at the top of the body. Where the test does still assert something on the guarded platform, keep it running and gate only the platform-specific assertions — `if (process.platform !== 'win32') expect(…)` — since a skip there throws away a real result.",
+  },
+  'platform-guard-stale-allowance': {
+    title: 'Grandfathered platform-guard allowance is larger than the file',
+    help: 'a file carrying fewer guards than its recorded allowance leaves room for new ones to land unnoticed, which is the hole the allowance exists to close. Lower the number in GRANDFATHERED_PLATFORM_GUARDS to what the file now carries, or delete the entry once it carries none.',
+  },
+};
+
+// Files that already carried rule 6's shape when it was written, with the exact
+// number of guards each may keep. CLAUDE.md's "older suites" note grandfathers
+// these — converting a neighbour in passing is explicitly not wanted — so the
+// rule exempts them rather than reporting a backlog nobody is going to clear in
+// one go.
+//
+// An allowance is an exact COUNT, pinned in both directions: exceeding it is a
+// violation, and falling below it is one too (`platform-guard-stale-allowance`),
+// so converting a guard means lowering the number in the same commit. A file
+// that reaches zero leaves the map entirely.
+//
+// That makes the NUMBER a ratchet, never the set of guards behind it. A commit
+// converting one guard and adding another holds the count at the allowance and
+// passes both rules, so a new guard CAN land in an exempt file when it arrives
+// paired with a conversion. Closing that needs guard identity — either a line
+// number, which shifts on any unrelated edit, or the enclosing test name — so
+// the count stands and the limit is written down instead. The exposure is the
+// map: a file with no allowance reports every guard in it.
+//
+// An allowance is keyed by PATH, so a rename leaves it behind: the entry then
+// covers nothing and the file arrives with an allowance of zero, which reports
+// every guard in it. That is loud and correct. A DELETED file's entry is the one
+// case nothing reports — it is dead weight rather than a hole, since it can only
+// ever exempt a path the scan never sees.
+export const GRANDFATHERED_PLATFORM_GUARDS: Readonly<Record<string, number>> = {
+  'packages/persistence/test/fingerprint.test.ts': 1,
+  'packages/persistence/test/settings.test.ts': 2,
+  'packages/plugin-sdk/test/config.test.ts': 3,
 };
 
 export interface Violation {
@@ -418,6 +467,90 @@ function checkPathSeparatorLiteral(
     }));
 }
 
+// Located on codeMasked, so a `process.platform` named in a comment or quoted in
+// a test description is not a candidate at all.
+const PLATFORM_GUARD_RE = /\bif\s*\(\s*process\.platform\b/g;
+// Matched on codeMasked, then the RETURNED EXPRESSION is read back out of the
+// raw source. Both halves are load-bearing and they pull in opposite directions:
+//
+//   - Structure has to come from the masked text, because a comment is blanked
+//     to spaces there. Read the raw source for structure instead and a block
+//     that explains itself first —
+//     `if (…) {\n  // no POSIX modes here\n  return;\n}` — stops matching, which
+//     is the defect wearing the most natural comment anyone would write.
+//   - Whether anything is RETURNED has to come from the raw source, because a
+//     literal is blanked to spaces in the masked text. Read the masked text for
+//     that instead and `return '<reason>';` reads as bare — a helper handing its
+//     caller a skip reason, flagged as a test bailing out. That is not
+//     hypothetical: it is
+//     packages/plugin-sdk/test/performance/project-files-walk.test.ts.
+//
+// codeMasked is the same length as the source, so the capture's offsets index
+// both alike. Returning a VALUE is the helper signal, so `return undefined;`
+// is deliberately NOT flagged — a helper typed `(): string | undefined` returns
+// it legitimately, and a test body bailing out that way is a spelling nobody
+// reaches for.
+//
+// `[^)\n]*` holds the condition to one line and to no nested parens, so
+// `process.platform === 'win32' || process.platform === 'linux'` matches while a
+// condition carrying a call does not. The consequent is a `return` either
+// trailing on the same line or alone in a block — a block that does anything
+// first (`ctx.skip(reason); return;`, the fixed form) is not a match, because
+// that statement is code and survives masking.
+// Sticky rather than anchored: `y` matches at lastIndex, which lets the guard be
+// located in place instead of slicing a fresh copy of the file tail per match.
+const PLATFORM_EARLY_RETURN_RE =
+  /if\s*\(\s*process\.platform\s*[!=]==?[^)\n]*\)\s*(?:\{\s*return([^;{}]*);\s*\}|return([^;\n]*);)/dy;
+
+function checkPlatformGuardEarlyReturn(
+  file: ScannedFile,
+  codeMasked: string,
+  allowance: number,
+): Violation[] {
+  const lines: number[] = [];
+  PLATFORM_GUARD_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PLATFORM_GUARD_RE.exec(codeMasked)) !== null) {
+    PLATFORM_EARLY_RETURN_RE.lastIndex = match.index;
+    const consequent = PLATFORM_EARLY_RETURN_RE.exec(codeMasked);
+    if (consequent === null) continue;
+    const groups = consequent.indices;
+    // The `d` flag is what makes the raw-source read below possible at all, so a
+    // missing `indices` is a broken rule rather than a clean file — skipping
+    // here would disable rule 6 across the whole tree with lint still green.
+    if (groups === undefined) {
+      throw new Error(
+        'platform-guard-early-return: regex lost its `d` flag, so no guard can be read',
+      );
+    }
+    const span = groups[1] ?? groups[2];
+    if (span === undefined) continue;
+    const returned = file.content.slice(span[0], span[1]);
+    if (returned.trim() !== '') continue;
+    lines.push(lineAt(codeMasked, match.index));
+  }
+
+  if (lines.length < allowance) {
+    return [
+      {
+        rule: 'platform-guard-stale-allowance',
+        file: file.path,
+        line: 1,
+        message: `Allowance of ${String(allowance)} but the file carries ${String(lines.length)} — ${RULES['platform-guard-stale-allowance'].help}`,
+      },
+    ];
+  }
+  // The allowance covers the guards that were already here, so the ones past it
+  // are the new ones. Reporting the tail rather than the head puts the violation
+  // on a line the author just wrote.
+  return lines.slice(allowance).map((line) => ({
+    rule: 'platform-guard-early-return' as const,
+    file: file.path,
+    line,
+    message: `Platform guard returns instead of skipping — ${RULES['platform-guard-early-return'].help}`,
+  }));
+}
+
 function checkConcurrencyMissingTimeout(
   file: ScannedFile,
   codeMasked: string,
@@ -446,12 +579,21 @@ function checkConcurrencyMissingTimeout(
 
 // A spec file: the unit rule 4 walks, wherever it sits in the tree.
 const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
-// Any source file under a directory named "test" or "bench" — the helpers,
-// worker entrypoints, fixture corpora and benchmark drivers rules 1-3 apply
-// to. A benchmark carries the same subject matter as a spec (chdir descent,
-// symlink loops, PATH_MAX ceilings that differ between platforms), so it is
-// covered by where it sits rather than by whichever shared fixture it happens
-// to call. The cut is by extension alone, so a fixture that deliberately holds
+// Any source file under a directory named "test", "bench" or "eval" — the
+// helpers, worker entrypoints, fixture corpora, benchmark drivers and prompt
+// contracts rules 1-3 apply to. A benchmark carries the same subject matter as
+// a spec (chdir descent, symlink loops, PATH_MAX ceilings that differ between
+// platforms), so it is covered by where it sits rather than by whichever shared
+// fixture it happens to call.
+//
+// `eval` is here for that same reason and was added after it cost something: a
+// native separator leaked out of `relative()` into a value compared against
+// posix literals in `plugins/claude-code/eval/prompt-contract.ts`, which three
+// test files import — test-support code by every measure except the name of its
+// directory. Nothing scanned it, because `eval/` matched neither this list nor
+// SPEC_FILE_RE. The rule that would have caught it already existed.
+//
+// The cut is by extension alone, so a fixture that deliberately holds
 // a bad pattern is only exempt while it is data (.txt, .json); written as real
 // .ts under one of these trees it is scanned like anything else, which is why
 // this package keeps its own violation fixtures at .txt.
@@ -462,7 +604,7 @@ const SPEC_FILE_RE = /\.test\.(?:ts|tsx|js|mjs|cts|mts)$/;
 // not match costs time quadratic in the number of segments. Reaching that
 // needs a committed path, since the input is git ls-files output — but this
 // gate runs on every push, so it stays linear by construction.
-const TREE_DIR_NAMES = ['test', 'bench'] as const;
+const TREE_DIR_NAMES = ['test', 'bench', 'eval'] as const;
 const SOURCE_EXT_RE = /\.(?:ts|tsx|js|mjs|cts|mts)$/;
 
 function isTreeFile(path: string): boolean {
@@ -509,11 +651,20 @@ function owningPackageHasTimeout(filePath: string, packages: PackageTimeoutInfo[
   return best?.hasTestTimeout ?? false;
 }
 
+export interface ScanOptions {
+  // Defaults to GRANDFATHERED_PLATFORM_GUARDS. Overridden by the unit suite so
+  // rule 6's allowance arithmetic is driven with synthetic paths rather than by
+  // asserting the contents of the real exempt files, which would put a second,
+  // stale copy of that list in the tests.
+  grandfatheredPlatformGuards?: Readonly<Record<string, number>>;
+}
+
 // files is the whole set the caller found worth handing in — vitest configs
 // are needed to resolve rule 4's package-level override and are silently
-// skipped by the TEST_FILE_RE filter below, so passing every tracked file is
+// skipped by the SPEC_FILE_RE filter below, so passing every tracked file is
 // fine and expected.
-export function scanTree(files: ScannedFile[]): Violation[] {
+export function scanTree(files: ScannedFile[], options: ScanOptions = {}): Violation[] {
+  const grandfathered = options.grandfatheredPlatformGuards ?? GRANDFATHERED_PLATFORM_GUARDS;
   const packages = derivePackageTimeouts(files);
   const violations: Violation[] = [];
   for (const file of files) {
@@ -526,11 +677,14 @@ export function scanTree(files: ScannedFile[]): Violation[] {
       ...checkPathComparisonCase(file, codeMasked),
       ...checkPathSeparatorLiteral(file, codeMasked, strings),
       ...(isSpec
-        ? checkConcurrencyMissingTimeout(
-            file,
-            codeMasked,
-            owningPackageHasTimeout(file.path, packages),
-          )
+        ? [
+            ...checkConcurrencyMissingTimeout(
+              file,
+              codeMasked,
+              owningPackageHasTimeout(file.path, packages),
+            ),
+            ...checkPlatformGuardEarlyReturn(file, codeMasked, grandfathered[file.path] ?? 0),
+          ]
         : []),
     );
   }

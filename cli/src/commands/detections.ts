@@ -92,6 +92,30 @@ async function runListSub(db: LocalDatabase): Promise<void> {
         `  aka detections unquarantine          # forget the verdicts and measure them again\n`,
     );
   }
+  // The scan path discards the WHOLE installed snapshot when any rule under an
+  // enabled pack fails validation, so one bad entry costs every custom rule and
+  // every per-detection action — a far larger loss than the entry itself. The
+  // plugin says so on a hook's stderr; this is the surface that survives, and
+  // the one its line points at.
+  //
+  // Unlike a quarantine verdict this caches nothing: the entries are re-read on
+  // every scan, so there is no stored verdict to clear and no command offered to
+  // clear one. The fix is to repair or reinstall the pack.
+  const ruleset = db.installedPacks.installedRuleset();
+  if (ruleset.invalidRules > 0) {
+    out.write(
+      `\n⚠ ${String(ruleset.invalidRules)} rule(s) under enabled packs failed validation — ` +
+        'scanning falls back to the bundled packs, so no custom rule and no per-detection ' +
+        'action is enforced.\n',
+    );
+    for (const rejected of ruleset.rejectedRules) {
+      const named = rejected.ruleId === null ? '' : ` ${rejected.ruleId}`;
+      out.write(`  ${rejected.pack}${named} — ${rejected.reason}\n`);
+    }
+    const undisclosed = ruleset.invalidRules - ruleset.rejectedRules.length;
+    if (undisclosed > 0) out.write(`  …and ${String(undisclosed)} more\n`);
+    out.write('  Repair or reinstall the pack — the check re-runs on the next scan.\n');
+  }
   if (counts.updates > 0) {
     out.write(
       `\n⬆ ${String(counts.updates)} update(s) available. Updates are manual — apply with:\n` +

@@ -26,13 +26,21 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { assertShimResolves, shimmedPath, writeCommandShim } from '../helpers/path-shim.ts';
+import {
+  assertShimResolves,
+  SHIM_PROBE_ARG,
+  shimmedPath,
+  WINDOWS_SYSTEM_DIRS,
+  WINDOWS_SYSTEM_ENV,
+  writeCommandShim,
+} from '../helpers/path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/codex
@@ -65,12 +73,12 @@ interface StepResult {
 // POSIX, so pointing HOME at a temp dir isolates the whole chain — no
 // script-level flag or process.env read is added to shipped code. The child env
 // is built from scratch (never the host env): PATH carries only the stub-judge
-// bin dir plus node's own dir, so a real `codex` on the developer's PATH is not
-// reachable through it, and the shebang still finds node. That is a narrower
-// claim than "the stub is the only resolvable judge" — PATH is not the whole
-// of resolution (Windows searches the working and system directories first),
-// and a stub that fails to land is answered by whatever is, not by an ENOENT.
-// assertShimResolves in run() is what closes that gap.
+// bin dir, node's own dir and — on Windows alone — System32, so a real `codex`
+// on the developer's PATH is not reachable through it, and the shebang still
+// finds node. That is a narrower claim than "the stub is the only resolvable
+// judge" — PATH is not the whole of resolution (Windows searches the working
+// and system directories first), and a stub that fails to land is answered by
+// whatever is, not by an ENOENT. assertShimResolves in run() closes that gap.
 class SetupJourney {
   readonly home: string;
   // The settings.json the onboarding writer records the consent into.
@@ -158,17 +166,38 @@ class SetupJourney {
       // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
       // branch of writeCommandShim; on Windows the stub is a .cmd naming an
       // absolute node, so node's dir is on PATH for POSIX's sake, not both.
-      // Nothing else from the host environment reaches the chain.
-      PATH: shimmedPath(this.binDir, dirname(process.execPath)),
+      // Nothing else from the host environment reaches the chain — except the
+      // Windows OS plumbing below, which is not "else" so much as the platform:
+      // cmd.exe and where.exe live under System32, and Node reads the
+      // interpreter's own location out of COMSPEC, so without them the chain
+      // cannot spawn even its OWN stub and this suite would report "the judge
+      // never ran" for a reason that is not the consent gate. Both are empty off
+      // win32, and no `codex` lives in System32, so the stub stays the only
+      // resolvable one. Defined once in path-shim.ts, beside the shim writer
+      // whose win32 output is what needs them.
+      PATH: shimmedPath(
+        this.binDir,
+        [dirname(process.execPath), ...WINDOWS_SYSTEM_DIRS].join(delimiter),
+      ),
+      ...WINDOWS_SYSTEM_ENV,
     };
     // Proven once per journey, before the first script runs. A shim that does
     // not land does NOT fail closed: resolution keeps walking PATH and finds a
     // real installed `codex`, so the chain would reach a live model and this
     // suite's load-bearing `judgeWasInvoked()` assertion would pass for the
-    // wrong reason — nothing ran because nothing COULD run. spawnCodex uses no
-    // `shell`, so the probe must not either.
+    // wrong reason — nothing ran because nothing COULD run.
+    //
+    // spawnCodex builds its spawn with planBareCommand, so the probe READS that
+    // plan's decisions rather than re-deriving them: on Windows `shell` is the
+    // difference between resolving a .cmd and skipping it, and the plan also
+    // anchors the spawn at the user's home, which is where `codex` is resolved
+    // from there. On POSIX the plan sets neither and this is a no-op.
     if (!this.shimProven) {
-      assertShimResolves('codex', env);
+      const plan = planBareCommand('codex', [SHIM_PROBE_ARG], { env });
+      assertShimResolves('codex', env, {
+        shell: plan.viaShell,
+        ...(plan.options.cwd === undefined ? {} : { cwd: plan.options.cwd }),
+      });
       this.shimProven = true;
     }
     // spawnSync (not execFileSync) so BOTH streams are captured on the success

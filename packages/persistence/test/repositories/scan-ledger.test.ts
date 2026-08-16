@@ -1,21 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import { openLocalDatabase } from '../../src/database.ts';
 import type { ScanLedgerEntry } from '../../src/repositories/scan-ledger.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
-let dir: string;
-
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-ledger-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+const store = useTempStore('aka-ledger-');
 
 function entry(path: string, overrides: Partial<ScanLedgerEntry> = {}): ScanLedgerEntry {
   return {
@@ -29,7 +17,7 @@ function entry(path: string, overrides: Partial<ScanLedgerEntry> = {}): ScanLedg
 
 describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
   it('round-trips entries keyed by path', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.scanLedger.upsertEntries([entry('/repo/a.ts'), entry('/repo/b.ts')]);
 
     const state = db.scanLedger.entriesForRuleset('ruleset-v1');
@@ -42,7 +30,7 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
   });
 
   it('excludes entries recorded under a different ruleset', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.scanLedger.upsertEntries([entry('/repo/a.ts', { rulesetHash: 'ruleset-v1' })]);
 
     expect(db.scanLedger.entriesForRuleset('ruleset-v2').size).toBe(0);
@@ -51,7 +39,7 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
   });
 
   it('upserts on path: a re-scan overwrites mtime, hash, and ruleset', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.scanLedger.upsertEntries([entry('/repo/a.ts')]);
     db.scanLedger.upsertEntries([
       entry('/repo/a.ts', {
@@ -70,17 +58,17 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
   });
 
   it('persists across reopen', () => {
-    const db1 = openLocalDatabase(dir);
+    const db1 = store.open();
     db1.scanLedger.upsertEntries([entry('/repo/a.ts')]);
     db1.close();
 
-    const db2 = openLocalDatabase(dir);
+    const db2 = store.open();
     expect(db2.scanLedger.entriesForRuleset('ruleset-v1').has('/repo/a.ts')).toBe(true);
     db2.close();
   });
 
   it('treats an empty upsert as a no-op', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.scanLedger.upsertEntries([]);
     expect(db.scanLedger.entriesForRuleset('ruleset-v1').size).toBe(0);
     db.close();

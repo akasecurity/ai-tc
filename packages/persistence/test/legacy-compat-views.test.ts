@@ -15,16 +15,14 @@
 //     refuses to plan an upsert against any view, trigger or not — a known,
 //     unavoidable, documented gap for that one already-shipped SQL shape).
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { openLocalDatabase } from '../src/database.ts';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import {
   applyLegacyDropMigration,
@@ -32,6 +30,8 @@ import {
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
 } from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
+import { useTempStore } from './helpers/temp-store.ts';
+import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
 // This suite drives real on-disk SQLite migrations, a batched history backfill,
 // and pre-drop backups against temp stores — all fsync-bound work. On a
@@ -40,15 +40,16 @@ import { DB_FILENAME } from '../src/paths.ts';
 // file generous headroom rather than let legitimate slow-disk timing trip it.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-let dir: string;
+const store = useTempStore('aka-legacy-views-');
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-legacy-views-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+// Raw connections here are split on purpose. A plain read of the store goes
+// through `store.openRaw()`, which closes it at teardown whatever the body did.
+// The fixture handles do NOT: each is opened to leave the store at one point in
+// the migration and closed again before the next `store.open()` drains a little
+// further, and the backfill and the drop are what those opens run — a handle
+// left live across one changes what it does. `openRaw()` holds every handle it
+// hands out until teardown, so it is the wrong tool wherever the close IS the
+// setup.
 
 const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
 const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
@@ -61,7 +62,7 @@ const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
 // backup, drop) rather than calling applyMigrations directly against a bare
 // DatabaseSync.
 function seedPreCutoverFile(): string {
-  const file = join(dir, DB_FILENAME);
+  const file = join(store.dataDir, DB_FILENAME);
   const raw = new DatabaseSync(file);
   // Fixture durability is irrelevant — the file is thrown away after the test.
   // Replaying ~12 migrations against the default DELETE journal pays one fsync
@@ -123,10 +124,10 @@ function insertLegacyFinding(
 
 describe('legacy events/findings compatibility views', () => {
   it('a fresh store lands on the views immediately — nothing to drain', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.close();
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       expect(schemaObjectExists(raw, 'table', 'events')).toBe(false);
       expect(schemaObjectExists(raw, 'table', 'findings')).toBe(false);
@@ -184,7 +185,7 @@ describe('legacy events/findings compatibility views', () => {
 
   it('re-opens successfully, repeatedly, after the drop — the installer-brick regression test', () => {
     for (let i = 0; i < 5; i += 1) {
-      const db = openLocalDatabase(dir);
+      const db = store.open();
       // Basic operations keep working on every reopen, not just the open call.
       const id = randomUUID();
       const ev: IngestEvent = {
@@ -212,7 +213,7 @@ describe('legacy events/findings compatibility views', () => {
       db.close();
     }
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       expect(schemaObjectExists(raw, 'view', 'events')).toBe(true);
       expect(schemaObjectExists(raw, 'view', 'findings')).toBe(true);
@@ -234,9 +235,9 @@ describe('legacy events/findings compatibility views', () => {
     // projects `synced_at` so the old probe's column guard short-circuits.
     // (The new binary's own ensureSyncedAtColumn was separately fixed to skip a
     // view; this covers the already-installed OLD binary, which cannot be.)
-    openLocalDatabase(dir).close(); // a fresh store drops `events` -> view now
+    store.open().close(); // a fresh store drops `events` -> view now
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       const cols = (raw.prepare('PRAGMA table_info(events)').all() as { name: string }[]).map(
         (c) => c.name,
@@ -273,16 +274,16 @@ describe('legacy events/findings compatibility views', () => {
     raw.close();
 
     // No backup exists yet — the drop hasn't run.
-    expect(readdirSync(dir).some((f) => f.includes('.pre-drop.'))).toBe(false);
+    expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(false);
 
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.close();
 
-    const backups = readdirSync(dir).filter((f) => f.includes('.pre-drop.'));
+    const backups = readdirSync(store.dataDir).filter((f) => f.includes('.pre-drop.'));
     expect(backups).toHaveLength(1);
     const [backupName] = backups;
     if (!backupName) throw new Error('expected exactly one pre-drop backup file');
-    const backupPath = join(dir, backupName);
+    const backupPath = join(store.dataDir, backupName);
     expect(existsSync(backupPath)).toBe(true);
 
     // The backup is a genuine, complete, openable SQLite database — not a
@@ -366,9 +367,14 @@ describe('legacy events/findings compatibility views', () => {
       insertLegacyEvent(raw, `ev-${String(i)}`, i, null);
     }
     raw.exec('COMMIT');
+    // The whole point of this fixture is that it holds MORE rows than one open's
+    // backfill budget. A transaction still open here commits none of them, and
+    // the "still mid-copy" assertions below would then hold on an empty store —
+    // for the wrong reason, and identically.
+    assertNoOpenTransaction(raw);
     raw.close();
 
-    const first = openLocalDatabase(dir);
+    const first = store.open();
     first.close();
 
     const afterFirst = new DatabaseSync(file);
@@ -388,10 +394,10 @@ describe('legacy events/findings compatibility views', () => {
     } finally {
       afterFirst.close();
     }
-    expect(readdirSync(dir).some((f) => f.includes('.pre-drop.'))).toBe(false);
+    expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(false);
 
     // Second open resumes the copy, finishes, and only THEN drops.
-    const second = openLocalDatabase(dir);
+    const second = store.open();
     second.close();
 
     const afterSecond = new DatabaseSync(file);
@@ -404,11 +410,11 @@ describe('legacy events/findings compatibility views', () => {
     } finally {
       afterSecond.close();
     }
-    expect(readdirSync(dir).some((f) => f.includes('.pre-drop.'))).toBe(true);
+    expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(true);
   });
 
   it('legacy SQL — verbatim from pre-cutover repository constructors — reads truthfully through the views', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     db.auditEvents.insertAuditEvent({
       id: sessionId,
@@ -439,7 +445,7 @@ describe('legacy events/findings compatibility views', () => {
     db.recordCapture(ev, [finding]);
     db.close();
 
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       // findings.ts (pre-cutover): recentFindings.
       const recent = raw
@@ -521,9 +527,9 @@ describe('legacy events/findings compatibility views', () => {
   });
 
   it('events.ts (pre-cutover): the eager INSERT prepares against the view and fails only at run time', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.close();
-    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const raw = store.openRaw();
     try {
       let stmt: ReturnType<DatabaseSync['prepare']> | undefined;
       expect(() => {
@@ -552,9 +558,9 @@ describe('legacy events/findings compatibility views', () => {
     'findings.ts (pre-cutover): the eager ON CONFLICT upsert fails at prepare() — a documented, ' +
       'unavoidable gap (SQLite refuses to plan an upsert against any view)',
     () => {
-      const db = openLocalDatabase(dir);
+      const db = store.open();
       db.close();
-      const raw = new DatabaseSync(join(dir, DB_FILENAME));
+      const raw = store.openRaw();
       try {
         expect(() => {
           raw.prepare(
@@ -627,7 +633,7 @@ describe('legacy events/findings compatibility views', () => {
   });
 
   it('pre-drop backup is a sidecar-free snapshot that includes WAL-resident committed rows', () => {
-    const file = join(dir, DB_FILENAME);
+    const file = join(store.dataDir, DB_FILENAME);
     const db = new DatabaseSync(file);
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('CREATE TABLE audit_events (id INTEGER PRIMARY KEY, v TEXT)');

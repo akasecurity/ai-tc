@@ -1,30 +1,20 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { ConfigScanRecord, ConfigScanResult } from '@akasecurity/schema';
 import { configInventoryInputs } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { openLocalDatabase } from '../../src/database.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // The real skills/hooks scanned at SessionStart land in the meta `inventory`
 // table (object_type skill|hook), NOT the sample-only inventory_asset table. This
 // exercises the projection that makes the Inventory page render them: a real
 // (non-sample) harness row + a config scan, read back through inventoryAssets.
 
-let dir: string;
+const store = useTempStore('aka-inv-config-');
 let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-inv-config-'));
-  db = openLocalDatabase(dir); // NOTE: no sample fixtures — a real, un-seeded store.
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open(); // NOTE: no sample fixtures — a real, un-seeded store.
 });
 
 // A real Claude Code harness dimension row (no provenance='sample') — the card the

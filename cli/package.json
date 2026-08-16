@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/cli",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "AI Traffic Control — local-first CLI to inspect and govern AI agent traffic on your machine",
   "license": "Apache-2.0",
   "repository": {
@@ -60,6 +60,7 @@
     "@akasecurity/web-ui": "workspace:*",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.0.0",
     "postject": "^1.0.0-alpha.6",
     "tsup": "^8.0.0",

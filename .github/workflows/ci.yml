@@ -14,16 +14,44 @@ on:
     # gives one `edited` type for all three — which the concurrency group below
     # bounds, since it cancels a superseded run per PR ref.
     types: [opened, synchronize, reopened, edited]
+  # The merge queue reaches a workflow through `merge_group` and through no other
+  # event, so a required check without this trigger never runs in the queue at
+  # all: the entry waits on a check nothing will ever report, rather than failing
+  # and being dropped. That is why this sits here whether or not the queue is
+  # switched on today — a workflow missing it does not degrade the queue, it
+  # wedges it. CONTRIBUTING.md ("Branch freshness") records which mechanism is in
+  # use, and required-checks.test.js drives that record against these triggers.
+  merge_group:
 
 permissions:
   contents: read
 
-# Cancel superseded runs: a new push to the same branch/PR stops the in-flight
-# run instead of letting both finish. Saves the most Actions minutes on PRs that
-# are pushed to repeatedly while iterating. main keeps a stable group per ref.
+# Cancel a superseded run on a PR: a new push to the same PR stops the in-flight
+# run instead of letting both finish. That is where the Actions minutes go on a
+# branch pushed to repeatedly while iterating.
+#
+# `push` and `merge_group` sit outside that bargain, and keeping them out takes
+# BOTH lines rather than just the second. Turning cancelling off while the group
+# stays keyed on the ref does not stop a run being lost — it QUEUES it, because
+# every push to main shares `refs/heads/main`, so a second merge waits out the
+# first run in full. Keying non-PR events by SHA gives every merged commit its
+# own group, so each one starts at once and runs to the end.
+#
+# What that buys on main is a post-merge run the NEXT merge cannot cancel. Keyed
+# on the ref alone, two merges a couple of minutes apart left the earlier commit
+# with no verdict at all, and the first red run to appear on main then carried a
+# SHA whose own change was not the cause. A cancelled run is not a green one, and
+# a commit carrying no verdict is what a later bisect has to work around.
+#
+# The event name is in the key as well, as it is in the other three gating
+# workflows. A merge-queue entry's `github.sha` is the head of the temporary
+# queue branch, and that is the commit the base branch advances to — so the
+# `merge_group` run and the `push` run that follows it carry the SAME sha, and
+# without the event name they would share a group and the push run would queue
+# behind rather than start at once.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:
@@ -31,9 +59,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # fetch-depth: 0 for the Diff coverage step below. The default depth-1
+      # checkout has no merge base to diff against, so the gate could only be
+      # given the base TIP — a two-dot diff against which attributes every line
+      # that landed on main since the branch started to this PR. That is wrong in
+      # both directions: an unrelated merge can redden a clean PR, and enough
+      # well-covered churn can dilute a genuinely untested change into a pass.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.30.1
 
@@ -69,8 +105,33 @@ jobs:
       # per-commit suffix keeps entries immutable. restore-keys warm-start
       # from the newest compatible prior cache. GitHub's 10 GB LRU + 7-day
       # eviction bounds total growth.
+      #
+      # RESTORE AND SAVE ARE SEPARATE STEPS, and that split is the whole of what
+      # keeps a red leg from staying cold for ever. The combined `actions/cache`
+      # saves in a post step that GitHub skips once an earlier step has failed,
+      # so a leg that goes red saves NOTHING. The next run then finds no entry
+      # for its own lockfile lineage, falls through restore-keys to an older
+      # one, misses on every task and runs the whole workspace from scratch.
+      # That is a loop rather than a one-off: the cold run is slower, a slower
+      # run is likelier to time out, and a timed-out run saves nothing again.
+      # Measured on one run of this workflow: the two green legs each saved an
+      # entry under the current lockfile hash, while the red Windows leg had
+      # none at all — so it fell back to a stale entry from an older lockfile
+      # lineage, whose every task hash differed, and hit 0 of its 36 tasks.
+      #
+      # Saving from a RED job is sound, and for a reason worth stating rather
+      # than assuming: turbo writes a cache entry only for a task that exited 0.
+      # A failed task leaves no entry behind and cannot be replayed as green by
+      # any later run. So what a red job uploads is exactly what a green one
+      # would have, minus the tasks that failed — never a false green.
+      #
+      # `!cancelled()` rather than `always()`: this workflow cancels superseded
+      # runs on every push, and a cancelled job is killed mid-step on a short
+      # grace period, so `always()` would routinely upload a cache still being
+      # written. Failure is the case this fixes; cancellation is not.
       - name: Restore Turbo cache
-        uses: actions/cache@v6
+        id: turbo-cache
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -128,8 +189,58 @@ jobs:
       - name: Test
         run: pnpm turbo run test --concurrency=2
 
+      # Coverage is written by the step above, not by this one: every package's
+      # vitest config turns it on unconditionally (test/vitest/coverage.ts says
+      # why), which is what finally makes turbo's long-declared
+      # `outputs: ["coverage/**"]` describe something real. Re-running the suite
+      # instrumented here would measure a second, differently-cached run.
+      #
+      # Per-package FLOORS are enforced in that step too — a package below its
+      # floor fails its own `vitest run`. There is deliberately no aggregate
+      # threshold anywhere: one would be satisfied by covering an icon sheet
+      # while a mutating Server Action stayed at zero.
+      #
+      # This step answers the other question — is the code this PR ADDS tested?
+      # It reads the reports already on disk and needs no network: the gate is a
+      # workspace tool, not a third-party uploader, so no coverage data leaves
+      # the runner.
+      - name: Diff coverage
+        if: github.event_name == 'pull_request'
+        run: >
+          node tools/coverage-gate/src/check-diff-coverage.ts
+          --base ${{ github.event.pull_request.base.sha }}
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      # `always()` so a package that fell BELOW its floor still uploads the
+      # report explaining which lines it lost — the coverage block sets
+      # `reportOnFailure`, so the report exists precisely when it is most wanted.
+      # `if-no-files-found: ignore` keeps a genuinely earlier failure (a crashed
+      # suite that wrote nothing) reporting as itself rather than as a missing
+      # artifact.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            */coverage/
+            */*/coverage/
+            !**/node_modules/**
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Build
         run: pnpm build
+
+      # Last step in the job, so it captures every task above it. The `cache-hit`
+      # guard skips a re-run of the same commit, whose exact key already exists —
+      # a save there is a no-op that only logs a scary "already exists".
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
   # No-network leg: the product's headline claim is that nothing leaves the
   # machine. The lint ban (@akasecurity/eslint-config) stops a network primitive
@@ -156,7 +267,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.30.1
 
@@ -233,7 +344,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.30.1
 
@@ -246,9 +357,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Same shape as the ubuntu leg's cache, and deliberately a separate lineage
-      # — see the runner.os note above.
+      # — see the runner.os note above. Split into restore + save for the reason
+      # given there too: the combined action saves nothing when the job is red.
       - name: Restore Turbo cache
-        uses: actions/cache@v6
+        id: turbo-cache
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
@@ -262,9 +375,54 @@ jobs:
         # on rotating unrelated files.
         run: pnpm turbo run test --continue --concurrency=2
 
-  # Windows leg: the CLI and plugin advertise Windows support (install.ps1), so
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+
+  # Windows leg: the CLI and plugins advertise Windows support (install.ps1), so
   # the OS-sensitive core — SQLite store, ~/.aka file layout, file walks, child
-  # processes — gets exercised on windows-latest. setup-wizard is included for
+  # processes — gets exercised on windows-latest.
+  #
+  # THE FOUR PUBLISHED ARTIFACTS ARE THE FIRST FOUR FILTERS, and that is the one
+  # part of this list with a rule behind it rather than a judgement. `cli`,
+  # `ai-tc-claude-code`, `ai-tc-codex` and `ai-tc-antigravity` are every package
+  # in the workspace npm actually publishes — everything else here is
+  # `private: true` and reaches a user only inlined into one of those four. They
+  # are also the packages carrying the most platform-specific code (`open-url.ts`'s
+  # `cmd /c start`, `prompter.ts`'s setRawMode, `dashboard.ts`'s spawn +
+  # require.resolve, `external-dispatch.ts`'s POSIX-only guard, the plugins'
+  # built-script child processes), and until they were added this job's name
+  # claimed a shipped surface none of them was part of.
+  # `packages/eslint-config/test/required-checks.test.js` derives that set from the
+  # workspace and fails when a published package is missing from this list, so a
+  # fifth artifact cannot ship untested here. Note turbo exits 1 on a `--filter`
+  # matching no package, so a typo here fails the job rather than quietly
+  # narrowing it.
+  #
+  # Whose `test` is deliberately NOT here: `dashboard-ui` and `ui-kit`
+  # (presentational, no I/O — `ui-kit` has no `test` script at all),
+  # `plugin-browser-extension` (private, and its Node half is a native-messaging
+  # host whose Windows install path `cli`'s extension suite already covers), and
+  # `audit-gate` (repo tooling, never shipped).
+  #
+  # Say `test` rather than "excluded", because `plugin-browser-extension` is not
+  # absent from this leg: `cli` devDepends on it and the `test` task
+  # `dependsOn: ["build", "^build", "^typecheck"]`, so `--filter=@akasecurity/cli`
+  # drags its `build` and `typecheck` in. Turbo's `Packages in scope:` line does
+  # not list it while the log carries both as executed task groups — which is
+  # exactly how a reader concludes it never runs here.
+  #
+  # That distinction had a cost attached. `plugins/browser-extension/test/
+  # global-setup.ts` was the one of four `global-setup.ts` files without
+  # `shell: USE_SHELL`, which was safe only for as long as its `test` stayed off
+  # this leg. It now carries the flag like its three siblings, so adding that
+  # filter is a one-line change rather than a debugging session — the shim would
+  # otherwise fail before a single test ran.
+  #
+  # setup-wizard is included for
   # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
   # the plugin bundle. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
@@ -293,7 +451,22 @@ jobs:
   # shipped-surface packages to keep the job fast; the full suite runs on the
   # Linux job above.
   #
-  # @akasecurity/eslint-config is the one entry that ships nothing — it is
+  # Two entries here are `private: true` and bundled by no artifact, so both are
+  # the first thing anyone trimming this list back to "the shipped surface"
+  # would strike. Each is here because this leg is the ONLY runner that can
+  # execute what it covers.
+  #
+  # @akasecurity/installer is the second of them. install.ps1 is a shipped
+  # security control — the thing an `irm … | iex` user runs — and Windows is
+  # the only platform that reaches its whole flow: the junction, the user-PATH
+  # rewrite and `aka.exe --version` all no-op or throw anywhere else, so the
+  # happy-path case SKIPS on the other two legs and the two refusal cases are
+  # all they can run. Drop this filter and the ps1 half of the trust chain is
+  # back to being source nobody executes. The sh half is the mirror image and
+  # skips here: `uname -s` under Git Bash reports MINGW and install.sh refuses
+  # that OS by design.
+  #
+  # @akasecurity/eslint-config is the other one — it is
   # `private: true` and no artifact bundles it. It runs here as the ENFORCEMENT
   # HALF of the no-network guarantee (CLAUDE.md §4): its suites are what fail the
   # workspace when a package drops its config, its `lint` script stops covering a
@@ -346,14 +519,89 @@ jobs:
   # approach vitest's 5s default. The bash-driven cases in
   # no-network-runtime.test.js skip themselves on win32 (the CI script is the
   # Linux job's mechanism) rather than passing vacuously — 9 skipped, 45 run.
+  #
+  # WHAT THE FOUR PUBLISHED PACKAGES SKIP HERE, and why each skip is a skip
+  # rather than a silent pass. Every one is `ctx.skip()` or `it.skipIf`, so it
+  # is reported; an early `return` would read as a green assertion instead.
+  #   - Unprivileged symlink creation (cli's init suite, the plugins' redact and
+  #     tail-scrub suites). Windows gates it behind a privilege the runner does
+  #     not grant, so the containment property those cases pin is asserted where
+  #     it can be, not faked here.
+  #   - POSIX mode-bit fault injection: a chmod is a no-op on Windows, so the
+  #     read-only-store and unwritable-home rows would pass having injected
+  #     nothing. Same rule the persistence suite already follows.
+  # Everything else in the four runs, including the plugins' fail-open e2e
+  # matrix and the bundled scan-worker resolution — which had never executed on
+  # Windows and is exactly the resolve-a-sibling-by-path code most likely to
+  # differ there.
+  #
+  # THE WIZARD JOURNEY SUITES WERE THIS LEG'S FIRST FAILURE, exactly as predicted
+  # when the four packages were added, and they are SKIPPED here rather than
+  # merely expected to fail. What runs them is `assertShimResolves`, and the
+  # refusal is correct: a `.cmd` launcher cannot be reached by a shell-free
+  # `execFileSync` at all, because Node's CVE-2024-27980 fix refuses to spawn a
+  # `.cmd`/`.bat` without one. `writeCommandShim` writing the launcher is
+  # necessary and not sufficient — the SPAWN has to opt in too.
+  #
+  # So the split is shell-vs-no-shell, not plugin-vs-plugin, and it is worth
+  # reading that way before adding a skip anywhere else here:
+  #   - `provenance.test.ts` passes `{ shell: USE_SHELL }` and RUNS on Windows,
+  #     because it mirrors `runNpmAudit`, which does the same.
+  #   - the three journey harnesses pass no shell, because they mirror
+  #     `spawnClaude`/`spawnCodex`/`spawnAgy`, which pass none either.
+  # A probe that disagreed with its subject would prove nothing, so the harnesses
+  # are RIGHT to refuse; what they are refusing is a real limitation of the code
+  # they model. That limitation is tracked separately — and until it moves, a
+  # skip here is honest and a green run would not be.
+  #
+  # The refusal itself is load-bearing and must not be softened into a warning:
+  # the stub fails OPEN, so a shim that does not land is not an ENOENT.
+  # Resolution keeps walking PATH and finds the developer's real installed CLI,
+  # and the chain would reach a live model with its seeded hits on stdin.
+  #
+  # It runs `test` only, and the job's name says so. Lint and typecheck read
+  # source and answer identically on every OS, so the ubuntu leg covers them —
+  # the same reasoning the macOS leg above records. The one genuinely
+  # platform-sensitive part of the lint surface is `@akasecurity/eslint-config`'s
+  # own path handling, and that is a `test` task, already in this filter.
+  # The budget moved 25 -> 35 with the four packages, and that number is a
+  # HEADROOM JUDGEMENT that a first measurement now supports. What it was sized
+  # against: turbo's `test` dependsOn `build`/`^build`/`^typecheck`, so each new
+  # package brings a tsup build with it on the first (cold-cache) run; the
+  # plugin suites are the heaviest thing added and spend most of their time
+  # spawning real child processes, which is the single slowest operation on this
+  # runner; and the macOS leg runs every package inside 25. Windows is the
+  # slowest of the three, so it gets more than macOS, not less.
+  #
+  # The one run that has completed with all four packages in it, cold:
+  #
+  #   Tasks:    35 successful, 35 total
+  #   Cached:    0 cached, 35 total
+  #     Time:    10m28.395s
+  #
+  # Nothing replayed, so that is the honest cost of a run that finishes — 3.3x
+  # inside the ceiling, and the Turbo cache restored above only widens it.
+  #
+  # Read it as ONE sample, not as a settled figure, and keep 35: a contended
+  # runner takes longer than this one did, and the headroom is what absorbs that
+  # along with the first cold run after a lockfile bump. Tightening toward the
+  # measured number would trade a real margin for a cosmetic one.
+  #
+  # What this budget does NOT address, and should not be reached for: this leg
+  # also fails intermittently with per-test `Test`/`Hook timed out in 20000ms`,
+  # a different test file each run, which is a starved runner rather than a
+  # broken test. Those failures land well inside the job budget — the failing
+  # run measured here took 12m07s of its 35 — so moving this number in either
+  # direction does nothing about them. The per-test timeout is the knob that
+  # governs those, not this one.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.30.1
 
@@ -365,6 +613,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same shape and the same separate-lineage rule as the other two cached
+      # legs — see the runner.os note above the macOS job. This leg re-ran every
+      # package from scratch on every push until it had one, which is also what
+      # paid for the four packages added below.
+      #
+      # This is the leg the restore/save split was written for: it is the one
+      # that goes red, so under the combined action it was the one that never
+      # saved — the cache mattered most exactly where it was guaranteed absent.
+      - name: Restore Turbo cache
+        id: turbo-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-${{ runner.os }}-
+
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
@@ -372,10 +638,17 @@ jobs:
         # --concurrency: see the Test step in the lint job. This is the leg that
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
+        #
+        # The installer suite is deliberately NOT in this list — it runs in its
+        # own invocation below, for the reason given there.
         run: >
           pnpm turbo run test
           --continue
           --concurrency=2
+          --filter=@akasecurity/cli
+          --filter=@akasecurity/ai-tc-claude-code
+          --filter=@akasecurity/ai-tc-codex
+          --filter=@akasecurity/ai-tc-antigravity
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections
@@ -388,9 +661,52 @@ jobs:
           --filter=@akasecurity/web-ui
           --filter=@akasecurity/eslint-config
 
+      # The installer suite runs in its OWN turbo invocation, AFTER the fifteen
+      # above rather than beside them. It is by far the most disk-expensive
+      # suite in the workspace on this platform — it copies, zips and expands a
+      # real ~115 MB PE — and under `--concurrency=2` it was therefore always
+      # running alongside one of the shipped-surface packages. What that
+      # produced was not its own failure so much as everyone else's:
+      # `Hook timed out in 20000ms` in plugin-sdk, persistence and claude-code,
+      # a different file each run, which is the signature of a starved runner
+      # rather than of any of those diffs.
+      #
+      # A second STEP rather than a second JOB, and that is the whole reason it
+      # is spelled this way: a new job is a new status check, and a check that
+      # branch protection does not require reads as covered while gating
+      # nothing. This needs no protection change and no new job name for
+      # CONTRIBUTING.md's table to carry.
+      #
+      # `!cancelled()` so a red shipped-surface step still leaves this one
+      # reporting, for the same reason that step takes `--continue`.
+      #
+      # AKA_INSTALLER_ALLOW_USER_PATH is the consent to let install.ps1 reach
+      # its HKCU `Path` write, which this throwaway runner may give and a
+      # contributor's workstation may not — the mutating cases skip without it,
+      # so THIS is what makes the ps1 happy path run anywhere at all. It is
+      # declared in turbo.json's `test` env: turbo hashes only the env it is
+      # told about, so undeclared it would hash-match a cached run without it
+      # and replay a green in which the case skipped. It sits on this step
+      # alone rather than the whole job because this is the only package that
+      # reads it — the other fifteen were being hashed against a variable none
+      # of them consults.
+      - name: Test the installer scripts
+        if: ${{ !cancelled() }}
+        env:
+          AKA_INSTALLER_ALLOW_USER_PATH: '1'
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer
+
+      - name: Save Turbo cache
+        if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+
   # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
-  # twenty packages target `*.config.*`, and so does the repo-root `lint:root`,
-  # which is the twenty-first invocation rather than a twenty-first package —
+  # twenty-two packages target `*.config.*`, and so does the repo-root
+  # `lint:root`, which is the twenty-third invocation rather than a
+  # twenty-third package —
   # and WHO EXPANDS IT is decided by the platform, not by the script. On POSIX
   # the shell expands the pattern and hands eslint concrete filenames; `cmd.exe`
   # does not glob at all, so eslint receives the literal pattern and runs its
@@ -460,7 +776,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.30.1
 

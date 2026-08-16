@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
+import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import type {
   ActionTaken,
   BatchedRemediation,
@@ -49,7 +50,12 @@ import { transcriptsDir } from '../../src/history/transcripts.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { renderRemediationDecision } from '../../src/remediation/render.ts';
 import { frameJsonBlock } from '../../src/setup-frame-json.ts';
-import { assertShimResolves, shimmedPath, writeCommandShim } from '../helpers/path-shim.ts';
+import {
+  assertShimResolves,
+  SHIM_PROBE_ARG,
+  shimmedPath,
+  writeCommandShim,
+} from '../helpers/path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/claude-code
@@ -451,10 +457,21 @@ export class SetupJourney {
   private assertJudgeStubOnPath(env: NodeJS.ProcessEnv, cwd?: string): void {
     const key = cwd ?? '';
     if (this.shimProven.has(key)) return;
-    // spawnClaude uses execFileSync with no `shell`, so the probe must not
-    // either — on Windows that is the difference between resolving a .cmd and
-    // skipping it, and a probe that disagrees with its subject proves nothing.
-    assertShimResolves('claude', env, cwd === undefined ? {} : { cwd });
+    // spawnClaude builds its spawn with planBareCommand, so the probe READS
+    // that plan's decisions rather than re-deriving them beside it. On Windows
+    // `shell` is the difference between resolving a .cmd and skipping it, and a
+    // probe that disagreed with its subject would prove nothing — disagreeing in
+    // the direction of "the probe succeeded" is the dangerous one, because the
+    // shim fails OPEN and the chain would reach the real installed CLI.
+    const plan = planBareCommand('claude', [SHIM_PROBE_ARG], { env });
+    // The plan anchors every Windows spawn at the user's home, so the step's own
+    // cwd is not what `claude` is resolved against there. On POSIX it sets no
+    // cwd and the step's applies — which is why this is `??` and not a branch.
+    const probeCwd = plan.options.cwd ?? cwd;
+    assertShimResolves('claude', env, {
+      shell: plan.viaShell,
+      ...(probeCwd === undefined ? {} : { cwd: probeCwd }),
+    });
     this.shimProven.add(key);
   }
 

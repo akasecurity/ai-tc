@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import type { DetectionException } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
 
 // `grantRevealFromPointer` mints the strictly-stronger capability: while the
@@ -69,7 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

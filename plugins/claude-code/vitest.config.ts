@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 
+import { coverageOptions } from '../../test/vitest/coverage.ts';
+
 // Every test file runs behind the no-network guard: it refuses any outbound
 // connection that is not loopback and names the call site that made it. Wired
 // per package because each one runs its own vitest;
@@ -19,6 +21,7 @@ const noNetworkGuard = fileURLToPath(new URL('../../test/setup/no-network.ts', i
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
+    coverage: coverageOptions(import.meta.url),
     environment: 'node',
     globalSetup: ['./test/journey/global-setup.ts'],
     testTimeout: 20_000,

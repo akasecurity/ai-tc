@@ -20,6 +20,7 @@ import {
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { revealPointer } from '../../app/(app)/vault/actions.ts';
 
 // `revealPointer` is the dashboard's reveal surface. It must return the raw
@@ -61,7 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

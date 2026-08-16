@@ -24,6 +24,7 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runException } from '../../src/commands/exception.ts';
 import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
@@ -195,7 +196,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('aka exception add → enforcement full loop', () => {

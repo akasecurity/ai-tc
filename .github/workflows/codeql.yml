@@ -17,6 +17,11 @@ on:
   # nothing to re-trigger — and this check cannot end up permanently absent on
   # a PR that is required to have it.
   pull_request:
+  # A merge queue reaches this workflow through `merge_group` and no other event.
+  # These analyses are meant to be required checks, and a required check missing
+  # this trigger does not fail in the queue — it never reports, so the entry waits
+  # on it for ever. See ci.yml for the same reasoning at length.
+  merge_group:
   schedule:
     - cron: '30 6 * * 1'
   workflow_dispatch:
@@ -24,9 +29,13 @@ on:
 permissions:
   contents: read
 
+# Only a PR run is cancellable. Every push to main shares `refs/heads/main`, so a
+# ref-keyed group let a second merge cancel the first commit's analysis outright
+# and leave that commit unanalysed; keying non-PR events by SHA gives each merged
+# commit its own group, which drops neither run nor queues one behind the other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:

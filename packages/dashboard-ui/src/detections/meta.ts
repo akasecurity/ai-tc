@@ -6,7 +6,6 @@ import type {
   DetectionCategory,
   DetectionDetail,
   Matcher,
-  MatcherType,
   OriginEnum,
   PublisherKind,
 } from '@akasecurity/schema';
@@ -24,7 +23,6 @@ import {
   RedactIcon,
   ShieldCheckIcon,
   SlashCircleIcon,
-  SparklesIcon,
   UserIcon,
 } from '../shared/icons.tsx';
 
@@ -52,8 +50,7 @@ export function toneColors(tone: Tone): [string, string] {
 /** A one-line code-ish summary of a matcher, shown on rule cards. */
 export function matcherSummary(m: Matcher): string {
   if (m.type === 'regex') return '/' + m.pattern + '/' + m.flags;
-  if (m.type === 'keyword') return m.keywords.join(' · ');
-  return m.name;
+  return m.keywords.join(' · ');
 }
 
 // ─── Matcher metadata ─────────────────────────────────────────────────────────
@@ -66,7 +63,10 @@ export interface MatcherMeta {
   blurb: string;
 }
 
-export const MATCHER_META: Record<MatcherType, MatcherMeta> = {
+// Keyed on the union's own discriminants rather than the standalone MatcherType
+// enum, so a matcher kind added to the schema arrives here as a compile error
+// rather than as a missing tile at render time.
+export const MATCHER_META: Record<Matcher['type'], MatcherMeta> = {
   regex: {
     label: 'Regex',
     icon: BracesIcon,
@@ -80,13 +80,6 @@ export const MATCHER_META: Record<MatcherType, MatcherMeta> = {
     color: 'var(--color-teal-ink)',
     fill: 'var(--color-teal-fill)',
     blurb: 'Literal lookup',
-  },
-  validator: {
-    label: 'Validator',
-    icon: SparklesIcon,
-    color: 'var(--color-primary)',
-    fill: 'var(--color-primary-tint)',
-    blurb: 'Checksum / entropy',
   },
 };
 

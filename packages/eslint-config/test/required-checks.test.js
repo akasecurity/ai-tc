@@ -9,7 +9,7 @@
 // configured as required lives outside the tree. This pins the half that is in
 // the tree — that every name in the table still belongs to a real job.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,7 +25,47 @@ import {
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
 
-const readWorkflow = (file) => readFileSync(join(WORKFLOWS, file), 'utf8');
+// Memoised per path: every workflow here is read by several assertions and
+// CONTRIBUTING.md by several more, and all of them want the same bytes within a
+// run. The cache is keyed on the absolute path so the two readers cannot collide.
+const fileCache = new Map();
+const readText = (path) => {
+  if (!fileCache.has(path)) fileCache.set(path, readFileSync(path, 'utf8'));
+  return fileCache.get(path);
+};
+
+const readWorkflow = (file) => readText(join(WORKFLOWS, file));
+
+// A line whose first non-space character is `#` is a YAML comment. Dropping them
+// is load-bearing rather than tidying — see jobBlock and triggerBlock, each of
+// which matches patterns against text whose own comments name the very thing
+// being looked for. Shared by all three block readers so they cannot drift into
+// disagreeing about what a comment is.
+const dropComments = (text) =>
+  text
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
+
+/**
+ * A top-level block: a column-0 `key:` through to the next column-0 key, or to
+ * the end of the file. Comments are dropped, and `control` is a pattern the body
+ * must match — the positive control, without which every absence check below it
+ * passes on a block that captured nothing.
+ *
+ * The end-of-input alternative matters because these are read from arbitrary
+ * workflows: a `concurrency:` block that happens to be the last top-level key in
+ * its file would otherwise report as absent rather than being read.
+ */
+function topLevelBlock(file, key, control) {
+  const block = new RegExp(`^${key}:[^\\S\\n]*$([\\s\\S]*?)(?=^\\S|\\s*$(?![\\s\\S]))`, 'm').exec(
+    readWorkflow(file),
+  );
+  expect(block, `${file} has no \`${key}:\` block`).not.toBeNull();
+  const body = dropComments(block[1]);
+  expect(body, `${file}: the \`${key}:\` block captured nothing`).toMatch(control);
+  return body;
+}
 
 // A job's `name:` sits at four spaces (`jobs:` → job key at two → its keys at
 // four). A step's is deeper and carries a `- `, so this matches job names only.
@@ -96,10 +136,7 @@ function jobBlock(source, key) {
     'm',
   ).exec(source);
   expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
-  const body = block[1]
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('#'))
-    .join('\n');
+  const body = dropComments(block[1]);
   expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
   expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
   return body;
@@ -164,13 +201,23 @@ function checkNames(file) {
   return names;
 }
 
-// The table itself: | `Check name` | `workflow.yml` |
-function requiredChecks() {
-  const contributing = readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8');
+const readContributing = () => readText(join(REPO_ROOT, 'CONTRIBUTING.md'));
+
+// The table itself: | `Check name` | `workflow.yml` |. Sliced to its own section
+// so a table further down the file cannot contribute rows — the branch-freshness
+// section below carries one, and its rows are not two backticked cells, but the
+// slice is what makes that a fact about this reader rather than about that table.
+//
+// Asserts NOTHING, deliberately: a caller builds an `it.each` list from this in a
+// `describe` body, and an assertion there is a collection error rather than a
+// test failure — vitest reports the whole FILE as `(0 test)` and every suite in
+// it stops running. A parse that found nothing returns null, and the callers that
+// can afford to assert do so inside an `it`.
+function requiredCheckRows() {
   const section = /## Pull requests[\s\S]*?### Checks that gate `main`([\s\S]*?)```bash/.exec(
-    contributing,
+    readContributing(),
   );
-  expect(section).not.toBeNull();
+  if (section === null) return null;
   return [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\|$/gm)].map(
     ([, check, file]) => ({
       check,
@@ -178,6 +225,94 @@ function requiredChecks() {
     }),
   );
 }
+
+function requiredChecks() {
+  const rows = requiredCheckRows();
+  expect(rows).not.toBeNull();
+  return rows;
+}
+
+// A workflow's `on:` block. The positive control is that the block captured a
+// trigger AT ALL — a two-space key — rather than any particular one: this backs
+// the merge_group check, and pinning `pull_request` here would fail a workflow
+// triggered by push and merge_group only, which is a valid shape once a queue is
+// what gates. Which workflows must carry which trigger is decided by the callers.
+const triggerBlock = (file) => topLevelBlock(file, 'on', /^ {2}\w+:/m);
+
+// A workflow's `concurrency:` block. `group:` is the positive control: every
+// check below reads one line out of this block, and all of them pass on a block
+// that captured nothing.
+const concurrencyBlock = (file) => topLevelBlock(file, 'concurrency', /^ {2}group: /m);
+
+/**
+ * The workflows that GATE a change: those that run both on `pull_request` and on
+ * a push to `main`. Derived from the workflows themselves rather than from the
+ * required-check table, because the table is documented (in the section it is
+ * read from) as listing more checks than are actually required — so it is
+ * neither the tabled set nor the enforced set, and a gating workflow missing
+ * from it inherits none of the properties below. `internal-path-guard.yml` was
+ * exactly that: absent from the table, and the one workflow whose being skipped
+ * is a disclosure rather than a missing verdict.
+ *
+ * Running on BOTH events is what makes a workflow a gate, and is what excludes
+ * `build-binaries.yml` — PR-only, path-filtered, and not something a merge waits
+ * on. An empty list is the vacuity risk (`it.each([])` registers no tests and
+ * reports nothing), so a shared `it` asserts the contents below.
+ */
+function gatingWorkflows() {
+  return readdirSync(WORKFLOWS)
+    .filter((file) => file.endsWith('.yml'))
+    .filter((file) => {
+      const on = dropComments(
+        /^on:[^\S\n]*$([\s\S]*?)(?=^\S|\s*$(?![\s\S]))/m.exec(readWorkflow(file))?.[1] ?? '',
+      );
+      // The end alternative is `$(?![\s\S])` — true end of input — and NOT a bare
+      // `$`, which under /m matches the end of the FIRST line and stops the lazy
+      // quantifier at once, capturing nothing. Measured: every workflow read as
+      // having no `push:` branches, so the derived set came back empty and only
+      // the non-vacuity control below caught it.
+      const push = /^ {2}push:[^\S\n]*$([\s\S]*?)(?=^ {2}\S|$(?![\s\S]))/m.exec(on);
+      return /^ {2}pull_request:/m.test(on) && /branches:.*\bmain\b/.test(push?.[1] ?? '');
+    })
+    .sort();
+}
+
+// The workflows behind the required checks, deduped from the table. Every one of
+// them must also be a gating workflow — a required check that does not run on
+// both events cannot be satisfied on a PR or cannot be re-verified on main.
+const requiredWorkflows = () => [...new Set((requiredCheckRows() ?? []).map((row) => row.file))];
+
+// The decision recorded in CONTRIBUTING.md's "Branch freshness" section. Returns
+// what it found rather than asserting, for the `describe`-body reason above.
+// Lower-cased because the prose two paragraphs above the record spells the
+// alternative "Require branches to be up to date", and a maintainer switching the
+// decision will copy that spelling; a case-sensitive lookup would then fail with
+// a message about an unknown mechanism rather than about the thing they changed.
+//
+// `in use` and `chosen` are both accepted, and the line is NOT anchored at its
+// end. A mechanism that is recorded but not yet switched on has to say so on the
+// same line — the bolded record is where a reader stops, so a caveat four
+// paragraphs down is one they never reach — and that trailing text is exactly
+// what an end-anchored pattern rejects. Dropping `$` is therefore half the
+// widening rather than a tidy-up: keeping it while adding the alternation parses
+// `Mechanism chosen: …` only while nothing follows the bold, which is the one
+// case the wording exists to cover.
+function branchFreshness() {
+  const contributing = readContributing();
+  const mechanism = /^\*\*Mechanism (?:in use|chosen): ([^.*]+)\.\*\*/m.exec(contributing);
+  return {
+    documented: /^### Branch freshness$/m.test(contributing),
+    mechanism: mechanism === null ? null : mechanism[1].trim().toLowerCase(),
+  };
+}
+
+// The two mechanisms that close the stale-base hole. Only the queue reaches the
+// workflows — it is the one that needs an event they do not otherwise receive —
+// so recording the other one obliges this tree to carry nothing, and the suite
+// below pins that the recorded one is the queue rather than carrying a flag whose
+// false branch nothing can reach.
+const MECHANISMS = ['merge queue', 'require branches to be up to date'];
+const MECHANISM_NEEDING_MERGE_GROUP = 'merge queue';
 
 describe('the required-check table in CONTRIBUTING.md', () => {
   const rows = requiredChecks();
@@ -497,5 +632,126 @@ describe('the Turbo caches in ci.yml', () => {
     const block = jobBlock(ci, 'windows-lint');
     expect(block).toMatch(LINT_STEP);
     expect(block).not.toMatch(/uses: actions\/cache@/);
+  });
+});
+
+// A `pull_request` check runs against a merge commit GitHub built when the branch
+// was last pushed, and never rebuilds as `main` moves. Several guards in this
+// repository derive their expectations from the tree at run time, so two branches
+// can each be green against a tree the other has already changed, and the first
+// run that sees both is the post-merge run on `main`. CONTRIBUTING.md's "Branch
+// freshness" section records which repository setting closes that; these suites
+// hold the half of it that lives in the tree.
+//
+// Neither property below can be seen in a diff. A missing `merge_group` trigger
+// looks like every workflow that predates the queue, and a concurrency group is
+// one line nobody re-reads.
+describe('the gating workflows can run in a merge queue', () => {
+  const workflows = gatingWorkflows();
+
+  // `it.each([])` registers no tests and reports nothing, so a derivation that
+  // stopped matching would empty every loop below while leaving the run green.
+  // The four are named rather than counted: a floor also clears on junk, and the
+  // two exclusions are as load-bearing as the inclusions — `build-binaries.yml`
+  // runs on PRs but gates nothing, and requiring a queue build of four binaries
+  // per entry would be a real cost added by a guard nobody asked for.
+  it('derives the gating workflows, so the loops below are not vacuous', () => {
+    expect(workflows).toEqual(['audit.yml', 'ci.yml', 'codeql.yml', 'internal-path-guard.yml']);
+  });
+
+  // Every workflow behind a required check has to be one of them, or the table
+  // names a check that cannot gate a PR in the first place.
+  it('covers every workflow behind a required check', () => {
+    expect(workflows).toEqual(expect.arrayContaining(requiredWorkflows()));
+  });
+
+  // THE assertion this suite exists for. A merge queue reaches a workflow through
+  // `merge_group` and no other event, so a gating check missing it does not go
+  // red in the queue — it never reports, and the entry waits on it indefinitely.
+  // That failure arrives the day the queue is switched on, in a workflow whose
+  // last change may be months old, which is why it is pinned before then.
+  it.each(workflows)('%s triggers on merge_group', (file) => {
+    expect(triggerBlock(file), `${file} would never report in a merge queue`).toMatch(
+      /^ {2}merge_group:/m,
+    );
+  });
+});
+
+describe('the concurrency groups of the gating workflows', () => {
+  const workflows = gatingWorkflows();
+
+  // A push to `main` and a merge-queue entry are each the only run their commit
+  // will ever get. Cancelling one does not save a re-run, it leaves that commit
+  // with no verdict — and the next red run then carries a SHA whose own change
+  // was not the cause, which is how an innocent commit gets implicated.
+  //
+  // The expression is pinned WHOLE rather than by the substring it contains. A
+  // substring test passes on its own inversion: `!(github.event_name ==
+  // 'pull_request')` and `… || true` both contain the condition and both restore
+  // the defect, the first by cancelling exactly the runs that must never be
+  // cancelled. Measured — both matched the substring form this replaced.
+  it.each(workflows)('%s cancels a superseded PR run and nothing else', (file) => {
+    expect(
+      concurrencyBlock(file),
+      `${file} does not condition cancelling on the event being a pull_request`,
+    ).toMatch(/^ {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m);
+  });
+
+  // The other half, and the one that reads as already fixed once cancelling is
+  // conditioned. It is not: with the group still keyed on the ref, every push to
+  // `main` shares `refs/heads/main`, and a group that does not cancel QUEUES
+  // instead — so the second merge waits out the first run in full rather than
+  // losing it. Keying non-PR events by SHA is what gives each merged commit a
+  // group of its own, and nothing above would notice its removal.
+  //
+  // Pinned as the whole ternary for the same reason: a bare `github.sha` test
+  // passes on the swap that keys PRs by sha and main by ref, which reintroduces
+  // this defect AND silently drops the PR-supersede saving the block opens with.
+  it.each(workflows)('%s gives a non-PR run a group of its own', (file) => {
+    expect(
+      concurrencyBlock(file),
+      `${file}'s group does not key non-PR events by SHA, so main runs queue behind each other`,
+    ).toMatch(/^ {2}group:.*github\.event_name == 'pull_request' && github\.ref \|\| github\.sha/m);
+  });
+
+  // The event name separates a merge_group run from the push that follows it:
+  // the queue advances `main` to the merge-group commit, so those two events
+  // carry the same SHA and would otherwise share a group.
+  it.each(workflows)('%s keys its group on the event as well', (file) => {
+    expect(concurrencyBlock(file)).toMatch(/^ {2}group:.*\$\{\{ github\.event_name \}\}/m);
+  });
+});
+
+describe('the branch-freshness decision in CONTRIBUTING.md', () => {
+  const { documented, mechanism } = branchFreshness();
+
+  it('is recorded where a contributor reading about branch protection will find it', () => {
+    expect(documented, 'CONTRIBUTING.md carries no `### Branch freshness` section').toBe(true);
+    expect(
+      mechanism,
+      'CONTRIBUTING.md carries no `**Mechanism in use/chosen: …**` line',
+    ).not.toBeNull();
+    expect(MECHANISMS, `"${mechanism}" is not one of the mechanisms`).toContain(mechanism);
+  });
+
+  // The record is driven against the tree rather than merely being present. A
+  // note reading "merge queue" beside workflows no queue can run is worse than no
+  // note at all, because the next person reads it as settled and stops looking.
+  //
+  // Pinning that the recorded mechanism is the one WITH a tree obligation is what
+  // keeps this non-vacuous: the alternative setting obliges the tree to carry
+  // nothing, so a decision changed to it would leave the loop below asserting
+  // over an empty requirement while staying green. Changing the decision means
+  // editing this test — which is the deliberate act the record exists to force.
+  it('is the mechanism the workflows are actually wired for', () => {
+    expect(
+      mechanism,
+      `"${mechanism}" obliges this tree to carry nothing, so the check below would assert nothing`,
+    ).toBe(MECHANISM_NEEDING_MERGE_GROUP);
+    for (const file of gatingWorkflows()) {
+      expect(triggerBlock(file), `${file} cannot run in the recorded mechanism`).toMatch(
+        /^ {2}merge_group:/m,
+      );
+    }
   });
 });

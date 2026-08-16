@@ -14,16 +14,44 @@ on:
     # gives one `edited` type for all three — which the concurrency group below
     # bounds, since it cancels a superseded run per PR ref.
     types: [opened, synchronize, reopened, edited]
+  # The merge queue reaches a workflow through `merge_group` and through no other
+  # event, so a required check without this trigger never runs in the queue at
+  # all: the entry waits on a check nothing will ever report, rather than failing
+  # and being dropped. That is why this sits here whether or not the queue is
+  # switched on today — a workflow missing it does not degrade the queue, it
+  # wedges it. CONTRIBUTING.md ("Branch freshness") records which mechanism is in
+  # use, and required-checks.test.js drives that record against these triggers.
+  merge_group:
 
 permissions:
   contents: read
 
-# Cancel superseded runs: a new push to the same branch/PR stops the in-flight
-# run instead of letting both finish. Saves the most Actions minutes on PRs that
-# are pushed to repeatedly while iterating. main keeps a stable group per ref.
+# Cancel a superseded run on a PR: a new push to the same PR stops the in-flight
+# run instead of letting both finish. That is where the Actions minutes go on a
+# branch pushed to repeatedly while iterating.
+#
+# `push` and `merge_group` sit outside that bargain, and keeping them out takes
+# BOTH lines rather than just the second. Turning cancelling off while the group
+# stays keyed on the ref does not stop a run being lost — it QUEUES it, because
+# every push to main shares `refs/heads/main`, so a second merge waits out the
+# first run in full. Keying non-PR events by SHA gives every merged commit its
+# own group, so each one starts at once and runs to the end.
+#
+# What that buys on main is a post-merge run the NEXT merge cannot cancel. Keyed
+# on the ref alone, two merges a couple of minutes apart left the earlier commit
+# with no verdict at all, and the first red run to appear on main then carried a
+# SHA whose own change was not the cause. A cancelled run is not a green one, and
+# a commit carrying no verdict is what a later bisect has to work around.
+#
+# The event name is in the key as well, as it is in the other three gating
+# workflows. A merge-queue entry's `github.sha` is the head of the temporary
+# queue branch, and that is the commit the base branch advances to — so the
+# `merge_group` run and the `push` run that follows it carry the SAME sha, and
+# without the event name they would share a group and the push run would queue
+# behind rather than start at once.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:

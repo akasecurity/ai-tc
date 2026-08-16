@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
-import { severityFloorPosture } from '@akasecurity/plugin-sdk';
+import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory, DetectionException } from '@akasecurity/schema';
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -1242,12 +1242,34 @@ describe('runQuery — against a seeded standalone gateway', () => {
   it('status bar stays stable across surfaces even when /findings truncates its page', async () => {
     // Seed more findings than the /findings page limit (25) so the listed rows
     // are a truncated slice while /health and /recommend read a wider window.
+    // 30 is pinned by that limit, not chosen, so the corpus cannot come down.
+    //
+    // Seeded on ONE store handle rather than through 30 handleCapture calls.
+    // handleCapture resolves a gateway, captures, and closes it again per call,
+    // so the loop's cost is 30 store opens rather than 30 writes — measured at
+    // 140ms against 20ms for the same writes on a single handle. That gap is
+    // paid in the operations Windows is slowest at (file create, fsync, and a
+    // virus scanner reading each new file), which is why this test alone hit the
+    // 20s ceiling on that leg while its one-capture neighbours never came close.
+    // The write path is unchanged: handleCapture is a fail-open wrapper around
+    // exactly this runtime, and the test at the top of this block covers it.
     const cfg = config(dir);
-    for (let i = 0; i < 30; i++) {
-      await handleCapture(
-        { kind: 'prompt', sourceTool: 'claude-code', text: `key ${String(i)} ${SECRET}` },
-        cfg,
-      );
+    const seed = createPluginRuntime(resolveDataGateway(cfg), cfg.settings, {
+      dataDir: cfg.dataDir,
+    });
+    try {
+      for (let i = 0; i < 30; i++) {
+        await seed.capture({
+          kind: 'prompt',
+          sourceTool: 'claude-code',
+          text: `key ${String(i)} ${SECRET}`,
+        });
+      }
+    } finally {
+      // Closes the gateway with it. The queries below then read the store back
+      // through a handle of their own, so the rows have to be on disk and not
+      // merely in the connection that wrote them.
+      await seed.close();
     }
 
     const gateway = resolveDataGateway(cfg);

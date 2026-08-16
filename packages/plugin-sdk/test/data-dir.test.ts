@@ -23,29 +23,46 @@ describe('data-dir re-export', () => {
     expect(DATA_FILE_MODE).toBe(PERSISTENCE_FILE_MODE);
   });
 
-  // Every binding here must BE persistence's, not a copy that happens to agree
-  // today. Identity is what carries persistence's own behavioural coverage of
-  // each one onto this package's surface — for `ensureDataDir` that is the 0700
-  // mkdir and the shared, symlink-guarded tighten, which a local
-  // reimplementation would satisfy every SDK consumer's import without
-  // delivering.
-  //
-  // Derived from the shim's own exports rather than listed by hand, so a
-  // binding added to the module is checked the day it lands instead of the day
-  // someone remembers to extend this table. `ensureDataDirSync` is the one
-  // renamed export — the SDK's spelling of persistence's `ensureLayoutDirSync`.
+  // Derived from the shim's own exports rather than listed by hand, so a binding
+  // added to the module is checked the day it lands instead of the day someone
+  // remembers to extend this table. `ensureDataDirSync` is the one renamed
+  // export — the SDK's spelling of persistence's `ensureLayoutDirSync`.
   const RENAMED: Record<string, string> = { ensureDataDirSync: 'ensureLayoutDirSync' };
   const bindings = Object.keys(shim).sort();
+  const at = (mod: object, name: string): unknown => (mod as Record<string, unknown>)[name];
 
-  it('re-exports a non-empty surface (the table below is derived from it)', () => {
-    // Without this the it.each below generates zero cases and passes silently,
-    // which is exactly how a shim that stopped re-exporting anything would read.
+  // Split by what `toBe` can actually prove about each kind, because one name
+  // cannot be true of both. For a FUNCTION, `toBe` is reference identity, so it
+  // genuinely rules out a local reimplementation — that is what carries
+  // persistence's own behavioural coverage (for `ensureDataDir`, the 0700 mkdir
+  // and the shared symlink-guarded tighten) onto this package's surface.
+  //
+  // For a NUMBER it is value equality, and `Object.is(0o700, 0o700)` is true, so
+  // no assertion over the values alone can tell persistence's constant from a
+  // local `export const DATA_DIR_MODE = 0o700`. Those two are pinned
+  // STRUCTURALLY instead, by `declares no mode of its own` below, which reads
+  // the module's bytes. Naming this case "not a local copy" would be a title
+  // that cannot go red for the reason it states.
+  const fnBindings = bindings.filter((n) => typeof at(shim, n) === 'function');
+  const valueBindings = bindings.filter((n) => typeof at(shim, n) !== 'function');
+
+  it('splits its whole surface across the two tables below', () => {
+    // Both halves are derived, so a binding could fall out of BOTH and every
+    // it.each below would simply generate one case fewer — silently, since a
+    // table that shrank still passes. This is what makes that loud, and it
+    // subsumes the non-empty check: zero exports fails the union too.
+    expect([...fnBindings, ...valueBindings].sort()).toEqual(bindings);
     expect(bindings.length).toBeGreaterThan(5);
   });
 
-  it.each(bindings)('serves persistence %s, not a local copy', (name) => {
-    const source = RENAMED[name] ?? name;
-    expect(shim[name as keyof typeof shim]).toBe(persistence[source as keyof typeof persistence]);
+  it.each(fnBindings)('serves persistence %s, not a local reimplementation', (name) => {
+    expect(at(shim, name)).toBe(at(persistence, RENAMED[name] ?? name));
+  });
+
+  // Value equality only — see above. `declares no mode of its own` is what rules
+  // out a local copy of these.
+  it.each(valueBindings)('agrees with persistence %s', (name) => {
+    expect(at(shim, name)).toBe(at(persistence, RENAMED[name] ?? name));
   });
 
   // Equality alone still holds if someone re-declares the same literals here, so

@@ -619,7 +619,15 @@ describe('KeychainKeyProvider', () => {
     });
 
     it('quotes a benign keychain path into the interactive line', async () => {
-      const target = join(dir, 'throwaway.keychain');
+      // A literal rather than a path under `dir`, and that is forced rather
+      // than tidier: the exec is injected, so nothing ever opens this — but
+      // `join()` under a Windows temp dir is backslash-separated, and
+      // writeCommand refuses a backslash. Built from `dir`, this case cannot
+      // pass on win32 at all, because every absolute path there carries the
+      // character the refusal is looking for. The refusal is what the cases
+      // below cover; this one is about the QUOTING, so it takes a path shaped
+      // like the one the backend really operates on.
+      const target = '/tmp/throwaway.keychain';
       const calls: { args: string[]; stdin: string | undefined }[] = [];
       const provider = new KeychainKeyProvider(
         dir,

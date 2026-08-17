@@ -37,6 +37,30 @@ export class GateConfigError extends Error {}
 const ENFORCED_MARK = '✅';
 const NOT_ENFORCED_MARK = '⛔';
 
+/** The section the gate table lives in, and the fence that closes it. */
+const SECTION_HEADING = '### Checks that gate `main`';
+const SECTION_FENCE = '```bash';
+
+/** A separator row — `| --- | --- |` — in any spelling GFM accepts. */
+const SEPARATOR_ROW = /^[|\-: ]+$/;
+
+/**
+ * Whether a line is a CONTENT row of the gate table: opens and closes with a
+ * pipe, and is neither the header nor the separator beneath it.
+ *
+ * Deliberately not one regex. The pattern this replaced put `\s*` directly in
+ * front of `[-: ]+` inside a lookahead, and a space matches both — so a long
+ * run of spaces backtracked quadratically. Every test here is a fixed-string
+ * comparison or one character class with a single quantifier, and `SEPARATOR_ROW`
+ * has no ambiguity because its class is the whole pattern.
+ */
+function isTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return false;
+  if (SEPARATOR_ROW.test(trimmed)) return false;
+  return !trimmed.startsWith('| Check');
+}
+
 /**
  * The gate table, sliced to its own section first so a table further down the
  * file cannot contribute rows — the branch-freshness section carries one.
@@ -47,17 +71,19 @@ const NOT_ENFORCED_MARK = '⛔';
  * job would report a clean bill of health having read no table at all.
  */
 export function parseGateTable(contributing: string): GateRow[] {
-  const section = /### Checks that gate `main`([\s\S]*?)```bash/.exec(contributing);
-  if (section === null) {
+  // Two indexOf calls and a slice rather than `HEADER([\s\S]*?)```bash`. The
+  // lazy form is quadratic — the header can match at many positions and each
+  // failed attempt scans to end of input, measured at 67x for 8x input — and
+  // this is clearer besides: it says "from the heading to the next fence".
+  const start = contributing.indexOf(SECTION_HEADING);
+  const end =
+    start === -1 ? -1 : contributing.indexOf(SECTION_FENCE, start + SECTION_HEADING.length);
+  if (start === -1 || end === -1) {
     throw new GateConfigError(
       'CONTRIBUTING.md has no "### Checks that gate `main`" section ending in a fenced block',
     );
   }
-  // `section[1]` is the capture group, which the null check above proves the
-  // match has — but only at runtime; under `noUncheckedIndexedAccess` the type
-  // is still `string | undefined`, so give it an empty default. Empty falls
-  // through to the no-rows refusal below rather than to a silent pass.
-  const body = section[1] ?? '';
+  const body = contributing.slice(start + SECTION_HEADING.length, end);
 
   // Every line that LOOKS like a table row is counted first, and the parsed
   // rows are required to match that count exactly.
@@ -69,7 +95,13 @@ export function parseGateTable(contributing: string): GateRow[] {
   // is `No-network`, the one this gate exists for. Refusing is the only safe
   // reading: a table this reader cannot fully parse is a table it must not
   // draw conclusions from.
-  const rowLike = [...body.matchAll(/^\|(?!\s*[-: ]+\|)(?!\s*Check\b).*\|$/gm)].length;
+  //
+  // A line filter rather than one pattern with two negative lookaheads. The
+  // lookahead form carried `\s*` immediately followed by `[-: ]+`, and a space
+  // matches BOTH — the classic ambiguous pair, quadratic at 54x for 8x input.
+  // Each test below is either a fixed-string check or a single character class
+  // with one quantifier, so none of them can backtrack.
+  const rowLike = body.split('\n').filter(isTableRow).length;
 
   const rows: GateRow[] = [];
   for (const [, check, file, mark] of body.matchAll(

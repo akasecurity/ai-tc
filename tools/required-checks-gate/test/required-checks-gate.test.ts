@@ -376,3 +376,48 @@ describe('a table row this reader cannot parse', () => {
     expect(parseGateTable(table(row('A'), row('B', 'audit.yml', '⛔')))).toHaveLength(2);
   });
 });
+
+// ReDoS guards for the two patterns CodeQL flagged (alerts 38 and 39), in the
+// ratio shape this repository uses: same work at two sizes, fastest of several
+// runs. A ratio cancels the runner and the fastest sample is the one load
+// cannot inflate; an absolute budget would redden a healthy tree on a preempted
+// CI sample.
+describe('parseGateTable is linear in its input', () => {
+  const fastest = (input: string): number =>
+    Math.min(
+      ...Array.from({ length: 5 }, () => {
+        const started = process.hrtime.bigint();
+        try {
+          parseGateTable(input);
+        } catch {
+          // Both witnesses are malformed on purpose — the refusal is the point,
+          // and what is being measured is how long reaching it takes.
+        }
+        return Number(process.hrtime.bigint() - started) / 1e6;
+      }),
+    );
+
+  // CodeQL's witness for the section slice: the heading repeated, never closed
+  // by a fence. The lazy `([\s\S]*?)```bash` form measured 67x for 8x input.
+  it('finds the section without rescanning from every heading', () => {
+    const witness = (reps: number): string =>
+      '### Checks that gate `main`' + '### Checks that gate `main`a'.repeat(reps);
+    expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
+  });
+
+  // CodeQL's witness for the row counter: a pipe then a long run of spaces. The
+  // `(?!\s*[-: ]+\|)` form measured 54x, because a space matches both `\s` and
+  // the `[-: ]` class that immediately follows it.
+  it('counts row-like lines without backtracking on a run of spaces', () => {
+    const witness = (reps: number): string =>
+      '### Checks that gate `main`\n|' + ' '.repeat(reps) + '\n```bash';
+    expect(fastest(witness(16_000)) / fastest(witness(2_000))).toBeLessThan(25);
+  });
+
+  // The positive control on both: the real table still parses to its real rows,
+  // so a reader that started refusing everything would not satisfy the ratios
+  // above by being uniformly fast.
+  it('still reads the repository’s own table', () => {
+    expect(parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'))).toHaveLength(8);
+  });
+});

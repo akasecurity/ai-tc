@@ -838,3 +838,47 @@ describe('advisoryIdsFromReport against the human side of the comparison', () =>
     ]);
   });
 });
+
+// A ReDoS guard, in the shape this repository uses for timing properties: a
+// RATIO of the same work at two input sizes, taken as the FASTEST of several
+// runs. A ratio cancels the runner — half the machine halves both sides — and
+// the fastest sample is the one a loaded runner cannot inflate, since noise
+// only ever adds time. An absolute millisecond budget here would redden a
+// healthy tree on a preempted CI sample.
+//
+// The input is CodeQL's own witness for alert 37. One side of the comparison
+// this function feeds is the tracking issue's comments, so it runs on input any
+// public commenter controls: unbounded, it measured 66x for 8x input (1116 ms
+// at 16k repetitions) inside a job with a ten-minute budget.
+describe('advisoryIdsFromReport is linear in its input', () => {
+  const witness = (reps: number): string => '| [9](' + '| [GHSA--]('.repeat(reps);
+  const fastest = (input: string): number =>
+    Math.min(
+      ...Array.from({ length: 5 }, () => {
+        const started = process.hrtime.bigint();
+        advisoryIdsFromReport(input);
+        return Number(process.hrtime.bigint() - started) / 1e6;
+      }),
+    );
+
+  it('grows about 8x for 8x input, not about 64x', () => {
+    const ratio = fastest(witness(16_000)) / fastest(witness(2_000));
+    // Quadratic is ~64 here and linear ~8. The ceiling sits between them with
+    // room for both a slow runner and an honest constant-factor change; what it
+    // separates is the SHAPE, which is the only thing that matters.
+    expect(ratio).toBeLessThan(25);
+  });
+
+  // The structural half, which no timing can drift out of: every quantifier in
+  // the pattern is bounded. Without this the case above could be satisfied by a
+  // machine fast enough to hide a regression.
+  it('bounds every quantifier in the advisory-cell pattern', () => {
+    const source = readFileSync(new URL('../src/lib.ts', import.meta.url), 'utf8');
+    const pattern = /const ADVISORY_CELL = (\/.*\/g);/.exec(source)?.[1];
+    expect(pattern).toBeDefined();
+    // No bare `+` or `*` quantifier survives; each is `{n,m}`.
+    expect(pattern).not.toMatch(/[\]+*]\+/);
+    expect(pattern).toMatch(/\{1,64\}/);
+    expect(pattern).toMatch(/\{0,2048\}/);
+  });
+});

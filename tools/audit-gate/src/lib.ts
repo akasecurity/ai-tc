@@ -446,7 +446,19 @@ export const advisoryId = (advisory: AuditAdvisory): string =>
 // two adjacent link cells mask each other. No row shape emitted today has two,
 // which is exactly why the bug would be introduced by a later edit and found by
 // nobody.
-const ADVISORY_CELL = /\| \[(GHSA-[A-Za-z0-9-]+|\d+)\]\([^)\n]*\)(?= \|)/g;
+// Every quantifier here is BOUNDED, and that is a security property rather than
+// tidiness. One side of the comparison this feeds is the tracking issue's own
+// comments — anyone who can comment on a public repository — so this pattern
+// runs on genuinely uncontrolled input inside a job with a ten-minute budget.
+// Unbounded, `[A-Za-z0-9-]+` scans a long run, fails at the `]`, and `matchAll`
+// retries from the next `| [`: quadratic, measured at 66x for 8x input on
+// CodeQL's own witness string. A bound caps the work per start position, so the
+// total is linear in the input again.
+//
+// The limits are far above anything real (a GHSA id is 19 characters, a
+// registry id 7) and a value past them is not silently truncated — it simply
+// does not match, exactly as an unrecognised shape already did not.
+const ADVISORY_CELL = /\| \[(GHSA-[A-Za-z0-9-]{1,64}|\d{1,32})\]\([^)\n]{0,2048}\)(?= \|)/g;
 
 export function advisoryIdsFromReport(markdown: string): string[] {
   const ids = new Set<string>();

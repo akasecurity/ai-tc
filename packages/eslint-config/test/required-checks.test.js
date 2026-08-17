@@ -212,25 +212,36 @@ function checkNames(file) {
 
 const readContributing = () => readText(join(REPO_ROOT, 'CONTRIBUTING.md'));
 
-// The table itself: | `Check name` | `workflow.yml` |. Sliced to its own section
-// so a table further down the file cannot contribute rows — the branch-freshness
-// section below carries one, and its rows are not two backticked cells, but the
-// slice is what makes that a fact about this reader rather than about that table.
+// The table itself: | `Check name` | `workflow.yml` | <mark> |. Sliced to its own
+// section so a table further down the file cannot contribute rows — the
+// branch-freshness section below carries one, and its rows are not two backticked
+// cells, but the slice is what makes that a fact about this reader rather than
+// about that table.
+//
+// The third cell is the ENFORCED column: whether branch protection actually
+// requires the check today. That is repository state rather than anything this
+// tree can set, so nothing here asserts it is ✅ — `required-checks.yml` reads the
+// live set daily and fails on drift in either direction. What this file keeps
+// true is the half that IS in the tree: that every name still belongs to a real
+// job, and that the column parses at all.
 //
 // Asserts NOTHING, deliberately: a caller builds an `it.each` list from this in a
 // `describe` body, and an assertion there is a collection error rather than a
 // test failure — vitest reports the whole FILE as `(0 test)` and every suite in
 // it stops running. A parse that found nothing returns null, and the callers that
 // can afford to assert do so inside an `it`.
+const ENFORCED_MARKS = ['✅', '⛔'];
+
 function requiredCheckRows() {
   const section = /## Pull requests[\s\S]*?### Checks that gate `main`([\s\S]*?)```bash/.exec(
     readContributing(),
   );
   if (section === null) return null;
-  return [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\|$/gm)].map(
-    ([, check, file]) => ({
+  return [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
+    ([, check, file, enforced]) => ({
       check,
       file,
+      enforced,
     }),
   );
 }
@@ -270,7 +281,7 @@ const concurrencyBlock = (file) => topLevelBlock(file, 'concurrency', /^ {2}grou
  */
 function gatingWorkflows() {
   return readdirSync(WORKFLOWS)
-    .filter((file) => file.endsWith('.yml'))
+    .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
     .filter((file) => {
       const on = dropComments(
         /^on:[^\S\n]*$([\s\S]*?)(?=^\S|\s*$(?![\s\S]))/m.exec(readWorkflow(file))?.[1] ?? '',
@@ -340,6 +351,24 @@ describe('the required-check table in CONTRIBUTING.md', () => {
     expect(checkNames(file)).toContain(check);
   });
 
+  // The Enforced column is what `required-checks.yml` compares the live set
+  // against, and that gate reads an unrecognised mark as a configuration error
+  // rather than as `false` — so a cell holding anything else fails the daily job
+  // rather than silently downgrading the row. Catch it here, in the PR that
+  // wrote it, instead of tomorrow morning.
+  it.each(rows)('$check records an enforced mark this repo recognises', ({ enforced }) => {
+    expect(ENFORCED_MARKS).toContain(enforced);
+  });
+
+  // The column has to be able to say both things. A table that had drifted to
+  // all-✅ or all-⛔ would satisfy every per-row check above while describing a
+  // state nobody measured — and all-✅ in particular is the shape that reads as
+  // "everything gates" while six checks block nothing.
+  it('records both enforced and not-enforced checks, so the column is load-bearing', () => {
+    const marks = new Set(rows.map((row) => row.enforced));
+    expect([...marks].sort()).toEqual([...ENFORCED_MARKS].sort());
+  });
+
   // The matrix expander is load-bearing for the two CodeQL rows: without it
   // they would read as the literal `CodeQL (${{ matrix.language }})` and match
   // nothing. Pin that it expands rather than trusting the rows above, which
@@ -352,11 +381,76 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   });
 
   // The audit workflow's second job reports a check too, and it is deliberately
-  // NOT required — it only ever runs on the schedule, so requiring it would
-  // block every PR on a check that is permanently skipped there.
-  it('does not require the scheduled advisory-reporting job', () => {
-    expect(checkNames('audit.yml')).toContain('File advisory issue (scheduled runs)');
-    expect(rows.map((row) => row.check)).not.toContain('File advisory issue (scheduled runs)');
+  // NOT required — it runs only on the schedule and on a push to main, so
+  // requiring it would block every PR on a check that is permanently skipped
+  // there.
+  // The alert-count job reports a check too, and it is deliberately NOT
+  // required for the same reason: it runs only on its own schedule, so on a PR
+  // it is SKIPPED — and GitHub reports a skipped required check as pending, so
+  // requiring it would block every PR for ever on a check that never reports.
+  it('does not require the CodeQL alert-count job', () => {
+    expect(checkNames('codeql-alerts.yml')).toContain('Open alerts match the baseline');
+    expect(requiredChecks().map((row) => row.check)).not.toContain(
+      'Open alerts match the baseline',
+    );
+  });
+
+  it('does not require the unattended advisory-reporting job', () => {
+    expect(checkNames('audit.yml')).toContain('File advisory issue (unattended runs)');
+    expect(rows.map((row) => row.check)).not.toContain('File advisory issue (unattended runs)');
+  });
+
+  // The job's NAME is the claim; its `if:` is what decides. They drifted apart
+  // once already — the name said "scheduled runs" while a main-push failure was
+  // the case nobody was watching, and the branch that ships stayed red for up
+  // to a day with no issue filed. Pin both halves so the next widening has to
+  // say so in the name too.
+  it('files an advisory issue for a push to main as well as for the schedule', () => {
+    const block = jobBlock(readWorkflow('audit.yml'), 'report');
+    expect(block).toMatch(/github\.event_name == 'schedule'/);
+    expect(block).toMatch(/github\.event_name == 'push'/);
+    expect(block).toMatch(/github\.ref == 'refs\/heads\/main'/);
+    // And still not on a PR, where the red check is already the signal in front
+    // of the one person who can act on it. Without this the case above is
+    // satisfied by an `if:` that fires on everything.
+    expect(block).toMatch(/needs\.audit\.result == 'failure'/);
+    expect(block).not.toMatch(/event_name == 'pull_request'/);
+  });
+});
+
+// The Enforced column above is a claim about repository state, and the only
+// thing that can keep it true is something that reads that state. This pins the
+// wiring — that the workflow exists, runs unattended, and drives the gate — since
+// every one of those can be removed leaving a table that still reads as audited.
+describe('the job that holds the enforced column against reality', () => {
+  const workflow = () => readWorkflow('required-checks.yml');
+
+  it('runs the gate rather than restating the table in YAML', () => {
+    expect(workflow()).toMatch(/node tools\/required-checks-gate\/src\/check-required\.ts/);
+  });
+
+  // Scheduled, because its answer has nothing to do with any PR's diff: it reads
+  // live settings, so as a PR check it would fail for a change somebody else
+  // made — which is a check people re-run rather than read.
+  it('runs on a schedule, so nothing has to remember to ask', () => {
+    expect(triggerBlock('required-checks.yml')).toMatch(/^ {4}- cron: '[^']+'$/m);
+  });
+
+  // And on a push touching the record itself, so a PR that flips a row learns
+  // within minutes of merging whether it told the truth. Without this the
+  // feedback on an edit to the column arrives the next morning, by which time
+  // it reads as an unrelated failure.
+  it('also runs when the record or the reader changes', () => {
+    const trigger = triggerBlock('required-checks.yml');
+    expect(trigger).toMatch(/^ {6}- 'CONTRIBUTING\.md'$/m);
+    expect(trigger).toMatch(/^ {6}- 'tools\/required-checks-gate\/\*\*'$/m);
+  });
+
+  // It reads the table it is checking, so it must not also be IN it: requiring
+  // it would put a live GitHub query on the critical path of every merge, and
+  // its red means a settings drift nobody's PR caused.
+  it('is not itself one of the checks it gates on', () => {
+    expect(requiredChecks().map((row) => row.file)).not.toContain('required-checks.yml');
   });
 });
 
@@ -376,6 +470,22 @@ describe('the workflows behind those checks', () => {
     expect(trigger[1]).not.toMatch(/^\s*branches:/m);
   });
 
+  // Retargeting a PR's base fires ONLY `edited`. `ci.yml` needs that type to
+  // avoid a permanent deadlock, because its `branches: [main]` filter means a
+  // stacked PR matches no event until it is retargeted. `codeql.yml` has no
+  // such filter, so the deadlock is unreachable there — but the retarget still
+  // changes the MERGE COMMIT, so an analysis that does not re-run describes a
+  // tree nobody will merge while reporting green. Both workflows carry the type
+  // for those two different reasons; pin both, since the second is the one a
+  // reader is likeliest to trim as redundant.
+  it.each(['ci.yml', 'codeql.yml'])('%s re-runs when a PR is retargeted', (file) => {
+    const trigger = /^ {2}pull_request:[^\S\n]*$([\s\S]*?)(?=^ {2}[^\s#])/m.exec(
+      dropComments(readWorkflow(file)),
+    );
+    expect(trigger, `${file} has no pull_request trigger block`).not.toBeNull();
+    expect(trigger[1]).toMatch(/types:\s*\[[^\]]*\bedited\b[^\]]*\]/);
+  });
+
   it('both run daily or weekly as well as on PRs', () => {
     expect(readWorkflow('audit.yml')).toMatch(/^\s*- cron: '[^']+'$/m);
     expect(readWorkflow('codeql.yml')).toMatch(/^\s*- cron: '[^']+'$/m);
@@ -385,6 +495,65 @@ describe('the workflows behind those checks', () => {
   // and report nothing.
   it('codeql.yml grants security-events: write', () => {
     expect(readWorkflow('codeql.yml')).toMatch(/^\s*security-events: write$/m);
+  });
+});
+
+// A workflow declaring no `permissions:` anywhere takes the repository's DEFAULT
+// token scope. That default is a repository setting — invisible to anyone reading
+// this tree, and widenable for every workflow at once by an admin who never
+// touches a file here. So the scope such a workflow runs with is not a property
+// of the workflow at all, which is why CodeQL's `actions/missing-workflow-
+// permissions` flags it and why it is worth deriving rather than pinning to the
+// one file that was missing it. `build-binaries.yml` was that file, and it is the
+// only reason this check exists — but a pin on that name would go green the
+// moment it was fixed and say nothing about the fourteenth workflow.
+describe('every workflow declares its token scope', () => {
+  // Top-level OR every job — the same disjunction the CodeQL rule uses. Four
+  // release workflows take the second form (each job narrows its own scope, one
+  // of them to `id-token: write` for provenance), so requiring the top-level form
+  // outright would fail them for being MORE precise than the rule asks.
+  // BOTH extensions: GitHub honours `.yaml` exactly as it honours `.yml`, so a
+  // workflow named that way would escape this guard entirely — and the
+  // non-vacuity check below counts files, so it cannot see one that was never
+  // enumerated. The claim this describe makes is about EVERY workflow.
+  const isWorkflow = (file) => file.endsWith('.yml') || file.endsWith('.yaml');
+  const workflowFiles = () => readdirSync(WORKFLOWS).filter(isWorkflow);
+
+  // Job keys sit at two spaces inside `jobs:`; their own keys sit at four, and a
+  // step's at six with a `- `. Comments are dropped first, or a `#` line inside a
+  // `run:` block reads as a job key.
+  const jobKeys = (file) =>
+    [...dropComments(topLevelBlock(file, 'jobs', /^ {2}\S/m)).matchAll(/^ {2}([\w-]+):/gm)].map(
+      ([, key]) => key,
+    );
+
+  // Non-vacuity, and it has to name a file rather than assert a count: an empty
+  // enumeration satisfies `it.each` by registering no tests at all, and vitest
+  // reports that as a pass. `build-binaries.yml` is the file this check was
+  // written for, so a reader that stopped finding it would be reporting on
+  // nothing while looking green.
+  it('enumerates the workflow files, so the per-file cases below are not vacuous', () => {
+    expect(workflowFiles()).toContain('build-binaries.yml');
+    expect(workflowFiles().length).toBeGreaterThan(10);
+  });
+
+  it.each(workflowFiles())('%s narrows the default token scope', (file) => {
+    const source = dropComments(readWorkflow(file));
+    if (/^permissions:/m.test(source)) return;
+    // No top-level block, so every job must carry one of its own. Assert the job
+    // list is non-empty first: a workflow whose jobs failed to parse would
+    // otherwise satisfy `every` on an empty array — the vacuous pass this whole
+    // describe exists to avoid, reached one level down.
+    const keys = jobKeys(file);
+    expect(keys.length, `${file}: no jobs parsed, so the per-job check is vacuous`).toBeGreaterThan(
+      0,
+    );
+    for (const key of keys) {
+      expect(
+        jobBlock(readWorkflow(file), key),
+        `${file}: job \`${key}\` declares no permissions`,
+      ).toMatch(/^ {4}permissions:/m);
+    }
   });
 });
 
@@ -505,6 +674,57 @@ describe('the Windows legs', () => {
     expect(block).toMatch(/--filter=@akasecurity\/eslint-config(?![\w-])/);
   });
 
+  // The second entry the derived check above cannot reach, and pinned for the
+  // same reason: `private: true` puts it outside the `private !== true` rule by
+  // construction, so a bare filter line could be removed with nothing going red
+  // — which is exactly what the `private !== true` rule deliberately will not
+  // protect.
+  //
+  // What it buys is narrow and has no substitute. `plugins/browser-extension/
+  // test/native-host/scan-worker-bundle.e2e.test.ts` is the only place
+  // `resolveWorkerUrl()` runs from the built NATIVE HOST, and that resolver is
+  // `fileURLToPath` over a bundled script's own URL — the one thing in the
+  // isolated-scan path that can differ on Windows and nowhere else. A miss
+  // returns undefined, the host keeps serving, and every pulled and custom
+  // regex rule is dropped on that machine with nothing failing loudly.
+  //
+  // The sibling property — that the Windows INSTALL of the native host works —
+  // is covered by `cli`'s extension suite and is not this. Installing the host
+  // is not the same as the host resolving its worker at runtime, so neither
+  // check stands in for the other.
+  it('tests the native-messaging host, which is private but ships inside the CLI', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    expect(block).toMatch(/--filter=@akasecurity\/plugin-browser-extension(?![\w-])/);
+  });
+
+  // The pin above is a filter entry, and a filter entry only buys a Windows run
+  // of the case that matters while that case EXISTS. The three older cases in
+  // that file check the worker is emitted, that its name is a literal in the
+  // bundle, and that it runs when this suite starts it directly — none of which
+  // drives the resolver as the shipped bundle inlines it, and all of which
+  // would go on passing on Windows while the property the leg was widened for
+  // went unexercised. So pin the case by name too: deleting it is then a red
+  // test rather than a silently narrower leg.
+  it('drives the built host, not only the worker started by the suite itself', () => {
+    const suite = readFileSync(
+      join(
+        REPO_ROOT,
+        'plugins',
+        'browser-extension',
+        'test',
+        'native-host',
+        'scan-worker-bundle.e2e.test.ts',
+      ),
+      'utf8',
+    );
+    expect(suite).toContain('is found by the built host’s own resolver');
+    // The positive control on the pin: it is a spawn OF the built host script,
+    // not another Worker the suite constructs. Without this the assertion above
+    // is satisfied by a case renamed to match and rewritten to do anything.
+    expect(suite).toMatch(/spawnSync\(process\.execPath, \[join\(HOST_DIR, HOST_SCRIPT\)\]/);
+  });
+
   // A filter is only a filter while there is something to filter. `turbo run
   // test` with no --filter at all would satisfy the containment check above by
   // running everything, which is a different job with a different cost — and it
@@ -618,7 +838,7 @@ describe('the Windows legs', () => {
   // is 22. Re-derive it after a merge rather than trusting that it merged.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(22);
+    expect(scripts).toHaveLength(24);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');

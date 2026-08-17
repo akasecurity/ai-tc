@@ -1,0 +1,378 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  annotations,
+  buildSummary,
+  compare,
+  GateConfigError,
+  type GateRow,
+  isFailure,
+  parseGateTable,
+  parsePrResponse,
+  parseRollupResponse,
+  prCandidatesQuery,
+  type PrNode,
+  readRollup,
+  type RollupContext,
+  rollupQuery,
+  selectPr,
+} from '../src/lib.ts';
+
+const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+
+const table = (...rows: string[]): string =>
+  [
+    '### Checks that gate `main`',
+    '',
+    '| Check | Workflow | Enforced |',
+    '| --- | --- | --- |',
+    ...rows,
+    '',
+    '```bash',
+    'gh api graphql …',
+    '```',
+  ].join('\n');
+
+const row = (check: string, file = 'ci.yml', mark = '✅'): string =>
+  `| \`${check}\` | \`${file}\` | ${mark} |`;
+
+const gateRow = (check: string, enforced: boolean): GateRow => ({
+  check,
+  file: 'ci.yml',
+  enforced,
+});
+
+describe('parseGateTable', () => {
+  it('reads the check, the workflow and the enforced mark', () => {
+    expect(parseGateTable(table(row('A'), row('B', 'audit.yml', '⛔')))).toEqual([
+      { check: 'A', file: 'ci.yml', enforced: true },
+      { check: 'B', file: 'audit.yml', enforced: false },
+    ]);
+  });
+
+  // The vacuity guard, and the reason it throws rather than returning []. Every
+  // comparison below is over set membership, so an empty intended set satisfies
+  // all of them at once: nothing is missing from a pin of nothing, so the job
+  // would report a clean bill of health having read no table at all.
+  it('refuses a section it cannot find rather than reporting no rows', () => {
+    expect(() => parseGateTable('# CONTRIBUTING\n\nnothing here\n')).toThrow(GateConfigError);
+  });
+
+  it('refuses a section whose rows do not parse', () => {
+    expect(() => parseGateTable(table('| not | a | row |'))).toThrow(GateConfigError);
+  });
+
+  // A mark nobody recognises is a configuration error, not a `false`. Read as
+  // "not enforced" it would silently downgrade a row that says the opposite —
+  // and a downgraded row is exactly what stops this gate failing on a
+  // regression.
+  it('refuses an unrecognised enforced mark', () => {
+    expect(() => parseGateTable(table(row('A', 'ci.yml', '?')))).toThrow(/neither/);
+  });
+
+  // The real file, so the shipped table and the reader cannot drift apart.
+  it('reads the repository’s own table', () => {
+    const rows = parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'));
+    expect(rows).toHaveLength(8);
+    expect(rows.filter((r) => r.enforced).map((r) => r.check)).toEqual([
+      'Lint · Typecheck · Test · Build',
+      'Windows · Unit tests (shipped surface)',
+    ]);
+  });
+});
+
+describe('readRollup', () => {
+  it('reads both context shapes', () => {
+    const live = readRollup([
+      { name: 'a-check-run', isRequired: true },
+      { context: 'a-status-context', isRequired: false },
+    ]);
+    expect(live.get('a-check-run')).toBe('required');
+    expect(live.get('a-status-context')).toBe('not-required');
+  });
+
+  // Keying an unnamed context on `undefined` would collide every one of them
+  // onto a single entry, and that entry's state is then whichever came last.
+  it('skips a context carrying no name at all', () => {
+    expect(readRollup([{ isRequired: true }]).size).toBe(0);
+  });
+
+  // A rerun can report the same name twice. `required` has to win, because the
+  // other order reports a regression that is not one — and this gate's whole
+  // value is that its red means something.
+  it('lets required win over a duplicate that says otherwise', () => {
+    expect(
+      readRollup([
+        { name: 'dup', isRequired: true },
+        { name: 'dup', isRequired: false },
+      ]).get('dup'),
+    ).toBe('required');
+  });
+});
+
+describe('compare', () => {
+  it('is quiet when the live set matches the record exactly', () => {
+    const drift = compare(
+      [gateRow('kept', true), gateRow('pending', false)],
+      readRollup([
+        { name: 'kept', isRequired: true },
+        { name: 'pending', isRequired: false },
+      ]),
+    );
+    expect(isFailure(drift)).toBe(false);
+    expect(drift.outstanding.map((r) => r.check)).toEqual(['pending']);
+  });
+
+  // THE regression this gate exists for: protection matches by name, so a
+  // renamed job stops being required with nothing in any diff to review.
+  it('fails when a check recorded as enforced is no longer required', () => {
+    const drift = compare(
+      [gateRow('kept', true)],
+      readRollup([{ name: 'kept', isRequired: false }]),
+    );
+    expect(drift.noLongerRequired.map((r) => r.check)).toEqual(['kept']);
+    expect(isFailure(drift)).toBe(true);
+  });
+
+  // The good direction, and it fails on purpose. A floor would stay green here
+  // and let the public record go stale — which is the defect the per-row column
+  // replaced, returning by another door.
+  it('fails when a check became required and the record still says otherwise', () => {
+    const drift = compare(
+      [gateRow('pending', false)],
+      readRollup([{ name: 'pending', isRequired: true }]),
+    );
+    expect(drift.newlyRequired).toEqual(['pending']);
+    expect(drift.outstanding).toEqual([]);
+    expect(isFailure(drift)).toBe(true);
+  });
+
+  // Absent is not "not required". A job that did not run on the PR being read
+  // contributes no context, and reading that as a regression would redden the
+  // job for a path-filtered workflow.
+  it('separates a check that reported nothing from one reported as not required', () => {
+    const drift = compare([gateRow('kept', true)], readRollup([]));
+    expect(drift.notReported.map((r) => r.check)).toEqual(['kept']);
+    expect(drift.noLongerRequired).toEqual([]);
+    // Still a failure — it is unread, not read as fine.
+    expect(isFailure(drift)).toBe(true);
+  });
+
+  // A required check the table never listed is a different edit from a row that
+  // needs its mark flipped, so it is reported separately: told to flip a row,
+  // the reader goes looking for one that does not exist.
+  it('names a required check the table does not list at all', () => {
+    const drift = compare(
+      [gateRow('kept', true)],
+      readRollup([
+        { name: 'kept', isRequired: true },
+        { name: 'surprise', isRequired: true },
+      ]),
+    );
+    expect(drift.untabled).toEqual(['surprise']);
+    expect(drift.newlyRequired).toEqual([]);
+    expect(isFailure(drift)).toBe(true);
+  });
+
+  // The state this ships in, and the one thing that must NOT fail. Six rows are
+  // honestly not required yet and cannot be fixed from a PR; failing on them
+  // would make this a permanently red job, which is a job people mute.
+  it('does not fail on rows that are recorded as not enforced and are not', () => {
+    const drift = compare(
+      [gateRow('a', false), gateRow('b', false)],
+      readRollup([
+        { name: 'a', isRequired: false },
+        { name: 'b', isRequired: false },
+      ]),
+    );
+    expect(isFailure(drift)).toBe(false);
+    expect(drift.outstanding).toHaveLength(2);
+  });
+});
+
+describe('buildSummary', () => {
+  it('names the PR it read, so a stale answer can be traced to its source', () => {
+    const drift = compare([gateRow('a', false)], readRollup([{ name: 'a', isRequired: false }]));
+    expect(buildSummary(drift, 284)).toContain('PR #284');
+  });
+
+  it('tells the reader to flip the row when a check became required', () => {
+    const drift = compare([gateRow('a', false)], readRollup([{ name: 'a', isRequired: true }]));
+    const summary = buildSummary(drift, 1);
+    expect(summary).toContain('Newly enforced');
+    expect(summary).toContain('`a`');
+    expect(summary).toContain('CONTRIBUTING.md');
+  });
+
+  // The regression summary has to name the cause, because the cause is not
+  // visible anywhere else: nothing in the diff that renamed the job says the
+  // check stopped gating.
+  it('names the rename as the likely cause when a check stops being required', () => {
+    const drift = compare([gateRow('a', true)], readRollup([{ name: 'a', isRequired: false }]));
+    expect(buildSummary(drift, 1)).toContain('renamed job');
+  });
+
+  it('says the outstanding rows are not a regression', () => {
+    const drift = compare([gateRow('a', false)], readRollup([{ name: 'a', isRequired: false }]));
+    expect(buildSummary(drift, 1)).toContain('Not a regression');
+  });
+});
+
+// The PR the live set is read from. Getting this wrong is not a silent wrong
+// answer — it is a loud one, since a PR that reported nothing makes every check
+// look unreported, which this gate fails on.
+describe('selectPr', () => {
+  const pr = (number: number, ...contexts: RollupContext[]): PrNode => ({
+    number,
+    commits: {
+      nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
+    },
+  });
+
+  // The input is oldest-first — the only order the connection offers — so the
+  // search runs from the end. Reading it forwards would answer with the OLDEST
+  // pull request, whose checks may predate the workflow being asked about.
+  it('takes the newest, given an oldest-first list', () => {
+    const chosen = selectPr([pr(1, { name: 'a' }), pr(2, { name: 'b' }), pr(3, { name: 'c' })]);
+    expect(chosen?.number).toBe(3);
+  });
+
+  it('skips a newer pull request that reported no checks', () => {
+    const chosen = selectPr([pr(1, { name: 'a' }), pr(2)]);
+    expect(chosen?.number).toBe(1);
+  });
+
+  it('skips one whose rollup is null rather than empty', () => {
+    const nullRollup: PrNode = {
+      number: 9,
+      commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+    };
+    expect(selectPr([pr(1, { name: 'a' }), nullRollup])?.number).toBe(1);
+  });
+
+  // Distinguished from "the newest reported nothing": the caller exits on the
+  // could-not-read path rather than comparing against an empty live set, which
+  // would report every enforced row as a regression.
+  it('finds nothing when no candidate reported a check', () => {
+    expect(selectPr([pr(1), pr(2)])).toBeUndefined();
+    expect(selectPr([])).toBeUndefined();
+  });
+});
+
+describe('parsePrResponse', () => {
+  it('reads the pull requests out of a gh response', () => {
+    const body = JSON.stringify({
+      data: { repository: { pullRequests: { nodes: [{ number: 7, commits: { nodes: [] } }] } } },
+    });
+    expect(parsePrResponse(body).map((p) => p.number)).toEqual([7]);
+  });
+
+  // An empty list is a legible state — a repository with no pull requests — so
+  // a failed parse must not produce one. It would exit on the could-not-read
+  // path naming the wrong cause, and the real fault (a changed response shape,
+  // an auth failure printing JSON) would never be named.
+  it('refuses a body it cannot read rather than reporting no pull requests', () => {
+    expect(() => parsePrResponse('not json')).toThrow(/did not return JSON/);
+    expect(() => parsePrResponse('{"data":{}}')).toThrow(/carried no pull requests/);
+  });
+
+  it('reads an genuinely empty list as empty', () => {
+    const body = JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } });
+    expect(parsePrResponse(body)).toEqual([]);
+  });
+});
+
+describe('the two queries', () => {
+  // `isRequired` is the whole point — the other three endpoints mislead a
+  // non-admin — and it is one token in a long string, so it is worth pinning.
+  // It takes the PR number as an explicit argument on BOTH context shapes.
+  it('asks for isRequired, by explicit number, on both context shapes', () => {
+    const query = rollupQuery('akasecurity', 'ai-tc', 284);
+    expect(query).toContain('... on CheckRun{name isRequired(pullRequestNumber:284)}');
+    expect(query).toContain('... on StatusContext{context isRequired(pullRequestNumber:284)}');
+  });
+
+  // Why there are two queries at all, pinned so nobody merges them back. The
+  // field cannot refer to its enclosing node's number, so asking for it inside
+  // the connection fails the WHOLE query — "A pull request ID or pull request
+  // number is required", once per node — rather than degrading.
+  it('does not ask for isRequired in the candidates query, which cannot supply a number', () => {
+    expect(prCandidatesQuery('akasecurity', 'ai-tc', 10)).not.toContain('isRequired');
+  });
+
+  // `last` with an ASCENDING sort is the newest N; `first` with the same sort
+  // is the OLDEST N, and the gate would answer from pull requests years out of
+  // date while looking exactly as healthy.
+  it('asks for the newest candidates, not the oldest', () => {
+    expect(prCandidatesQuery('o', 'r', 10)).toContain(
+      'pullRequests(last:10,orderBy:{field:CREATED_AT,direction:ASC})',
+    );
+  });
+});
+
+describe('parseRollupResponse', () => {
+  const body = (rollup: unknown): string =>
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } },
+        },
+      },
+    });
+
+  it('reads the contexts out of a rollup response', () => {
+    const contexts = parseRollupResponse(
+      body({ contexts: { nodes: [{ name: 'a', isRequired: true }] } }),
+    );
+    expect(contexts).toEqual([{ name: 'a', isRequired: true }]);
+  });
+
+  // More at stake here than in the candidates parse: an empty list compares
+  // against a table whose every enforced row then reads as `not-reported`, so a
+  // silent [] turns a parse failure into a report that two checks stopped
+  // gating — a false alarm about the exact thing this gate exists to detect.
+  it('refuses a body it cannot read rather than reporting no contexts', () => {
+    expect(() => parseRollupResponse('not json')).toThrow(/did not return JSON/);
+    expect(() => parseRollupResponse('{"data":{}}')).toThrow(/no commit/);
+    expect(() => parseRollupResponse(body(null))).toThrow(/no check rollup/);
+  });
+});
+
+describe('annotations', () => {
+  it('emits one line per drift finding and none for outstanding rows', () => {
+    const clean = compare([gateRow('a', false)], readRollup([{ name: 'a', isRequired: false }]));
+    expect(annotations(clean)).toEqual([]);
+
+    const drifted = compare(
+      [gateRow('kept', true), gateRow('pending', false)],
+      readRollup([
+        { name: 'kept', isRequired: false },
+        { name: 'pending', isRequired: true },
+        { name: 'surprise', isRequired: true },
+      ]),
+    );
+    expect(annotations(drifted)).toHaveLength(3);
+    expect(annotations(drifted).join('\n')).toContain('kept');
+    expect(annotations(drifted).join('\n')).toContain('surprise');
+  });
+});
+
+// Regression from the xhigh review of this change: a row the strict pattern
+// cannot read used to be SKIPPED, so the check it names vanished from the
+// comparison while the job still reported a clean match and exited 0.
+describe('a table row this reader cannot parse', () => {
+  it('is refused, not silently dropped', () => {
+    const withEmptyCell = table(row('A'), '| `No-network · Full suite` | `ci.yml` |  |');
+    expect(() => parseGateTable(withEmptyCell)).toThrow(GateConfigError);
+    expect(() => parseGateTable(withEmptyCell)).toThrow(/2 rows but only 1 parsed/);
+  });
+
+  // The positive control on the counter: a healthy table must still parse, and
+  // the header and separator rows must not be counted as content.
+  it('leaves a well-formed table alone', () => {
+    expect(parseGateTable(table(row('A'), row('B', 'audit.yml', '⛔')))).toHaveLength(2);
+  });
+});

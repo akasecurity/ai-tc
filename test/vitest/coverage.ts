@@ -87,6 +87,15 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/setup-wizard': 89, //               90.38
   '@akasecurity/schema': 84, //                     85.59
   '@akasecurity/portability-gate': 84, //           85.58
+  // Same split as coverage-gate: every decision is in lib.ts, where the suite
+  // drives it, and check-required.ts is the `gh` spawn, two file operations and
+  // the exit-code mapping around it. Lower than coverage-gate's because the
+  // ratio differs — that package's entry is 50 lines against a 590-line lib,
+  // this one's is 120 against 320.
+  '@akasecurity/required-checks-gate': 62, //       63.84
+  // Same split again: lib.ts holds every decision, check-alerts.ts is the `gh`
+  // spawn and the exit-code mapping.
+  '@akasecurity/codeql-alerts-gate': 56, //         57.00
   '@akasecurity/plugin-runtime': 76, //             77.25
   '@akasecurity/ai-tc-claude-code': 71, //          72.84
   '@akasecurity/local-ops': 65, //                  66.75

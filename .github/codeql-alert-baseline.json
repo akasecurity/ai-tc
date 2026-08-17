@@ -1,0 +1,9 @@
+{
+  "measured": "2026-08-17",
+  "note": "Open CodeQL alerts on main. A ratchet in BOTH directions: a rise fails, and so does a fall, because a baseline nobody lowers stops describing the tree. Lower it in the commit that fixes or dismisses the alert. Every count here is untriaged work, not an accepted level.",
+  "total": 26,
+  "bySeverity": {
+    "high": 25,
+    "medium": 1
+  }
+}

@@ -259,6 +259,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
+  '@akasecurity/codeql-alerts-gate',
   '@akasecurity/coverage-gate',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',
@@ -271,6 +272,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/portability-gate',
+  '@akasecurity/required-checks-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',
   '@akasecurity/setup-wizard',
@@ -2272,13 +2274,27 @@ const BY_INLINE = 'inline `eslint-disable-next-line`';
 const INLINE_DISABLE = /eslint-disable(?:-next-line|-line)?\b[^\n]*\bn\/no-process-env\b/;
 
 /**
- * Test harnesses are deliberately out of the table's scope: several spawn the
- * real hooks as child processes and need the host PATH, so they carry inline
- * disables of their own. §3's sentence says "in shipped source" for exactly this
- * reason, and this predicate is what that phrase has to mean for the sentence to
- * be true. Widen one without the other and the count silently stops matching.
+ * What §3's phrase "in shipped source" has to EXCLUDE for its sentence to be
+ * true. Widen this without widening the sentence and the table silently stops
+ * describing the tree; widen the sentence without this and the count stops
+ * matching. They move together, and the sentence names the same three kinds.
+ *
+ * Test harnesses: several spawn the real hooks as child processes and need the
+ * host PATH, so they carry inline disables of their own.
+ *
+ * `tools/`: repo tooling, never shipped — the Repository layout section says so
+ * in those words. A CI gate there reads the runner's own output channels
+ * (GITHUB_STEP_SUMMARY), which is not "the host environment" in the sense this
+ * table is about, and tabling it would put a file that ships to nobody in a
+ * table of shipped opt-outs.
+ *
+ * Neither exclusion loses the inventory: inline-disables.test.js reads the whole
+ * tracked tree and pins the set EXACTLY, so a disable dropping out of this
+ * table's scope lands in that one rather than in nothing.
  */
 const isTestPath = (file) => file.split('/').some((seg) => seg === 'test' || seg === '__tests__');
+const isRepoTooling = (file) => file.startsWith('tools/');
+const isShippedSource = (file) => !isTestPath(file) && !isRepoTooling(file);
 
 /** Resolved configs report severity numerically; a config entry spells it. */
 const isOff = (severity) => severity === 0 || severity === 'off';
@@ -2411,7 +2427,7 @@ describe(`the process.env opt-out table (${CONVENTIONS_DOC} §3)`, () => {
     const tabled = new Set(parsed().map((r) => r.site));
     const undocumented = LINTABLE_TRACKED.files
       .filter(
-        (f) => !isTestPath(f) && INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, f), 'utf8')),
+        (f) => isShippedSource(f) && INLINE_DISABLE.test(readFileSync(join(REPO_ROOT, f), 'utf8')),
       )
       .filter((f) => !tabled.has(f))
       .map((f) => `${f}: disables n/no-process-env inline and is in no §3 row`);

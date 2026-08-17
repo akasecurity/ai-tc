@@ -1,0 +1,68 @@
+name: Required checks
+
+# Asserts that the checks branch protection ACTUALLY requires on `main` are the
+# ones CONTRIBUTING.md's gate table records in its Enforced column.
+#
+# Why this cannot be a test. Which checks are required is a repository setting:
+# not in this tree, not settable from a PR, and matched by NAME. Rename a job
+# and protection goes on waiting for a name nothing emits any more, so the check
+# silently stops gating — invisible in the diff that renamed it and invisible in
+# a green run. A document recording the state cannot catch that; it is written
+# once and read never.
+#
+# Why it is scheduled rather than a PR check. It reads live repository state, so
+# its answer has nothing to do with the diff in front of it — a PR that changed
+# no workflow would fail for a setting somebody else changed, which is a check
+# people learn to re-run rather than read. Daily, plus on demand.
+#
+# It is deliberately NOT in the gate table it reads. Requiring it would make
+# every merge wait on a live GitHub query, and its failure mode is a settings
+# drift nobody's PR caused.
+
+on:
+  schedule:
+    - cron: '15 7 * * *'
+  workflow_dispatch:
+  # On a push that touched the record or the reader themselves, so a PR editing
+  # the Enforced column gets its answer within minutes of merging rather than
+  # the next morning.
+  push:
+    branches: [main]
+    paths:
+      - 'CONTRIBUTING.md'
+      - 'tools/required-checks-gate/**'
+      - '.github/workflows/required-checks.yml'
+
+permissions:
+  contents: read
+
+# Keyed by SHA for the push event so two merges in quick succession each get
+# their own run, and by the event name so a scheduled run never queues behind
+# one. Same reasoning as the gating workflows, at length in ci.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  required-checks:
+    name: Required checks match the record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # No `pnpm install`: the gate imports nothing outside its own two files,
+      # and Node 24 runs the TypeScript entry directly (type stripping). The
+      # only external thing it needs is `gh`, which every GitHub runner ships.
+      #
+      # GH_TOKEN is the default job token. `isRequired` is readable at ordinary
+      # read permission — that is the whole reason this job can exist without an
+      # admin PAT, and it is why the three admin-only endpoints are not used.
+      - name: Compare the live required set against CONTRIBUTING.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/required-checks-gate/src/check-required.ts

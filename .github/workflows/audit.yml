@@ -75,12 +75,23 @@ jobs:
             fi
           done
 
-  # Scheduled runs must not fail silently: surface a failing daily audit as a
-  # tracked issue. PR runs skip this — the red check on the PR is the signal.
+  # Runs where nobody is watching must not fail silently: surface the failure as
+  # a tracked issue. PR runs skip this — the red check on the PR is the signal,
+  # and it is in front of the one person who can act on it.
+  #
+  # A PUSH TO MAIN is the other unwatched run, and leaving it out left a window
+  # of up to a whole day on the branch that ships. That is not hypothetical: the
+  # audit failed on a main push at 2026-08-03T17:36:22Z and main stayed red until
+  # the next daily run picked it up. The dedup below is what makes adding this
+  # cheap — a push failure and the daily run that follows it name the same
+  # advisories, so the second one posts nothing.
   report:
-    name: File advisory issue (scheduled runs)
+    name: File advisory issue (unattended runs)
     needs: audit
-    if: always() && needs.audit.result == 'failure' && github.event_name == 'schedule'
+    if: >-
+      always() && needs.audit.result == 'failure' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -141,7 +152,7 @@ jobs:
                 printf '\n'
               fi
             done
-            printf '\n_Scheduled audit run: %s_\n' "$run_url"
+            printf '\n_Audit run (%s): %s_\n' "$GITHUB_EVENT_NAME" "$run_url"
           } > issue-body.md
 
           gh label create security-advisory \
@@ -162,10 +173,28 @@ jobs:
               --label security-advisory \
               --body-file issue-body.md
           elif [ "$RERUN_CODE" = "1" ]; then
-            new_ids="$(cat audit-report.md artifact-audit-report.md 2>/dev/null | grep -o 'GHSA-[a-z0-9-]*' | sort -u || true)"
-            seen_ids="$( { gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json body --jq '.body'; \
-                           gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body'; } \
-                         | grep -o 'GHSA-[a-z0-9-]*' | sort -u || true)"
+            # Both sides go through tools/audit-gate's own extractor rather than
+            # a grep written here. It reads the report's `[<id>](<url>)` link,
+            # so it sees an advisory reported under a NUMERIC registry id — the
+            # form `buildReport` falls back to, which a `GHSA-`-only match
+            # dropped, yielding an empty new_ids and therefore no comment at all.
+            # It is also anchored on the link rather than on a bare id anywhere
+            # in the text, so prose on the issue naming an advisory does not
+            # count as having reported it. Unit-tested in that package; a regex
+            # in this file is executed by nothing until the day it matters.
+            new_ids="$(node tools/audit-gate/src/advisory-ids.ts audit-report.md artifact-audit-report.md)"
+            # `|| true` on the two reads, deliberately, and it is the direction
+            # that matters. A rate-limit or 5xx here would otherwise end the
+            # step under the runner's default `bash -eo pipefail` BEFORE any
+            # comment is posted — so a genuinely new advisory goes unreported
+            # for the day, in the one job whose whole purpose is that an
+            # unattended failure is never silent. Degrading to an empty seen set
+            # posts a possibly-duplicate comment instead, which is the harmless
+            # way to be wrong here.
+            : > seen.md
+            gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json body --jq '.body' >> seen.md || true
+            gh issue view "$existing" --repo "$GITHUB_REPOSITORY" --json comments --jq '.comments[].body' >> seen.md || true
+            seen_ids="$(node tools/audit-gate/src/advisory-ids.ts seen.md)"
             if [ -n "$(comm -23 <(printf '%s\n' "$new_ids") <(printf '%s\n' "$seen_ids"))" ]; then
               gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file issue-body.md
             else

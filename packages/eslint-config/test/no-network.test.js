@@ -337,7 +337,7 @@ describe('networkGuard (the scripts/ pass)', () => {
 });
 
 describe('noEnterpriseImports merge', () => {
-  // The enterprise config is layered on top of `base` in some packages. Flat
+  // The wall config is layered on top of `base` in some packages. Flat
   // config does not merge two no-restricted-imports entries, so this config must
   // carry the network bans forward or those packages would silently lose them.
   const entry = noEnterpriseImports.find((c) => c.rules?.['no-restricted-imports']);
@@ -355,18 +355,39 @@ describe('noEnterpriseImports merge', () => {
     expect(messages[0].ruleId).toBe('no-restricted-imports');
   });
 
-  it('also bans the enterprise HTTP client', () => {
+  it('also bans the HTTP client, with the wall message rather than the network one', () => {
     const messages = lintWithRules("import c from '@akasecurity/client';", {
       'no-restricted-imports': ruleValue,
     });
     expect(messages).toHaveLength(1);
-    expect(messages[0].message).toContain('enterprise-only');
+    // 'server-side ORM' appears only in the wall's message, so this asserts the
+    // ban that fired was the wall's and not base's network ban, which also
+    // covers some of these specifiers.
+    expect(messages[0].message).toContain('server-side ORM');
   });
 
-  it('keeps BOTH pattern groups (network subpaths + enterprise) after the merge', () => {
+  // H1: the wall's message is public-facing text in a public repo. It states a
+  // capability boundary ("no HTTP client, no server-side ORM") and must not
+  // describe the private layer it happens to exclude, or name an unshipped
+  // feature. Asserting on the emitted message rather than on the source keeps
+  // this honest: whatever a future edit writes, this is what a contributor
+  // actually reads.
+  it('states the boundary as a capability and leaks no private-layer detail', () => {
+    const messages = lintWithRules("import c from '@akasecurity/client';", {
+      'no-restricted-imports': ruleValue,
+    });
+    const message = messages[0].message;
+    expect(message).toContain('HTTP client');
+    expect(message).toContain('server-side ORM');
+    for (const leak of ['tenancy', 'Postgres', 'attached', 'enterprise-only', 'multi-tenant']) {
+      expect(message.toLowerCase()).not.toContain(leak.toLowerCase());
+    }
+  });
+
+  it('keeps BOTH pattern groups (network subpaths + wall) after the merge', () => {
     // The network `<client>/*` groups are prepended to noEnterpriseImports' own
     // `patterns` (drizzle-orm/*, schema-enterprise/*). A regressed merge that
-    // declared only enterprise patterns would drop the network subpath ban.
+    // declared only the wall's patterns would drop the network subpath ban.
     const deep = lintWithRules("import x from 'axios/lib/adapters/http.js';", {
       'no-restricted-imports': ruleValue,
     });

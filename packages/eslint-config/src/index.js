@@ -331,33 +331,36 @@ export const base = [
   prettier,
 ];
 
-// OSS/enterprise dependency wall (see CLAUDE.md "Package dependency rules"):
-// packages that ship in the public oss/ tree must never import enterprise-only
-// modules — @akasecurity/client (the tenant-aware HTTP client), drizzle-orm and
-// @akasecurity/schema-enterprise (the Postgres/tenancy layer). Apply this to
-// every OSS package except the plugin, which is the documented exception
-// allowed to use @akasecurity/client to sync to a backend when attached.
-const ENTERPRISE_IMPORT_MESSAGE =
-  'OSS packages must never import enterprise-only modules (this keeps tenancy/auth/Postgres code out of the public oss/ tree). See CLAUDE.md "Package dependency rules".';
+// The store-reading dependency wall (see CLAUDE.md "Package dependency rules").
+//
+// A package that reads the local SQLite store reaches it through
+// @akasecurity/persistence and nothing else: no HTTP client, no server-side
+// ORM. The specifiers below are the names those two capabilities have in this
+// workspace; a new HTTP client or ORM belongs in the same list.
+//
+// Opt in per package, from the package's own eslint config. A package this
+// does not describe simply does not apply it — there is no exemption list.
+const STORE_READER_IMPORT_MESSAGE =
+  'A package that reads the local SQLite store must not depend on an HTTP client or a server-side ORM — reach the store through @akasecurity/persistence. See CLAUDE.md "Package dependency rules".';
 
-// This carries the network import bans forward alongside the enterprise ones.
+// This carries the network import bans forward alongside the wall's own.
 // `no-restricted-imports` does not merge across flat-config entries, and this is
-// layered on top of `base` in the packages that use it, so declaring the
-// enterprise restrictions on their own would silently drop base's network bans
-// for exactly those packages.
+// layered on top of `base` in the packages that use it, so declaring the wall's
+// restrictions on their own would silently drop base's network bans for exactly
+// those packages.
 /** @type {import('typescript-eslint').ConfigArray} */
 export const noEnterpriseImports = [
   {
     rules: {
       'no-restricted-imports': noNetworkImports({
         paths: [
-          { name: '@akasecurity/client', message: ENTERPRISE_IMPORT_MESSAGE },
-          { name: 'drizzle-orm', message: ENTERPRISE_IMPORT_MESSAGE },
-          { name: '@akasecurity/schema-enterprise', message: ENTERPRISE_IMPORT_MESSAGE },
+          { name: '@akasecurity/client', message: STORE_READER_IMPORT_MESSAGE },
+          { name: 'drizzle-orm', message: STORE_READER_IMPORT_MESSAGE },
+          { name: '@akasecurity/schema-enterprise', message: STORE_READER_IMPORT_MESSAGE },
         ],
         patterns: [
-          { group: ['drizzle-orm/*'], message: ENTERPRISE_IMPORT_MESSAGE },
-          { group: ['@akasecurity/schema-enterprise/*'], message: ENTERPRISE_IMPORT_MESSAGE },
+          { group: ['drizzle-orm/*'], message: STORE_READER_IMPORT_MESSAGE },
+          { group: ['@akasecurity/schema-enterprise/*'], message: STORE_READER_IMPORT_MESSAGE },
         ],
       }),
     },

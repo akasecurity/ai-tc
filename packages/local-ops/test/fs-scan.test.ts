@@ -131,6 +131,30 @@ describe('collectFiles', () => {
     expect(byPath.get(join(root, 'logs', 'debug.log'))).toBe(true);
   });
 
+  it('applies a .gitignore from a MIDDLE directory to entries below it', () => {
+    // The anchor case. A layer in the directory being walked, and a layer at the
+    // walk root, are both addressed correctly however the offset arithmetic is
+    // computed — one returns early and the other slices from zero. Only a layer
+    // part way down, evaluated deeper still, exercises it, and this walk had no
+    // such case: the shared arithmetic could be broken outright with every
+    // suite in three packages staying green.
+    mkdirSync(join(root, 'src', 'gen'), { recursive: true });
+    // The pattern names FILES below `gen/`, deliberately not the directory: a
+    // `gen/` pattern is answered at `src`, where the layer sits in the very
+    // directory being walked and the arithmetic is an early return. Only a
+    // pattern that survives to be re-asked one level deeper reaches it.
+    writeFileSync(join(root, 'src', '.gitignore'), 'gen/*.snap\n');
+    writeFileSync(join(root, 'src', 'gen', 'a.snap'), 'a');
+    writeFileSync(join(root, 'src', 'gen', 'b.ts'), 'b');
+
+    const byPath = new Map([...collectFiles(root)].map((f) => [f.path, f.gitignored]));
+    expect(byPath.get(join(root, 'src', 'gen', 'a.snap'))).toBe(true);
+    // The control: the same layer has no opinion about its neighbour, so the
+    // assertion above is about the pattern rather than about a stack that marks
+    // everything below `src`.
+    expect(byPath.get(join(root, 'src', 'gen', 'b.ts'))).toBe(false);
+  });
+
   it('lets an .akaignore negation re-include a default-skipped directory', () => {
     writeFileSync(join(root, '.akaignore'), '!build/\n');
     mkdirSync(join(root, 'build'));

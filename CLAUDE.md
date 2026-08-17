@@ -1373,7 +1373,19 @@ address, a `.gitignore` that ignores everything, 500k files ignored by directory
 the same number ignored by pattern. It sits at the repo root for the same reason the
 no-network guard does: `project-files`, `local-ops`' folder scan and `scanner` all need
 the SAME inputs, a package wall blocks the import, and three private copies of a symlink
-loop drift apart. Only the first drives it today.
+loop drift apart. All three drive it now, each from its own `test/performance/`
+directory — and the two that were added last found two things a shared corpus is for: the
+folder scan aborted its whole generator on one unreadable directory where the other two
+tolerate it, and the three walkers disagree about a `..`-prefixed DIRECTORY, which the
+folder scan's dot-directory floor refuses and the other two descend into. Both are pinned
+where they differ rather than smoothed over.
+
+The corpus is in `globalDependencies` (see "Adding a new workspace package" on why every
+shared `test/` subtree must be): it is generated, so weakening a shape — shrinking the
+tree, dropping the loop, breaking the deep chain — changes what every guard driving it
+actually runs, and outside the hash those guards replay a cached green at the one moment
+they are being changed. `packages/eslint-config/test/shared-test-inputs.test.js` derives
+that requirement from what the tree really references rather than listing it.
 
 Two things about it are load-bearing:
 

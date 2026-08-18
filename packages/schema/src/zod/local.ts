@@ -73,15 +73,6 @@ export type SimpleDetectionPolicy = z.infer<typeof SimpleDetectionPolicy>;
 export const HistoricalAccess = z.enum(['full', 'session-only']);
 export type HistoricalAccess = z.infer<typeof HistoricalAccess>;
 
-// Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
-// Versioned and default-filled so future config steps are additive: a
-// settings.json written by an older plugin still parses, with any missing key
-// taking its default.
-//
-// Plugin-local only — deliberately NO `.meta({ id })`. An id would register this
-// in Zod's global registry, and a @fastify/swagger setup
-// emits every registered schema as an OpenAPI component, leaking this plugin
-// config into a public API client. No API route references it.
 // A recorded model-judge consent: when it was given, and the payload shape it
 // was given against. Named here (rather than inlined on WorkspaceSettings) so
 // the plugin, CLI and dashboard all reference one shape.
@@ -102,6 +93,15 @@ export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined)
   return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
 }
 
+// Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
+// Versioned and default-filled so future config steps are additive: a
+// settings.json written by an older plugin still parses, with any missing key
+// taking its default.
+//
+// Plugin-local only — deliberately NO `.meta({ id })`. An id registers the shape
+// in Zod's global registry, and a consumer walking that registry publishes every
+// entry it finds under that name. This is on-disk plugin configuration, not a
+// shape anything refers to by name, so it stays unregistered.
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
   // A settings file written before this field settled on one value can hold a

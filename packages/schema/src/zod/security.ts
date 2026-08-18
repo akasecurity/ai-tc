@@ -226,7 +226,10 @@ export type Provider = z.infer<typeof Provider>;
 export const ScanCoverageProvider = z
   .object({
     provider: Provider,
-    // Percent of that provider's traffic scanned in the window. 0 when unsupported.
+    // Percent of that provider's traffic the shipped capture surface reaches.
+    // A curated business fact, constant across every `range` — not a measured
+    // per-window metric. 0 exactly when `supported` is false. See the comment
+    // above the block for where these numbers are decided.
     coverage: z.number().int().min(0).max(100),
     supported: z.boolean(),
   })

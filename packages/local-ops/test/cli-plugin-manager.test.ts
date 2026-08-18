@@ -25,8 +25,20 @@ describe('claude verbs', () => {
     ]);
   });
 
-  it('prepares the marketplace with a bare `marketplace add` — it keeps no snapshot to refresh', () => {
+  it("refreshes the snapshot with `marketplace update` — its own spelling, not codex's", () => {
+    // Claude Code caches the marketplace and reconciles it with its source
+    // through `marketplace update` (verified against 2.1.220: the verb exists,
+    // exits 0, and reports "Successfully updated marketplace"). Registering
+    // alone does NOT reconcile — a re-add answers "already on disk" — so prep
+    // that stopped at `add` left the op resolving against a stale manifest.
     expect(claude.marketplaceSteps('akasecurity/marketplace', 'akasecurity')).toEqual([
+      ['plugin', 'marketplace', 'add', 'akasecurity/marketplace'],
+      ['plugin', 'marketplace', 'update', 'akasecurity'],
+    ]);
+  });
+
+  it('skips the snapshot refresh when no marketplace name is known', () => {
+    expect(claude.marketplaceSteps('akasecurity/marketplace')).toEqual([
       ['plugin', 'marketplace', 'add', 'akasecurity/marketplace'],
     ]);
   });
@@ -83,13 +95,17 @@ describe('a plugin op carries no marketplace command', () => {
 describe('no host emits a verb its CLI does not have', () => {
   // Verified against codex-cli 0.147.0 (`codex plugin --help`): add, list,
   // marketplace, remove — and `codex plugin marketplace`: add, list, upgrade,
-  // remove. Claude Code's `claude plugin --help` carries install and update.
+  // remove. Against Claude Code 2.1.220: `claude plugin --help` carries install
+  // and update, and `claude plugin marketplace --help` carries add, list,
+  // remove and update. Each host read from that host — the sets below are a
+  // model of two CLIs, so filling one in from the other is the same mistake as
+  // sharing the verbs.
   const KNOWN_VERBS: Record<'claude' | 'codex', Set<string>> = {
     claude: new Set(['install', 'update', 'uninstall', 'marketplace', 'list', 'enable', 'disable']),
     codex: new Set(['add', 'remove', 'marketplace', 'list']),
   };
   const MARKETPLACE_VERBS: Record<'claude' | 'codex', Set<string>> = {
-    claude: new Set(['add', 'remove', 'list']),
+    claude: new Set(['add', 'remove', 'list', 'update']),
     codex: new Set(['add', 'list', 'upgrade', 'remove']),
   };
 
@@ -150,10 +166,19 @@ describe('a recipe is safe to join with &&', () => {
         // user asked for, never prep instead of it.
         expect(recipe.slice(-op.length)).toEqual(op);
         expect(recipe.length).toBeGreaterThan(op.length);
-        // No survivable step anywhere in it. `marketplace upgrade` is the one
-        // this module treats as best-effort, so it is the one that must not be
-        // here — its failure would take the op down with it.
-        for (const line of recipe) expect(line).not.toContain('marketplace upgrade');
+        // No survivable step anywhere in it. The refresh is the one this
+        // module treats as best-effort, so it is the one that must not be here
+        // — its failure would take the op down with it. Derived from
+        // `marketplaceSteps` (prep is register-then-refresh) rather than
+        // spelled: the hosts disagree about the verb — `marketplace update` on
+        // Claude Code, `marketplace upgrade` on Codex — and a literal check
+        // silently covers only whichever one it names.
+        const refresh = manager
+          .marketplaceSteps('owner/repo', 'm')
+          .slice(1)
+          .map((args) => `${bin} ${args.join(' ')}`);
+        expect(refresh.length).toBeGreaterThan(0);
+        for (const line of refresh) expect(recipe).not.toContain(line);
       }
     });
   }
@@ -168,11 +193,22 @@ describe('a recipe is safe to join with &&', () => {
 // silently deleted it. It belongs to the automated path alone, which captures
 // and discards each result instead of chaining on success.
 describe('the snapshot refresh survives as best-effort prep', () => {
+  // Both hosts, because both cache a snapshot. Asserted per host rather than in
+  // a loop over a shared expectation: the verbs differ, and a loop that derived
+  // the expected step from the module would pass whatever the module said.
   it('codex keeps it in marketplaceSteps, which ensureMarketplace runs', () => {
     const codex = createCliPluginManager('codex');
     expect(codex.marketplaceSteps('akasecurity/ai-tc', 'ai-tc')).toEqual([
       ['plugin', 'marketplace', 'add', 'akasecurity/ai-tc'],
       ['plugin', 'marketplace', 'upgrade', 'ai-tc'],
+    ]);
+  });
+
+  it('claude keeps it too — registering alone does not reconcile the snapshot', () => {
+    const claude = createCliPluginManager('claude');
+    expect(claude.marketplaceSteps('akasecurity/marketplace', 'akasecurity')).toEqual([
+      ['plugin', 'marketplace', 'add', 'akasecurity/marketplace'],
+      ['plugin', 'marketplace', 'update', 'akasecurity'],
     ]);
   });
 });

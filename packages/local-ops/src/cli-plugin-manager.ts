@@ -10,7 +10,14 @@ import { binExists, runCapture, runInherit } from './exec.ts';
 // `codex plugin install|update`, which Codex rejects outright with
 // "unrecognized subcommand". Claude Code takes `install` and `update`; Codex
 // takes `add` for both, having no update verb at all (`add` re-resolves the
-// plugin, so a refresh IS a re-add).
+// plugin, so a refresh IS a re-add). The marketplace verbs diverge the same
+// way: both hosts cache a snapshot of the marketplace and both can reconcile it
+// with its source, but Claude Code spells that `marketplace update` and Codex
+// spells it `marketplace upgrade`. Verified against the hosts themselves —
+// `claude plugin marketplace --help` on Claude Code 2.1.220 and
+// `codex plugin marketplace --help` on codex-cli 0.147.0 — not inferred from
+// one host and assumed for the other, which is the mistake this table exists
+// to stop.
 //
 // Two kinds of command come out of this table and they are NOT interchangeable:
 //
@@ -35,9 +42,16 @@ interface HostVerbs {
   // fails on an unknown marketplace — so a failure here genuinely should stop
   // whatever follows.
   register: (source: string) => Step[];
-  // Refreshing an already-registered snapshot. Optional, and empty on a host
-  // that keeps no snapshot. A failure here is survivable: the cached snapshot
-  // stays in place and the op can still run against it.
+  // Refreshing an already-registered snapshot. Both managed hosts keep one, so
+  // both carry a verb here; the empty return stays legal for a host that keeps
+  // none. A failure here is survivable: the cached snapshot stays in place and
+  // the op can still run against it.
+  //
+  // It is not optional in EFFECT, which is why the empty return was a defect
+  // rather than a shortcut: `marketplace add` on an already-registered source
+  // reports success without touching the snapshot (measured — Claude Code
+  // answers "already on disk"), so prep that only registers leaves a months-old
+  // manifest in place and the op resolves against that.
   refresh: (marketplace: string) => Step[];
 }
 
@@ -46,7 +60,7 @@ const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
     install: (ref) => [['plugin', 'install', ref]],
     update: (ref) => [['plugin', 'update', ref]],
     register: (source) => [['plugin', 'marketplace', 'add', source]],
-    refresh: () => [],
+    refresh: (marketplace) => [['plugin', 'marketplace', 'update', marketplace]],
   },
   codex: {
     install: (ref) => [['plugin', 'add', ref]],
@@ -64,10 +78,11 @@ const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
 export interface CliPluginManager {
   available: () => boolean;
   // Bring the marketplace up to date, best-effort: register the source if it
-  // isn't already, then refresh the snapshot on a host that keeps one. Every
-  // step's result is captured and discarded — a re-add of an existing
-  // marketplace is a no-op that reports success, and a refresh that fails
-  // leaves the cached snapshot in place, which the plugin op can still use.
+  // isn't already, then refresh the snapshot. Every step's result is captured
+  // and discarded — a re-add of an existing marketplace is a no-op that reports
+  // success on both hosts (measured on each, not inferred from one), and a
+  // refresh that fails leaves the cached snapshot in place, which the plugin op
+  // can still use.
   ensureMarketplace: (source: string, marketplace?: string) => void;
   // The commands an install/update runs, in order. Exposed so a caller that
   // needs its own output mode (apply.ts streams or captures) and the hint copy
@@ -87,10 +102,17 @@ export interface CliPluginManager {
   // The snapshot refresh is deliberately absent: it is the one step this module
   // treats as survivable, and `&&` cannot express that — a git-fetch error on
   // `marketplace upgrade` would short-circuit the `plugin add` that is the whole
-  // point. It is also redundant here, because `marketplace add` clones the
-  // snapshot fresh on the machine this copy is written for. Leaving it in was a
-  // real defect: it made best-effort prep fatal in exactly the line a user
-  // retypes, while the code path went on treating the same failure as harmless.
+  // point. Leaving it in was a real defect: it made best-effort prep fatal in
+  // exactly the line a user retypes, while the code path went on treating the
+  // same failure as harmless.
+  //
+  // The trade that buys is worth naming rather than glossing. On a machine that
+  // has never registered the marketplace — the case this copy is mostly written
+  // for — `marketplace add` clones the snapshot fresh and there is nothing to
+  // refresh. On one that registered it long ago, the re-add reports success
+  // without reconciling, so the retyped line runs against whatever manifest is
+  // cached. That is the deliberate choice: a stale manifest resolves the plugin
+  // it already knows about, where a fatal refresh resolves nothing at all.
   installRecipe: (ref: string, source?: string) => string[];
   updateRecipe: (ref: string, source?: string) => string[];
   // Everything the AUTOMATED path spawns, in order: prep (both steps) then the

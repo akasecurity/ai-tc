@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   base,
   networkGuard,
+  drizzleWallRules,
   noDrizzleImports,
   noNetworkGlobals,
   noNetworkImports,
@@ -364,6 +365,71 @@ describe('noDrizzleImports merge', () => {
     // the ruleId alone passes on a message that names no alternative, which is
     // the form that sends people to grep for one.
     expect(messages[0].message).toContain('@akasecurity/persistence');
+  });
+
+  // Ported from the message-leak guard on the H1 branch. The wall's message is
+  // public-facing text in a public repo, and it is the only place a contributor
+  // meets the rule. Asserting on the EMITTED message rather than on the source
+  // is what keeps this honest: whatever a future edit writes, this is what they
+  // actually read. The banned terms name a private layer this tree does not
+  // contain — a message that reaches for one is describing something the reader
+  // cannot go and look at.
+  it('states the boundary in terms of this tree, and names no absent layer', () => {
+    const messages = lintWithRules("import { eq } from 'drizzle-orm';", {
+      'no-restricted-imports': ruleValue,
+    });
+    const message = messages[0].message;
+    expect(message).toContain('@akasecurity/schema');
+    expect(message).toContain('@akasecurity/persistence');
+    expect(message).toContain('node:sqlite');
+    for (const absent of [
+      'tenancy',
+      'Postgres',
+      'attached',
+      'enterprise',
+      'multi-tenant',
+      '@akasecurity/client',
+    ]) {
+      expect(message.toLowerCase()).not.toContain(absent.toLowerCase());
+    }
+  });
+
+  // A file-scoped entry that relaxes the NETWORK ban SETS `no-restricted-imports`,
+  // and flat config replaces rather than merges — so building that entry from
+  // `noNetworkImports` alone drops the Drizzle wall for the files it matches,
+  // with lint green. `drizzleWallRules` is what makes that unstateable; this is
+  // the case that fails if it stops carrying the wall.
+  describe('drizzleWallRules({ allow }) — the relaxation seam', () => {
+    const relaxed = drizzleWallRules({ allow: ['node:net'] });
+
+    it('lets the allowed module through', () => {
+      expect(
+        lintWithRules("import net from 'node:net';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(0);
+    });
+
+    it('still bans Drizzle, statically and dynamically', () => {
+      expect(
+        lintWithRules("import { eq } from 'drizzle-orm';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(1);
+      expect(
+        lintWithRules("await import('drizzle-orm/sqlite-core');", {
+          'no-restricted-syntax': relaxed['no-restricted-syntax'],
+        }),
+      ).toHaveLength(1);
+    });
+
+    it('still bans every OTHER network module', () => {
+      expect(
+        lintWithRules("import http from 'node:http';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(1);
+    });
   });
 
   it('keeps BOTH pattern groups (network subpaths + drizzle dialects) after the merge', () => {

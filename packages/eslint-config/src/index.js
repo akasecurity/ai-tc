@@ -257,29 +257,45 @@ const DRIZZLE_IMPORT_MESSAGE =
 // layered on top of `base` in the packages that use it, so declaring the Drizzle
 // restriction on its own would silently drop base's network bans for exactly
 // those packages.
+/**
+ * The wall's two rule VALUES, exposed so a file-scoped entry that has to relax
+ * the NETWORK ban can restate the wall in the same breath.
+ *
+ * That is not a convenience. Flat config REPLACES a rule rather than merging it,
+ * so a later `files:` entry setting either of these drops the wall for the files
+ * it matches — and a lost ban still exits 0, which is the failure this whole
+ * module is shaped around. Spreading `noDrizzleImports` and then relaxing
+ * `no-restricted-imports` for one file is exactly that mistake.
+ *
+ * `allow` drops a network module from base's bans, exactly as `noNetworkImports`
+ * takes it. The Drizzle half deliberately takes NO allow list: `@akasecurity/schema`
+ * is the one package that may import Drizzle, and it carries no wall to relax.
+ * @param {{ allow?: string[] }} [opts]
+ */
+export function drizzleWallRules(opts = {}) {
+  return {
+    'no-restricted-imports': noNetworkImports({
+      ...opts,
+      paths: DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
+      patterns: DRIZZLE_MODULES.map((name) => ({
+        group: [`${name}/*`],
+        message: DRIZZLE_IMPORT_MESSAGE,
+      })),
+    }),
+    // The dynamic half. `no-restricted-imports` sees only a written specifier,
+    // so without this a code-split `await import('drizzle-orm/pg-core')` reaches
+    // a bundle with lint green. Carries base's network selectors forward for the
+    // same replace-not-merge reason the imports ban does.
+    'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
+      'error',
+      ...networkSyntaxSelectors(opts),
+      ...drizzleSyntaxSelectors(),
+    ]),
+  };
+}
+
 /** @type {import('typescript-eslint').ConfigArray} */
-export const noDrizzleImports = [
-  {
-    rules: {
-      'no-restricted-imports': noNetworkImports({
-        paths: DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
-        patterns: DRIZZLE_MODULES.map((name) => ({
-          group: [`${name}/*`],
-          message: DRIZZLE_IMPORT_MESSAGE,
-        })),
-      }),
-      // The dynamic half. `no-restricted-imports` sees only a written specifier,
-      // so without this a code-split `await import('drizzle-orm/pg-core')` reaches
-      // a bundle with lint green. Carries base's network selectors forward for the
-      // same replace-not-merge reason the imports ban does.
-      'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
-        'error',
-        ...networkSyntaxSelectors(),
-        ...drizzleSyntaxSelectors(),
-      ]),
-    },
-  },
-];
+export const noDrizzleImports = [{ rules: drizzleWallRules() }];
 
 // Every tonal family in @akasecurity/ui-kit's theme.css carries two foregrounds:
 // `--color-X` is the HUE (chart series, status dots, bar segments) and

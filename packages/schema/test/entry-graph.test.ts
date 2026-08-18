@@ -50,6 +50,14 @@ const STATIC_STATEMENT =
   /(?:^|\n)\s*(?:import|export)\s+(type\s+)?([\s\S]*?)from\s*['"]([^'"]+)['"]/g;
 const DYNAMIC_CALL = /(?:^|[^\w.])(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
+// `import './register.ts';` — no bindings, so no `from`, so STATIC_STATEMENT
+// cannot match it and the WHOLE subtree it pulls in drops out of the graph. It
+// is the one static form with no type-only spelling, so it always survives
+// compilation: precisely the emitted edge this guard exists to catch. Without
+// this, inserting one between the entry and a drizzle-orm importer keeps every
+// assertion below green while the bundle ships Drizzle.
+const SIDE_EFFECT_IMPORT = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
+
 /** A brace list whose every binding is inline-`type` is erased too. */
 function bindingsAllTypeOnly(body: string): boolean {
   const braced = /^\s*\{([^}]*)\}\s*$/.exec(body);
@@ -61,8 +69,13 @@ function bindingsAllTypeOnly(body: string): boolean {
   return bindings.length > 0 && bindings.every((b) => /^type\s/.test(b));
 }
 
-function edgesOf(file: string): Edge[] {
-  const src = readFileSync(file, 'utf8');
+/** A relative specifier the walk pointed at a path it could not read. */
+interface Unresolvable {
+  readonly from: string;
+  readonly specifier: string;
+}
+
+function edgesOf(src: string): Edge[] {
   const edges: Edge[] = [];
   for (const m of src.matchAll(STATIC_STATEMENT)) {
     const [, typeKeyword, body = '', specifier] = m;
@@ -71,6 +84,9 @@ function edgesOf(file: string): Edge[] {
       specifier,
       emitted: typeKeyword === undefined && !bindingsAllTypeOnly(body),
     });
+  }
+  for (const m of src.matchAll(SIDE_EFFECT_IMPORT)) {
+    if (m[1] !== undefined) edges.push({ specifier: m[1], emitted: true });
   }
   for (const m of src.matchAll(DYNAMIC_CALL)) {
     if (m[1] !== undefined) edges.push({ specifier: m[1], emitted: true });
@@ -82,6 +98,15 @@ interface Graph {
   readonly files: string[];
   readonly externals: string[];
   readonly offenders: { file: string; specifier: string }[];
+  /**
+   * Relative specifiers pointing at a path that could not be read. The walk
+   * appends nothing to a specifier, so it works only because every relative
+   * import in this package carries an explicit `.ts`. Collected rather than
+   * thrown: the first extensionless or directory import would otherwise crash
+   * the suite with a raw ENOENT naming a path that was never on disk, instead of
+   * reporting that the graph could not be walked.
+   */
+  readonly unresolvable: Unresolvable[];
 }
 
 /**
@@ -92,22 +117,36 @@ function walk(root: string, { emittedOnly }: { emittedOnly: boolean }): Graph {
   const seen = new Set<string>();
   const externals = new Set<string>();
   const offenders: { file: string; specifier: string }[] = [];
-  const queue = [abs(root)];
+  const unresolvable: Unresolvable[] = [];
+  const queue: { file: string; importedBy: string | undefined }[] = [
+    { file: abs(root), importedBy: undefined },
+  ];
 
   while (queue.length > 0) {
-    const file = queue.pop();
-    if (file === undefined || seen.has(file)) continue;
-    seen.add(file);
+    const item = queue.pop();
+    if (item === undefined || seen.has(item.file)) continue;
 
-    for (const edge of edgesOf(file)) {
+    let src: string;
+    try {
+      src = readFileSync(item.file, 'utf8');
+    } catch {
+      unresolvable.push({
+        from: item.importedBy === undefined ? root : posix(relative(PKG_ROOT, item.importedBy)),
+        specifier: posix(relative(PKG_ROOT, item.file)),
+      });
+      continue;
+    }
+    seen.add(item.file);
+
+    for (const edge of edgesOf(src)) {
       if (emittedOnly && !edge.emitted) continue;
       if (edge.specifier.startsWith('.')) {
-        queue.push(resolve(dirname(file), edge.specifier));
+        queue.push({ file: resolve(dirname(item.file), edge.specifier), importedBy: item.file });
         continue;
       }
       externals.add(edge.specifier);
       if (edge.specifier.startsWith(BANNED_PREFIX)) {
-        offenders.push({ file: posix(relative(PKG_ROOT, file)), specifier: edge.specifier });
+        offenders.push({ file: posix(relative(PKG_ROOT, item.file)), specifier: edge.specifier });
       }
     }
   }
@@ -116,6 +155,7 @@ function walk(root: string, { emittedOnly }: { emittedOnly: boolean }): Graph {
     files: [...seen].map((f) => posix(relative(PKG_ROOT, f))).sort(),
     externals: [...externals].sort(),
     offenders,
+    unresolvable,
   };
 }
 
@@ -129,6 +169,35 @@ describe('the package entry ships no Drizzle', () => {
     expect(emitted.files).toContain(ENTRY);
     expect(emitted.files).toContain('src/zod/local.ts');
     expect(emitted.externals).toContain('zod');
+  });
+
+  // The three static forms the walk has to see, driven directly rather than
+  // inferred from the tree — the side-effect form appears nowhere in this
+  // package today, which is exactly what would let a regression in it go
+  // unnoticed until the day somebody writes one.
+  it('sees a side-effect import, which carries no `from` clause', () => {
+    const withoutBindings = edgesOf("import './register.ts';");
+    expect(withoutBindings).toEqual([{ specifier: './register.ts', emitted: true }]);
+
+    const named = edgesOf("import { a } from './a.ts';");
+    expect(named).toEqual([{ specifier: './a.ts', emitted: true }]);
+
+    const typeOnly = edgesOf("import type { T } from './t.ts';");
+    expect(typeOnly).toEqual([{ specifier: './t.ts', emitted: false }]);
+  });
+
+  // A specifier the walk could not read is a graph it did not finish walking,
+  // and an unfinished walk satisfies every absence assertion below for the wrong
+  // reason. Reported by name rather than surfacing as a raw ENOENT from whichever
+  // assertion happened to trigger the read first.
+  it('resolved every relative specifier it followed', () => {
+    expect(
+      emitted.unresolvable,
+      'The walk followed a relative import it could not read. It appends nothing to a ' +
+        'specifier, so it needs every relative import in this package to carry an explicit ' +
+        "`.ts`. Give the specifier its extension, or teach the walk that package's resolution:\n  " +
+        emitted.unresolvable.map((u) => `${u.from} -> ${u.specifier}`).join('\n  '),
+    ).toEqual([]);
   });
 
   // The detector's positive control. Walking the module that DOES import

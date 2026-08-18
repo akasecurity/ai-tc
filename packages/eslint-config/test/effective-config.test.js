@@ -876,6 +876,92 @@ describe('every workspace package ships a network-guarded eslint config', () => 
   });
 });
 
+// A package that imports a `node:` builtin, or reads `import.meta.dirname`,
+// needs `@types/node` in its OWN manifest — and omitting it typechecks fine from
+// inside this workspace, because TypeScript walks up to the repo root's
+// node_modules/@types and finds the copy the root devDependencies installed.
+// So the defect is invisible here by construction and surfaces only where the
+// package is consumed from a workspace that does not install this root: TS2307
+// on the `node:` specifier, TS2339 on `import.meta.dirname`.
+//
+// It is also invisible in the lockfile in a way worth naming, because that is
+// the second thing declaring the dependency fixes. Undeclared, pnpm resolved
+// vitest's optional `@types/node` peer for those importers independently of what
+// TypeScript resolved from the root — landing a major above the `engines` floor
+// while the compiler used the root's copy. Two versions in play for one package.
+//
+// Three packages carried this at once, which is what makes it a pattern rather
+// than an oversight and the reason it is derived here instead of remembered.
+describe('every workspace package declares the @types/node its own source needs', () => {
+  // The two symptoms above, and nothing wider. `process.` looks like it belongs
+  // and does not: `child_process.` contains it, so the token needs a boundary it
+  // cannot carry, and a package whose only Node surface is a global is not a case
+  // this repo has. Matching what actually broke keeps a green run meaningful.
+  const NEEDS_NODE_TYPES =
+    /(?:from|import|require)\s*\(?\s*['"]node:|import\.meta\.(?:dirname|filename)\b/;
+
+  /** Every lintable tracked file the package itself owns, nested packages excluded. */
+  const ownFiles = (pkg) => {
+    const dir = `${pkg.dir.split(sep).join('/')}/`;
+    return LINTABLE_TRACKED.files.filter(
+      (f) =>
+        f.startsWith(dir) &&
+        !PACKAGE_DIRS.some((other) => other !== dir.slice(0, -1) && f.startsWith(`${other}/`)),
+    );
+  };
+
+  const usage = WORKSPACE_PACKAGES.map((pkg) => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, pkg.dir, 'package.json'), 'utf8'));
+    const files = ownFiles(pkg).filter((f) =>
+      NEEDS_NODE_TYPES.test(stripComments(readFileSync(join(REPO_ROOT, f), 'utf8'))),
+    );
+    return {
+      label: pkg.label,
+      files,
+      declared:
+        manifest.devDependencies?.['@types/node'] ?? manifest.dependencies?.['@types/node'] ?? '',
+    };
+  });
+
+  it('finds the node-typed source it is filtering for (vacuity guard)', () => {
+    // Every assertion below filters `usage`, so a regex that matched nothing —
+    // or an ownFiles() that resolved no path on a platform whose separator is
+    // not '/' — would report zero violations and pass having checked nothing.
+    const withUsage = usage.filter((u) => u.files.length);
+    expect(
+      withUsage.map((u) => u.label),
+      'no package reads as using a node: builtin, so the checks below are vacuous',
+    ).not.toEqual([]);
+    expect(withUsage.length).toBeGreaterThan(WORKSPACE_PACKAGES.length / 2);
+  });
+
+  it('no package uses a node: builtin without declaring @types/node', () => {
+    const undeclared = usage
+      .filter((u) => u.files.length && !u.declared)
+      .map((u) => `${u.label} — e.g. ${u.files.slice(0, 3).join(', ')}`);
+    expect(
+      undeclared,
+      undeclared.length
+        ? 'These packages import a node: builtin (or read import.meta.dirname) but declare no ' +
+            '@types/node of their own. They typecheck here only because TypeScript falls back to ' +
+            "the repo root's node_modules/@types, and fail with TS2307/TS2339 from any workspace " +
+            `that does not install this root. Add "@types/node" to devDependencies:\n  ${undeclared.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it('every declared @types/node tracks the one Active LTS line', () => {
+    // Split ranges are the state this replaced, one layer down: the point of
+    // declaring the dependency is that ONE version is in play per package.
+    const ranges = [...new Set(usage.map((u) => u.declared).filter(Boolean))];
+    expect(
+      ranges,
+      `Workspace packages declare more than one @types/node range: ${ranges.join(', ')}. ` +
+        `${CONVENTIONS_DOC} states .nvmrc, CI and @types/node all track the Active LTS line.`,
+    ).toHaveLength(1);
+  });
+});
+
 describe('every file outside every workspace package is linted by a repo-root pass', () => {
   it('enumerates exactly the expected package-less files (drift guard)', () => {
     // Both assertions below filter this list, so an empty or under-counted one

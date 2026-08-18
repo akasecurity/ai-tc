@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdtempSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 /**
@@ -166,6 +173,14 @@ export function shimmedPath(binDir: string, basePath: string | undefined): strin
 /** The name a POSIX shim's `#!/usr/bin/env node` line looks the interpreter up under. */
 export const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
 
+export interface NodeOnlyPathOptions extends NodeOnlyDirOptions {
+  /**
+   * The platform to decide FOR, defaulting to the running one. Present so both
+   * branches are drivable from either host, exactly as `writeCommandShim`'s is.
+   */
+  readonly platform?: NodeJS.Platform;
+}
+
 export interface NodeOnlyDirOptions {
   /**
    * The link attempt, `symlinkSync` by default. Exists so the copy fallback is
@@ -200,12 +215,118 @@ export function nodeOnlyDir(parent: string, options: NodeOnlyDirOptions = {}): s
   try {
     (options.symlink ?? symlinkSync)(process.execPath, target);
   } catch {
+    // Deliberately unconditional, and worth naming because the fallback is not
+    // cheap — it writes the whole interpreter. What it is FOR is a filesystem
+    // that grants writes but not links (a link needs a privilege on Windows,
+    // and some network and non-native mounts have no symlinks at all). What it
+    // also swallows is an EACCES or ENOENT on `dir` itself, which is not a link
+    // problem — but the copy then fails on the same directory and throws, so
+    // the real fault still surfaces rather than being converted into a pass.
     copyFileSync(process.execPath, target);
     // A no-op on Windows; on POSIX, the executable bit the shebang needs, held
     // here rather than trusted to what the copy preserved.
     chmodSync(target, 0o755);
   }
   return dir;
+}
+
+/**
+ * Whether a shim written by {@link writeCommandShim} resolves its INTERPRETER
+ * through the child's PATH.
+ *
+ * Only a POSIX shim does: it is a `#!/usr/bin/env node` script, and `env` walks
+ * PATH for the name. The win32 shim is a `.cmd` that names `process.execPath`
+ * outright, so nothing there looks `node` up at all. A property of the ARTIFACT
+ * this module writes, kept beside {@link SHIM_NEEDS_SHELL} for the same reason:
+ * a caller re-deriving it would be guessing at output it does not produce.
+ *
+ * Takes a `platform` for the reason {@link writeCommandShim} does: the branch
+ * that matters here is the win32 one, and a constant read off the running host
+ * can only ever be checked against itself — `process.platform !== 'win32'` on a
+ * POSIX runner asserts `true === true`, so replacing the whole decision with
+ * `true` stays green everywhere the suite actually runs.
+ */
+export const shimNeedsNodeOnPath = (platform: NodeJS.Platform = process.platform): boolean =>
+  platform !== 'win32';
+
+/** {@link shimNeedsNodeOnPath} for the running platform. */
+export const SHIM_NEEDS_NODE_ON_PATH = shimNeedsNodeOnPath();
+
+/**
+ * The PATH entries a caller must add so a shim written by
+ * {@link writeCommandShim} can reach its interpreter — one {@link nodeOnlyDir}
+ * where the shebang needs one, and NOTHING on win32, where nothing reads it.
+ *
+ * Empty rather than symmetric on purpose. Materialising the interpreter costs
+ * a link where the platform grants one and a copy of the whole binary — tens of
+ * megabytes — where it does not, and Windows is exactly the platform that may
+ * refuse the link (a file symlink needs a privilege an ordinary account and an
+ * un-elevated runner may both lack). So the symmetric version pays the most
+ * expensive form of this on the leg that can least afford it, for a shebang
+ * that is never read: this suite is a peer copy in three plugins, `launcherEnv`
+ * is called more than once each, and the Windows leg is already the slowest
+ * one here.
+ *
+ * Spread into the PATH list, so a caller that stops needing one changes nothing
+ * else:
+ *
+ * ```ts
+ * shimmedPath(binDir, [...nodeOnlyPathEntries(parent), ...WINDOWS_SYSTEM_DIRS].join(delimiter))
+ * ```
+ */
+export function nodeOnlyPathEntries(parent: string, options: NodeOnlyPathOptions = {}): string[] {
+  return shimNeedsNodeOnPath(options.platform) ? [nodeOnlyDir(parent, options)] : [];
+}
+
+/**
+ * Refuse unless NO directory on `env.PATH` holds anything the bare name
+ * `command` could resolve to.
+ *
+ * The mirror of {@link assertShimResolves}, for the case whose subject is that
+ * a command is absent: that premise has to be PROVEN, because a miss does not
+ * fail closed. Resolution keeps walking PATH and finds the developer's real
+ * installed CLI, so the case under test drives a live binary — for the dashboard
+ * launcher, that means a real detached server on the machine running the suite,
+ * started before any assertion can say why.
+ *
+ * Decided by LISTING rather than by spawning, so the check can never start the
+ * thing it is looking for. The match is deliberately wide — `command` plus any
+ * `command.*`, covering a `.cmd`, a `.exe` and the extensionless launcher an
+ * npm global install writes — because over-refusing names a file to go and look
+ * at, while under-refusing runs it.
+ *
+ * A directory on PATH that does not exist is not a hit: `execvp` and libuv both
+ * skip an unreadable entry, so refusing there would report a resolution this
+ * PATH cannot perform. Anything else is rethrown rather than swallowed — a
+ * directory that exists and cannot be read is a premise this check could not
+ * establish, which is the one thing it must not report as established.
+ */
+export function assertCommandNotOnPath(env: NodeJS.ProcessEnv, command: string): void {
+  const prefix = `${command.toLowerCase()}.`;
+  for (const dir of (env.PATH ?? '').split(delimiter)) {
+    if (dir === '') continue;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw e;
+    }
+    const hit = names.find((name) => {
+      const lower = name.toLowerCase();
+      return lower === command.toLowerCase() || lower.startsWith(prefix);
+    });
+    if (hit !== undefined) {
+      throw new Error(
+        `a real "${command}" is reachable from this PATH: ${join(dir, hit)}. This is a SETUP ` +
+          'failure, not a result: driving the case from here would resolve that binary instead ' +
+          "of the stub, so the case would exercise the developer's own installed CLI. The PATH " +
+          'must carry only the shim dir, the interpreter dir where one is needed and (win32) the ' +
+          "system dirs — never node's own bin dir, which under a shared install prefix is where " +
+          '`npm i -g` puts its shims too.',
+      );
+    }
+  }
 }
 
 /**

@@ -18,12 +18,16 @@ import { delimiter, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  assertCommandNotOnPath,
   assertShimResolves,
   NODE_BIN,
   nodeOnlyDir,
+  nodeOnlyPathEntries,
+  SHIM_NEEDS_NODE_ON_PATH,
   SHIM_NEEDS_SHELL,
   shimMarker,
   shimmedPath,
+  shimNeedsNodeOnPath,
   WINDOWS_SYSTEM_DIRS,
   WINDOWS_SYSTEM_ENV,
   writeCommandShim,
@@ -227,6 +231,201 @@ describe('nodeOnlyDir', () => {
     expect(statSync(target).size).toBe(statSync(process.execPath).size);
     // And it runs, which is what the shebang will ask of it.
     expect(nodeVersionVia(dir)).toBe(process.version);
+  });
+});
+
+describe('nodeOnlyPathEntries', () => {
+  it('yields NOTHING for the platform whose shim reads no shebang', () => {
+    // The decision that matters, driven for win32 from whatever host runs this.
+    // Read off the running platform instead and the case asserts nothing on a
+    // POSIX runner: `true === true` however the gate is spelled, so dropping it
+    // entirely stays green on every leg the suite is actually run on.
+    //
+    // The cost is why it is worth a case at all. Materialising the interpreter
+    // is a link where the platform grants one and a copy of the whole binary —
+    // tens of megabytes — where it does not, and Windows is both the platform
+    // that may refuse the link and the one that can least afford the write.
+    const parent = tempDir();
+    expect(nodeOnlyPathEntries(parent, { platform: 'win32' })).toEqual([]);
+    // Absent ENTRY means absent DIR: an empty list beside a dir built anyway
+    // would read identically at every caller and cost exactly the same.
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  it('yields one dir holding node alone for a platform whose shim does', () => {
+    const parent = tempDir();
+    const [dir] = nodeOnlyPathEntries(parent, { platform: 'linux' });
+
+    expect(dirname(dir ?? '')).toBe(parent);
+    expect(readdirSync(dir ?? '')).toEqual([NODE_BIN]);
+  });
+
+  it('decides on the RUNNING platform by default', () => {
+    // The default is what every caller uses, so it needs its own case: a
+    // parameter honoured only when passed would leave the shipped call site
+    // unguarded while both cases above stayed green.
+    const parent = tempDir();
+    expect(nodeOnlyPathEntries(parent)).toHaveLength(SHIM_NEEDS_NODE_ON_PATH ? 1 : 0);
+    expect(SHIM_NEEDS_NODE_ON_PATH).toBe(shimNeedsNodeOnPath(process.platform));
+  });
+
+  it('states the platform rule the same way for both branches', () => {
+    // The rule itself, independent of the host: win32 alone needs no entry.
+    expect(shimNeedsNodeOnPath('win32')).toBe(false);
+    for (const platform of ['linux', 'darwin', 'freebsd'] as const) {
+      expect(shimNeedsNodeOnPath(platform)).toBe(true);
+    }
+  });
+
+  it('reaches THIS process s node through the dir it yields', (ctx) => {
+    if (!SHIM_NEEDS_NODE_ON_PATH) ctx.skip('this platform needs no node on PATH');
+    const [dir] = nodeOnlyPathEntries(tempDir());
+    expect(nodeVersionVia(dir ?? '')).toBe(process.version);
+  });
+
+  it('forwards the link seam, so the fallback is reachable through it', () => {
+    // Without this the option could be dropped on the way through and the
+    // wrapper would look identical from every caller.
+    const calls: string[] = [];
+    nodeOnlyPathEntries(tempDir(), {
+      platform: 'linux',
+      symlink: (target, path) => {
+        calls.push(path);
+        symlinkSync(target, path);
+      },
+    });
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('assertCommandNotOnPath', () => {
+  const REAL = 'aka';
+
+  // Every name a bare `aka` could resolve to: the POSIX file, the `.cmd` shim
+  // an npm global install writes on Windows, a `.exe`, and the EXTENSIONLESS
+  // Bourne launcher npm writes beside the shim. Each is planted on its own, so
+  // a match narrowed to one form fails on the others rather than on a mixture.
+  const RESOLVABLE = ['aka', 'aka.cmd', 'aka.exe', 'aka.bat', 'AKA.CMD'];
+
+  const pathOf = (...dirs: string[]): NodeJS.ProcessEnv => ({ PATH: dirs.join(delimiter) });
+
+  it('passes on a PATH holding nothing that resolves', () => {
+    // The positive control. Without it every refusal case below could be
+    // satisfied by a check that throws unconditionally.
+    const dir = tempDir();
+    writeFileSync(join(dir, 'akashic-unrelated'), '');
+    writeFileSync(join(dir, 'claude'), '');
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(dir), REAL);
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each(RESOLVABLE)('refuses a planted %s', (name) => {
+    const dir = tempDir();
+    writeFileSync(join(dir, name), '');
+
+    const err = errorFrom(() => {
+      assertCommandNotOnPath(pathOf(dir), REAL);
+    });
+    // Named, so the refusal sends the reader at the file rather than at PATH.
+    expect(err?.message).toContain(join(dir, name));
+    expect(err?.message).toContain('SETUP');
+  });
+
+  it('scans every dir on PATH, not just the first', () => {
+    // A loop that returned after the first clean dir would pass the control
+    // case above and miss every real one, since the shim dir is always first.
+    const clean = tempDir();
+    const dirty = tempDir();
+    writeFileSync(join(dirty, REAL), '');
+
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(clean, dirty), REAL);
+      })?.message,
+    ).toContain(join(dirty, REAL));
+  });
+
+  it('decides by LISTING, so it never runs what it finds', () => {
+    // The check stands in front of a launcher that would start a detached
+    // server, so it must not be able to start one itself. Pinned by planting a
+    // shim that records having run: a probe-by-spawn would trip it.
+    const dir = tempDir();
+    const sentinel = join(tempDir(), 'ran');
+    writeCommandShim(dir, REAL, bodyWritingSentinel(sentinel));
+
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(dir), REAL);
+      }),
+    ).toBeDefined();
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
+  it('tolerates a PATH entry that does not exist', () => {
+    // Nothing resolves through a dir that is not there, so refusing on one
+    // would report a resolution this PATH cannot perform — and an unguarded
+    // readdir would throw ENOENT, naming the wrong problem entirely.
+    const missing = join(tempDir(), 'never-created');
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(missing), REAL);
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rethrows a read failure that is NOT absence', () => {
+    // The other half, and the one a blanket `catch { continue }` loses: absence
+    // means nothing is there, while a read that fails for any other reason
+    // leaves the premise UNESTABLISHED — and this check reporting "nothing
+    // resolves" without having looked is the exact failure it exists to
+    // prevent. The live case is a POSIX dir with search but not read permission
+    // (`--x`): execvp happily executes a known name inside it while readdir
+    // refuses, so a swallowed EACCES hides a binary that really is reachable.
+    // Driven here as ENOTDIR — a file where a dir was expected — because that
+    // needs no chmod, which is a no-op on Windows and again when running as
+    // root, and it exercises the same non-ENOENT branch.
+    const notADir = join(tempDir(), 'file-on-path');
+    writeFileSync(notADir, '');
+
+    const err = errorFrom(() => {
+      assertCommandNotOnPath(pathOf(notADir), REAL);
+    });
+    expect(err).toBeDefined();
+    expect((err as NodeJS.ErrnoException).code).toBe('ENOTDIR');
+  });
+
+  it('ignores empty PATH segments rather than reading the cwd', () => {
+    // An empty segment means the CURRENT DIRECTORY to execvp — reading it here
+    // would refuse on whatever the repo happens to hold.
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath({ PATH: '' }, REAL);
+      }),
+    ).toBeUndefined();
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath({}, REAL);
+      }),
+    ).toBeUndefined();
+  });
+
+  it('matches the command it was given, not a name baked in', () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'codex'), '');
+
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(dir), 'codex');
+      }),
+    ).toBeDefined();
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(dir), REAL);
+      }),
+    ).toBeUndefined();
   });
 });
 

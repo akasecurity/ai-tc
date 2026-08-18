@@ -15,7 +15,7 @@
  * these arguments, from the directory the plan chose".
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,8 +25,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
+  assertCommandNotOnPath,
   assertShimResolves,
-  nodeOnlyDir,
+  nodeOnlyPathEntries,
   shimmedPath,
   WINDOWS_SYSTEM_DIRS,
   WINDOWS_SYSTEM_ENV,
@@ -95,44 +96,22 @@ function writeAkaStub(binDir: string, recordPath: string): void {
   );
 }
 
-// PATH carries the stub, a dir holding node ALONE (a POSIX shim's shebang needs
-// the interpreter — never what happens to live beside it, which under a shared
-// install prefix is where `npm i -g` puts a real `aka`) and — on win32 only —
-// the system dirs cmd.exe and where.exe are found through. Nothing else from
-// the host: a real `aka` on the developer's PATH must not be reachable, since
-// this suite's whole subject is which one gets spawned.
+// PATH carries the stub, a dir holding node ALONE where a shebang needs one (a
+// POSIX shim resolves `node` by name — never what happens to live beside it,
+// which under a shared install prefix is where `npm i -g` puts a real `aka`)
+// and — on win32 only — the system dirs cmd.exe and where.exe are found
+// through. Nothing else from the host: a real `aka` on the developer's PATH
+// must not be reachable, since this suite's whole subject is which one gets
+// spawned. `nodeOnlyPathEntries` is empty on win32, where the `.cmd` shim names
+// its interpreter outright and materialising one would buy nothing.
 function launcherEnv(binDir: string): NodeJS.ProcessEnv {
   return {
     ...WINDOWS_SYSTEM_ENV,
-    PATH: shimmedPath(binDir, [nodeOnlyDir(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+    PATH: shimmedPath(
+      binDir,
+      [...nodeOnlyPathEntries(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter),
+    ),
   };
-}
-
-// Refuse unless NO dir on `env.PATH` holds anything the bare name `aka` could
-// resolve to. The negative case's premise, proven before anything is driven —
-// the mirror of `assertShimResolves` in the positive one. A miss here is worse
-// than a wrong message: the launcher finds a real `aka` and starts a real
-// dashboard server on the developer's machine, detached, before the assertion
-// can say why. Listing rather than spawning, so the check itself can never run
-// the CLI it is looking for; the match is deliberately wide (`aka` plus any
-// `aka.*` — a `.cmd`, `.exe` or extensionless launcher), since over-refusing
-// names a file to look at and under-refusing starts a server.
-function assertNoAkaOnPath(env: NodeJS.ProcessEnv): void {
-  for (const dir of (env.PATH ?? '').split(delimiter)) {
-    const hits = readdirSync(dir).filter((name) => {
-      const lower = name.toLowerCase();
-      return lower === 'aka' || lower.startsWith('aka.');
-    });
-    if (hits.length > 0) {
-      throw new Error(
-        `a real "aka" is reachable from the launcher's PATH: ${join(dir, hits[0] ?? '')}. ` +
-          'This is a SETUP failure: driving the launcher from here would start a real ' +
-          'dashboard server on this machine. The PATH must carry only the shim dir, a dir ' +
-          'holding node alone and (win32) the system dirs — never node’s own bin dir, ' +
-          'which under a shared install prefix is where `npm i -g` puts `aka` too.',
-      );
-    }
-  }
 }
 
 function runLauncher(env: NodeJS.ProcessEnv, args: string[]): string {
@@ -259,7 +238,7 @@ describe('the built dashboard launcher', () => {
       // Proven, not assumed: a real `aka` reachable from here would be spawned
       // for real, and this case would then fail on the message — after the
       // server was already running.
-      assertNoAkaOnPath(env);
+      assertCommandNotOnPath(env, 'aka');
 
       const stdout = runLauncher(env, ['--no-open']);
 

@@ -35,7 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   assertShimResolves,
-  nodeOnlyDir,
+  nodeOnlyPathEntries,
   SHIM_PROBE_ARG,
   shimmedPath,
   WINDOWS_SYSTEM_DIRS,
@@ -91,14 +91,16 @@ class SetupJourney {
   // The interpreter for the stub's shebang, and nothing that lives beside it.
   // Nested under the stub dir so it rides that dir's cleanup; being inside a
   // dir on PATH does not put it on PATH, so it is listed there by itself.
-  private readonly nodeDir: string;
+  // Empty on win32, where the `.cmd` shim names its interpreter outright and
+  // nothing reads a shebang at all.
+  private readonly nodeDirs: string[];
   private shimProven = false;
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-codex-journey-home-'));
     this.settingsPath = join(this.home, '.aka', 'settings', 'settings.json');
     this.binDir = mkdtempSync(join(tmpdir(), 'aka-codex-journey-bin-'));
-    this.nodeDir = nodeOnlyDir(this.binDir);
+    this.nodeDirs = nodeOnlyPathEntries(this.binDir);
     this.writeFakeJudge();
   }
 
@@ -184,7 +186,7 @@ class SetupJourney {
       // win32, and no `codex` lives in System32, so the stub stays the only
       // resolvable one. Defined once in path-shim.ts, beside the shim writer
       // whose win32 output is what needs them.
-      PATH: shimmedPath(this.binDir, [this.nodeDir, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+      PATH: shimmedPath(this.binDir, [...this.nodeDirs, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
       ...WINDOWS_SYSTEM_ENV,
     };
     // Proven once per journey, before the first script runs. A shim that does

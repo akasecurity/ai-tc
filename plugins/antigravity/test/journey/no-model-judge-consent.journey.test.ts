@@ -26,7 +26,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
@@ -35,7 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { judgeArgvUnsupported } from '../helpers/judge-argv-unsupported.ts';
 import {
   assertShimResolves,
-  nodeOnlyDir,
+  nodeOnlyPathEntries,
   shimmedPath,
   writeCommandShim,
 } from '../helpers/path-shim.ts';
@@ -92,14 +92,16 @@ class SetupJourney {
   // The interpreter for the stub's shebang, and nothing that lives beside it.
   // Nested under the stub dir so it rides that dir's cleanup; being inside a
   // dir on PATH does not put it on PATH, so it is listed there by itself.
-  private readonly nodeDir: string;
+  // Empty on win32, where the `.cmd` shim names its interpreter outright and
+  // nothing reads a shebang at all.
+  private readonly nodeDirs: string[];
   private shimProven = false;
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-antigravity-journey-home-'));
     this.settingsPath = join(this.home, '.aka', 'settings', 'settings.json');
     this.binDir = mkdtempSync(join(tmpdir(), 'aka-antigravity-journey-bin-'));
-    this.nodeDir = nodeOnlyDir(this.binDir);
+    this.nodeDirs = nodeOnlyPathEntries(this.binDir);
     this.writeFakeJudge();
   }
 
@@ -189,10 +191,11 @@ class SetupJourney {
       // Stub judge first on PATH so apply-suppressions' `agy` spawn hits
       // it, never a live model; a dir holding node ALONE second so the stub's
       // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
-      // branch of writeCommandShim; on Windows the stub is a .cmd naming an
-      // absolute node, so the node dir is on PATH for POSIX's sake, not both.
-      // Nothing else from the host environment reaches the chain.
-      PATH: shimmedPath(this.binDir, this.nodeDir),
+      // branch of writeCommandShim. On Windows the stub is a .cmd naming an
+      // absolute node, so there is no shebang to serve and the list is empty;
+      // shimmedPath then yields the stub dir alone. Nothing else from the host
+      // environment reaches the chain.
+      PATH: shimmedPath(this.binDir, this.nodeDirs.join(delimiter)),
     };
     // Proven once per journey, before the first script runs. A shim that does
     // not land does NOT fail closed: resolution keeps walking PATH and finds a

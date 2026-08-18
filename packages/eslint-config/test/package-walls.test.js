@@ -200,19 +200,20 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
   // is why this takes the dirname rather than stripping a known suffix. Two
   // configs in one directory collapse to one entry, so a package that splits its
   // wall across a primary and a scripts config still reads as one package.
-  const configsReferencingWall = () => [
-    ...new Set(
-      trackedEslintConfigFiles()
-        .filter((f) => {
-          const src = readFileSync(join(REPO_ROOT, f), 'utf8');
-          return WALL_TOKENS.some((token) => src.includes(token));
-        })
-        .map((f) => {
-          const dir = toPosix(f).split('/').slice(0, -1).join('/');
-          return dir === '' ? '.' : dir;
-        }),
-    ),
-  ].sort();
+  const configsReferencingWall = () =>
+    [
+      ...new Set(
+        trackedEslintConfigFiles()
+          .filter((f) => {
+            const src = readFileSync(join(REPO_ROOT, f), 'utf8');
+            return WALL_TOKENS.some((token) => src.includes(token));
+          })
+          .map((f) => {
+            const dir = toPosix(f).split('/').slice(0, -1).join('/');
+            return dir === '' ? '.' : dir;
+          }),
+      ),
+    ].sort();
 
   it('is exactly the packages that read the store', () => {
     expect(
@@ -242,9 +243,9 @@ describe('a file that relaxes the network ban keeps the wall', () => {
         'with drizzleWallRules({ allow }) rather than noNetworkImports({ allow }).',
     ).toBe(1);
     expect(firedIn(file.name, "import z from 'drizzle-zod';", 'no-restricted-imports')).toBe(1);
-    expect(firedIn(file.name, "await import('drizzle-orm/sqlite-core');", 'no-restricted-syntax')).toBe(
-      1,
-    );
+    expect(
+      firedIn(file.name, "await import('drizzle-orm/sqlite-core');", 'no-restricted-syntax'),
+    ).toBe(1);
 
     // The relaxation is scoped to the one module it names.
     expect(firedIn(file.name, "import h from 'node:http';", 'no-restricted-imports')).toBe(1);

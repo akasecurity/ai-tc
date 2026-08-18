@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,25 +53,38 @@ describe('the packaged layout is reachable from the app directory', () => {
   // <cli>/web-ui/web-ui/server.js, so the walk crosses two directories — well
   // inside the classifier's depth limit, but that is a property of the packed
   // layout rather than something either package can assert alone.
-  function packagedCli(): { cliRoot: string; appDir: string } {
-    const cliRoot = tempDir('aka-packaged-cli-');
+  //
+  // Lay it down under a real npm prefix (<prefix>/lib/node_modules/<pkg>) so
+  // the case is the one its name claims, and assert the channel STRUCTURALLY.
+  // A `JSON.stringify(channel)` substring check was the earlier form and it is
+  // unsound in two independent ways: JSON escapes a backslash, so a Windows
+  // path never appears literally in the encoded string however the classifier
+  // behaves (this is what reddened the Windows leg — the returned `detail`
+  // carried the path exactly), and a substring passes on a SUPERSTRING, which
+  // is the only reason the macOS leg was green — realpath prefixes `/private`
+  // and `/private/var/…/x` happens to contain `/var/…/x`. Both are answered by
+  // comparing whole paths against `realpathSync`, which is what the classifier
+  // reports.
+  function packagedCli(): { prefix: string; cliRoot: string; appDir: string } {
+    const prefix = tempDir('aka-packaged-cli-');
+    const cliRoot = join(prefix, 'lib', 'node_modules', '@akasecurity', 'cli');
+    const appDir = join(cliRoot, 'web-ui', 'web-ui');
+    mkdirSync(appDir, { recursive: true });
     writeFileSync(
       join(cliRoot, 'package.json'),
       JSON.stringify({ name: '@akasecurity/cli', version: '0.9.3' }),
     );
-    const appDir = join(cliRoot, 'web-ui', 'web-ui');
-    mkdirSync(appDir, { recursive: true });
-    return { cliRoot, appDir };
+    return { prefix, cliRoot, appDir };
   }
 
   it('classifies an npm-global CLI from the dashboard app directory', () => {
-    const { cliRoot, appDir } = packagedCli();
-    // Put the whole thing under a global npm prefix: <prefix>/lib/node_modules/…
-    const channel = detectInstallChannel({ moduleDir: appDir });
-    // The temp dir is not under a node_modules tree, so this lands on the
-    // source-checkout/unknown side — what matters here is that the walk REACHED
-    // the CLI package rather than stopping short of it.
-    expect(JSON.stringify(channel)).toContain(cliRoot);
+    const { prefix, cliRoot, appDir } = packagedCli();
+    expect(detectInstallChannel({ moduleDir: appDir })).toStrictEqual({
+      kind: 'global',
+      manager: 'npm',
+      root: realpathSync(prefix),
+      packageDir: realpathSync(cliRoot),
+    });
   });
 
   it('an app directory outside any install classifies as unknown, not as a guess', () => {

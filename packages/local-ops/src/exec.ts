@@ -38,6 +38,35 @@ export function quoteForShell(arg: string): string {
   return NEEDS_QUOTING.test(arg) ? `"${arg.replaceAll('"', '""')}"` : arg;
 }
 
+// The same argument, quoted for a HUMAN rather than for the shell this module
+// spawns through. The two are not the same problem. `quoteForShell` only ever
+// has to satisfy cmd.exe, because that is the only shell exec.ts uses; a
+// `display` string is pasted into whichever shell the reader is already in.
+// Those agree that a bare space separates two arguments and that a
+// double-quoted run is one token, and disagree about what survives INSIDE the
+// quotes: sh/bash/zsh keep expanding `$var`, backticks and `\` there, so a
+// path carrying one is silently rewritten rather than merely re-split. Single
+// quotes are the only POSIX form that takes a string literally.
+//
+// Quoting is by exception on both platforms, so the ordinary command — every
+// argument of which is a flag or a package spec — is printed exactly as it was
+// before a path could appear in one. The POSIX test is a SAFE-set rather than
+// a list of metacharacters: a character nobody thought of is then quoted
+// rather than passed through.
+//
+// The Windows side keeps the cmd form's gap and inherits one more, because a
+// reader there is as likely to be in PowerShell: a double-quoted run expands
+// `%VAR%` in cmd and `$var` in PowerShell alike. Both are legal in a Windows
+// path, and no single quoting form is literal in both shells — cmd does not
+// treat `'` as a quote at all — so this is documented rather than solved.
+const POSIX_SAFE = /^[\w@%+=:,./-]+$/;
+
+export function quoteForDisplay(arg: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') return quoteForShell(arg);
+  if (arg.length > 0 && POSIX_SAFE.test(arg)) return arg;
+  return `'${arg.replaceAll("'", String.raw`'\''`)}'`;
+}
+
 function shellArgs(args: string[]): string[] {
   return USE_SHELL ? args.map(quoteForShell) : args;
 }

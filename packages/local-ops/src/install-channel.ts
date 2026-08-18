@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 
+import { quoteForDisplay } from './exec.ts';
 import { isSea } from './self-exec.ts';
 import { CLI_PACKAGE, isRecord } from './updates.ts';
 
@@ -128,6 +129,27 @@ function collapseVirtualStore(parts: string[]): string[] {
   return [...above, ...nodeModules, ...parts.slice(inner + 1)];
 }
 
+// Homebrew's Cellar is always the segment directly below a brew PREFIX, and
+// those are a closed set: /opt/homebrew (Apple silicon), /usr/local (Intel),
+// and Linuxbrew's /home/linuxbrew/.linuxbrew or a per-user .linuxbrew. The
+// anchor matters because `Cellar` is an ordinary word — matching the segment
+// wherever it appears sends anyone with a directory of that name to
+// `brew upgrade aka`, a formula that does not exist, instead of to the
+// package manager that really owns their install.
+const BREW_PREFIX_SEGMENTS = new Set(['homebrew', 'local', 'linuxbrew', '.linuxbrew']);
+
+function isHomebrewCellar(parts: string[]): boolean {
+  return parts.some(
+    (segment, i) => segment === 'Cellar' && i >= 1 && BREW_PREFIX_SEGMENTS.has(parts[i - 1] ?? ''),
+  );
+}
+
+// `yarn`, `Yarn` and `.yarn` are the same vendor directory: yarn v1 capitalises
+// it on Windows and hides it on POSIX.
+function isYarnSegment(segment: string): boolean {
+  return segment.toLowerCase().replace(/^\./, '') === 'yarn';
+}
+
 // The installer lays a binary down at
 // `<installRoot>/<version>/aka-<triple>/aka`; anything else is a copy someone
 // placed by hand, which we can describe but not locate an install root for.
@@ -166,7 +188,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
   // Homebrew owns its Cellar outright — an npm/pnpm write into it is fought
   // by the next `brew upgrade`, so brew is named even though the tree below
   // Cellar is an ordinary node_modules layout.
-  if (parts.includes('Cellar') || lastRunIndex(parts, ['homebrew', 'Cellar']) >= 0) {
+  if (isHomebrewCellar(parts)) {
     return { kind: 'homebrew', packageDir };
   }
 
@@ -193,13 +215,20 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     };
   }
 
-  // yarn (v1): <…>/yarn/global/node_modules/@akasecurity/cli
-  const yarn = lastRunIndex(parts, ['yarn', 'global', 'node_modules']);
-  if (yarn >= 0) {
+  // yarn (v1): `~/.config/yarn/global/node_modules/@akasecurity/cli` on POSIX,
+  // but `%LOCALAPPDATA%\Yarn\Data\global\node_modules\…` on Windows — the
+  // vendor segment is capitalised there AND separated from `global` by a `Data`
+  // segment, so neither the case nor the adjacency holds across platforms. The
+  // `global`/`node_modules` pair is what is stable; the vendor is looked for in
+  // the two segments above it. Missing this does not degrade to vague advice:
+  // yarn writes its own package.json into that directory, so the layout falls
+  // through to the npm rule below and reads as a source checkout.
+  const yarn = lastRunIndex(parts, ['global', 'node_modules']);
+  if (yarn >= 1 && parts.slice(Math.max(0, yarn - 2), yarn).some(isYarnSegment)) {
     return {
       kind: 'global',
       manager: 'yarn',
-      root: toPath(parts.slice(0, yarn + 2), absolute),
+      root: toPath(parts.slice(0, yarn + 1), absolute),
       packageDir,
     };
   }
@@ -220,6 +249,13 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
   const npmWin = lastRunIndex(parts, ['node_modules']);
   if (npmWin >= 0) {
     // A checkout's own node_modules is a dev link, not a global install.
+    // This branch is also where a global layout NONE of the rules above match
+    // would land, and it would read as a checkout rather than as unknown —
+    // pnpm, yarn and bun each write a package.json into their global dir, so
+    // the marker below cannot separate the two. Every manager this module
+    // knows is matched above in both its POSIX and its Windows form, which is
+    // what keeps the case hypothetical; a new manager needs its own rule
+    // there rather than a wider net here.
     const prefix = toPath(parts.slice(0, npmWin), absolute);
     if (probe.exists(join(prefix, 'package.json')) || probe.exists(join(prefix, 'src'))) {
       return { kind: 'dev', packageDir };
@@ -305,7 +341,19 @@ const INSTALLER_PS1 =
 // was found in wherever the manager accepts a location flag. yarn and bun take
 // none, so those two rely on the manager resolving the same global dir it
 // installed into — which it does unless the user moved it since.
-function planGlobalUpdate(manager: InstallManager, root: string, spec: string): UpdatePlan {
+//
+// `command` and `display` are the same argv with different audiences, and the
+// difference is quoting: argv reaches the manager as a vector, so a space in
+// the root is nothing to it, while `display` is one line for a human to paste
+// into a shell that splits on exactly that. Unquoted, an npm prefix of
+// `C:\Program Files\nodejs` reads `--prefix C:\Program` and turns the rest of
+// the path into a package spec.
+function planGlobalUpdate(
+  manager: InstallManager,
+  root: string,
+  spec: string,
+  platform: NodeJS.Platform,
+): UpdatePlan {
   const argsFor: Record<InstallManager, string[]> = {
     npm: ['install', '-g', '--prefix', root, spec],
     pnpm: ['add', '-g', '--global-dir', root, spec],
@@ -313,7 +361,8 @@ function planGlobalUpdate(manager: InstallManager, root: string, spec: string): 
     bun: ['add', '-g', spec],
   };
   const args = argsFor[manager];
-  return { command: { bin: manager, args }, display: `${manager} ${args.join(' ')}` };
+  const display = [manager, ...args.map((arg) => quoteForDisplay(arg, platform))].join(' ');
+  return { command: { bin: manager, args }, display };
 }
 
 /**
@@ -328,7 +377,7 @@ export function planCliUpdate(
   const spec = `${CLI_PACKAGE}@latest`;
   switch (channel.kind) {
     case 'global':
-      return planGlobalUpdate(channel.manager, channel.root, spec);
+      return planGlobalUpdate(channel.manager, channel.root, spec, platform);
     case 'homebrew':
       return {
         command: null,

@@ -14,6 +14,7 @@ import { defaultDataDir } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
 import { dashboardInstallOrigin } from '../../lib/install-origin';
+import type { UpdateAdvisory } from './UpdatesClient';
 import { UpdatesClient } from './UpdatesClient';
 
 export const runtime = 'nodejs';
@@ -52,9 +53,24 @@ export default function UpdatesPage() {
   // one nvm version, a pnpm/bun store, the standalone binary…), so it is derived
   // rather than assumed — the same plan the button will run. The origin comes
   // from this app, never from `import.meta.url`: see app/lib/install-origin.ts.
-  const commands: Record<string, string> = {
-    cli: planCliUpdate(detectInstallChannel(dashboardInstallOrigin())).display,
-  };
+  //
+  // A plan with no `command` is one this process will not run: the standalone
+  // binary, a Homebrew tree, a source checkout. Its `display` is advice and is
+  // kept OUT of `commands`, because the dialog introduces whatever it finds
+  // there with "This runs the following command on this machine" — and for the
+  // binary that line is the installer's curl-pipe-to-shell one-liner, which is
+  // the last thing to present as something the dashboard is about to execute.
+  const cliPlan = planCliUpdate(detectInstallChannel(dashboardInstallOrigin()));
+  const commands: Record<string, string> = {};
+  const advisories: Record<string, UpdateAdvisory> = {};
+  if (cliPlan.command === null) {
+    advisories.cli = {
+      display: cliPlan.display,
+      reason: cliPlan.reason ?? 'this copy cannot be updated from the dashboard',
+    };
+  } else {
+    commands.cli = cliPlan.display;
+  }
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
     if (ref) commands[agent.id] = `claude plugin update ${ref}`;
@@ -76,6 +92,7 @@ export default function UpdatesPage() {
         availablePlugins={report.availablePlugins}
         checkedAt={cache ? relativeTime(new Date(cache.checkedAt).toISOString()) : null}
         commands={commands}
+        advisories={advisories}
         installCommands={installCommands}
       />
     </div>

@@ -104,7 +104,38 @@ describe('classifyInstall', () => {
     const channel = classifyInstall(
       globalProbe('/Users/x/.config/yarn/global/node_modules/@akasecurity/cli'),
     );
-    expect(channel).toMatchObject({ kind: 'global', manager: 'yarn' });
+    expect(channel).toMatchObject({
+      kind: 'global',
+      manager: 'yarn',
+      root: p('/Users/x/.config/yarn/global'),
+    });
+  });
+
+  it('recognises the WINDOWS yarn global folder, which is spelled differently', () => {
+    // `%LOCALAPPDATA%\Yarn\Data\global` — the vendor segment is capitalised
+    // and a `Data` segment sits between it and `global`, so a rule written
+    // against the POSIX form (`yarn/global/node_modules`, consecutive and
+    // lower-case) misses it entirely. What made that worth a test rather than a
+    // shrug is where the miss LANDS: `yarn global` keeps its own package.json
+    // in that directory, so the fallthrough reads it as a project checkout and
+    // `aka update` tells a yarn user to run `git pull`.
+    const channel = classifyInstall(
+      globalProbe('/Users/u/AppData/Local/Yarn/Data/global/node_modules/@akasecurity/cli'),
+    );
+    expect(channel).toMatchObject({
+      kind: 'global',
+      manager: 'yarn',
+      root: p('/Users/u/AppData/Local/Yarn/Data/global'),
+    });
+  });
+
+  it('does not read a bare `global/node_modules` as yarn', () => {
+    // The vendor segment is the whole of the evidence — without it this is an
+    // ordinary npm prefix that happens to have a `global` directory in it.
+    const channel = classifyInstall(
+      globalProbe('/Users/x/tools/global/node_modules/@akasecurity/cli'),
+    );
+    expect(channel).toMatchObject({ kind: 'global', manager: 'npm' });
   });
 
   it('names Homebrew rather than writing into a tree brew owns', () => {
@@ -113,6 +144,27 @@ describe('classifyInstall', () => {
     );
     expect(channel.kind).toBe('homebrew');
     expect(planCliUpdate(channel).command).toBeNull();
+  });
+
+  it('recognises the other prefixes brew installs under', () => {
+    for (const prefix of ['/usr/local', '/home/linuxbrew/.linuxbrew']) {
+      const channel = classifyInstall(
+        globalProbe(`${prefix}/Cellar/node/24.4.0/lib/node_modules/@akasecurity/cli`),
+      );
+      expect(channel.kind, prefix).toBe('homebrew');
+    }
+  });
+
+  it('does not read a directory merely NAMED Cellar as a Homebrew tree', () => {
+    // `Cellar` is an ordinary word, and this was the one rule here matching a
+    // bare segment anywhere in the path rather than a layout. A user with a
+    // directory of that name was told to run `brew upgrade aka` — a formula
+    // that does not exist — instead of being pointed at the manager that
+    // really owns the install.
+    const channel = classifyInstall(
+      globalProbe('/Users/x/Cellar/tools/lib/node_modules/@akasecurity/cli'),
+    );
+    expect(channel).toMatchObject({ kind: 'global', manager: 'npm' });
   });
 
   it('reports the standalone binary, with the installer root it was laid down in', () => {
@@ -294,6 +346,46 @@ describe('planCliUpdate', () => {
       bin: 'npm',
       args: ['install', '-g', '--prefix', p('/opt/node'), `${CLI_PACKAGE}@latest`],
     });
+  });
+
+  it('leaves an ordinary root unquoted — only a path that needs it is touched', () => {
+    // The control for the two cases below: quoting is by exception, so the
+    // line every existing install prints is byte-identical to what it was.
+    const plan = planCliUpdate(
+      classifyInstall(globalProbe('/opt/node/lib/node_modules/@akasecurity/cli')),
+    );
+    expect(plan.display).toBe(`npm install -g --prefix ${p('/opt/node')} ${CLI_PACKAGE}@latest`);
+  });
+
+  it('quotes a root with a space in the line it prints, but not in the argv it runs', () => {
+    // `display` is documented as what the user would type, and both surfaces
+    // present it that way — the CLI under `To update it, run:`, the dashboard
+    // in a <pre>. Joined raw, an npm prefix of `C:\Program Files\nodejs` reads
+    // as `--prefix C:\Program` with the rest of the path as a package spec.
+    // argv is a vector and must stay unquoted: the manager receives it whole.
+    const posix = planCliUpdate(
+      {
+        kind: 'global',
+        manager: 'npm',
+        root: '/opt/My Node/prefix',
+        packageDir: '/opt/My Node/prefix/lib/node_modules/@akasecurity/cli',
+      },
+      'darwin',
+    );
+    expect(posix.display).toContain(String.raw`'/opt/My Node/prefix'`);
+    expect(posix.command?.args).toContain('/opt/My Node/prefix');
+
+    const win = planCliUpdate(
+      {
+        kind: 'global',
+        manager: 'npm',
+        root: String.raw`C:\Program Files\nodejs`,
+        packageDir: String.raw`C:\Program Files\nodejs\node_modules\@akasecurity\cli`,
+      },
+      'win32',
+    );
+    expect(win.display).toContain(String.raw`"C:\Program Files\nodejs"`);
+    expect(win.command?.args).toContain(String.raw`C:\Program Files\nodejs`);
   });
 
   it('offers the platform-appropriate installer for the standalone binary', () => {

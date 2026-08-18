@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { quoteForShell } from '../src/exec.ts';
+import { quoteForDisplay, quoteForShell } from '../src/exec.ts';
 
 // Node does not quote argv when `shell: true`: it joins the command and its
 // arguments with single spaces and hands the string to the shell, which then
@@ -52,6 +52,42 @@ describe('quoteForShell', () => {
   });
 });
 
+describe('quoteForDisplay', () => {
+  // The same argument for a HUMAN to paste, which is a different shell from the
+  // one exec.ts spawns through. On Windows it is the same problem and delegates;
+  // on POSIX it is not, because a double-quoted run still expands.
+  it('leaves every argument of the ordinary command byte-identical', () => {
+    for (const arg of ['install', '-g', '--prefix', '@akasecurity/cli@latest', '/opt/node']) {
+      expect(quoteForDisplay(arg, 'darwin'), arg).toBe(arg);
+      expect(quoteForDisplay(arg, 'win32'), arg).toBe(arg);
+    }
+  });
+
+  it('single-quotes a POSIX path that needs it', () => {
+    expect(quoteForDisplay('/opt/My Node/prefix', 'darwin')).toBe(
+      String.raw`'/opt/My Node/prefix'`,
+    );
+  });
+
+  it('delegates to the cmd form on Windows', () => {
+    const prefix = String.raw`C:\Program Files\nodejs`;
+    expect(quoteForDisplay(prefix, 'win32')).toBe(quoteForShell(prefix));
+    expect(quoteForDisplay(prefix, 'win32')).toBe(`"${prefix}"`);
+  });
+
+  it('closes and reopens the quotes around an embedded single quote', () => {
+    expect(quoteForDisplay("/opt/o'brien/prefix", 'darwin')).toBe(
+      String.raw`'/opt/o'\''brien/prefix'`,
+    );
+  });
+
+  it('quotes anything outside the safe set, including a character nobody listed', () => {
+    for (const arg of ['/opt/a;b', '/opt/a*b', '/opt/a`b', '/opt/a$b', '/opt/a\\b']) {
+      expect(quoteForDisplay(arg, 'darwin'), arg).toBe(`'${arg}'`);
+    }
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('the property the quoting exists to preserve', () => {
   // A POSIX shell and cmd.exe disagree about almost everything, but they agree
   // that an unquoted space separates two arguments. So driving the quoted form
@@ -90,5 +126,22 @@ describe.skipIf(process.platform === 'win32')('the property the quoting exists t
       '[Node/prefix]',
       '[pkg@latest]',
     ]);
+  });
+
+  // A `display` string is pasted into the reader's own shell, and a POSIX one
+  // keeps expanding INSIDE double quotes — so the spawn-side form is not
+  // sufficient here even though it fixes the space. The variable below is
+  // deliberately one nothing sets: it expands to empty, which is a silent
+  // rewrite of the path rather than an error.
+  const withVar = '/opt/My $AKA_NOT_A_REAL_VAR Node';
+
+  it('a single-quoted path reaches the shell verbatim', () => {
+    expect(argvUnderShell([quoteForDisplay(withVar, 'darwin')])).toStrictEqual([`[${withVar}]`]);
+  });
+
+  it('the double-quoted form is rewritten — why display quoting is its own function', () => {
+    const [got] = argvUnderShell([quoteForShell(withVar)]);
+    expect(got).not.toBe(`[${withVar}]`);
+    expect(got).not.toContain('$AKA_NOT_A_REAL_VAR');
   });
 });

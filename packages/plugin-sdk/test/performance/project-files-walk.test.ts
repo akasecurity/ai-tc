@@ -16,6 +16,7 @@ import {
   nestedGitignoreChain,
   symlinkLoops,
 } from '../../../../test/fixtures/adversarial/hostile-repo/index.ts';
+import { fastestOf, FIXTURE_TIMEOUT_MS } from '../../../../test/helpers/perf.ts';
 import { PROJECT_WALK_BOUNDS, resolveProjectFiles } from '../../src/project-files.ts';
 
 // The SessionStart project walk against the adversarial corpus.
@@ -59,25 +60,6 @@ const fresh = (prefix?: string): HostileRepo => {
   repo = createHostileRepo(prefix);
   return repo;
 };
-
-/**
- * Ceiling for a case whose fixture is thousands of files. Big enough that the
- * BUILD never decides the outcome on the slowest runner, small enough that a
- * walk which stopped terminating still fails rather than hanging the suite.
- */
-const FIXTURE_TIMEOUT_MS = 120_000;
-
-/** The fastest of `runs` passes — see the note above on why not a mean. */
-function fastestOf(runs: number, body: () => void): number {
-  body();
-  let best = Infinity;
-  for (let i = 0; i < runs; i++) {
-    const started = performance.now();
-    body();
-    best = Math.min(best, performance.now() - started);
-  }
-  return best;
-}
 
 /**
  * Whether this process can make a directory genuinely unreadable.

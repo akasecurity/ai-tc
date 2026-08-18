@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,6 +15,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
+
+/** The error a thunk threw, captured OUTSIDE its own catch so a never-thrown one is `undefined`. */
+function errorFrom(fn: () => unknown): Error | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (err) {
+    return err as Error;
+  }
+}
 
 // An AWS-key-SHAPED test value, assembled at runtime so no key-shaped literal
 // sits in this source file (the AKA plugin itself would flag it). Matched by
@@ -129,6 +139,66 @@ describe('collectFiles', () => {
     expect(byPath.get(join(root, 'tracked.ts'))).toBe(false);
     expect(byPath.get(join(root, 'scratch.env'))).toBe(true);
     expect(byPath.get(join(root, 'logs', 'debug.log'))).toBe(true);
+  });
+
+  it('refuses an unreadable scan ROOT instead of reporting it clean', (ctx) => {
+    // The asymmetry that makes this necessary: `statSync` succeeds on a
+    // directory with no read bit, so `collectFiles` gets past its
+    // `isDirectory()` check and only `readdirSync` fails. Swallowed, the
+    // generator ends having yielded nothing and `scanPathIntoStore` records
+    // `scanned: 0, findings: 0` — the Scan page rendering "no findings" for a
+    // folder that was never opened. A false negative on the whole target is
+    // worse than the error the caller used to get, so the ROOT rethrows while a
+    // subtree stays best-effort.
+    const target = join(root, 'sealed');
+    mkdirSync(target);
+    writeFileSync(join(target, 'a.env'), 'x');
+    chmodSync(target, 0o000);
+    try {
+      // Gated on the platform actually denying the read: win32 ignores the mode
+      // and root bypasses it, and in both cases the walk below would succeed
+      // and this case would assert nothing.
+      let denied = false;
+      try {
+        readdirSync(target);
+      } catch {
+        denied = true;
+      }
+      if (!denied) ctx.skip('this platform/user is not denied the read');
+
+      const err = errorFrom(() => [...collectFiles(target)]);
+      expect(err, 'the unreadable root was swallowed').toBeDefined();
+      expect((err as NodeJS.ErrnoException).code).toBe('EACCES');
+    } finally {
+      chmodSync(target, 0o700);
+    }
+  });
+
+  it('keeps a subtree best-effort even though the root throws', () => {
+    // The other half, and the reason the root case is not just "rethrow
+    // everything": one unreadable directory below the target must still cost
+    // only its own subtree. Without this, the two halves could be collapsed
+    // into a single rethrow and nothing here would notice.
+    writeFileSync(join(root, 'top.ts'), 'a');
+    const sealed = join(root, 'sub');
+    mkdirSync(sealed);
+    writeFileSync(join(sealed, 'buried.ts'), 'b');
+    chmodSync(sealed, 0o000);
+    try {
+      let denied = false;
+      try {
+        readdirSync(sealed);
+      } catch {
+        denied = true;
+      }
+      if (!denied) return; // covered by the gated case above
+
+      const files = [...collectFiles(root)].map((f) => f.path);
+      expect(files).toContain(join(root, 'top.ts'));
+      expect(files).not.toContain(join(sealed, 'buried.ts'));
+    } finally {
+      chmodSync(sealed, 0o700);
+    }
   });
 
   it('applies a .gitignore from a MIDDLE directory to entries below it', () => {

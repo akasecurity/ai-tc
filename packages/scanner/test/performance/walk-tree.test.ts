@@ -15,6 +15,7 @@ import {
   nestedGitignoreChain,
   symlinkLoops,
 } from '../../../../test/fixtures/adversarial/hostile-repo/index.ts';
+import { fastestOf, FIXTURE_TIMEOUT_MS } from '../../../../test/helpers/perf.ts';
 import { walkTree } from '../../src/walk.ts';
 
 // The worktree scanner's file discovery against the adversarial corpus.
@@ -59,21 +60,6 @@ const fresh = (prefix?: string): HostileRepo => {
   repo = createHostileRepo(prefix);
   return repo;
 };
-
-/** Ceiling for a case whose fixture is thousands of files — see project-files-walk.test.ts. */
-const FIXTURE_TIMEOUT_MS = 120_000;
-
-/** The fastest of `runs` passes: noise only ever adds time, so the minimum is the closest a loaded machine gets to the code's own cost. */
-function fastestOf(runs: number, body: () => void): number {
-  body();
-  let best = Infinity;
-  for (let i = 0; i < runs; i++) {
-    const started = performance.now();
-    body();
-    best = Math.min(best, performance.now() - started);
-  }
-  return best;
-}
 
 const walk = (root: string) => [...walkTree(root, { trackGitignore: true })];
 

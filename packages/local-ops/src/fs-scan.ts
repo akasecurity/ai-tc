@@ -124,6 +124,40 @@ function* visit(
   skipLayers: readonly IgnoreLayer[],
   inIgnoredDir: boolean,
 ): Generator<CollectedFile> {
+  // The listing comes FIRST, before either ignore file is read. Two reasons,
+  // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
+  // walkTree — the walker this one is aligned with — has always been in this
+  // order, and every directory that turns out to be unlistable was otherwise
+  // paying two `readFileSync` attempts and up to two array copies to build
+  // layer stacks for entries that will never be read. That is exactly the
+  // hostile shape this walk now has coverage for.
+  let dirents: Dirent[];
+  try {
+    dirents = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    // THE ROOT IS NOT BEST-EFFORT. `dirRel` is '' only at the scan target, and
+    // a target the user named and we could not read is a FAILED scan, not an
+    // empty one: `statSync` succeeds on a directory with no read bit (measured:
+    // mode 0000 gives `isDirectory() === true` and `readdirSync` EACCES), so
+    // swallowing this yields zero files, and `scanPathIntoStore` then records
+    // `scanned: 0, findings: 0` — the Scan page rendering "no findings" for a
+    // folder that was never opened. A false negative on the whole target is
+    // worse than the error the caller used to see, so the root rethrows.
+    if (dirRel === '') throw err;
+    // A SUBTREE is best-effort, matching the other two walkers: one unreadable
+    // directory costs its own subtree, never the whole scan. Unwrapped, a
+    // permission-denied directory, an antivirus lock, a transient EMFILE — or a
+    // path past the platform's ceiling, which is how the adversarial corpus
+    // finds this — aborts `collectFiles` mid-generator and takes every file
+    // already walked with it.
+    //
+    // That subtree is dropped SILENTLY, which is the same posture
+    // `@akasecurity/scanner`'s walkTree documents. Reporting it to the caller
+    // is worth doing and is a change to this function's contract, so it is
+    // tracked separately rather than smuggled in here.
+    return;
+  }
+
   const dirMarkLayers = withLayer(
     markLayers,
     inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
@@ -132,25 +166,6 @@ function* visit(
     skipLayers,
     readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length),
   );
-
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    // Best-effort, matching the other two walkers: one unreadable directory
-    // costs its own subtree, never the whole scan. Unwrapped, a single
-    // permission-denied directory, an antivirus lock, a transient EMFILE — or a
-    // path past the platform's ceiling, which is how the adversarial corpus
-    // finds this — aborts `collectFiles` mid-generator and takes every file
-    // already walked with it, surfacing on the Scan page as a thrown Server
-    // Action rather than a shorter list.
-    //
-    // The subtree is dropped SILENTLY, which is the same posture
-    // `@akasecurity/scanner`'s walkTree documents. Reporting it to the caller
-    // is worth doing and is a change to this function's contract, so it is
-    // tracked separately rather than smuggled in here.
-    return;
-  }
 
   for (const entry of dirents) {
     const path = join(dir, entry.name);

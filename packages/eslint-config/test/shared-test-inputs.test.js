@@ -41,8 +41,15 @@ const ROOT_TEST_DIR = join(REPO_ROOT, 'test');
 // that would fail SILENTLY: a reference this cannot see is a directory this
 // never requires, so the guard would report green while that directory sat
 // outside every test hash — which is the exact false green it exists to stop.
-// A template literal carrying an interpolation still contributes its literal
-// prefix, which is enough to name the directory.
+//
+// Matching text rather than import syntax is what reaches `new URL(…)`, and it
+// is also why the segment has to be checked against the DISK below: this reader
+// cannot tell a real reference from a path inside a comment, and it captures a
+// template literal raw, `${…}` included. An interpolation in the FIRST segment
+// therefore yields a segment like `${kind}` — a requirement no turbo entry can
+// satisfy, naming a directory that cannot exist. (Past the first segment the
+// literal prefix does name the directory, which is why
+// `../../test/fixtures/${name}/x.ts` is read correctly as `test/fixtures`.)
 const RELATIVE_LITERAL = /(['"`])(\.\.?\/[^'"`\n]*)\1/g;
 
 /**
@@ -72,6 +79,17 @@ function rootTestSegments(file) {
     // the same string as a `../`-PREFIXED one and slips a `test/../**`
     // requirement past a prefix test.
     if (!first || first === '..') continue;
+    // It must be a directory that EXISTS. A reader matching text rather than
+    // imports otherwise manufactures requirements nothing can meet — `${kind}`
+    // from an interpolated literal, or a path quoted inside a comment — and
+    // each one fails this suite demanding a globalDependencies entry that the
+    // "names a directory that exists" case below would then reject. A reference
+    // to a directory that is not there cannot be a real dependency anyway.
+    //
+    // The residue, stated rather than hidden: the real directory an
+    // interpolation ranges over goes unguarded. Nothing short of evaluating the
+    // expression can recover it.
+    if (!existsSync(join(ROOT_TEST_DIR, first))) continue;
     segments.add(first);
   }
   return segments;
@@ -125,6 +143,29 @@ describe('the shared repo-root test tree is hashed into every test task', () => 
     // silently demanding a globalDependencies entry for every string in the
     // repo.
     expect([...String.raw`import x from 'vitest';`.matchAll(RELATIVE_LITERAL)]).toEqual([]);
+  });
+
+  it('manufactures no requirement a turbo entry could not satisfy', () => {
+    // Both phantom classes, driven through the real reader. Without the
+    // on-disk check each of these demands an entry naming a directory that does
+    // not exist — which no edit to turbo.json can satisfy, because the "names a
+    // directory that exists" case below would then reject it.
+    const phantom = [
+      'new URL(`../../../test/${kind}/index.ts`, import.meta.url)',
+      "// see '../../../test/phantom/thing.ts' for details",
+    ];
+    for (const src of phantom) {
+      const found = [...src.matchAll(RELATIVE_LITERAL)].map((m) => m[2]);
+      expect(found, `nothing was read out of: ${src}`).toHaveLength(1);
+      const rest = toPosix(
+        relative(ROOT_TEST_DIR, resolve(REPO_ROOT, 'packages/x/test', found[0])),
+      );
+      const first = rest.split('/')[0];
+      expect(existsSync(join(ROOT_TEST_DIR, first)), `${first} would be demanded`).toBe(false);
+    }
+    // The positive control: a REAL shared directory still resolves and still
+    // exists, so the check above rejects phantoms without rejecting everything.
+    expect(existsSync(join(ROOT_TEST_DIR, 'fixtures'))).toBe(true);
   });
 
   it('finds the references it is derived from', () => {

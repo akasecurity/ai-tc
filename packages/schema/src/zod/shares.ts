@@ -264,7 +264,7 @@ export type SetEgressDecisionResponse = z.infer<typeof SetEgressDecisionResponse
 // ─── Query schemas ────────────────────────────────────────────────────────────
 // Query schemas intentionally carry NO `.meta({ id })`: the OpenAPI generator
 // expands query params into individual `parameters` (which cannot be a `$ref`),
-// so they must stay inline. See inventory.ts / api.ts header for the same rule.
+// so they must stay inline. See the SHAPE IDS note in zod/index.ts.
 
 /** GET /v1/shares/destinations query params. */
 export const ListShareDestinationsQuery = z.object({

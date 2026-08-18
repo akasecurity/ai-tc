@@ -264,6 +264,14 @@ export const PolicyListItem = z
   .meta({ id: 'PolicyListItem' });
 export type PolicyListItem = z.infer<typeof PolicyListItem>;
 
+// The built-in policy catalog as a list. Lives here, beside the item shape it
+// wraps, because the local store's policy-catalog port returns exactly this —
+// see `getPolicyList` in @akasecurity/persistence.
+export const ListPoliciesResponse = z
+  .object({ items: z.array(PolicyListItem) })
+  .meta({ id: 'ListPoliciesResponse' });
+export type ListPoliciesResponse = z.infer<typeof ListPoliciesResponse>;
+
 export const PolicyDetail = z
   .object({
     specVersion: z.literal(1),

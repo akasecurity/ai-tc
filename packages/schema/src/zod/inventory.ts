@@ -73,7 +73,7 @@ export type AssetSummary = z.infer<typeof AssetSummary>;
 // ─── Shape 2: ProjectSummary ──────────────────────────────────────────────────
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
+ * Response shape for this resource's read.
  * Embedded in harness summaries, project lists, and connect-project responses.
  */
 export const ProjectSummary = z
@@ -101,7 +101,7 @@ const HarnessCategory = z.object({
 });
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
+ * Response shape for this resource's read.
  * Powers the by-harness tree view.
  */
 export const HarnessSummary = z
@@ -200,7 +200,7 @@ const AssetFindingRef = z.object({
 });
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
+ * Response shape for this resource's read.
  * Powers the right-pane asset detail and setMcpTrust response.
  * `trust` is null for non-mcp; `tools` is omitted for non-mcp.
  */
@@ -300,7 +300,7 @@ export type ProjectTreeResponse = z.infer<typeof ProjectTreeResponse>;
 // ─── Shape 14: FileDetail ────────────────────────────────────────────────────
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
+ * Response shape for this resource's read.
  * Powers the per-file detail drawer.
  * Extends FileSummary with project context and findingsRefs.
  */
@@ -387,7 +387,8 @@ export type ConnectProjectBody = z.infer<typeof ConnectProjectBody>;
 // ─── Query schemas ────────────────────────────────────────────────────────────
 // Query schemas intentionally carry NO `.meta({ id })`: the OpenAPI generator
 // expands query params into individual `parameters` (which cannot be a `$ref`),
-// so they must stay inline.  Body schemas above DO carry ids.  See api.ts header.
+// so they must stay inline.  Body schemas above DO carry ids.  See the SHAPE
+// IDS note in zod/index.ts.
 
 /** GET /v1/inventory/assets query params. */
 export const ListAssetsQuery = z.object({

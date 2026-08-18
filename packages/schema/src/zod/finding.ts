@@ -271,12 +271,12 @@ export type FindingFacets = z.infer<typeof FindingFacets>;
 // ─── Request / response schemas ───────────────────────────────────────────────
 
 // ListGroupedFindingsQuery / ListGroupedFindingsResponse: the grouped findings
-// API (GET /v1/findings). Distinct from the legacy ListFindingsQuery in api.ts
-// which backs the old simple list.
+// read. Distinct from the older flat list, which pages differently — see below.
 //
 // Query schema — intentionally NO `.meta({ id })`: the OpenAPI generator expands
 // query params into individual `parameters` (which cannot be a `$ref`), so it
-// must stay inline (see api.ts header). `limit` uses `z.coerce.number()` because
+// must stay inline (see the SHAPE IDS note in zod/index.ts). `limit` uses
+// `z.coerce.number()` because
 // query params arrive as strings (`?limit=50`).
 // Default page size for grouped findings when the query omits `limit` (schema
 // caps `limit` at 100). Shared by every findings read path so all consumers
@@ -350,7 +350,8 @@ export const ApplyFindingActionResponse = FindingGroup.meta({ id: 'ApplyFindingA
 export type ApplyFindingActionResponse = z.infer<typeof ApplyFindingActionResponse>;
 
 // ExportFindingsQuery: same filter params as ListFindingsQuery minus pagination.
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery / api.ts header).
+// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the SHAPE
+// IDS note in zod/index.ts).
 export const ExportFindingsQuery = z.object({
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
@@ -383,8 +384,8 @@ export type FindingInstanceDetail = z.infer<typeof FindingInstanceDetail>;
 // the grouped query matches the group's folded status, and this response
 // paginates by a real keyset cursor where the grouped one pages a sorted array.
 //
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery / api.ts
-// header). `limit` mirrors the legacy flat lists' 200 ceiling.
+// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the
+// SHAPE IDS note in zod/index.ts). `limit` mirrors the legacy flat lists' 200 ceiling.
 export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
 
 export const ListFindingInstancesQuery = z.object({
@@ -462,8 +463,8 @@ export const FindingLocationRepo = z
   .meta({ id: 'FindingLocationRepo' });
 export type FindingLocationRepo = z.infer<typeof FindingLocationRepo>;
 
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery / api.ts
-// header). `limit` caps the REPO rows returned; a repo's files are not
+// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the
+// SHAPE IDS note in zod/index.ts). `limit` caps the REPO rows returned; a repo's files are not
 // separately paged.
 export const ListFindingLocationsQuery = z.object({
   severity: z.array(Severity).optional(),

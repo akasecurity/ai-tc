@@ -58,6 +58,17 @@ const waiver = (overrides: Record<string, unknown> = {}): Waiver => ({
 
 const TODAY = '2026-07-29';
 
+// The reader is scoped to the blocking table, so a fixture has to carry that
+// heading. Wrapping rather than dropping the cases: what they pin — the cell
+// anchor against arbitrary human markdown — is unchanged and still needed.
+const inBlocking = (...lines: string[]): string =>
+  [
+    '## Blocking advisories (1)',
+    '',
+    '| Package | Severity | Advisory | Title | Via |',
+    ...lines,
+  ].join('\n');
+
 const npmVia = (overrides: Record<string, unknown> = {}) => ({
   source: 1104664,
   name: 'postcss',
@@ -822,18 +833,20 @@ describe('advisoryIdsFromReport against the human side of the comparison', () =>
   // or the case above is satisfied by a reader that finds nothing anywhere.
   it('still reads both row shapes the report emits', () => {
     expect(
-      advisoryIdsFromReport('| left-pad | high | [GHSA-aaaa-bbbb-cccc](https://x) | t | v |'),
+      advisoryIdsFromReport(
+        inBlocking('| left-pad | high | [GHSA-aaaa-bbbb-cccc](https://x) | t | v |'),
+      ),
     ).toEqual(['GHSA-aaaa-bbbb-cccc']);
-    expect(advisoryIdsFromReport('| pkg | [1090893](https://x) | 2026-01-01 | why |')).toEqual([
-      '1090893',
-    ]);
+    expect(
+      advisoryIdsFromReport(inBlocking('| pkg | [1090893](https://x) | 2026-01-01 | why |')),
+    ).toEqual(['1090893']);
   });
 
   // The closing pipe is a lookahead so one cell's separator is not eaten as the
   // next cell's opener. No row emitted today has two link cells, which is why a
   // later edit that adds one would lose an id with nothing going red.
   it('reads both ids when two link cells are adjacent', () => {
-    expect(advisoryIdsFromReport('| a | [GHSA-a-b-c](u) | [4](v) | x |')).toEqual([
+    expect(advisoryIdsFromReport(inBlocking('| a | [GHSA-a-b-c](u) | [4](v) | x |'))).toEqual([
       '4',
       'GHSA-a-b-c',
     ]);
@@ -890,8 +903,8 @@ describe('advisoryIdsFromReport is linear in its input', () => {
 // again.
 describe('advisoryIdsCli', () => {
   const files: Record<string, string> = {
-    'audit-report.md': '| left-pad | high | [GHSA-aaaa-bbbb-cccc](https://x) | t | v |',
-    'artifact-audit-report.md': '| pkg | [1090893](https://x) | 2026-01-01 | why |',
+    'audit-report.md': inBlocking('| left-pad | high | [GHSA-aaaa-bbbb-cccc](https://x) | t | v |'),
+    'artifact-audit-report.md': inBlocking('| pkg | [1090893](https://x) | 2026-01-01 | why |'),
   };
   const read = (path: string): string | undefined => files[path];
 
@@ -909,5 +922,62 @@ describe('advisoryIdsCli', () => {
   // line is an id that matches nothing, which would make every advisory look new.
   it('prints nothing when there are no ids, rather than an empty line', () => {
     expect(advisoryIdsCli(['nope.md'], read)).toBe('');
+  });
+});
+
+// From the human review of this PR: the dedup must count only the BLOCKING
+// table. `advisoryRow` renders Blocking AND "Below the gate", and the waived
+// table shares the same cell shape, so a whole-document reader treated a
+// merely-reported advisory as an announced one.
+describe('advisoryIdsFromReport is scoped to the blocking table', () => {
+  const adv = (id: string): AuditAdvisory => ({
+    github_advisory_id: id,
+    module_name: 'm',
+    severity: 'high',
+    title: 't',
+    url: 'https://x',
+    findings: [],
+  });
+  const report = (over: Partial<Parameters<typeof buildReport>[0]> = {}): string =>
+    buildReport({
+      mode: 'workspace',
+      counts: { high: 1 },
+      blocking: [adv('GHSA-bbbb-bbbb-bbbb')],
+      waived: [],
+      stale: [],
+      nonBlocking: [],
+      ...over,
+    });
+
+  // THE regression. Monday it sits below the gate; Thursday the registry
+  // re-rates it and it moves into Blocking — the event the tracking issue
+  // exists to announce. Counted from Monday's report, `comm -23` emits nothing
+  // and it is never announced.
+  it('ignores an advisory that is only below the gate', () => {
+    expect(advisoryIdsFromReport(report({ nonBlocking: [adv('GHSA-nnnn-nnnn-nnnn')] }))).toEqual([
+      'GHSA-bbbb-bbbb-bbbb',
+    ]);
+  });
+
+  it('ignores a waived advisory, which is reported but not blocking', () => {
+    const waived = [{ advisory: adv('GHSA-wwww-wwww-wwww'), waiver: waiver() }];
+    expect(advisoryIdsFromReport(report({ waived }))).toEqual(['GHSA-bbbb-bbbb-bbbb']);
+  });
+
+  // audit.yml passes the workspace and artifact reports together, so both
+  // blocking sections have to be read — not merely the first.
+  it('reads every blocking section when two reports are concatenated', () => {
+    const two = `${report()}\n${report({ blocking: [adv('GHSA-cccc-cccc-cccc')] })}`;
+    expect(advisoryIdsFromReport(two)).toEqual(['GHSA-bbbb-bbbb-bbbb', 'GHSA-cccc-cccc-cccc']);
+  });
+
+  // The positive control on the slice: a report whose blocking table is empty
+  // must yield nothing rather than falling through to the other tables.
+  it('yields nothing when there is no blocking table at all', () => {
+    expect(
+      advisoryIdsFromReport(
+        report({ blocking: [], nonBlocking: [adv('GHSA-nnnn-nnnn-nnnn')], counts: {} }),
+      ),
+    ).toEqual([]);
   });
 });

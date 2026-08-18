@@ -237,13 +237,38 @@ function requiredCheckRows() {
     readContributing(),
   );
   if (section === null) return null;
-  return [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
+  const rows = [...section[1].matchAll(/^\| `([^`]+)`\s*\| `([^`]+)`\s*\| *(\S+) *\|$/gm)].map(
     ([, check, file, enforced]) => ({
       check,
       file,
       enforced,
     }),
   );
+  // The same completeness rule `parseGateTable` enforces, because this is a
+  // SECOND reader of one document and the two must not disagree about how many
+  // rows it has. Without it the pair diverges in the permissive direction: add
+  // a ninth row whose Enforced cell does not parse and the gate refuses the
+  // whole table (9 row-like, 8 parsed) while this file yields 8, satisfies its
+  // `toHaveLength(8)` pin, and stays green — measured at 111 passed. The count
+  // pin catches a REFORMATTED row and cannot catch an ADDED one.
+  //
+  // Duplicated rather than imported: `@akasecurity/required-checks-gate`
+  // devDepends on this package, so taking the reverse edge makes turbo report
+  // `x Cyclic dependency detected`. The guard travels with the copy instead.
+  //
+  // REPORTED, not asserted here. Collapsing a short count to `null` made
+  // `requiredChecks()` throw in a describe body, which vitest reports as a
+  // collection error — `Test Files 1 failed` with `Tests no tests`, taking
+  // every other suite in this file down and reading as green to anything
+  // grepping for a failed test. The count rides along and one named `it`
+  // asserts it.
+  rows.rowLike = section[1].split('\n').filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return false;
+    if (/^[|\-: ]+$/.test(trimmed)) return false;
+    return !trimmed.startsWith('| Check');
+  }).length;
+  return rows;
 }
 
 function requiredChecks() {
@@ -342,6 +367,12 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
     expect(rows).toHaveLength(8);
+    // Every line that LOOKS like a row parsed as one. The length pin above
+    // catches a REFORMATTED row (8 become 7) and cannot catch an ADDED one: a
+    // ninth row whose Enforced cell does not parse leaves 8 here while
+    // `parseGateTable` refuses the table outright, so the gate goes red daily
+    // and this file stays green. Measured at 111 passed before this line.
+    expect(rows).toHaveLength(rows.rowLike);
     expect(rows.map((row) => row.file)).toEqual(
       expect.arrayContaining(['ci.yml', 'audit.yml', 'codeql.yml']),
     );
@@ -451,6 +482,31 @@ describe('the job that holds the enforced column against reality', () => {
   // its red means a settings drift nobody's PR caused.
   it('is not itself one of the checks it gates on', () => {
     expect(requiredChecks().map((row) => row.file)).not.toContain('required-checks.yml');
+  });
+});
+
+// The two scheduled repository-state gates. Both read state that only settles
+// AFTER something else finishes, and both were got wrong once in review.
+describe('the scheduled repository-state gates', () => {
+  // A `push` trigger here reads the Security tab as it stood BEFORE the merge:
+  // an alert closes only when a later analysis stops reporting it, and
+  // codeql.yml takes ~2m20s on a main push while this job starts in seconds. It
+  // had one, and the effect was systematic — do what the gate's own failure text
+  // says (fix one alert, lower the baseline in the same commit) and the push run
+  // calls the lowered baseline a RISE and prints "Do not raise the baseline" at
+  // the commit that correctly lowered it.
+  it('codeql-alerts.yml has no push trigger, so it never reads a pre-merge count', () => {
+    const trigger = triggerBlock('codeql-alerts.yml');
+    expect(trigger).toMatch(/^ {2}schedule:/m);
+    expect(trigger).not.toMatch(/^ {2}push:/m);
+  });
+
+  // Specifying `permissions` at all sets every unlisted scope to `none`, and
+  // this job's whole purpose is two GraphQL reads of `repository.pullRequests`.
+  it('required-checks.yml grants the pull-request read its queries need', () => {
+    expect(jobBlock(readWorkflow('required-checks.yml'), 'required-checks')).toMatch(
+      /^ {6}pull-requests: read$/m,
+    );
   });
 });
 

@@ -460,12 +460,41 @@ export const advisoryId = (advisory: AuditAdvisory): string =>
 // does not match, exactly as an unrecognised shape already did not.
 const ADVISORY_CELL = /\| \[(GHSA-[A-Za-z0-9-]{1,64}|\d{1,32})\]\([^)\n]{0,2048}\)(?= \|)/g;
 
+/** The heading `buildReport` gives the blocking table, and any sibling heading. */
+const BLOCKING_HEADING = '## Blocking advisories';
+const ANY_HEADING = '\n## ';
+
+/**
+ * Every BLOCKING advisory id a rendered report carries, sorted and deduped.
+ *
+ * Scoped to the blocking table on purpose. `advisoryRow` renders the Blocking
+ * table AND the "Below the gate (non-blocking)" one, and the waived table
+ * shares the same `| [id](url) |` cell shape — so a reader taking ids from the
+ * whole document counted a merely-REPORTED advisory as an ANNOUNCED one. The
+ * consequence is the exact event the tracking issue exists for: Monday's report
+ * lists GHSA-xxxx below the gate, Thursday the registry re-rates it to high and
+ * it moves into Blocking, `seen_ids` already carries it from Monday, `comm -23`
+ * emits nothing, and a newly-blocking advisory on `main` is never announced.
+ * The mirror held too — a change confined to the non-blocking table posted a
+ * comment for nothing.
+ *
+ * Both sides of the comparison are rendered reports (this run's, and the issue
+ * body a previous run posted), so slicing the same section out of each keeps
+ * them comparable. A concatenation of BOTH reports is the normal input —
+ * audit.yml passes the workspace and artifact reports together — so every
+ * blocking section is taken, not just the first.
+ */
 export function advisoryIdsFromReport(markdown: string): string[] {
   const ids = new Set<string>();
-  for (const match of markdown.matchAll(ADVISORY_CELL)) {
-    // The group is mandatory, so a match always carries it; the guard is what
-    // the compiler needs rather than a reachable state.
-    if (match[1] !== undefined) ids.add(match[1]);
+  for (let at = markdown.indexOf(BLOCKING_HEADING); at !== -1;) {
+    const next = markdown.indexOf(ANY_HEADING, at + BLOCKING_HEADING.length);
+    const section = next === -1 ? markdown.slice(at) : markdown.slice(at, next);
+    for (const match of section.matchAll(ADVISORY_CELL)) {
+      // The group is mandatory, so a match always carries it; the guard is what
+      // the compiler needs rather than a reachable state.
+      if (match[1] !== undefined) ids.add(match[1]);
+    }
+    at = markdown.indexOf(BLOCKING_HEADING, at + BLOCKING_HEADING.length);
   }
   return [...ids].sort();
 }

@@ -22,18 +22,27 @@ name: CodeQL alerts
 # in front of it. As a PR check it would fail for an alert somebody else's merge
 # introduced, which is a check people re-run rather than read.
 
+# NO `push` trigger, and that absence is the load-bearing part.
+#
+# It had one, on the baseline and the reader, so that "a PR lowering the
+# baseline learns within minutes of merging whether it told the truth". It
+# learns the PRE-MERGE answer instead. An alert is closed only when a LATER
+# analysis of the branch stops reporting it, and `codeql.yml` takes ~2m20s on a
+# main push (measured over five) while this job starts in seconds — so a push
+# run reads the Security tab as it stood before the merge.
+#
+# The consequence is systematic and it inverts this gate's own advice. Do what
+# the failure text says — fix one high, lower the baseline 25 -> 24 in the same
+# commit — and the push run reads live 25 against baseline 24, calls it RISEN,
+# and prints "Do not raise the baseline to absorb it" at the commit that
+# correctly lowered it. Every alert-fixing merge would produce one red run with
+# backwards guidance, and the next morning's cron would be green.
+#
+# The cron is the honest cadence: it runs long after any analysis has settled.
 on:
   schedule:
     - cron: '45 7 * * *'
   workflow_dispatch:
-  # On a push that touched the baseline or the reader, so a PR lowering the
-  # baseline learns within minutes of merging whether it told the truth.
-  push:
-    branches: [main]
-    paths:
-      - '.github/codeql-alert-baseline.json'
-      - 'tools/codeql-alerts-gate/**'
-      - '.github/workflows/codeql-alerts.yml'
 
 permissions:
   contents: read

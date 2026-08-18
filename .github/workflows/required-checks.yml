@@ -48,6 +48,15 @@ jobs:
     name: Required checks match the record
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # Specifying `permissions` at all sets every scope not listed to `none`,
+      # and this job's entire purpose is two GraphQL reads of
+      # `repository.pullRequests`. Public data survives without it today;
+      # wherever the restriction bites — a private fork on the same schedule, or
+      # this repository going private — the query 403s and the gate exits 2
+      # every morning with "could not read the required-check state".
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
 

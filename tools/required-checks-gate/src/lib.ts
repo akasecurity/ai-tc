@@ -169,23 +169,35 @@ export interface SelectedPr {
 }
 
 /**
- * The newest pull request that reported any checks at all.
+ * The newest pull request whose rollup COVERS every check the table names.
  *
- * Skipping the ones that reported none is load-bearing rather than tidy. A PR
- * can exist with an empty rollup — opened seconds ago, or every workflow
- * path-filtered out — and reading THAT one reports every check as unreported,
- * which this gate treats as a failure. So the wrong answer would be a loud one,
- * arriving daily, about nothing.
+ * Coverage, not merely non-emptiness, and the difference is a daily flake. The
+ * earlier version returned the first candidate with `contexts.length > 0`,
+ * guarding only the EMPTY rollup — "opened seconds ago, or every workflow
+ * path-filtered out". But a pull request opened seconds ago far more often has
+ * a PARTIAL rollup than an empty one, and partial is the dangerous shape:
+ * `flag-major` (dependabot-major-guard.yml) SKIPS on an ordinary PR and so
+ * reports within seconds, while the five CI jobs take minutes. A PR opened a
+ * minute before the cron therefore offers exactly one context, satisfies
+ * `length > 0`, is selected — and every tabled check then reads as
+ * `not-reported`, which `isFailure` treats as drift. The job goes red daily
+ * with "A check recorded as enforced was not reported".
  *
- * The input is oldest-first, which is the only order the GraphQL connection
- * offers (`last: N` with an ascending sort), so the search runs from the end.
+ * So the caller passes the names it is going to ask about, and a candidate that
+ * cannot answer for all of them is skipped in favour of an older one that can.
+ * Finding none is NOT drift and must not be reported as any: the caller exits
+ * on the could-not-read path instead, which is the fail-safe direction.
+ *
+ * The input is oldest-first — the only order the connection offers (`last: N`
+ * with an ascending sort) — so the search runs from the end.
  */
-export function selectPr(candidates: PrNode[]): SelectedPr | undefined {
+export function selectPr(candidates: PrNode[], needed: readonly string[]): SelectedPr | undefined {
   for (let i = candidates.length - 1; i >= 0; i--) {
     const pr = candidates[i];
     if (pr === undefined) continue;
     const contexts = pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [];
-    if (contexts.length > 0) return { number: pr.number, contexts };
+    const names = new Set(contexts.map((context) => context.name ?? context.context));
+    if (needed.every((name) => names.has(name))) return { number: pr.number, contexts };
   }
   return undefined;
 }
@@ -261,7 +273,7 @@ export function parseRollupResponse(stdout: string): RollupContext[] {
  * request here, then read its rollup by number below.
  */
 export const prCandidatesQuery = (owner: string, repo: string, candidates: number): string =>
-  `{repository(owner:"${owner}",name:"${repo}"){pullRequests(last:${String(candidates)},orderBy:{field:CREATED_AT,direction:ASC}){nodes{number commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name} ... on StatusContext{context}}}}}}}}}}}`;
+  `{repository(owner:"${owner}",name:"${repo}"){pullRequests(last:${String(candidates)},baseRefName:"main",orderBy:{field:CREATED_AT,direction:ASC}){nodes{number commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name} ... on StatusContext{context}}}}}}}}}}}`;
 
 /** The second query: one pull request's rollup, with the required flag. */
 export const rollupQuery = (owner: string, repo: string, prNumber: number): string =>
@@ -468,9 +480,15 @@ export function runGate(io: GateIo, owner: string, repo: string, candidates: num
   try {
     const selected = selectPr(
       parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates))),
+      rows.map((row) => row.check),
     );
     if (selected === undefined) {
-      io.print(`::error::none of the last ${String(candidates)} pull requests reported any checks`);
+      // Exit 2 rather than comparing against a partial rollup: a question the
+      // data cannot answer is not a regression, and reporting it as one is the
+      // daily flake the coverage requirement exists to remove.
+      io.print(
+        `::error::none of the last ${String(candidates)} pull requests reported every check in the table`,
+      );
       return 2;
     }
     prNumber = selected.number;

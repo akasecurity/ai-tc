@@ -237,14 +237,36 @@ describe('selectPr', () => {
   // The input is oldest-first — the only order the connection offers — so the
   // search runs from the end. Reading it forwards would answer with the OLDEST
   // pull request, whose checks may predate the workflow being asked about.
-  it('takes the newest, given an oldest-first list', () => {
-    const chosen = selectPr([pr(1, { name: 'a' }), pr(2, { name: 'b' }), pr(3, { name: 'c' })]);
+  it('takes the newest that covers what was asked for', () => {
+    const chosen = selectPr(
+      [pr(1, { name: 'a' }), pr(2, { name: 'a' }), pr(3, { name: 'a' })],
+      ['a'],
+    );
     expect(chosen?.number).toBe(3);
   });
 
   it('skips a newer pull request that reported no checks', () => {
-    const chosen = selectPr([pr(1, { name: 'a' }), pr(2)]);
+    const chosen = selectPr([pr(1, { name: 'a' }), pr(2)], ['a']);
     expect(chosen?.number).toBe(1);
+  });
+
+  // THE daily flake this argument exists for. `flag-major`
+  // (dependabot-major-guard.yml) SKIPS on an ordinary PR and reports within
+  // seconds, while the five CI jobs take minutes — so a PR opened just before
+  // the cron offers exactly one context. The old `contexts.length > 0` test
+  // selected it, and every tabled check then read as `not-reported`, which
+  // `isFailure` treats as drift.
+  it('skips a newer pull request whose rollup is PARTIAL, not merely empty', () => {
+    const partial = pr(9, { name: 'flag-major' });
+    const complete = pr(4, { name: 'flag-major' }, { name: 'Lint' }, { name: 'Windows' });
+    expect(selectPr([complete, partial], ['Lint', 'Windows'])?.number).toBe(4);
+  });
+
+  // Finding none is not drift. Comparing against a partial rollup would report
+  // a regression that did not happen, so the caller exits on the
+  // could-not-read path instead.
+  it('finds nothing when no candidate covers the whole table', () => {
+    expect(selectPr([pr(1, { name: 'flag-major' })], ['Lint'])).toBeUndefined();
   });
 
   it('skips one whose rollup is null rather than empty', () => {
@@ -252,15 +274,15 @@ describe('selectPr', () => {
       number: 9,
       commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
     };
-    expect(selectPr([pr(1, { name: 'a' }), nullRollup])?.number).toBe(1);
+    expect(selectPr([pr(1, { name: 'a' }), nullRollup], ['a'])?.number).toBe(1);
   });
 
   // Distinguished from "the newest reported nothing": the caller exits on the
   // could-not-read path rather than comparing against an empty live set, which
   // would report every enforced row as a regression.
   it('finds nothing when no candidate reported a check', () => {
-    expect(selectPr([pr(1), pr(2)])).toBeUndefined();
-    expect(selectPr([])).toBeUndefined();
+    expect(selectPr([pr(1), pr(2)], ['a'])).toBeUndefined();
+    expect(selectPr([], ['a'])).toBeUndefined();
   });
 });
 
@@ -309,9 +331,17 @@ describe('the two queries', () => {
   // is the OLDEST N, and the gate would answer from pull requests years out of
   // date while looking exactly as healthy.
   it('asks for the newest candidates, not the oldest', () => {
-    expect(prCandidatesQuery('o', 'r', 10)).toContain(
-      'pullRequests(last:10,orderBy:{field:CREATED_AT,direction:ASC})',
-    );
+    expect(prCandidatesQuery('o', 'r', 10)).toContain('pullRequests(last:10,');
+    expect(prCandidatesQuery('o', 'r', 10)).toContain('orderBy:{field:CREATED_AT,direction:ASC}');
+  });
+
+  // `isRequired(pullRequestNumber:)` is answered against THAT pull request's own
+  // base protection. A stacked PR based on a feature branch has an unprotected
+  // base, so every context reads not-required — and both enforced rows would
+  // land in `noLongerRequired` under the summary's confident, wrong headline
+  // "the usual cause is a renamed job".
+  it('restricts candidates to pull requests based on main', () => {
+    expect(prCandidatesQuery('o', 'r', 10)).toContain('baseRefName:"main"');
   });
 });
 
@@ -452,7 +482,15 @@ describe('runGate', () => {
                 number,
                 commits: {
                   nodes: [
-                    { commit: { statusCheckRollup: { contexts: { nodes: [{ name: 'x' }] } } } },
+                    // Must COVER the table, or selectPr correctly skips this
+                    // candidate — the behaviour the partial-rollup cases pin.
+                    {
+                      commit: {
+                        statusCheckRollup: {
+                          contexts: { nodes: [{ name: 'kept' }, { name: 'pending' }] },
+                        },
+                      },
+                    },
                   ],
                 },
               },
@@ -526,12 +564,12 @@ describe('runGate', () => {
 
   // Distinct from the throw above: the query succeeded and simply found nothing
   // usable, which must not be read as "no checks are required".
-  it('exits 2 when no recent pull request reported any checks', () => {
+  it('exits 2 when no recent pull request covers the table', () => {
     const { code, printed } = drive({
       graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }),
     });
     expect(code).toBe(2);
-    expect(printed.join('\n')).toContain('reported any checks');
+    expect(printed.join('\n')).toContain('reported every check in the table');
   });
 });
 
@@ -562,5 +600,47 @@ describe('buildSummary branches', () => {
       readRollup([{ name: 'kept', isRequired: true }]),
     );
     expect(buildSummary(drift, 1)).toContain('Every check in the table is required');
+  });
+});
+
+// From the human review of this PR: the gate must not compare against a rollup
+// that cannot answer for the whole table.
+describe('runGate against a partial rollup', () => {
+  it('exits 2 rather than reporting drift it cannot substantiate', () => {
+    const printed: string[] = [];
+    // Only `flag-major` has reported — the shape a PR opened a minute before
+    // the cron really has, since that job skips and the CI jobs take minutes.
+    const candidates = JSON.stringify({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                number: 7,
+                commits: {
+                  nodes: [
+                    {
+                      commit: {
+                        statusCheckRollup: { contexts: { nodes: [{ name: 'flag-major' }] } },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const io: GateIo = {
+      readRecord: () => table(row('kept'), row('pending', 'ci.yml', '⛔')),
+      graphql: () => candidates,
+      print: (line) => printed.push(line),
+      appendSummary: () => undefined,
+    };
+    expect(runGate(io, 'o', 'r', 10)).toBe(2);
+    expect(printed.join('\n')).toContain('reported every check in the table');
+    // And emphatically NOT the drift wording, which would be a wrong diagnosis.
+    expect(printed.join('\n')).not.toContain('does not require them');
   });
 });

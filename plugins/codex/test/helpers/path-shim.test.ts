@@ -1,5 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 
@@ -7,6 +19,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   assertShimResolves,
+  NODE_BIN,
+  nodeOnlyDir,
   SHIM_NEEDS_SHELL,
   shimMarker,
   shimmedPath,
@@ -67,16 +81,25 @@ const tempDir = (): string => {
   return dir;
 };
 
-// node's own dir, so a POSIX shim's `#!/usr/bin/env node` line resolves without
-// dragging the whole host PATH (and its real binaries) into these cases.
-const NODE_DIR = dirname(process.execPath);
-
-// The env a probe is run with: node's own dir for a POSIX shim's shebang, plus
-// (win32 only) the system dirs cmd.exe itself is found through.
+// The env a probe is run with: a dir holding node ALONE for a POSIX shim's
+// shebang — never node's own bin dir, which under a shared install prefix
+// carries `npm i -g`'s shims beside the interpreter — plus (win32 only) the
+// system dirs cmd.exe itself is found through.
 const shimEnv = (binDir?: string): NodeJS.ProcessEnv => ({
   ...WINDOWS_SYSTEM_ENV,
-  PATH: shimmedPath(binDir ?? '', [NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+  PATH: shimmedPath(binDir ?? '', [nodeOnlyDir(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
 });
+
+// `node --version` through `PATH` alone, the way a POSIX shim's `#!/usr/bin/env
+// node` line reaches the interpreter. Shell-free on every platform: libuv's own
+// search tries `.exe`, so a bare `node` finds `node.exe` without one.
+const nodeVersionVia = (dir: string): string =>
+  execFileSync('node', ['--version'], {
+    env: { ...WINDOWS_SYSTEM_ENV, PATH: dir },
+    encoding: 'utf8',
+    timeout: 20_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 
 afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
@@ -125,6 +148,85 @@ describe('shimmedPath', () => {
     expect(shimmedPath('/shim/dir', undefined)).toBe('/shim/dir');
     expect(shimmedPath('/shim/dir', '')).toBe('/shim/dir');
     expect(shimmedPath('/shim/dir', undefined).split(delimiter)).toEqual(['/shim/dir']);
+  });
+});
+
+describe('nodeOnlyDir', () => {
+  it('holds node and NOTHING else, in a fresh dir under the parent it was given', () => {
+    // The whole property. `dirname(process.execPath)` fails it under nvm — or any
+    // prefix node shares with its global installs — because `npm i -g` writes
+    // its bin shims beside the binary, so a PATH built from node's own dir
+    // carries the real `aka` too. An exact listing is what pins "nothing else":
+    // a `toContain` would pass with a sibling in the dir, which is the defect.
+    const parent = tempDir();
+    const dir = nodeOnlyDir(parent);
+
+    expect(dirname(dir)).toBe(parent);
+    expect(readdirSync(dir)).toEqual([NODE_BIN]);
+  });
+
+  it('is fresh per call, so two callers never share a dir', () => {
+    const parent = tempDir();
+    expect(nodeOnlyDir(parent)).not.toBe(nodeOnlyDir(parent));
+  });
+
+  it('reaches THIS process s node by bare name, from a PATH holding only that dir', () => {
+    // What a shebang needs, asked the way a shebang asks: bare name, PATH alone.
+    // The version pins that the interpreter reached is this one and not some
+    // other node the search happened upon.
+    const dir = nodeOnlyDir(tempDir());
+    expect(nodeVersionVia(dir)).toBe(process.version);
+  });
+
+  it('links rather than copies where the platform grants a link', () => {
+    const dir = nodeOnlyDir(tempDir());
+    const target = join(dir, NODE_BIN);
+
+    // Followed: whatever was written, it is a regular file when read through.
+    expect(statSync(target).isFile()).toBe(true);
+    // Not followed: the cheap branch is the one taken where it can be. A file
+    // symlink on Windows needs a privilege an ordinary account may lack, so the
+    // branch is not pinned there — the copy case below is what covers that leg.
+    if (process.platform !== 'win32') {
+      expect(lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(target)).toBe(process.execPath);
+    }
+  });
+
+  it('routes the link through the seam it was given', () => {
+    // Guards the parameter itself: a `symlink` option the helper ignored would
+    // leave the fallback case below passing for the wrong reason on a Windows
+    // account without the privilege — every dir would be a copy, and no case
+    // could tell an ignored seam from a refused link.
+    const calls: [string, string][] = [];
+    const dir = nodeOnlyDir(tempDir(), {
+      symlink: (target, path) => {
+        calls.push([target, path]);
+        symlinkSync(target, path);
+      },
+    });
+    expect(calls).toEqual([[process.execPath, join(dir, NODE_BIN)]]);
+  });
+
+  it('falls back to a copy when the link is refused, and the copy still runs', () => {
+    // Driven through the seam so the branch is reachable from a host that grants
+    // symlinks; the real refusal (a Windows account without the privilege) is a
+    // leg no runner here takes.
+    const dir = nodeOnlyDir(tempDir(), {
+      symlink: () => {
+        throw new Error('EPERM: symlink privilege not held (injected)');
+      },
+    });
+    const target = join(dir, NODE_BIN);
+
+    // Still node and nothing else — the refused link left no stray behind.
+    expect(readdirSync(dir)).toEqual([NODE_BIN]);
+    // A real file with the binary's own bytes, not a link and not a stub.
+    expect(lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(lstatSync(target).isFile()).toBe(true);
+    expect(statSync(target).size).toBe(statSync(process.execPath).size);
+    // And it runs, which is what the shebang will ask of it.
+    expect(nodeVersionVia(dir)).toBe(process.version);
   });
 });
 

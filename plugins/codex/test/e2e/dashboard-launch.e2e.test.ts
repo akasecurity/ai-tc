@@ -15,16 +15,7 @@
  * these arguments, from the directory the plan chose".
  */
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,6 +26,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
   assertShimResolves,
+  nodeOnlyDir,
   shimmedPath,
   WINDOWS_SYSTEM_DIRS,
   WINDOWS_SYSTEM_ENV,
@@ -44,8 +36,6 @@ import {
 // test/e2e -> plugins/codex
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LAUNCHER = join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
-// The name a POSIX shim's `#!/usr/bin/env node` line looks node up under.
-const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
 
 // The launcher spawns DETACHED and unrefs, then exits without waiting — so the
 // stub's record appears after the parent has already returned. Poll for it
@@ -105,34 +95,16 @@ function writeAkaStub(binDir: string, recordPath: string): void {
   );
 }
 
-// A fresh dir holding this process's own node and NOTHING else, for the PATH
-// the launcher gets. `dirname(process.execPath)` is not that: under nvm — or any
-// prefix shared between node and its global installs — `npm i -g` puts its bin
-// shims beside the binary, so a PATH carrying node's own dir for the shebang's
-// sake carries a real `aka` too, and the "genuinely not there" case then finds
-// it. A symlink where the platform grants one, a copy where it does not; either
-// way only the interpreter is reachable through it.
-function nodeOnlyDir(): string {
-  const dir = tempDir();
-  const target = join(dir, NODE_BIN);
-  try {
-    symlinkSync(process.execPath, target);
-  } catch {
-    copyFileSync(process.execPath, target);
-    chmodSync(target, 0o755);
-  }
-  return dir;
-}
-
 // PATH carries the stub, a dir holding node ALONE (a POSIX shim's shebang needs
-// the interpreter — never what happens to live beside it) and — on win32 only —
+// the interpreter — never what happens to live beside it, which under a shared
+// install prefix is where `npm i -g` puts a real `aka`) and — on win32 only —
 // the system dirs cmd.exe and where.exe are found through. Nothing else from
 // the host: a real `aka` on the developer's PATH must not be reachable, since
 // this suite's whole subject is which one gets spawned.
 function launcherEnv(binDir: string): NodeJS.ProcessEnv {
   return {
     ...WINDOWS_SYSTEM_ENV,
-    PATH: shimmedPath(binDir, [nodeOnlyDir(), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+    PATH: shimmedPath(binDir, [nodeOnlyDir(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
   };
 }
 

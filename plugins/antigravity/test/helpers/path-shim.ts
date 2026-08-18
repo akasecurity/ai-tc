@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 /**
@@ -39,6 +39,16 @@ import { delimiter, join } from 'node:path';
  *    TYPED, so for a batch cmd.exe resolved from PATH under a bare name it
  *    expands against the CURRENT DIRECTORY. `writeCommandShim` writes an
  *    absolute path instead.
+ *
+ * ## What ELSE the child's PATH reaches
+ *
+ * A POSIX shim's `#!/usr/bin/env node` line needs node on the child's PATH, and
+ * the obvious way to put it there — `dirname(process.execPath)` — puts node's
+ * SIBLINGS there too. Under nvm, or any prefix node shares with its global
+ * installs, that is where `npm i -g` writes its bin shims, so the real `aka`
+ * (or `claude`, `codex`, `agy`) rides in beside the interpreter and a suite
+ * whose subject is "the command is not there" finds it. `nodeOnlyDir` is the
+ * dir to use instead: the interpreter alone, and nothing that lives beside it.
  *
  * Shared by this package's suites because they sit behind one package wall.
  * Across a wall it cannot be imported, so `plugins/claude-code` and
@@ -151,6 +161,51 @@ if (process.argv.slice(2).includes(${JSON.stringify(SHIM_PROBE_ARG)})) {
  */
 export function shimmedPath(binDir: string, basePath: string | undefined): string {
   return basePath ? `${binDir}${delimiter}${basePath}` : binDir;
+}
+
+/** The name a POSIX shim's `#!/usr/bin/env node` line looks the interpreter up under. */
+export const NODE_BIN = process.platform === 'win32' ? 'node.exe' : 'node';
+
+export interface NodeOnlyDirOptions {
+  /**
+   * The link attempt, `symlinkSync` by default. Exists so the copy fallback is
+   * reachable from a host that grants symlinks — the way `writeCommandShim`
+   * takes a `platform` — rather than only on a Windows account without the
+   * privilege, which is where no suite would ever see it fail.
+   */
+  readonly symlink?: (target: string, path: string) => void;
+}
+
+/**
+ * A fresh directory under `parent` holding this process's own node and NOTHING
+ * else, for a child PATH that must reach a POSIX shim's shebang without reaching
+ * whatever lives beside the interpreter.
+ *
+ * `dirname(process.execPath)` is not that. Under nvm — or any prefix node shares
+ * with its global installs — `npm i -g` puts its bin shims beside the binary, so
+ * a PATH carrying node's own dir for the shebang's sake carries a real `aka` too,
+ * and the "genuinely not there" case then finds it. Measured: the dashboard
+ * launcher's negative case resolved `~/.nvm/versions/node/<v>/bin/aka`, started
+ * a real detached dashboard server, and only then failed on the message.
+ *
+ * A symlink where the platform grants one, a copy where it does not (a file
+ * symlink on Windows needs a privilege an ordinary account may lack); either way
+ * only the interpreter is reachable through the dir. Created with `mkdtempSync`
+ * so it is empty by construction rather than by a check, and under a directory
+ * the CALLER owns, so it rides the caller's own cleanup.
+ */
+export function nodeOnlyDir(parent: string, options: NodeOnlyDirOptions = {}): string {
+  const dir = mkdtempSync(join(parent, 'node-only-'));
+  const target = join(dir, NODE_BIN);
+  try {
+    (options.symlink ?? symlinkSync)(process.execPath, target);
+  } catch {
+    copyFileSync(process.execPath, target);
+    // A no-op on Windows; on POSIX, the executable bit the shebang needs, held
+    // here rather than trusted to what the copy preserved.
+    chmodSync(target, 0o755);
+  }
+  return dir;
 }
 
 /**

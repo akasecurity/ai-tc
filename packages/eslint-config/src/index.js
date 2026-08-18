@@ -199,6 +199,88 @@ function networkSyntaxSelectors(opts = {}) {
   ];
 }
 
+// Drizzle plus the companion packages that take it as a peer dependency. Banning
+// `drizzle-orm` alone is not enough: `drizzle-zod` and its siblings pull the same
+// runtime into a bundle without the banned name ever appearing in the source.
+// `drizzle-kit` is a schema-generation CLI and belongs to @akasecurity/schema's
+// tooling only.
+const DRIZZLE_MODULES = [
+  'drizzle-orm',
+  'drizzle-zod',
+  'drizzle-typebox',
+  'drizzle-valibot',
+  'drizzle-kit',
+];
+
+/**
+ * The `no-restricted-syntax` selector entries that ban *dynamic* access to the
+ * Drizzle modules — `import('drizzle-orm/pg-core')` and `require('drizzle-zod')`
+ * — which the static `no-restricted-imports` rule cannot see. Same shape, and the
+ * same acknowledged limits, as `networkSyntaxSelectors` above: a non-literal
+ * specifier and an indirected `require` are not matched, because an esquery
+ * selector cannot follow a binding.
+ * @returns {{ selector: string, message: string }[]}
+ */
+function drizzleSyntaxSelectors() {
+  const pattern = DRIZZLE_MODULES.map(
+    (name) => `${escapeForSelector(name)}(${escapeForSelector('/')}.*)?`,
+  ).join('|');
+  return [
+    {
+      selector: `ImportExpression[source.value=/^(${pattern})$/]`,
+      message: DRIZZLE_IMPORT_MESSAGE,
+    },
+    {
+      selector: `CallExpression[callee.name='require'] > Literal[value=/^(${pattern})$/]`,
+      message: DRIZZLE_IMPORT_MESSAGE,
+    },
+  ];
+}
+
+// The store-reading wall (see CLAUDE.md "Package dependency rules"): Drizzle is
+// imported ONLY by @akasecurity/schema, which uses it to DEFINE the local-store
+// and registry schemas. Every other package reads that store through
+// @akasecurity/persistence, which wraps node:sqlite — so a Drizzle import
+// anywhere else is a package-wall crossing. Spread this in every package except
+// @akasecurity/schema itself.
+//
+// The `drizzle-orm/*` group is what makes the ban hold: `no-restricted-imports`
+// `paths` matches only the exact specifier, so the root ban alone leaves every
+// dialect entry (`drizzle-orm/pg-core`, `drizzle-orm/sqlite-core`) reachable.
+const DRIZZLE_IMPORT_MESSAGE =
+  'Drizzle is imported only by @akasecurity/schema, which uses it to define the local-store and ' +
+  'registry schemas. Read the store through @akasecurity/persistence (node:sqlite) instead. ' +
+  'See CLAUDE.md "Package dependency rules".';
+
+// This carries the network import bans forward alongside the Drizzle one.
+// `no-restricted-imports` does not merge across flat-config entries, and this is
+// layered on top of `base` in the packages that use it, so declaring the Drizzle
+// restriction on its own would silently drop base's network bans for exactly
+// those packages.
+/** @type {import('typescript-eslint').ConfigArray} */
+export const noDrizzleImports = [
+  {
+    rules: {
+      'no-restricted-imports': noNetworkImports({
+        paths: DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
+        patterns: DRIZZLE_MODULES.map((name) => ({
+          group: [`${name}/*`],
+          message: DRIZZLE_IMPORT_MESSAGE,
+        })),
+      }),
+      // The dynamic half. `no-restricted-imports` sees only a written specifier,
+      // so without this a code-split `await import('drizzle-orm/pg-core')` reaches
+      // a bundle with lint green. Carries base's network selectors forward for the
+      // same replace-not-merge reason the imports ban does.
+      'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
+        'error',
+        ...networkSyntaxSelectors(),
+        ...drizzleSyntaxSelectors(),
+      ]),
+    },
+  },
+];
+
 // Every tonal family in @akasecurity/ui-kit's theme.css carries two foregrounds:
 // `--color-X` is the HUE (chart series, status dots, bar segments) and
 // `--color-X-ink` is TEXT on that family's tint. The hue is deliberately too light
@@ -252,11 +334,12 @@ function tonalInkSelectors() {
 // The tonal-token guard, for the packages that render Tailwind classes: ui-kit,
 // dashboard-ui and web-ui.
 //
-// It re-lists base's network selectors rather than only its own, because a
-// flat-config `rules` entry REPLACES the rule's options instead of merging them —
-// setting `no-restricted-syntax` bare here would silently drop base's
-// dynamic-import network ban for exactly these three packages. Same hazard
-// `noDrizzleImports` below is written around.
+// It re-lists the network AND drizzle selectors rather than only its own, because
+// a flat-config `rules` entry REPLACES the rule's options instead of merging them
+// — setting `no-restricted-syntax` bare here would silently drop both bans for
+// exactly these three packages, and this is spread after `noDrizzleImports` in
+// every one of them. `reactUiPackage` below is what keeps that ordering from
+// being re-derived per package.
 /** @type {import('eslint').Linter.Config[]} */
 export const tonalInkTokens = [
   {
@@ -264,6 +347,7 @@ export const tonalInkTokens = [
       'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
         'error',
         ...networkSyntaxSelectors(),
+        ...drizzleSyntaxSelectors(),
         ...tonalInkSelectors(),
       ]),
     },
@@ -329,38 +413,6 @@ export const base = [
     },
   },
   prettier,
-];
-
-// The store-reading wall (see CLAUDE.md "Package dependency rules"): Drizzle is
-// imported ONLY by @akasecurity/schema, which uses it to DEFINE the local-store
-// and registry schemas. Every other package reads that store through
-// @akasecurity/persistence, which wraps node:sqlite — so a Drizzle import
-// anywhere else is a package-wall crossing. Spread this in every package except
-// @akasecurity/schema itself.
-//
-// The `drizzle-orm/*` group is what makes the ban hold: `no-restricted-imports`
-// `paths` matches only the exact specifier, so the root ban alone leaves every
-// dialect entry (`drizzle-orm/pg-core`, `drizzle-orm/sqlite-core`) reachable.
-const DRIZZLE_IMPORT_MESSAGE =
-  'Drizzle is imported only by @akasecurity/schema, which uses it to define the local-store and ' +
-  'registry schemas. Read the store through @akasecurity/persistence (node:sqlite) instead. ' +
-  'See CLAUDE.md "Package dependency rules".';
-
-// This carries the network import bans forward alongside the Drizzle one.
-// `no-restricted-imports` does not merge across flat-config entries, and this is
-// layered on top of `base` in the packages that use it, so declaring the Drizzle
-// restriction on its own would silently drop base's network bans for exactly
-// those packages.
-/** @type {import('typescript-eslint').ConfigArray} */
-export const noDrizzleImports = [
-  {
-    rules: {
-      'no-restricted-imports': noNetworkImports({
-        paths: [{ name: 'drizzle-orm', message: DRIZZLE_IMPORT_MESSAGE }],
-        patterns: [{ group: ['drizzle-orm/*'], message: DRIZZLE_IMPORT_MESSAGE }],
-      }),
-    },
-  },
 ];
 
 // Every package keeps its build and tooling config at its own root —

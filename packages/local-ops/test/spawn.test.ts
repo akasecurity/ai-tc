@@ -9,6 +9,7 @@ import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
 import {
   assertShimResolves,
   SHIM_NEEDS_SHELL,
+  SHIM_PROBE_ARG,
   WINDOWS_SYSTEM_DIRS,
   WINDOWS_SYSTEM_ENV,
   writeCommandShim,
@@ -71,17 +72,27 @@ let callsPath: string;
  * The fail marker is keyed on argv[1] — `marketplace` for the prep steps,
  * `install`/`update`/`add` for the plugin op — because that is the split
  * `apply.ts` treats differently: prep is best-effort, the op is fatal.
+ *
+ * Every path is embedded with `JSON.stringify`, never pasted into the source,
+ * and that is a fifth POSIX-only defect to add to the four path-shim.ts lists.
+ * A Windows path is full of backslashes, so pasting one into a string literal
+ * hands the JS parser escapes: `\U`, `\A`, `\L` and `\T` are dropped and `\r`
+ * becomes a carriage return, which turns `C:\Users\…\calls.jsonl` into the
+ * DRIVE-RELATIVE `C:Users…calls.jsonl`. The shim then runs, prints, exits 0 and
+ * appends its record to a long-named file in its own cwd — so the harness reads
+ * nothing at the real path and every argv assertion sees an empty list, while
+ * the fail markers miss the same way and a step told to fail reports success.
  */
-function shimBody(command: string): string {
+function shimBody(command: string, callsFile: string, failRoot: string): string {
   return `const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 fs.appendFileSync(
-  ${JSON.stringify('__CALLS__')},
+  ${JSON.stringify(callsFile)},
   JSON.stringify({ bin: ${JSON.stringify(command)}, args }) + '\\n',
 );
 process.stdout.write(${JSON.stringify(command)} + ' ' + args.join(' ') + ' ran\\n');
-if (fs.existsSync(path.join(${JSON.stringify('__FAILDIR__')}, args[1] || '_'))) {
+if (fs.existsSync(path.join(${JSON.stringify(failRoot)}, args[1] || '_'))) {
   process.stderr.write('step refused\\n');
   process.exit(3);
 }
@@ -89,15 +100,11 @@ if (fs.existsSync(path.join(${JSON.stringify('__FAILDIR__')}, args[1] || '_'))) 
 }
 
 function calls(): Recorded[] {
-  let raw: string;
-  try {
-    raw = readFileSync(callsPath, 'utf8');
-  } catch (err) {
-    // Nothing spawned is a legitimate outcome (the not-on-PATH cases below turn
-    // on it), so an absent file reads as "no calls" — but only that one code.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw err;
-  }
+  // The log is created EMPTY by the setup, so "no calls" is an empty file and a
+  // MISSING one is a broken harness — a shim writing somewhere else, which is
+  // precisely the failure the escaping above describes. Reading an absent file
+  // as "no calls" would let that shape satisfy every `toEqual([])` in here.
+  const raw = readFileSync(callsPath, 'utf8');
   return raw
     .split('\n')
     .filter(Boolean)
@@ -130,18 +137,58 @@ beforeEach(() => {
   emptyDir = join(dir, 'empty');
   callsPath = join(dir, 'calls.jsonl');
   for (const sub of [binDir, failDir, emptyDir]) mkdirSync(sub);
+  writeFileSync(callsPath, '');
   for (const command of ['claude', 'codex']) {
-    writeCommandShim(
-      binDir,
-      command,
-      shimBody(command).replace('__CALLS__', callsPath).replace('__FAILDIR__', failDir),
-    );
+    writeCommandShim(binDir, command, shimBody(command, callsPath, failDir));
   }
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe('the shim source itself', () => {
+  // A Windows path, driven from any host — the same reason `writeCommandShim`
+  // takes a `platform`. On POSIX the paths this suite really uses carry no
+  // backslashes, so the defect below is invisible to every case above and shows
+  // up only on the leg nobody runs locally.
+  const WINDOWS_CALLS = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\aka-x\\calls.jsonl';
+  const WINDOWS_FAIL = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\aka-x\\fail';
+
+  it('embeds each path as a JS literal, not as pasted text', () => {
+    const src = shimBody('claude', WINDOWS_CALLS, WINDOWS_FAIL);
+
+    // What the emitted program RESOLVES to, which is the thing that broke —
+    // `toContain` on the raw path passes for both spellings, since the pasted
+    // form contains it verbatim. Only parsing the literal back can tell them
+    // apart.
+    const literal = /appendFileSync\(\s*("(?:[^"\\]|\\.)*")/.exec(src)?.[1];
+    expect(literal).toBeDefined();
+    expect(JSON.parse(literal ?? '""')).toBe(WINDOWS_CALLS);
+
+    // The control — without it the round-trip above could be satisfied by a
+    // `toContain` on the raw path, which BOTH spellings pass, since the pasted
+    // form contains it verbatim. Pasted, the path is not a valid literal by
+    // this check at all.
+    //
+    // Node's own parser is laxer than that and is what made the defect quiet:
+    // it takes `\U` as an identity escape, drops the backslash, and turns `\r`
+    // into a carriage return — so the shim gets a drive-relative path, writes
+    // to it happily, exits 0, and this suite finds nothing at the real one.
+    expect(() => {
+      JSON.parse(`"${WINDOWS_CALLS}"`);
+    }).toThrow();
+  });
+
+  it('answers the resolution probe before it records anything', () => {
+    // Ordering asserted on the source because the probe runs during setup: a
+    // shim that logged first would count every `armShims` as an invocation and
+    // every argv assertion here would carry two phantom leading entries.
+    const src = writeCommandShim(binDir, 'claude', shimBody('claude', callsPath, failDir), 'win32');
+    const emitted = readFileSync(src.replace(/\.cmd$/, '-shim.js'), 'utf8');
+    expect(emitted.indexOf(SHIM_PROBE_ARG)).toBeLessThan(emitted.indexOf('appendFileSync'));
+  });
 });
 
 describe('what an install/update really spawns', () => {

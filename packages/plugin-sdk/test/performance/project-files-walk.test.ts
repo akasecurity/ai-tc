@@ -385,104 +385,126 @@ describe('traversal is bounded, and every omission says so', () => {
     expect(scan?.truncated).toBe(false);
   });
 
-  it('the deadline stops a walk spread across MANY directories', () => {
-    const r = fresh();
-    // Flat and shallow, so the depth cap plays no part and the only bound that
-    // can fire is the deadline. That matters: this is the shape a depth cap
-    // alone does NOT bound — 500k files behind one root-level pattern are each
-    // tested against the whole stack, and not one of them is a kept file, so
-    // MAX_FILES never fires either.
-    //
-    // MANY directories, few entries each, is what the PER-DIRECTORY check
-    // covers. It has a sibling below for the mirror shape, and the two are not
-    // interchangeable: with this fixture alone, deleting the per-entry check
-    // leaves the whole suite green.
-    flatFiles(r, 5_000, 500);
+  it(
+    'the deadline stops a walk spread across MANY directories',
+    () => {
+      const r = fresh();
+      // Flat and shallow, so the depth cap plays no part and the only bound that
+      // can fire is the deadline. That matters: this is the shape a depth cap
+      // alone does NOT bound — 500k files behind one root-level pattern are each
+      // tested against the whole stack, and not one of them is a kept file, so
+      // MAX_FILES never fires either.
+      //
+      // MANY directories, few entries each, is what the PER-DIRECTORY check
+      // covers. It has a sibling below for the mirror shape, and the two are not
+      // interchangeable: with this fixture alone, deleting the per-entry check
+      // leaves the whole suite green.
+      // 10 directories x 100 files. The DIRECTORY count is the property; the file
+      // count is pure fixture cost, and on the Windows runner each writeFileSync
+      // costs an order of magnitude more than here — 5,000 of them measured
+      // 69,234 ms there against ~400 ms locally, which is what blew this case's
+      // budget while the walk itself was never the problem.
+      flatFiles(r, 1_000, 100);
 
-    // The clock is injected rather than raced. A real deadline small enough to
-    // fire inside this fixture is a few milliseconds, which is the same order as
-    // the walk itself on a fast machine — a wall-clock race deciding a
-    // correctness assertion, and a flake on whichever runner lands on the wrong
-    // side of it.
-    //
-    // It STEPS rather than jumping, so the walk gets somewhere before the
-    // deadline bites. A clock that returned the budget on its second read would
-    // trip at the root directory's own check, leave nothing collected, and the
-    // walk would return undefined — which is a different contract (an empty walk
-    // is dropped) and would prove nothing about a partial one.
-    let reads = 0;
-    const now = () => reads++ * 100;
-    const bounded = resolveProjectFiles(r.root, { bounds: { maxDepth: 64, budgetMs: 1_000 }, now });
+      // The clock is injected rather than raced. A real deadline small enough to
+      // fire inside this fixture is a few milliseconds, which is the same order as
+      // the walk itself on a fast machine — a wall-clock race deciding a
+      // correctness assertion, and a flake on whichever runner lands on the wrong
+      // side of it.
+      //
+      // It STEPS rather than jumping, so the walk gets somewhere before the
+      // deadline bites. A clock that returned the budget on its second read would
+      // trip at the root directory's own check, leave nothing collected, and the
+      // walk would return undefined — which is a different contract (an empty walk
+      // is dropped) and would prove nothing about a partial one.
+      let reads = 0;
+      const now = () => reads++ * 100;
+      const bounded = resolveProjectFiles(r.root, { bounds: { maxDepth: 64, budgetMs: 500 }, now });
 
-    expect(bounded?.truncated).toBe(true);
-    expect(bounded?.files.length).toBeLessThan(5_000);
-    // Not zero, or this would also pass on a walk that refused to start — and a
-    // walk that yields nothing returns undefined, so the assertion above would
-    // be reading `undefined?.truncated` and comparing it to nothing.
-    expect(bounded?.files.length).toBeGreaterThan(0);
-    // The clock was actually consulted. Without this the case still passes on a
-    // walk that truncated for some entirely different reason.
-    expect(reads).toBeGreaterThan(1);
+      expect(bounded?.truncated).toBe(true);
+      expect(bounded?.files.length).toBeLessThan(1_000);
+      // Not zero, or this would also pass on a walk that refused to start — and a
+      // walk that yields nothing returns undefined, so the assertion above would
+      // be reading `undefined?.truncated` and comparing it to nothing.
+      expect(bounded?.files.length).toBeGreaterThan(0);
+      // The clock was actually consulted. Without this the case still passes on a
+      // walk that truncated for some entirely different reason.
+      expect(reads).toBeGreaterThan(1);
 
-    // The control, and what makes the assertions above about the DEADLINE rather
-    // than about this tree: the same fixture on the real clock walks whole and
-    // reports no truncation.
-    const whole = resolveProjectFiles(r.root);
-    expect(whole?.files.length).toBe(5_000);
-    expect(whole?.truncated).toBe(false);
-  });
+      // The control, and what makes the assertions above about the DEADLINE rather
+      // than about this tree: the same fixture on the real clock walks whole and
+      // reports no truncation.
+      const whole = resolveProjectFiles(r.root);
+      expect(whole?.files.length).toBe(1_000);
+      expect(whole?.truncated).toBe(false);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 
-  it('the deadline stops a walk inside ONE very wide directory', () => {
-    const r = fresh();
-    // The mirror shape, and the one the per-directory check cannot reach: a
-    // single directory holding every file. Checked only on entry to a
-    // directory, the deadline is read three times here — the walk's start, the
-    // root, and this directory — and then not again until a readdir of 3,000
-    // entries has been walked to the end. The entry counter is what bounds that,
-    // and this is the only case that can tell whether it is still there.
-    flatFiles(r, 3_000, 3_000);
+  it(
+    'the deadline stops a walk inside ONE very wide directory',
+    () => {
+      const r = fresh();
+      // The mirror shape, and the one the per-directory check cannot reach: a
+      // single directory holding every file. Checked only on entry to a
+      // directory, the deadline is read three times here — the walk's start, the
+      // root, and this directory — and then not again until a readdir of 3,000
+      // entries has been walked to the end. The entry counter is what bounds that,
+      // and this is the only case that can tell whether it is still there.
+      // Over two DEADLINE_CHECK_INTERVALs in one directory, which is all this
+      // shape needs — 3,000 measured 7,354 ms of fixture build on Windows against
+      // a 20 s per-test default, which is not the margin to leave a case on.
+      flatFiles(r, 1_200, 1_200);
 
-    // Budget sized so the clock crosses it only after the first entry-interval
-    // check: the three directory reads reach 200, and the deadline is 250.
-    let reads = 0;
-    const now = () => reads++ * 100;
-    const bounded = resolveProjectFiles(r.root, { bounds: { maxDepth: 64, budgetMs: 250 }, now });
+      // Budget sized so the clock crosses it only after the first entry-interval
+      // check: the three directory reads reach 200, and the deadline is 250.
+      let reads = 0;
+      const now = () => reads++ * 100;
+      const bounded = resolveProjectFiles(r.root, { bounds: { maxDepth: 64, budgetMs: 250 }, now });
 
-    expect(bounded?.truncated).toBe(true);
-    expect(bounded?.files.length).toBeLessThan(3_000);
-    expect(bounded?.files.length).toBeGreaterThan(0);
-    expect(reads).toBeGreaterThan(3);
+      expect(bounded?.truncated).toBe(true);
+      expect(bounded?.files.length).toBeLessThan(1_200);
+      expect(bounded?.files.length).toBeGreaterThan(0);
+      // More than the walk's own start plus the two directory checks, so the read
+      // that tripped can only have come from the per-ENTRY schedule.
+      expect(reads).toBeGreaterThan(3);
 
-    // The control: same tree, real clock, whole walk, no truncation.
-    const whole = resolveProjectFiles(r.root);
-    expect(whole?.files.length).toBe(3_000);
-    expect(whole?.truncated).toBe(false);
-  });
+      // The control: same tree, real clock, whole walk, no truncation.
+      const whole = resolveProjectFiles(r.root);
+      expect(whole?.files.length).toBe(1_200);
+      expect(whole?.truncated).toBe(false);
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 
-  it('bounds the shape that outran the hook timeout, at the SHIPPED bounds', (ctx) => {
-    const r = fresh();
-    // The shape from the measurement above, driven at the defaults rather than
-    // at an override — the one case here that reads what actually ships. Only
-    // the depth matters, so the leaf is deliberately narrow: the assertion is
-    // that the walk stops descending and says so, and the wall clock lives in
-    // the bench, which gates nothing.
-    const chain = nestedGitignoreChain(r, 100, 200);
-    // GATED, for the reason `created: false` is gated elsewhere: Windows' default
-    // MAX_PATH stops this chain wherever it stops, and a chain that never got
-    // past the cap has nothing to say about the cap.
-    if (chain.depth <= PROJECT_WALK_BOUNDS.maxDepth) {
-      ctx.skip(`the chain reached depth ${String(chain.depth)}, at or under the cap`);
-    }
+  it(
+    'bounds the shape that outran the hook timeout, at the SHIPPED bounds',
+    (ctx) => {
+      const r = fresh();
+      // The shape from the measurement above, driven at the defaults rather than
+      // at an override — the one case here that reads what actually ships. Only
+      // the depth matters, so the leaf is deliberately narrow: the assertion is
+      // that the walk stops descending and says so, and the wall clock lives in
+      // the bench, which gates nothing.
+      const chain = nestedGitignoreChain(r, 100, 200);
+      // GATED, for the reason `created: false` is gated elsewhere: Windows' default
+      // MAX_PATH stops this chain wherever it stops, and a chain that never got
+      // past the cap has nothing to say about the cap.
+      if (chain.depth <= PROJECT_WALK_BOUNDS.maxDepth) {
+        ctx.skip(`the chain reached depth ${String(chain.depth)}, at or under the cap`);
+      }
 
-    const scan = resolveProjectFiles(r.root);
+      const scan = resolveProjectFiles(r.root);
 
-    // The 200 leaf files sit at the bottom of the chain, past the cap, so the
-    // walk reaches none of them — what it keeps is the `.gitignore` from each
-    // level down to the cap. It must not report that as a complete tree.
-    expect(scan?.truncated).toBe(true);
-    expect(scan?.files.length).toBe(PROJECT_WALK_BOUNDS.maxDepth);
-    for (const file of scan?.files ?? []) expect(file.name).toBe('.gitignore');
-  });
+      // The 200 leaf files sit at the bottom of the chain, past the cap, so the
+      // walk reaches none of them — what it keeps is the `.gitignore` from each
+      // level down to the cap. It must not report that as a complete tree.
+      expect(scan?.truncated).toBe(true);
+      expect(scan?.files.length).toBe(PROJECT_WALK_BOUNDS.maxDepth);
+      for (const file of scan?.files ?? []) expect(file.name).toBe('.gitignore');
+    },
+    FIXTURE_TIMEOUT_MS,
+  );
 });
 
 describe('the project walk stays inside its budget', () => {

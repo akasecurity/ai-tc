@@ -3,13 +3,14 @@ import { chmodSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
 /**
- * A controlled executable placed first on a child's PATH, so a suite driving a
- * BUILT script can fake the external command that script shells out to.
+ * A controlled executable placed first on a child's PATH, so a suite can fake
+ * the external command the code under test shells out to.
  *
- * This is the only way to fake such a command: the spawns live behind a process
- * boundary (`triage/judge.ts`'s `spawnClaude`, `provenance.ts`'s npm runner),
- * so their dependency-injection seams are in-process only and unreachable from
- * a test that runs the real built script.
+ * In this package the subject is `src/exec.ts`, which takes no injectable
+ * runner: `binExists`, `runCapture` and `runInherit` reach `node:child_process`
+ * directly and let the child INHERIT this process's env, so PATH is the only
+ * seam a test has. That is also why callers here stub `process.env.PATH` rather
+ * than passing an `env` — there is nowhere to pass one to.
  *
  * ## The shim fails OPEN, which is why every user of it must probe first
  *
@@ -41,8 +42,8 @@ import { delimiter, join } from 'node:path';
  *    absolute path instead.
  *
  * Shared by this package's suites because they sit behind one package wall.
- * Across a wall it cannot be imported, so `plugins/codex`,
- * `plugins/antigravity` and `packages/local-ops` carry peer copies — each taking a
+ * Across a wall it cannot be imported, so `plugins/claude-code`,
+ * `plugins/codex` and `plugins/antigravity` carry peer copies — each taking a
  * `path-shim.test.ts` with it, or `assertShimResolves` can be weakened back
  * into a no-op with every caller staying green.
  */

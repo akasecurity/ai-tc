@@ -41,10 +41,10 @@ import { delimiter, join } from 'node:path';
  *    absolute path instead.
  *
  * Shared by this package's suites because they sit behind one package wall.
- * Across a wall it cannot be imported, so `plugins/claude-code` and
- * `plugins/codex` carry peer copies — each taking a `path-shim.test.ts`
- * with it, or `assertShimResolves` can be weakened back into a no-op with
- * every caller staying green.
+ * Across a wall it cannot be imported, so `plugins/claude-code`,
+ * `plugins/codex` and `packages/local-ops` carry peer copies — each taking a
+ * `path-shim.test.ts` with it, or `assertShimResolves` can be weakened back
+ * into a no-op with every caller staying green.
  */
 
 /**

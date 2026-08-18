@@ -83,6 +83,13 @@ export class SqliteResolutionsRepository {
   constructor(
     private readonly db: DatabaseSync,
     private readonly now: () => number = () => Date.now(),
+    // Row id, injectable for the same reason `now` is: a deterministic corpus
+    // cannot contain ambient entropy. `id` is opaque to every read on this
+    // table (all of them key by finding_key), so a caller supplying its own
+    // changes nothing a query can observe — see
+    // src/test-fixtures/generate.ts, which needs byte-identical rows across
+    // runs and therefore cannot let either default fire.
+    private readonly newId: () => string = () => randomUUID(),
   ) {
     this.insertStmt = db.prepare(
       `INSERT INTO finding_resolution (id, finding_key, status, method, resolved_at, evidence, created_at)
@@ -123,7 +130,8 @@ export class SqliteResolutionsRepository {
   }
 
   /**
-   * Insert one disposition row. The repo mints the id and stamps created_at.
+   * Insert one disposition row. The repo mints the id and stamps created_at,
+   * both through the constructor's injectable seams.
    * `status`/`method` are typed AND re-parsed here against @akasecurity/schema's
    * FindingStatus/ResolutionMethod, so the persisted vocabulary can never drift
    * from the schema enums. NOTE for future manual-resolution writers: this is
@@ -135,7 +143,7 @@ export class SqliteResolutionsRepository {
    */
   insertResolution(r: ResolutionInput): void {
     this.insertStmt.run({
-      id: randomUUID(),
+      id: this.newId(),
       findingKey: r.findingKey,
       status: FindingStatus.parse(r.status),
       method: ResolutionMethod.parse(r.method),

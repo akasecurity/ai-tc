@@ -286,10 +286,10 @@ export class SqliteSecurityRepository implements SecurityViews {
   // count; a superseding open/redetected row means the finding is not
   // remediated and is excluded, same invariant as severitySummary. Legacy
   // at-rest findings with finding_key IS NULL can never have a resolution row
-  // (the lifecycle is keyed by finding_key), so the SQL guard excludes them
-  // outright. One raw-row query (fetch every trackable finding + its latest
-  // resolution's status/method/resolved_at) + pure-JS filter/bucket/mean,
-  // mirroring this file's other methods.
+  // (the lifecycle is keyed by finding_key), so they cannot reach the driving
+  // set below. One raw-row query (fetch the findings with resolution activity in
+  // the window + each one's latest resolution status/method/resolved_at) +
+  // pure-JS filter/bucket/mean, mirroring this file's other methods.
   mttrTrend(range: TimeRange): Promise<MttrTrendResponse> {
     const granularity = granularityFor(range);
     const bucketMs = (granularity === 'day' ? 1 : 7) * DAY_MS;
@@ -301,6 +301,8 @@ export class SqliteSecurityRepository implements SecurityViews {
     const windowStart = startOfUtcDay(now) - (lenDays - 1) * DAY_MS;
 
     const rows = allRows<{
+      /** Selected for DISTINCT's benefit, not read below — see the note on the SQL. */
+      finding_key: string;
       first_detected_at: number;
       severity: string;
       latest_status: string | null;
@@ -314,29 +316,80 @@ export class SqliteSecurityRepository implements SecurityViews {
         // started_at the upsert overwrites onto inspection_findings.audit_event_id.
         // COALESCE onto the parent event's started_at defends against any
         // legacy/edge row the backfill left null.
-        `SELECT COALESCE(f.first_detected_at, e.started_at) AS first_detected_at, d.severity AS severity,
+        `SELECT DISTINCT f.finding_key AS finding_key,
+                COALESCE(f.first_detected_at, e.started_at) AS first_detected_at, d.severity AS severity,
                 latest.status AS latest_status,
                 latest.method AS latest_method,
                 latest.resolved_at AS latest_resolved_at
-         FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
-         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         FROM finding_resolution fr
+         CROSS JOIN inspection_findings f ON f.finding_key = fr.finding_key
+         CROSS JOIN audit_events e ON e.id = f.audit_event_id
+         CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
-         WHERE f.finding_key IS NOT NULL
-           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
-           AND EXISTS (
-             SELECT 1 FROM finding_resolution fr
-              WHERE fr.finding_key = f.finding_key
-                AND fr.resolved_at >= :windowStart
-           )`,
-        // The EXISTS is a SUPERSET prefilter that bounds the scan to keys with
-        // any resolution activity at/after the window start — a row this method
+         WHERE fr.resolved_at >= :windowStart
+           AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`,
+        // `fr` is a SUPERSET prefilter, not the answer: a finding this method
         // ultimately counts has its LATEST resolution inside the window, which
-        // implies such a row exists, so nothing wanted is dropped. The exact
-        // latest-wins + status/method + window gate stays in JS below,
-        // dialect-agnostic. Without this, a
-        // 7d request evaluated the store's entire trackable-findings history.
+        // implies a resolution row at/after the window start exists, so nothing
+        // wanted is dropped. The exact latest-wins + status/method + window gate
+        // stays in JS below, dialect-agnostic. `f.finding_key IS NOT NULL` is
+        // implied rather than dropped — the join key comes from
+        // finding_resolution, whose finding_key is NOT NULL.
+        //
+        // IT IS THE DRIVING TABLE THAT MAKES THAT PREFILTER A BOUND, which is
+        // the correction this replaced. Spelled as an `EXISTS` in the WHERE it
+        // READ as a bound and was not one: SQLite drove from `audit_events` on
+        // event_type, joined every capture event to its findings, and evaluated
+        // the EXISTS last — bounding the RESULT and not the scan, so a 7d request
+        // still cost the store's whole trackable history. Measured at 44.6 ms on
+        // 50,000 events and 171.3 ms on 150,000 — linear in the STORE, and in
+        // both cases returning rows for a window holding a fraction of it.
+        //
+        // Two things carry it, and they answer DIFFERENT halves — which is worth
+        // stating precisely, because the obvious reading (both are needed for the
+        // speed) is wrong and was measured to be wrong:
+        //
+        //  - **`CROSS JOIN`** is the whole of the store-size fix. In SQLite the
+        //    keyword is semantically identical to JOIN and exists only to stop the
+        //    tables being reordered; with plain JOINs the planner puts `e` back on
+        //    the outside, because with no ANALYZE statistics it prices
+        //    `event_type IN (...)` as a selective probe. Reverting it alone takes
+        //    the 2k->20k flatness ratio from 1.32 to 16.87.
+        //  - **`idx_finding_resolution_resolved_at`** (migration 0021) makes
+        //    `resolved_at >= :windowStart` a range SEARCH instead of a bare
+        //    `SCAN fr` — finding_key was this table's only index before it, so the
+        //    range had none. It buys NO flatness in store size: remove it and the
+        //    ratio above does not move, because the latest-resolution derived
+        //    table already passes over the whole of finding_resolution, so this
+        //    read is O(resolutions) either way and resolutions are not the store.
+        //    What it buys is the criterion `hot-read-query-plans.test.ts` enforces
+        //    — no hot read may pass over a table with no index — and that is the
+        //    guard that goes red when it is dropped. Neither test catches the
+        //    other's defect.
+        //
+        // SELECT DISTINCT is a CORRECTNESS requirement of driving from `fr`, not a
+        // tidy-up. finding_resolution is append-only, so a key that was fixed,
+        // redetected and fixed again carries several rows inside one window and
+        // matches once per row — and the value below is a MEAN, so a key matched
+        // three times is a key weighted three times.
+        //
+        // The skew is easy to argue away and the argument is wrong, so it is worth
+        // recording. Duplicate rows for ONE key are identical (every projected
+        // column is per-key: `latest.*` is latest-wins, `first_detected_at` is
+        // preserved), so sums and counts scale together and that key's own mean
+        // does not move. What moves is a bucket holding TWO findings that duplicate
+        // UNEQUALLY: three rows for a 5.9-day fix and one for a 1.9-day fix average
+        // 4.9 days weighted against 3.9 unweighted. Measured, and pinned by
+        // `security.test.ts`'s "weights a finding ONCE however many resolution rows
+        // it has inside the window" — which needed a fixture built for it, since no
+        // single-key case can show it.
+        //
+        // `finding_key` is selected to make the DISTINCT dedup by KEY rather than
+        // by value tuple. On the other columns alone, two genuinely different
+        // findings sharing a severity, a first-detection event and a resolution
+        // instant — one commit fixing two secrets in one file — are one tuple, and
+        // collapsing them would under-count in the other direction.
       ),
       { windowStart },
     );
@@ -417,16 +470,47 @@ export class SqliteSecurityRepository implements SecurityViews {
 
   // Recently-resolved activity feed: findings whose finding_key's LATEST
   // finding_resolution row is status:'resolved'/method:'fixed-at-source' —
-  // same latest-resolution-wins correlated subquery as severitySummary /
-  // mttrTrend (NOT a plain JOIN, which would surface every historical
-  // resolution row for a key rather than just its current disposition). A key
-  // whose latest row is a superseding 'open'/'redetected' row (the same
-  // secret came back) is excluded — it is not currently resolved. Legacy
-  // at-rest findings with finding_key IS NULL are excluded outright (the
-  // resolution lifecycle can never attach to them). Path comes from the
-  // finding's parent event (event_type 'code_change', attributes.file_path) —
-  // mirrors resolutions.ts's openAtRestStmt accessor. Ordered by resolved_at
-  // DESC, capped at `limit`.
+  // same latest-resolution-wins derived table as severitySummary / mttrTrend
+  // (NOT a plain JOIN, which would surface every historical resolution row for
+  // a key rather than just its current disposition). A key whose latest row is
+  // a superseding 'open'/'redetected' row (the same secret came back) is
+  // excluded — it is not currently resolved. Legacy at-rest findings with
+  // finding_key IS NULL are excluded outright (the resolution lifecycle can
+  // never attach to them). Path comes from the finding's parent event
+  // (event_type 'code_change', attributes.file_path) — mirrors resolutions.ts's
+  // openAtRestStmt accessor. Ordered by resolved_at DESC, capped at `limit`.
+  //
+  // THE RESOLUTION SET DRIVES THIS QUERY, and that is a correctness property of
+  // the plan rather than a preference. Written the other way round — driving
+  // from inspection_findings/audit_events with `latest` LEFT JOINed on — SQLite
+  // cannot use the join key: `f` is reached FROM `latest` by finding_key, so
+  // `latest` gets probed on (rn, status, method) instead and the plan enumerates
+  // every (code_change event x resolved key) pair before `f` can reject it. That
+  // is a cross product, and it is quadratic in the store: measured at 10,966 ms
+  // on a corpus of 50,000 events carrying 2,051 resolutions, against 20 rows
+  // returned. It was invisible for as long as it was, and reported at 8 ms,
+  // because an empty finding_resolution table makes the inner side empty and the
+  // cross product collapses to nothing — so the shape is only observable on a
+  // corpus that seeds resolutions.
+  //
+  // Driving from `latest` instead makes every step below it a unique-index or
+  // primary-key lookup (uq_inspection_findings_key, then audit_events' own PK),
+  // so the cost is the derived table's own — linear in resolutions, which is
+  // what this feed is legitimately about.
+  //
+  // CROSS JOIN is what actually pins that, and it is load-bearing rather than
+  // decorative: in SQLite the keyword is semantically identical to JOIN and
+  // exists only to stop the optimizer reordering the tables. Written as plain
+  // JOINs in this order the planner puts `e` back on the outside — it has no
+  // ANALYZE statistics to price the alternatives with, so it takes
+  // `event_type = 'code_change'` for a selective index probe and rebuilds the
+  // cross product. The FROM order alone was measured to change the plan not at
+  // all.
+  //
+  // The LEFT JOIN it replaced was already an inner join in effect: three
+  // `latest.*` predicates sit in the WHERE, and each of them is false for a
+  // null-extended row. Spelling it JOIN changes no row and stops the plan
+  // reading as though the findings side could drive.
   recentlyResolved(limit = 20): Promise<RecentlyResolvedResponse> {
     const rows = allRows<{
       finding_key: string;
@@ -443,17 +527,15 @@ export class SqliteSecurityRepository implements SecurityViews {
                 json_extract(e.attributes, '$.file_path') AS path,
                 COALESCE(f.first_detected_at, e.started_at) AS first_detected_at,
                 latest.resolved_at AS latest_resolved_at
-         FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
-         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
-         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
-           ON latest.finding_key = f.finding_key
-         WHERE e.event_type = 'code_change'
-           AND f.finding_key IS NOT NULL
-           AND latest.status = 'resolved'
+         FROM ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+         CROSS JOIN inspection_findings f ON f.finding_key = latest.finding_key
+         CROSS JOIN audit_events e ON e.id = f.audit_event_id
+         CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         WHERE latest.status = 'resolved'
            AND latest.method = 'fixed-at-source'
            AND latest.resolved_at IS NOT NULL
-         ORDER BY latest_resolved_at DESC
+           AND e.event_type = 'code_change'
+         ORDER BY latest.resolved_at DESC
          LIMIT :limit`,
       ),
       { limit },

@@ -1,6 +1,5 @@
 /**
- * The dashboard's read surface at a stated store size — and the one budget in
- * this package that is currently missed.
+ * The dashboard's read surface at a stated store size.
  *
  * `/security` renders eight aggregations. The page awaits them in a single
  * `Promise.all`, which reads like eight concurrent queries and is not: every
@@ -11,46 +10,59 @@
  *
  * | store size | `/security` (8 aggregations) | verdict vs the 2,000 ms budget |
  * | ---------- | ---------------------------: | ------------------------------ |
- * | 100k       |            373 ms † (median) | inside                         |
- * | 200k       |                       963 ms | inside                         |
- * | 300k       |                     1,515 ms | inside                         |
- * | 500k       |                     2,964 ms | **over**                       |
- * | 1M         |          5,945 ms † (median) | **3.0× over**                  |
+ * | 50k        |                       159 ms | inside                         |
+ * | 150k       |                       350 ms | inside                         |
+ * | 300k       |                       729 ms | inside                         |
+ * | 1M         |    ~2.5-3 s (extrapolated)   | **over**                       |
  *
- * † re-measured since, median of 5 (100k samples 356/357/373/390/392; 1M samples
- * 5905/5915/5945/7399/7418). The three middle rows are from the original sweep
- * and have not been re-taken — a `/security` figure is a wall clock, so treat
- * any single one as ±20% and the SHAPE as the finding.
+ * The 1M row is NOT a measurement, and it is not a straight-line one either: the
+ * page is mildly superlinear, so a two-point slope reads ~2.0 s and a fit over
+ * all three reads 2.5-3 s. `severitySummary` is what bends it — 46.6 / 177.7 /
+ * 472.2 ms, i.e. 0.93 / 1.19 / 1.57 us per event, a per-event cost rising ~1.33x
+ * per doubling — and at 1M it is ~85% of the page on its own. Take the range as
+ * the finding rather than either end.
  *
- * Growth is linear past 100k at 6.19 ms per additional thousand events (the slope
- * through the two re-measured endpoints), so the budget is crossed near 362,800
- * events — about 300 MB of store, well inside
- * what a year of daily use produces. Five of the eight are over a second each at
- * 1M (`enforcementActions` 2,079 ms, `findingsTimeseries` 1,227 ms,
- * `severitySummary` 1,191 ms, `mttrTrend` 1,164 ms, `recentFindings` 1,160 ms;
- * `topSources` 414 ms and `recentlyResolved` 8 ms are the cheap two), so no
- * single query is the culprit and no single index fixes it.
+ * Nothing here reaches 1M because SEEDING does not scale: 142 s at 150k against
+ * 733 s at 300k, 5.2x for 2x the events. A 1M corpus is tens of minutes, which is
+ * why this file's largest measured point is 300k and why the row above is a fit.
  *
- * It is not a missing index either: `test/performance/hot-read-query-plans.test.ts`
- * confirms every one of these runs indexed. That check runs at 3k, and nothing
- * re-captures the plans above it — SQLite has no `ANALYZE` statistics on this
- * store, so it plans from the schema rather than from row counts and the plans
- * are EXPECTED to be the same at 1M. The cost is
- * that four of them do not shrink with the window at all — `severitySummary`,
- * `recentFindings` and `recentlyResolved` take no range, and `mttrTrend`'s
- * `EXISTS` prefilter bounds the RESULT rather than the scan — while the rest of
- * the cost is that the windowed ones are bounded by a WINDOW rather than a limit, and the
- * corpus is dense enough that a 30-day window at 1M events still contains most
- * of the store. Fixing it means bounding what the page reads — a product
- * decision (retention, pre-aggregation, or a cap), not a tuning one.
+ * ## The figures this table replaced, and why they were wrong in BOTH directions
+ *
+ * The earlier sweep read 5,945 ms at 1M and 373 ms at 100k, crossing the budget
+ * near 363k events. Those numbers were taken correctly and described the wrong
+ * store, on two counts that pulled opposite ways:
+ *
+ *  - **Too pessimistic on density.** `spacingMs` was 1 s, so a million events
+ *    spanned 11.6 days and a 30-day window held the WHOLE corpus — every windowed
+ *    read cost what an unwindowed one does. No install does that.
+ *  - **Far too optimistic on `recentlyResolved`**, which it recorded at 8 ms and
+ *    called one of "the cheap two". The corpus wrote no `finding_resolution` rows
+ *    at all, so that read was measured on an empty table. Seed resolutions and it
+ *    is 10,966 ms at 50k events and 125,322 ms at 150k — QUADRATIC, since the plan
+ *    enumerated every (code_change event x resolved key) pair. The page took 126
+ *    SECONDS at 150k, not 5.9 s at 1M.
+ *
+ * Both are fixed: the generator now seeds resolutions and finding keys, and its
+ * finding rate is a measured 0.33 rather than 0.1. `recentlyResolved`, `mttrTrend`
+ * and `recentFindings` were rewritten to drive from the bounded side of their
+ * joins, and `test/performance/security-page-scale.test.ts` pins all three as
+ * ratios so a regression is a red test rather than a number in this comment.
+ *
+ * What remains is `severitySummary` — 65% of the page at 300k (472.2 ms of 729) and
+ * ~85% of it by 1M, an all-time `GROUP BY` over every finding whose cost IS its
+ * semantics. It is also why the budget is still missed at 1M after everything
+ * above: bounding it is a product decision (a maintained rollup, windowing the
+ * card, or retention on the corpus itself), not a tuning one.
  *
  * WHY THE CLOCK IS PINNED, and why it is the difference between a real number
  * and a comfortable one. Six of the eight filter on a window ending "now", and
  * the generator stamps its events from a fixed 2024 epoch so the corpus is
  * identical on every machine. Left on the wall clock the window sits years past
- * every row, six of the eight match NOTHING, and the same 1M store reports
- * 3,831 ms — inside half the real cost, from a run that looks perfectly valid.
- * A benchmark whose input is empty is the failure mode to watch for here.
+ * every row, six of the eight match NOTHING, and the same 1M store reported
+ * 3,831 ms — inside half the cost measured then, from a run that looks perfectly
+ * valid. A benchmark whose input is empty is the failure mode to watch for here,
+ * and the retracted `recentlyResolved` figure above is the same mistake reached by
+ * a different route: not an empty window, but an empty TABLE.
  *
  * NO ASSERTIONS: nothing in this repository gates a PR on wall-clock. The
  * measurement above is a finding, recorded here so it is re-taken rather than

@@ -111,4 +111,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0020_secret_vault_pagination_indexes',
     sql: "CREATE INDEX `idx_secret_vault_last_seen` ON `secret_vault` (`last_seen`,`pointer_id`);--> statement-breakpoint\nCREATE INDEX `idx_secret_vault_reuse` ON `secret_vault` (`occurrence_count`,`pointer_id`);--> statement-breakpoint\nCREATE INDEX `idx_secret_vault_deref_at` ON `secret_vault_deref` (`at`,`id`);--> statement-breakpoint\nCREATE INDEX `idx_secret_vault_deref_signal` ON `secret_vault_deref` (`at`,`id`) WHERE `reason` NOT IN ('display', 'view-render');",
   },
+  {
+    tag: '0021_finding_resolution_resolved_at_index',
+    sql: 'CREATE INDEX `idx_finding_resolution_resolved_at` ON `finding_resolution` (`resolved_at`);\n',
+  },
 ];

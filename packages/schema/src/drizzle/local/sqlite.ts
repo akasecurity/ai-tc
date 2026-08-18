@@ -95,7 +95,15 @@ export const findingResolution = sqliteTable(
       .notNull()
       .$defaultFn(() => Date.now()),
   },
-  (t) => [index('idx_finding_resolution_key').on(t.findingKey)],
+  (t) => [
+    index('idx_finding_resolution_key').on(t.findingKey),
+    // Serves the resolution-driven /security reads, which ask "which findings
+    // were resolved in this window" and therefore drive from a resolved_at range.
+    // With finding_key as the table's only index that range had none to scan, so
+    // the read passed over the whole table — a bare `SCAN fr`, which is the one
+    // thing `hot-read-query-plans.test.ts` hard-fails on.
+    index('idx_finding_resolution_resolved_at').on(t.resolvedAt),
+  ],
 );
 
 export const policies = sqliteTable(

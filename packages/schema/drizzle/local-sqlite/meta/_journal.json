@@ -148,6 +148,13 @@
       "when": 1786009795585,
       "tag": "0020_secret_vault_pagination_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1787071229876,
+      "tag": "0021_finding_resolution_resolved_at_index",
+      "breakpoints": true
     }
   ]
 }

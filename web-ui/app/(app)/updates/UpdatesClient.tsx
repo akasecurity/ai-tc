@@ -163,7 +163,7 @@ export function UpdatesClient({
             <DialogDescription>
               {pending?.kind === 'advice'
                 ? 'This one can’t be applied from the dashboard. Run it yourself:'
-                : 'This runs the following command on this machine:'}
+                : 'This runs the following on this machine:'}
             </DialogDescription>
           </DialogHeader>
           <DialogBody>

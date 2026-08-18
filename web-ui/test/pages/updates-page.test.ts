@@ -152,12 +152,51 @@ describe('the Updates route splits a runnable command from advice', () => {
 
   it('still hands down the plugin commands, which are not channel-dependent', () => {
     // `commands` used to be built with the CLI's line as its initialiser; the
-    // plugins are appended to it and would be lost by a careless split.
+    // plugins are appended to it and would be lost by a careless split. The
+    // count is asserted FIRST because the loop below runs zero times over an
+    // empty record — which is exactly the state this case exists to catch, and
+    // it would report it as a pass.
     origin.moduleDir = sourceCheckout();
     const props = renderPage();
-    for (const line of Object.values(props.commands)) {
-      expect(line).toContain('claude plugin update ');
+    const lines = Object.values(props.commands);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line).toContain(' plugin update ');
     }
     expect(Object.keys(props.installCommands).length).toBeGreaterThan(0);
+  });
+
+  it('names each plugin\u2019s own host CLI, and the marketplace step that precedes it', () => {
+    // The dialog introduces this text as what runs. The apply path resolves the
+    // binary per agent, so a hardcoded `claude` showed Codex users a command
+    // that is not the one that spawns; and both apply paths run
+    // `plugin marketplace add` first, which is a second child process the copy
+    // never mentioned.
+    origin.moduleDir = sourceCheckout();
+    const props = renderPage();
+    // Read the binary off the LAST step, which is the update itself. Taking it
+    // across every step instead lets the marketplace prelude — which resolves
+    // its own binary correctly — supply the second value and mask a hardcoded
+    // one in the line that matters. Measured: with `claude` pinned back into
+    // the update line, a set over all steps still had two entries and this case
+    // stayed green.
+    const updateBins = new Set(
+      Object.values(props.commands).map((line) => line.split('\n').at(-1)?.split(' ')[0]),
+    );
+    expect(updateBins.size).toBeGreaterThan(1);
+    // Counted, not merely tolerated: a `steps.length > 1` check alone passes on
+    // a page that stopped emitting the marketplace step at all.
+    const withPrelude = Object.values(props.commands).filter((line) =>
+      line.includes(' plugin marketplace add '),
+    );
+    expect(withPrelude.length).toBeGreaterThan(0);
+    for (const [id, line] of Object.entries(props.commands)) {
+      const steps = line.split('\n');
+      // Every step of one command drives the same host CLI — the second,
+      // independent way a hardcoded binary shows up here.
+      expect(new Set(steps.map((step) => step.split(' ')[0])).size, id).toBe(1);
+      expect(steps.at(-1), id).toMatch(/^(claude|codex) plugin update /);
+      if (steps.length > 1) expect(steps[0], id).toMatch(/^(claude|codex) plugin marketplace add /);
+    }
   });
 });

@@ -98,8 +98,24 @@ function lastRunIndex(parts: string[], run: string[]): number {
   return -1;
 }
 
-function toPath(parts: string[], absolute: boolean): string {
-  return (absolute ? sep : '') + parts.join(sep);
+// How many separators a path opens with, carried through as a string rather
+// than as a boolean. A path does not always start with one or zero of them: a
+// Windows UNC path opens with TWO (`\\server\share\…`), and `segments` drops
+// both when it filters the empty parts out. Rebuilding with one produces a
+// rooted but drive-LESS path, which Windows resolves against whichever drive is
+// current — so `npm install -g --prefix \server\share\…` writes to
+// `C:\server\share\…` and leaves the install it was pinned to untouched. That
+// is the second-copy failure this module exists to prevent, reached from inside
+// it, and it is reachable wherever a profile is redirected to a file server,
+// since npm's default global prefix is `%APPDATA%\npm`.
+function leadingSeparators(path: string): string {
+  let end = 0;
+  while (path[end] === sep) end++;
+  return path.slice(0, end);
+}
+
+function toPath(parts: string[], leading: string): string {
+  return leading + parts.join(sep);
 }
 
 // pnpm keeps the real files in a content-addressed store and LINKS them into
@@ -157,7 +173,7 @@ function seaInstallRoot(execPath: string): string | null {
   const parts = segments(execPath);
   const triple = parts[parts.length - 2];
   if (parts.length < 4 || !triple?.startsWith('aka-')) return null;
-  return toPath(parts.slice(0, parts.length - 3), execPath.startsWith(sep));
+  return toPath(parts.slice(0, parts.length - 3), leadingSeparators(execPath));
 }
 
 /**
@@ -183,7 +199,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
   }
 
   const parts = collapseVirtualStore(segments(packageDir));
-  const absolute = packageDir.startsWith(sep);
+  const leading = leadingSeparators(packageDir);
 
   // Homebrew owns its Cellar outright — an npm/pnpm write into it is fought
   // by the next `brew upgrade`, so brew is named even though the tree below
@@ -198,7 +214,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     return {
       kind: 'global',
       manager: 'bun',
-      root: toPath(parts.slice(0, bun + 2), absolute),
+      root: toPath(parts.slice(0, bun + 2), leading),
       packageDir,
     };
   }
@@ -210,7 +226,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     return {
       kind: 'global',
       manager: 'pnpm',
-      root: toPath(parts.slice(0, pnpm + 1), absolute),
+      root: toPath(parts.slice(0, pnpm + 1), leading),
       packageDir,
     };
   }
@@ -228,7 +244,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     return {
       kind: 'global',
       manager: 'yarn',
-      root: toPath(parts.slice(0, yarn + 1), absolute),
+      root: toPath(parts.slice(0, yarn + 1), leading),
       packageDir,
     };
   }
@@ -242,7 +258,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     return {
       kind: 'global',
       manager: 'npm',
-      root: toPath(parts.slice(0, npmPosix), absolute),
+      root: toPath(parts.slice(0, npmPosix), leading),
       packageDir,
     };
   }
@@ -256,7 +272,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     // knows is matched above in both its POSIX and its Windows form, which is
     // what keeps the case hypothetical; a new manager needs its own rule
     // there rather than a wider net here.
-    const prefix = toPath(parts.slice(0, npmWin), absolute);
+    const prefix = toPath(parts.slice(0, npmWin), leading);
     if (probe.exists(join(prefix, 'package.json')) || probe.exists(join(prefix, 'src'))) {
       return { kind: 'dev', packageDir };
     }

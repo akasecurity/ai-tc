@@ -71,14 +71,25 @@ export default function UpdatesPage() {
   } else {
     commands.cli = cliPlan.display;
   }
-  for (const agent of AGENT_PLUGINS) {
-    const ref = pluginRef(agent);
-    if (ref) commands[agent.id] = `claude plugin update ${ref}`;
-  }
+  //
+  // A plugin's line is built from the registry the apply path resolves against,
+  // never from a literal. Two things follow from that. The host CLI is per
+  // agent (`claude` for Claude Code, `codex` for Codex), so naming one of them
+  // here shows a command that is not the one that spawns — and a user who
+  // copies it instead runs a real command against the wrong host. And both
+  // apply paths register the marketplace BEFORE installing or updating, which
+  // is a second child process and a persistent change to the host CLI's own
+  // config, so it belongs in a dialog that says what will run.
   const installCommands: Record<string, string> = {};
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
-    if (ref) installCommands[agent.id] = `claude plugin install ${ref}`;
+    const bin = agent.cliBin;
+    if (!ref || !bin) continue;
+    const prelude = agent.marketplaceSource
+      ? [`${bin} plugin marketplace add ${agent.marketplaceSource}`]
+      : [];
+    commands[agent.id] = [...prelude, `${bin} plugin update ${ref}`].join('\n');
+    installCommands[agent.id] = [...prelude, `${bin} plugin install ${ref}`].join('\n');
   }
 
   return (

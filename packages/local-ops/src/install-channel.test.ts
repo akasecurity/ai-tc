@@ -155,6 +155,45 @@ describe('classifyInstall', () => {
     }
   });
 
+  it('carries a UNC path\u2019s leading separators through the round trip', () => {
+    // `segments` drops every empty part and the rebuild used to re-prepend a
+    // single separator, so a Windows UNC install (`\\\\server\\share\\\u2026`, which a
+    // redirected profile really produces \u2014 npm's default prefix is
+    // `%APPDATA%\\npm`) came back one separator short. That path is rooted but
+    // drive-LESS, so Windows resolves it against the current drive: the update
+    // lands on C: and the install it was pinned to is untouched, which is the
+    // second-copy failure this module exists to prevent.
+    //
+    // Written with the host separator like every other fixture here, so on the
+    // Windows leg this IS a UNC path and on POSIX it is the same round-trip
+    // property over a doubled separator.
+    const channel = classifyInstall(
+      globalProbe('//fileserver/profiles/u/AppData/Roaming/npm/node_modules/@akasecurity/cli'),
+    );
+    expect(channel).toMatchObject({
+      kind: 'global',
+      manager: 'npm',
+      root: p('//fileserver/profiles/u/AppData/Roaming/npm'),
+    });
+    expect(planCliUpdate(channel).command?.args).toContain(
+      p('//fileserver/profiles/u/AppData/Roaming/npm'),
+    );
+  });
+
+  it('leaves an ordinary rooted path with exactly the separators it had', () => {
+    // The control for the case above: preserving a RUN of separators must not
+    // start adding one to a path that opens with a single separator, nor to a
+    // Windows drive-letter path, which opens with none.
+    expect(
+      classifyInstall(globalProbe('/opt/node/lib/node_modules/@akasecurity/cli')),
+    ).toMatchObject({ root: p('/opt/node') });
+    expect(
+      classifyInstall(
+        probe({ sea: true, execPath: '//fileserver/opt/aka/0.9.3/aka-win32-x64/aka' }),
+      ),
+    ).toMatchObject({ installRoot: p('//fileserver/opt/aka') });
+  });
+
   it('does not read a directory merely NAMED Cellar as a Homebrew tree', () => {
     // `Cellar` is an ordinary word, and this was the one rule here matching a
     // bare segment anywhere in the path rather than a layout. A user with a

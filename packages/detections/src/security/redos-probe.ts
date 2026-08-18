@@ -166,24 +166,59 @@ const wallClock: ProbeClock = () => performance.now();
 // MANY times — which is also the stronger fix, since one CPU-time sample
 // rejects a stall that no number of wall-time samples can separate from the
 // interpreted tier.
+/**
+ * What one probe walk measured.
+ *
+ * `corroboratedMs` is a SECOND clock's reading of the SAME probe window that
+ * produced `ms` — not of the whole walk, and not of a second walk. Both halves
+ * of that matter. A reading over the whole walk charges the winning probe with
+ * every other probe's cost, and a second walk measures the native tier rather
+ * than the interpreted one the paragraph above is about, so neither can be
+ * compared against `ms` at all.
+ */
+export interface ProbeTiming {
+  /** The deciding clock's worst reading. */
+  ms: number;
+  /** The probe that produced it. */
+  probe: string;
+  /**
+   * The corroborating clock over that same window, or `undefined` when no
+   * second clock was supplied. `undefined` is "nobody asked", never "zero".
+   */
+  corroboratedMs: number | undefined;
+}
+
 /** The slowest probe against `rule`, in ms; stops early once one blows the budget. */
 export function worstProbeMs(
   rule: Rule,
   now: ProbeClock = wallClock,
-): { ms: number; probe: string } {
+  corroborate?: ProbeClock,
+): ProbeTiming {
   let ms = 0;
   let probe = '';
+  let corroboratedMs: number | undefined;
   for (const text of probesFor(rule)) {
     const start = now();
+    const corroborateStart = corroborate?.();
     scan(text, [rule]);
     const elapsed = now() - start;
+    // Read unconditionally, so every probe's corroborating window has the same
+    // shape whether or not it wins — reading inside the branch below would give
+    // the winner a window measured differently from the ones it was compared
+    // against. Both windows already span the `now()` call above; that cost is
+    // one clock read and is charged identically to every probe.
+    const corroborateEnd = corroborate?.();
     if (elapsed > ms) {
       ms = elapsed;
       probe = text;
+      corroboratedMs =
+        corroborateStart === undefined || corroborateEnd === undefined
+          ? undefined
+          : corroborateEnd - corroborateStart;
     }
     if (ms >= BUDGET_MS) break;
   }
-  return { ms, probe };
+  return { ms, probe, corroboratedMs };
 }
 
 // A same-length ordinary input for `rule` that cannot enter the pattern's
@@ -223,11 +258,99 @@ export function backtrackRatio(rule: Rule): { ratio: number; ms: number; benignM
   return { ratio: ms / benignMs, ms, benignMs };
 }
 
-// The runtime pre-flight check: is `rule`'s regex matcher safe against this
-// same probe battery? `safe: false` means the rule must be excluded from the
-// active ruleset entirely — never registered and never silently allowed
-// through.
-export function checkRuleTiming(rule: Rule): { safe: boolean; worstMs: number; probe: string } {
-  const { ms, probe } = worstProbeMs(rule);
-  return { safe: ms < BUDGET_MS, worstMs: ms, probe };
+// How much of the budget must be WORK before a breach is allowed to become a
+// permanent verdict, as a share of BUDGET_MS.
+//
+// The measured separation this sits in, taken on an arm64 Mac (14 cores, Node
+// 24.18) with the battery driven over all 101 bundled rules:
+//
+//   - A benign rule's whole battery costs 1.2ms of CPU quiet. Under 96
+//     concurrent CPU burners one crossed the 100ms WALL budget at 104.9ms
+//     having burned 0.5ms — a 210x divergence, and the false accusation this
+//     constant exists to refuse. A wider fleet run recorded the same shape
+//     across five different rules at 0.2-7.7ms of CPU.
+//   - A genuinely catastrophic pattern is CPU-bound by construction. Quiet,
+//     the four textbook shapes burn 163-458ms. Under the same 96 burners they
+//     still burn 196-600ms — except `(x+x+)+y`, measured at 44.5 / 45.9 / 48.8
+//     / 49.1ms over four runs, which is the floor this has to sit under.
+//
+// So the gap is roughly 7.7ms to 44.5ms, and 20ms splits it: ~2.6x above the
+// worst stall, ~2.2x below the worst-case genuine breach.
+//
+// Why the genuine floor drops so far under load is worth keeping, because it is
+// what rules out the obvious threshold. The walk stops at the first probe whose
+// WALL reading crosses the budget, so a stalled machine ends the walk earlier in
+// CPU terms than a quiet one — a full `BUDGET_MS` of corroborating CPU is
+// therefore NOT reachable on a loaded machine, and requiring it would refuse to
+// quarantine a genuinely catastrophic rule exactly when the machine is busiest.
+//
+// The two errors are not symmetric, which is what settles the direction to lean.
+// Too high, and a hostile rule is excluded from every run but never cached: the
+// enforcement still happens, it is just re-measured each process, and it becomes
+// permanent as soon as the machine is quiet enough to burn the CPU. Too low, and
+// a stall permanently disables a rule the user installed. Only the second is
+// unrecoverable without `aka detections unquarantine`, so a value that errs
+// toward "measure it again" is the safe one.
+const CPU_CORROBORATION_SHARE = 0.2;
+
+/** The corroborating clock must read at least this much for a breach to be cached. */
+export const CORROBORATION_FLOOR_MS = BUDGET_MS * CPU_CORROBORATION_SHARE;
+
+/**
+ * What the pre-flight learned about a rule, and — separately — whether that is
+ * worth remembering.
+ *
+ * The two questions are NOT the same, and collapsing them is the defect this
+ * replaced. A rule is excluded on WALL time, because the thing being defended
+ * is the hook's harness timeout and that timeout is wall-clock. But the verdict
+ * is cached forever and nothing ever re-measures, so what may be written down
+ * has to answer a stricter question: was this elapsed time WORK?
+ *
+ *   - `safe` — under budget. Cacheable; the rule runs.
+ *   - `over-budget` — over budget, and the corroborating clock agrees the time
+ *     was spent executing. Evidence against the rule, so cacheable.
+ *   - `uncorroborated` — over budget on the wall while almost nothing ran. That
+ *     is a statement about the MACHINE, not about the rule: a descheduled thread
+ *     accrues elapsed time having executed nothing, and no number of wall-clock
+ *     samples can separate that from a pattern that backtracked for as long. The
+ *     rule is still excluded from this run — the wall bound is what the harness
+ *     enforces and it was genuinely blown — but nothing is written down, so the
+ *     next process measures it again instead of inheriting an accusation.
+ */
+export type RuleTimingVerdict = 'safe' | 'over-budget' | 'uncorroborated';
+
+export interface RuleTiming {
+  verdict: RuleTimingVerdict;
+  /** The wall reading that decided exclusion. */
+  worstMs: number;
+  /** The work reading over that same probe window. */
+  corroboratedMs: number;
+  probe: string;
+}
+
+/**
+ * The runtime pre-flight check: is `rule`'s regex matcher safe against this same
+ * probe battery, and — if not — is the breach worth caching?
+ *
+ * Any verdict other than `safe` means the rule must be excluded from the active
+ * ruleset entirely: never registered, never silently allowed through. Only
+ * `over-budget` may be persisted.
+ *
+ * `corroborate` is REQUIRED rather than defaulted, and deliberately so. A caller
+ * that omitted it would get today's behaviour — a permanent verdict from a wall
+ * clock — which is exactly the failure this signature exists to make
+ * unrepresentable, and an optional parameter is dropped in silence (nothing
+ * typechecks it, nothing lints it, no test sees it). Every caller therefore has
+ * to name the resource it is willing to disable a user's rule on. This package
+ * takes no Node-API dependency, so it cannot read CPU time itself — the clock
+ * comes from whichever caller has one.
+ */
+export function checkRuleTiming(rule: Rule, corroborate: ProbeClock): RuleTiming {
+  const { ms, probe, corroboratedMs } = worstProbeMs(rule, wallClock, corroborate);
+  // A walk that never ran a probe reports 0 on both clocks, which is `safe` on
+  // the first test and never reaches the second.
+  const work = corroboratedMs ?? 0;
+  const verdict: RuleTimingVerdict =
+    ms < BUDGET_MS ? 'safe' : work >= CORROBORATION_FLOOR_MS ? 'over-budget' : 'uncorroborated';
+  return { verdict, worstMs: ms, corroboratedMs: work, probe };
 }

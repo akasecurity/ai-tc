@@ -2,6 +2,7 @@ import type { checkRuleTiming as CheckRuleTiming } from '@akasecurity/detections
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { IsolatedProbeOutcome } from '../src/isolated-scan.ts';
 import { filterUnsafeRules, ruleProbeKey } from '../src/rule-quarantine.ts';
 
 // Wrap the real `checkRuleTiming` in a spy so most tests exercise the actual
@@ -211,7 +212,14 @@ describe('filterUnsafeRules with a prober', () => {
 
   it('takes the prober verdict instead of measuring on this thread', async () => {
     const gateway = fakeCacheGateway();
-    const probe = vi.fn(() => Promise.resolve({ status: 'ok' as const, safe: true, worstMs: 1.5 }));
+    const probe = vi.fn(() =>
+      Promise.resolve({
+        status: 'ok' as const,
+        verdict: 'safe' as const,
+        worstMs: 1.5,
+        corroboratedMs: 1.4,
+      }),
+    );
 
     const result = await filterUnsafeRules([rule], gateway, { prober: { probe } });
 
@@ -237,6 +245,56 @@ describe('filterUnsafeRules with a prober', () => {
     expect(gateway.setRuleProbeVerdict.mock.calls[0]?.[1]).toBe('quarantined');
   });
 
+  it('excludes without persisting when the breach was elapsed time and not work', async () => {
+    // The whole point of the change. The rule IS excluded — the wall bound is
+    // what the harness enforces and it was genuinely blown, so continuing to run
+    // the rule would put back the hang. What must not happen is the WRITE: the
+    // verdict is permanent, nothing ever re-measures it, and a machine that was
+    // merely busy for a moment would disable a rule the user installed for every
+    // later process on that machine.
+    const gateway = fakeCacheGateway();
+    const probe = vi.fn(() =>
+      Promise.resolve({
+        status: 'ok' as const,
+        verdict: 'uncorroborated' as const,
+        worstMs: 184.8,
+        corroboratedMs: 0.3,
+      }),
+    );
+
+    const result = await filterUnsafeRules([rule], gateway, { prober: { probe } });
+
+    expect(result).toEqual([]);
+    // Not "was called with safe" — not called AT ALL. A `safe` row would be just
+    // as wrong in the other direction: it would let a genuinely catastrophic
+    // rule through for good on the strength of a measurement that never ran.
+    expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
+  });
+
+  it('measures the rule again on the next pass, since nothing was written down', async () => {
+    // "Not cached" only matters if it means "re-measured". This is the recovery
+    // the old behaviour had none of: a second pass over a fresh gateway reaches
+    // the prober again, and a corroborated verdict this time is kept.
+    const gateway = fakeCacheGateway();
+    const probe = vi
+      .fn<() => Promise<IsolatedProbeOutcome>>()
+      .mockResolvedValueOnce({
+        status: 'ok',
+        verdict: 'uncorroborated',
+        worstMs: 184.8,
+        corroboratedMs: 0.3,
+      })
+      .mockResolvedValueOnce({ status: 'ok', verdict: 'safe', worstMs: 2.1, corroboratedMs: 2.0 });
+
+    const first = await filterUnsafeRules([rule], gateway, { prober: { probe } });
+    const second = await filterUnsafeRules([rule], gateway, { prober: { probe } });
+
+    expect(first).toEqual([]);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(second).toEqual([rule]);
+    expect(gateway.setRuleProbeVerdict.mock.calls[0]?.[1]).toBe('safe');
+  });
+
   it('excludes without persisting when there is nowhere safe to measure', async () => {
     // No worker means no measurement. Falling back to this thread would restore
     // the unbounded call, and caching a verdict would condemn a rule that was
@@ -260,7 +318,14 @@ describe('filterUnsafeRules with a prober', () => {
     const gateway = fakeCacheGateway();
     const key = ruleProbeKey(rule);
     gateway.store.set(key ?? '', { verdict: 'safe', worstProbeMs: 1 });
-    const probe = vi.fn(() => Promise.resolve({ status: 'ok' as const, safe: true, worstMs: 0 }));
+    const probe = vi.fn(() =>
+      Promise.resolve({
+        status: 'ok' as const,
+        verdict: 'safe' as const,
+        worstMs: 0,
+        corroboratedMs: 0,
+      }),
+    );
 
     const result = await filterUnsafeRules([rule], gateway, { prober: { probe } });
 
@@ -282,13 +347,26 @@ describe('filterUnsafeRules with a prober', () => {
 describe('what the pre-flight says on stderr', () => {
   const rule = regexRule('pulled/needs-measuring', 'AKIA[A-Z0-9]{16}');
 
-  const overBudget = { status: 'ok' as const, safe: false, worstMs: 812.5 };
+  const overBudget = {
+    status: 'ok' as const,
+    verdict: 'over-budget' as const,
+    worstMs: 812.5,
+    corroboratedMs: 780.2,
+  };
+  // Over the wall budget with no work behind it — a stalled machine, not a
+  // slow rule. Excluded like any breach, cached like none.
+  const uncorroborated = {
+    status: 'ok' as const,
+    verdict: 'uncorroborated' as const,
+    worstMs: 137.4,
+    corroboratedMs: 0.5,
+  };
   const noWorker = {
     status: 'unavailable' as const,
     reason: 'the scan worker script was not found next to this bundle',
   };
 
-  function proberOf(outcome: { status: 'ok'; safe: boolean; worstMs: number } | typeof noWorker) {
+  function proberOf(outcome: IsolatedProbeOutcome) {
     return { probe: vi.fn(() => Promise.resolve(outcome)) };
   }
 
@@ -353,6 +431,33 @@ describe('what the pre-flight says on stderr', () => {
       expect(line).not.toContain('quarantined');
       expect(line).not.toContain('aka detections unquarantine');
       expect(gateway.setRuleProbeVerdict).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('case 4 — the rule blew the wall budget without doing the work', () => {
+    it('blames the machine, not the rule, and offers no row to clear', async () => {
+      const gateway = fakeCacheGateway();
+      const stderr = captureStderr();
+
+      await filterUnsafeRules([rule], gateway, { prober: proberOf(uncorroborated) });
+
+      const line = stderr.lines();
+      // The positive control, for the same reason case 2 carries one: every
+      // absence below is satisfied by an empty stderr.
+      expect(line).toContain('deferred rule "pulled/needs-measuring"');
+      expect(line).toContain('of CPU doing it');
+      expect(line).toContain('measured again next time');
+      // Both numbers are quoted so the claim can be checked rather than taken on
+      // trust — this line is telling the user their rule is fine.
+      expect(line).toContain('137.4ms');
+      // The CPU reading, which is the whole basis for NOT blaming the rule.
+      // Unquoted, "spent almost no CPU" is an assertion the user cannot check.
+      expect(line).toContain('0.5ms of CPU');
+      // It must NOT read as a verdict against the rule. Nothing was cached, so
+      // "quarantined" is false and the unquarantine hint leads to an empty list.
+      expect(line).not.toContain('quarantined');
+      expect(line).not.toContain('aka detections unquarantine');
+      expect(line).not.toContain('exceeded the ReDoS timing budget');
     });
   });
 
@@ -460,17 +565,30 @@ describe('what the pre-flight says on stderr', () => {
     });
   });
 
-  it('says something different for each of the three, and something for all of them', async () => {
+  it('says something different for each of the four, and something for all of them', async () => {
     // The defect this suite exists for was not a wrong sentence but an
     // INDISTINGUISHABLE one: cases 2 and 3 were byte-identical, so a user
     // reading either was told to fix a rule. Asserting the wordings pairwise is
     // the only form that goes red on a future collapse whatever the new wording
     // turns out to be.
+    //
+    // Case 4 is the one most likely to be collapsed back, because it and case 1
+    // are the two that follow a real measurement and differ only in what the
+    // measurement MEANS. Told case 1's sentence, a user whose machine was merely
+    // busy goes to audit a pattern that is fine and then to clear a quarantine
+    // row that was never written.
     const said: string[] = [];
     for (const opts of [
       { prober: proberOf(overBudget) },
       { prober: proberOf(overBudget), passBudgetMs: -1 },
       { prober: proberOf(noWorker) },
+      // The SAME reading as case 1, deliberately. Cases 1 and 4 are the two that
+      // follow a real measurement and both quote their number, so leaving them
+      // on different numbers makes the set distinct on the DIGITS rather than on
+      // the wording — and the wording is the whole property here. Collapsing
+      // case 4 into case 1's sentence then leaves this green, which is exactly
+      // what happened when it was tried.
+      { prober: proberOf({ ...uncorroborated, worstMs: overBudget.worstMs }) },
     ]) {
       const stderr = captureStderr();
       await filterUnsafeRules([rule], fakeCacheGateway(), opts);

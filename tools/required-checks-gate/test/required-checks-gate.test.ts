@@ -8,6 +8,7 @@ import {
   buildSummary,
   compare,
   GateConfigError,
+  type GateIo,
   type GateRow,
   isFailure,
   parseGateTable,
@@ -18,6 +19,7 @@ import {
   readRollup,
   type RollupContext,
   rollupQuery,
+  runGate,
   selectPr,
 } from '../src/lib.ts';
 
@@ -419,5 +421,146 @@ describe('parseGateTable is linear in its input', () => {
   // above by being uniformly fast.
   it('still reads the repository’s own table', () => {
     expect(parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'))).toHaveLength(8);
+  });
+});
+
+// The orchestration, driven through the seam rather than through `gh`. The four
+// exit codes and the messages behind them are decisions, and while they lived
+// in the entry file beside a spawnSync nothing could reach them.
+describe('runGate', () => {
+  const RECORD = table(row('kept'), row('pending', 'ci.yml', '⛔'));
+
+  const rollupFor = (contexts: RollupContext[]): string =>
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequest: {
+            commits: {
+              nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }],
+            },
+          },
+        },
+      },
+    });
+  const candidatesFor = (number: number): string =>
+    JSON.stringify({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                number,
+                commits: {
+                  nodes: [
+                    { commit: { statusCheckRollup: { contexts: { nodes: [{ name: 'x' }] } } } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+  const drive = (
+    overrides: Partial<GateIo> & { contexts?: RollupContext[] } = {},
+  ): { code: number; printed: string[]; summaries: string[] } => {
+    const printed: string[] = [];
+    const summaries: string[] = [];
+    let call = 0;
+    const io: GateIo = {
+      readRecord: () => RECORD,
+      graphql: () => (call++ === 0 ? candidatesFor(7) : rollupFor(overrides.contexts ?? [])),
+      print: (line) => printed.push(line),
+      appendSummary: (text) => summaries.push(text),
+      ...overrides,
+    };
+    return { code: runGate(io, 'o', 'r', 10), printed, summaries };
+  };
+
+  it('exits 0 and writes the summary when the live set matches the record', () => {
+    const { code, printed, summaries } = drive({
+      contexts: [
+        { name: 'kept', isRequired: true },
+        { name: 'pending', isRequired: false },
+      ],
+    });
+    expect(code).toBe(0);
+    expect(printed.join('\n')).toContain(
+      'Required checks match the record: 1 enforced, 1 outstanding.',
+    );
+    // The step summary is the only place a maintainer reads this, so a run that
+    // decided something must have written one.
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain('# Required checks');
+  });
+
+  it('exits 1 and annotates when a check stopped being required', () => {
+    const { code, printed } = drive({
+      contexts: [
+        { name: 'kept', isRequired: false },
+        { name: 'pending', isRequired: false },
+      ],
+    });
+    expect(code).toBe(1);
+    expect(printed.some((l) => l.startsWith('::error::') && l.includes('kept'))).toBe(true);
+  });
+
+  // 3, not 2: a malformed record is deterministic, and retrying it changes
+  // nothing. The distinction is the whole reason the codes are separate.
+  it('exits 3 on a record it cannot parse', () => {
+    const { code, printed } = drive({ readRecord: () => 'no table here' });
+    expect(code).toBe(3);
+    expect(printed[0]).toContain('::error::');
+  });
+
+  it('exits 2 when the API cannot be read at all', () => {
+    const { code, printed } = drive({
+      graphql: () => {
+        throw new Error('gh api graphql failed: 502');
+      },
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('could not read the required-check state');
+  });
+
+  // Distinct from the throw above: the query succeeded and simply found nothing
+  // usable, which must not be read as "no checks are required".
+  it('exits 2 when no recent pull request reported any checks', () => {
+    const { code, printed } = drive({
+      graphql: () => JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }),
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('reported any checks');
+  });
+});
+
+// The three report branches the earlier cases never reached.
+describe('buildSummary branches', () => {
+  it('explains a check that reported nothing at all', () => {
+    const drift = compare([gateRow('kept', true)], readRollup([]));
+    const summary = buildSummary(drift, 1);
+    expect(summary).toContain('was not reported');
+    expect(summary).toContain('Re-run against a PR where every workflow ran');
+    expect(annotations(drift).join('\n')).toContain('reported no check to read');
+  });
+
+  it('tells the reader to add a row for a required check the table omits', () => {
+    const drift = compare(
+      [gateRow('kept', true)],
+      readRollup([
+        { name: 'kept', isRequired: true },
+        { name: 'surprise', isRequired: true },
+      ]),
+    );
+    expect(buildSummary(drift, 1)).toContain('Required but not in the table');
+  });
+
+  it('says so plainly when everything in the table is required and nothing else is', () => {
+    const drift = compare(
+      [gateRow('kept', true)],
+      readRollup([{ name: 'kept', isRequired: true }]),
+    );
+    expect(buildSummary(drift, 1)).toContain('Every check in the table is required');
   });
 });

@@ -31,20 +31,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  annotations,
-  buildSummary,
-  compare,
-  GateConfigError,
-  isFailure,
-  parseGateTable,
-  parsePrResponse,
-  parseRollupResponse,
-  prCandidatesQuery,
-  readRollup,
-  rollupQuery,
-  selectPr,
-} from './lib.ts';
+import { type GateIo, runGate } from './lib.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 // Owner and repo from the runner rather than baked in: a fork with Actions
@@ -70,13 +57,6 @@ const [OWNER, REPO] = ownerRepo();
 // without being free.
 const PR_CANDIDATES = 10;
 
-const print = (line: string): void => {
-  process.stdout.write(`${line}\n`);
-};
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 // The step-summary path is a runner variable, absent when run locally — where
 // stdout is the whole output and appending nowhere is correct.
 function summaryFile(): string | undefined {
@@ -85,69 +65,30 @@ function summaryFile(): string | undefined {
   return path === undefined || path === '' ? undefined : path;
 }
 
-function graphql(query: string): string {
-  const result = spawnSync('gh', ['api', 'graphql', '-f', `query=${query}`], {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-    cwd: REPO_ROOT,
-  });
-  if (result.error) throw new Error(`could not spawn gh: ${result.error.message}`);
-  if (result.status !== 0) {
-    throw new Error(
-      `gh api graphql failed: ${(result.stderr || result.stdout).trim().slice(0, 400)}`,
-    );
-  }
-  return result.stdout;
-}
-
-function main(): void {
-  let rows;
-  try {
-    rows = parseGateTable(readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8'));
-  } catch (error) {
-    print(`::error::${errorMessage(error)}`);
-    process.exitCode = error instanceof GateConfigError ? 3 : 2;
-    return;
-  }
-
-  // Two round trips, and the split is forced rather than chosen: `isRequired`
-  // takes `pullRequestNumber` as a required argument with no way to refer to
-  // the enclosing node's own number, so it cannot be asked for inside the
-  // `pullRequests` connection that finds a usable PR in the first place.
-  let contexts;
-  let prNumber;
-  try {
-    const selected = selectPr(
-      parsePrResponse(graphql(prCandidatesQuery(OWNER, REPO, PR_CANDIDATES))),
-    );
-    if (selected === undefined) {
-      print(`::error::none of the last ${String(PR_CANDIDATES)} pull requests reported any checks`);
-      process.exitCode = 2;
-      return;
+// Every decision — which exit code, which message — lives in `runGate`, where
+// the suite drives it against fakes. What is left here is the four real
+// boundaries it needs.
+const io: GateIo = {
+  readRecord: () => readFileSync(join(REPO_ROOT, 'CONTRIBUTING.md'), 'utf8'),
+  graphql: (query) => {
+    const result = spawnSync('gh', ['api', 'graphql', '-f', `query=${query}`], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      cwd: REPO_ROOT,
+    });
+    if (result.error) throw new Error(`could not spawn gh: ${result.error.message}`);
+    if (result.status !== 0) {
+      throw new Error(
+        `gh api graphql failed: ${(result.stderr || result.stdout).trim().slice(0, 400)}`,
+      );
     }
-    prNumber = selected.number;
-    contexts = parseRollupResponse(graphql(rollupQuery(OWNER, REPO, prNumber)));
-  } catch (error) {
-    print(`::error::could not read the required-check state: ${errorMessage(error)}`);
-    process.exitCode = 2;
-    return;
-  }
+    return result.stdout;
+  },
+  print: (line) => process.stdout.write(`${line}\n`),
+  appendSummary: (text) => {
+    const path = summaryFile();
+    if (path !== undefined) appendFileSync(path, `${text}\n`);
+  },
+};
 
-  const drift = compare(rows, readRollup(contexts));
-  const summary = buildSummary(drift, prNumber);
-
-  const summaryPath = summaryFile();
-  if (summaryPath !== undefined) appendFileSync(summaryPath, `${summary}\n`);
-  print(summary);
-  for (const line of annotations(drift)) print(`::error::${line}`);
-
-  if (isFailure(drift)) {
-    process.exitCode = 1;
-    return;
-  }
-  print(
-    `Required checks match the record: ${String(rows.length - drift.outstanding.length)} enforced, ${String(drift.outstanding.length)} outstanding.`,
-  );
-}
-
-main();
+process.exitCode = runGate(io, OWNER, REPO, PR_CANDIDATES);

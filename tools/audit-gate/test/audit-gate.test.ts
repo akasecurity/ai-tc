@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 import {
   advisoryId,
+  advisoryIdsCli,
   advisoryIdsFromReport,
   assertNoAuditConfigMutes,
   assertNothingMuted,
@@ -880,5 +881,33 @@ describe('advisoryIdsFromReport is linear in its input', () => {
     expect(pattern).not.toMatch(/[\]+*]\+/);
     expect(pattern).toMatch(/\{1,64\}/);
     expect(pattern).toMatch(/\{0,2048\}/);
+  });
+});
+
+// The `advisory-ids` entry, driven through its seam. It had no test at all
+// while its whole body was module-level, and it is the thing audit.yml shells
+// out to on the one path that decides whether an advisory is ever mentioned
+// again.
+describe('advisoryIdsCli', () => {
+  const files: Record<string, string> = {
+    'audit-report.md': '| left-pad | high | [GHSA-aaaa-bbbb-cccc](https://x) | t | v |',
+    'artifact-audit-report.md': '| pkg | [1090893](https://x) | 2026-01-01 | why |',
+  };
+  const read = (path: string): string | undefined => files[path];
+
+  it('prints every id across the files it was given, sorted', () => {
+    expect(advisoryIdsCli(['audit-report.md', 'artifact-audit-report.md'], read)).toBe(
+      '1090893\nGHSA-aaaa-bbbb-cccc\n',
+    );
+  });
+
+  it('treats an absent file as contributing nothing', () => {
+    expect(advisoryIdsCli(['audit-report.md', 'nope.md'], read)).toBe('GHSA-aaaa-bbbb-cccc\n');
+  });
+
+  // Nothing at all, not a blank line: `comm` compares line by line, and an empty
+  // line is an id that matches nothing, which would make every advisory look new.
+  it('prints nothing when there are no ids, rather than an empty line', () => {
+    expect(advisoryIdsCli(['nope.md'], read)).toBe('');
   });
 });

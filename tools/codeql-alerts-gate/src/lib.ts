@@ -227,3 +227,84 @@ export function buildAlertSummary(drift: AlertDrift, summary: AlertSummary): str
   lines.push('## By rule', '', ...table(summary.byRule), '');
   return lines.join('\n');
 }
+
+/**
+ * The alerts response, parsed and shape-checked.
+ *
+ * Refused rather than read as an empty list: empty compares against a non-zero
+ * baseline as "every alert was fixed", which is the good news this gate would
+ * otherwise be trusted for.
+ */
+export function parseAlertsResponse(stdout: string): Alert[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error(`gh did not return JSON: ${stdout.trim().slice(0, 400)}`);
+  }
+  if (!Array.isArray(parsed))
+    throw new Error('the code-scanning response was not a list of alerts');
+  return parsed as Alert[];
+}
+
+/**
+ * The outside world this gate touches, taken as a parameter — the same seam
+ * `required-checks-gate` uses, and for the same reason: the exit-code mapping
+ * and the messages are decisions, and they were unreachable by any test while
+ * they sat in the entry file beside a `spawnSync`.
+ */
+export interface AlertIo {
+  /** The raw baseline JSON. */
+  readBaseline: () => string;
+  /** Fetch the open alerts, returning `gh`'s raw stdout. */
+  fetchAlerts: () => string;
+  print: (line: string) => void;
+  appendSummary: (text: string) => void;
+}
+
+const alertMessageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * Compare the open alerts against the baseline. Returns the process exit code
+ * rather than setting it: 0 matched · 1 moved · 2 unreadable · 3 misconfigured.
+ */
+export function runAlertGate(io: AlertIo): number {
+  let baseline: AlertBaseline;
+  try {
+    baseline = parseBaseline(io.readBaseline());
+  } catch (error) {
+    io.print(`::error::${alertMessageOf(error)}`);
+    return error instanceof AlertGateConfigError ? 3 : 2;
+  }
+
+  let alerts: Alert[];
+  try {
+    alerts = parseAlertsResponse(io.fetchAlerts());
+  } catch (error) {
+    io.print(`::error::could not read the open CodeQL alerts: ${alertMessageOf(error)}`);
+    return 2;
+  }
+
+  const summary = summarise(alerts);
+  const drift = compareAlerts(baseline, summary);
+  const report = buildAlertSummary(drift, summary);
+
+  io.appendSummary(report);
+  io.print(report);
+
+  for (const { severity, was, now } of drift.risen) {
+    io.print(
+      `::error::open ${severity} CodeQL alerts rose from ${String(was)} to ${String(now)} — triage them, do not raise the baseline`,
+    );
+  }
+  for (const { severity, was, now } of drift.fallen) {
+    io.print(
+      `::error::open ${severity} CodeQL alerts fell from ${String(was)} to ${String(now)} — lower the baseline`,
+    );
+  }
+
+  if (isAlertFailure(drift)) return 1;
+  io.print(`Open CodeQL alerts match the baseline: ${String(drift.totalNow)} outstanding.`);
+  return 0;
+}

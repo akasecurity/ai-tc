@@ -470,6 +470,22 @@ export function advisoryIdsFromReport(markdown: string): string[] {
   return [...ids].sort();
 }
 
+/**
+ * The advisory ids carried by the files named on argv, one per line.
+ *
+ * A function rather than a module body so the suite can drive it: absent files
+ * contribute nothing (the artifact report does not exist when that audit never
+ * ran), and an empty result prints nothing at all rather than a blank line,
+ * which `comm` would otherwise read as an id.
+ */
+export function advisoryIdsCli(
+  paths: string[],
+  read: (path: string) => string | undefined,
+): string {
+  const ids = advisoryIdsFromReport(paths.map((path) => read(path) ?? '').join('\n'));
+  return ids.length > 0 ? `${ids.join('\n')}\n` : '';
+}
+
 function advisoryRow(advisory: AuditAdvisory): string {
   const id = advisoryId(advisory);
   const paths = (advisory.findings ?? []).flatMap((finding) => finding.paths ?? []);

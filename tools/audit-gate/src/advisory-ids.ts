@@ -11,7 +11,7 @@
 // extraction is one tested function in lib.ts rather than a regex in YAML for
 // exactly that reason: nothing executes the YAML until the day it matters.
 
-import { advisoryIdsFromReport, readIfPresent } from './lib.ts';
+import { advisoryIdsCli, readIfPresent } from './lib.ts';
 
 // One reader, shared with the pnpm-config check rather than re-rolled here.
 // Both encode the same rule and it is a rule worth having in one place: absent
@@ -19,10 +19,4 @@ import { advisoryIdsFromReport, readIfPresent } from './lib.ts';
 // refused rather than reported as empty. Empty here would read as "every one of
 // these was already posted" and would suppress the comment this path exists to
 // send — the same shape of silent-pass the pnpm-config check refuses.
-const ids = advisoryIdsFromReport(
-  process.argv
-    .slice(2)
-    .map((path) => readIfPresent(path) ?? '')
-    .join('\n'),
-);
-if (ids.length > 0) process.stdout.write(`${ids.join('\n')}\n`);
+process.stdout.write(advisoryIdsCli(process.argv.slice(2), readIfPresent));

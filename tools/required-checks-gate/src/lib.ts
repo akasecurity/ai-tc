@@ -418,3 +418,78 @@ export function buildSummary(drift: Drift, prNumber: number): string {
   }
   return lines.join('\n');
 }
+
+/**
+ * The outside world this gate touches, taken as a parameter.
+ *
+ * The orchestration below decides four exit codes and which of five messages a
+ * maintainer sees, and none of that was reachable by a test while it lived in
+ * the entry file beside a `spawnSync`. This repository's answer to that is an
+ * injectable seam rather than a mocked module — the boundary is a parameter, so
+ * the network call site is never reached instead of being intercepted.
+ */
+export interface GateIo {
+  /** The raw CONTRIBUTING.md text. */
+  readRecord: () => string;
+  /** Run one GraphQL query, returning `gh`'s raw stdout. */
+  graphql: (query: string) => string;
+  /** One line to the job log. */
+  print: (line: string) => void;
+  /** Append to the step summary, where the runner provides one. */
+  appendSummary: (text: string) => void;
+}
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * Read the live required set and compare it against the record. Returns the
+ * process exit code rather than setting it, so a test can assert the mapping:
+ * 0 matched · 1 drifted · 2 unreadable · 3 misconfigured.
+ */
+export function runGate(io: GateIo, owner: string, repo: string, candidates: number): number {
+  let rows: GateRow[];
+  try {
+    rows = parseGateTable(io.readRecord());
+  } catch (error) {
+    io.print(`::error::${messageOf(error)}`);
+    // A malformed record is deterministic — retrying it changes nothing — so it
+    // is kept distinct from the transient read failures below.
+    return error instanceof GateConfigError ? 3 : 2;
+  }
+
+  // Two round trips, and the split is forced rather than chosen: `isRequired`
+  // takes `pullRequestNumber` as a required argument with no way to refer to
+  // the enclosing node's own number, so it cannot be asked for inside the
+  // `pullRequests` connection that finds a usable pull request in the first
+  // place.
+  let contexts: RollupContext[];
+  let prNumber: number;
+  try {
+    const selected = selectPr(
+      parsePrResponse(io.graphql(prCandidatesQuery(owner, repo, candidates))),
+    );
+    if (selected === undefined) {
+      io.print(`::error::none of the last ${String(candidates)} pull requests reported any checks`);
+      return 2;
+    }
+    prNumber = selected.number;
+    contexts = parseRollupResponse(io.graphql(rollupQuery(owner, repo, prNumber)));
+  } catch (error) {
+    io.print(`::error::could not read the required-check state: ${messageOf(error)}`);
+    return 2;
+  }
+
+  const drift = compare(rows, readRollup(contexts));
+  const summary = buildSummary(drift, prNumber);
+
+  io.appendSummary(summary);
+  io.print(summary);
+  for (const line of annotations(drift)) io.print(`::error::${line}`);
+
+  if (isFailure(drift)) return 1;
+  io.print(
+    `Required checks match the record: ${String(rows.length - drift.outstanding.length)} enforced, ${String(drift.outstanding.length)} outstanding.`,
+  );
+  return 0;
+}

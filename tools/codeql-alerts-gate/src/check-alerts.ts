@@ -21,15 +21,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  type Alert,
-  AlertGateConfigError,
-  buildAlertSummary,
-  compareAlerts,
-  isAlertFailure,
-  parseBaseline,
-  summarise,
-} from './lib.ts';
+import { type AlertIo, runAlertGate } from './lib.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const BASELINE_PATH = join(REPO_ROOT, '.github', 'codeql-alert-baseline.json');
@@ -47,13 +39,6 @@ function repoSlug(): string {
 const alertsEndpoint = (): string =>
   `repos/${repoSlug()}/code-scanning/alerts?state=open&per_page=100`;
 
-const print = (line: string): void => {
-  process.stdout.write(`${line}\n`);
-};
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 // The step-summary path is a runner variable, absent when run locally — where
 // stdout is the whole output and appending nowhere is correct.
 function summaryFile(): string | undefined {
@@ -62,76 +47,31 @@ function summaryFile(): string | undefined {
   return path === undefined || path === '' ? undefined : path;
 }
 
+// Every decision — which exit code, which message — lives in `runAlertGate`,
+// where the suite drives it against fakes. What is left here is the boundaries.
+//
 // `--paginate` matters: the endpoint caps at 100 per page, and a repository
 // that crossed that would silently report 100 — a number that can only ever go
 // DOWN from there, so the gate would read a growing tree as an improving one.
-function fetchAlerts(): Alert[] {
-  const result = spawnSync('gh', ['api', '--paginate', alertsEndpoint()], {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-    cwd: REPO_ROOT,
-  });
-  if (result.error) throw new Error(`could not spawn gh: ${result.error.message}`);
-  if (result.status !== 0) {
-    throw new Error(`gh api failed: ${(result.stderr || result.stdout).trim().slice(0, 400)}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    throw new Error(`gh did not return JSON: ${result.stdout.trim().slice(0, 400)}`);
-  }
-  // An unreadable shape is refused rather than read as an empty list: empty
-  // compares against a non-zero baseline as "every alert was fixed", which
-  // reports the good news this gate would otherwise be trusted for.
-  if (!Array.isArray(parsed))
-    throw new Error('the code-scanning response was not a list of alerts');
-  return parsed as Alert[];
-}
+const io: AlertIo = {
+  readBaseline: () => readFileSync(BASELINE_PATH, 'utf8'),
+  fetchAlerts: () => {
+    const result = spawnSync('gh', ['api', '--paginate', alertsEndpoint()], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      cwd: REPO_ROOT,
+    });
+    if (result.error) throw new Error(`could not spawn gh: ${result.error.message}`);
+    if (result.status !== 0) {
+      throw new Error(`gh api failed: ${(result.stderr || result.stdout).trim().slice(0, 400)}`);
+    }
+    return result.stdout;
+  },
+  print: (line) => process.stdout.write(`${line}\n`),
+  appendSummary: (text) => {
+    const path = summaryFile();
+    if (path !== undefined) appendFileSync(path, `${text}\n`);
+  },
+};
 
-function main(): void {
-  let baseline;
-  try {
-    baseline = parseBaseline(readFileSync(BASELINE_PATH, 'utf8'));
-  } catch (error) {
-    print(`::error::${errorMessage(error)}`);
-    process.exitCode = error instanceof AlertGateConfigError ? 3 : 2;
-    return;
-  }
-
-  let alerts: Alert[];
-  try {
-    alerts = fetchAlerts();
-  } catch (error) {
-    print(`::error::could not read the open CodeQL alerts: ${errorMessage(error)}`);
-    process.exitCode = 2;
-    return;
-  }
-
-  const summary = summarise(alerts);
-  const drift = compareAlerts(baseline, summary);
-  const report = buildAlertSummary(drift, summary);
-
-  const summaryPath = summaryFile();
-  if (summaryPath !== undefined) appendFileSync(summaryPath, `${report}\n`);
-  print(report);
-
-  for (const { severity, was, now } of drift.risen) {
-    print(
-      `::error::open ${severity} CodeQL alerts rose from ${String(was)} to ${String(now)} — triage them, do not raise the baseline`,
-    );
-  }
-  for (const { severity, was, now } of drift.fallen) {
-    print(
-      `::error::open ${severity} CodeQL alerts fell from ${String(was)} to ${String(now)} — lower the baseline`,
-    );
-  }
-
-  if (isAlertFailure(drift)) {
-    process.exitCode = 1;
-    return;
-  }
-  print(`Open CodeQL alerts match the baseline: ${String(drift.totalNow)} outstanding.`);
-}
-
-main();
+process.exitCode = runAlertGate(io);

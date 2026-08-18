@@ -7,10 +7,13 @@ import {
   type Alert,
   type AlertBaseline,
   AlertGateConfigError,
+  type AlertIo,
   buildAlertSummary,
   compareAlerts,
   isAlertFailure,
+  parseAlertsResponse,
   parseBaseline,
+  runAlertGate,
   severityOf,
   summarise,
 } from '../src/lib.ts';
@@ -208,5 +211,85 @@ describe('buildAlertSummary explains a totals-only mismatch', () => {
     const report = buildAlertSummary(drift, summary);
     expect(report).toContain('totals disagree');
     expect(report).toContain('codeql-alert-baseline.json');
+  });
+});
+
+// The orchestration, driven through the seam. The four exit codes and the
+// messages behind them were unreachable by any test while they sat in the entry
+// beside a spawnSync.
+describe('runAlertGate', () => {
+  const BASELINE = JSON.stringify({ total: 1, bySeverity: { high: 1 } });
+  const alertsJson = (...severities: string[]): string =>
+    JSON.stringify(severities.map((s) => ({ rule: { id: 'js/x', security_severity_level: s } })));
+
+  const drive = (
+    overrides: Partial<AlertIo> = {},
+  ): { code: number; printed: string[]; summaries: string[] } => {
+    const printed: string[] = [];
+    const summaries: string[] = [];
+    const io: AlertIo = {
+      readBaseline: () => BASELINE,
+      fetchAlerts: () => alertsJson('high'),
+      print: (line) => printed.push(line),
+      appendSummary: (text) => summaries.push(text),
+      ...overrides,
+    };
+    return { code: runAlertGate(io), printed, summaries };
+  };
+
+  it('exits 0 and writes the summary when the counts match', () => {
+    const { code, printed, summaries } = drive();
+    expect(code).toBe(0);
+    expect(printed.join('\n')).toContain('Open CodeQL alerts match the baseline: 1 outstanding.');
+    expect(summaries).toHaveLength(1);
+  });
+
+  it('exits 1 and annotates when the count rose', () => {
+    const { code, printed } = drive({ fetchAlerts: () => alertsJson('high', 'high') });
+    expect(code).toBe(1);
+    expect(printed.some((l) => l.includes('rose from 1 to 2'))).toBe(true);
+  });
+
+  it('exits 1 and says to lower the baseline when the count fell', () => {
+    const { code, printed } = drive({ fetchAlerts: () => alertsJson() });
+    expect(code).toBe(1);
+    expect(printed.some((l) => l.includes('fell from 1 to 0'))).toBe(true);
+  });
+
+  // 3 rather than 2: a malformed baseline is deterministic and retrying it
+  // changes nothing.
+  it('exits 3 on a baseline it cannot parse', () => {
+    const { code, printed } = drive({ readBaseline: () => '{"total":"nope"}' });
+    expect(code).toBe(3);
+    expect(printed[0]).toContain('::error::');
+  });
+
+  it('exits 2 when the alerts cannot be fetched', () => {
+    const { code, printed } = drive({
+      fetchAlerts: () => {
+        throw new Error('gh api failed: 403');
+      },
+    });
+    expect(code).toBe(2);
+    expect(printed.join('\n')).toContain('could not read the open CodeQL alerts');
+  });
+
+  // The response shape check: an object where a list was expected must not read
+  // as "no alerts", which against a non-zero baseline is the good news this gate
+  // would otherwise be trusted for.
+  it('exits 2 rather than reading an unreadable response as an empty list', () => {
+    expect(drive({ fetchAlerts: () => '{"message":"Not Found"}' }).code).toBe(2);
+    expect(drive({ fetchAlerts: () => 'not json at all' }).code).toBe(2);
+  });
+});
+
+describe('parseAlertsResponse', () => {
+  it('reads a list of alerts', () => {
+    expect(parseAlertsResponse('[{"rule":{"id":"r"}}]')).toHaveLength(1);
+  });
+
+  it('refuses a body it cannot read rather than reporting no alerts', () => {
+    expect(() => parseAlertsResponse('nope')).toThrow(/did not return JSON/);
+    expect(() => parseAlertsResponse('{"message":"Not Found"}')).toThrow(/not a list of alerts/);
   });
 });

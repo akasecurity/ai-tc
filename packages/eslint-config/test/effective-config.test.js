@@ -53,8 +53,8 @@ import {
 //     rules still fire on real code. Flat config resolves "last wins": the final
 //     block matching a file overrides earlier ones for a given rule, and
 //     no-restricted-imports never merges across blocks. So a package that layers
-//     a second config on top of base (web-ui: react + noEnterpriseImports;
-//     persistence / local-ops: base + noEnterpriseImports; cli: base + the
+//     a second config on top of base (web-ui: react + noDrizzleImports;
+//     persistence / local-ops: base + noDrizzleImports; cli: base + the
 //     dashboard opt-out) could silently drop a network ban with the unit suite
 //     still green. Here we assert the composition, not the components.
 //
@@ -808,7 +808,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
       notExtending.length
         ? 'These packages ship an eslint.config.mjs that never imports @akasecurity/eslint-config, ' +
             'so the shared no-network ban is not wired in. Extend the shared config (spread ' +
-            `...base / ...noEnterpriseImports / ...react):\n  ${notExtending.join('\n  ')}`
+            `...base / ...noDrizzleImports / ...react):\n  ${notExtending.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });

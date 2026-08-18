@@ -256,7 +256,7 @@ function tonalInkSelectors() {
 // flat-config `rules` entry REPLACES the rule's options instead of merging them —
 // setting `no-restricted-syntax` bare here would silently drop base's
 // dynamic-import network ban for exactly these three packages. Same hazard
-// `noEnterpriseImports` above is written around.
+// `noDrizzleImports` below is written around.
 /** @type {import('eslint').Linter.Config[]} */
 export const tonalInkTokens = [
   {
@@ -331,34 +331,33 @@ export const base = [
   prettier,
 ];
 
-// OSS/enterprise dependency wall (see CLAUDE.md "Package dependency rules"):
-// packages that ship in the public oss/ tree must never import enterprise-only
-// modules — @akasecurity/client (the tenant-aware HTTP client), drizzle-orm and
-// @akasecurity/schema-enterprise (the Postgres/tenancy layer). Apply this to
-// every OSS package except the plugin, which is the documented exception
-// allowed to use @akasecurity/client to sync to a backend when attached.
-const ENTERPRISE_IMPORT_MESSAGE =
-  'OSS packages must never import enterprise-only modules (this keeps tenancy/auth/Postgres code out of the public oss/ tree). See CLAUDE.md "Package dependency rules".';
+// The store-reading wall (see CLAUDE.md "Package dependency rules"): Drizzle is
+// imported ONLY by @akasecurity/schema, which uses it to DEFINE the local-store
+// and registry schemas. Every other package reads that store through
+// @akasecurity/persistence, which wraps node:sqlite — so a Drizzle import
+// anywhere else is a package-wall crossing. Spread this in every package except
+// @akasecurity/schema itself.
+//
+// The `drizzle-orm/*` group is what makes the ban hold: `no-restricted-imports`
+// `paths` matches only the exact specifier, so the root ban alone leaves every
+// dialect entry (`drizzle-orm/pg-core`, `drizzle-orm/sqlite-core`) reachable.
+const DRIZZLE_IMPORT_MESSAGE =
+  'Drizzle is imported only by @akasecurity/schema, which uses it to define the local-store and ' +
+  'registry schemas. Read the store through @akasecurity/persistence (node:sqlite) instead. ' +
+  'See CLAUDE.md "Package dependency rules".';
 
-// This carries the network import bans forward alongside the enterprise ones.
+// This carries the network import bans forward alongside the Drizzle one.
 // `no-restricted-imports` does not merge across flat-config entries, and this is
-// layered on top of `base` in the packages that use it, so declaring the
-// enterprise restrictions on their own would silently drop base's network bans
-// for exactly those packages.
+// layered on top of `base` in the packages that use it, so declaring the Drizzle
+// restriction on its own would silently drop base's network bans for exactly
+// those packages.
 /** @type {import('typescript-eslint').ConfigArray} */
-export const noEnterpriseImports = [
+export const noDrizzleImports = [
   {
     rules: {
       'no-restricted-imports': noNetworkImports({
-        paths: [
-          { name: '@akasecurity/client', message: ENTERPRISE_IMPORT_MESSAGE },
-          { name: 'drizzle-orm', message: ENTERPRISE_IMPORT_MESSAGE },
-          { name: '@akasecurity/schema-enterprise', message: ENTERPRISE_IMPORT_MESSAGE },
-        ],
-        patterns: [
-          { group: ['drizzle-orm/*'], message: ENTERPRISE_IMPORT_MESSAGE },
-          { group: ['@akasecurity/schema-enterprise/*'], message: ENTERPRISE_IMPORT_MESSAGE },
-        ],
+        paths: [{ name: 'drizzle-orm', message: DRIZZLE_IMPORT_MESSAGE }],
+        patterns: [{ group: ['drizzle-orm/*'], message: DRIZZLE_IMPORT_MESSAGE }],
       }),
     },
   },

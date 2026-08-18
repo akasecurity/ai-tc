@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   base,
   networkGuard,
-  noEnterpriseImports,
+  noDrizzleImports,
   noNetworkGlobals,
   noNetworkImports,
   noNetworkProperties,
@@ -336,11 +336,11 @@ describe('networkGuard (the scripts/ pass)', () => {
   });
 });
 
-describe('noEnterpriseImports merge', () => {
-  // The enterprise config is layered on top of `base` in some packages. Flat
+describe('noDrizzleImports merge', () => {
+  // The Drizzle config is layered on top of `base` in some packages. Flat
   // config does not merge two no-restricted-imports entries, so this config must
   // carry the network bans forward or those packages would silently lose them.
-  const entry = noEnterpriseImports.find((c) => c.rules?.['no-restricted-imports']);
+  const entry = noDrizzleImports.find((c) => c.rules?.['no-restricted-imports']);
   const ruleValue = entry?.rules?.['no-restricted-imports'];
 
   it('is present', () => {
@@ -355,26 +355,29 @@ describe('noEnterpriseImports merge', () => {
     expect(messages[0].ruleId).toBe('no-restricted-imports');
   });
 
-  it('also bans the enterprise HTTP client', () => {
-    const messages = lintWithRules("import c from '@akasecurity/client';", {
+  it('also bans drizzle-orm, and names the replacement', () => {
+    const messages = lintWithRules("import { eq } from 'drizzle-orm';", {
       'no-restricted-imports': ruleValue,
     });
     expect(messages).toHaveLength(1);
-    expect(messages[0].message).toContain('enterprise-only');
+    // The message is the whole value of the ban to whoever trips it. Asserting
+    // the ruleId alone passes on a message that names no alternative, which is
+    // the form that sends people to grep for one.
+    expect(messages[0].message).toContain('@akasecurity/persistence');
   });
 
-  it('keeps BOTH pattern groups (network subpaths + enterprise) after the merge', () => {
-    // The network `<client>/*` groups are prepended to noEnterpriseImports' own
-    // `patterns` (drizzle-orm/*, schema-enterprise/*). A regressed merge that
-    // declared only enterprise patterns would drop the network subpath ban.
+  it('keeps BOTH pattern groups (network subpaths + drizzle dialects) after the merge', () => {
+    // The network `<client>/*` groups are prepended to noDrizzleImports' own
+    // `patterns` (drizzle-orm/*). A regressed merge that declared only the
+    // drizzle pattern would drop the network subpath ban.
     const deep = lintWithRules("import x from 'axios/lib/adapters/http.js';", {
       'no-restricted-imports': ruleValue,
     });
     expect(deep.map((m) => m.ruleId)).toContain('no-restricted-imports');
-    const ent = lintWithRules("import s from 'drizzle-orm/sqlite-core';", {
+    const dialect = lintWithRules("import s from 'drizzle-orm/sqlite-core';", {
       'no-restricted-imports': ruleValue,
     });
-    expect(ent.map((m) => m.ruleId)).toContain('no-restricted-imports');
+    expect(dialect.map((m) => m.ruleId)).toContain('no-restricted-imports');
   });
 });
 

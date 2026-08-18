@@ -349,9 +349,9 @@ export type ApplyFindingActionRequest = z.infer<typeof ApplyFindingActionRequest
 export const ApplyFindingActionResponse = FindingGroup.meta({ id: 'ApplyFindingActionResponse' });
 export type ApplyFindingActionResponse = z.infer<typeof ApplyFindingActionResponse>;
 
-// ExportFindingsQuery: same filter params as ListFindingsQuery minus pagination.
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the SHAPE
-// IDS note in zod/index.ts).
+// ExportFindingsQuery: the same filter params as the grouped-findings read,
+// minus pagination. Query schema — NO `.meta({ id })` (see
+// ListGroupedFindingsQuery and the SHAPE IDS note in zod/index.ts).
 export const ExportFindingsQuery = z.object({
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
@@ -363,7 +363,7 @@ export const ExportFindingsQuery = z.object({
 export type ExportFindingsQuery = z.infer<typeof ExportFindingsQuery>;
 
 // FindingInstanceDetail: denormalized instance detail combining FindingInstance
-// fields with group-level context. Returned by GET /v1/findings/instances/:id.
+// fields with group-level context. Returned by the finding-instance read.
 export const FindingInstanceDetail = FindingInstance.extend({
   groupId: z.string(),
   category: FindingCategory,

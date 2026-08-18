@@ -8,8 +8,12 @@ import { inspectionDefinitionId } from '../ids.ts';
 /**
  * Inspection definition (a detection rule version) writer.
  *
- * `id = sha256('inspection_definition' + rule_id + version)` — see
- * `inspectionDefinitionId` in ../ids.ts. Content-addressed on the rule's
+ * `id = sha256Hex(canonicalIdentity(['inspection_definition', rule_id, version]))`
+ * — see `inspectionDefinitionId` in ../ids.ts. `canonicalIdentity` JSON-encodes
+ * the parts as an array rather than joining them, which is what keeps the part
+ * boundaries: concatenation would put rule `ab` version `c` and rule `a` version
+ * `bc` on one digest, collapsing two rule versions onto a single row so
+ * historical findings cite the wrong definition. Content-addressed on the rule's
  * identity and its version and nothing else, so editing a rule mints a NEW row
  * and historical findings keep citing the exact version that fired. Two stores
  * that load the same rule version derive the same id.

@@ -1,9 +1,9 @@
-// OSS local store — SQLite dialect, single-node, tenant-free.
+// The local store — SQLite dialect, one store per machine.
 //
-// This is the canonical open-source schema for the plugin/CLI's local
-// ~/.aka/data/aka.db store. It deliberately carries NO tenant_id / user_id, no
-// FKs to a tenants/users catalog, and no auth tables — the local store is a
-// single-node, tenant-free store.
+// This is the canonical schema for the plugin/CLI's ~/.aka/data/aka.db store.
+// Every row in it belongs to the machine it sits on, so it carries no owner
+// columns, no FKs to an account catalog and no auth tables: identity is the file
+// path, and the OS account that owns the file is the only boundary.
 //
 // events and findings are append-only (no updated_at); policies and
 // installed_packs are mutable. occurred_at / created_at / updated_at are
@@ -254,9 +254,9 @@ export const exceptions = sqliteTable(
   ],
 );
 
-// ─── [Meta] data model — tenant-free local mirror ───────────────────────────
+// ─── [Meta] data model — local mirror ───────────────────────────
 // The inventory / audit / inspection dimensions of the meta data model,
-// here without tenant_id / user_id (single-node, tenant-free local store).
+// here without owner columns — one store per machine.
 // Content-addressed ids dedupe within the store.
 
 // INVENTORY — host / harness / user dimension, content-addressed.
@@ -436,10 +436,10 @@ export const inspectionFindings = sqliteTable(
   ],
 );
 
-// ─── Data Shares (outbound egress) — tenant-free local mirror ────────────────
+// ─── Data Shares (outbound egress) — local mirror ────────────────
 // Outbound data egress detected in the user's software, grouped by destination
 // (provider / internal domain / raw IP) → endpoint → call-site. The share_*
-// tables are tenant-free. trust/status/network are DERIVED on
+// tables carry no owner columns. trust/status/network are DERIVED on
 // read from kind/trust/transport (+ any egress_decision_override), so only the
 // base facts live here. Seeded sample rows carry provenance='sample'.
 
@@ -568,11 +568,11 @@ export const egressDecisionOverride = sqliteTable(
   ],
 );
 
-// ─── Inventory API (asset model) — tenant-free local store ───────────────────
+// ─── Inventory API (asset model) — local store ───────────────────
 // The rich asset inventory the Inventory page renders: skills / MCP
 // servers / hooks / config as inventory_asset, their harness edges as
 // harness_asset (→ the inventory harness rows), and per-project files with
-// per-file LLM access. Tenant-free. Seeded
+// per-file LLM access. No owner columns. Seeded
 // sample assets carry provenance='sample'.
 
 // ASSET — a skill / mcp / hook / config artifact.

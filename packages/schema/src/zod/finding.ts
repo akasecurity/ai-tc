@@ -28,9 +28,9 @@ export const Span = z
   .meta({ id: 'Span' });
 export type Span = z.infer<typeof Span>;
 
-// The canonical open-source finding shape AND the public OpenAPI component
-// 'Finding'. Tenant-free — the public API contract carries no scoping columns.
-// Consumed directly by @akasecurity/persistence and the OSS web-ui.
+// The canonical finding shape, and the component named 'Finding'. Carries no
+// scoping columns — a finding is identified by its own id and its parent event.
+// Consumed directly by @akasecurity/persistence and the web-ui.
 export const Finding = z
   .object({
     id: z.guid(),
@@ -46,8 +46,8 @@ export const Finding = z
   .meta({ id: 'Finding' });
 export type Finding = z.infer<typeof Finding>;
 
-// Detection produces a DetectedFinding. In OSS it equals the tenant-free Finding
-// (ingest === stored); it keeps its own OpenAPI id.
+// Detection produces a DetectedFinding. It equals Finding — what is detected
+// and what is stored are the same shape — and keeps its own id.
 export const DetectedFinding = Finding.meta({ id: 'DetectedFinding' });
 export type DetectedFinding = z.infer<typeof DetectedFinding>;
 

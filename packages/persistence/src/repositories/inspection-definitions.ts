@@ -6,10 +6,15 @@ import { toInspectionDefinitionRow } from '@akasecurity/schema';
 import { inspectionDefinitionId } from '../ids.ts';
 
 /**
- * Inspection definition (a detection rule version) writer. id = sha256(tenant +
- * rule_id + version), so editing a rule mints a new row and historical findings
- * keep citing the exact version that fired. Idempotent upsert: re-loading the
- * same rule version no-ops.
+ * Inspection definition (a detection rule version) writer.
+ *
+ * `id = sha256('inspection_definition' + rule_id + version)` — see
+ * `inspectionDefinitionId` in ../ids.ts. Content-addressed on the rule's
+ * identity and its version and nothing else, so editing a rule mints a NEW row
+ * and historical findings keep citing the exact version that fired. Two stores
+ * that load the same rule version derive the same id.
+ *
+ * Idempotent upsert: re-loading the same rule version no-ops.
  */
 export class SqliteInspectionDefinitionsRepository {
   private readonly insertStmt: StatementSync;

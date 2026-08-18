@@ -1,17 +1,18 @@
 // Configuration-inventory contracts — the Skills & Hooks surface of the [Meta]
-// Data Model (design: config-inventory-skills-hooks.design.md). Skills and hooks
-// are Inventory objects (`object_type` = 'skill' | 'hook', meta.ts); each scan is
-// one `config_scan` audit event under the session root, and posture findings
-// hang off that event.
+// Data Model. Skills and hooks are Inventory objects (`object_type` = 'skill' |
+// 'hook', meta.ts); each scan is one `config_scan` audit event under the session
+// root, and posture findings hang off that event.
 //
 // Layering: the scanner (@akasecurity/plugin-sdk) PRODUCES a ConfigScanResult; the
 // posture rules (@akasecurity/detections) CONSUME it (pure, schema-typed only — this
 // module is the shared vocabulary that keeps detections free of plugin-sdk); the
 // gateway carries a ConfigScanRecord into @akasecurity/persistence.
 //
-// No `.meta({ id })` anywhere here: nothing is referenced by an API route,
-// and an orphan id would leak into the OpenAPI client (the .meta id-leak gotcha
-// in local.ts). Add ids only when ingest routes start referencing these shapes.
+// No `.meta({ id })` anywhere here. An id marks a shape as a named, externally
+// referenced component; nothing in this file is one, and an orphan id becomes a
+// dangling component in anything that walks these schemas (the .meta id-leak
+// gotcha in local.ts). Add one only when a shape here acquires a name something
+// else refers to.
 import { z } from 'zod';
 
 import { ActionTaken, Span } from './finding.ts';

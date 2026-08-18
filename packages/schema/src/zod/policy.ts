@@ -30,10 +30,9 @@ export const PolicyTarget = z
   .meta({ id: 'PolicyTarget' });
 export type PolicyTarget = z.infer<typeof PolicyTarget>;
 
-// The canonical open-source policy shape AND the public OpenAPI component
-// 'Policy'. Tenant-free: the local store + the wire PolicyBundle use it directly,
-// and it backs the policies API contract — the public contract carries no
-// scoping columns.
+// The canonical policy shape, and the component named 'Policy'. The local store
+// and the wire PolicyBundle use it directly, and it backs the policies contract.
+// Carries no scoping columns — a policy is identified by its own id.
 export const Policy = z
   .object({
     id: z.guid(),

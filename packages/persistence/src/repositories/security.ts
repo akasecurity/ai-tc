@@ -105,20 +105,21 @@ interface FindingTimeRow {
 }
 
 /**
- * Security dashboard read views over the tenant-free local store. The adapter
+ * Security dashboard read views over the local store. The adapter
  * fetches AND aggregates here so one call yields the finished @akasecurity/schema
  * response the security widget views consume — the local store IS the
  * security service. Window/bucket/delta math is pure JS over rows fetched per
  * range; the clock is injectable so it is deterministic under test.
  *
  * Two contract gaps are intrinsic to the local store, not omissions:
- *  - top-sources `user` kind: OSS captures carry no userId (the store is
- *    tenant-free, single-tenant), so only `repo` sources — from
- *    audit_events.attributes.repo — are derivable; a `user` filter returns [].
+ *  - top-sources `user` kind: captures carry no userId — the store records no
+ *    user identity, since every row in it belongs to this machine — so only
+ *    `repo` sources, from audit_events.attributes.repo, are derivable; a `user`
+ *    filter returns [].
  *  - recommended-actions: a recommendation engine with no OSS storage — not part
  *    of this port (the web-ui renders an empty card).
  *
- * Single-tenant: no tenant predicate on any query.
+ * One store per machine: no query carries an owner predicate.
  */
 export class SqliteSecurityRepository implements SecurityViews {
   constructor(
@@ -381,7 +382,7 @@ export class SqliteSecurityRepository implements SecurityViews {
     opts: { limit?: number; kind?: SourceKind } = {},
   ): Promise<TopSourcesResponse> {
     const limit = opts.limit ?? 5;
-    // OSS events carry no userId (tenant-free), so user sources aren't derivable.
+    // Events carry no userId, so user sources aren't derivable.
     if (opts.kind === 'user') return Promise.resolve({ range, items: [] });
 
     const now = this.now();

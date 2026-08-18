@@ -165,8 +165,7 @@ export const ACTIVE_REVEAL_GRANT_PREDICATE = `capability = 'reveal_to_model'
  * preview — never the raw value, and never a reversible copy. Consumed,
  * expired, and revoked rows are audit evidence: nothing here hard-deletes
  * except the retention sweep over long-terminal rows and the 30-minute
- * blocked-detections sweep. The local store is tenant-free (single tenant),
- * so there is no tenant predicate on any query.
+ * blocked-detections sweep. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteExceptionsRepository {
   private readonly consumeStmt: StatementSync;

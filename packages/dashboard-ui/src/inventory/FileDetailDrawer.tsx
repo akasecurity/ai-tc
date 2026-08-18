@@ -2,8 +2,8 @@
 
 // The per-file detail body rendered inside the right-edge Sheet: LLM-access
 // radio options, "why this default" rationale, related findings & metadata.
-// Backed by GET /v1/inventory/projects/:id/files; the access picker writes back
-// through PUT .../files/access.
+// Takes the `FileDetail` as a prop and reports an access change through its
+// callback — the host owns both the load and the write.
 import type { AccessLevel, FileDetail } from '@akasecurity/schema';
 import { SheetHeader, SheetTitle } from '@akasecurity/ui-kit';
 

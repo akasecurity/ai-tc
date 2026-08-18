@@ -33,9 +33,9 @@ export const ExceptionConditions = z
   .strict();
 export type ExceptionConditions = z.infer<typeof ExceptionConditions>;
 
-// Tenant-free base (local store + wire bundle). NO `.meta({ id })`: an id
-// would register it in Zod's global registry and leak it into the
-// generated OpenAPI client.
+// The base shape, used by both the local store and the wire bundle. NO
+// `.meta({ id })`: an id would register it in Zod's global registry, which
+// anything walking these schemas then picks up as a named component.
 // What a grant authorizes. 'suppress' is today's semantics: the detection is
 // not hard-enforced (block/redact downgrades). 'reveal_to_model' is strictly
 // stronger: the vault may de-reference the value's pointer back to raw FOR THE

@@ -468,9 +468,13 @@ jobs:
   # added there pays a full store-seeding hook (~2s), which is why a test that
   # needs no store belongs beside the reader instead.
   # web-ui's `test` also drops the `build`/`^build` edges
-  # (web-ui/turbo.json), so no `next build` runs here. Scoped to the
-  # shipped-surface packages to keep the job fast; the full suite runs on the
-  # Linux job above.
+  # (web-ui/turbo.json), so it never waits on a `next build` — only on the
+  # ~200ms `build:worker` task that emits the scan worker its suites drive.
+  # The CLI's tasks still reach `web-ui#build` through `^build`, so that build
+  # runs BESIDE `web-ui#test` here as on every leg, which is exactly why
+  # `build:worker` has to be the only task that writes web-ui/dist/
+  # (web-ui/test/scan-worker-build.test.ts). Scoped to the shipped-surface
+  # packages to keep the job fast; the full suite runs on the Linux job above.
   #
   # Two entries here are `private: true` and bundled by no artifact, so both are
   # the first thing anyone trimming this list back to "the shipped surface"

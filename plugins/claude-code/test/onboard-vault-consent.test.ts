@@ -24,6 +24,33 @@ function readRawSettings(journey: SetupJourney): Record<string, unknown> {
   return JSON.parse(readFileSync(journey.settingsPath, 'utf8')) as Record<string, unknown>;
 }
 
+/**
+ * How far a child's stamp may fall outside the parent's bracket.
+ *
+ * The bracket below reads a timestamp minted by a SPAWNED PROCESS against two
+ * `Date.now()` readings taken here, and two processes ask two independently-
+ * maintained clocks: on Windows those disagree by a few milliseconds routinely,
+ * and an NTP or VM host correction can step one of them further. With zero
+ * slack the assertion fails on that disagreement rather than on a defect —
+ * which is exactly how the settings-race barrier reddened main from a green
+ * tree, and this is the same comparison one file over.
+ *
+ * The property survives the tolerance intact, because what the bracket is
+ * really worth is "the writer stamped this run, not a value it was handed".
+ * The stamps it must reject — the 1999 literal smuggled in below, a hardcoded
+ * date, a field left at the epoch, one carried over from an earlier run — are
+ * all wrong by years, not by seconds.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 5_000;
+
+/** Whether a child-minted epoch stamp falls in the parent's run window. */
+function stampedDuringRun(stampedMs: number, beforeMs: number, afterMs: number): boolean {
+  return (
+    stampedMs >= beforeMs - CLOCK_SKEW_TOLERANCE_MS &&
+    stampedMs <= afterMs + CLOCK_SKEW_TOLERANCE_MS
+  );
+}
+
 describe('grant — records a writer-stamped VaultConsent', () => {
   let journey: SetupJourney;
   let stdout: string;
@@ -53,8 +80,7 @@ describe('grant — records a writer-stamped VaultConsent', () => {
     expect(acknowledgedAt).toBeDefined();
     const stampedMs = Date.parse(acknowledgedAt ?? '');
     expect(Number.isNaN(stampedMs)).toBe(false);
-    expect(stampedMs).toBeGreaterThanOrEqual(beforeMs);
-    expect(stampedMs).toBeLessThanOrEqual(afterMs);
+    expect(stampedDuringRun(stampedMs, beforeMs, afterMs)).toBe(true);
   });
 
   it('confirms on stdout in plain language', () => {
@@ -124,8 +150,9 @@ describe('grant — the stamp cannot be smuggled in from the caller', () => {
     const persisted = WorkspaceSettings.parse(readRawSettings(journey));
     expect(persisted.vaultConsent?.version).toBe(VAULT_CONSENT_VERSION);
     const stampedMs = Date.parse(persisted.vaultConsent?.acknowledgedAt ?? '');
-    expect(stampedMs).toBeGreaterThanOrEqual(beforeMs);
-    expect(stampedMs).toBeLessThanOrEqual(afterMs);
+    // The 1999 literal above is 27 years outside the window, so the tolerance
+    // costs this assertion nothing: it still fails if the arg is ever honoured.
+    expect(stampedDuringRun(stampedMs, beforeMs, afterMs)).toBe(true);
   });
 });
 

@@ -1584,15 +1584,19 @@ the same edit to make, and neither leaves an `if (process.platform …) return;`
 
 That last part is enforced rather than asked: `tools/portability-gate`'s
 `platform-guard-early-return` (rule 6, spec files only) fails `pnpm lint` on the shape.
-Three older suites predate it — `settings.test.ts`, `fingerprint.test.ts` and
-`plugin-sdk`'s `config.test.ts` — and are exempt through `GRANDFATHERED_PLATFORM_GUARDS`,
-which records the exact count each may keep. Leave them be unless you are already changing
-that test for another reason, and do not convert a neighbour in passing; the allowance is a
-ratchet, so converting one means lowering its number in the same commit, and a file that
-reaches zero leaves the map. The ratchet is on the COUNT, though, not on which guards make
-it up: converting one and adding another in the same commit holds the number and passes
-both rules, so the gate cannot tell that pairing from an honest conversion. All three carry
-the top-of-body shape, so each is a real `ctx.skip` still owed.
+Three older suites predated it — `settings.test.ts`, `fingerprint.test.ts` and
+`plugin-sdk`'s `config.test.ts` — and were exempt through `GRANDFATHERED_PLATFORM_GUARDS`
+while their six guards were owed. All six are converted, so **that map is now empty and
+nothing is exempt**: a guard in any spec file is reported. The mechanism stays, because it
+is what lets a rule of this kind land on a tree that already carries its shape, and an
+allowance is a ratchet in both directions — exceeding it is a violation, falling below it is
+`platform-guard-stale-allowance`, so converting a guard means lowering the number in the
+same commit and a file that reaches zero leaves the map. The ratchet is on the COUNT,
+though, not on which guards make it up: converting one and adding another in the same
+commit holds the number and passes both rules, so the gate cannot tell that pairing from an
+honest conversion. That is the reason to keep the map empty rather than to re-open it —
+with no entry at all, every guard in every spec file is reported and the pairing has
+nowhere to hide.
 
 ### Testing a web-ui Server Action
 
@@ -1707,8 +1711,9 @@ stays green if a branch echoes a _truncated_ value, which is still a live creden
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
-`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts` and
-`packages/setup-wizard/test/helpers/no-echo.ts`. A plain
+`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
+`packages/setup-wizard/test/helpers/no-echo.ts` and
+`packages/persistence/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -1727,7 +1732,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All six packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -1741,9 +1746,15 @@ without which an `undefined` message satisfies the loop vacuously.
 **A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built
 literal asserts that a string the test constructed lacks a run of another string the test
 constructed — true by construction, and it stays true however `maskMatch` changes. Each
-`no-echo.test.ts` calls `maskMatch` itself (`@akasecurity/plugin-sdk` re-exports it, so the
-plugin crosses no package wall), which is what makes widening its generic branch go red where
-the reason is written down.
+`no-echo.test.ts` that has a masked-preview case calls `maskMatch` itself
+(`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
+makes widening its generic branch go red where the reason is written down.
+
+`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
+omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
+`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
+a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

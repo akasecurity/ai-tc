@@ -26,6 +26,18 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // `cli/src/*.ts` reaching for it fails — which is the property, stated directly.
 
 /** The seam this suite exists for. */
+// Budget for the cases below that walk the WHOLE tracked tree — a `git ls-files`
+// plus a read of every lintable file. That costs ~3s on an idle developer
+// machine, against vitest's 5s per-test default, so these carry under 2x
+// headroom before any other suite is running. This package runs its files in
+// parallel and several of them resolve flat configs (which pull the whole
+// typescript-eslint stack), so the headroom is gone whenever the suite is busy,
+// and the failure then surfaces as a timeout on whichever file lost the race
+// rather than on whatever was added. Same reasoning as the resolution hooks'
+// budgets: bound the hang where the slow work actually is, and leave the package
+// default alone so the sub-millisecond assertions keep a tight one.
+const TREE_WALK_TIMEOUT_MS = 30_000;
+
 const SEAM = 'UNSAFE_TEST_ONLY_RAW_HANDLE';
 
 /** The only shipped-source file allowed to name it: where it is defined. */
@@ -70,26 +82,34 @@ function filesNamingSeam() {
 }
 
 describe(`the ${SEAM} test-only seam`, () => {
-  it('is named by exactly one shipped source file — the one that defines it', () => {
-    const shipped = filesNamingSeam()
-      .filter((file) => !isTestFile(file))
-      .sort();
+  it(
+    'is named by exactly one shipped source file — the one that defines it',
+    () => {
+      const shipped = filesNamingSeam()
+        .filter((file) => !isTestFile(file))
+        .sort();
 
-    // An exact set of one, not a floor. "The definition is still there" would
-    // stay green with a second, product caller beside it, and the second caller
-    // is the entire failure mode.
-    expect(shipped).toEqual([DEFINITION]);
-  });
+      // An exact set of one, not a floor. "The definition is still there" would
+      // stay green with a second, product caller beside it, and the second caller
+      // is the entire failure mode.
+      expect(shipped).toEqual([DEFINITION]);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 
-  it('is used by the fault tests, so this suite is not guarding an absence', () => {
-    const tests = filesNamingSeam().filter(isTestFile);
+  it(
+    'is used by the fault tests, so this suite is not guarding an absence',
+    () => {
+      const tests = filesNamingSeam().filter(isTestFile);
 
-    // The positive control. Delete the seam and its consumers and every
-    // assertion above holds perfectly — on a workspace where the thing being
-    // guarded does not exist. This is the case that goes red for that.
-    expect(tests.length).toBeGreaterThan(0);
-    expect(tests).toContain('packages/persistence/test/faults/disk-full.test.ts');
-  });
+      // The positive control. Delete the seam and its consumers and every
+      // assertion above holds perfectly — on a workspace where the thing being
+      // guarded does not exist. This is the case that goes red for that.
+      expect(tests.length).toBeGreaterThan(0);
+      expect(tests).toContain('packages/persistence/test/faults/disk-full.test.ts');
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 
   it('is not re-exported from the package entry point', () => {
     const entry = readFileSync(join(REPO_ROOT, ENTRY), 'utf8');
@@ -117,13 +137,17 @@ describe(`the ${SEAM} test-only seam`, () => {
     }
   });
 
-  it('reads a tree it really walked', () => {
-    // `trackedFiles()` returning nothing would make every assertion above pass
-    // by describing an empty workspace — the failure mode a git-backed walk has
-    // and a hardcoded list does not.
-    expect(trackedFiles()).toContain(DEFINITION);
-    expect(lintableTrackedFiles()).toContain(DEFINITION);
-  });
+  it(
+    'reads a tree it really walked',
+    () => {
+      // `trackedFiles()` returning nothing would make every assertion above pass
+      // by describing an empty workspace — the failure mode a git-backed walk has
+      // and a hardcoded list does not.
+      expect(trackedFiles()).toContain(DEFINITION);
+      expect(lintableTrackedFiles()).toContain(DEFINITION);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 });
 
 describe('isTestFile', () => {

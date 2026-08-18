@@ -26,6 +26,18 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // `cli/src`.
 
 /** The directory that must not reach a shipped bundle. */
+// Budget for the cases below that walk the WHOLE tracked tree — a `git ls-files`
+// plus a read of every lintable file. That costs ~3s on an idle developer
+// machine, against vitest's 5s per-test default, so these carry under 2x
+// headroom before any other suite is running. This package runs its files in
+// parallel and several of them resolve flat configs (which pull the whole
+// typescript-eslint stack), so the headroom is gone whenever the suite is busy,
+// and the failure then surfaces as a timeout on whichever file lost the race
+// rather than on whatever was added. Same reasoning as the resolution hooks'
+// budgets: bound the hang where the slow work actually is, and leave the package
+// default alone so the sub-millisecond assertions keep a tight one.
+const TREE_WALK_TIMEOUT_MS = 30_000;
+
 const FIXTURES = 'packages/persistence/src/test-fixtures';
 
 /** The package entry point that must not re-export it. */
@@ -106,29 +118,37 @@ function filesImportingFixtures() {
 }
 
 describe('the test-and-benchmark-only fixture directory', () => {
-  it('is imported only from test and bench code', () => {
-    const shipped = filesImportingFixtures()
-      .filter((file) => !mayImportFixtures(file))
-      .sort();
+  it(
+    'is imported only from test and bench code',
+    () => {
+      const shipped = filesImportingFixtures()
+        .filter((file) => !mayImportFixtures(file))
+        .sort();
 
-    // An exact empty set, not a floor. A product importer anywhere in the
-    // workspace is the entire failure mode, and it ships the dataset in four
-    // artifacts the moment it lands.
-    expect(shipped).toEqual([]);
-  });
+      // An exact empty set, not a floor. A product importer anywhere in the
+      // workspace is the entire failure mode, and it ships the dataset in four
+      // artifacts the moment it lands.
+      expect(shipped).toEqual([]);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 
-  it('is imported by tests and by the benchmark helper, so this is not guarding an absence', () => {
-    const importers = filesImportingFixtures();
+  it(
+    'is imported by tests and by the benchmark helper, so this is not guarding an absence',
+    () => {
+      const importers = filesImportingFixtures();
 
-    // The positive control. Delete the directory and its consumers and the
-    // assertion above holds perfectly — on a workspace where the thing being
-    // guarded does not exist. `HELPER` is named specifically because it is the
-    // importer the old comment failed to describe: a rule that stopped covering
-    // helpers would go green here rather than quietly reverting.
-    expect(importers.length).toBeGreaterThan(0);
-    expect(importers).toContain(HELPER);
-    expect(importers).toContain('packages/persistence/test/repositories/activity.test.ts');
-  });
+      // The positive control. Delete the directory and its consumers and the
+      // assertion above holds perfectly — on a workspace where the thing being
+      // guarded does not exist. `HELPER` is named specifically because it is the
+      // importer the old comment failed to describe: a rule that stopped covering
+      // helpers would go green here rather than quietly reverting.
+      expect(importers.length).toBeGreaterThan(0);
+      expect(importers).toContain(HELPER);
+      expect(importers).toContain('packages/persistence/test/repositories/activity.test.ts');
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 
   it('is not re-exported from the package entry point', () => {
     const entry = readFileSync(join(REPO_ROOT, ENTRY), 'utf8');
@@ -157,13 +177,17 @@ describe('the test-and-benchmark-only fixture directory', () => {
     }
   });
 
-  it('reads a tree it really walked', () => {
-    // `trackedFiles()` returning nothing would make every assertion above pass
-    // by describing an empty workspace — the failure mode a git-backed walk has
-    // and a hardcoded list does not.
-    expect(trackedFiles()).toContain(`${FIXTURES}/index.ts`);
-    expect(lintableTrackedFiles()).toContain(HELPER);
-  });
+  it(
+    'reads a tree it really walked',
+    () => {
+      // `trackedFiles()` returning nothing would make every assertion above pass
+      // by describing an empty workspace — the failure mode a git-backed walk has
+      // and a hardcoded list does not.
+      expect(trackedFiles()).toContain(`${FIXTURES}/index.ts`);
+      expect(lintableTrackedFiles()).toContain(HELPER);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
 });
 
 describe('mayImportFixtures', () => {

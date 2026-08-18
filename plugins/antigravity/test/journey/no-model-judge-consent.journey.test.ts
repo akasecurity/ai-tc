@@ -33,7 +33,12 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { judgeArgvUnsupported } from '../helpers/judge-argv-unsupported.ts';
-import { assertShimResolves, shimmedPath, writeCommandShim } from '../helpers/path-shim.ts';
+import {
+  assertShimResolves,
+  nodeOnlyDir,
+  shimmedPath,
+  writeCommandShim,
+} from '../helpers/path-shim.ts';
 
 // See judge-argv-unsupported.ts: this host takes the judge prompt in ARGV, which
 // cannot cross cmd.exe — so the stub, which can only be a .cmd on Windows, is
@@ -71,23 +76,30 @@ interface StepResult {
 // POSIX, so pointing HOME at a temp dir isolates the whole chain — no
 // script-level flag or process.env read is added to shipped code. The child env
 // is built from scratch (never the host env): PATH carries only the stub-judge
-// bin dir plus node's own dir, so a real `agy` on the developer's PATH is not
-// reachable through it, and the shebang still finds node. That is a narrower
-// claim than "the stub is the only resolvable judge" — PATH is not the whole
-// of resolution (Windows searches the working and system directories first),
-// and a stub that fails to land is answered by whatever is, not by an ENOENT.
-// assertShimResolves in run() is what closes that gap.
+// bin dir plus a dir holding node ALONE, so a real `agy` on the developer's
+// PATH is not reachable through it, and the shebang still finds node. Node
+// alone, never node's own bin dir: under nvm, or any prefix node shares with
+// its global installs, that dir is where `npm i -g` puts a real `agy` too. That
+// is a narrower claim than "the stub is the only resolvable judge" — PATH is
+// not the whole of resolution (Windows searches the working and system
+// directories first), and a stub that fails to land is answered by whatever
+// is, not by an ENOENT. assertShimResolves in run() is what closes that gap.
 class SetupJourney {
   readonly home: string;
   // The settings.json the onboarding writer records the consent into.
   readonly settingsPath: string;
   private readonly binDir: string;
+  // The interpreter for the stub's shebang, and nothing that lives beside it.
+  // Nested under the stub dir so it rides that dir's cleanup; being inside a
+  // dir on PATH does not put it on PATH, so it is listed there by itself.
+  private readonly nodeDir: string;
   private shimProven = false;
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-antigravity-journey-home-'));
     this.settingsPath = join(this.home, '.aka', 'settings', 'settings.json');
     this.binDir = mkdtempSync(join(tmpdir(), 'aka-antigravity-journey-bin-'));
+    this.nodeDir = nodeOnlyDir(this.binDir);
     this.writeFakeJudge();
   }
 
@@ -175,12 +187,12 @@ class SetupJourney {
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
       // Stub judge first on PATH so apply-suppressions' `agy` spawn hits
-      // it, never a live model; node's own dir second so the stub's
+      // it, never a live model; a dir holding node ALONE second so the stub's
       // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
       // branch of writeCommandShim; on Windows the stub is a .cmd naming an
-      // absolute node, so node's dir is on PATH for POSIX's sake, not both.
+      // absolute node, so the node dir is on PATH for POSIX's sake, not both.
       // Nothing else from the host environment reaches the chain.
-      PATH: shimmedPath(this.binDir, dirname(process.execPath)),
+      PATH: shimmedPath(this.binDir, this.nodeDir),
     };
     // Proven once per journey, before the first script runs. A shim that does
     // not land does NOT fail closed: resolution keeps walking PATH and finds a

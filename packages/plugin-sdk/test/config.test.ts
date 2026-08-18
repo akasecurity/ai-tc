@@ -98,8 +98,11 @@ describe('loadConfig', () => {
     expect(existsSync(join(base, 'config.json'))).toBe(false);
   });
 
-  it('tightens a pre-existing loose base ~/.aka to 0700 on load (the plugin path)', () => {
-    if (process.platform === 'win32') return;
+  it('tightens a pre-existing loose base ~/.aka to 0700 on load (the plugin path)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // A base a user or an older release left group/other-readable: only `aka init`
     // tightened it before, so the plugin hook path (loadConfig) has to, since
     // openLocalDatabase only ensures the data/ leaf. See the "Data at rest" note
@@ -111,8 +114,11 @@ describe('loadConfig', () => {
     expect(statSync(base).mode & 0o777).toBe(0o700);
   });
 
-  it('self-heals a loose settings.json to 0600 on load (plugin entry path)', () => {
-    if (process.platform === 'win32') return;
+  it('self-heals a loose settings.json to 0600 on load (plugin entry path)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // A plugin-only user who never runs `aka init`: loadConfig re-tightens a
     // settings.json a prior release left group/other-readable, on the next hook.
     const dir = join(base, 'settings');
@@ -126,8 +132,11 @@ describe('loadConfig', () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  it('does not chmod THROUGH a settings.json symlink on load (never tightens an arbitrary target)', () => {
-    if (process.platform === 'win32') return;
+  it('does not chmod THROUGH a settings.json symlink on load (never tightens an arbitrary target)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     // The loose-~/.aka state this repairs is attacker-writable; a planted
     // settings.json symlink must not let the self-heal chmod its target.
     const dir = join(base, 'settings');

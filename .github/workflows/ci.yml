@@ -58,6 +58,27 @@ jobs:
     name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Three steps in this job fan turbo with no bound of their own — `pnpm lint`,
+    # `pnpm typecheck` and `pnpm build` each expand to a bare `turbo run …`, so
+    # each fans every package at turbo's default of 10. None of them can take the
+    # flag: `pnpm lint -- --concurrency=4` appends to the END of a `&&` chain and
+    # lands on `check:portability`, not on turbo. The environment is the only lever
+    # that reaches all three, which is the same reason the Windows lint leg uses it.
+    #
+    # This does NOT disturb the Test step below. A `--concurrency` flag supersedes
+    # this variable outright — measured against the pinned turbo, where an invalid
+    # env value is rejected on its own (exit 1) but ignored entirely when the flag
+    # is present (exit 0) — so that step keeps its explicit 2.
+    #
+    # 4 rather than the Windows leg's 2, and the asymmetry is deliberate. That leg
+    # answers an OBSERVED process-launch failure (0xC0000142) and is conservative
+    # for it; nothing equivalent has been seen here — both recent attempt-1 failures
+    # of this job were the Diff coverage step. This is preventive: it caps the fan
+    # below turbo's default so 22 concurrent type-aware ESLint processes cannot
+    # crowd the runner's memory, without giving up parallelism the job is not
+    # actually losing, since a bound above the core count buys no more of it.
+    env:
+      TURBO_CONCURRENCY: 4
     steps:
       # fetch-depth: 0 for the Diff coverage step below. The default depth-1
       # checkout has no merge base to diff against, so the gate could only be
@@ -773,6 +794,35 @@ jobs:
     name: Windows · Lint
     runs-on: windows-latest
     timeout-minutes: 25
+    # `pnpm lint` fans `turbo run lint` across every package, and this was the one
+    # lint-or-test step on the WINDOWS legs with no bound on that — every
+    # `turbo run test` invocation carries `--concurrency=2`, and this leg needs it
+    # for the same reason the Windows test leg does. Unbounded, each package task
+    # runs its own ESLint, and Windows answers a process storm of that size with
+    # STATUS_DLL_INIT_FAILED (0xC0000142, surfacing as exit 3221225794) rather than
+    # a lint error: the child never starts, so no lint output precedes it and the
+    # victim moves between runs.
+    #
+    # Scoped to the Windows legs deliberately, because the file-wide claim is false
+    # and the next person debugging this class of failure would be misdirected by
+    # it: the Linux `Lint · Typecheck · Test · Build` job fans turbo unbounded three
+    # times over — `pnpm lint`, `pnpm typecheck` and `pnpm build` each expand to a
+    # bare `turbo run …`. It fans the same package count this leg did and gets away
+    # with it on a far larger process budget than the Windows desktop heap, not
+    # because anything bounds it.
+    #
+    # Peak parallelism is turbo's concurrency and nothing else. A package whose
+    # lint script makes two ESLint passes chains them with `&&`, so they are
+    # sequential and add nothing to the peak — which is exactly what makes
+    # TURBO_CONCURRENCY the whole lever here rather than one of two.
+    #
+    # Bounded through the environment rather than the flag because the run step has
+    # to stay exactly `pnpm lint`. Going to turbo directly drops `lint:root` and
+    # `check:portability`, which the root script chains and which are the only
+    # coverage the repo root gets — required-checks.test.js pins that step for that
+    # reason, and this bound is pinned beside it.
+    env:
+      TURBO_CONCURRENCY: 2
     steps:
       - uses: actions/checkout@v7
 

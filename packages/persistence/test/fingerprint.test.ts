@@ -54,8 +54,11 @@ describe('loadOrCreateFingerprintKey', () => {
     expect(second.material.equals(first.material)).toBe(true);
   });
 
-  it('re-tightens a pre-existing loose key file to 0600 on load (not re-minted)', () => {
-    if (process.platform === 'win32') return;
+  it('re-tightens a pre-existing loose key file to 0600 on load (not re-minted)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const key = loadOrCreateFingerprintKey(dir);
     // Simulate a key written before the mode was enforced at write time.
     chmodSync(keyFile(), 0o644);

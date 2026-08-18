@@ -21,7 +21,8 @@ import { existsSync, writeFileSync, writeSync } from 'node:fs';
 
 import { applyOnboarding } from '../../src/settings.ts';
 
-const [base, jobJson, readyFile, goFile, barrierTimeoutArg, parentPidArg] = process.argv.slice(2);
+const [base, jobJson, readyFile, goFile, barrierTimeoutArg, parentPidArg, readyToken] =
+  process.argv.slice(2);
 if (
   base === undefined ||
   jobJson === undefined ||
@@ -29,7 +30,7 @@ if (
   goFile === undefined
 ) {
   throw new Error(
-    'settings-writer-child: expected <base> <jobJson> <readyFile> <goFile> [barrierTimeoutMs] [parentPid]',
+    'settings-writer-child: expected <base> <jobJson> <readyFile> <goFile> [barrierTimeoutMs] [parentPid] [readyToken]',
   );
 }
 
@@ -141,7 +142,7 @@ for (const field of job.clear ?? []) answers[field] = undefined;
 // and a hot loop each would take a core apiece off the rest of the suite —
 // enough to push a timing-sensitive test elsewhere over its threshold. The
 // extra millisecond of release latency costs nothing here, since the barrier's
-// assertion tolerates a late start (see allReleasedTogether).
+// assertion tolerates a late start (see barrierReport).
 //
 // The wait is bounded, but NOT by a clock standing in for the handshake. The
 // distinction is the whole point: a deadline-based barrier expires and lets the
@@ -155,10 +156,22 @@ for (const field of job.clear ?? []) answers[field] = undefined;
 // would all sit unrun until the barrier lifted, which is precisely when they
 // are no longer needed.
 const PARK = new Int32Array(new SharedArrayBuffer(4));
-const readyAt = Date.now();
-const barrierDeadline = readyAt + barrierTimeoutMs;
-let nextLivenessCheck = readyAt + LIVENESS_POLL_MS;
-writeFileSync(readyFile, '');
+// How long this process took to get here — a DURATION, measured against this
+// process's own start, so it carries no instant the parent could be tempted to
+// compare against one of its own. That comparison is what this harness was last
+// fixed for.
+const bootMs = performance.now();
+// Local-only, and compared against this process's own Date.now() below. It is
+// not reported: an instant that crossed the boundary is what the parent used to
+// mis-compare against its own.
+const parkedAt = Date.now();
+const barrierDeadline = parkedAt + barrierTimeoutMs;
+let nextLivenessCheck = parkedAt + LIVENESS_POLL_MS;
+// The token names WHICH writer this is, so the parent counts a ready file only
+// against the writer that wrote it. Mere existence would let one writer's file
+// satisfy every index if the paths were ever shared, releasing the barrier
+// while the rest were still booting.
+writeFileSync(readyFile, readyToken ?? '');
 while (!existsSync(goFile)) {
   const now = Date.now();
   if (now >= barrierDeadline) {
@@ -188,5 +201,5 @@ try {
 // passed one. Left to the default it would be dead configuration: the bound
 // would still hold, but at a value nothing in the harness chose.
 process.stdout.write(
-  `${JSON.stringify({ ok, error, readyAt, startedAt, endedAt: Date.now(), barrierTimeoutMs })}\n`,
+  `${JSON.stringify({ ok, error, bootMs, startedAt, endedAt: Date.now(), barrierTimeoutMs })}\n`,
 );

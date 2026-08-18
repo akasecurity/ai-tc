@@ -626,14 +626,13 @@ describe('scanCoverage', () => {
 
   it('pins the two web-chat rows: supported at partial (40) coverage', async () => {
     // The browser extension scans the typed prompt at the submit gesture on
-    // both sites, so neither is "not yet supported" — but it covers one of the
-    // three channels a web chat egresses on: it reads no assistant response
-    // back out of the DOM, and an attachment (paperclip, drag-drop or paste) is
-    // a sibling node that never reaches `extractText`. That is why these are
-    // partial rather than 100, and why they must stay strictly below every
-    // terminal harness row rather than matching one — a web-chat row reaching
-    // 100 would claim response and attachment scanning the extension does not
-    // do.
+    // both sites, so neither is "not yet supported" — but content.ts watches a
+    // single composer element, so every other way bytes reach the model is
+    // uncovered by construction: assistant responses, attachments, and
+    // edit-and-resend among them. That is why these are partial rather than
+    // 100, and why they must stay strictly below every terminal harness row
+    // rather than matching one — a web-chat row reaching 100 would claim
+    // scanning the extension structurally does not do.
     const res = await security().scanCoverage('30d');
     for (const provider of ['claudeai', 'chatgpt'] as const) {
       expect(res.providers.find((p) => p.provider === provider)).toEqual({

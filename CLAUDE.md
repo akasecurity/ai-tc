@@ -190,6 +190,19 @@ targets elsewhere. Two consequences for anyone adding a config:
   files against the derived set and names anything left over. Wire it into a `lint` script or
   delete it.
 
+**The BEHAVIOURAL prober is derived the same way, and for the same reason.** Knowing a config
+is audited says nothing about whether its bans actually fire, so `PROBE_TARGETS` resolves each
+package's real config and drives the four bans against a snippet. It used to pair a directory
+with a config inferred from the directory's NAME — everything under `eslint.config.mjs`, plus a
+hardcoded `scripts/` case — which is the same one-rename hole one level over: this package's own
+`test/` runs under `eslint.guard.config.mjs`, so it was paired with a sibling config that
+`--no-config-lookup` guarantees never applies there, and the enforcement suites sat behind a
+config no probe exercised. Switching the ban off in it left every test green. Each pair now
+comes from the invocation that really lints the path, so a THIRD pass shape is probed by
+construction; and a path whose invocation resolves no config is reported rather than skipped,
+because a shape nobody modelled would otherwise generate no case at all and a suite that runs
+no assertion reports green.
+
 The reader itself — which invocations a green run makes, which config each runs under, and
 which paths each covers — is one shared module
 (`packages/eslint-config/test/helpers/lint-invocations.js`), used by both that audit and the
@@ -200,6 +213,8 @@ and audited by neither. `trackedFiles()` sits there for the same reason and is t
 the tree really holds rather than what a lint script says.
 
 `DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
+
+Both of those read the TABLE and check it against the workspace. The promise this section closes on — that a new opt-out site is documented here — runs the other way, so it is asserted the other way: the `files:` pattern on every config entry that permits a network specifier is derived from the configs and differenced against the tabled sites, in both directions. **So a site that never reaches this table fails CI**, exactly as §3's parallel sentence does. Two things about it are load-bearing. A row whose exception has gone is caught on the SET rather than only on the count sentence — which matters precisely because two rows share `eslint.root.config.mjs`, so the config-keyed mirror keeps that key from the surviving row and moves not at all. And the **pattern** is compared rather than the files it currently resolves to: widening `tools/ci/egress-probe.mjs` to `tools/ci/*.mjs` reaches the same single file today while silently granting the exception to every `.mjs` added afterwards, so a basename carrying a glob is refused outright as the "file-scoped, never package-wide" violation it is, and a resolved-file comparison would have passed until somebody landed a second file.
 
 Network access happens **only through child processes**. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither:
 
@@ -741,6 +756,20 @@ tools/                repo tooling, never shipped: the installer one-liners and
    took coverage back. It bounds the damage rather than banning the flag: an ignore
    matching nothing the package ships stays green, which is what stops the guard
    over-reporting.
+
+   **That holds at FILE granularity, not just directory granularity, and the
+   difference is the whole exposure.** A directory target is checked as a directory,
+   so an ignore is reduced to its literal prefix to answer whether the directory
+   survives — and `--ignore-pattern test/probe.test.ts` reduces to a base that
+   neither equals `test` nor prefixes it. Read at that level alone the directory
+   goes on reading as covered while ESLint skips the file, which is worse than an
+   unguarded path rather than equal to it: the reviewer who checks coverage finds a
+   green guard. So the tracked files inside each covered directory are enumerated
+   and checked individually, and one an ignore takes back out is named. The two
+   buckets partition the failure — where the whole directory is excluded, the
+   directory bucket names the package and the file bucket stays quiet, so one
+   mistake prints one actionable line rather than that line plus every file
+   beneath it.
 
    A `lint` script is a shell string, so **two ESLint calls are chained with `&&`
    and nothing else**. Behind a `||` the second runs only once the first has

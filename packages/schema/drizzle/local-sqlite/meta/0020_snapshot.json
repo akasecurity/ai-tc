@@ -2117,6 +2117,15 @@
             "id"
           ],
           "isUnique": false
+        },
+        "idx_secret_vault_deref_signal": {
+          "name": "idx_secret_vault_deref_signal",
+          "columns": [
+            "at",
+            "id"
+          ],
+          "isUnique": false,
+          "where": "\"secret_vault_deref\".\"reason\" NOT IN ('display', 'view-render')"
         }
       },
       "foreignKeys": {},

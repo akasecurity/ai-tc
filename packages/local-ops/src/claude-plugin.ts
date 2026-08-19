@@ -7,6 +7,5 @@ import { createCliPluginManager } from './cli-plugin-manager.ts';
 const manager = createCliPluginManager('claude');
 
 export const claudeAvailable = manager.available;
-export const ensureMarketplace = manager.ensureMarketplace;
 export const installClaudePlugin = manager.install;
 export const updateClaudePlugin = manager.update;

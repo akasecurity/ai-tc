@@ -113,8 +113,8 @@ export class SqliteAuditEventsRepository {
 
   // Insert one transcript-derived `llm_call` leaf. Unlike `insertAuditEvent`
   // (which takes a caller-supplied random id), the id here is MINTED internally
-  // from the natural key — `llmCallId(sessionId, messageId)` — tenant-free like the
-  // sibling local-store ids (the local store is single-tenant). The deterministic
+  // from the natural key — `llmCallId(sessionId, messageId)` — derived from the
+  // session and message alone, like the sibling local-store ids. The deterministic
   // id + the UPSERT-take-MAX(output_tokens) statement make every re-read idempotent
   // AND converge a streaming partial/final split across two incremental passes:
   // a whole-file re-read no-ops (equal output), a lagging final replaces a

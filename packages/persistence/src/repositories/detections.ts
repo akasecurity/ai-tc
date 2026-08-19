@@ -84,7 +84,7 @@ function hasDrift(
 }
 
 /**
- * Detections read views over the tenant-free local store — the read side of
+ * Detections read views over the local store — the read side of
  * the Detections page. Reads installed_packs (+ inspection_findings⋈audit_events
  * for the 30-day count, + available_packs for update availability) and shapes the finished
  * @akasecurity/schema responses via the shared pure builders, so read surfaces

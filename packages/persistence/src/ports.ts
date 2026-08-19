@@ -168,7 +168,7 @@ export interface SecurityViews {
 }
 
 /**
- * Data Shares read views over the tenant-free local store (share_destination
+ * Data Shares read views over the local store (share_destination
  * / endpoint / call_site + egress_decision_override). Like SecurityViews /
  * DetectionsReadPort, the SQLite adapter both fetches AND assembles the
  * finished @akasecurity/schema responses (grouped register, needs-review strip,
@@ -186,7 +186,7 @@ export interface SharesReadPort {
 }
 
 /**
- * Inventory read views over the tenant-free local store — the asset model
+ * Inventory read views over the local store — the asset model
  * (inventory_asset / harness_asset / project_file + their overrides) plus the
  * shared inventory (harnesses) / source_project (projects) tables. Like the other
  * view ports, the SQLite adapter both fetches AND assembles the finished
@@ -215,7 +215,7 @@ export interface InventoryReadPort {
 }
 
 /**
- * Activity read views over the tenant-free local `audit_events` store —
+ * Activity read views over the local `audit_events` store —
  * sessions reconstructed from the session/tool-call/llm-call timeline. Like
  * SecurityViews / SharesReadPort, the SQLite adapter both fetches AND
  * assembles the finished @akasecurity/schema responses (today stats · session list ·
@@ -223,7 +223,7 @@ export interface InventoryReadPort {
  * identically across surfaces — the local store IS the activity service.
  * Not on a cross-adapter port.
  *
- * Single-tenant: no tenant/user predicate on any query. A session is any
+ * One store per machine: no query carries an owner predicate, because no row has an owner column. A session is any
  * `event_type='session'` root; a row missing the (not-yet-live-written) rich
  * attributes degrades to defensive defaults (harness → `claudecode`, empty
  * title, …) rather than being hidden, so dashboards render identically for

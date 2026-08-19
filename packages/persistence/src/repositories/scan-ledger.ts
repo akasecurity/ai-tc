@@ -25,8 +25,7 @@ export interface ScanLedgerState {
  * events — so a re-run skips unchanged files instead of re-reading the whole
  * tree. One row per path (latest scan wins); rows written under a different
  * ruleset are excluded from reads, so adding a detection rule rescans
- * everything. The local store is tenant-free (single tenant), so there is no
- * tenant predicate on any query.
+ * everything. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteScanLedgerRepository {
   private readonly upsertStmt: StatementSync;

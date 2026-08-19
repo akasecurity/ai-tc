@@ -1,8 +1,9 @@
 'use client';
 
 // Right pane shown when a harness (Claude Code / Cursor / Codex) is selected:
-// recent block/redact/warn events (GET /v1/inventory/harnesses/:id/events), an
-// attention banner, the harness's projects, and per-category asset mini-lists.
+// its recent block/redact/warn events, an attention banner, the harness's
+// projects, and per-category asset mini-lists. Every one of those arrives as a
+// prop; this component renders and loads nothing.
 import type {
   AssetSummary,
   AssetType,

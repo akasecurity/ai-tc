@@ -14,8 +14,12 @@ import { describe, expect, it } from 'vitest';
 // sqlite-ddl.test.ts cannot see this — it compares SQLITE_MIGRATIONS with the
 // .sql files, and both sides of that comparison are already correct.
 //
-// Apply the real migrations to a real in-memory SQLite and compare the indexes
-// that actually exist against the ones the latest snapshot records.
+// Apply the real migrations to a real in-memory SQLite and compare the tables,
+// columns and indexes that actually exist against the ones the latest snapshot
+// records. All three are compared because all three drift the same way: a
+// column missing from the snapshot mints an `ALTER TABLE … ADD`, a table
+// missing from it mints a `CREATE TABLE`, exactly as a missing index mints a
+// `CREATE INDEX`.
 const here = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(here, '..', '..', 'drizzle', 'local-sqlite');
 
@@ -35,12 +39,35 @@ const DOCUMENTED_ONE_SIDED_INDEXES: Record<string, string> = {
   uq_findings_key: 'index of the legacy `findings` table, replaced by a view in 0014',
 };
 
+// The tables that legitimately appear on one side only, on the same terms.
+const DOCUMENTED_ONE_SIDED_TABLES: Record<string, string> = {
+  // Migrations only. Backfill scaffolding created by 0013 to track how far the
+  // batched legacy copy has advanced; it is not part of the drizzle schema, so
+  // no snapshot records it.
+  legacy_copy_watermark: 'backfill watermark, created outside the drizzle schema',
+  // Snapshot only, and the table-level half of the three index entries above:
+  // 0014 replaced both tables with views of the same name while the drizzle
+  // schema still declares them as tables.
+  events: 'legacy table replaced by a view in 0014',
+  findings: 'legacy table replaced by a view in 0014',
+};
+
 interface IndexShape {
   table: string;
   columns: (string | null)[];
   unique: boolean;
   partial: boolean;
 }
+
+interface ColumnShape {
+  type: string;
+  notNull: boolean;
+  primaryKey: boolean;
+  default: string | null;
+  generated: 'virtual' | 'stored' | null;
+}
+
+type TableShape = Record<string, ColumnShape>;
 
 function journalTags(): string[] {
   const journal = JSON.parse(
@@ -49,23 +76,27 @@ function journalTags(): string[] {
   return [...journal.entries].sort((a, b) => a.idx - b.idx).map((e) => e.tag);
 }
 
-// The indexes a store really carries once every migration has been applied.
-// In-memory rather than a temp dir: nothing here reads the store back through
-// the product, so the file would only be a teardown to get wrong.
-function indexesAfterMigrating(tags: string[]): Map<string, IndexShape> {
+// What a store really carries once every migration has been applied. In-memory
+// rather than a temp dir: nothing here reads the store back through the
+// product, so the file would only be a teardown to get wrong.
+function afterMigrating(tags: string[]): {
+  indexes: Map<string, IndexShape>;
+  tables: Map<string, TableShape>;
+} {
   const db = new DatabaseSync(':memory:');
   try {
     for (const tag of tags) {
       db.exec(readFileSync(join(migrationsDir, `${tag}.sql`), 'utf8').replace(/\r\n/g, '\n'));
     }
-    const shapes = new Map<string, IndexShape>();
+
+    const indexes = new Map<string, IndexShape>();
     // `sql IS NOT NULL` drops the implicit indexes SQLite mints for UNIQUE and
     // PRIMARY KEY constraints — no CREATE INDEX made them, so no snapshot
     // records them either.
-    const rows = db
+    const indexRows = db
       .prepare("SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL")
       .all() as unknown as { name: string; tbl_name: string }[];
-    for (const { name, tbl_name: table } of rows) {
+    for (const { name, tbl_name: table } of indexRows) {
       const listed = db.prepare(`PRAGMA index_list(\`${table}\`)`).all() as unknown as {
         name: string;
         unique: number;
@@ -75,7 +106,7 @@ function indexesAfterMigrating(tags: string[]): Map<string, IndexShape> {
       const columns = db.prepare(`PRAGMA index_info(\`${name}\`)`).all() as unknown as {
         name: string | null;
       }[];
-      shapes.set(name, {
+      indexes.set(name, {
         table,
         // NULL for an expression column, which is what makes it one.
         columns: columns.map((c) => c.name),
@@ -83,14 +114,55 @@ function indexesAfterMigrating(tags: string[]): Map<string, IndexShape> {
         partial: meta?.partial === 1,
       });
     }
-    return shapes;
+
+    const tables = new Map<string, TableShape>();
+    const tableRows = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+      .all() as unknown as { name: string }[];
+    for (const { name } of tableRows) {
+      // table_xinfo, not table_info: table_info OMITS generated columns, and
+      // eight of them are declared across audit_events and inventory. Reading
+      // the narrower pragma reports those eight as snapshot-only and invites
+      // documenting real columns as exceptions.
+      const columns = db.prepare(`PRAGMA table_xinfo(\`${name}\`)`).all() as unknown as {
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+        pk: number;
+        hidden: number;
+      }[];
+      const shape: TableShape = {};
+      for (const c of columns) {
+        // hidden: 0 ordinary, 1 a virtual table's hidden column, 2 GENERATED
+        // ALWAYS AS … VIRTUAL, 3 … STORED. No virtual tables exist here, so a
+        // 1 would be a new construct rather than something to skip silently.
+        if (c.hidden === 1) throw new Error(`unexpected hidden column ${name}.${c.name}`);
+        shape[c.name] = {
+          // SQLite reports the declared type folded to upper case while the
+          // snapshot keeps drizzle's lower-case spelling; the type itself is
+          // the comparable part.
+          type: c.type.toLowerCase(),
+          notNull: c.notnull === 1,
+          primaryKey: c.pk > 0,
+          default: c.dflt_value ?? null,
+          generated: c.hidden === 2 ? 'virtual' : c.hidden === 3 ? 'stored' : null,
+        };
+      }
+      tables.set(name, shape);
+    }
+
+    return { indexes, tables };
   } finally {
     db.close();
   }
 }
 
-// The indexes drizzle-kit believes that same chain produced.
-function indexesInLatestSnapshot(tags: string[]): Map<string, IndexShape> {
+// What drizzle-kit believes that same chain produced.
+function inLatestSnapshot(tags: string[]): {
+  indexes: Map<string, IndexShape>;
+  tables: Map<string, TableShape>;
+} {
   const latest = tags.at(-1);
   if (latest === undefined) throw new Error('journal has no entries');
   const snapshot = JSON.parse(
@@ -98,13 +170,28 @@ function indexesInLatestSnapshot(tags: string[]): Map<string, IndexShape> {
   ) as {
     tables: Record<
       string,
-      { indexes?: Record<string, { columns: string[]; isUnique?: boolean; where?: string }> }
+      {
+        indexes?: Record<string, { columns: string[]; isUnique?: boolean; where?: string }>;
+        columns?: Record<
+          string,
+          {
+            name?: string;
+            type: string;
+            notNull?: boolean;
+            primaryKey?: boolean;
+            default?: string | number | null;
+            generated?: { as: string; type: 'virtual' | 'stored' };
+          }
+        >;
+      }
     >;
   };
-  const shapes = new Map<string, IndexShape>();
+
+  const indexes = new Map<string, IndexShape>();
+  const tables = new Map<string, TableShape>();
   for (const [table, def] of Object.entries(snapshot.tables)) {
     for (const [name, index] of Object.entries(def.indexes ?? {})) {
-      shapes.set(name, {
+      indexes.set(name, {
         table,
         columns: index.columns,
         unique: index.isUnique === true,
@@ -115,27 +202,65 @@ function indexesInLatestSnapshot(tags: string[]): Map<string, IndexShape> {
         partial: 'where' in index,
       });
     }
+    const shape: TableShape = {};
+    for (const [key, column] of Object.entries(def.columns ?? {})) {
+      shape[column.name ?? key] = {
+        type: column.type.toLowerCase(),
+        notNull: column.notNull === true,
+        primaryKey: column.primaryKey === true,
+        default: column.default == null ? null : String(column.default),
+        // The generated expression TEXT is left out for the reason the WHERE
+        // text is, plus one of its own: reading it back requires parsing
+        // sqlite_master's DDL, and a parse that silently matches nothing
+        // reports agreement it never checked. Whether a column is generated,
+        // and virtual or stored, comes from the pragma and is compared.
+        generated: column.generated ? column.generated.type : null,
+      };
+    }
+    tables.set(table, shape);
   }
-  return shapes;
+  return { indexes, tables };
+}
+
+function oneSided<T>(a: Map<string, T>, b: Map<string, T>): string[] {
+  return [...new Set([...a.keys(), ...b.keys()])].filter((k) => a.has(k) !== b.has(k)).sort();
 }
 
 describe('drizzle snapshot vs. the migrations it claims to describe', () => {
   const tags = journalTags();
-  const fromMigrations = indexesAfterMigrating(tags);
-  const fromSnapshot = indexesInLatestSnapshot(tags);
+  const fromMigrations = afterMigrating(tags);
+  const fromSnapshot = inLatestSnapshot(tags);
 
-  it('records every index the migrations create, and no index they do not (a mismatch here makes `pnpm --filter @akasecurity/schema gen:sqlite-ddl` mint a duplicate migration on every run)', () => {
-    const oneSided = [...new Set([...fromMigrations.keys(), ...fromSnapshot.keys()])]
-      .filter((name) => fromMigrations.has(name) !== fromSnapshot.has(name))
-      .sort();
-    expect(oneSided).toEqual(Object.keys(DOCUMENTED_ONE_SIDED_INDEXES).sort());
+  const mintsADuplicate =
+    'a mismatch here makes `pnpm --filter @akasecurity/schema gen:sqlite-ddl` mint a duplicate migration on every run';
+
+  it(`records every index the migrations create, and no index they do not (${mintsADuplicate})`, () => {
+    expect(oneSided(fromMigrations.indexes, fromSnapshot.indexes)).toEqual(
+      Object.keys(DOCUMENTED_ONE_SIDED_INDEXES).sort(),
+    );
   });
 
-  it('agrees with the migrations on columns, uniqueness and partiality', () => {
-    for (const [name, recorded] of fromSnapshot) {
-      const built = fromMigrations.get(name);
+  it('agrees with the migrations on index columns, uniqueness and partiality', () => {
+    for (const [name, recorded] of fromSnapshot.indexes) {
+      const built = fromMigrations.indexes.get(name);
       if (!built) continue; // one-sided; pinned by the test above
       expect(built, `index ${name}`).toEqual(recorded);
+    }
+  });
+
+  it(`records every table the migrations create, and no table they do not (${mintsADuplicate})`, () => {
+    expect(oneSided(fromMigrations.tables, fromSnapshot.tables)).toEqual(
+      Object.keys(DOCUMENTED_ONE_SIDED_TABLES).sort(),
+    );
+  });
+
+  it(`agrees with the migrations on every column of every table (${mintsADuplicate})`, () => {
+    for (const [name, recorded] of fromSnapshot.tables) {
+      const built = fromMigrations.tables.get(name);
+      if (!built) continue; // one-sided; pinned by the test above
+      // The whole column map in one assertion: a missing column, an extra one
+      // and a changed attribute all surface with the table named.
+      expect(built, `table ${name}`).toEqual(recorded);
     }
   });
 });

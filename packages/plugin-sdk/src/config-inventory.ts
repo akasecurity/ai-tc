@@ -28,7 +28,7 @@ export interface ResolveConfigInventoryInput {
 /**
  * Scan the machine's Claude Code configuration surface — registered hooks and
  * installed skills — into a {@link ConfigScanResult} (the meta-model config
- * inventory; design: config-inventory-skills-hooks.design.md).
+ * inventory).
  *
  * Sources, each parsed independently and fail-open (a malformed file becomes an
  * `errors` entry, never a throw — dropping one source must not lose the rest):

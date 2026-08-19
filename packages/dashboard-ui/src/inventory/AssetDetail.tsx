@@ -2,10 +2,10 @@
 
 // Right pane shown when a non-project asset (skill / MCP server / hook / config)
 // is selected: status chips, description, MCP trust classifier + exposed tools,
-// related finding, metadata grid and context-specific actions. Backed by
-// GET /v1/inventory/assets/:assetId; the trust classifier writes back through
-// PUT .../trust. The per-type action buttons are visual affordances only —
-// no update/approve/disable operations exist.
+// related finding, metadata grid and context-specific actions. Takes the
+// `AssetDetail` as a prop and reports a trust change through its callback — the
+// host owns both the load and the write. The per-type action buttons are visual
+// affordances only — no update/approve/disable operations exist.
 import type {
   AssetDetail as AssetDetailShape,
   AssetType,

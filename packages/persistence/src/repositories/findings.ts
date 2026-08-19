@@ -245,8 +245,7 @@ interface FindingRowJoined {
  * longer exists (recordCapture writes `inspection_findings` via
  * SqliteInspectionFindingsRepository instead — see database.ts); a dropped-
  * then-viewed compatibility shape backs any already-shipped binary that still
- * writes the old table by name. The local store is tenant-free (single
- * tenant), so there is no tenant predicate on any query.
+ * writes the old table by name. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteFindingsRepository
   implements FindingsReadPort, DashboardViews, GroupedFindingsView, FindingInstancesView

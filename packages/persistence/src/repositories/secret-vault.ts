@@ -216,7 +216,7 @@ function toRow(raw: RawVaultRow): VaultRow {
 
 /**
  * `secret_vault` / `secret_vault_deref` reader and writer, bound to one open DB.
- * The local store is single-tenant, so no query carries a tenant predicate.
+ * Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteSecretVaultRepository {
   private readonly insertStmt: StatementSync;

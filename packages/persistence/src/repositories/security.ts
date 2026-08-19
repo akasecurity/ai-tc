@@ -9,6 +9,7 @@ import {
   type MttrTrendPoint,
   type MttrTrendResponse,
   type Provider,
+  Provider as ProviderSchema,
   RANGE_DAYS,
   type RecentlyResolvedResponse,
   type ResolvedFeedItem,
@@ -84,16 +85,20 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // best-effort against a vendor's DOM, and a miss is silent by design
 // (findComposer() returns null and the adapter does nothing), so a redesign can
 // take real coverage to zero without changing this table.
-const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
-  { provider: 'claudecode', coverage: 100, supported: true },
-  { provider: 'cursor', coverage: 0, supported: false },
-  { provider: 'codex', coverage: 80, supported: true },
-  { provider: 'antigravity', coverage: 60, supported: true },
-  { provider: 'claudeai', coverage: 40, supported: true },
-  { provider: 'chatgpt', coverage: 40, supported: true },
-  { provider: 'copilot', coverage: 0, supported: false },
-  { provider: 'api', coverage: 0, supported: false },
-];
+// Keyed by every `Provider` value rather than an array, so a provider added to
+// the enum without a row here is a compile error — an omission the array shape
+// this replaced could not catch (see scanCoverage() below for the ordering,
+// which is derived from Provider.options rather than object key order).
+const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> = {
+  claudecode: { coverage: 100, supported: true },
+  cursor: { coverage: 0, supported: false },
+  codex: { coverage: 80, supported: true },
+  antigravity: { coverage: 60, supported: true },
+  claudeai: { coverage: 40, supported: true },
+  chatgpt: { coverage: 40, supported: true },
+  copilot: { coverage: 0, supported: false },
+  api: { coverage: 0, supported: false },
+};
 
 // Bucket size per range. A table rather than a ternary so adding a range to
 // TIME_RANGES is a compile error here too, the way a missing RANGE_DAYS entry is.
@@ -238,9 +243,19 @@ export class SqliteSecurityRepository implements SecurityViews {
   }
 
   // Range is echoed but does not change the result today — coverage is a constant
-  // business fact (see SCAN_COVERAGE), not a measured per-window metric.
+  // business fact (see SCAN_COVERAGE), not a measured per-window metric. Order
+  // comes from Provider.options (the enum's declaration order), not from
+  // SCAN_COVERAGE's own key order, which object literals do not guarantee —
+  // and which must match the schema comment's promise that this order mirrors
+  // the generated OpenAPI enum list.
   scanCoverage(range: TimeRange): Promise<ScanCoverageResponse> {
-    return Promise.resolve({ range, providers: SCAN_COVERAGE.map((p) => ({ ...p })) });
+    return Promise.resolve({
+      range,
+      providers: ProviderSchema.options.map((provider) => ({
+        provider,
+        ...SCAN_COVERAGE[provider],
+      })),
+    });
   }
 
   enforcementActions(range: TimeRange): Promise<EnforcementActionsResponse> {

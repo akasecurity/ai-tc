@@ -8,6 +8,7 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
+import { Provider } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -638,6 +639,16 @@ describe('recentlyResolved', () => {
 });
 
 describe('scanCoverage', () => {
+  // SCAN_COVERAGE is now typed Record<Provider, ...>, so a provider added to
+  // the enum without a row is already a compile error. This pins the same
+  // invariant at runtime, so widening that type or reintroducing the old
+  // array shape still fails here rather than silently omitting a provider's
+  // row (the schema comment promises `providers` covers the whole enum).
+  it('gives every Provider enum member a scan-coverage row', async () => {
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.map((p) => p.provider).sort()).toEqual([...Provider.options].sort());
+  });
+
   it('returns the curated per-provider coverage (claude code supported)', async () => {
     const res = await security().scanCoverage('30d');
     expect(res.range).toBe('30d');

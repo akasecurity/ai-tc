@@ -197,10 +197,15 @@ describe('the built scan worker', () => {
       env: { ...processEnv(), HOME: home, USERPROFILE: home },
       maxBuffer: 64 * 1024 * 1024,
     });
-    const stderr = result.stderr.toString('utf8');
-
-    // Fail-open first: whatever else happened, the bridge must not have died.
+    // The spawn itself first, BEFORE touching its streams. A failed spawn
+    // leaves `stderr` undefined, so reading it here throws
+    // `Cannot read properties of undefined` and buries the real cause — and the
+    // likeliest first failure on the Windows leg this suite was just added to
+    // is exactly a spawn failure.
+    expect(result.error).toBeUndefined();
+    // Fail-open next: whatever else happened, the bridge must not have died.
     expect(result.status).toBe(0);
+    const stderr = result.stderr.toString('utf8');
 
     const after = openLocalDatabase(dataDir);
     try {

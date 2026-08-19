@@ -502,12 +502,18 @@ describe('the scheduled repository-state gates', () => {
   });
 
   // Specifying `permissions` at all sets every unlisted scope to `none`, and
-  // this job's whole purpose is two GraphQL reads of `repository.pullRequests`.
-  it('required-checks.yml grants the pull-request read its queries need', () => {
-    expect(jobBlock(readWorkflow('required-checks.yml'), 'required-checks')).toMatch(
-      /^ {6}pull-requests: read$/m,
-    );
-  });
+  // this job's whole purpose is two GraphQL reads that cross TWO surfaces:
+  // `repository.pullRequests` needs `pull-requests`, and the `statusCheckRollup`
+  // CheckRun nodes it selects need `checks`. Missing either is a daily red that
+  // says "could not read the required-check state" and nothing about the repo.
+  it.each(['pull-requests', 'checks'])(
+    'required-checks.yml grants %s: read, which its queries cross',
+    (scope) => {
+      expect(jobBlock(readWorkflow('required-checks.yml'), 'required-checks')).toMatch(
+        new RegExp(`^ {6}${scope}: read$`, 'm'),
+      );
+    },
+  );
 });
 
 describe('the workflows behind those checks', () => {

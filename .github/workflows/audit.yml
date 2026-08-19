@@ -182,9 +182,19 @@ jobs:
             # in the text, so prose on the issue naming an advisory does not
             # count as having reported it. Unit-tested in that package; a regex
             # in this file is executed by nothing until the day it matters.
+            # NO `|| true` on this line, and the asymmetry with the two reads
+            # below is deliberate rather than an oversight. `comm -23` prints
+            # the ids in new_ids that are absent from seen_ids, so the two sides
+            # degrade in OPPOSITE directions when a list comes back empty:
+            # an empty seen_ids makes every advisory look new and posts a
+            # possibly-duplicate comment, while an empty new_ids makes every
+            # advisory look already-reported and posts NOTHING, with the step
+            # green. Measured both ways. So a read failure here must kill the
+            # step — a red job somebody looks at — rather than degrade into the
+            # silent miss this whole path exists to prevent.
             new_ids="$(node tools/audit-gate/src/advisory-ids.ts audit-report.md artifact-audit-report.md)"
-            # `|| true` on the two reads, deliberately, and it is the direction
-            # that matters. A rate-limit or 5xx here would otherwise end the
+            # `|| true` on the two reads below, deliberately, and it is the
+            # direction that matters. A rate-limit or 5xx here would otherwise end the
             # step under the runner's default `bash -eo pipefail` BEFORE any
             # comment is posted — so a genuinely new advisory goes unreported
             # for the day, in the one job whose whole purpose is that an

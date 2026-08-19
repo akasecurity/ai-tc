@@ -57,6 +57,14 @@ jobs:
       # this repository going private — the query 403s and the gate exits 2
       # every morning with "could not read the required-check state".
       pull-requests: read
+      # Both queries read `statusCheckRollup` CheckRun nodes, which is the
+      # Checks surface rather than the pull-request one. UNVERIFIED — the job is
+      # scheduled and has never run, and the restricted-token path cannot be
+      # exercised from a workstation — so this is cheap insurance rather than a
+      # measurement: if `checks: none` does refuse the read, the failure is a
+      # daily red saying "could not read the required-check state" and nothing
+      # about the repository.
+      checks: read
     steps:
       - uses: actions/checkout@v7
 

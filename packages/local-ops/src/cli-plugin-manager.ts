@@ -1,34 +1,163 @@
-import { binExists, runCapture, runInherit } from './exec.ts';
+import { binExists, runInherit } from './exec.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
 // reimplementation: each host CLI owns its own plugin cache, enable/disable
 // state, and restart lifecycle.
 //
-// Parameterized by binary name because Claude Code (`claude`) and Codex CLI
-// (`codex`) expose the SAME `<bin> plugin marketplace add|install|update`
-// subcommand shape — confirmed for Codex against developers.openai.com/codex/
-// plugins and the `codex-marketplace.com` docs. One factory avoids
-// duplicating this thin wrapper per host; see claude-plugin.ts / codex-plugin.ts
-// for the two bound instances the rest of local-ops imports.
+// The hosts share the SHAPE (`<bin> plugin …`) but NOT the verbs, and assuming
+// they did is the defect this replaced — every Codex install and update emitted
+// `codex plugin install|update`, which Codex rejects outright with
+// "unrecognized subcommand". Claude Code takes `install` and `update`; Codex
+// takes `add` for both, having no update verb at all (`add` re-resolves the
+// plugin, so a refresh IS a re-add). The marketplace verbs diverge the same
+// way: both hosts cache a snapshot of the marketplace and both can reconcile it
+// with its source, but Claude Code spells that `marketplace update` and Codex
+// spells it `marketplace upgrade`. Verified against the hosts themselves —
+// `claude plugin marketplace --help` on Claude Code 2.1.220 and
+// `codex plugin marketplace --help` on codex-cli 0.147.0 — not inferred from
+// one host and assumed for the other, which is the mistake this table exists
+// to stop.
+//
+// Two kinds of command come out of this table and they are NOT interchangeable:
+//
+//   - the PLUGIN OP (`installSteps`/`updateSteps`) — what the user asked for.
+//     A failure here is the operation failing, so apply.ts runs it fatally.
+//   - MARKETPLACE PREP (`marketplaceSteps`) — registering the source, and for a
+//     host whose `add` reads a local snapshot, refreshing that snapshot. This is
+//     best-effort: it is a precondition that is usually already met, and a
+//     transient failure (offline, a git fetch error, a marketplace registered
+//     from a source that cannot be upgraded) must not abort an operation that
+//     would have succeeded against the cached snapshot.
+export type CliPluginBin = 'claude' | 'codex';
+
+// One command's argv, minus the binary. A step list rather than a single argv
+// because Codex's marketplace prep is two commands.
+type Step = readonly string[];
+
+interface HostVerbs {
+  install: (ref: string) => Step[];
+  update: (ref: string) => Step[];
+  // Registering the marketplace. REQUIRED before the op — without it the op
+  // fails on an unknown marketplace — so a failure here genuinely should stop
+  // whatever follows.
+  register: (source: string) => Step[];
+  // Refreshing an already-registered snapshot. Both managed hosts keep one, so
+  // both carry a verb here; the empty return stays legal for a host that keeps
+  // none. A failure here is survivable: the cached snapshot stays in place and
+  // the op can still run against it.
+  //
+  // It is not optional in EFFECT, which is why the empty return was a defect
+  // rather than a shortcut: `marketplace add` on an already-registered source
+  // reports success without touching the snapshot (measured — Claude Code
+  // answers "already on disk"), so prep that only registers leaves a months-old
+  // manifest in place and the op resolves against that.
+  refresh: (marketplace: string) => Step[];
+}
+
+const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
+  claude: {
+    install: (ref) => [['plugin', 'install', ref]],
+    update: (ref) => [['plugin', 'update', ref]],
+    register: (source) => [['plugin', 'marketplace', 'add', source]],
+    refresh: (marketplace) => [['plugin', 'marketplace', 'update', marketplace]],
+  },
+  codex: {
+    install: (ref) => [['plugin', 'add', ref]],
+    // No `update` verb — `add` is the whole operation. It resolves the plugin
+    // from the marketplace manifest, which for this repo's entries names an npm
+    // package with no version pin, so `add` picks up a published bump on its
+    // own. Refreshing the git snapshot is about the MANIFEST (a renamed package,
+    // a newly listed plugin), which is why it is a separate, optional step.
+    update: (ref) => [['plugin', 'add', ref]],
+    register: (source) => [['plugin', 'marketplace', 'add', source]],
+    refresh: (marketplace) => [['plugin', 'marketplace', 'upgrade', marketplace]],
+  },
+};
+
 export interface CliPluginManager {
   available: () => boolean;
-  // Register the marketplace if it isn't already. `<bin> plugin marketplace add`
-  // is idempotent enough for our purposes — a re-add of an existing marketplace
-  // just errors, which we capture and ignore; the subsequent install/update is
-  // what matters.
-  ensureMarketplace: (source: string) => void;
+  // The commands an install/update runs, in order. Exposed as STEPS rather than
+  // run here, because the caller owns the output mode: apply.ts streams to a
+  // terminal or captures for the dashboard, and marketplace prep is best-effort
+  // where the op is fatal. One table feeds both those runs and the hint copy
+  // that tells a user what to type — hint copy naming a verb the host rejects
+  // is exactly how this bug reached a user's terminal.
+  //
+  // `marketplaceSteps` is prep: register the source, then refresh the snapshot
+  // if a marketplace name is known. A re-add of an existing marketplace is a
+  // no-op that reports success on both hosts (measured on each, not inferred
+  // from one), and a refresh that fails leaves the cached snapshot in place,
+  // which the plugin op can still install from — so every one of these steps is
+  // survivable and apply.ts discards their results.
+  marketplaceSteps: (source: string, marketplace?: string) => Step[];
+  installSteps: (ref: string) => Step[];
+  updateSteps: (ref: string) => Step[];
+  // The MANUAL EQUIVALENT: what a user runs by hand to reach the same state —
+  // register the marketplace, then the op. Shown where the automated path can't
+  // run or may be interrupted, so every caller joins it with `&&`.
+  //
+  // Which means it must carry ONLY steps whose failure should stop the chain.
+  // The snapshot refresh is deliberately absent: it is the one step this module
+  // treats as survivable, and `&&` cannot express that — a git-fetch error on
+  // `marketplace upgrade` would short-circuit the `plugin add` that is the whole
+  // point. Leaving it in was a real defect: it made best-effort prep fatal in
+  // exactly the line a user retypes, while the code path went on treating the
+  // same failure as harmless.
+  //
+  // The trade that buys is worth naming rather than glossing. On a machine that
+  // has never registered the marketplace — the case this copy is mostly written
+  // for — `marketplace add` clones the snapshot fresh and there is nothing to
+  // refresh. On one that registered it long ago, the re-add reports success
+  // without reconciling, so the retyped line runs against whatever manifest is
+  // cached. That is the deliberate choice: a stale manifest resolves the plugin
+  // it already knows about, where a fatal refresh resolves nothing at all.
+  installRecipe: (ref: string, source?: string) => string[];
+  updateRecipe: (ref: string, source?: string) => string[];
+  // Everything the AUTOMATED path spawns, in order: prep (both steps) then the
+  // op. This is the disclosure render — a confirm dialog saying "this runs the
+  // following on your machine" is a promise, and naming one of three spawns
+  // breaks it in a product whose whole pitch is that you can see what runs.
+  //
+  // NOT interchangeable with a recipe, and never to be joined with `&&`: it
+  // deliberately includes the survivable refresh, whose failure the automated
+  // path ignores and `&&` would not. Join with a newline and show it as a list.
+  installSpawnPlan: (ref: string, source?: string, marketplace?: string) => string[];
+  updateSpawnPlan: (ref: string, source?: string, marketplace?: string) => string[];
   install: (ref: string) => boolean;
   update: (ref: string) => boolean;
 }
 
-export function createCliPluginManager(bin: string): CliPluginManager {
+export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
+  const verbs = HOST_VERBS[bin];
+  const runAll = (steps: Step[]): boolean => steps.every((args) => runInherit(bin, [...args]));
+  const render = (steps: Step[]): string[] => steps.map((args) => `${bin} ${args.join(' ')}`);
+  const marketplaceSteps = (source: string, marketplace?: string): Step[] => [
+    ...verbs.register(source),
+    ...(marketplace ? verbs.refresh(marketplace) : []),
+  ];
+  // Register-then-op only. See `installRecipe` on why the refresh stays out.
+  const recipe = (steps: Step[], source: string | undefined): string[] =>
+    render([...(source ? verbs.register(source) : []), ...steps]);
+  // Prep-then-op, refresh included — what `apply.ts` really spawns.
+  const spawnPlan = (
+    steps: Step[],
+    source: string | undefined,
+    marketplace: string | undefined,
+  ): string[] => render([...(source ? marketplaceSteps(source, marketplace) : []), ...steps]);
+
   return {
     available: () => binExists(bin),
-    ensureMarketplace: (source: string) => {
-      runCapture(bin, ['plugin', 'marketplace', 'add', source], 60_000);
-    },
-    install: (ref: string) => runInherit(bin, ['plugin', 'install', ref]),
-    update: (ref: string) => runInherit(bin, ['plugin', 'update', ref]),
+    marketplaceSteps,
+    installSteps: (ref) => verbs.install(ref),
+    updateSteps: (ref) => verbs.update(ref),
+    installRecipe: (ref, source) => recipe(verbs.install(ref), source),
+    updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
+    installSpawnPlan: (ref, source, marketplace) =>
+      spawnPlan(verbs.install(ref), source, marketplace),
+    updateSpawnPlan: (ref, source, marketplace) =>
+      spawnPlan(verbs.update(ref), source, marketplace),
+    install: (ref) => runAll(verbs.install(ref)),
+    update: (ref) => runAll(verbs.update(ref)),
   };
 }

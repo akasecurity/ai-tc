@@ -19,6 +19,15 @@ on:
       - 'tools/installer/**'
       - '.github/workflows/build-binaries.yml'
 
+# Declared explicitly rather than inherited. Without a `permissions:` block a
+# workflow takes the repository's DEFAULT token scope, which is a repository
+# setting no reader of this file can see and which an admin can widen for every
+# workflow at once. This job checks out a commit and uploads a workflow
+# artifact; the artifact upload authenticates with the runtime's own token
+# rather than this one, so read access to the tree is the whole requirement.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.target }}

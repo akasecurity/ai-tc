@@ -109,7 +109,7 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks — or the real installer scripts — carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
 
 | Site                                              | Mechanism                         | Why                                                         |
 | ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
@@ -190,6 +190,19 @@ targets elsewhere. Two consequences for anyone adding a config:
   files against the derived set and names anything left over. Wire it into a `lint` script or
   delete it.
 
+**The BEHAVIOURAL prober is derived the same way, and for the same reason.** Knowing a config
+is audited says nothing about whether its bans actually fire, so `PROBE_TARGETS` resolves each
+package's real config and drives the four bans against a snippet. It used to pair a directory
+with a config inferred from the directory's NAME — everything under `eslint.config.mjs`, plus a
+hardcoded `scripts/` case — which is the same one-rename hole one level over: this package's own
+`test/` runs under `eslint.guard.config.mjs`, so it was paired with a sibling config that
+`--no-config-lookup` guarantees never applies there, and the enforcement suites sat behind a
+config no probe exercised. Switching the ban off in it left every test green. Each pair now
+comes from the invocation that really lints the path, so a THIRD pass shape is probed by
+construction; and a path whose invocation resolves no config is reported rather than skipped,
+because a shape nobody modelled would otherwise generate no case at all and a suite that runs
+no assertion reports green.
+
 The reader itself — which invocations a green run makes, which config each runs under, and
 which paths each covers — is one shared module
 (`packages/eslint-config/test/helpers/lint-invocations.js`), used by both that audit and the
@@ -200,6 +213,8 @@ and audited by neither. `trackedFiles()` sits there for the same reason and is t
 the tree really holds rather than what a lint script says.
 
 `DOCUMENTED_OPT_OUTS` is a hand-written mirror of that table, and it is not what keeps the table true — it never opens this file. `packages/eslint-config/test/no-network.test.js` parses the table and asserts it twice: against that mirror, so the two cannot drift apart in either direction, and against the configs themselves, resolving each row's site through ESLint under the config the row names. The second is what covers the **Site** column, which the mirror does not carry and so cannot check — a row may not name a file the config never reaches, nor keep an exception that has been removed. Any entry in the **Allowed specifier** column that is neither a banned module nor a banned global marked `(inline)` fails rather than being skipped, since a token the module audit cannot see is enforced by nothing.
+
+Both of those read the TABLE and check it against the workspace. The promise this section closes on — that a new opt-out site is documented here — runs the other way, so it is asserted the other way: the `files:` pattern on every config entry that permits a network specifier is derived from the configs and differenced against the tabled sites, in both directions. **So a site that never reaches this table fails CI** — for an opt-out written as an `allow` on either half of the ban, as an `off`, or as a severity naming nothing, since a rule that is merely PRESENT is not the same as one that bans something. Both halves are read: an opt-out relaxing only `no-restricted-syntax` permits its specifier through `import()` exactly as a static one does, and reading only `no-restricted-imports` made that invisible in both directions. The **globals** ban stays outside this audit, as the paragraph above says — `no-restricted-globals` carries no `allow`, so there is nothing to difference, and a file-scoped `off` on it is caught by the inline-disable inventory rather than here. Two things about it are load-bearing. A row whose exception has gone is caught on the SET rather than only on the count sentence — which matters precisely because two rows share `eslint.root.config.mjs`, so the config-keyed mirror keeps that key from the surviving row and moves not at all. And the **pattern** is compared rather than the files it currently resolves to: widening `tools/ci/egress-probe.mjs` to `tools/ci/*.mjs` reaches the same single file today while silently granting the exception to every `.mjs` added afterwards, so a basename carrying a glob is refused outright as the "file-scoped, never package-wide" violation it is, and a resolved-file comparison would have passed until somebody landed a second file.
 
 Network access happens **only through child processes**. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither:
 
@@ -329,7 +344,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 
 - **The scanner is per REQUEST, not per process.** The first hang retires isolation for the scanner's whole life; the dashboard server outlives every scan it runs, so a process-wide scanner would cost it its pulled rules until someone restarted it. That is also why `createGuardedScanner` takes a `degradeScope` — the stderr warning must not claim a lifetime it does not have. It is held as BEHAVIOUR rather than as that sentence: `packages/local-ops/test/guarded-scan.test.ts` drives two scans over one store and requires the second to detect again with a rule the first dropped. The rule it reads has to be **collateral**, never the culprit — a quarantined rule is gone from every later scan by design, so it would pass whether or not the scanner was shared, while a rule dropped only because a neighbour hung is supposed to come back and does so only if the next scan builds its own scanner.
 - **The isolation options are forwarded by SHAPE, not by listing keys.** Every field of `IsolatedScanOptions` is optional, so a pass-through that names a subset drops the rest by construction and nothing notices — not typecheck, not lint, not a test. That is not hypothetical: `onWorkerStart` was added to the SDK and reached the plugin's isolation and never the dashboard's, with `local-ops` green throughout. `createGuardedFileScanner` annotates its pass-through `CompleteIsolatedScanOptions` — `IsolatedScanOptions` with every key REQUIRED, each still allowed to be `undefined` — so every key must be named and the next field added to the SDK fails the build here until someone decides whether to expose it. Declining is spelled `field: undefined`, which reads as the choice it is rather than as an omission.
-- **The worker location is a caller input** (`GuardedFileScannerOptions.workerUrl`), never the SDK's sibling lookup. A Next build replaces `import.meta.url` with the BUILD MACHINE's absolute source path, so that lookup resolves where the build ran and nowhere else — silently costing an installed dashboard its bound. `web-ui/tsup.config.ts` emits the worker to `web-ui/dist/scan-worker.js`, `next.config.ts` traces it into the standalone build, and `web-ui/app/lib/scan-worker.ts` resolves it against `process.cwd()` (the app dir: Next's standalone `server.js` chdirs to its own directory, and every other launch runs from the package). Those three move together, `web-ui/test/e2e/scan-worker-bundle.e2e.test.ts` pins the first and third, and `cli/scripts/bundle-web-ui.mjs` throws at pack time if the second stopped working.
+- **The worker location is a caller input** (`GuardedFileScannerOptions.workerUrl`), never the SDK's sibling lookup. A Next build replaces `import.meta.url` with the BUILD MACHINE's absolute source path, so that lookup resolves where the build ran and nowhere else — silently costing an installed dashboard its bound. `web-ui/tsup.config.ts` emits the worker to `web-ui/dist/scan-worker.js`, `next.config.ts` traces it into the standalone build, and `web-ui/app/lib/scan-worker.ts` resolves it against `process.cwd()` (the app dir: Next's standalone `server.js` chdirs to its own directory, and every other launch runs from the package). Those three move together, `web-ui/test/e2e/scan-worker-bundle.e2e.test.ts` pins the first and third, and `cli/scripts/bundle-web-ui.mjs` throws at pack time if the second stopped working. The emit itself is ONE turbo task, `web-ui#build:worker`, and every task that reads or ships the file depends on it — `build`, `test` and `dev` run no `tsup` of their own. That is not tidiness: `turbo run test` schedules `web-ui#build` beside `web-ui#test` (the CLI's test task reaches it through `^build`) with no ordering between them, so a `tsup` inlined into either script is a second writer whose `clean: true` removes and rewrites the worker while a vitest fork is between `existsSync` and `new Worker(…)` — a flake that reads as the action's own wording, not as a build race. `web-ui/test/scan-worker-build.test.ts` pins the single-writer shape, including that `build`'s declared outputs carry no `dist/**` (a cache hit restores outputs, which is a write too).
 - **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
 - **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never CONCLUSIVELY timed here (no worker, the pre-flight's pass budget spent, or a wall breach the work clock refused to corroborate) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
 
@@ -770,6 +785,20 @@ tools/                repo tooling, never shipped: the installer one-liners and
    matching nothing the package ships stays green, which is what stops the guard
    over-reporting.
 
+   **That holds at FILE granularity, not just directory granularity, and the
+   difference is the whole exposure.** A directory target is checked as a directory,
+   so an ignore is reduced to its literal prefix to answer whether the directory
+   survives — and `--ignore-pattern test/probe.test.ts` reduces to a base that
+   neither equals `test` nor prefixes it. Read at that level alone the directory
+   goes on reading as covered while ESLint skips the file, which is worse than an
+   unguarded path rather than equal to it: the reviewer who checks coverage finds a
+   green guard. So the tracked files inside each covered directory are enumerated
+   and checked individually, and one an ignore takes back out is named. The two
+   buckets partition the failure — where the whole directory is excluded, the
+   directory bucket names the package and the file bucket stays quiet, so one
+   mistake prints one actionable line rather than that line plus every file
+   beneath it.
+
    A `lint` script is a shell string, so **two ESLint calls are chained with `&&`
    and nothing else**. Behind a `||` the second runs only once the first has
    failed, so no green run ever lints what it targets; `|| true` is the mirror
@@ -1151,14 +1180,17 @@ scaling one. They catch different defects; neither substitutes for the other.
 The numbers, measured on arm64 macOS / Node 24 against corpora from
 `src/test-fixtures/generate.ts`:
 
-| Property                                  | Measured                           | Gate                    |
-| ----------------------------------------- | ---------------------------------- | ----------------------- |
-| Store growth, 5k → 10k                    | **797.9 B/event** marginal         | ±15% band ✅            |
-| `recordCapture` 2k → 20k                  | ratio **1.02** (fastest of 200)    | ratio < 3 ✅            |
-| `openLocalDatabase` 2k → 20k              | ratio **0.99** (fastest of 20)     | ratio < 3 ✅            |
-| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅  |
-| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅  |
-| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5           | ungated (misses 2 s) ❌ |
+| Property                                    | Measured                           | Gate                   |
+| ------------------------------------------- | ---------------------------------- | ---------------------- |
+| Store growth, 5k → 10k                      | **902.8 B/event** marginal         | ±15% band ✅           |
+| `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
+| `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
+| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
+| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅ |
+| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)            | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)           | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 300k events | **729 ms**                         | 3 flatness ratios ✅   |
+| `/security` at 1M events                    | **~2.5–3 s** extrapolated          | ungated, unmeasured ❌ |
 
 **Both pairs came down from a decade higher, and the reason is worth carrying.** They
 were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
@@ -1168,9 +1200,17 @@ macOS CI run that passed and 135 s on one that did not, against a 120 s hook cei
 each case is a RATIO or a SLOPE, and neither needs a particular absolute size, so the
 corpus came down rather than the ceiling going up. The prices are stated where they are
 paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's centre
-had to be retaken, because the marginal creeps with size — 791.3 B/event across 2.5k→5k,
-797.9 across 5k→10k, 818.4 across 10k→20k, all measured, all byte-identical run to run.
+had to be retaken, because the marginal creeps with size — 902.8 B/event across 2.5k→5k,
+902.8 across 5k→10k, 923.2 across 10k→20k, all measured, all byte-identical run to run.
 **Do not carry a centre across a size change**; a stale one still reads green.
+
+**Nor across a CORPUS change, which is the harder one to remember because the test's own
+size did not move.** That centre was 797.9 until the generator's finding rate went from
+0.1 to a measured 0.33: three times the finding rows per event took the marginal to 902.8,
+which the old band's 917.6 ceiling **passed, by 1.6%**. So a 13% growth regression went
+undetected and the band was left one unrelated commit away from failing for no reason — at
+which point widening it is the obvious-looking fix. Re-take the centre whenever anything
+about the corpus moves, not only its event count.
 
 **A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
 The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
@@ -1183,23 +1223,75 @@ fails. So a ratio gate catches a linear cost that changes what the operation cos
 one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
 the pair by 2.5x raised it by 2.5x.
 
-**`/security` misses its budget, and it is not a missing index.**
+**Three of `/security`'s eight reads are BOUNDED, and a plan test cannot tell you that.**
 `hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
 `/vault` pages issue and confirms each one runs indexed. That capture runs at 3k and
 nothing re-captures the plans above it: the store carries no `ANALYZE` statistics, so
 SQLite plans from the schema rather than from row counts and the plans are EXPECTED to
-hold at 1M — reasoning, not a second measurement, and worth wording that way. The
-cost is that FOUR of the eight never shrink with the window at all: `severitySummary`,
-`recentFindings` and `recentlyResolved` take no range argument, and `mttrTrend` takes one
-whose `EXISTS` prefilter bounds the RESULT rather than the scan (measured at 1,523 ms
-returning zero rows). All four are linear in total FINDINGS, not events. And the page's
-`Promise.all` buys nothing: every repository method here runs its SQL **synchronously**
-and returns an already-resolved promise, so the page costs the SUM of the eight.
+hold at 1M — reasoning, not a second measurement, and worth wording that way.
 
-Linear past 100k at 6.19 ms per thousand events (373 ms at 100k, 5,945 ms at 1M, both
-measured), so the budget is crossed near **363k events** (~300 MB). Fixing it means
-bounding what the page reads — retention, pre-aggregation or a cap — which is a product
-decision, not tuning.
+An indexed plan is not a bound, in either direction, and this page is where both halves of
+that were learned. `mttrTrend` ran every step of its plan as a SEARCH while driving from
+`audit_events` and joining every capture event before its window predicate could reject a
+row. `recentFindings` now deliberately SCANS `idx_audit_started_at` so its `LIMIT` can stop
+early, and EXPLAIN QUERY PLAN has no text for "terminates after 500 rows". So the plans pin
+the mechanism and `security-page-scale.test.ts` pins the consequence, as a ratio across a
+10x store step with `severitySummary` as the growth control. Neither implies the other.
+
+`recentFindings`, `recentlyResolved` and `mttrTrend` are the three now flat in store size —
+ratios **1.10**, **1.26** and **1.32** over 2k → 20k, against a ceiling of 3 and a control
+reading 18.30. What each needed differs, and none of it was tuning:
+
+- **`recentlyResolved` was QUADRATIC**, O(code_change events x resolved keys), because the
+  join key was unreachable: `f` was reached FROM `latest`, so `latest` got probed on
+  (rn, status, method) and the plan enumerated every pair before `f` could reject it. 10,966
+  ms at 50k events and 125,322 ms at 150k — 3x the store for 11.4x the cost — returning 20
+  rows. It read 8 ms to everyone who measured it before, because an EMPTY
+  `finding_resolution` collapses the cross product to nothing.
+- **`mttrTrend`'s `EXISTS` bounded the RESULT, not the scan.** Fixed by driving from
+  `finding_resolution` over a `resolved_at` range. Migration **0021**'s index on that column
+  is NOT what buys the flatness — remove it and the ratio does not move, because the
+  latest-resolution derived table already passes over the whole table, so the read is
+  O(resolutions) either way and resolutions are not the store. What it buys is the criterion
+  the plan test hard-fails on: without it the driving step is a bare `SCAN fr`. Two guards,
+  two different defects, and neither catches the other's.
+- **`recentFindings` could not push its LIMIT down**, since the sort key sat on the joined
+  table. Fixed with `+e.event_type` (making `idx_audit_type_t` unattractive, so
+  `idx_audit_started_at` yields `started_at` order directly) plus `CROSS JOIN`.
+
+**`CROSS JOIN` is load-bearing in all three and must not be tidied into `JOIN`.** In SQLite
+it is semantically identical and exists only to stop the tables being reordered; with no
+`ANALYZE` statistics the planner prices `event_type IN (...)` as a selective probe and puts
+`audit_events` back on the outside. On `recentFindings` the unary plus ALONE recovers almost
+none of the win — 23.6 ms against 0.9 ms with both, from 35.0 ms.
+
+The page's `Promise.all` still buys nothing: every repository method here runs its SQL
+**synchronously** and returns an already-resolved promise, so the page costs the SUM of the
+eight.
+
+**What remains is `severitySummary`, the budget is still missed at 1M, and closing it is a
+product decision.** Measured at three points — 159 ms at 50k, 350 ms at 150k, 729 ms at 300k
+— and the page is mildly SUPERLINEAR rather than linear, which is the part a two-point
+reading gets wrong. `severitySummary` carries that: 46.6 → 177.7 → 472.2 ms, i.e. 0.93 →
+1.19 → 1.57 us per event, a cost per event rising ~1.33x per doubling (an all-time `GROUP BY`
+whose temp B-tree and working set both grow with it). Everything else is flat or
+window-bounded, so it goes from 29% of the page at 50k to 65% at 300k.
+
+Carrying that factor from 300k to 1M puts `severitySummary` near **2.6 s** and the page at
+**~2.5–3 s** — still OVER the 2,000 ms budget, with that one read accounting for ~85% of it.
+Read the RANGE as the finding, not either endpoint: it is an extrapolation over 1.7 doublings
+from three points whose slope is itself moving.
+
+**Nothing here measures 1M, and the reason is the corpus rather than the reads.** Seeding is
+badly superlinear — 142 s at 150k against 733 s at 300k, **5.2x for 2x the events** — so a 1M
+corpus is tens of minutes and belongs in neither a test nor a session. Do not size a change
+against a 1M figure from this section without taking it.
+
+So the engineering half is done and the arithmetic says it is not sufficient. Bounding
+`severitySummary` means a maintained rollup (exact, but invalidated from the resolution path
+as well as the capture path, plus a backfill for existing stores), windowing the card (cheap,
+changes what the number means from "ever" to "the last 30 days"), or retention on the corpus
+itself. All three are product calls, not tuning.
 
 **Two tables have a retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and

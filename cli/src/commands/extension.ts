@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -19,16 +19,36 @@ function cliRoot(): string {
   return isSea() ? dirname(process.execPath) : join(here, '..');
 }
 
-// Mirrors plugins/browser-extension/src/constants.ts — the extension id is
+// Mirrors plugins/browser-extension/src/constants.ts — an extension id is
 // derived from the "key" field committed in plugins/browser-extension/
 // manifest.json (a public key, not a secret), which pins it across every
 // machine that builds the extension from source. Duplicated here rather than
 // imported: cli and plugins/* are sibling leaf packages (see CLAUDE.md's
 // package dependency rules — neither depends on the other), and the CLI
 // already hardcodes small per-plugin facts this way (see AGENT_PLUGINS in
-// packages/local-ops/src/registry.ts). If the extension's signing key ever
-// changes, both copies need updating together.
-const EXTENSION_ID = 'mdoiaiemcnjnaokmcmgbikcdhgiemdof';
+// packages/local-ops/src/registry.ts).
+//
+// A LIST rather than one id: the Chrome Web Store signs a listing with a key
+// it holds and ignores the committed one, so a store build and an unpacked
+// from-source build have DIFFERENT ids. Granting both is what lets an already
+// installed unpacked build keep reaching the native host across that switch —
+// an id missing here is not a build error but a silent runtime one, since
+// Chrome refuses connectNative for an origin the host manifest omits.
+//
+// Every entry is a live grant: an extension whose id is listed may talk to the
+// native host, so add one deliberately and drop a legacy id once it is dead.
+// plugins/browser-extension/test/manifest.test.ts derives the committed key's
+// id and fails if this list omits it.
+//
+// Adding an id here means updating cli/test/commands/extension.test.ts too: it
+// deep-equals the whole written manifest, so a new entry reddens it on an
+// allowed_origins mismatch. That literal is spelled out rather than derived on
+// purpose — widening a grant should have to be confirmed somewhere, the way the
+// host_permissions guard works — so the second edit is the point, not friction.
+const EXTENSION_IDS = [
+  // Derived from the "key" in plugins/browser-extension/manifest.json.
+  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+];
 const NATIVE_HOST_NAME = 'com.akasecurity.aka';
 
 function nativeHostManifest(hostPath: string): Record<string, unknown> {
@@ -38,7 +58,7 @@ function nativeHostManifest(hostPath: string): Record<string, unknown> {
       'AI Traffic Control native messaging host — bridges the browser extension to the local ~/.aka SQLite store.',
     path: hostPath,
     type: 'stdio',
-    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
+    allowed_origins: EXTENSION_IDS.map((id) => `chrome-extension://${id}/`),
   };
 }
 
@@ -268,12 +288,48 @@ export function runInstall(
   );
 }
 
+// What an existence check cannot see. `install` runs only when the user types
+// it, and nothing re-runs it on upgrade — so a manifest written before an id
+// joined EXTENSION_IDS keeps granting the shorter list. Chrome refuses
+// connectNative for an origin the manifest omits, so that extension installs
+// cleanly and silently cannot reach the host: the same failure the CLI-side
+// guard prevents, reached from the on-disk side instead of the source side.
+// Reported rather than repaired, because rewriting a manifest is what the
+// explicit `install` subcommand is for.
+function manifestFault(manifestPath: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (err) {
+    return `could not be read (${err instanceof Error ? err.message : String(err)})`;
+  }
+  const granted = (parsed as { allowed_origins?: unknown } | null)?.allowed_origins;
+  if (!Array.isArray(granted)) return 'has no allowed_origins list';
+  const missing = EXTENSION_IDS.filter((id) => !granted.includes(`chrome-extension://${id}/`));
+  if (missing.length === 0) return null;
+  return `does not grant ${missing.length === 1 ? 'the extension id' : 'the extension ids'} ${missing.join(', ')}`;
+}
+
 export function runStatus(manifestDir: string): void {
   const manifestPath = join(manifestDir, `${NATIVE_HOST_NAME}.json`);
-  const installed = existsSync(manifestPath);
+  if (!existsSync(manifestPath)) {
+    process.stdout.write(
+      'native-messaging host: not installed\n' +
+        `  manifest: ${manifestPath}\n` +
+        '  run `aka extension install` to set it up\n',
+    );
+    return;
+  }
+
+  const fault = manifestFault(manifestPath);
   process.stdout.write(
-    `native-messaging host: ${installed ? 'installed' : 'not installed'}\n` +
+    `native-messaging host: ${fault ? 'installed (out of date)' : 'installed'}\n` +
       `  manifest: ${manifestPath}\n` +
-      (installed ? '' : '  run `aka extension install` to set it up\n'),
+      (fault
+        ? `  this manifest ${fault}\n` +
+          '  Chrome refuses a connection from any origin the manifest omits —\n' +
+          '  re-run `aka extension install` to rewrite it\n'
+        : ''),
   );
+  if (fault) process.exitCode = 1;
 }

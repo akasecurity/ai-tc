@@ -1,5 +1,5 @@
-// Base storage-row contracts — the tenant-free SHAPE of every control-plane table
-// in the OSS local store (this package, SQLite).
+// Base storage-row contracts — the SHAPE of every table in the local store
+// (this package, SQLite).
 //
 // These interfaces are the single source of truth for the column set of each
 // entity. The SQLite tables are asserted to equal the base

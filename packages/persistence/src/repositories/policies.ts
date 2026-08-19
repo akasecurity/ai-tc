@@ -21,7 +21,7 @@ interface PolicyRow {
  * Policies table reader + the first-run seeder, bound to one open DB. The seeded
  * per-category defaults are what the runtime resolves enforcement actions
  * against; `/aka:config` edits them later. The local store is
- * tenant-free (single tenant).
+ * one store per machine.
  */
 export class SqlitePoliciesRepository implements PoliciesReadPort {
   constructor(private readonly db: DatabaseSync) {}

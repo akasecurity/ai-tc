@@ -98,19 +98,30 @@ function installPlugin(argv: string[]): void {
   // Delegate to the host CLI's own plugin manager (it owns the plugin cache +
   // lifecycle). If it isn't on PATH, fall back to the manual in-app path so
   // the command stays honest and actionable.
-  if (!createCliPluginManager(cliBin).available()) {
+  // Hint copy comes from the host's own verb table, never a hardcoded verb —
+  // `claude plugin install` and `codex plugin add` are not interchangeable, and
+  // naming the wrong one hands the user a command their CLI rejects.
+  const manager = createCliPluginManager(cliBin);
+  const recipe = manager.installRecipe(ref, agent.marketplaceSource);
+  if (!manager.available()) {
     process.stdout.write(
       `Installing ${agent.name}…\n\n` +
         `The \`${cliBin}\` CLI isn't on your PATH, so I can't install it automatically.\n` +
         `Install it from inside ${agent.name}:\n` +
-        `  ${cliBin} plugin marketplace add ${agent.marketplaceSource ?? ''}\n` +
-        `  ${cliBin} plugin install ${ref}\n\n` +
-        `Then run \`aka init\` to set up the local store.\n`,
+        recipe.map((c) => `  ${c}\n`).join('') +
+        `\nThen run \`aka init\` to set up the local store.\n`,
     );
     return;
   }
 
-  process.stdout.write(`Installing ${agent.name} via ${cliBin}…\n`);
+  // Announce every command that is about to run, not just the host binary's
+  // name. The install path spawns marketplace prep before the op exactly as the
+  // update path does, and "via claude" named none of the three.
+  const plan = manager.installSpawnPlan(ref, agent.marketplaceSource, agent.marketplace);
+  process.stdout.write(
+    `Installing ${agent.name} via ${cliBin}, running:\n` +
+      plan.map((command) => `  ${command}\n`).join(''),
+  );
   const { ok } = installAgentPlugin(agent.id, 'inherit');
   if (ok) {
     process.stdout.write(
@@ -121,7 +132,7 @@ function installPlugin(argv: string[]): void {
   } else {
     process.stderr.write(
       `\n✗ Install failed — see the output above, or add it in ${agent.name} with ` +
-        `\`${cliBin} plugin install ${ref}\`.\n`,
+        `\`${recipe.join(' && ')}\`.\n`,
     );
     process.exitCode = 1;
   }

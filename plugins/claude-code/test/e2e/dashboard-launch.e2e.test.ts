@@ -25,7 +25,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
+  assertCommandNotOnPath,
   assertShimResolves,
+  nodeOnlyPathEntries,
   shimmedPath,
   WINDOWS_SYSTEM_DIRS,
   WINDOWS_SYSTEM_ENV,
@@ -35,7 +37,6 @@ import {
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LAUNCHER = join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
-const NODE_DIR = dirname(process.execPath);
 
 // The launcher spawns DETACHED and unrefs, then exits without waiting — so the
 // stub's record appears after the parent has already returned. Poll for it
@@ -95,14 +96,21 @@ function writeAkaStub(binDir: string, recordPath: string): void {
   );
 }
 
-// PATH carries the stub, node's own dir (a POSIX shim's shebang needs it) and —
-// on win32 only — the system dirs cmd.exe and where.exe are found through.
-// Nothing else from the host: a real `aka` on the developer's PATH must not be
-// reachable, since this suite's whole subject is which one gets spawned.
+// PATH carries the stub, a dir holding node ALONE where a shebang needs one (a
+// POSIX shim resolves `node` by name — never what happens to live beside it,
+// which under a shared install prefix is where `npm i -g` puts a real `aka`)
+// and — on win32 only — the system dirs cmd.exe and where.exe are found
+// through. Nothing else from the host: a real `aka` on the developer's PATH
+// must not be reachable, since this suite's whole subject is which one gets
+// spawned. `nodeOnlyPathEntries` is empty on win32, where the `.cmd` shim names
+// its interpreter outright and materialising one would buy nothing.
 function launcherEnv(binDir: string): NodeJS.ProcessEnv {
   return {
     ...WINDOWS_SYSTEM_ENV,
-    PATH: shimmedPath(binDir, [NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+    PATH: shimmedPath(
+      binDir,
+      [...nodeOnlyPathEntries(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter),
+    ),
   };
 }
 
@@ -220,12 +228,24 @@ describe('the built dashboard launcher', () => {
   it(
     'prints the install hint, and spawns nothing, when `aka` genuinely is not there',
     () => {
-      // An empty bin dir: no stub, and the host PATH is not inherited, so the name
-      // resolves nowhere. The case above is this one's control — it shows the
-      // harness CAN see a spawn, so "no record" here means none happened.
+      // An empty bin dir: no stub, and neither the host PATH nor node's own bin
+      // dir is inherited, so the name resolves nowhere. The case above is this
+      // one's control — it shows the harness CAN see a spawn, so "no record"
+      // here means none happened.
       const binDir = tempDir();
       const recordPath = join(binDir, 'spawned.json');
       const env = launcherEnv(binDir);
+      // The plan the launcher itself will build, for the reason the positive
+      // case reads one: PATH is not the whole of resolution. The win32 plan
+      // anchors its spawn at `homedir()`, and both `cmd.exe` and the `where.exe`
+      // lookup inside `planBareCommand` search that directory BEFORE PATH.
+      const plan = planBareCommand('aka', ['dashboard'], { env });
+      // Proven, not assumed: a real `aka` reachable from here would be spawned
+      // for real, and this case would then fail on the message — after the
+      // server was already running.
+      assertCommandNotOnPath(env, 'aka', {
+        ...(plan.options.cwd === undefined ? {} : { cwd: plan.options.cwd }),
+      });
 
       const stdout = runLauncher(env, ['--no-open']);
 

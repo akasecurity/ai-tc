@@ -13,10 +13,11 @@ export interface AgentPlugin {
   // Install/update coordinates — present for agents distributed through a host
   // CLI's own plugin marketplace. `npmPackage` is the registry package the
   // marketplace resolves (used for `npm view <pkg> version` to learn the latest
-  // version); `pluginName`@`marketplace` is the ref `<cliBin> plugin install|
-  // update` expects; and `marketplaceSource` is the GitHub repo to `<cliBin>
-  // plugin marketplace add` if the marketplace isn't registered yet. Absent for
-  // agents installed by other means.
+  // version); `pluginName`@`marketplace` is the ref the host's install/update
+  // verbs expect (they differ per host — see cli-plugin-manager.ts); and
+  // `marketplaceSource` is the GitHub repo to `<cliBin> plugin marketplace add`
+  // if the marketplace isn't registered yet. Absent for agents installed by
+  // other means.
   npmPackage?: string;
   pluginName?: string;
   marketplace?: string;
@@ -91,8 +92,8 @@ export function findAgent(id: string): AgentPlugin | undefined {
   return AGENT_PLUGINS.find((a) => a.id === id);
 }
 
-// The `<plugin>@<marketplace>` ref that `claude plugin install|update` expects, and
-// the key under which Claude Code records the install in installed_plugins.json.
+// The `<plugin>@<marketplace>` ref every host's plugin verbs take, and the key
+// under which Claude Code records the install in installed_plugins.json.
 // Undefined for agents without marketplace coordinates.
 export function pluginRef(agent: AgentPlugin): string | undefined {
   if (!agent.pluginName || !agent.marketplace) return undefined;

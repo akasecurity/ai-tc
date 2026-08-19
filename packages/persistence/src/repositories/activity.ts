@@ -308,7 +308,7 @@ const HAS_ACTIVITY = `EXISTS (
     AND c.event_type NOT IN ('hook', 'config_scan'))`;
 
 /**
- * Activity read views over the tenant-free local `audit_events` store. Runs the
+ * Activity read views over the local `audit_events` store. Runs the
  * session/timeline queries on node:sqlite (epoch-ms integer columns,
  * `json_extract` attribute reads, the generated token columns), assembling the
  * finished @akasecurity/schema responses — the local store IS the activity service.

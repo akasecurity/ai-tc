@@ -87,6 +87,14 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/setup-wizard': 89, //               90.38
   '@akasecurity/schema': 84, //                     85.59
   '@akasecurity/portability-gate': 84, //           85.58
+  // Both gates keep every DECISION in lib.ts behind an injected io seam — which
+  // exit code, which message — so the suite drives all four exit paths without
+  // reaching `gh`. What is left uncovered in each entry is the seam itself: the
+  // spawn, the two file operations, and the slug read. These floors were raised
+  // from 62 and 56 when that refactor landed; the entries had held the exit-code
+  // mapping, and nothing could reach it there.
+  '@akasecurity/required-checks-gate': 85, //       86.61
+  '@akasecurity/codeql-alerts-gate': 81, //         82.40
   '@akasecurity/plugin-runtime': 76, //             77.25
   '@akasecurity/ai-tc-claude-code': 71, //          72.84
   '@akasecurity/local-ops': 65, //                  66.75

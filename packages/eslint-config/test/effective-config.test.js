@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { join, matchesGlob, posix, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -893,12 +894,27 @@ describe('every workspace package ships a network-guarded eslint config', () => 
 // Three packages carried this at once, which is what makes it a pattern rather
 // than an oversight and the reason it is derived here instead of remembered.
 describe('every workspace package declares the @types/node its own source needs', () => {
-  // The two symptoms above, and nothing wider. `process.` looks like it belongs
-  // and does not: `child_process.` contains it, so the token needs a boundary it
-  // cannot carry, and a package whose only Node surface is a global is not a case
-  // this repo has. Matching what actually broke keeps a green run meaningful.
-  const NEEDS_NODE_TYPES =
-    /(?:from|import|require)\s*\(?\s*['"]node:|import\.meta\.(?:dirname|filename)\b/;
+  // The two symptoms above, plus the BARE form of the first. `process.` still
+  // looks like it belongs and does not: `child_process.` contains it, so the
+  // token needs a boundary it cannot carry, and a package whose only Node
+  // surface is a global is not a case this repo has.
+  //
+  // A bare `from 'fs'` needs the types exactly as `node:fs` does, and nothing
+  // here forces the prefix: no `n/prefer-node-protocol` is configured, and the
+  // network-module ban reaches the bare form for those modules alone. No package
+  // carries one today — which is the reason the alternation is DERIVED rather
+  // than written out. A hand-listed set is what goes stale before the first case
+  // arrives, and `builtinModules` is an external, stable fact about the runtime,
+  // the same shape as CANDIDATE_EXTENSIONS below. The closing quote is what
+  // keeps `fs` off `fs-extra`; `path/posix` matches under its own alternative
+  // rather than through `path`.
+  const BARE_BUILTINS = builtinModules
+    .filter((m) => !m.startsWith('node:'))
+    .sort((a, b) => b.length - a.length);
+  const NEEDS_NODE_TYPES = new RegExp(
+    `\\b(?:from|import|require)\\s*\\(?\\s*['"](?:node:|(?:${BARE_BUILTINS.join('|')})['"])` +
+      `|import\\.meta\\.(?:dirname|filename)\\b`,
+  );
 
   /** Every lintable tracked file the package itself owns, nested packages excluded. */
   const ownFiles = (pkg) => {
@@ -935,6 +951,37 @@ describe('every workspace package declares the @types/node its own source needs'
     expect(withUsage.length).toBeGreaterThan(WORKSPACE_PACKAGES.length / 2);
   });
 
+  it('reads a bare builtin specifier as needing the types, and a look-alike as not', () => {
+    // No package imports a bare builtin today, so every assertion below that
+    // filters `usage` would pass unchanged with the bare alternation deleted.
+    // This is the only thing holding that half, which is why it drives the
+    // pattern directly rather than through the tracked tree.
+    const matches = (src) => NEEDS_NODE_TYPES.test(src);
+    for (const src of [
+      "import { readFileSync } from 'node:fs';",
+      "import { readFileSync } from 'fs';",
+      "const { join } = require('path');",
+      "import 'os';",
+      "import { win32 } from 'path/win32';",
+      'import.meta.dirname',
+    ]) {
+      expect(matches(src), `should read as needing @types/node: ${src}`).toBe(true);
+    }
+    // The closing quote earning its place: each of these contains a builtin
+    // name and needs nothing.
+    for (const src of [
+      "import x from 'fs-extra';",
+      "import x from 'node-fetch';",
+      "import x from './fs';",
+      "import x from 'vitest';",
+    ]) {
+      expect(matches(src), `should NOT read as needing @types/node: ${src}`).toBe(false);
+    }
+    // The alternation is derived, so a runtime that stopped reporting builtins
+    // would silently empty it while every case above still passed on `node:`.
+    expect(BARE_BUILTINS, 'builtinModules reported no bare builtin').toContain('fs');
+  });
+
   it('no package uses a node: builtin without declaring @types/node', () => {
     const undeclared = usage
       .filter((u) => u.files.length && !u.declared)
@@ -953,10 +1000,35 @@ describe('every workspace package declares the @types/node its own source needs'
   it('every declared @types/node tracks the one Active LTS line', () => {
     // Split ranges are the state this replaced, one layer down: the point of
     // declaring the dependency is that ONE version is in play per package.
-    const ranges = [...new Set(usage.map((u) => u.declared).filter(Boolean))];
+    //
+    // The ROOT manifest is in the set because it is a real consumer of this
+    // range and not a workspace package: tsconfig.root.json sets
+    // `"types": ["node"]` and `typecheck:root` runs over test/setup, test/vitest,
+    // tools/ci and eslint.root.config.mjs against whatever copy the root
+    // declares. Derived from WORKSPACE_PACKAGES alone, a root-only bump puts two
+    // majors in play — the exact state this block exists to prevent — and stays
+    // green, because the drift is outside every set the check reads.
+    const rootDeclared =
+      ROOT_MANIFEST.devDependencies?.['@types/node'] ??
+      ROOT_MANIFEST.dependencies?.['@types/node'] ??
+      '';
+    // Non-vacuity: `filter(Boolean)` below drops an undeclared root silently,
+    // so the root would leave the comparison rather than fail it.
+    expect(
+      rootDeclared,
+      `The root package.json declares no @types/node, but tsconfig.root.json sets ` +
+        `"types": ["node"] and typecheck:root runs against it.`,
+    ).not.toBe('');
+
+    const declarers = [
+      ...usage.map((u) => ({ label: u.label, declared: u.declared })),
+      { label: 'the repo root (package.json)', declared: rootDeclared },
+    ].filter((d) => d.declared);
+    const ranges = [...new Set(declarers.map((d) => d.declared))];
     expect(
       ranges,
-      `Workspace packages declare more than one @types/node range: ${ranges.join(', ')}. ` +
+      `More than one @types/node range is declared: ` +
+        `${declarers.map((d) => `${d.label} ${d.declared}`).join(', ')}. ` +
         `${CONVENTIONS_DOC} states .nvmrc, CI and @types/node all track the Active LTS line.`,
     ).toHaveLength(1);
   });

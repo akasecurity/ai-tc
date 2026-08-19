@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readWorkspaceSettings } from '../../src/settings.ts';
 import type { ConcurrentRun, WriterJob } from './settings-writers.ts';
-import { allReleasedTogether, runConcurrentSettingsWriters } from './settings-writers.ts';
+import { BARRIER_HELD, barrierReport, runConcurrentSettingsWriters } from './settings-writers.ts';
 
 const CHILD = fileURLToPath(new URL('./settings-writer-child.ts', import.meta.url));
 
@@ -96,14 +96,30 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-function run(releasedAt: number, readies: number[]): ConcurrentRun {
+/**
+ * One writer, as the PARENT saw it.
+ *
+ * `observedAt` is when the parent read this writer's ready token; omit it for a
+ * writer it never saw park. `bootMs` is the writer's own boot duration, quoted
+ * back in a fault message and read by nothing else.
+ */
+interface WriterTiming {
+  observedAt?: number;
+  bootMs?: number;
+}
+
+function run(releasedAt: number, writers: WriterTiming[]): ConcurrentRun {
   return {
     releasedAt,
-    outcomes: readies.map((readyAt) => ({
+    readyObservedAt: writers.map((w) => w.observedAt),
+    outcomes: writers.map((w) => ({
       ok: true,
-      readyAt,
-      // Every writer starts after the release; that is true by construction and
-      // is precisely why the barrier check reads readyAt instead.
+      bootMs: w.bootMs ?? 1,
+      // Every writer starts after the release CAUSALLY — it is stamped by the
+      // child once it observes the go file. These fixture numbers are not a
+      // cross-process comparison and must not be read as licence for one: that
+      // is the mistake this harness was last fixed for, and the barrier check
+      // reads neither field.
       startedAt: releasedAt + 1,
       endedAt: releasedAt + 11,
       barrierTimeoutMs: 60_000,
@@ -140,7 +156,7 @@ describe('runConcurrentSettingsWriters', () => {
       { set: { historicalAccess: 'full' } },
       { set: { dataSharesInPlace: false } },
     ]);
-    expect(allReleasedTogether(result)).toBe(true);
+    expect(barrierReport(result)).toBe(BARRIER_HELD);
   });
 
   it('carries a revoke across the process boundary', async () => {
@@ -173,11 +189,15 @@ describe('runConcurrentSettingsWriters', () => {
 
   it('runs its writers under its own barrier ceiling, not the child’s default', async () => {
     // The ceiling only bounds anything if it is actually sent. The child's
-    // fallback is deliberately a different number, so this reads as 60s exactly
-    // when the harness passed 60s — drop the argument and it reports the
+    // fallback is deliberately a different number, so this reads as 30s exactly
+    // when the harness passed 30s — drop the argument and it reports the
     // fallback instead of quietly agreeing.
+    //
+    // Spelled out rather than imported: the harness derives it as
+    // READY_TIMEOUT_MS * 2, and a test that recomputed the derivation would
+    // agree with any value the harness chose, including none.
     const result = await runConcurrentSettingsWriters(base, [{ set: { policy: 'warn' } }]);
-    expect(result.outcomes[0]?.barrierTimeoutMs).toBe(60_000);
+    expect(result.outcomes[0]?.barrierTimeoutMs).toBe(30_000);
   });
 });
 
@@ -300,31 +320,92 @@ describe('a writer that is never released', () => {
   }, 40_000);
 });
 
-describe('allReleasedTogether', () => {
-  it('is true when every writer was parked before the release', () => {
-    expect(allReleasedTogether(run(100, [20, 60, 100]))).toBe(true);
+describe('barrierReport', () => {
+  it('holds when every writer was parked before the release', () => {
+    expect(
+      barrierReport(run(100, [{ observedAt: 20 }, { observedAt: 60 }, { observedAt: 100 }])),
+    ).toBe(BARRIER_HELD);
   });
 
-  it('is false when a writer was still loading at the release', () => {
-    // The failure mode it exists to catch: a barrier that stopped holding, so
-    // the writers ran as each finished booting, one after another — under which
-    // "no answer was lost" is trivially true.
-    expect(allReleasedTogether(run(100, [20, 140]))).toBe(false);
-  });
+  // The two conjuncts, one case each. Each catches what the other cannot, and
+  // the pair is what stops either being deleted with the suite green — which is
+  // how the ordering half shipped unexercised: the gap case alone left
+  // `at <= releasedAt` removable with all six cases passing.
 
-  it('tolerates a writer scheduled late AFTER the release, which is not a defect', () => {
-    // A released child can sit unscheduled for longer than another writer's
-    // whole call on a loaded runner. Only readiness is the barrier's business,
-    // so that must not read as a broken barrier — otherwise the suite fails on
-    // machine load rather than on the product.
-    const late = run(100, [20, 60]);
-    const scheduledLate = late.outcomes.map((o, i) =>
-      i === 1 ? { ...o, startedAt: 9_000, endedAt: 9_010 } : o,
+  it('fails when a writer was never parked at all', () => {
+    // A barrier that stopped holding lets the writers run as each finishes
+    // booting, one after another — under which "no answer was lost" is
+    // trivially true. The parent never saw that writer park, so the gap is what
+    // reports it.
+    expect(barrierReport(run(100, [{ observedAt: 20 }, { bootMs: 4_000 }]))).toBe(
+      'writer 1 never parked (booted in 4000ms)',
     );
-    expect(allReleasedTogether({ ...late, outcomes: scheduledLate })).toBe(true);
   });
 
-  it('is false for no writers at all', () => {
-    expect(allReleasedTogether(run(100, []))).toBe(false);
+  it('fails when a writer was not observed until AFTER the release', () => {
+    // The ordering half, which no gap can reach: every writer parked and was
+    // seen, but one of them only after the go file went out. That is what a
+    // release reordered ahead of the handshake looks like from here — hoist
+    // `releasedAt`/`writeFileSync(goFile)` above the wait and every observation
+    // lands on this side of it.
+    expect(barrierReport(run(100, [{ observedAt: 20 }, { observedAt: 140 }]))).toBe(
+      'writer 1 was not observed until 40ms after the release (booted in 1ms)',
+    );
+  });
+
+  it('names every writer at fault, not just the first', () => {
+    // The whole reason this returns a sentence: a run with two bad writers has
+    // to say so, or the second is found on the next CI cycle.
+    expect(barrierReport(run(100, [{ observedAt: 20 }, {}, { observedAt: 150 }]))).toBe(
+      'writer 1 never parked (booted in 1ms); writer 2 was not observed until 50ms after the release (booted in 1ms)',
+    );
+  });
+
+  it('rejects a run carrying fewer observations than writers', () => {
+    // An arity guard on an exported function, not a shape the helper can
+    // return — `readyObservedAt` and `outcomes` both derive from the job list.
+    // A caller assembling a ConcurrentRun by hand can still reach it.
+    const partial = run(100, [{ observedAt: 20 }, { observedAt: 40 }]);
+    expect(barrierReport({ ...partial, readyObservedAt: [20] })).toBe(
+      'run is malformed: 1 observations for 2 writers',
+    );
+  });
+
+  it('does not skip a hole in the observations', () => {
+    // `Array.prototype.every` SKIPS holes, so a sparse array would never visit
+    // the missing index and the run would report that the barrier held. No
+    // production path builds one — both arrays are dense — so this pins the
+    // trap rather than a live defect.
+    const sparse = run(100, [{ observedAt: 20 }, { observedAt: 40 }, { observedAt: 60 }]);
+    // eslint-disable-next-line no-sparse-arrays -- the hole IS the fixture
+    expect(barrierReport({ ...sparse, readyObservedAt: [20, , 60] })).toBe(
+      'writer 1 never parked (booted in 1ms)',
+    );
+  });
+
+  it('reads no child stamp, however impossible that stamp looks', () => {
+    // Two writers with child stamps that cannot both be true of a barrier that
+    // held: one descheduled so long it started 9s late, and one reporting a
+    // start BEFORE the release it was waiting on. Neither is a defect. The
+    // first is ordinary runner load, and the second is the cross-process clock
+    // disagreement this whole harness was rewritten for — startedAt is stamped
+    // by the child, releasedAt by the parent, so their arithmetic means
+    // nothing even though the causal order is certain.
+    //
+    // Both values are the point. A version of barrierReport that reached for
+    // startedAt at all fails here whichever direction it compared: `>=
+    // releasedAt` rejects writer 0, `<=` rejects writer 1. Without the early
+    // stamp the case was a tautology — a late-only fixture satisfies a
+    // `startedAt >= releasedAt` conjunct, so the conjunct could be added with
+    // the suite green.
+    const run_ = run(100, [{ observedAt: 20 }, { observedAt: 60 }]);
+    const impossible = run_.outcomes.map((o, i) =>
+      i === 0 ? { ...o, startedAt: 50, endedAt: 70 } : { ...o, startedAt: 9_000, endedAt: 9_010 },
+    );
+    expect(barrierReport({ ...run_, outcomes: impossible })).toBe(BARRIER_HELD);
+  });
+
+  it('fails for no writers at all', () => {
+    expect(barrierReport(run(100, []))).toBe('no writers ran');
   });
 });

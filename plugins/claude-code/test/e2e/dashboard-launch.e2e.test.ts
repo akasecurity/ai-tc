@@ -235,10 +235,17 @@ describe('the built dashboard launcher', () => {
       const binDir = tempDir();
       const recordPath = join(binDir, 'spawned.json');
       const env = launcherEnv(binDir);
+      // The plan the launcher itself will build, for the reason the positive
+      // case reads one: PATH is not the whole of resolution. The win32 plan
+      // anchors its spawn at `homedir()`, and both `cmd.exe` and the `where.exe`
+      // lookup inside `planBareCommand` search that directory BEFORE PATH.
+      const plan = planBareCommand('aka', ['dashboard'], { env });
       // Proven, not assumed: a real `aka` reachable from here would be spawned
       // for real, and this case would then fail on the message — after the
       // server was already running.
-      assertCommandNotOnPath(env, 'aka');
+      assertCommandNotOnPath(env, 'aka', {
+        ...(plan.options.cwd === undefined ? {} : { cwd: plan.options.cwd }),
+      });
 
       const stdout = runLauncher(env, ['--no-open']);
 

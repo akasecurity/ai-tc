@@ -89,9 +89,19 @@ const tempDir = (): string => {
 // shebang — never node's own bin dir, which under a shared install prefix
 // carries `npm i -g`'s shims beside the interpreter — plus (win32 only) the
 // system dirs cmd.exe itself is found through.
+//
+// Through `nodeOnlyPathEntries` rather than `nodeOnlyDir`, for the reason that
+// wrapper exists: on win32 the shim is a `.cmd` naming `process.execPath`
+// outright, so nothing reads the interpreter off PATH, and materialising one
+// there costs a copy of the whole binary wherever the platform refuses the link
+// — which is the ordinary un-elevated Windows account. Called once per case,
+// this is the same shape `launcherEnv` uses in the e2e suites.
 const shimEnv = (binDir?: string): NodeJS.ProcessEnv => ({
   ...WINDOWS_SYSTEM_ENV,
-  PATH: shimmedPath(binDir ?? '', [nodeOnlyDir(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+  PATH: shimmedPath(
+    binDir ?? '',
+    [...nodeOnlyPathEntries(tempDir()), ...WINDOWS_SYSTEM_DIRS].join(delimiter),
+  ),
 });
 
 // `node --version` through `PATH` alone, the way a POSIX shim's `#!/usr/bin/env
@@ -376,25 +386,117 @@ describe('assertCommandNotOnPath', () => {
     ).toBeUndefined();
   });
 
-  it('rethrows a read failure that is NOT absence', () => {
-    // The other half, and the one a blanket `catch { continue }` loses: absence
-    // means nothing is there, while a read that fails for any other reason
-    // leaves the premise UNESTABLISHED — and this check reporting "nothing
-    // resolves" without having looked is the exact failure it exists to
-    // prevent. The live case is a POSIX dir with search but not read permission
-    // (`--x`): execvp happily executes a known name inside it while readdir
-    // refuses, so a swallowed EACCES hides a binary that really is reachable.
-    // Driven here as ENOTDIR — a file where a dir was expected — because that
-    // needs no chmod, which is a no-op on Windows and again when running as
-    // root, and it exercises the same non-ENOENT branch.
+  it('tolerates a PATH entry that is a file rather than a directory', () => {
+    // The second entry nothing resolves THROUGH. `execvp` tries `<file>/aka`,
+    // gets ENOTDIR and walks on to the next entry, so a stale file on PATH is
+    // the "nothing can be here" case exactly as a missing dir is — and refusing
+    // would report a read problem where there was nothing to read. A generic
+    // NodeJS.ProcessEnv is what this takes, so a caller passing `process.env` on
+    // a host whose PATH carries one gets a hard setup failure for a directory
+    // that could never have resolved anything.
     const notADir = join(tempDir(), 'file-on-path');
     writeFileSync(notADir, '');
 
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(notADir), REAL);
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rethrows a read failure that leaves the premise unestablished', (ctx) => {
+    // The other half, and the one a blanket `catch { continue }` loses. Absence
+    // and ENOTDIR mean nothing is there to find; a read that fails for any other
+    // reason leaves the premise UNESTABLISHED, and this check reporting "nothing
+    // resolves" without having looked is the exact failure it exists to prevent.
+    //
+    // Driven as the live case rather than a stand-in: a POSIX dir with search
+    // but not read permission (`--x`). `execvp` executes a known name inside it
+    // while `readdir` refuses with EACCES, so a swallowed error hides a binary
+    // that really is reachable. ENOTDIR was the earlier stand-in and is no
+    // longer one — it is now a skip, which is what the case above pins.
+    const dir = tempDir();
+    writeFileSync(join(dir, REAL), '');
+    chmodSync(dir, 0o111);
+    // chmod is a no-op on Windows and again as root, and there the read
+    // succeeds — so there is no unreadable directory to assert about. Skipped
+    // rather than returned: a pass here would be a claim this run never checked.
+    let denied = false;
+    try {
+      readdirSync(dir);
+    } catch {
+      denied = true;
+    }
+    if (!denied) {
+      chmodSync(dir, 0o755);
+      ctx.skip('this platform/account ignores a --x directory, so readdir still succeeds');
+    }
+
     const err = errorFrom(() => {
-      assertCommandNotOnPath(pathOf(notADir), REAL);
+      assertCommandNotOnPath(pathOf(dir), REAL);
     });
+    // Restored before the assertions, so a failure does not also break teardown.
+    chmodSync(dir, 0o755);
     expect(err).toBeDefined();
-    expect((err as NodeJS.ErrnoException).code).toBe('ENOTDIR');
+    expect((err as NodeJS.ErrnoException).code).toBe('EACCES');
+  });
+
+  it('refuses a command in the cwd on win32, which resolves before PATH', () => {
+    // The axis PATH alone cannot see. Windows searches the working directory
+    // first, so a real `aka` there is resolved with a spotless PATH — and the
+    // launcher's win32 plan anchors its spawn at homedir(), a directory this
+    // check has no other way to know about.
+    const cwd = tempDir();
+    const clean = tempDir();
+    for (const name of RESOLVABLE) {
+      rmSync(join(cwd, name), { force: true });
+      writeFileSync(join(cwd, name), '');
+
+      const err = errorFrom(() => {
+        assertCommandNotOnPath(pathOf(clean), REAL, { cwd, platform: 'win32' });
+      });
+      expect(err, `a "${name}" in the cwd must refuse`).toBeDefined();
+      // Named as the cwd rather than as a PATH entry: the two are fixed by
+      // different edits, so a refusal that misreports which one wastes the hint.
+      expect(err?.message).toContain('BEFORE PATH');
+      rmSync(join(cwd, name), { force: true });
+    }
+  });
+
+  it('ignores the cwd on POSIX, where resolution never consults it', () => {
+    // Not symmetry for its own sake: POSIX PATH lookup does not read the cwd, so
+    // refusing there would block a case over a binary that could never be
+    // reached — and the call site passes `plan.options.cwd` unconditionally.
+    const cwd = tempDir();
+    writeFileSync(join(cwd, REAL), '');
+
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(tempDir()), REAL, { cwd, platform: 'linux' });
+      }),
+    ).toBeUndefined();
+  });
+
+  it('still walks PATH when a cwd is given, and tolerates a missing one', () => {
+    // The cwd is an ADDITIONAL entry, not a replacement: a check that returned
+    // after reading it would pass every PATH case in this file.
+    const onPath = tempDir();
+    writeFileSync(join(onPath, REAL), '');
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(onPath), REAL, { cwd: tempDir(), platform: 'win32' });
+      }),
+    ).toBeDefined();
+
+    // A cwd that does not exist is the ENOENT skip, reached through the new arm.
+    expect(
+      errorFrom(() => {
+        assertCommandNotOnPath(pathOf(tempDir()), REAL, {
+          cwd: join(tempDir(), 'never-created'),
+          platform: 'win32',
+        });
+      }),
+    ).toBeUndefined();
   });
 
   it('ignores empty PATH segments rather than reading the cwd', () => {

@@ -278,9 +278,42 @@ export function nodeOnlyPathEntries(parent: string, options: NodeOnlyPathOptions
   return shimNeedsNodeOnPath(options.platform) ? [nodeOnlyDir(parent, options)] : [];
 }
 
+export interface CommandAbsenceOptions {
+  /**
+   * The working directory the spawn being stood in for will use, when it is not
+   * this process's own.
+   *
+   * The axis {@link ShimResolutionOptions.cwd} exists for, in the direction that
+   * fails SILENTLY. Windows searches the working directory before it walks PATH
+   * — `cmd.exe` does, and so does the `where.exe` lookup inside
+   * `planBareCommand` — so a real `command.cmd` sitting there is resolved
+   * without PATH being consulted at all, and proving absence over PATH alone
+   * reports a premise this check never established. That is not hypothetical for
+   * the launcher: its Windows plan anchors the spawn at `homedir()` rather than
+   * inheriting the caller's cwd, which is precisely where a user's own tools
+   * land.
+   *
+   * Ignored on POSIX, where resolution never consults the cwd, so a call site
+   * passes `plan.options.cwd` straight through without a platform branch of its
+   * own.
+   */
+  readonly cwd?: string;
+  /**
+   * The platform whose resolution rules to apply. Defaults to the running one.
+   *
+   * A seam for the reason {@link shimNeedsNodeOnPath} takes one: the branch that
+   * matters here is the win32 one, and gating it on a constant read off the
+   * running host leaves it unreachable from every runner this suite is actually
+   * run on. It decides the cwd rule ALONE — `env.PATH` is still split on the
+   * running platform's delimiter, because that is the host that built it.
+   */
+  readonly platform?: NodeJS.Platform;
+}
+
 /**
- * Refuse unless NO directory on `env.PATH` holds anything the bare name
- * `command` could resolve to.
+ * Refuse unless NO directory the platform would search holds anything the bare
+ * name `command` could resolve to — every entry on `env.PATH`, and on win32 the
+ * caller's `cwd` ahead of them.
  *
  * The mirror of {@link assertShimResolves}, for the case whose subject is that
  * a command is absent: that premise has to be PROVEN, because a miss does not
@@ -295,30 +328,53 @@ export function nodeOnlyPathEntries(parent: string, options: NodeOnlyPathOptions
  * npm global install writes — because over-refusing names a file to go and look
  * at, while under-refusing runs it.
  *
- * A directory on PATH that does not exist is not a hit: `execvp` and libuv both
- * skip an unreadable entry, so refusing there would report a resolution this
- * PATH cannot perform. Anything else is rethrown rather than swallowed — a
- * directory that exists and cannot be read is a premise this check could not
- * establish, which is the one thing it must not report as established.
+ * An entry nothing can resolve THROUGH is not a hit, and there are two of them:
+ * one that does not exist (ENOENT) and one that is a regular FILE where a
+ * directory was expected (ENOTDIR). `execvp` and libuv skip both and keep
+ * walking, so refusing on either would report a resolution this PATH cannot
+ * perform. A read that fails for any OTHER reason is rethrown rather than
+ * swallowed: a directory that exists and cannot be read — a POSIX `--x`, where
+ * `execvp` happily runs a known name inside it while `readdir` refuses — is a
+ * premise this check could not establish, which is the one thing it must not
+ * report as established.
  */
-export function assertCommandNotOnPath(env: NodeJS.ProcessEnv, command: string): void {
-  const prefix = `${command.toLowerCase()}.`;
-  for (const dir of (env.PATH ?? '').split(delimiter)) {
+export function assertCommandNotOnPath(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  options: CommandAbsenceOptions = {},
+): void {
+  const lower = command.toLowerCase();
+  const prefix = `${lower}.`;
+  // The cwd goes FIRST because that is the order resolution uses, so a refusal
+  // names the entry that would actually have won.
+  const searched: { readonly dir: string; readonly source: string }[] = [
+    ...((options.platform ?? process.platform) === 'win32' && options.cwd !== undefined
+      ? [
+          {
+            dir: options.cwd,
+            source: "the spawn's own working directory, which Windows searches BEFORE PATH",
+          },
+        ]
+      : []),
+    ...(env.PATH ?? '').split(delimiter).map((dir) => ({ dir, source: 'this PATH' })),
+  ];
+  for (const { dir, source } of searched) {
     if (dir === '') continue;
     let names: string[];
     try {
       names = readdirSync(dir);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       throw e;
     }
     const hit = names.find((name) => {
-      const lower = name.toLowerCase();
-      return lower === command.toLowerCase() || lower.startsWith(prefix);
+      const name_ = name.toLowerCase();
+      return name_ === lower || name_.startsWith(prefix);
     });
     if (hit !== undefined) {
       throw new Error(
-        `a real "${command}" is reachable from this PATH: ${join(dir, hit)}. This is a SETUP ` +
+        `a real "${command}" is reachable from ${source}: ${join(dir, hit)}. This is a SETUP ` +
           'failure, not a result: driving the case from here would resolve that binary instead ' +
           "of the stub, so the case would exercise the developer's own installed CLI. The PATH " +
           'must carry only the shim dir, the interpreter dir where one is needed and (win32) the ' +

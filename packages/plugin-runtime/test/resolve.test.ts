@@ -98,6 +98,52 @@ describe('resolveDataGateway', () => {
     await gw.close();
   });
 
+  it('the returned thunk restores the PREVIOUS factory, not the standalone default', () => {
+    // Two registrants: an embedder at process start, then a test substituting
+    // over it. Unwinding with `setDefaultGatewayFactory()` would reset to
+    // standalone and silently discard the embedder's registration — and the
+    // embedder ran before any resolving code, so it has no call site left to
+    // notice from. The thunk puts the embedder back.
+    const embedder = { close: (): Promise<void> => Promise.resolve() } as unknown as DataGateway;
+    setDefaultGatewayFactory(() => embedder);
+
+    const restore = setDefaultGatewayFactory(() => stub);
+    expect(resolveDataGateway(makeConfig('standalone'))).toBe(stub);
+
+    restore();
+    expect(resolveDataGateway(makeConfig('standalone'))).toBe(embedder);
+  });
+
+  it('nested substitutions unwind exactly, innermost first', () => {
+    const outer = { close: (): Promise<void> => Promise.resolve() } as unknown as DataGateway;
+    const inner = { close: (): Promise<void> => Promise.resolve() } as unknown as DataGateway;
+
+    const restoreOuter = setDefaultGatewayFactory(() => outer);
+    const restoreInner = setDefaultGatewayFactory(() => inner);
+    expect(resolveDataGateway(makeConfig('standalone'))).toBe(inner);
+
+    restoreInner();
+    expect(resolveDataGateway(makeConfig('standalone'))).toBe(outer);
+
+    restoreOuter();
+    const gw = resolveDataGateway(makeConfig('standalone'));
+    expect(gw).toBeInstanceOf(StandaloneDataGateway);
+    return gw.close();
+  });
+
+  it("the no-argument form's own thunk restores what IT replaced", async () => {
+    // The reset is still a substitution like any other, so a teardown that
+    // resets can itself be unwound.
+    setDefaultGatewayFactory(() => stub);
+    const restore = setDefaultGatewayFactory();
+    const reset = resolveDataGateway(makeConfig('standalone'));
+    expect(reset).toBeInstanceOf(StandaloneDataGateway);
+    await reset.close();
+
+    restore();
+    expect(resolveDataGateway(makeConfig('standalone'))).toBe(stub);
+  });
+
   it('exports the standalone factory so a substitute can fall back to it', async () => {
     const gw = standaloneGatewayFactory(makeConfig('standalone'));
     expect(gw).toBeInstanceOf(StandaloneDataGateway);

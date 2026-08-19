@@ -38,11 +38,27 @@ let defaultGatewayFactory: DataGatewayFactory = standaloneGatewayFactory;
 
 /**
  * Set the factory `resolveDataGateway` falls back to for the rest of this
- * process. Passing nothing restores the standalone default, which is what a
- * test's teardown does — and the reason the parameter is optional.
+ * process, and return a thunk that puts back whatever was set before.
+ *
+ * Unwind through the thunk, not through a second no-argument call. The
+ * no-argument form resets to the STANDALONE default rather than to the
+ * previous factory, so with two registrants — an embedder setting its gateway
+ * at process start, then a test or a nested helper substituting over it — a
+ * reset discards the embedder's registration and every later
+ * `resolveDataGateway` silently opens the on-disk SQLite store instead. The
+ * embedder is by definition the caller that ran before any resolving code, so
+ * it has no call site left to notice the takeover from. The thunk restores the
+ * previous factory, so nested substitutions unwind exactly.
+ *
+ * Passing nothing still resets to the standalone default: that is what a
+ * top-level test teardown wants, and the reason the parameter is optional.
  */
-export function setDefaultGatewayFactory(factory?: DataGatewayFactory): void {
+export function setDefaultGatewayFactory(factory?: DataGatewayFactory): () => void {
+  const previous = defaultGatewayFactory;
   defaultGatewayFactory = factory ?? standaloneGatewayFactory;
+  return () => {
+    defaultGatewayFactory = previous;
+  };
 }
 
 export function resolveDataGateway(

@@ -230,22 +230,51 @@ export interface LocalStoreMaintenance {
   staleBinaryNotice(currentVersion: string): string | null;
 }
 
+// The member names, derived from the interface rather than restated: a
+// `Record` keyed on `keyof LocalStoreMaintenance` fails to compile until a
+// sixth member added above is listed here too, so the two cannot drift.
+const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true> = {
+  sweepTerminalExceptions: true,
+  capWarnEraEnforcement: true,
+  recordProjectFiles: true,
+  reconcileWorktreeProjects: true,
+  staleBinaryNotice: true,
+};
+
 /**
- * Whether a gateway offers local-store maintenance.
+ * Whether a gateway offers ONE named maintenance member.
  *
- * Structural rather than an `instanceof` check: any implementation providing
- * all five members qualifies, including a wrapper that forwards them to an
- * inner gateway. Callers gate the optional maintenance work on this.
+ * Structural rather than an `instanceof` check: any implementation supplying
+ * the member qualifies, including a wrapper that forwards it to an inner
+ * gateway.
+ *
+ * Per member rather than all-or-nothing, because the five passes are
+ * unrelated — a retention purge, a one-shot legacy cap, a file-tree commit, a
+ * read-model repair, a version nudge — and an implementation that owns a store
+ * has every reason to supply some and not others. Gating the group on the full
+ * set means a gateway missing only the version nudge also stops purging
+ * terminal exceptions past retention, which is one of the two tables with any
+ * retention policy at all. Every pass is swallowed by design, so that loss is
+ * printed nowhere. Callers gate each pass on its own member.
+ */
+export function offersMaintenance<K extends keyof LocalStoreMaintenance>(
+  gateway: DataGateway,
+  member: K,
+): gateway is DataGateway & Pick<LocalStoreMaintenance, K> {
+  return typeof (gateway as Partial<LocalStoreMaintenance>)[member] === 'function';
+}
+
+/**
+ * Whether a gateway offers the WHOLE local-store maintenance capability.
+ *
+ * The all-or-nothing form, for a caller that needs every member — the shipped
+ * standalone gateway is pinned against it. It is not what session-start
+ * gates on; that gates each pass on its own member via `offersMaintenance`.
  */
 export function hasLocalStoreMaintenance(
   gateway: DataGateway,
 ): gateway is DataGateway & LocalStoreMaintenance {
-  const candidate = gateway as Partial<LocalStoreMaintenance>;
-  return (
-    typeof candidate.sweepTerminalExceptions === 'function' &&
-    typeof candidate.capWarnEraEnforcement === 'function' &&
-    typeof candidate.recordProjectFiles === 'function' &&
-    typeof candidate.reconcileWorktreeProjects === 'function' &&
-    typeof candidate.staleBinaryNotice === 'function'
+  return Object.keys(LOCAL_STORE_MAINTENANCE_MEMBERS).every((member) =>
+    offersMaintenance(gateway, member as keyof LocalStoreMaintenance),
   );
 }

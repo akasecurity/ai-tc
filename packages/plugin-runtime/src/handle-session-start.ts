@@ -5,8 +5,8 @@ import {
   claimSessionStart,
   configPostureDefinitions,
   evaluateConfigPosture,
-  hasLocalStoreMaintenance,
   loadConfig,
+  offersMaintenance,
   resolveConfigInventory,
   resolveGitBranch,
   resolveHeadRoot,
@@ -101,18 +101,25 @@ export async function handleSessionStart(
       // session claim. Guarded separately: a scanner bug must not take the
       // just-written session root down with it.
       await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
-      // Best-effort store maintenance, gated on the capability: purge terminal
-      // exception rows past retention. Swallowed — a failed sweep must never
-      // break SessionStart, and evaluation never depends on it.
-      if (hasLocalStoreMaintenance(gateway)) {
+      // Best-effort store maintenance. Each pass is gated on ITS OWN member
+      // rather than on the whole capability: the five are unrelated, so a
+      // gateway supplying four of them must still get those four run — gating
+      // the group would drop the retention purge because some unrelated member
+      // is absent, and every pass here is swallowed, so nothing would say so.
+      //
+      // Purge terminal exception rows past retention. Swallowed — a failed
+      // sweep must never break SessionStart, and evaluation never depends on it.
+      if (offersMaintenance(gateway, 'sweepTerminalExceptions')) {
         try {
           await gateway.sweepTerminalExceptions(EXCEPTION_RETENTION_MS);
         } catch {
           // best-effort
         }
-        // The warn-era enforcement cap: caps existing block/redact category
-        // rows to warn once for a warn-policy store. A redact-policy store
-        // is a no-op.
+      }
+      // The warn-era enforcement cap: caps existing block/redact category
+      // rows to warn once for a warn-policy store. A redact-policy store
+      // is a no-op.
+      if (offersMaintenance(gateway, 'capWarnEraEnforcement')) {
         try {
           const { capped } = gateway.capWarnEraEnforcement(config.settings.policy);
           if (capped > 0) {
@@ -125,9 +132,11 @@ export async function handleSessionStart(
         } catch {
           // Fail-open: a failed cap drops the migration, never the session.
         }
-        // The project-file inventory pass (the Inventory page's file tree),
-        // gated on the capability like the sweep. Guarded separately: a walk
-        // bug must never take the session root or config scan down with it.
+      }
+      // The project-file inventory pass (the Inventory page's file tree).
+      // Guarded separately: a walk bug must never take the session root or
+      // config scan down with it.
+      if (offersMaintenance(gateway, 'recordProjectFiles')) {
         try {
           if (resolved.sourceProjectId) {
             const filesScan = resolveProjectFiles(input.cwd);
@@ -136,8 +145,10 @@ export async function handleSessionStart(
         } catch {
           // Fail-open: a failed walk drops the tree update, never the session.
         }
-        // Self-heal ghost projects the pre-worktree-fix resolver minted for
-        // checkout paths — one fixed-plugin session clears them for good.
+      }
+      // Self-heal ghost projects the pre-worktree-fix resolver minted for
+      // checkout paths — one fixed-plugin session clears them for good.
+      if (offersMaintenance(gateway, 'reconcileWorktreeProjects')) {
         try {
           const headRoot = resolveHeadRoot(input.cwd);
           const worktreeRoot = resolveWorktreeRoot(input.cwd);
@@ -151,12 +162,12 @@ export async function handleSessionStart(
         } catch {
           // Fail-open: ghosts linger until the next session, nothing breaks.
         }
-        // The stale-session check (P2): only meaningful when this session
-        // knows its own version; a failing check here falls through to the
-        // outer fail-open.
-        if (input.harnessVersion !== undefined) {
-          return { staleBinaryNotice: gateway.staleBinaryNotice(input.harnessVersion) };
-        }
+      }
+      // The stale-session check (P2): only meaningful when this session
+      // knows its own version; a failing check here falls through to the
+      // outer fail-open.
+      if (input.harnessVersion !== undefined && offersMaintenance(gateway, 'staleBinaryNotice')) {
+        return { staleBinaryNotice: gateway.staleBinaryNotice(input.harnessVersion) };
       }
     } finally {
       await gateway.close();

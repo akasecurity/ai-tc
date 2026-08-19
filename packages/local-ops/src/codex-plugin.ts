@@ -7,6 +7,5 @@ import { createCliPluginManager } from './cli-plugin-manager.ts';
 const manager = createCliPluginManager('codex');
 
 export const codexAvailable = manager.available;
-export const ensureCodexMarketplace = manager.ensureMarketplace;
 export const installCodexPlugin = manager.install;
 export const updateCodexPlugin = manager.update;

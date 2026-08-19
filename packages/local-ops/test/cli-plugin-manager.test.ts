@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
 
+// The manager exposes STEPS; rendering them is the caller's job (apply.ts runs
+// them, the CLI and the dashboard print them). Rendering here rather than
+// asserting against a shipped `installCommands`/`updateCommands` keeps the
+// module's surface to what something actually calls — an exported helper whose
+// only caller is the suite pinning it proves nothing about the product.
+const rendered = (bin: string, steps: readonly (readonly string[])[]): string[] =>
+  steps.map((args) => `${bin} ${args.join(' ')}`);
+
 // The two host CLIs share the `<bin> plugin …` SHAPE and nothing else. Treating
 // their verbs as interchangeable is what shipped `codex plugin install
 // aka-codex@ai-tc` to users, which Codex rejects with "unrecognized subcommand"
@@ -129,20 +137,6 @@ describe('no host emits a verb its CLI does not have', () => {
   }
 });
 
-describe('hint copy is the command that runs', () => {
-  for (const bin of ['claude', 'codex'] as const) {
-    it(bin, () => {
-      const manager = createCliPluginManager(bin);
-      expect(manager.installCommands('p@m')).toEqual(
-        manager.installSteps('p@m').map((args) => `${bin} ${args.join(' ')}`),
-      );
-      expect(manager.updateCommands('p@m')).toEqual(
-        manager.updateSteps('p@m').map((args) => `${bin} ${args.join(' ')}`),
-      );
-    });
-  }
-});
-
 // A recipe is the MANUAL EQUIVALENT — what a user runs by hand — and every
 // caller joins it with `&&`. Two things follow, and the second is the one that
 // bit: a recipe must reach the op (a line that only registers a marketplace
@@ -156,8 +150,14 @@ describe('a recipe is safe to join with &&', () => {
     it(bin, () => {
       const manager = createCliPluginManager(bin);
       const cases = [
-        { recipe: manager.installRecipe('p@m', 'owner/repo'), op: manager.installCommands('p@m') },
-        { recipe: manager.updateRecipe('p@m', 'owner/repo'), op: manager.updateCommands('p@m') },
+        {
+          recipe: manager.installRecipe('p@m', 'owner/repo'),
+          op: rendered(bin, manager.installSteps('p@m')),
+        },
+        {
+          recipe: manager.updateRecipe('p@m', 'owner/repo'),
+          op: rendered(bin, manager.updateSteps('p@m')),
+        },
       ];
       for (const { recipe, op } of cases) {
         // Registers first — the op fails on an unknown marketplace without it.
@@ -185,7 +185,7 @@ describe('a recipe is safe to join with &&', () => {
 
   it('omits the prep when there is no marketplace source to name', () => {
     const codex = createCliPluginManager('codex');
-    expect(codex.installRecipe('p@m')).toEqual(codex.installCommands('p@m'));
+    expect(codex.installRecipe('p@m')).toEqual(rendered('codex', codex.installSteps('p@m')));
   });
 });
 
@@ -196,7 +196,7 @@ describe('the snapshot refresh survives as best-effort prep', () => {
   // Both hosts, because both cache a snapshot. Asserted per host rather than in
   // a loop over a shared expectation: the verbs differ, and a loop that derived
   // the expected step from the module would pass whatever the module said.
-  it('codex keeps it in marketplaceSteps, which ensureMarketplace runs', () => {
+  it('codex keeps it in marketplaceSteps, which apply.ts runs as prep', () => {
     const codex = createCliPluginManager('codex');
     expect(codex.marketplaceSteps('akasecurity/ai-tc', 'ai-tc')).toEqual([
       ['plugin', 'marketplace', 'add', 'akasecurity/ai-tc'],
@@ -232,15 +232,13 @@ describe('the spawn plan discloses every command the automated path runs', () =>
   it('matches what apply.ts actually spawns: marketplaceSteps then the op', () => {
     for (const bin of ['claude', 'codex'] as const) {
       const m = createCliPluginManager(bin);
-      const rendered = (steps: readonly (readonly string[])[]) =>
-        steps.map((a) => `${bin} ${a.join(' ')}`);
       expect(m.updateSpawnPlan('p@m', 'owner/repo', 'm')).toEqual([
-        ...rendered(m.marketplaceSteps('owner/repo', 'm')),
-        ...m.updateCommands('p@m'),
+        ...rendered(bin, m.marketplaceSteps('owner/repo', 'm')),
+        ...rendered(bin, m.updateSteps('p@m')),
       ]);
       expect(m.installSpawnPlan('p@m', 'owner/repo', 'm')).toEqual([
-        ...rendered(m.marketplaceSteps('owner/repo', 'm')),
-        ...m.installCommands('p@m'),
+        ...rendered(bin, m.marketplaceSteps('owner/repo', 'm')),
+        ...rendered(bin, m.installSteps('p@m')),
       ]);
     }
   });

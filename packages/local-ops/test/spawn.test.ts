@@ -1,9 +1,12 @@
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ApplyMode } from '../src/apply.ts';
 import { applyPluginUpdate, installAgentPlugin } from '../src/apply.ts';
 import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
 import {
@@ -286,6 +289,62 @@ describe('what an install/update really spawns', () => {
   });
 });
 
+// Whether prep STREAMS or is swallowed is invisible from inside this process:
+// 'inherit' hands the child this process's own stdout, so nothing JS-level sees
+// the bytes, and 'capture' pipes them somewhere apply.ts then discards. Both
+// look identical to every assertion above, which is how prep went on capturing
+// unconditionally while the CLI announced three commands and showed none of
+// them running. Read it from the far side of a process boundary instead.
+const APPLY_RUNNER = fileURLToPath(new URL('./helpers/apply-runner.ts', import.meta.url));
+
+function applyInChild(op: 'install' | 'update', agentId: string, mode: ApplyMode): string {
+  const path = [binDir, NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter);
+  const res = spawnSync(process.execPath, [APPLY_RUNNER, op, agentId, mode], {
+    encoding: 'utf8',
+    // The same closed PATH the in-process cases use. A child that inherited the
+    // host's PATH would resolve the developer's REAL `claude` and run a live
+    // plugin install against their machine — measured, not hypothetical.
+    env: { PATH: path, ...WINDOWS_SYSTEM_ENV },
+    cwd: SPAWN_CWD,
+  });
+  // The runner always prints its marker, so an absent one means it never got
+  // there — a silent stdout would otherwise satisfy the negative case below
+  // whether prep was quiet or the whole run had failed to start.
+  expect(res.stdout).toContain('[done]');
+  return res.stdout;
+}
+
+describe('what the user actually sees while it runs', () => {
+  it('streams every prep command in inherit mode, not just the op', () => {
+    armShims(['claude']);
+
+    const out = applyInChild('install', 'claude-code', 'inherit');
+
+    // All three, because all three were announced. Prep used to run through
+    // runCapture whatever the mode, so the first two lines existed only inside
+    // a discarded buffer and `aka update` sat silent across two network-bound
+    // spawns.
+    expect(out).toContain('claude plugin marketplace add akasecurity/marketplace ran');
+    expect(out).toContain('claude plugin marketplace update akasecurity ran');
+    expect(out).toContain('claude plugin install ai-tc@akasecurity ran');
+    expect(out).toContain('[done] ok=true');
+  });
+
+  it('keeps every command off stdout in capture mode — the dashboard has no terminal', () => {
+    armShims(['claude']);
+
+    const out = applyInChild('install', 'claude-code', 'capture');
+
+    // The control for the case above: same plan, same shims, and the ONLY
+    // difference is the mode. Without it that test passes for a build that
+    // streams unconditionally, which would print the dashboard's output into
+    // the server log.
+    expect(out).not.toContain('claude plugin marketplace add akasecurity/marketplace ran');
+    expect(out).not.toContain('claude plugin install ai-tc@akasecurity ran');
+    expect(out).toContain('[done] ok=true');
+  });
+});
+
 describe('which failures are fatal', () => {
   it('carries on when marketplace prep fails — the op still runs, and succeeds', () => {
     armShims(['claude']);
@@ -302,8 +361,8 @@ describe('which failures are fatal', () => {
       'claude plugin marketplace update akasecurity',
       'claude plugin install ai-tc@akasecurity',
     ]);
-    // A refused prep step leaves no trace in the result either — its output is
-    // captured and discarded by ensureMarketplace.
+    // A refused prep step leaves no trace in the result either: prep's results
+    // are discarded, and that discard is the only thing keeping it survivable.
     expect(res.output).not.toContain('step refused');
   });
 
@@ -387,27 +446,5 @@ describe('the manager’s own spawning verbs', () => {
     failStep('update');
 
     expect(createCliPluginManager('claude').update('ai-tc@akasecurity')).toBe(false);
-  });
-
-  it('ensureMarketplace runs register then refresh, and swallows both results', () => {
-    armShims(['codex']);
-    failStep('marketplace');
-
-    expect(() => {
-      createCliPluginManager('codex').ensureMarketplace('akasecurity/ai-tc', 'ai-tc');
-    }).not.toThrow();
-
-    expect(commandLines()).toEqual([
-      'codex plugin marketplace add akasecurity/ai-tc',
-      'codex plugin marketplace upgrade ai-tc',
-    ]);
-  });
-
-  it('skips the refresh when there is no marketplace to refresh', () => {
-    armShims(['claude']);
-
-    createCliPluginManager('claude').ensureMarketplace('akasecurity/marketplace');
-
-    expect(commandLines()).toEqual(['claude plugin marketplace add akasecurity/marketplace']);
   });
 });

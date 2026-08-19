@@ -1,4 +1,4 @@
-import { binExists, runCapture, runInherit } from './exec.ts';
+import { binExists, runInherit } from './exec.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
@@ -77,23 +77,22 @@ const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
 
 export interface CliPluginManager {
   available: () => boolean;
-  // Bring the marketplace up to date, best-effort: register the source if it
-  // isn't already, then refresh the snapshot. Every step's result is captured
-  // and discarded — a re-add of an existing marketplace is a no-op that reports
-  // success on both hosts (measured on each, not inferred from one), and a
-  // refresh that fails leaves the cached snapshot in place, which the plugin op
-  // can still use.
-  ensureMarketplace: (source: string, marketplace?: string) => void;
-  // The commands an install/update runs, in order. Exposed so a caller that
-  // needs its own output mode (apply.ts streams or captures) and the hint copy
-  // that tells a user what to type both come from ONE table — hint copy naming
-  // a verb the host rejects is exactly how this bug reached a user's terminal.
+  // The commands an install/update runs, in order. Exposed as STEPS rather than
+  // run here, because the caller owns the output mode: apply.ts streams to a
+  // terminal or captures for the dashboard, and marketplace prep is best-effort
+  // where the op is fatal. One table feeds both those runs and the hint copy
+  // that tells a user what to type — hint copy naming a verb the host rejects
+  // is exactly how this bug reached a user's terminal.
+  //
+  // `marketplaceSteps` is prep: register the source, then refresh the snapshot
+  // if a marketplace name is known. A re-add of an existing marketplace is a
+  // no-op that reports success on both hosts (measured on each, not inferred
+  // from one), and a refresh that fails leaves the cached snapshot in place,
+  // which the plugin op can still install from — so every one of these steps is
+  // survivable and apply.ts discards their results.
   marketplaceSteps: (source: string, marketplace?: string) => Step[];
   installSteps: (ref: string) => Step[];
   updateSteps: (ref: string) => Step[];
-  // The same steps rendered as copy-pasteable command lines.
-  installCommands: (ref: string) => string[];
-  updateCommands: (ref: string) => string[];
   // The MANUAL EQUIVALENT: what a user runs by hand to reach the same state —
   // register the marketplace, then the op. Shown where the automated path can't
   // run or may be interrupted, so every caller joins it with `&&`.
@@ -149,16 +148,9 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
 
   return {
     available: () => binExists(bin),
-    ensureMarketplace: (source, marketplace) => {
-      for (const args of marketplaceSteps(source, marketplace)) {
-        runCapture(bin, [...args], 60_000);
-      }
-    },
     marketplaceSteps,
     installSteps: (ref) => verbs.install(ref),
     updateSteps: (ref) => verbs.update(ref),
-    installCommands: (ref) => render(verbs.install(ref)),
-    updateCommands: (ref) => render(verbs.update(ref)),
     installRecipe: (ref, source) => recipe(verbs.install(ref), source),
     updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
     installSpawnPlan: (ref, source, marketplace) =>

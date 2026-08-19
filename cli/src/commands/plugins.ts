@@ -114,7 +114,14 @@ function installPlugin(argv: string[]): void {
     return;
   }
 
-  process.stdout.write(`Installing ${agent.name} via ${cliBin}…\n`);
+  // Announce every command that is about to run, not just the host binary's
+  // name. The install path spawns marketplace prep before the op exactly as the
+  // update path does, and "via claude" named none of the three.
+  const plan = manager.installSpawnPlan(ref, agent.marketplaceSource, agent.marketplace);
+  process.stdout.write(
+    `Installing ${agent.name} via ${cliBin}, running:\n` +
+      plan.map((command) => `  ${command}\n`).join(''),
+  );
   const { ok } = installAgentPlugin(agent.id, 'inherit');
   if (ok) {
     process.stdout.write(

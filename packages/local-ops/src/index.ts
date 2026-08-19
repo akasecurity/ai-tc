@@ -1,19 +1,9 @@
 export type { ApplyMode, ApplyResult } from './apply.ts';
 export { applyCliUpdate, applyPluginUpdate, installAgentPlugin } from './apply.ts';
-export {
-  claudeAvailable,
-  ensureMarketplace,
-  installClaudePlugin,
-  updateClaudePlugin,
-} from './claude-plugin.ts';
+export { claudeAvailable, installClaudePlugin, updateClaudePlugin } from './claude-plugin.ts';
 export type { CliPluginBin, CliPluginManager } from './cli-plugin-manager.ts';
 export { createCliPluginManager } from './cli-plugin-manager.ts';
-export {
-  codexAvailable,
-  ensureCodexMarketplace,
-  installCodexPlugin,
-  updateCodexPlugin,
-} from './codex-plugin.ts';
+export { codexAvailable, installCodexPlugin, updateCodexPlugin } from './codex-plugin.ts';
 export type { EgressRecordResult } from './egress-record.ts';
 export { recordProjectEgress } from './egress-record.ts';
 export type { RunResult } from './exec.ts';

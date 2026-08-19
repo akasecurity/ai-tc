@@ -28,11 +28,22 @@ export interface ApplyResult {
 // a slow registry doesn't strand a half-applied update.
 const APPLY_TIMEOUT_MS = 10 * 60_000;
 
-function run(command: string, args: readonly string[], mode: ApplyMode): ApplyResult {
+// Marketplace prep is a git fetch, not a package download, and it is the step a
+// user is most likely to be waiting on with nothing to look at. Keep its own,
+// much shorter cap so a hung fetch cannot sit on the ten-minute one — the op is
+// what that budget is for.
+const PREP_TIMEOUT_MS = 60_000;
+
+function run(
+  command: string,
+  args: readonly string[],
+  mode: ApplyMode,
+  timeoutMs = APPLY_TIMEOUT_MS,
+): ApplyResult {
   if (mode === 'inherit') {
     return { ok: runInherit(command, [...args]), output: '' };
   }
-  const res = runCapture(command, [...args], APPLY_TIMEOUT_MS);
+  const res = runCapture(command, [...args], timeoutMs);
   return { ok: res.ok, output: [res.stdout, res.stderr].filter(Boolean).join('\n') };
 }
 
@@ -116,23 +127,37 @@ function resolveRef(agentId: string):
 // be upgraded) leaves the cached snapshot in place — which the plugin op can
 // still install from. Folding it into the fatal step list instead would let a
 // failed refresh abort an operation that was going to succeed.
-function prepare(resolved: {
-  cliBin: CliPluginBin;
-  marketplace?: string | undefined;
-  marketplaceSource?: string | undefined;
-}): void {
+//
+// It runs through the SAME mode-aware `run` as the op, which is the whole point
+// rather than a tidy-up. Prep used to capture unconditionally, so in 'inherit'
+// mode the CLI printed one line and then sat silent through two network-bound
+// spawns — up to two minutes of a terminal showing nothing, which reads as a
+// hang and invites a Ctrl-C in the middle of a marketplace write. Streaming is
+// also what makes the announced plan honest: the user is told three commands
+// will run, so all three have to be visible when they do.
+//
+// Each result is still discarded — that discard is the ONLY thing making prep
+// survivable, so it must not turn into a chain on success.
+function prepare(
+  resolved: {
+    cliBin: CliPluginBin;
+    marketplace?: string | undefined;
+    marketplaceSource?: string | undefined;
+  },
+  mode: ApplyMode,
+): void {
   if (!resolved.marketplaceSource) return;
-  createCliPluginManager(resolved.cliBin).ensureMarketplace(
-    resolved.marketplaceSource,
-    resolved.marketplace,
-  );
+  const manager = createCliPluginManager(resolved.cliBin);
+  for (const args of manager.marketplaceSteps(resolved.marketplaceSource, resolved.marketplace)) {
+    run(resolved.cliBin, args, mode, PREP_TIMEOUT_MS);
+  }
 }
 
 /** Update an installed agent plugin through its host CLI's own update path. */
 export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
-  prepare(resolved);
+  prepare(resolved, mode);
   const manager = createCliPluginManager(resolved.cliBin);
   return runSteps(resolved.cliBin, manager.updateSteps(resolved.ref), mode);
 }
@@ -141,7 +166,7 @@ export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'):
 export function installAgentPlugin(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
-  prepare(resolved);
+  prepare(resolved, mode);
   const manager = createCliPluginManager(resolved.cliBin);
   return runSteps(resolved.cliBin, manager.installSteps(resolved.ref), mode);
 }

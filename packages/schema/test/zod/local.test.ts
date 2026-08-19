@@ -77,8 +77,10 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     expect(WorkspaceSettings.safeParse({ historicalAccess: 'partial' }).success).toBe(false);
   });
 
-  it("parses the retired 'attached' runMode value as 'standalone'", () => {
-    // Files written by earlier releases must keep loading unchanged otherwise.
+  it('normalises a superseded runMode value instead of failing the whole object', () => {
+    // The point is the SIBLING field: a settings file holding a value this build
+    // no longer knows must still load, and must keep the user's other choices —
+    // rejecting the object would discard `policy` along with it.
     const s = WorkspaceSettings.parse({ runMode: 'attached', policy: 'warn' });
     expect(s.runMode).toBe('standalone');
     expect(s.policy).toBe('warn');

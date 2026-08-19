@@ -11,9 +11,10 @@ import { DATA_DIR_MODE, DATA_FILE_MODE } from './data-dir.ts';
  * (touching the marker's mtime) and returns `false` (proceed).
  *
  * `markerName` namespaces the gate so independent background jobs throttle
- * SEPARATELY — e.g. the sync spawn (`sync-last-attempt`) and the token reconcile
- * spawn (`reconcile-last-attempt`) each gate on their own window without one
- * starving the other. The marker is a sibling file in `dataDir`.
+ * SEPARATELY — each passes its own name and gates on its own window, without one
+ * starving the other. The marker is a sibling file in `dataDir`. Today the
+ * callers are the per-host token reconcile spawns, which pass
+ * `reconcile-last-attempt`.
  *
  * Best-effort and fail-open in BOTH directions: a stat error (no marker yet, or
  * unreadable) is treated as "not throttled" so a transient fs hiccup never

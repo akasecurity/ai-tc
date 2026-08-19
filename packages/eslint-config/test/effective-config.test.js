@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, matchesGlob, posix, sep } from 'node:path';
+import { builtinModules } from 'node:module';
+import { join, matchesGlob, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
@@ -53,8 +54,8 @@ import {
 //     rules still fire on real code. Flat config resolves "last wins": the final
 //     block matching a file overrides earlier ones for a given rule, and
 //     no-restricted-imports never merges across blocks. So a package that layers
-//     a second config on top of base (web-ui: react + noEnterpriseImports;
-//     persistence / local-ops: base + noEnterpriseImports; cli: base + the
+//     a second config on top of base (web-ui: react + noDrizzleImports;
+//     persistence / local-ops: base + noDrizzleImports; cli: base + the
 //     dashboard opt-out) could silently drop a network ban with the unit suite
 //     still green. Here we assert the composition, not the components.
 //
@@ -210,21 +211,19 @@ const extendsSharedConfig = (abs) =>
  */
 function discoverWorkspacePackages() {
   return workspacePackageDirs().map((dir) => {
-    // git reports posix paths on every platform; globSync yields native ones.
-    const posixDir = dir.split(sep).join('/');
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
-    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : posixDir;
+    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : dir;
     const configRel = join(dir, 'eslint.config.mjs');
     const configAbs = join(REPO_ROOT, configRel);
     const hasConfig = existsSync(configAbs);
     const scriptsConfigRel = join(dir, 'eslint.scripts.config.mjs');
     const scriptsConfigAbs = join(REPO_ROOT, scriptsConfigRel);
     const hasScriptsConfig = existsSync(scriptsConfigAbs);
-    const codeDirs = lintableChildDirs(posixDir);
+    const codeDirs = lintableChildDirs(dir);
     return {
       name,
       dir,
-      label: name === posixDir ? posixDir : `${name} (${posixDir})`,
+      label: name === dir ? dir : `${name} (${dir})`,
       lintScript: pkg.scripts?.lint ?? '',
       configRel,
       hasConfig,
@@ -236,7 +235,7 @@ function discoverWorkspacePackages() {
       codeDirs,
       sourceDirs: codeDirs.filter((d) => d !== SCRIPTS_DIR),
       // The other half of what the lint script must cover, derived the same way.
-      rootFiles: lintableRootFiles(posixDir),
+      rootFiles: lintableRootFiles(dir),
       hasScriptsDir: codeDirs.includes(SCRIPTS_DIR),
       scriptsConfigRel,
       hasScriptsConfig,
@@ -259,15 +258,18 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/ai-tc-antigravity',
   '@akasecurity/audit-gate',
   '@akasecurity/cli',
+  '@akasecurity/coverage-gate',
   '@akasecurity/dashboard-ui',
   '@akasecurity/detections',
   '@akasecurity/eslint-config',
   '@akasecurity/extract',
+  '@akasecurity/installer',
   '@akasecurity/local-ops',
   '@akasecurity/persistence',
   '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
+  '@akasecurity/portability-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',
   '@akasecurity/setup-wizard',
@@ -577,7 +579,7 @@ function configViolations(guarded) {
 // added, which is the only moment this check exists for.
 
 /** Every workspace package directory, as a posix path. */
-const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir.split(sep).join('/'));
+const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir);
 
 /** Every git-tracked lintable file that sits under no workspace package. */
 const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
@@ -593,7 +595,10 @@ const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
 const EXPECTED_NON_PACKAGE_FILES = [
   'commitlint.config.mjs',
   'eslint.root.config.mjs',
+  'test/fixtures/adversarial/hostile-repo/index.ts',
+  'test/helpers/remove-tree.ts',
   'test/setup/no-network.ts',
+  'test/vitest/coverage.ts',
   'tools/ci/egress-probe.mjs',
 ];
 
@@ -802,7 +807,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
       notExtending.length
         ? 'These packages ship an eslint.config.mjs that never imports @akasecurity/eslint-config, ' +
             'so the shared no-network ban is not wired in. Extend the shared config (spread ' +
-            `...base / ...noEnterpriseImports / ...react):\n  ${notExtending.join('\n  ')}`
+            `...base / ...noDrizzleImports / ...react):\n  ${notExtending.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });
@@ -867,6 +872,163 @@ describe('every workspace package ships a network-guarded eslint config', () => 
             `do not wire the shared network guard (spread ...networkGuard):\n  ${scriptsNotExtending.join('\n  ')}`
         : undefined,
     ).toEqual([]);
+  });
+});
+
+// A package that imports a `node:` builtin, or reads `import.meta.dirname`,
+// needs `@types/node` in its OWN manifest — and omitting it typechecks fine from
+// inside this workspace, because TypeScript walks up to the repo root's
+// node_modules/@types and finds the copy the root devDependencies installed.
+// So the defect is invisible here by construction and surfaces only where the
+// package is consumed from a workspace that does not install this root: TS2307
+// on the `node:` specifier, TS2339 on `import.meta.dirname`.
+//
+// It is also invisible in the lockfile in a way worth naming, because that is
+// the second thing declaring the dependency fixes. Undeclared, pnpm resolved
+// vitest's optional `@types/node` peer for those importers independently of what
+// TypeScript resolved from the root — landing a major above the `engines` floor
+// while the compiler used the root's copy. Two versions in play for one package.
+//
+// Three packages carried this at once, which is what makes it a pattern rather
+// than an oversight and the reason it is derived here instead of remembered.
+describe('every workspace package declares the @types/node its own source needs', () => {
+  // The two symptoms above, plus the BARE form of the first. `process.` still
+  // looks like it belongs and does not: `child_process.` contains it, so the
+  // token needs a boundary it cannot carry, and a package whose only Node
+  // surface is a global is not a case this repo has.
+  //
+  // A bare `from 'fs'` needs the types exactly as `node:fs` does, and nothing
+  // here forces the prefix: no `n/prefer-node-protocol` is configured, and the
+  // network-module ban reaches the bare form for those modules alone. No package
+  // carries one today — which is the reason the alternation is DERIVED rather
+  // than written out. A hand-listed set is what goes stale before the first case
+  // arrives, and `builtinModules` is an external, stable fact about the runtime,
+  // the same shape as CANDIDATE_EXTENSIONS below. The closing quote is what
+  // keeps `fs` off `fs-extra`; `path/posix` matches under its own alternative
+  // rather than through `path`.
+  const BARE_BUILTINS = builtinModules
+    .filter((m) => !m.startsWith('node:'))
+    .sort((a, b) => b.length - a.length);
+  const NEEDS_NODE_TYPES = new RegExp(
+    `\\b(?:from|import|require)\\s*\\(?\\s*['"](?:node:|(?:${BARE_BUILTINS.join('|')})['"])` +
+      `|import\\.meta\\.(?:dirname|filename)\\b`,
+  );
+
+  /** Every lintable tracked file the package itself owns, nested packages excluded. */
+  const ownFiles = (pkg) => {
+    const dir = `${pkg.dir}/`;
+    return LINTABLE_TRACKED.files.filter(
+      (f) =>
+        f.startsWith(dir) &&
+        !PACKAGE_DIRS.some((other) => other !== dir.slice(0, -1) && f.startsWith(`${other}/`)),
+    );
+  };
+
+  const usage = WORKSPACE_PACKAGES.map((pkg) => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, pkg.dir, 'package.json'), 'utf8'));
+    const files = ownFiles(pkg).filter((f) =>
+      NEEDS_NODE_TYPES.test(stripComments(readFileSync(join(REPO_ROOT, f), 'utf8'))),
+    );
+    return {
+      label: pkg.label,
+      files,
+      declared:
+        manifest.devDependencies?.['@types/node'] ?? manifest.dependencies?.['@types/node'] ?? '',
+    };
+  });
+
+  it('finds the node-typed source it is filtering for (vacuity guard)', () => {
+    // Every assertion below filters `usage`, so a regex that matched nothing —
+    // or an ownFiles() that resolved no path on a platform whose separator is
+    // not '/' — would report zero violations and pass having checked nothing.
+    const withUsage = usage.filter((u) => u.files.length);
+    expect(
+      withUsage.map((u) => u.label),
+      'no package reads as using a node: builtin, so the checks below are vacuous',
+    ).not.toEqual([]);
+    expect(withUsage.length).toBeGreaterThan(WORKSPACE_PACKAGES.length / 2);
+  });
+
+  it('reads a bare builtin specifier as needing the types, and a look-alike as not', () => {
+    // No package imports a bare builtin today, so every assertion below that
+    // filters `usage` would pass unchanged with the bare alternation deleted.
+    // This is the only thing holding that half, which is why it drives the
+    // pattern directly rather than through the tracked tree.
+    const matches = (src) => NEEDS_NODE_TYPES.test(src);
+    for (const src of [
+      "import { readFileSync } from 'node:fs';",
+      "import { readFileSync } from 'fs';",
+      "const { join } = require('path');",
+      "import 'os';",
+      "import { win32 } from 'path/win32';",
+      'import.meta.dirname',
+    ]) {
+      expect(matches(src), `should read as needing @types/node: ${src}`).toBe(true);
+    }
+    // The closing quote earning its place: each of these contains a builtin
+    // name and needs nothing.
+    for (const src of [
+      "import x from 'fs-extra';",
+      "import x from 'node-fetch';",
+      "import x from './fs';",
+      "import x from 'vitest';",
+    ]) {
+      expect(matches(src), `should NOT read as needing @types/node: ${src}`).toBe(false);
+    }
+    // The alternation is derived, so a runtime that stopped reporting builtins
+    // would silently empty it while every case above still passed on `node:`.
+    expect(BARE_BUILTINS, 'builtinModules reported no bare builtin').toContain('fs');
+  });
+
+  it('no package uses a node: builtin without declaring @types/node', () => {
+    const undeclared = usage
+      .filter((u) => u.files.length && !u.declared)
+      .map((u) => `${u.label} — e.g. ${u.files.slice(0, 3).join(', ')}`);
+    expect(
+      undeclared,
+      undeclared.length
+        ? 'These packages import a node: builtin (or read import.meta.dirname) but declare no ' +
+            '@types/node of their own. They typecheck here only because TypeScript falls back to ' +
+            "the repo root's node_modules/@types, and fail with TS2307/TS2339 from any workspace " +
+            `that does not install this root. Add "@types/node" to devDependencies:\n  ${undeclared.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it('every declared @types/node tracks the one Active LTS line', () => {
+    // Split ranges are the state this replaced, one layer down: the point of
+    // declaring the dependency is that ONE version is in play per package.
+    //
+    // The ROOT manifest is in the set because it is a real consumer of this
+    // range and not a workspace package: tsconfig.root.json sets
+    // `"types": ["node"]` and `typecheck:root` runs over test/setup, test/vitest,
+    // tools/ci and eslint.root.config.mjs against whatever copy the root
+    // declares. Derived from WORKSPACE_PACKAGES alone, a root-only bump puts two
+    // majors in play — the exact state this block exists to prevent — and stays
+    // green, because the drift is outside every set the check reads.
+    const rootDeclared =
+      ROOT_MANIFEST.devDependencies?.['@types/node'] ??
+      ROOT_MANIFEST.dependencies?.['@types/node'] ??
+      '';
+    // Non-vacuity: `filter(Boolean)` below drops an undeclared root silently,
+    // so the root would leave the comparison rather than fail it.
+    expect(
+      rootDeclared,
+      `The root package.json declares no @types/node, but tsconfig.root.json sets ` +
+        `"types": ["node"] and typecheck:root runs against it.`,
+    ).not.toBe('');
+
+    const declarers = [
+      ...usage.map((u) => ({ label: u.label, declared: u.declared })),
+      { label: 'the repo root (package.json)', declared: rootDeclared },
+    ].filter((d) => d.declared);
+    const ranges = [...new Set(declarers.map((d) => d.declared))];
+    expect(
+      ranges,
+      `More than one @types/node range is declared: ` +
+        `${declarers.map((d) => `${d.label} ${d.declared}`).join(', ')}. ` +
+        `${CONVENTIONS_DOC} states .nvmrc, CI and @types/node all track the Active LTS line.`,
+    ).toHaveLength(1);
   });
 });
 
@@ -2051,12 +2213,27 @@ describe('ignore flags subtract from what an invocation covers', () => {
     // would pass on a predicate that had stopped seeing one of them.
     const REAL_SHAPES = [
       ['eslint src test *.config.*', ['src', 'test']],
+      // The benchmark harness adds a third code directory to the packages that
+      // carry benchmarks. `bench/` imports product code and test helpers, so it
+      // is source like any other and has to sit behind the same bans.
+      ['eslint src test bench *.config.*', ['src', 'test', 'bench']],
       ['eslint app middleware.ts test *.config.*', ['app', 'test']],
       ['eslint src test eval *.config.*', ['src', 'test', 'eval']],
       ['eslint src *.config.*', ['src']],
+      // tools/installer ships no `src` at all: the thing under test is the
+      // two shell scripts at the package root, which ESLint does not lint,
+      // and `test/` is the whole of its JavaScript.
+      ['eslint test *.config.*', ['test']],
       [
         'eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
         ['src', 'test', 'scripts'],
+      ],
+      // The same shape once a package grows a `bench/`. A benchmark imports
+      // product code and builds fixtures like any other source here, so it sits
+      // behind the same bans rather than outside every lint pass.
+      [
+        'eslint src test bench *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+        ['src', 'test', 'bench', 'scripts'],
       ],
       // The same two-pass split, with `test` rather than `scripts` behind the
       // network-only config: @akasecurity/eslint-config's own suites are plain JS

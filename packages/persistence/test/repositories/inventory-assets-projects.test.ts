@@ -1,28 +1,18 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { openLocalDatabase } from '../../src/database.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // The Inventory projects read views must never surface a Claude Code worktree
 // CHECKOUT as a project: pre-worktree-fix plugins minted a source_project row
 // per `.claude/worktrees/*` session, and an older plugin can re-mint one at any
 // time. The checkout is already part of its head project.
 
-let dir: string;
+const store = useTempStore('aka-inv-projects-');
 let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-inv-projects-'));
-  db = openLocalDatabase(dir);
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 describe('worktree-checkout ghost rows', () => {

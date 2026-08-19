@@ -2,7 +2,7 @@
 import pluginReact from 'eslint-plugin-react';
 import pluginReactHooks from 'eslint-plugin-react-hooks';
 
-import { base } from './index.js';
+import { base, noDrizzleImports, tonalInkTokens } from './index.js';
 
 // A plain flat-config array, for the reason spelled out over `base` in
 // index.js: the `tseslint.config()` wrapper this used to carry returned the
@@ -30,5 +30,18 @@ export const react = [
     },
   },
 ];
+
+// The full preset for a package that renders Tailwind classes in a browser:
+// ui-kit, dashboard-ui and web-ui. Composed here rather than spread three times
+// per package because the ORDER is load-bearing and invisible at the call site.
+// `no-restricted-imports` and `no-restricted-syntax` are both REPLACED rather
+// than merged by a later flat-config entry, so:
+//   - `noDrizzleImports` must come after `react` (whose `base` sets the network
+//     bans), or its own entry is the one that gets dropped;
+//   - `tonalInkTokens` comes last and re-lists the network AND drizzle selectors,
+//     because it sets `no-restricted-syntax` too.
+// Spread this, add the package's own `parserOptions`, then `rootConfigFiles`.
+/** @type {import('typescript-eslint').ConfigArray} */
+export const reactUiPackage = [...react, ...noDrizzleImports, ...tonalInkTokens];
 
 export default react;

@@ -6,10 +6,23 @@ import { toInspectionDefinitionRow } from '@akasecurity/schema';
 import { inspectionDefinitionId } from '../ids.ts';
 
 /**
- * Inspection definition (a detection rule version) writer. id = sha256(tenant +
- * rule_id + version), so editing a rule mints a new row and historical findings
- * keep citing the exact version that fired. Idempotent upsert: re-loading the
- * same rule version no-ops.
+ * Inspection definition (a detection rule version) writer.
+ *
+ * `id = sha256Hex(canonicalIdentity(['inspection_definition', rule_id, version]))`
+ * — see `inspectionDefinitionId` in ../ids.ts. `canonicalIdentity` JSON-encodes
+ * the parts as an array rather than joining them, which is what keeps the part
+ * boundaries: concatenation would put rule `ab` version `c` and rule `a` version
+ * `bc` on one digest, collapsing two rule versions onto a single row so
+ * historical findings cite the wrong definition. Content-addressed on the rule's
+ * identity and its version and nothing else, so two stores that load the same
+ * rule version derive the same id.
+ *
+ * The VERSION is what mints a row, not the edit. Bump it and the rule gets a new
+ * id and a new row, leaving historical findings citing the exact version that
+ * fired. Edit a rule WITHOUT bumping it and the id is unchanged — and the write
+ * is `INSERT OR IGNORE`, insert-if-absent rather than an update, so the row
+ * keeps its old `definition`/`name`/`category`/`severity` and the new text is
+ * dropped. Re-loading an unchanged rule version no-ops by that same route.
  */
 export class SqliteInspectionDefinitionsRepository {
   private readonly insertStmt: StatementSync;
@@ -23,7 +36,8 @@ export class SqliteInspectionDefinitionsRepository {
     );
   }
 
-  // Idempotent upsert; returns the content-addressed definition id.
+  // Insert-if-absent; returns the content-addressed definition id. An id already
+  // present keeps the stored row untouched — see the class doc.
   upsert(input: InspectionDefinitionInput): string {
     const id = inspectionDefinitionId(input.ruleId, input.version);
     const row = toInspectionDefinitionRow(input, id);

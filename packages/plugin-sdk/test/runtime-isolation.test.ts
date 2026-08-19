@@ -439,31 +439,64 @@ describe('a pulled rule and a vault pointer', () => {
   };
   const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
 
-  it('fires on a bare match, so the absence below is the shield and not the rule', async () => {
-    const rt = createPluginRuntime(
-      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
-      settings(),
-    );
-    try {
-      const result = await rt.processText(`token ${'A'.repeat(26)} here`);
-      expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
-    } finally {
-      await rt.close();
-    }
-  });
+  // Both cases below scan through the worker, so both need the startup grant
+  // START_MS documents — and they are the two in this file that were left on the
+  // product's own 5s default. That default is a FAIL-OPEN threshold, not a cost:
+  // a start that overruns it reports `unavailable`, and an unavailable worker
+  // means the pulled rule is dropped rather than run, which is the correct
+  // product behaviour and fatal to a case whose premise is that the rule ran.
+  //
+  // The direction that bites is not symmetric, which is why this is worth
+  // spelling out. The positive control fails LOUDLY when the rule is dropped —
+  // its expected finding simply is not there. Its sibling expects NO findings,
+  // so a dropped rule satisfies it for entirely the wrong reason: the shield is
+  // credited with an absence that a failed worker start produced. That is what
+  // makes the pair load-bearing rather than decorative, and it is also why each
+  // asserts `scanIsolationDegraded()` first — a startup overrun then names
+  // itself instead of arriving as a bare empty array.
+  const shieldIsolation = { startBudgetMs: START_MS };
 
-  it('never matches inside the pointer, even though the scan ran in the worker', async () => {
-    const rt = createPluginRuntime(
-      fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
-      settings(),
-    );
-    try {
-      const result = await rt.processText(`resubmit ${POINTER} please`);
-      expect(result.findings).toEqual([]);
-    } finally {
-      await rt.close();
-    }
-  });
+  it(
+    'fires on a bare match, so the absence below is the shield and not the rule',
+    async () => {
+      const rt = createPluginRuntime(
+        fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+        settings(),
+        { scanIsolation: shieldIsolation },
+      );
+      try {
+        const result = await rt.processText(`token ${'A'.repeat(26)} here`);
+        // Before the finding: if isolation degraded, the rule was dropped and
+        // the assertion below is measuring the wrong thing.
+        expect(rt.scanIsolationDegraded()).toBe(false);
+        expect(result.findings.map((f) => f.ruleId)).toEqual(['pulled/long-upper']);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'never matches inside the pointer, even though the scan ran in the worker',
+    async () => {
+      const rt = createPluginRuntime(
+        fakeGateway(bundle([GREEDY]), clearedByPreflight(GREEDY)),
+        settings(),
+        { scanIsolation: shieldIsolation },
+      );
+      try {
+        const result = await rt.processText(`resubmit ${POINTER} please`);
+        // The one that cannot tell a working shield from a missing rule on its
+        // own. Without this line, a worker that failed to start passes this case.
+        expect(rt.scanIsolationDegraded()).toBe(false);
+        expect(result.findings).toEqual([]);
+      } finally {
+        await rt.close();
+      }
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
 });
 
 describe('what isolation costs when nothing is wrong', () => {
@@ -523,73 +556,129 @@ describe('what isolation costs when nothing is wrong', () => {
     }
   });
 
-  it('costs the cold starts once, then a round trip per scan', async () => {
-    const benign: Rule = {
-      specVersion: 1,
-      id: 'pulled/benign',
-      name: 'Benign pulled rule',
-      category: 'custom',
-      severity: 'low',
-      matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
-    };
-    const starts = countWorkerStarts();
-    const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings(), {
-      // Every budget stays at the product's own default — this case is about
-      // what isolation costs as shipped, and only the observation is added.
-      scanIsolation: { onWorkerStart: starts.onWorkerStart },
-    });
-    try {
-      const text = 'lorem ipsum dolor sit amet '.repeat(80); // ~2KB, a typical prompt
+  // The per-test timeout is not decoration here, and leaving it off is what made
+  // the ceiling below unfixable on its own. Without it this case runs on the
+  // package's 20s default, so `startupMs` above ~20s is never observed at all —
+  // the run reports "Test timed out in 20000ms" and no assertion is reached.
+  // Any ceiling above 20s would then be unreachable by construction, which is
+  // the same defect as a ceiling below the grant, approached from the other
+  // side. ISOLATION_CASE_TIMEOUT_MS is 120s and sits above the 63s ceiling, so
+  // a path that blows its bound now fails on the assertion that names what was
+  // exceeded — which is what that constant says it is for.
+  it(
+    'costs the cold starts once, then a round trip per scan',
+    async () => {
+      const benign: Rule = {
+        specVersion: 1,
+        id: 'pulled/benign',
+        name: 'Benign pulled rule',
+        category: 'custom',
+        severity: 'low',
+        matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
+      };
+      const starts = countWorkerStarts();
+      const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings(), {
+        // The budgets that MEASURE a cost stay at the product's own default,
+        // because that is what this case is about: the scan budget bounds the
+        // round trip asserted below, and the probe budget bounds the pre-flight.
+        //
+        // The start budget is not one of them, and leaving it at the default was a
+        // contradiction with this case's own ceiling. It is a fail-open THRESHOLD:
+        // a start that overruns it reports `unavailable`, degrades, and drops the
+        // pulled rule.
+        //
+        // Be exact about what that cost, because the loose reading is wrong in a
+        // way that matters. `startupMs` spans BOTH cold starts plus the whole
+        // probe battery, so the 5-to-10s band IS reachable with neither start
+        // over the shipped 5s — the 10s ceiling was not unreachable. What the
+        // default cost was this case's ability to fail on that ceiling when it
+        // should: a SINGLE start overrunning 5s failed earlier and on something
+        // else, and which assertion caught it depended on which worker was slow.
+        // A slow PROBER leaves the rule unmeasured, so no scan worker is ever
+        // built and the count reads 1 — "the path built the wrong number of
+        // threads", when a contended runner was merely slow to start one. A slow
+        // SCAN WORKER keeps the count at 2 and degrades instead, which nothing
+        // here checked at all until the assertion added below. Both are the
+        // failure START_MS exists to prevent, so the grant applies here too and
+        // the assertions below — not the runner — are what decide.
+        scanIsolation: { startBudgetMs: START_MS, onWorkerStart: starts.onWorkerStart },
+      });
+      try {
+        const text = 'lorem ipsum dolor sit amet '.repeat(80); // ~2KB, a typical prompt
 
-      // The worst case by construction: this gateway's verdict map is empty, so
-      // the first capture pays BOTH cold starts — the prober that measures the
-      // pulled rule against the battery, and then the scan worker. A real
-      // machine pays the prober once per rule ever and nothing after that.
-      const coldStart = performance.now();
-      await rt.processText(text);
-      const startupMs = performance.now() - coldStart;
-
-      // A PreToolUse hook scans one field per MCP leaf, so the steady-state
-      // round trip — not the start — is what a real payload multiplies.
-      const samples: number[] = [];
-      for (let i = 0; i < 40; i++) {
-        const started = performance.now();
+        // The worst case by construction: this gateway's verdict map is empty, so
+        // the first capture pays BOTH cold starts — the prober that measures the
+        // pulled rule against the battery, and then the scan worker. A real
+        // machine pays the prober once per rule ever and nothing after that.
+        const coldStart = performance.now();
         await rt.processText(text);
-        samples.push(performance.now() - started);
+        const startupMs = performance.now() - coldStart;
+
+        // A PreToolUse hook scans one field per MCP leaf, so the steady-state
+        // round trip — not the start — is what a real payload multiplies.
+        const samples: number[] = [];
+        for (let i = 0; i < 40; i++) {
+          const started = performance.now();
+          await rt.processText(text);
+          samples.push(performance.now() - started);
+        }
+        samples.sort((a, b) => a - b);
+        const medianMs = samples[Math.floor(samples.length / 2)] ?? Infinity;
+
+        // Isolation is still live, asserted before the count so that a worker
+        // which failed to start says so. Without it the same overrun arrives as
+        // "expected 1 to be 2", which reads like a shape regression in the path
+        // rather than a slow start on a busy machine.
+        expect(rt.scanIsolationDegraded()).toBe(false);
+
+        // TWO threads for the whole run — the prober that measures the pulled
+        // rule against the battery, and the scan worker — across 41 captures. The
+        // "once" in this case's name is this number and nothing else: a worker
+        // started per scan reads 41 here, and a prober that re-measures a rule
+        // the cache already answered scales with the ruleset. Both are the SHAPE
+        // regressions the two ceilings below were sized to catch, and a count
+        // catches them without being sized for anything.
+        expect(starts.count()).toBe(2);
+
+        // Ceilings, not measurements — CI runners are far too noisy to assert a
+        // real timing, and these two are noisy in very different degrees. They
+        // cover what a count cannot: the per-scan COST of a thread that is
+        // correctly started only once.
+        //
+        // The round trip is the load-bearing one: it is what a real payload
+        // MULTIPLIES, one scan per MCP leaf, and it is stable because it measures
+        // a message round trip and nothing else. 0.195ms here against an
+        // in-process scan of ~0.173ms, so 25ms is ~128x headroom.
+        //
+        // The cold start is the noisy one and guards much less. It covers two
+        // thread creations plus a whole probe battery, and in the repo Node
+        // strips the types on the way in; 189ms here, and a contended Linux CI
+        // runner has been seen at 2.7s for the same work.
+        //
+        // It goes through the helper like every other worker-backed ceiling in
+        // this file, and the reason is the paragraph at the top: this case grants
+        // each of its two starts START_MS, so any ceiling budgeting less than
+        // that per start can be blown by a start the case itself permits. A
+        // hardcoded 10s was exactly the smaller multiple that paragraph forbids —
+        // it survived here because the grant used to be the shipped 5s, and this
+        // PR raising the grant is what put the two out of step.
+        //
+        // `budgetUnits` is 2 because `startupMs` also spans the two product
+        // budgets the case deliberately leaves at their defaults:
+        // ISOLATED_PROBE_BUDGET_MS (1000) bounds the battery and
+        // ISOLATED_SCAN_BUDGET_MS (2000) bounds the first scan, and 2 x BUDGET_MS
+        // is those 3000ms exactly.
+        //
+        // Losing the 10s smoke bound costs less than it looks: `starts.count()`
+        // above is the shape check, `medianMs` below is the per-scan cost, and
+        // what is left for an elapsed ceiling is separating "slower" from "not
+        // terminating" — which 63s against the 120s case timeout still does.
+        expect(startupMs).toBeLessThan(isolationCeilingMs(2, 2));
+        expect(medianMs).toBeLessThan(25);
+      } finally {
+        await rt.close();
       }
-      samples.sort((a, b) => a - b);
-      const medianMs = samples[Math.floor(samples.length / 2)] ?? Infinity;
-
-      // TWO threads for the whole run — the prober that measures the pulled
-      // rule against the battery, and the scan worker — across 41 captures. The
-      // "once" in this case's name is this number and nothing else: a worker
-      // started per scan reads 41 here, and a prober that re-measures a rule
-      // the cache already answered scales with the ruleset. Both are the SHAPE
-      // regressions the two ceilings below were sized to catch, and a count
-      // catches them without being sized for anything.
-      expect(starts.count()).toBe(2);
-
-      // Ceilings, not measurements — CI runners are far too noisy to assert a
-      // real timing, and these two are noisy in very different degrees. They
-      // cover what a count cannot: the per-scan COST of a thread that is
-      // correctly started only once.
-      //
-      // The round trip is the load-bearing one: it is what a real payload
-      // MULTIPLIES, one scan per MCP leaf, and it is stable because it measures
-      // a message round trip and nothing else. 0.195ms here against an
-      // in-process scan of ~0.173ms, so 25ms is ~128x headroom.
-      //
-      // The cold start is the noisy one and guards much less. It covers two
-      // thread creations plus a whole probe battery, and in the repo Node
-      // strips the types on the way in; 189ms here, and a contended Linux CI
-      // runner has been seen at 2.7s for the same work. So it is a smoke bound,
-      // sized to clear that with room. Do not tighten it toward the observed
-      // number: the last time this was sized against one worker start, adding
-      // the second one turned it into a red CI run rather than a real signal.
-      expect(startupMs).toBeLessThan(10_000);
-      expect(medianMs).toBeLessThan(25);
-    } finally {
-      await rt.close();
-    }
-  });
+    },
+    ISOLATION_CASE_TIMEOUT_MS,
+  );
 });

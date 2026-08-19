@@ -231,7 +231,16 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
         });
       });
 
-      it('valid input, read-only ~/.aka → exit 0', () => {
+      it('valid input, read-only ~/.aka → exit 0', (ctx) => {
+        // The fault IS the chmod, and chmod is a no-op on Windows: the home
+        // stays writable, the hook takes its ordinary path, and every assertion
+        // below then holds having injected nothing. Skip rather than collect
+        // that pass — the sibling corrupt-store row above writes real bytes and
+        // so still covers this hook's fail-open contract there.
+        if (process.platform === 'win32') {
+          ctx.skip('chmod is a no-op on Windows, so the read-only fault injects nothing');
+          return;
+        }
         withTempHome((home) => {
           seedReadOnlyAkaHome(home);
           try {

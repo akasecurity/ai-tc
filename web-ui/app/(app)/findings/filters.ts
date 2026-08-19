@@ -39,10 +39,10 @@ const keepKnown = (values: string[], allowed: readonly string[]): string[] =>
 
 /**
  * URL search params → the toolbar's five filter dimensions. Severity/provider/
- * action/status are validated against their schema enums here (the OSS
- * Server-Component path has no Fastify/Zod validation door), so a crafted
- * `?severity=bogus` is dropped rather than passed on to the store.
- * `type`/subtype is a free string.
+ * action/status are validated against their schema enums HERE, in the Server
+ * Component, because this is the only boundary the value crosses before it
+ * reaches the store — a crafted `?severity=bogus` is dropped rather than passed
+ * on. `type`/subtype is a free string.
  */
 export function parseFindingsFilters(sp: FindingsSearchParams): FindingsFilters {
   return {

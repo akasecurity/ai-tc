@@ -1,0 +1,16 @@
+import { Worker } from 'node:worker_threads';
+import { describe, expect, it } from 'vitest';
+
+describe('scan worker', () => {
+  it(
+    'scans in a real worker thread',
+    async () => {
+      const worker = new Worker('./scan-worker.js');
+      const result = await new Promise((resolve) => {
+        worker.once('message', resolve);
+      });
+      expect(result).toBeDefined();
+    },
+    5,
+  );
+});

@@ -12,10 +12,10 @@ import {
 import { PointerToken, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { dataDir } from '../src/data-dir.ts';
 import type { VaultCore, VaultGlue } from '../src/tokenize.ts';
 import { createVaultGlue, POINTER_UNAVAILABLE_TEXT } from '../src/tokenize.ts';
-import { removeTree } from './helpers/remove-tree.ts';
 
 const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 const OTHER = 'AKIAI44QH8DHBEXAMPLE';

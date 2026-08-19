@@ -44,6 +44,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { maskText } from '@akasecurity/plugin-sdk';
+import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import type { TriageHit, TriageRecommendation } from '@akasecurity/schema';
 import { parseRecommendation } from '@akasecurity/setup-wizard';
 
@@ -141,13 +142,42 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // inherited) because `agy`'s run logging can echo raw content, and execFileSync's
 // default would write it straight through to the parent's stderr — which flows
 // into the wizard conversation this judge exists to keep raw content out of.
+// planBareCommand owns the Windows half, and this host is the one where its
+// refusal branch is reachable rather than theoretical.
+//
+// A bare `agy` is invisible to libuv's own search (which tries `.com` and `.exe`
+// and stops), so a shell-free spawn fails with a bare ENOENT wherever the CLI is
+// installed as a batch shim. Reaching such a shim needs cmd.exe — and the prompt
+// on this host rides ARGV, so it would have to cross cmd.exe's parser. It cannot,
+// three times over: it is multi-line (a Windows command line carries no line
+// break), it is several KiB against cmd.exe's 8,191-character ceiling, and it is
+// scanned transcript text, so a `&` or a `"` in content AKA did not choose would
+// be re-read as syntax. The planner refuses that outright instead of escaping it
+// hopefully, and this file surfaces the refusal raw-free.
+//
+// When `agy` resolves to a real executable the planner skips cmd.exe entirely
+// and spawns it by absolute path with no shell, which is the path this judge
+// takes on a Windows host that installs it as one.
+// `timeout` MEANS SOMETHING WEAKER ON THE SHELL PATH, and the difference is not
+// cosmetic. Node applies it to the process it started, so where `plan.options`
+// carries `shell: true` the process killed at 180s is `cmd.exe` — `agy` is a
+// grandchild and survives it. It also still holds the inherited stdout handle,
+// so the synchronous read here waits for that pipe to close rather than for the
+// kill, and can outlast the timeout it looks bounded by.
+//
+// Not repaired here, because the repair is to not need the shell: whenever `agy`
+// resolves to a real executable the planner spawns it directly and the timeout
+// bounds the real process. Written down so the next reader does not assume the
+// 180s survives an interpreter it does not.
 export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv): string {
-  return execFileSync('agy', [...argv], {
+  const plan = planBareCommand('agy', argv, { env });
+  return execFileSync(plan.file, [...plan.args], {
     env,
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
+    ...plan.options,
   });
 }
 
@@ -158,6 +188,13 @@ export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv): strin
 // metadata (exit status / signal / node error code), never `.message`,
 // `.stdout`, or `.stderr`.
 function spawnFailureMeta(err: unknown): string {
+  // planBareCommand's refusal is the one failure here that carries an
+  // explanation worth reading, and it is raw-free by construction — it names an
+  // argv index and a character class, never a value. That distinction matters
+  // most on this host, where the refused argument IS the raw-bearing prompt.
+  // Everything below is exit metadata, which is all any other failure may
+  // contribute.
+  if (isBareCommandUnsupported(err)) return err.reason;
   const e = err as { status?: number | null; signal?: string | null; code?: string };
   const parts: string[] = [];
   if (typeof e.status === 'number') parts.push(`exit ${String(e.status)}`);

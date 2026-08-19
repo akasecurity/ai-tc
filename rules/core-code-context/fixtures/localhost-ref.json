@@ -18,5 +18,15 @@
     "label": "not localhost",
     "text": "hostname: server.internal",
     "shouldMatch": false
+  },
+  {
+    "label": "private network CIDR, not the wildcard bind address",
+    "text": "Allow ingress from 10.0.0.0/8 only",
+    "shouldMatch": false
+  },
+  {
+    "label": "identifier containing the word, not a loopback reference",
+    "text": "localhostname = socket.gethostname()",
+    "shouldMatch": false
   }
 ]

@@ -1,29 +1,22 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { LlmCallInput, ToolCallInput } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
+import type { LocalDatabase } from '../../src/database.ts';
+import { UNSAFE_TEST_ONLY_RAW_HANDLE } from '../../src/database.ts';
 import { llmCallId, toolCallId } from '../../src/ids.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
+import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
 const SESSION_ID = 'session-audit-events-test';
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-audit-events-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-audit-events-'));
-  db = openLocalDatabase(dir);
+  db = store.open();
   // The leaves FK parent_id/root_session_id onto the session root, so seed it
   // the way the reconciler's ensure-root step does — through the shared seam.
   db.auditEvents.ensureSessionRoot(SESSION_ID, '2026-06-01T00:00:00.000Z');
-});
-
-afterEach(() => {
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
 function llmCall(messageId: string, startedAt: string): LlmCallInput {
@@ -66,6 +59,11 @@ describe('malformed startedAt tolerance', () => {
     expect(db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_good_1'))).toBeDefined();
     expect(db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_bad'))).toBeUndefined();
     expect(db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_good_2'))).toBeDefined();
+    // Dropping the bad leaf must also close the transaction it was dropped
+    // inside. A pass that swallowed the malformed row but returned still inside
+    // its BEGIN would leave every later write on this handle joining it, which
+    // reads as a healthy store right up to the point nothing is durable.
+    assertNoOpenTransaction(db[UNSAFE_TEST_ONLY_RAW_HANDLE]);
   });
 
   it('insertToolCall drops a leaf whose timestamp does not parse, keeping the rest of the batch', () => {
@@ -76,6 +74,10 @@ describe('malformed startedAt tolerance', () => {
 
     expect(db.auditEvents.findById(toolCallId(SESSION_ID, 'toolu_good'))).toBeDefined();
     expect(db.auditEvents.findById(toolCallId(SESSION_ID, 'toolu_bad'))).toBeUndefined();
+    // Asserted on BOTH arms, not just the llm_call one above: the two insert
+    // paths drop a malformed leaf independently, so a containment check on one
+    // leaves the other free to strand a transaction and stay green.
+    assertNoOpenTransaction(db[UNSAFE_TEST_ONLY_RAW_HANDLE]);
   });
 
   it('a valid leaf still lands with its parsed epoch-millis started_at', () => {

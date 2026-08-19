@@ -204,8 +204,8 @@ export type LlmCallAttributes = z.infer<typeof LlmCallAttributes>;
 // The reconciler → gateway → persistence input for one `llm_call` leaf row. It
 // carries the NATURAL key (`sessionId` + `messageId`) rather than a row id: the
 // content-addressed `llmCallId(sessionId, messageId)` is minted inside
-// `@akasecurity/persistence` (the layer that holds the sha256 helper; the id
-// is tenant-free for the single-tenant OSS local store), so the plugin never imports
+// `@akasecurity/persistence` (the layer that holds the sha256 helper; the id is
+// derived from the session and message alone), so the plugin never imports
 // `@akasecurity/persistence` to mint it — keeping the
 // `plugins/claude-code → @akasecurity/plugin-sdk` boundary intact. `parentId`/`rootSessionId` are
 // both the `sessionId` (the leaf hangs directly off the session root).

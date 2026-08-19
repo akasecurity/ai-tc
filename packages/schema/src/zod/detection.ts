@@ -16,10 +16,10 @@ import { Matcher, RegexMatcher } from './rule.ts';
 export const OriginEnum = z.enum(['library']).meta({ id: 'OriginEnum' });
 export type OriginEnum = z.infer<typeof OriginEnum>;
 
-// Filter options for GET /v1/detections.
+// Filter options for the detections read.
 // NOT `.meta({ id })`: this enum is only used in querystring position, and a
-// named-component `$ref` inside route parameters crashes @fastify/swagger's
-// param resolver. Query-param schemas stay inline (see ListEventsQuery/ListFindingsQuery).
+// consumer expands those properties into individual parameters, which cannot be
+// a reference to a named shape. See the SHAPE IDS note in zod/index.ts.
 export const DetectionFilterEnum = z.enum(['all', 'library', 'custom', 'customized', 'updates']);
 export type DetectionFilterEnum = z.infer<typeof DetectionFilterEnum>;
 
@@ -33,7 +33,7 @@ export type LibraryStateEnum = z.infer<typeof LibraryStateEnum>;
 // List & stats shapes
 // ---------------------------------------------------------------------------
 
-// Counts object returned in GET /v1/detections. Computed over the UNFILTERED set.
+// Counts object returned by the detections read. Computed over the UNFILTERED set.
 export const DetectionCounts = z
   .object({
     all: z.number().int().nonnegative(),
@@ -45,7 +45,7 @@ export const DetectionCounts = z
   .meta({ id: 'DetectionCounts' });
 export type DetectionCounts = z.infer<typeof DetectionCounts>;
 
-// A single item in the GET /v1/detections response.
+// A single item in the detections read's response.
 // `id` is the un-encoded "namespace/packId" slug (clients encode it for detail/update).
 // `update` is always null on list (lazy-computed on detail only to avoid N registry calls).
 // `origin` is always "library" in v1.
@@ -78,7 +78,7 @@ export const DetectionListItem = z
   .meta({ id: 'DetectionListItem' });
 export type DetectionListItem = z.infer<typeof DetectionListItem>;
 
-// Response shape for GET /v1/detections.
+// Response shape for the detections read.
 export const ListDetectionsResponse = z
   .object({
     counts: DetectionCounts,
@@ -87,16 +87,16 @@ export const ListDetectionsResponse = z
   .meta({ id: 'ListDetectionsResponse' });
 export type ListDetectionsResponse = z.infer<typeof ListDetectionsResponse>;
 
-// Query params for GET /v1/detections.
-// NOT `.meta({ id })`: querystring schemas must stay inline (a named-component
-// `$ref` in parameters crashes @fastify/swagger). Matches ListEventsQuery/ListFindingsQuery.
+// Query params for the detections read.
+// NOT `.meta({ id })`: querystring schemas stay inline, like every other query
+// shape here. See the SHAPE IDS note in zod/index.ts.
 export const ListDetectionsQuery = z.object({
   filter: DetectionFilterEnum.optional().default('all'),
   q: z.string().optional(),
 });
 export type ListDetectionsQuery = z.infer<typeof ListDetectionsQuery>;
 
-// Response shape for GET /v1/detections/stats.
+// Response shape for the detection-stats read.
 export const DetectionStats = z
   .object({
     detections: z.number().int().nonnegative(),
@@ -144,7 +144,7 @@ export const DetectionUpdate = z
   .meta({ id: 'DetectionUpdate' });
 export type DetectionUpdate = z.infer<typeof DetectionUpdate>;
 
-// Full detail for GET /v1/detections/:id.
+// Full detail for a single detection.
 export const DetectionDetail = z
   .object({
     id: z.string(),
@@ -176,7 +176,7 @@ export const DetectionDetail = z
   .meta({ id: 'DetectionDetail' });
 export type DetectionDetail = z.infer<typeof DetectionDetail>;
 
-// A library item for GET /v1/detections/library.
+// A library item in the detection-library read.
 export const LibraryItem = z
   .object({
     id: z.string(),
@@ -198,7 +198,7 @@ export const LibraryItem = z
   .meta({ id: 'LibraryItem' });
 export type LibraryItem = z.infer<typeof LibraryItem>;
 
-// Response shape for GET /v1/detections/library.
+// Response shape for the detection-library read.
 export const ListLibraryResponse = z
   .object({
     categories: z.array(DetectionCategory),
@@ -207,7 +207,7 @@ export const ListLibraryResponse = z
   .meta({ id: 'ListLibraryResponse' });
 export type ListLibraryResponse = z.infer<typeof ListLibraryResponse>;
 
-// Request body for POST /v1/detections/import.
+// Request body for a detection import.
 // `libraryId` must be in `namespace/packId` format.
 export const ImportDetectionRequest = z
   .object({

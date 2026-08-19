@@ -9,7 +9,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   base,
   networkGuard,
-  noEnterpriseImports,
+  drizzleWallRules,
+  noDrizzleImports,
   noNetworkGlobals,
   noNetworkImports,
   noNetworkProperties,
@@ -336,11 +337,11 @@ describe('networkGuard (the scripts/ pass)', () => {
   });
 });
 
-describe('noEnterpriseImports merge', () => {
-  // The enterprise config is layered on top of `base` in some packages. Flat
+describe('noDrizzleImports merge', () => {
+  // The Drizzle config is layered on top of `base` in some packages. Flat
   // config does not merge two no-restricted-imports entries, so this config must
   // carry the network bans forward or those packages would silently lose them.
-  const entry = noEnterpriseImports.find((c) => c.rules?.['no-restricted-imports']);
+  const entry = noDrizzleImports.find((c) => c.rules?.['no-restricted-imports']);
   const ruleValue = entry?.rules?.['no-restricted-imports'];
 
   it('is present', () => {
@@ -355,26 +356,94 @@ describe('noEnterpriseImports merge', () => {
     expect(messages[0].ruleId).toBe('no-restricted-imports');
   });
 
-  it('also bans the enterprise HTTP client', () => {
-    const messages = lintWithRules("import c from '@akasecurity/client';", {
+  it('also bans drizzle-orm, and names the replacement', () => {
+    const messages = lintWithRules("import { eq } from 'drizzle-orm';", {
       'no-restricted-imports': ruleValue,
     });
     expect(messages).toHaveLength(1);
-    expect(messages[0].message).toContain('enterprise-only');
+    // The message is the whole value of the ban to whoever trips it. Asserting
+    // the ruleId alone passes on a message that names no alternative, which is
+    // the form that sends people to grep for one.
+    expect(messages[0].message).toContain('@akasecurity/persistence');
   });
 
-  it('keeps BOTH pattern groups (network subpaths + enterprise) after the merge', () => {
-    // The network `<client>/*` groups are prepended to noEnterpriseImports' own
-    // `patterns` (drizzle-orm/*, schema-enterprise/*). A regressed merge that
-    // declared only enterprise patterns would drop the network subpath ban.
+  // Ported from the message-leak guard on the H1 branch. The wall's message is
+  // public-facing text in a public repo, and it is the only place a contributor
+  // meets the rule. Asserting on the EMITTED message rather than on the source
+  // is what keeps this honest: whatever a future edit writes, this is what they
+  // actually read. The banned terms name a private layer this tree does not
+  // contain — a message that reaches for one is describing something the reader
+  // cannot go and look at.
+  it('states the boundary in terms of this tree, and names no absent layer', () => {
+    const messages = lintWithRules("import { eq } from 'drizzle-orm';", {
+      'no-restricted-imports': ruleValue,
+    });
+    const message = messages[0].message;
+    expect(message).toContain('@akasecurity/schema');
+    expect(message).toContain('@akasecurity/persistence');
+    expect(message).toContain('node:sqlite');
+    for (const absent of [
+      'tenancy',
+      'Postgres',
+      'attached',
+      'enterprise',
+      'multi-tenant',
+      '@akasecurity/client',
+    ]) {
+      expect(message.toLowerCase()).not.toContain(absent.toLowerCase());
+    }
+  });
+
+  // A file-scoped entry that relaxes the NETWORK ban SETS `no-restricted-imports`,
+  // and flat config replaces rather than merges — so building that entry from
+  // `noNetworkImports` alone drops the Drizzle wall for the files it matches,
+  // with lint green. `drizzleWallRules` is what makes that unstateable; this is
+  // the case that fails if it stops carrying the wall.
+  describe('drizzleWallRules({ allow }) — the relaxation seam', () => {
+    const relaxed = drizzleWallRules({ allow: ['node:net'] });
+
+    it('lets the allowed module through', () => {
+      expect(
+        lintWithRules("import net from 'node:net';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(0);
+    });
+
+    it('still bans Drizzle, statically and dynamically', () => {
+      expect(
+        lintWithRules("import { eq } from 'drizzle-orm';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(1);
+      expect(
+        lintWithRules("await import('drizzle-orm/sqlite-core');", {
+          'no-restricted-syntax': relaxed['no-restricted-syntax'],
+        }),
+      ).toHaveLength(1);
+    });
+
+    it('still bans every OTHER network module', () => {
+      expect(
+        lintWithRules("import http from 'node:http';", {
+          'no-restricted-imports': relaxed['no-restricted-imports'],
+        }),
+      ).toHaveLength(1);
+    });
+  });
+
+  it('keeps BOTH pattern groups (network subpaths + drizzle dialects) after the merge', () => {
+    // The network `<client>/*` groups are prepended to noDrizzleImports' own
+    // `patterns` (drizzle-orm/*). A regressed merge that declared only the
+    // drizzle pattern would drop the network subpath ban.
     const deep = lintWithRules("import x from 'axios/lib/adapters/http.js';", {
       'no-restricted-imports': ruleValue,
     });
     expect(deep.map((m) => m.ruleId)).toContain('no-restricted-imports');
-    const ent = lintWithRules("import s from 'drizzle-orm/sqlite-core';", {
+    const dialect = lintWithRules("import s from 'drizzle-orm/sqlite-core';", {
       'no-restricted-imports': ruleValue,
     });
-    expect(ent.map((m) => m.ruleId)).toContain('no-restricted-imports');
+    expect(dialect.map((m) => m.ruleId)).toContain('no-restricted-imports');
   });
 });
 
@@ -431,6 +500,10 @@ const DOCUMENTED_OPT_OUTS = {
   // network-only coverage; it opts out no-network-runtime.test.js, which imports
   // the three transports it drives at runtime. File-scoped; see CLAUDE.md §4.
   'packages/eslint-config/eslint.guard.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
+  // The installer suite stands a loopback HTTP server so the shipped
+  // install.sh / install.ps1 can be driven against a local base. File-scoped
+  // to the one helper that binds it; see CLAUDE.md §4.
+  'tools/installer/eslint.config.mjs': ['node:http'],
 };
 
 /** The module names a resolved `no-restricted-imports` value bans, or null if absent. */

@@ -20,6 +20,12 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type {
   DetokenizeTarget,
+  ListVaultDerefsQuery,
+  ListVaultDerefsResponse,
+  ListVaultInventoryQuery,
+  ListVaultInventoryResponse,
+  ListVaultReuseQuery,
+  ListVaultReuseResponse,
   VaultDeref,
   VaultDerefOutcome,
   VaultDerefReason,
@@ -27,11 +33,38 @@ import type {
   VaultSighting,
   VaultSightingKind,
 } from '@akasecurity/schema';
-import { POINTER_FORMAT_VERSION } from '@akasecurity/schema';
+import {
+  DEFAULT_VAULT_DEREFS_LIMIT,
+  DEFAULT_VAULT_INVENTORY_LIMIT,
+  MAX_VAULT_PAGE_LIMIT,
+  POINTER_FORMAT_VERSION,
+} from '@akasecurity/schema';
 
+import { parseJsonObject } from '../internal/json.ts';
+import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
 import { allRows, bindParams, countScalar, getRow } from '../internal/rows.ts';
+import { placeholders } from '../internal/sql-text.ts';
 import { withTransaction } from '../internal/transactions.ts';
 import { ACTIVE_REVEAL_GRANT_PREDICATE } from './exceptions.ts';
+
+/**
+ * The page size a read will actually use.
+ *
+ * The Server Actions parse `limit` against the same ceiling before it reaches
+ * here, so on the web path this is redundant — but the ceiling protects an
+ * invariant of the STORE rather than of that one caller: `sightingsFor` hydrates
+ * a page through one `IN (…)` carrying a bind variable per row, and SQLite
+ * refuses to prepare past 32766 of them. Anything constructing this repository
+ * directly would otherwise reach that as a thrown prepare.
+ *
+ * `trunc` and the floor of 1 are not decoration. A fractional limit binds as a
+ * SQLite `datatype mismatch`, and 0 asks for one row, keeps none, and reports no
+ * next cursor — a silently empty page that reads as the end of the list.
+ */
+function pageLimit(requested: number | undefined, fallback: number): number {
+  if (requested === undefined) return fallback;
+  return Math.min(Math.max(1, Math.trunc(requested)), MAX_VAULT_PAGE_LIMIT);
+}
 
 /** What a caller supplies when it asks for a value to be vaulted. */
 export interface VaultRowInsert {
@@ -83,6 +116,82 @@ interface RawVaultRow extends Omit<VaultRow, 'provider'> {
   provider: string | null;
 }
 
+// The reuse list sorts on an occurrence COUNT, not a timestamp, so it cannot
+// borrow the shared keyset codec without calling that count `startedAtMs`. A
+// second codec is the precedent here (findings.ts carries its own for the same
+// reason). Like the shared one, a cursor that does not decode restarts from the
+// top rather than throwing: it is opaque state a client hands back, and a bad
+// one only reaches us from a hand-edited request or a store that has since been
+// reset — in both cases the first page is the useful answer.
+interface ReuseCursor {
+  occurrences: number;
+  pointerId: string;
+}
+
+function encodeReuseCursor(payload: ReuseCursor): string {
+  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
+
+function decodeReuseCursor(cursor: string): ReuseCursor | null {
+  const parsed = parseJsonObject(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (
+    parsed !== undefined &&
+    // `Number.isInteger`, not `typeof === 'number'`: a payload carrying
+    // ±Infinity or a fraction binds cleanly and returns an EMPTY page with a
+    // null cursor, which the caller reads as "end of list" — the one outcome a
+    // malformed cursor must never produce, since restarting from the top is the
+    // documented behaviour and the only recoverable one. (`1e999` is valid JSON
+    // and parses to Infinity; a bare `NaN` is not, so it cannot arrive here.)
+    Number.isInteger(parsed.occurrences) &&
+    typeof parsed.pointerId === 'string'
+  ) {
+    return { occurrences: parsed.occurrences as number, pointerId: parsed.pointerId };
+  }
+  return null;
+}
+
+// A value counts as reused when it was detected more than once or its pointer
+// was written in more than one place. Kept as SQL so the signal is computed over
+// the WHOLE store rather than over whichever page the inventory is showing —
+// the view applies the same test to what it receives.
+const REUSED_PREDICATE = `(v.occurrence_count > 1
+     OR (SELECT count(*) FROM secret_vault_sighting s WHERE s.pointer_id = v.pointer_id) > 1)`;
+
+// The inventory's raw-free projection. Never selects value_fingerprint or the
+// sealed columns — the keyed HMAC is correlation material and must not reach a
+// view layer, and the ciphertext must not leave the vault at all.
+const INVENTORY_COLUMNS = `v.pointer_id, v.category, v.rule_id, v.masked_match, v.provider,
+          v.occurrence_count, v.first_seen, v.last_seen`;
+
+interface RawInventoryRow {
+  pointer_id: string;
+  category: string;
+  rule_id: string;
+  masked_match: string;
+  provider: string | null;
+  occurrence_count: number;
+  first_seen: number;
+  last_seen: number;
+  grant_id: string | null;
+}
+
+interface RawSightingRow {
+  pointer_id: string;
+  location: string;
+  kind: string;
+  first_seen: number;
+  last_seen: number;
+}
+
+function toSighting(row: RawSightingRow): VaultSighting {
+  return {
+    location: row.location,
+    kind: row.kind as VaultSightingKind,
+    firstSeen: new Date(row.first_seen).toISOString(),
+    lastSeen: new Date(row.last_seen).toISOString(),
+  };
+}
+
 const SELECT_COLUMNS = `
   pointer_id AS pointerId,
   value_fingerprint AS valueFingerprint,
@@ -107,7 +216,7 @@ function toRow(raw: RawVaultRow): VaultRow {
 
 /**
  * `secret_vault` / `secret_vault_deref` reader and writer, bound to one open DB.
- * The local store is single-tenant, so no query carries a tenant predicate.
+ * Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteSecretVaultRepository {
   private readonly insertStmt: StatementSync;
@@ -304,54 +413,35 @@ export class SqliteSecretVaultRepository {
       });
   }
 
-  listSightings(pointerId: string): VaultSighting[] {
-    const rows = allRows<{ location: string; kind: string; first_seen: number; last_seen: number }>(
+  /**
+   * Sightings for a whole page of pointers, in ONE query grouped in JS rather
+   * than one query per row. A pointer with no sightings still gets an entry, so
+   * the caller never has to distinguish "none" from "missing".
+   *
+   * The `IN` list is sized to the page, so this statement cannot be cached on
+   * the instance the way the fixed-shape ones in the constructor are.
+   */
+  private sightingsFor(pointerIds: string[]): Map<string, VaultSighting[]> {
+    const byPointer = new Map<string, VaultSighting[]>(pointerIds.map((id) => [id, []]));
+    // An empty `IN ()` is invalid SQL.
+    if (pointerIds.length === 0) return byPointer;
+
+    const rows = allRows<RawSightingRow>(
       this.db.prepare(
-        `SELECT location, kind, first_seen, last_seen FROM secret_vault_sighting
-          WHERE pointer_id = :pointerId ORDER BY last_seen DESC`,
+        `SELECT pointer_id, location, kind, first_seen, last_seen
+           FROM secret_vault_sighting
+          WHERE pointer_id IN (${placeholders(pointerIds.length)})
+          ORDER BY last_seen DESC`,
       ),
-      { pointerId },
+      pointerIds,
     );
-    return rows.map((r) => ({
-      location: r.location,
-      kind: r.kind as VaultSightingKind,
-      firstSeen: new Date(r.first_seen).toISOString(),
-      lastSeen: new Date(r.last_seen).toISOString(),
-    }));
+    for (const row of rows) byPointer.get(row.pointer_id)?.push(toSighting(row));
+    return byPointer;
   }
 
-  /**
-   * The dashboard inventory: every vaulted value's descriptor data joined with
-   * its sightings and the active reveal-to-model grant when one exists.
-   * Raw-free by construction — neither the fingerprint nor the ciphertext
-   * columns are selected.
-   */
-  listInventory(now = Date.now()): VaultInventoryEntry[] {
-    const rows = allRows<{
-      pointer_id: string;
-      category: string;
-      rule_id: string;
-      masked_match: string;
-      provider: string | null;
-      occurrence_count: number;
-      first_seen: number;
-      last_seen: number;
-      grant_id: string | null;
-    }>(
-      this.db.prepare(
-        `SELECT v.pointer_id, v.category, v.rule_id, v.masked_match, v.provider,
-                v.occurrence_count, v.first_seen, v.last_seen,
-                (SELECT e.id FROM exceptions e
-                  WHERE e.rule_id = v.rule_id
-                    AND e.value_fingerprint = v.value_fingerprint
-                    AND e.key_version = v.fingerprint_key_version
-                    AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
-                  LIMIT 1) AS grant_id
-           FROM secret_vault v
-          ORDER BY v.last_seen DESC`,
-      ),
-      { now },
-    );
+  /** Hydrate a page of raw inventory rows with their sightings, batched. */
+  private toInventoryEntries(rows: RawInventoryRow[]): VaultInventoryEntry[] {
+    const sightings = this.sightingsFor(rows.map((r) => r.pointer_id));
     return rows.map((r) => ({
       pointerId: r.pointer_id,
       category: r.category as VaultInventoryEntry['category'],
@@ -361,23 +451,176 @@ export class SqliteSecretVaultRepository {
       firstSeen: new Date(r.first_seen).toISOString(),
       lastSeen: new Date(r.last_seen).toISOString(),
       revealGrantId: r.grant_id,
-      sightings: this.listSightings(r.pointer_id),
+      sightings: sightings.get(r.pointer_id) ?? [],
     }));
   }
 
   /**
-   * The de-reference trail, newest first. By default the batched, high-volume
-   * reasons (display, view-render) are hidden and counted instead — the rows
-   * that matter as a signal are the model crossings, and burying them under
-   * render noise would defeat the audit's purpose.
+   * The dashboard inventory, newest-first, ONE PAGE at a time: every vaulted
+   * value's descriptor data joined with its sightings and the active
+   * reveal-to-model grant when one exists. Raw-free by construction — neither
+   * the fingerprint nor the ciphertext columns are selected.
+   *
+   * `totals.values` counts the whole store, not the page, so the count a reader
+   * sees never depends on how far they have paged.
    */
-  listDerefs(opts?: { includeBatched?: boolean; limit?: number }): {
-    rows: VaultDeref[];
-    hiddenBatched: number;
-  } {
-    const limit = opts?.limit ?? 200;
+  listInventory(query: ListVaultInventoryQuery = {}, now = Date.now()): ListVaultInventoryResponse {
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
+    const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
+
+    // Keyset pagination, expanded tuple comparison (node:sqlite has no row-value
+    // syntax): strictly-older last_seen, or the same last_seen and a lower
+    // pointer id.
+    //
+    // What this buys over an offset, precisely: an INSERT between two page
+    // requests cannot shift the window, so no row is skipped or repeated
+    // because of one. It does NOT make the walk a snapshot, because `last_seen`
+    // is not immutable — `upsert` bumps it on every repeat detection, and the
+    // plugin hooks write while the reader pages.
+    //
+    // Measured, not reasoned: a bump moves a row toward page 1, i.e. ABOVE the
+    // cursor. A row already served stays above it and is never served twice; a
+    // row the walk had not yet reached is MISSED until the next read. So the
+    // everyday hazard here is a short walk, not a duplicate. `totals.values`
+    // counts the store rather than the walk, so it stays right and the shortfall
+    // is visible rather than silent. (A duplicate needs a row to move DOWN past
+    // the cursor, which takes a clock going backwards between two writers, since
+    // `bumpStmt` assigns `last_seen = :now` rather than `max(last_seen, :now)`.)
+    // Both are inherent to ordering on a mutable column and are the accepted
+    // trade for showing most-recently-seen first.
     const where =
-      opts?.includeBatched === true ? '' : `WHERE reason NOT IN ('display', 'view-render')`;
+      cursor === null
+        ? ''
+        : 'WHERE (v.last_seen < :cursorLastSeen OR (v.last_seen = :cursorLastSeen AND v.pointer_id < :cursorPointerId))';
+
+    // One extra row detects a next page without a second COUNT.
+    const rows = allRows<RawInventoryRow>(
+      this.db.prepare(
+        `SELECT ${INVENTORY_COLUMNS},
+                (SELECT e.id FROM exceptions e
+                  WHERE e.rule_id = v.rule_id
+                    AND e.value_fingerprint = v.value_fingerprint
+                    AND e.key_version = v.fingerprint_key_version
+                    AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
+                  LIMIT 1) AS grant_id
+           FROM secret_vault v
+           ${where}
+          ORDER BY v.last_seen DESC, v.pointer_id DESC
+          LIMIT :limit`,
+      ),
+      bindParams({
+        now,
+        limit: limit + 1,
+        ...(cursor === null
+          ? {}
+          : { cursorLastSeen: cursor.startedAtMs, cursorPointerId: cursor.id }),
+      }),
+    );
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      totals: { values: this.countEntries() },
+      items: this.toInventoryEntries(page),
+      // Minted from the last row of the PAGE, never the extra probe row.
+      nextCursor:
+        hasMore && last
+          ? encodeKeysetCursor({ startedAtMs: last.last_seen, id: last.pointer_id })
+          : null,
+    };
+  }
+
+  /**
+   * Values reused on this machine — detected more than once, or written to more
+   * than one location — most-reused first, one page at a time.
+   *
+   * Its own read rather than a filter over an inventory page: reuse is a
+   * property of the whole store, and deriving it from 50 newest rows would
+   * under-report exactly the values a reader most needs to see.
+   */
+  listReuse(query: ListVaultReuseQuery = {}, now = Date.now()): ListVaultReuseResponse {
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_INVENTORY_LIMIT);
+    const cursor = query.cursor === undefined ? null : decodeReuseCursor(query.cursor);
+
+    // Same expanded tuple comparison as above, over (occurrence_count DESC,
+    // pointer_id DESC) — this list ranks by how often a value recurs, not by
+    // when it was last seen. It carries the same mutable-sort-key caveat, from
+    // the same writer: `upsert` increments `occurrence_count`, so a repeat
+    // detection moves a row toward page 1 and a row the walk had not yet
+    // reached is missed. One case is its own: a value crossing from not-reused
+    // to reused mid-walk ENTERS the set, at a rank that may already be behind
+    // the cursor — counted by `totals.reused`, not returned until a fresh read.
+    const after =
+      cursor === null
+        ? ''
+        : `AND (v.occurrence_count < :cursorOccurrences
+              OR (v.occurrence_count = :cursorOccurrences AND v.pointer_id < :cursorPointerId))`;
+
+    const rows = allRows<RawInventoryRow>(
+      this.db.prepare(
+        `SELECT ${INVENTORY_COLUMNS},
+                (SELECT e.id FROM exceptions e
+                  WHERE e.rule_id = v.rule_id
+                    AND e.value_fingerprint = v.value_fingerprint
+                    AND e.key_version = v.fingerprint_key_version
+                    AND ${ACTIVE_REVEAL_GRANT_PREDICATE}
+                  LIMIT 1) AS grant_id
+           FROM secret_vault v
+          WHERE ${REUSED_PREDICATE} ${after}
+          ORDER BY v.occurrence_count DESC, v.pointer_id DESC
+          LIMIT :limit`,
+      ),
+      bindParams({
+        now,
+        limit: limit + 1,
+        ...(cursor === null
+          ? {}
+          : { cursorOccurrences: cursor.occurrences, cursorPointerId: cursor.pointerId }),
+      }),
+    );
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      totals: { reused: this.countReused() },
+      items: this.toInventoryEntries(page),
+      nextCursor:
+        hasMore && last
+          ? encodeReuseCursor({ occurrences: last.occurrence_count, pointerId: last.pointer_id })
+          : null,
+    };
+  }
+
+  /**
+   * The de-reference trail, newest first, one page at a time. By default the
+   * batched, high-volume reasons (display, view-render) are hidden and counted
+   * instead — the rows that matter as a signal are the model crossings, and
+   * burying them under render noise would defeat the audit's purpose.
+   *
+   * `hiddenBatched` counts the whole trail rather than the page: it is what the
+   * view's "N hidden" line and its toggle speak for, so it must not shrink as
+   * the reader pages.
+   */
+  listDerefs(query: ListVaultDerefsQuery = {}): ListVaultDerefsResponse {
+    const limit = pageLimit(query.limit, DEFAULT_VAULT_DEREFS_LIMIT);
+    const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
+
+    const conditions: string[] = [];
+    if (query.includeBatched !== true) {
+      conditions.push(`reason NOT IN ('display', 'view-render')`);
+    }
+    if (cursor !== null) {
+      conditions.push('(at < :cursorAt OR (at = :cursorAt AND id < :cursorId))');
+    }
+    const where = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
+
+    // Ordered by (at, id) rather than (at, rowid): rowid is not stable for a
+    // table whose primary key is not INTEGER, and a cursor naming one would
+    // silently resume in the wrong place after a VACUUM.
     const rows = allRows<{
       id: string;
       pointer_id: string;
@@ -391,19 +634,28 @@ export class SqliteSecretVaultRepository {
       this.db.prepare(
         `SELECT id, pointer_id, at, target, reason, outcome, grant_id, pointer_count
            FROM secret_vault_deref ${where}
-          ORDER BY at DESC, rowid DESC LIMIT :limit`,
+          ORDER BY at DESC, id DESC LIMIT :limit`,
       ),
-      { limit },
+      bindParams({
+        limit: limit + 1,
+        ...(cursor === null ? {} : { cursorAt: cursor.startedAtMs, cursorId: cursor.id }),
+      }),
     );
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page[page.length - 1];
+
     const hiddenBatched =
-      opts?.includeBatched === true
+      query.includeBatched === true
         ? 0
         : countScalar(
             this.db,
             `SELECT count(*) AS n FROM secret_vault_deref WHERE reason IN ('display', 'view-render')`,
           );
+
     return {
-      rows: rows.map((r) => ({
+      items: page.map((r) => ({
         id: r.id,
         pointerId: r.pointer_id,
         at: new Date(r.at).toISOString(),
@@ -413,11 +665,21 @@ export class SqliteSecretVaultRepository {
         ...(r.grant_id === null ? {} : { grantId: r.grant_id }),
         pointerCount: r.pointer_count,
       })),
+      nextCursor:
+        hasMore && last ? encodeKeysetCursor({ startedAtMs: last.at, id: last.id }) : null,
       hiddenBatched,
     };
   }
 
   countEntries(): number {
     return countScalar(this.db, 'SELECT COUNT(*) AS n FROM secret_vault');
+  }
+
+  /** Values reused on this machine — the reuse list's page-independent total. */
+  countReused(): number {
+    return countScalar(
+      this.db,
+      `SELECT COUNT(*) AS n FROM secret_vault v WHERE ${REUSED_PREDICATE}`,
+    );
   }
 }

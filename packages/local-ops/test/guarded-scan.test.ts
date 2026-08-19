@@ -14,7 +14,7 @@
  * real text (only the scan deadline catches it), the other hangs the battery
  * itself (only a killable measurement catches it).
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +24,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { createGuardedFileScanner } from '../src/guarded-scan.ts';
 
@@ -156,8 +157,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   db.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
+  removeTree(root);
+  removeTree(store);
 });
 
 // Walk `root` exactly as the dashboard's Scan action does.

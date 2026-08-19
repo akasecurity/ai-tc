@@ -128,6 +128,25 @@ function probesFor(rule: Rule): string[] {
   return [...derived, ...EXPONENTIAL_PROBES, ...POLYNOMIAL_PROBES];
 }
 
+// A monotonic clock reading milliseconds, injected so a caller can time the
+// walk against a resource other than wall time.
+//
+// The default is wall time, which is what the RUNTIME pre-flight wants: a rule
+// is quarantined because it would spend the hook's harness timeout, and that
+// timeout is wall-clock. But wall time answers "how long did this take" rather
+// than "how much work was this", and the two diverge on a loaded machine — a
+// descheduled thread accumulates wall time having executed nothing, and the
+// walk cannot tell that from a pattern that backtracked for the same duration.
+// A caller that needs the second question — the bundled-rule CI gate, where a
+// stall is a false accusation against a reviewed rule — passes a clock that
+// reads CPU time instead. Reading a different resource is the whole reason this
+// is a parameter and not a constant: the probe walk, its ordering and its
+// early stop must stay a single implementation, because a second copy of them
+// would be free to disagree about which probe the verdict came from.
+export type ProbeClock = () => number;
+
+const wallClock: ProbeClock = () => performance.now();
+
 // Each probe is timed ONCE, and that single measurement is the verdict. Do not
 // re-run a probe and keep the lower sample — not to "confirm" a breach, not as
 // an average, not as a best-of-N. V8 executes a regex in the Irregexp bytecode
@@ -140,14 +159,24 @@ function probesFor(rule: Rule): string[] {
 // keeping the lower of the two admits an over-budget rule — permanently, since
 // the verdict is cached. A GC pause and the interpreted tier are
 // indistinguishable by re-measurement; only the first is noise.
+//
+// That rule is what forces the clock to be the adjustable part. Re-measuring is
+// the obvious answer to a noisy sample and it is closed off here, so a caller
+// that cannot tolerate noise has to change WHAT is measured rather than HOW
+// MANY times — which is also the stronger fix, since one CPU-time sample
+// rejects a stall that no number of wall-time samples can separate from the
+// interpreted tier.
 /** The slowest probe against `rule`, in ms; stops early once one blows the budget. */
-export function worstProbeMs(rule: Rule): { ms: number; probe: string } {
+export function worstProbeMs(
+  rule: Rule,
+  now: ProbeClock = wallClock,
+): { ms: number; probe: string } {
   let ms = 0;
   let probe = '';
   for (const text of probesFor(rule)) {
-    const start = performance.now();
+    const start = now();
     scan(text, [rule]);
-    const elapsed = performance.now() - start;
+    const elapsed = now() - start;
     if (elapsed > ms) {
       ms = elapsed;
       probe = text;

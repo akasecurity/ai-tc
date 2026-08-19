@@ -141,6 +141,13 @@
       "when": 1785759172956,
       "tag": "0019_audit_started_at_index",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1786009795585,
+      "tag": "0020_secret_vault_pagination_indexes",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,89 @@
+name: Benchmarks
+
+# ADVISORY ONLY. This workflow exists to track a TREND, and it must never gate a
+# pull request.
+#
+# The reason is not squeamishness about slow tests. Hosted runners vary by a
+# large factor between runs on nothing but neighbour load — this repository has
+# retuned a timing assertion three times for exactly that (the ReDoS gate on
+# Windows, the isolation ceilings under contention, the fillStore commit
+# budget) — so a wall-clock check on a PR fails for reasons unrelated to the
+# diff, and a check that cries wolf is a check people learn to re-run until it
+# is green. At that point it gates nothing and costs attention.
+#
+# What DOES gate a PR is the timing GUARDS, which are correctness assertions
+# rather than measurements: the adversarial-rule bound in
+# packages/detections/test/security/redos.test.ts, and the isolation ceilings in
+# packages/plugin-sdk. Those ride the ordinary `Test` job in ci.yml.
+#
+# So: no `pull_request:` trigger here, no threshold comparison, and no step that
+# can fail on a number. The signal wanted from this job is "the p99 scan doubled
+# last week", read off the artifacts, not "this run was 12 ms slower than the
+# last one". packages/eslint-config/test/bench-harness.test.js asserts those
+# properties against this file, so the advisory shape is enforced rather than
+# merely written down here.
+on:
+  # Nightly on main. 03:17 UTC rather than the hour, to sit away from the
+  # scheduling spike every cron-on-the-hour workflow on the platform shares —
+  # a queued runner is a slow runner, and this job measures runners.
+  schedule:
+    - cron: '17 3 * * *'
+  # So a maintainer can take a reading on demand — after a change with a
+  # suspected cost, or to re-establish a baseline after a runner-image bump.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deliberately NOT cancel-in-progress. A superseded CI run is wasted work; a
+# superseded benchmark run is a missing point in a trend.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: Benchmarks (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No Turbo cache restore, and none is possible: the `bench` task sets
+      # `cache: false` in turbo.json. A benchmark returns a MEASUREMENT rather
+      # than a derivation of its inputs, and the runner it ran on is not in the
+      # hash — so a replayed result would be another machine's number reported
+      # as this one's, which is the one stale green that cannot be spotted by
+      # reading it.
+      - name: Run benchmarks
+        run: pnpm bench
+
+      # Each package writes its own bench-results.json (vitest's --outputJson).
+      # Uploaded raw: this job records, it does not judge. Comparing two runs is
+      # a question for whoever reads the trend, and 90 days is long enough to
+      # see a slow drift rather than only a step change.
+      - name: Upload benchmark results
+        # Always, so a run that fell over partway still contributes whatever it
+        # measured — and so a missing artifact means the job never got here,
+        # rather than meaning the upload was skipped.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: '**/bench-results.json'
+          retention-days: 90
+          # A run that produced no file at all is worth a warning in the log; it
+          # is not worth failing an advisory job over.
+          if-no-files-found: warn

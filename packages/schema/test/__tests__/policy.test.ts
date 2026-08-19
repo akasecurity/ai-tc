@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { GetPolicyStatsResponse, ListPoliciesResponse } from '../../src/zod/api.ts';
 import { InstalledPack, PatchInstalledPackRequest } from '../../src/zod/installed-pack.ts';
 import {
   BuiltinPolicyId,
   KNOWN_BUILTIN_IDS,
+  ListPoliciesResponse,
   PolicyDetail,
   PolicyKind,
   PolicyListItem,
@@ -175,15 +175,6 @@ describe('ListPoliciesResponse', () => {
       ],
     };
     expect(() => ListPoliciesResponse.parse(input)).toThrow();
-  });
-});
-
-// ─── GetPolicyStatsResponse (alias check) ────────────────────────────────────
-
-describe('GetPolicyStatsResponse', () => {
-  it('is the same schema as PolicyStatsResponse', () => {
-    const input = { policies: 4, builtin: 4, custom: 0, detectionsGoverned: 7 };
-    expect(GetPolicyStatsResponse.parse(input)).toEqual(input);
   });
 });
 

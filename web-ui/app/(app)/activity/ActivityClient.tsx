@@ -12,7 +12,7 @@ import type {
   Harness,
   SessionTokenReport,
 } from '@akasecurity/schema';
-import { Card, cn } from '@akasecurity/ui-kit';
+import { Card, cn, Sheet, SheetContent, SheetTitle } from '@akasecurity/ui-kit';
 import { usePathname } from 'next/navigation';
 import { useCallback } from 'react';
 
@@ -40,6 +40,7 @@ export function ActivityClient({
   hasMore,
   emptyCount,
   showEmpty,
+  expanded,
 }: {
   sessions: ActivitySessionSummary[];
   detail: ActivitySession | null;
@@ -59,9 +60,11 @@ export function ActivityClient({
   emptyCount: number;
   /** Whether zero-activity sessions are currently listed (?empty=1). */
   showEmpty: boolean;
+  /** Whether the full-width session inspector is open (?view=full). */
+  expanded: boolean;
 }) {
   const pathname = usePathname();
-  const { isPending, push: pushUrl } = useNavigationTransition();
+  const { isPending, push: pushUrl, replace: replaceUrl } = useNavigationTransition();
 
   // Timeline deep links: a detection event opens the findings page scoped to
   // this session (narrowed to the event's finding when the event carries one);
@@ -91,6 +94,7 @@ export function ActivityClient({
       range: TimeRange;
       id?: string;
       showEmpty?: boolean;
+      expanded?: boolean;
     }) => {
       const qs = buildActivityParams(opts).toString();
       return qs ? `${pathname}?${qs}` : pathname;
@@ -112,12 +116,57 @@ export function ActivityClient({
       range: TimeRange;
       id?: string;
       showEmpty?: boolean;
+      expanded?: boolean;
     }) => {
       onNavigate(opts.q);
       pushUrl(buildUrl(opts));
     },
     [onNavigate, pushUrl, buildUrl],
   );
+
+  // Push to open, replace to close.
+  //
+  // Opening is a real drill-down, so it earns a history entry: Back closes the
+  // inspector and the open state survives a copied URL. Closing is the reverse of
+  // that entry rather than a place of its own — pushing it would leave the panel
+  // the reader just dismissed sitting on the Back path (and open/close/open would
+  // stack a run of them), so the close overwrites the entry the open added.
+  const setExpanded = useCallback(
+    (next: boolean) => {
+      const url = buildUrl({ q: query, harness, range, id: selectedId, showEmpty, expanded: next });
+      // Settle the search debounce on both paths: it holds a URL built from the
+      // pre-navigation state, so closing mid-typing would otherwise let the timer
+      // fire a URL that predates the close and re-open the panel.
+      onNavigate(query);
+      (next ? pushUrl : replaceUrl)(url);
+    },
+    [buildUrl, onNavigate, pushUrl, replaceUrl, query, harness, range, selectedId, showEmpty],
+  );
+
+  // Shared by the docked pane and the inspector — one session, two frames, so
+  // the deep links and figures must not drift between them.
+  const detailProps = {
+    session: detail,
+    tokenReport,
+    liveFindings,
+    linkHref,
+    isLoading: false,
+    error: null,
+    // Tool chips deep-link to the flat findings view filtered to that
+    // tool. `?tool=` is a real filter on the capturing event's recorded
+    // tool name, where the previous `?q=via Bash` was a text match
+    // against a rendered label — it matched any finding whose search
+    // text happened to contain the phrase, and missed nothing only by
+    // luck. The session scope rides along so the link stays about this
+    // session.
+    toolHref: (toolName: string) => {
+      const params = new URLSearchParams();
+      params.set('view', 'flat');
+      if (sessionId) params.set('session', sessionId);
+      params.append('tool', toolName);
+      return `/findings?${params.toString()}`;
+    },
+  };
 
   return (
     <div
@@ -153,28 +202,41 @@ export function ActivityClient({
       </Card>
       <Card className="flex min-w-0 flex-1 flex-col overflow-hidden shadow-sm">
         <SessionDetailView
-          session={detail}
-          tokenReport={tokenReport}
-          liveFindings={liveFindings}
-          linkHref={linkHref}
-          isLoading={false}
-          error={null}
-          // Tool chips deep-link to the flat findings view filtered to that
-          // tool. `?tool=` is a real filter on the capturing event's recorded
-          // tool name, where the previous `?q=via Bash` was a text match
-          // against a rendered label — it matched any finding whose search
-          // text happened to contain the phrase, and missed nothing only by
-          // luck. The session scope rides along so the link stays about this
-          // session.
-          toolHref={(toolName) => {
-            const params = new URLSearchParams();
-            params.set('view', 'flat');
-            if (sessionId) params.set('session', sessionId);
-            params.append('tool', toolName);
-            return `/findings?${params.toString()}`;
+          {...detailProps}
+          onExpand={() => {
+            setExpanded(true);
           }}
         />
       </Card>
+
+      {/* The full-width inspector. Same view, more room: the docked pane shares
+          the viewport with the session list, so a long timeline is read here.
+          Open state is the URL's, not this component's — see setExpanded.
+
+          `detail !== null` is a second guard, and it is the one that survives a
+          hand-typed URL. parseExpanded already refuses `?view=full` with no ?id,
+          but an id naming a session the store does not have parses as open and
+          arrives here with nothing to render — so the panel stays shut on the
+          session itself, not merely on the param that claims one. */}
+      <Sheet
+        open={expanded && detail !== null}
+        onOpenChange={(open) => {
+          if (!open) setExpanded(false);
+        }}
+      >
+        {/* No description in this panel — opt out of Radix's aria-describedby. */}
+        <SheetContent
+          className="w-320 max-w-[96%] gap-0 overflow-hidden p-0"
+          aria-describedby={undefined}
+        >
+          {/* The view renders its own visible heading; this is the accessible
+              name Radix requires on the dialog. */}
+          <SheetTitle className="sr-only">
+            {detail ? `Session ${detail.title}` : 'Session'}
+          </SheetTitle>
+          <SessionDetailView {...detailProps} overlayClose />
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

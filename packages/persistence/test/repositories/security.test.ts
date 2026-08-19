@@ -1,8 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type {
   ActionTaken,
@@ -12,33 +8,22 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 const DAY_MS = 86_400_000;
 // A fixed midday clock so window/bucket math is deterministic. Its UTC day is
 // 2026-06-29; windows align to UTC midnight (00:00) of that day.
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-security-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-security-'));
-  db = openLocalDatabase(dir);
-});
-
-// Raw second connections handed to repos under test — closed before rmSync
-// (Windows cannot delete a directory while a DB handle is open).
-const rawConnections: DatabaseSync[] = [];
-
-afterEach(() => {
-  for (const raw of rawConnections.splice(0)) raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 // Record one event + one finding. `daysAgo` is relative to NOW (fractional ok).
@@ -95,8 +80,7 @@ function record(opts: {
 // A SecurityViews bound to a second read connection with the fixed clock (the
 // facade's own repo uses the wall clock — window math must be pinned in tests).
 function security(): SqliteSecurityRepository {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  rawConnections.push(raw);
+  const raw = store.openRaw();
   return new SqliteSecurityRepository(raw, () => NOW);
 }
 
@@ -624,17 +608,32 @@ describe('scanCoverage', () => {
     ]);
   });
 
-  it('pins the claudeai row: listed, not yet supported', async () => {
-    // The claude-ai source exists in the schema before any capture surface
-    // ships for it, so the coverage table names it explicitly at zero rather
-    // than omitting it — an omitted provider reads as an oversight, a zero
-    // row reads as a decision.
+  it('pins the two web-chat rows: supported at partial (40) coverage', async () => {
+    // The browser extension scans the typed prompt at the submit gesture on
+    // both sites, so neither is "not yet supported" — but content.ts watches a
+    // single composer element, so every other way bytes reach the model is
+    // uncovered by construction: assistant responses, attachments, and
+    // edit-and-resend among them. That is why these are partial rather than
+    // 100, and why they must stay strictly below every terminal harness row
+    // rather than matching one — a web-chat row reaching 100 would claim
+    // scanning the extension structurally does not do.
     const res = await security().scanCoverage('30d');
-    expect(res.providers.find((p) => p.provider === 'claudeai')).toEqual({
-      provider: 'claudeai',
-      coverage: 0,
-      supported: false,
-    });
+    for (const provider of ['claudeai', 'chatgpt'] as const) {
+      expect(res.providers.find((p) => p.provider === provider)).toEqual({
+        provider,
+        coverage: 40,
+        supported: true,
+      });
+    }
+  });
+
+  it('pins the still-unsupported rows: listed at zero, not omitted', async () => {
+    // A source that exists in the schema before any capture surface ships for
+    // it is named explicitly at zero rather than omitted — an omitted provider
+    // reads as an oversight, a zero row reads as a decision.
+    const res = await security().scanCoverage('30d');
+    const unsupported = res.providers.filter((p) => !p.supported).map((p) => p.provider);
+    expect(unsupported).toEqual(['cursor', 'copilot', 'api']);
   });
 
   it('pins the codex row: supported at partial (80) coverage', async () => {
@@ -667,5 +666,9 @@ describe('scanCoverage', () => {
       res.providers.find((row) => row.provider === p)?.coverage ?? -1;
     expect(coverageOf('antigravity')).toBeLessThan(coverageOf('codex'));
     expect(coverageOf('codex')).toBeLessThan(coverageOf('claudecode'));
+    // The web-chat rows scan prompts only, so they stay below every terminal
+    // harness row — including the most constrained one.
+    expect(coverageOf('chatgpt')).toBeLessThan(coverageOf('antigravity'));
+    expect(coverageOf('claudeai')).toBeLessThan(coverageOf('antigravity'));
   });
 });

@@ -1,4 +1,4 @@
-# AKA installer — downloads the self-contained `aka` binary. No Node.js required.
+# AKA installer -- downloads the self-contained `aka` binary. No Node.js required.
 #
 #   irm <raw>/install.ps1 | iex                                  # install the latest `aka`
 #   $env:AKA_INSTALL_REF='bin-v0.8.1'; irm ... | iex             # pin an exact release
@@ -14,7 +14,7 @@ $ProgressPreference = 'SilentlyContinue'
 $Repo = if ($env:AKA_INSTALL_REPO) { $env:AKA_INSTALL_REPO } else { 'akasecurity/ai-tc' }
 $InstallDir = if ($env:AKA_INSTALL_DIR) { $env:AKA_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'aka' }
 
-# 1. Detect arch → target triple. Only win32-x64 is built.
+# 1. Detect arch -> target triple. Only win32-x64 is built.
 $archEnv = "$env:PROCESSOR_ARCHITECTURE"
 switch ($archEnv) {
   'AMD64' { $triple = 'win32-x64' }
@@ -47,7 +47,7 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomF
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 try {
   # 3. Download the archive + checksums.
-  Write-Host "aka: downloading $archive…"
+  Write-Host "aka: downloading $archive..."
   Invoke-WebRequest -Uri "$base/$archive" -OutFile (Join-Path $tmp $archive)
   Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
 
@@ -57,7 +57,7 @@ try {
   if (-not $line) { Write-Error "aka: $archive not listed in SHA256SUMS."; exit 1 }
   $want = ($line.Line -split '\s+')[0].ToLower()
   if ($got -ne $want) {
-    Write-Error "aka: checksum mismatch for $archive — refusing to install. expected $want, got $got."
+    Write-Error "aka: checksum mismatch for $archive -- refusing to install. expected $want, got $got."
     exit 1
   }
 
@@ -74,7 +74,7 @@ try {
   # ONE entry that survives upgrades (mirrors install.sh's ~/.local/bin/aka symlink).
   # process.execPath follows the junction, so the binary still resolves its sidecars.
   $current = Join-Path $InstallDir 'current'
-  # Remove only the old junction link, never recurse into its target — on Windows
+  # Remove only the old junction link, never recurse into its target -- on Windows
   # PowerShell 5.1 `Remove-Item -Recurse` on a junction can delete the target's contents.
   if (Test-Path $current) { [System.IO.Directory]::Delete($current) }
   New-Item -ItemType Junction -Path $current -Target $binroot | Out-Null
@@ -92,7 +92,7 @@ try {
     Write-Host "aka: $current is on your PATH (open a new terminal to pick it up)."
   }
   $ver = (& (Join-Path $current 'aka.exe') --version)
-  Write-Host "aka: $ver ready — run 'aka init' to set up your local store."
+  Write-Host "aka: $ver ready -- run 'aka init' to set up your local store."
 }
 finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

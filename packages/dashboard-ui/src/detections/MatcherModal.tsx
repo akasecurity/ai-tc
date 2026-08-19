@@ -29,31 +29,22 @@ function MatcherDetail({ matcher }: { matcher: Matcher }) {
       </div>
     );
   }
-  if (matcher.type === 'keyword') {
-    return (
-      <div className="flex flex-col gap-3">
-        <Field label="Keywords">
-          <div className="flex flex-wrap gap-1.5">
-            {matcher.keywords.map((kw) => (
-              <span
-                key={kw}
-                className="inline-flex h-6 items-center rounded-md border border-border bg-surface-2 px-2 font-mono text-xs text-text-2"
-              >
-                {kw}
-              </span>
-            ))}
-          </div>
-        </Field>
-        <Field label="Case sensitive">
-          <span className="text-xs text-text-2">{matcher.caseSensitive ? 'Yes' : 'No'}</span>
-        </Field>
-      </div>
-    );
-  }
   return (
     <div className="flex flex-col gap-3">
-      <Field label="Validator">
-        <code className="font-mono text-xs text-text-2">{matcher.name}</code>
+      <Field label="Keywords">
+        <div className="flex flex-wrap gap-1.5">
+          {matcher.keywords.map((kw) => (
+            <span
+              key={kw}
+              className="inline-flex h-6 items-center rounded-md border border-border bg-surface-2 px-2 font-mono text-xs text-text-2"
+            >
+              {kw}
+            </span>
+          ))}
+        </div>
+      </Field>
+      <Field label="Case sensitive">
+        <span className="text-xs text-text-2">{matcher.caseSensitive ? 'Yes' : 'No'}</span>
       </Field>
     </div>
   );

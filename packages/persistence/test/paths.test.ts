@@ -1,32 +1,34 @@
 import { execFileSync } from 'node:child_process';
+import fsModule from 'node:fs';
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  classifyOccupant,
+  createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   dbSidecars,
   ensureDataDirSync,
+  KeyUnclaimableError,
   tightenDir,
   tightenFile,
   tightenPerms,
   writeOwnerOnlyFileSync,
 } from '../src/paths.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
 // The POSIX file/dir modes are the ONLY at-rest control on the store — see the
 // "Data at rest" note in SECURITY.md. These tests pin the success modes (the
@@ -35,14 +37,21 @@ import {
 // exercised in database/settings fault cases rather than here. All mode
 // assertions skip on Windows, where POSIX modes are a no-op.
 
+// The harness owns the temp tree — its removal retries, and it demotes a
+// teardown failure to the `cause` of the body's own error rather than speaking
+// over it. Both matter here: several cases below tighten a directory to 0000 or
+// set the macOS immutable flag, and a restore that does not run leaves a tree
+// `rmSync` cannot remove.
+//
+// `base` is a subdirectory rather than the store's own root because these cases
+// assert on the tree's exact contents (`readdirSync(base)`) and create the layout
+// subdirs themselves — both of which the harness has already done to its root.
+const store = useTempStore('aka-paths-');
 let base: string;
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), 'aka-paths-'));
-});
-
-afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  base = join(store.home, 'base');
+  mkdirSync(base);
 });
 
 const mode = (p: string): number => statSync(p).mode & 0o777;
@@ -59,21 +68,23 @@ describe('ensureDataDirSync', () => {
     const dir = join(base, 'data');
     ensureDataDirSync(dir);
     expect(existsSync(dir)).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(mode(dir)).toBe(DATA_DIR_MODE);
+    if (process.platform !== 'win32') expect(mode(dir)).toBe(DATA_DIR_MODE);
   });
 
-  it('tightens an existing loose directory to 0700 (chmods after mkdir)', () => {
+  it('tightens an existing loose directory to 0700 (chmods after mkdir)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const dir = join(base, 'data');
     mkdirSync(dir);
     chmodSync(dir, 0o777);
-    if (process.platform !== 'win32') {
-      expect(mode(dir)).toBe(0o777); // precondition: genuinely loose
-    }
+    // Unguarded because the ctx.skip at the top of this body already returned on
+    // Windows; narrowing that skip means restoring a platform guard here.
+    expect(mode(dir)).toBe(0o777); // precondition: genuinely loose
 
     ensureDataDirSync(dir);
 
-    if (process.platform === 'win32') return;
     expect(mode(dir)).toBe(DATA_DIR_MODE);
   });
 
@@ -85,8 +96,7 @@ describe('ensureDataDirSync', () => {
     expect(() => {
       ensureDataDirSync(dir);
     }).not.toThrow();
-    if (process.platform === 'win32') return;
-    expect(mode(dir)).toBe(DATA_DIR_MODE);
+    if (process.platform !== 'win32') expect(mode(dir)).toBe(DATA_DIR_MODE);
   });
 
   it('holds every level it creates at 0700, not just the leaf it tightens', (ctx) => {
@@ -226,7 +236,11 @@ describe('dbSidecars', () => {
 });
 
 describe('tightenPerms', () => {
-  it('sets 0600 on the db file and all of its sidecars', () => {
+  it('sets 0600 on the db file and all of its sidecars', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const file = join(base, 'aka.db');
     // Create the set with deliberately loose modes so the chmod is observable.
     for (const p of [file, ...dbSidecars(file)]) {
@@ -236,7 +250,6 @@ describe('tightenPerms', () => {
 
     tightenPerms(file);
 
-    if (process.platform === 'win32') return;
     for (const p of [file, ...dbSidecars(file)]) {
       expect(mode(p)).toBe(DATA_FILE_MODE);
     }
@@ -251,8 +264,7 @@ describe('tightenPerms', () => {
     expect(() => {
       tightenPerms(file);
     }).not.toThrow();
-    if (process.platform === 'win32') return;
-    expect(mode(file)).toBe(DATA_FILE_MODE);
+    if (process.platform !== 'win32') expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
   it('never chmods THROUGH a symlink planted at a sidecar path', (ctx) => {
@@ -278,14 +290,17 @@ describe('tightenPerms', () => {
 });
 
 describe('tightenFile', () => {
-  it('sets 0600 on a single file (a backup copy, the exception key)', () => {
+  it('sets 0600 on a single file (a backup copy, the exception key)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const file = join(base, 'aka.db.legacy.bak');
     writeFileSync(file, 'corpus copy');
     chmodSync(file, 0o644); // as VACUUM INTO / a mode-preserving rename would leave it
 
     tightenFile(file);
 
-    if (process.platform === 'win32') return;
     expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
@@ -295,8 +310,11 @@ describe('tightenFile', () => {
     }).not.toThrow();
   });
 
-  it('never chmods THROUGH a symlink (self-heal must not tighten an arbitrary target)', () => {
-    if (process.platform === 'win32') return;
+  it('never chmods THROUGH a symlink (self-heal must not tighten an arbitrary target)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     // Fault injection: settings.json (or the exception key) is a planted symlink
     // to a victim the attacker can read. tightenFile must skip it, not follow the
     // link and chmod the victim.
@@ -318,8 +336,7 @@ describe('writeOwnerOnlyFileSync', () => {
     const file = join(base, 'settings.json');
     writeOwnerOnlyFileSync(file, 'hello\n');
     expect(readFileSync(file, 'utf8')).toBe('hello\n');
-    if (process.platform === 'win32') return;
-    expect(mode(file)).toBe(DATA_FILE_MODE);
+    if (process.platform !== 'win32') expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
   it('clears a stale same-pid tmp from an earlier crash and still lands 0600', () => {
@@ -334,8 +351,7 @@ describe('writeOwnerOnlyFileSync', () => {
     writeOwnerOnlyFileSync(file, 'fresh\n');
 
     expect(readFileSync(file, 'utf8')).toBe('fresh\n');
-    if (process.platform === 'win32') return;
-    expect(mode(file)).toBe(DATA_FILE_MODE);
+    if (process.platform !== 'win32') expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
   it('replaces an existing loose target and ends 0600', () => {
@@ -346,12 +362,14 @@ describe('writeOwnerOnlyFileSync', () => {
     writeOwnerOnlyFileSync(file, 'new\n');
 
     expect(readFileSync(file, 'utf8')).toBe('new\n');
-    if (process.platform === 'win32') return;
-    expect(mode(file)).toBe(DATA_FILE_MODE);
+    if (process.platform !== 'win32') expect(mode(file)).toBe(DATA_FILE_MODE);
   });
 
-  it('never writes through or installs a symlink planted at the tmp path', () => {
-    if (process.platform === 'win32') return;
+  it('never writes through or installs a symlink planted at the tmp path', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     // Fault injection: an attacker with write access to the (loose) dir plants a
     // symlink at our tmp path pointing at a victim file. The write must not follow
     // it (no arbitrary overwrite) and must not install it as `file`.
@@ -385,13 +403,24 @@ describe('writeOwnerOnlyFileSync', () => {
     expect(readdirSync(base).filter((f) => f.includes('.tmp'))).toEqual([]);
   });
 
-  it('refuses to follow a planted tmp symlink the unlink could not clear (O_EXCL, not the rm)', () => {
+  it('refuses to follow a planted tmp symlink the unlink could not clear (O_EXCL, not the rm)', (ctx) => {
     // Isolates `wx`: chflags makes the dir immutable so the leading rmSync can't
     // remove the planted symlink, so ONLY the exclusive create can prevent the
     // write from following it. Without `flag: 'wx'` the write overwrites the
-    // victim. macOS-only (needs chflags to fail the unlink); no macOS CI, so this
-    // runs locally.
-    if (process.platform !== 'darwin') return;
+    // victim. macOS-only, since it needs chflags to fail the unlink, so the only
+    // CI leg that executes it is `macOS · Full suite` in ci.yml (a local run on a
+    // Mac executes it too, and is the quickest way to reproduce a failure here).
+    // That leg runs the WHOLE workspace for this reason among others; filtering
+    // `persistence` out of it leaves nothing anywhere exercising `wx`.
+    //
+    // The skip is what makes that legible. This case reaches no assertion off
+    // macOS, and an early `return` there is reported as a PASS — so every other
+    // leg would read as having covered the one property only this case pins,
+    // and deleting `flag: 'wx'` would keep them all green.
+    if (process.platform !== 'darwin') {
+      ctx.skip('needs chflags to fail the unlink, which is macOS-only');
+      return;
+    }
     const file = join(base, 'settings.json');
     const victim = join(base, 'victim');
     writeFileSync(victim, 'SECRET');
@@ -406,5 +435,196 @@ describe('writeOwnerOnlyFileSync', () => {
     } finally {
       execFileSync('chflags', ['nouchg', base]);
     }
+  });
+});
+
+describe('createOwnerOnlyFileSync', () => {
+  // The exclusive twin of writeOwnerOnlyFileSync, and the one primitive both
+  // machine-local keys publish their FIRST copy through. Its whole job is two
+  // properties at once — exactly one caller wins, and no reader ever sees a
+  // partial file — so both are pinned here rather than in either key's suite.
+  const file = (): string => join(base, 'exception.key');
+
+  it('creates the file and reports that it won', () => {
+    expect(createOwnerOnlyFileSync(file(), 'first\n')).toBe(true);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('refuses an occupied path and leaves the incumbent byte-for-byte', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+
+    expect(createOwnerOnlyFileSync(file(), 'second\n')).toBe(false);
+    expect(readFileSync(file(), 'utf8')).toBe('first\n');
+  });
+
+  it('publishes only a COMPLETE file — the final path is never seen empty', () => {
+    // The reason this exists rather than a bare exclusive open at the final
+    // path: `open(O_CREAT|O_EXCL)` publishes an empty inode and fills it on the
+    // next syscall, so a concurrent reader can take a live key for a corrupt
+    // one. Watching every intermediate state is what distinguishes the two.
+    //
+    // `intercepts` is the positive control, and it carries the whole case. The
+    // size assertion below reads a FILTERED array, so an empty `seen` satisfies
+    // it — and an empty `seen` is precisely what a watcher that never fired
+    // produces. Nothing here makes the write route through `fs.writeSync`; that
+    // is an implementation detail of `writeFileSync` on the current runtime, so
+    // a Node release that stops routing through it would leave every assertion
+    // green while this watched nothing at all. Counting the interceptions is
+    // what turns that silence into a failure. On the healthy tmp+link path the
+    // count is non-zero while `seen` stays empty — the write lands on the tmp,
+    // so the final path legitimately does not exist yet to be measured.
+    const seen: number[] = [];
+    let intercepts = 0;
+    const target = file();
+    const realWriteSync = fsModule.writeSync;
+    fsModule.writeSync = ((...args: Parameters<typeof realWriteSync>) => {
+      intercepts += 1;
+      if (existsSync(target)) seen.push(statSync(target).size);
+      return realWriteSync(...args);
+    }) as typeof realWriteSync;
+    try {
+      createOwnerOnlyFileSync(target, 'complete\n');
+    } finally {
+      fsModule.writeSync = realWriteSync;
+    }
+
+    expect(intercepts).toBeGreaterThan(0);
+    expect(seen.filter((size) => size === 0)).toEqual([]);
+    expect(readFileSync(target, 'utf8')).toBe('complete\n');
+  });
+
+  it('leaves no tmp behind on either outcome', () => {
+    createOwnerOnlyFileSync(file(), 'first\n');
+    createOwnerOnlyFileSync(file(), 'second\n');
+
+    expect(readdirSync(base).sort()).toEqual(['exception.key']);
+  });
+
+  it('leaves nothing at the final path when the write itself fails', () => {
+    // A failed publish must not strand a half-made file at the name every later
+    // reader resolves — that would brick the key permanently.
+    const dirAtPath = join(base, 'exception.key');
+    mkdirSync(dirAtPath);
+
+    expect(() => createOwnerOnlyFileSync(join(dirAtPath, 'x', 'y'), 'data\n')).toThrow();
+    expect(readdirSync(dirAtPath)).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('writes the file owner-only', () => {
+    createOwnerOnlyFileSync(file(), 'data\n');
+
+    expect(mode(file())).toBe(DATA_FILE_MODE);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink at the final path', () => {
+    // link() will not replace an existing name, and the target is never created
+    // through it — so a planted link cannot capture the key.
+    const victim = join(base, 'victim');
+    symlinkSync(victim, file());
+
+    expect(createOwnerOnlyFileSync(file(), 'PWNED\n')).toBe(false);
+    expect(existsSync(victim)).toBe(false);
+  });
+});
+
+describe('classifyOccupant', () => {
+  // Both machine-local keys use this to word the failure when a publish found
+  // the path occupied and the re-read then found nothing there. The three states
+  // carry different remedies, so collapsing any two sends operators after the
+  // wrong thing — which is what "cannot inspect" reported as "was removed" did.
+  it('names a symlink, so the remedy can be "remove it"', () => {
+    const link = join(base, 'exception.key');
+    symlinkSync(join(base, 'nowhere'), link);
+
+    expect(classifyOccupant(link)).toEqual({ kind: 'symlink' });
+  });
+
+  it('reports an absent path as gone, carrying no cause', () => {
+    // ENOENT is the removal itself, not a failed lookup: the caller is telling
+    // us the path WAS occupied, so its absence now is the whole diagnosis.
+    const result = classifyOccupant(join(base, 'exception.key'));
+
+    expect(result).toEqual({ kind: 'gone' });
+    expect(result.cause).toBeUndefined();
+  });
+
+  it('reports a real file as gone — the path changed under the read', () => {
+    const target = join(base, 'exception.key');
+    writeFileSync(target, 'data\n');
+
+    expect(classifyOccupant(target)).toEqual({ kind: 'gone' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'reports an unreadable path as unknown, and keeps the errno',
+    (ctx) => {
+      // The case the old boolean folded into "was removed". It is the one state
+      // where the path may be perfectly intact and the lookup is what failed.
+      const dir = join(base, 'locked');
+      mkdirSync(dir);
+      const target = join(dir, 'exception.key');
+      writeFileSync(target, 'data\n');
+      // Registered BEFORE the tighten, so the widen runs even on the paths the
+      // in-body restores below cannot reach: a `classifyOccupant` that throws,
+      // or an assertion that fails ahead of one. Removing an entry needs write
+      // and execute on its PARENT, so a 0000 directory left behind is a tree
+      // `rmSync` refuses — and the rm's own EACCES is then the only thing
+      // reported, in place of whatever actually went wrong here.
+      store.onCleanup(() => {
+        try {
+          chmodSync(dir, 0o700);
+        } catch {
+          // Already widened by the body, or a platform that never applied it.
+        }
+      });
+      chmodSync(dir, 0o000);
+
+      let readable = true;
+      try {
+        lstatSync(target);
+      } catch {
+        readable = false;
+      }
+      if (readable) {
+        chmodSync(dir, 0o700);
+        ctx.skip('lstat still succeeds under a 0000 dir (running as root?)');
+      }
+
+      const result = classifyOccupant(target);
+      chmodSync(dir, 0o700);
+
+      expect(result.kind).toBe('unknown');
+      expect((result.cause as NodeJS.ErrnoException | undefined)?.code).toBe('EACCES');
+    },
+  );
+});
+
+describe('KeyUnclaimableError', () => {
+  it('carries a string code, so a renderer never reads it as a corrupt file', () => {
+    // Both key surfaces branch on `typeof code === 'string'` to decide whether
+    // to advise deleting the file. A codeless error takes the destructive
+    // branch, which here would discard a key the winner had just published.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(err.code).toBe('key-unclaimable');
+    expect(typeof err.code).toBe('string');
+  });
+
+  it('omits `cause` entirely when there is none', () => {
+    // `{ cause: undefined }` defines the property anyway, so the error would
+    // answer `'cause' in err` while carrying nothing — a diagnosis that reads as
+    // captured-then-lost rather than never-taken.
+    const err = new KeyUnclaimableError('occupied');
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(false);
+  });
+
+  it('keeps a cause when given one', () => {
+    const underlying = new Error('EACCES');
+
+    const err = new KeyUnclaimableError('occupied', underlying);
+
+    expect(Object.prototype.hasOwnProperty.call(err, 'cause')).toBe(true);
+    expect(err.cause).toBe(underlying);
   });
 });

@@ -1,15 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFindingWithKey, EventKind, IngestEvent } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../../src/database.ts';
-import { DB_FILENAME } from '../../src/paths.ts';
+import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
+import { useTempStore } from '../helpers/temp-store.ts';
 
 // PINS the status↔bucket contract between the two resolution read surfaces:
 //
@@ -27,22 +23,11 @@ import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
 
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-let dir: string;
-let db: ReturnType<typeof openLocalDatabase>;
+const store = useTempStore('aka-resolution-consistency-');
+let db: LocalDatabase;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-resolution-consistency-'));
-  db = openLocalDatabase(dir);
-});
-
-// Raw second connections handed to repos under test — closed before rmSync
-// (Windows cannot delete a directory while a DB handle is open).
-const rawConnections: DatabaseSync[] = [];
-
-afterEach(() => {
-  for (const raw of rawConnections.splice(0)) raw.close();
-  db.close();
-  rmSync(dir, { recursive: true, force: true });
+  db = store.open();
 });
 
 // One event + one finding per scenario; a distinct ruleId per scenario makes
@@ -75,8 +60,7 @@ function record(opts: { ruleId: string; kind?: EventKind; findingKey?: string })
 }
 
 function security(): SqliteSecurityRepository {
-  const raw = new DatabaseSync(join(dir, DB_FILENAME));
-  rawConnections.push(raw);
+  const raw = store.openRaw();
   return new SqliteSecurityRepository(raw, () => NOW);
 }
 

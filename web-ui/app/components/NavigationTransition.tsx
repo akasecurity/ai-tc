@@ -36,6 +36,13 @@ import {
 interface NavigationTransition {
   isPending: boolean;
   push: (url: string) => void;
+  /**
+   * Same transition, but overwriting the current history entry instead of adding
+   * one. For a state change that undoes the entry it is reverting — dismissing a
+   * panel a push opened — where a second entry would put the dismissed state on
+   * the Back path and re-open it.
+   */
+  replace: (url: string) => void;
 }
 
 const NavigationTransitionContext = createContext<NavigationTransition | null>(null);
@@ -53,7 +60,16 @@ export function NavigationTransitionProvider({ children }: { children: ReactNode
     [router],
   );
 
-  const value = useMemo(() => ({ isPending, push }), [isPending, push]);
+  const replace = useCallback(
+    (url: string) => {
+      startTransition(() => {
+        router.replace(url);
+      });
+    },
+    [router],
+  );
+
+  const value = useMemo(() => ({ isPending, push, replace }), [isPending, push, replace]);
 
   return (
     <NavigationTransitionContext.Provider value={value}>

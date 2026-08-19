@@ -1,5 +1,6 @@
 import type { Rule, Span } from '@akasecurity/schema';
 
+import { memoizedRegExp } from '../regex-cache.ts';
 import type { Matcher } from '../types.ts';
 import { MAX_MATCHES_PER_RULE, MAX_REGEX_INPUT_LENGTH } from './limits.ts';
 
@@ -11,7 +12,16 @@ export class RegexMatcher implements Matcher {
     // the captured text inside the overall match (indexOf) would mislocate the
     // span whenever the captured value also occurs earlier in the match, and a
     // mislocated span makes redact() mask the wrong characters.
-    const re = new RegExp(pattern, flags.includes('d') ? flags : `${flags}d`);
+    //
+    // Compiled once per matcher rather than once per call, and shared across
+    // calls, so it arrives with `lastIndex` at 0. That reset is load-bearing
+    // rather than tidy: every `break` below leaves a global pattern's
+    // `lastIndex` mid-input, so without it the next call would resume from the
+    // previous call's offset and miss every match before it.
+    const re = memoizedRegExp(
+      rule.matcher,
+      () => new RegExp(pattern, flags.includes('d') ? flags : `${flags}d`),
+    );
     // Bound how much of `text` a single caller-supplied pattern is ever run
     // against — see MAX_REGEX_INPUT_LENGTH for why this matters for a
     // catastrophically-backtracking pattern. `scanText` is always a prefix of

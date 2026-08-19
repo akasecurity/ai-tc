@@ -205,8 +205,15 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 
 // GET /v1/security/scan-coverage
 //
-// Per-provider scan coverage. In the initial release only Claude Code is scanned;
-// other providers are returned with supported:false (FE greys them out / "Soon").
+// Per-provider scan coverage. Several providers are scanned, at differing
+// depths — `supported` says whether a capture surface ships for that provider
+// at all, and `coverage` says how much of its traffic that surface reaches, so
+// a supported row is NOT necessarily a complete one. A row with
+// supported:false is returned at coverage 0 for the FE to grey out ("Soon").
+// The per-row rationale is deliberately not restated here: it lives in the
+// comment above the SCAN_COVERAGE table in
+// packages/persistence/src/repositories/security.ts, which is the one place
+// that decides these numbers. A second copy is how this comment went stale.
 // `provider` is its own stable id (note: `claudecode`, distinct from the event
 // SourceTool `claude-code`). Uses the shared `range` query param.
 // Order matches the dashboard display order (and SCAN_COVERAGE) so the generated
@@ -219,7 +226,10 @@ export type Provider = z.infer<typeof Provider>;
 export const ScanCoverageProvider = z
   .object({
     provider: Provider,
-    // Percent of that provider's traffic scanned in the window. 0 when unsupported.
+    // Percent of that provider's traffic the shipped capture surface reaches.
+    // A curated business fact, constant across every `range` — not a measured
+    // per-window metric. 0 exactly when `supported` is false. See the comment
+    // above the block for where these numbers are decided.
     coverage: z.number().int().min(0).max(100),
     supported: z.boolean(),
   })

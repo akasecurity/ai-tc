@@ -142,6 +142,32 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "cache": false
     },
+    // manifest.test.ts asserts two cross-package invariants by reading the CLI's
+    // source as text: the native-host name, and that EXTENSION_IDS grants the id
+    // manifest.json's "key" derives. Chrome refuses connectNative for an origin
+    // the host manifest omits, so a CLI-side drift is a silent runtime failure
+    // rather than a build one — this suite is the only thing that catches it.
+    //
+    // plugins/browser-extension does not depend on cli, so nothing under cli/ is
+    // in the default hash. Measured: swapping the CLI's id for a different
+    // well-formed one left the task hash byte-identical, and ci.yml restores
+    // .turbo/cache with restore-keys that fall back across commits — so a
+    // follow-up touching only the CLI would replay a cached pass and neither
+    // guard would execute. Same hazard as the eslint-config entry below, same
+    // remedy: name the cross-package file the suite reads.
+    //
+    // turbo.json is named too, so this entry covers the config that declares it:
+    // removing these inputs re-hashes the task, which re-runs the suite, whose
+    // own turbo-inputs case then fails rather than going quietly stale.
+    "@akasecurity/plugin-browser-extension#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/cli/src/commands/extension.ts",
+        "$TURBO_ROOT$/turbo.json"
+      ]
+    },
     // The eslint-config suite asserts a workspace-wide invariant: every package
     // ships an eslint.config.mjs wiring the no-network ban, points its `lint`
     // script at every directory it holds code in, and covers scripts/ with a
@@ -179,32 +205,6 @@
     // nothing. The exclusion list has to track the tree's .gitignore files; a
     // generated path that slips through costs a cache miss (a build-output file
     // enters the hash), never a false pass.
-    // manifest.test.ts asserts two cross-package invariants by reading the CLI's
-    // source as text: the native-host name, and that EXTENSION_IDS grants the id
-    // manifest.json's "key" derives. Chrome refuses connectNative for an origin
-    // the host manifest omits, so a CLI-side drift is a silent runtime failure
-    // rather than a build one — this suite is the only thing that catches it.
-    //
-    // plugins/browser-extension does not depend on cli, so nothing under cli/ is
-    // in the default hash. Measured: swapping the CLI's id for a different
-    // well-formed one left the task hash byte-identical, and ci.yml restores
-    // .turbo/cache with restore-keys that fall back across commits — so a
-    // follow-up touching only the CLI would replay a cached pass and neither
-    // guard would execute. Same hazard as the eslint-config entry below, same
-    // remedy: name the cross-package file the suite reads.
-    //
-    // turbo.json is named too, so this entry covers the config that declares it:
-    // removing these inputs re-hashes the task, which re-runs the suite, whose
-    // own turbo-inputs case then fails rather than going quietly stale.
-    "@akasecurity/plugin-browser-extension#test": {
-      "dependsOn": ["build", "^build", "^typecheck"],
-      "outputs": ["coverage/**"],
-      "inputs": [
-        "$TURBO_DEFAULT$",
-        "$TURBO_ROOT$/cli/src/commands/extension.ts",
-        "$TURBO_ROOT$/turbo.json"
-      ]
-    },
     "@akasecurity/eslint-config#test": {
       "dependsOn": ["build", "^build", "^typecheck"],
       "outputs": ["coverage/**"],

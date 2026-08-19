@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
@@ -489,6 +489,13 @@ describe('noDrizzleImports merge', () => {
 // loosening the per-test default that guards every other test in this file.
 const CONFIG_LOAD_TIMEOUT_MS = 60_000;
 
+// Keyed by CONFIG, not by site, and deliberately so: what it mirrors is the
+// SPECIFIER claim, which a config grants once for every site it scopes to, so
+// site-level keying here would duplicate a value rather than assert a new one.
+// The site claim — WHICH files each exception reaches — is asserted directly
+// against the configs by `scopes every opt-out to a site the table names`, in
+// both directions, so it needs no mirror to drift from. Read the two together:
+// this constant is the specifier half, that check is the site half.
 const DOCUMENTED_OPT_OUTS = {
   'cli/eslint.config.mjs': ['node:net'],
   'cli/eslint.scripts.config.mjs': ['node:http'],
@@ -515,15 +522,223 @@ function bannedNamesOf(ruleEntry) {
 }
 
 /**
+ * Whether a rule value switches the rule OFF. `'off'` and `0` are the two
+ * spellings, bare or as the severity slot of an options array.
+ * @param {unknown} value
+ */
+const ruleIsOff = (value) => {
+  const severity = Array.isArray(value) ? value[0] : value;
+  return severity === 'off' || severity === 0;
+};
+
+/**
+ * The shipped network module names a `no-restricted-syntax` value still bans, or
+ * null when the value cannot be read.
+ *
+ * The dynamic half of the ban is a regex ALTERNATION inside an esquery selector
+ * (`ImportExpression[source.value=/^(node:http|http|…)$/]`), so what a value
+ * permits is derived by differencing its alternation tokens against the shipped
+ * one — never by re-deriving the escaping, which is an implementation detail of
+ * the generator. A selector this cannot parse returns null, which the caller
+ * resolves toward "permits everything": the loud direction, matching how every
+ * other ambiguity in this file is broken.
+ * @param {unknown} ruleEntry
+ * @returns {Set<string> | null}
+ */
+function syntaxBannedNamesOf(ruleEntry) {
+  if (!Array.isArray(ruleEntry)) return null;
+  const tokens = new Set();
+  for (const entry of ruleEntry.slice(1)) {
+    const selector = typeof entry === 'string' ? entry : entry?.selector;
+    if (typeof selector !== 'string') return null;
+    for (const match of selector.matchAll(/\^\(([^)]*)\)\$/g)) {
+      for (const token of match[1].split('|')) tokens.add(token);
+    }
+  }
+  const shipped = bannedNamesOf(noNetworkImports());
+  // A name appears in the alternation with its `/` regex-escaped; everything
+  // else in these specifiers is already regex-inert.
+  return new Set([...shipped].filter((name) => tokens.has(name.replaceAll('/', '\\/'))));
+}
+
+/**
  * The network specifiers a config entry PERMITS that the shipped default bans.
- * Derived by differencing against `noNetworkImports()` with no allow list, so it
- * keeps no copy of the module list and cannot drift from it.
+ * Derived by differencing against `noNetworkImports()` / `noNetworkSyntax()`
+ * with no allow list, so it keeps no copy of the module list and cannot drift.
+ *
+ * BOTH halves of the ban are read, and a rule that is merely PRESENT is not the
+ * same as one that bans something. Three shapes each permit every network
+ * specifier and each used to read as permitting none, so an opt-out written any
+ * of these ways was invisible to every audit in this file:
+ *
+ *   - `'off'` / `0`, bare or in the severity slot — the rule is switched off.
+ *   - a value naming no `paths` and no selector (`'error'`, `['error']`) — the
+ *     rule is on and bans nothing.
+ *   - a value this cannot parse — unknown scope, so the widest reading.
+ *
+ * A rule the entry does not mention at all is different again: it states no
+ * opinion and inherits the shared ban, so it contributes nothing here.
  */
 function networkSpecifiersPermittedBy(rules) {
-  const banned = bannedNamesOf(rules?.['no-restricted-imports']);
-  if (banned === null) return [];
-  const shipped = bannedNamesOf(noNetworkImports());
-  return [...shipped].filter((name) => !banned.has(name));
+  const shipped = [...bannedNamesOf(noNetworkImports())];
+  /** @type {Set<string>} */
+  const permitted = new Set();
+  for (const [key, stillBannedBy] of /** @type {const} */ ([
+    ['no-restricted-imports', bannedNamesOf],
+    ['no-restricted-syntax', syntaxBannedNamesOf],
+  ])) {
+    const value = rules?.[key];
+    if (value === undefined) continue;
+    const banned = ruleIsOff(value) ? null : stillBannedBy(value);
+    for (const name of shipped) if (banned === null || !banned.has(name)) permitted.add(name);
+  }
+  return [...permitted].sort();
+}
+
+/**
+ * The `files:` patterns of every entry in a flat config that PERMITS a network
+ * specifier — that is, the sites the config's exception actually reaches.
+ *
+ * The patterns are taken verbatim rather than expanded against the tree, and
+ * that is the whole point of this derivation. Expanding would compare the files
+ * that exist TODAY: widening `tools/ci/egress-probe.mjs` to `tools/ci/*.mjs`
+ * expands to the same single file while silently granting the exception to every
+ * `.mjs` added there afterwards, which is the edit §4's "file-scoped, never
+ * package-wide" promise exists to forbid. Comparing the pattern catches it at
+ * the moment it is written, not at the moment someone lands a second file.
+ *
+ * `files` entries may nest (flat config reads an inner array as AND), so the
+ * list is flattened before comparison.
+ * @param {{ files?: unknown, rules?: Record<string, unknown> }[]} entries
+ * @returns {string[]}
+ */
+const optOutFilePatterns = (entries) =>
+  entries
+    .filter((entry) => networkSpecifiersPermittedBy(entry.rules).length > 0)
+    .flatMap((entry) => {
+      // No `files` at all is the package-wide opt-out §4 forbids outright.
+      // Reported as `undefined` rather than as no pattern: contributing nothing
+      // would leave the entry invisible here and every tabled site for its
+      // config then named as one the config "no longer scopes" — one edit, two
+      // complaints, and the actionable one missing.
+      if (entry.files === undefined) return [undefined];
+      return /** @type {(string | undefined)[]} */ (
+        [entry.files].flat().map((f) =>
+          // Flat config reads a NESTED array as AND — a file must match every
+          // element — which this resolution cannot model. Joined into one token
+          // so it is refused as unscoped rather than flattened into two
+          // independent site claims, neither of which ESLint actually applies.
+          Array.isArray(f) ? f.join(' + ') : f,
+        )
+      );
+    });
+
+/**
+ * Whether a `files:` pattern is FILE-scoped in §4's sense: its final segment is
+ * a literal filename. This is the property the section actually promises — "All
+ * are file-scoped, never package-wide" — and the one the existing audit cannot
+ * express, because that check only asks whether `files` is present at all, which
+ * a directory glob satisfies just as well as a filename.
+ *
+ * A leading `**\/` or directory glob is fine and is how three real opt-outs are
+ * written; what must stay literal is the basename, because that is the segment
+ * deciding whether the exception can reach a file nobody has written yet.
+ * `tools/ci/egress-probe.mjs` names one file for ever; `tools/ci/*.mjs` grants
+ * the exception to every `.mjs` added to that directory afterwards.
+ * @param {string} pattern
+ */
+const isFileScopedPattern = (pattern) => !/[*?[{]/.test(posix.basename(pattern));
+
+/**
+ * The tracked files a file-scoped opt-out pattern designates, repo-relative.
+ *
+ * A pattern with no glob at all names exactly one path under the config's own
+ * directory. One carrying a directory glob (`**\/x.ts`) is resolved by BASENAME
+ * against the tracked tree beneath that directory — a lookup, not a second glob
+ * engine, which is why this is deliberately limited to the leading-directory-glob
+ * shape the workspace actually uses. A pattern whose directory part is anything
+ * more elaborate would resolve too widely here, and `isFileScopedPattern` is what
+ * keeps the interesting axis (the basename) exact.
+ * @param {string} via config path, repo-relative posix
+ * @param {string} pattern
+ * @param {string[]} tracked
+ */
+function sitesDesignatedBy(via, pattern, tracked) {
+  const dir = dirname(via);
+  const base = dir === '.' ? '' : `${dir}/`;
+  if (!/[*?[{]/.test(pattern)) return [`${base}${pattern}`];
+  const name = posix.basename(pattern);
+  return tracked.filter((f) => f.startsWith(base) && posix.basename(f) === name);
+}
+
+/**
+ * Everything wrong between the opt-outs the CONFIGS carry and the sites §4
+ * tables, in both directions. Pure over its inputs, so the failure paths are
+ * drivable with synthetic configs the way the sibling suite's `configViolations`
+ * is — a healthy tree produces none of them by construction, which would
+ * otherwise leave every branch here unexecuted and a deleted check green.
+ * @param {{ patternsByConfig: Map<string, string[]>,
+ *   tabledSitesByConfig: Map<string, string[]>, tracked: string[] }} input
+ * @returns {string[]}
+ */
+function optOutSiteProblems({ patternsByConfig, tabledSitesByConfig, tracked }) {
+  const problems = [];
+  for (const [via, patterns] of patternsByConfig) {
+    const tabled = tabledSitesByConfig.get(via) ?? [];
+    const reached = [];
+    // Whether any pattern here is unresolvable — see the tabled-site loop below.
+    let unscoped = false;
+    for (const pattern of patterns) {
+      if (pattern === undefined) {
+        problems.push(
+          `${via} carries a network opt-out with no \`files:\` scope at all, so it applies ` +
+            `package-wide. ${CONVENTIONS_DOC} §4 requires every opt-out to be file-scoped — ` +
+            'scope it to the file that needs it.',
+        );
+        unscoped = true;
+        continue;
+      }
+      // §4: "All are file-scoped, never package-wide." A basename carrying a
+      // glob is the edit that quietly widens an exception to files nobody has
+      // written, and it is invisible to a resolved-file comparison: the set it
+      // reaches TODAY is unchanged, so that check passes and only fails once
+      // somebody lands a second file.
+      if (!isFileScopedPattern(pattern)) {
+        problems.push(
+          `${via} scopes a network opt-out to \`${pattern}\`, whose final segment is a glob. ` +
+            `${CONVENTIONS_DOC} §4 requires each opt-out to be file-scoped, never package-wide — ` +
+            'this one also covers every matching file added later. Name the file.',
+        );
+        unscoped = true;
+        continue;
+      }
+      reached.push(...sitesDesignatedBy(via, pattern, tracked));
+    }
+    for (const site of reached) {
+      if (!tabled.includes(site)) {
+        problems.push(
+          `${via} opts \`${site}\` out of the network ban and no ${CONVENTIONS_DOC} §4 row ` +
+            'names it. §4 closes with "Adding another opt-out site means updating this table" — ' +
+            'add the row.',
+        );
+      }
+    }
+    // Skipped once any pattern was rejected above: a globbed basename cannot be
+    // resolved to the files it covers (the resolution is a basename lookup, not
+    // a glob engine), so `reached` under-reports and every tabled site would be
+    // named a second time as dropped — two complaints for one edit, the second
+    // of them false. The glob complaint is the actionable one; let it stand
+    // alone, and this direction returns as soon as the pattern is a filename.
+    for (const site of unscoped ? [] : tabled) {
+      if (!reached.includes(site)) {
+        problems.push(
+          `${CONVENTIONS_DOC} §4 tables \`${site}\` as opted out via ${via}, but that config ` +
+            'no longer scopes its network opt-out to it. Remove the row, or restore the pattern.',
+        );
+      }
+    }
+  }
+  return problems;
 }
 
 /**
@@ -933,6 +1148,177 @@ const SITE_COUNT_SENTENCE = /(\w+) files carry a genuine local-only opt-out/g;
 /** "Adding another opt-out site means updating this table." */
 const ADDING_SENTENCE = /Adding (?:an? )?(\w+)(?: opt-out)? site means updating this table/g;
 
+describe('networkSpecifiersPermittedBy (what a config entry really relaxes)', () => {
+  // Every shape below permits the whole banned module list, and each one used to
+  // read as permitting NONE — so an opt-out written any of these ways was
+  // invisible to every audit in this file while eslint let the import through.
+  // Driven directly because no config in the tree is written this way, which is
+  // exactly why nothing caught them.
+  const ALL = [...bannedNamesOf(noNetworkImports())].sort();
+  const permits = (rules) => networkSpecifiersPermittedBy(rules);
+
+  it('treats a rule that is switched off as permitting everything', () => {
+    for (const off of ['off', 0, ['off'], [0]]) {
+      expect(permits({ 'no-restricted-imports': off }), JSON.stringify(off)).toEqual(ALL);
+      expect(permits({ 'no-restricted-syntax': off }), JSON.stringify(off)).toEqual(ALL);
+    }
+    // The DISCRIMINATING shape: severity `off` with the options still attached.
+    // Every spelling above is also caught by the parse falling through to null,
+    // so on those alone the severity check is dead weight no mutation can kill.
+    // Here the options parse perfectly well and the severity is the only thing
+    // saying the ban is not running — read the options and the answer inverts,
+    // reporting the one specifier still listed as the one NOT permitted.
+    expect(
+      permits({ 'no-restricted-imports': ['off', { paths: [{ name: 'node:http' }] }] }),
+      'severity off with options present',
+    ).toEqual(ALL);
+    expect(
+      permits({ 'no-restricted-syntax': ['off', ...noNetworkSyntax().slice(1)] }),
+      'severity off with selectors present',
+    ).toEqual(ALL);
+  });
+
+  it('treats a rule that is on but bans nothing as permitting everything', () => {
+    // Severity with no options. The rule is live and reports nothing, which is
+    // the same exposure as switching it off and reads nothing like it.
+    for (const bare of ['error', ['error'], 'warn']) {
+      expect(permits({ 'no-restricted-imports': bare }), JSON.stringify(bare)).toEqual(ALL);
+    }
+  });
+
+  it('treats a value it cannot parse as permitting everything', () => {
+    // The loud direction: an unreadable scope is reported as the widest one, so
+    // the failure names the config instead of silently clearing it.
+    expect(permits({ 'no-restricted-syntax': ['error', { selector: 42 }] })).toEqual(ALL);
+    expect(permits({ 'no-restricted-imports': ['error', { paths: 'nope' }] })).toEqual(ALL);
+  });
+
+  it('reads the DYNAMIC half, not only the static one', () => {
+    // An opt-out relaxing just the import-expression ban permits that specifier
+    // as surely as relaxing the static one does.
+    expect(permits({ 'no-restricted-syntax': noNetworkSyntax({ allow: ['node:https'] }) })).toEqual(
+      ['node:https'],
+    );
+    expect(permits({ 'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }) })).toEqual(
+      ['node:net'],
+    );
+    // …and both halves union rather than one masking the other.
+    expect(
+      permits({
+        'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }),
+        'no-restricted-syntax': noNetworkSyntax({ allow: ['node:https'] }),
+      }),
+    ).toEqual(['node:https', 'node:net']);
+  });
+
+  it('leaves the shipped ban, and an entry that says nothing, permitting nothing', () => {
+    // The controls. Without them every case above passes on a predicate that
+    // returned the whole module list for absolutely everything.
+    expect(
+      permits({
+        'no-restricted-imports': noNetworkImports(),
+        'no-restricted-syntax': noNetworkSyntax(),
+      }),
+      'the shipped ban permits nothing',
+    ).toEqual([]);
+    expect(permits({}), 'an entry mentioning neither rule states no opinion').toEqual([]);
+    expect(permits(undefined), 'no rules block at all').toEqual([]);
+  });
+});
+
+describe('optOutSiteProblems (the site check, tested on synthetic configs)', () => {
+  // The real tree is healthy, so every branch above returns nothing against it —
+  // deleting any one of them keeps the workspace green. Drive them directly.
+  const TRACKED = ['tools/ci/egress-probe.mjs', 'tools/ci/second-probe.mjs', 'cli/src/a.ts'];
+  const run = (patterns, tabled, tracked = TRACKED) =>
+    optOutSiteProblems({
+      patternsByConfig: new Map([['eslint.root.config.mjs', patterns]]),
+      tabledSitesByConfig: new Map([['eslint.root.config.mjs', tabled]]),
+      tracked,
+    });
+
+  it('clears a config whose opt-out is exactly the tabled site', () => {
+    // The control. Without it every case below would pass on a function that
+    // reported a problem for absolutely everything.
+    expect(run(['tools/ci/egress-probe.mjs'], ['tools/ci/egress-probe.mjs'])).toEqual([]);
+  });
+
+  it('rejects a pattern whose final segment is a glob, even when it reaches only tabled files', () => {
+    // The widening edit, and the reason the check is on the PATTERN rather than
+    // on the files it resolves: `tools/ci/*.mjs` reaches egress-probe.mjs and
+    // second-probe.mjs here, but even against a tree holding only the tabled one
+    // it must fail — the exception would silently cover whatever lands next.
+    const problems = run(['tools/ci/*.mjs'], ['tools/ci/egress-probe.mjs'], [TRACKED[0]]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('whose final segment is a glob');
+    expect(problems[0]).toContain('file-scoped, never package-wide');
+  });
+
+  it('names a site the config opts out that no row tables', () => {
+    const problems = run(
+      ['tools/ci/egress-probe.mjs', 'tools/ci/second-probe.mjs'],
+      ['tools/ci/egress-probe.mjs'],
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('tools/ci/second-probe.mjs');
+    expect(problems[0]).toContain('§4');
+  });
+
+  it('names a tabled site the config no longer opts out', () => {
+    // The direction the specifier comparison structurally cannot see: a config
+    // shared by two rows keeps its key from the sibling row, whose specifiers are
+    // a superset, so deleting a row moves that comparison not at all.
+    const problems = run(
+      ['tools/ci/egress-probe.mjs'],
+      ['tools/ci/egress-probe.mjs', 'tools/ci/second-probe.mjs'],
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('tools/ci/second-probe.mjs');
+    expect(problems[0]).toContain('no longer scopes');
+  });
+
+  it('names a package-wide opt-out as itself, not as a dropped row', () => {
+    // `files: undefined` is the violation §4 forbids outright. Contributing no
+    // pattern would make it invisible here AND report every tabled site for the
+    // config as one it "no longer scopes" — the wrong complaint, twice over.
+    const problems = run([undefined], ['tools/ci/egress-probe.mjs']);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('no `files:` scope at all');
+    expect(problems[0]).not.toContain('no longer scopes');
+  });
+
+  it('reads a package-wide entry and a nested AND-array out of a config', () => {
+    // The two shapes optOutFilePatterns must not silently drop or split. A real
+    // opt-out is included as its pattern; an entry with no `files` becomes
+    // `undefined` (refused above); a nested array is one AND-pattern this
+    // resolution cannot model, joined so it is refused rather than split into two
+    // independent site claims ESLint never applies.
+    const permitting = {
+      rules: { 'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }) },
+    };
+    expect(optOutFilePatterns([{ ...permitting, files: ['a/b.ts'] }])).toEqual(['a/b.ts']);
+    expect(optOutFilePatterns([permitting])).toEqual([undefined]);
+    expect(optOutFilePatterns([{ ...permitting, files: [['src/**', '**/*.ts']] }])).toEqual([
+      'src/** + **/*.ts',
+    ]);
+    // The control: an entry permitting nothing contributes no pattern at all.
+    expect(optOutFilePatterns([{ files: ['a/b.ts'], rules: {} }])).toEqual([]);
+  });
+
+  it('resolves a directory-glob pattern by basename, under that config only', () => {
+    // `**/x.mjs` is legitimately file-scoped and three real opt-outs use it, so
+    // it must resolve rather than be rejected — and must not reach an identically
+    // named file under a different config's tree.
+    expect(sitesDesignatedBy('eslint.root.config.mjs', '**/second-probe.mjs', TRACKED)).toEqual([
+      'tools/ci/second-probe.mjs',
+    ]);
+    expect(sitesDesignatedBy('cli/eslint.config.mjs', '**/second-probe.mjs', TRACKED)).toEqual([]);
+    expect(sitesDesignatedBy('cli/eslint.config.mjs', 'src/a.ts', TRACKED)).toEqual([
+      'cli/src/a.ts',
+    ]);
+  });
+});
+
 describe(`the opt-out table itself (${CONVENTIONS_DOC} §4)`, () => {
   /** The section's text, and one entry per table row. */
   let section = '';
@@ -942,6 +1328,8 @@ describe(`the opt-out table itself (${CONVENTIONS_DOC} §4)`, () => {
   let setupError;
   /** Specifiers each row's config really permits for that row's site. */
   const permittedBySite = new Map();
+  /** The `files:` patterns each tabled config scopes its network opt-out to. */
+  const scopedPatternsByConfig = new Map();
 
   // Resolving five configs through ESLint costs what the audit above costs, and
   // for the same reason; it shares that budget rather than the per-test default.
@@ -971,6 +1359,26 @@ describe(`the opt-out table itself (${CONVENTIONS_DOC} §4)`, () => {
           cell: allowed,
         };
       });
+
+      // Every config a green `pnpm lint` runs, not just the ones the table
+      // already names. Scoping this to tabled configs would make the whole
+      // reality -> table direction blind to the case it exists for: a NEW config
+      // carrying an opt-out that no row mentions is exactly a site that never
+      // reached the table, and it would have been iterated by nothing.
+      const { inPlay } = await configsInPlay({
+        rootScripts: rootScripts(),
+        packages: workspaceLintScripts(),
+      });
+      for (const via of new Set([...inPlay, ...rows.map((r) => r.via)])) {
+        const mod = await import(pathToFileURL(join(REPO_ROOT, via)).href);
+        const patterns = optOutFilePatterns(mod.default);
+        // Configs carrying no opt-out at all are left out — they have nothing to
+        // compare. A TABLED config is kept even when empty, so a row whose
+        // exception has been removed is still reported against it.
+        if (patterns.length || rows.some((r) => r.via === via)) {
+          scopedPatternsByConfig.set(via, patterns);
+        }
+      }
 
       for (const { site, via } of rows) {
         // The config's own directory is its cwd, which is what `--no-config-lookup
@@ -1007,6 +1415,40 @@ describe(`the opt-out table itself (${CONVENTIONS_DOC} §4)`, () => {
       tabled[via] = [...new Set([...(tabled[via] ?? []), ...specifiers])].sort();
     }
     expect(tabled).toEqual(DOCUMENTED_OPT_OUTS);
+  });
+
+  it('scopes every opt-out to a site the table names, and no other', () => {
+    // The reality -> table direction, at SITE granularity. Everything else here
+    // reads the table and checks it against the workspace; this reads the
+    // WORKSPACE and checks it against the table, which is the direction §4's
+    // closing promise — "Adding another opt-out site means updating this table" —
+    // actually makes. §3's parallel sentence has carried this since it was
+    // written; §4's did not, so an ordinary edit could grant the exception more
+    // ground with every gate green.
+    const tracked = trackedFiles();
+    const tabledSitesByConfig = new Map();
+    for (const { site, via } of parsed()) {
+      tabledSitesByConfig.set(via, [...(tabledSitesByConfig.get(via) ?? []), site]);
+    }
+
+    // A derivation that resolved nothing would report no problem for any config
+    // and pass this whole check vacuously — the same rule the parse above applies
+    // to the table itself.
+    const derived = [...scopedPatternsByConfig.values()].flat();
+    expect(
+      derived.length,
+      'no tabled config scopes a network opt-out to any file, so this check compares two empty ' +
+        'sets — the derivation has regressed rather than the workspace having no opt-outs',
+    ).toBeGreaterThan(0);
+
+    const problems = optOutSiteProblems({
+      patternsByConfig: scopedPatternsByConfig,
+      tabledSitesByConfig,
+      tracked,
+    });
+    expect(problems, `${CONVENTIONS_DOC} §4 site column does not describe the workspace`).toEqual(
+      [],
+    );
   });
 
   it('names a real file and a real config in every row, the file under the config', () => {

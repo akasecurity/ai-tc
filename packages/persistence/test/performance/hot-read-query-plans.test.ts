@@ -14,13 +14,22 @@
  *
  * **The full INDEX scans are pinned as an exact set.** `SCAN t USING INDEX i` is
  * not a defect — for a whole-table aggregate it is usually the best plan there
- * is — but it is still O(rows), so every one of them is a place where the
+ * is — and it is USUALLY O(rows), so most of them are a place where the
  * dashboard gets slower as the store grows. Left unpinned, a new one could
  * appear and the first assertion would stay green, because the query would have
  * an index and would still visit every row. The set is compared EXACTLY, in both
  * directions: an entry that disappears fails too, so someone who adds an index
  * that turns a scan into a search is told to delete the line rather than leaving
  * a stale claim behind.
+ *
+ * **"Usually" is doing real work in that sentence, and the exception is why this
+ * file cannot be the only guard.** A `SCAN` under a `LIMIT` whose order comes
+ * from the index terminates early, and EXPLAIN QUERY PLAN prints it exactly like
+ * one that does not — there is no plan text for "stops after 500 rows".
+ * `recentFindings` is that case and is annotated at its entry. It means a reader
+ * cannot infer growth from this set alone, in either direction: an entry may be
+ * bounded, and a plan that looks ideal can still be linear in the store, which
+ * is what `security-page-scale.test.ts` measures as a ratio across two sizes.
  *
  * **The plans are taken from the reads, never restated here.** `recordingConnection`
  * captures the SQL and the bound parameters as the repositories execute them; a
@@ -170,7 +179,19 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/security scanCoverage': [],
   '/security topSources': [],
   '/security recentlyResolved': ['finding_resolution'],
-  '/security recentFindings': [],
+  // The ONE entry in this set that does not grow with the store, and the reason
+  // the paragraph above says "usually" rather than "always". `recentFindings`
+  // scans `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop
+  // the scan after `limit` findings — EXPLAIN QUERY PLAN has no way to say
+  // "terminates early", so a bounded scan and an unbounded one print the same
+  // word. Measured at 0.9 ms against 35.0 ms for the temp-B-tree form it
+  // replaced, on the same 40,000-event store.
+  //
+  // So this row must not be read as a cost to remove: removing it means going
+  // back to sorting every finding in the store. What DOES bound it is a ratio
+  // across two store sizes, which a plan cannot express and
+  // `security-page-scale.test.ts` asserts instead.
+  '/security recentFindings': ['audit_events'],
   '/activity stats': [],
   '/activity listSessions': [],
   '/activity tokenReports': [],

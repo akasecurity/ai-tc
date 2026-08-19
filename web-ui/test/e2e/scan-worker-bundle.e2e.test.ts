@@ -61,8 +61,10 @@ afterAll(() => {
 
 describe('the built scan worker', () => {
   it('is emitted where the runtime resolver looks for it', () => {
-    // If this fails, the `test` script no longer builds the worker first — and
-    // every assertion below would be checking a stale artifact or none at all.
+    // If this fails, the `build:worker` turbo task no longer runs ahead of
+    // `test` (turbo.json) — and every assertion below would be checking a stale
+    // artifact or none at all. Run through turbo (`pnpm test --filter
+    // @akasecurity/web-ui`); a bare `vitest run` builds nothing.
     expect(existsSync(BUILT_WORKER)).toBe(true);
 
     // The resolver's own answer, not a restatement of the path: it computes it

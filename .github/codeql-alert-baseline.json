@@ -1,0 +1,9 @@
+{
+  "measured": "2026-08-17",
+  "note": "Open CodeQL alerts on main. A ratchet in BOTH directions: a rise fails, and so does a fall, because a baseline nobody lowers stops describing the tree. Lower it in the commit that fixes or dismisses the alert. Every count here is untriaged work, not an accepted level.",
+  "predicted": "The 25 high alerts were MEASURED on main. The absence of the medium is PREDICTED, not measured: main currently carries one actions/missing-workflow-permissions alert on build-binaries.yml, and the permissions block added in this change is what clears it — which cannot be observed until main is re-analysed after merge. If the prediction is wrong the first scheduled run says so in one line and the fix is one character here.",
+  "total": 25,
+  "bySeverity": {
+    "high": 25
+  }
+}

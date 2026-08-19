@@ -34,6 +34,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  advisoryId,
   assertNoAuditConfigMutes,
   assertNothingMuted,
   type AuditMode,
@@ -43,6 +44,7 @@ import {
   normalizeNpmAudit,
   parseAuditPayload,
   parseNpmAuditPayload,
+  readPnpmConfigSources,
   REPORT_STYLES,
   validateWaivers,
   type Waiver,
@@ -98,31 +100,10 @@ function withRetries<T>(attemptFn: () => T): T {
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-// Absent is not an error: only a file that exists is inspected, so a checkout
-// without a workspace manifest simply contributes nothing to look at. Absent
-// means ENOENT and nothing else — a file that exists but cannot be read is
-// refused rather than reported as "no config here", which is how the JSON
-// parse failure in findAuditConfigMutes already behaves. Reading a mute as
-// absence is the one outcome this check exists to prevent, so it must not be
-// reachable through a failed read either.
-const readIfPresent = (path: string): string | undefined => {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw new WaiverConfigError(
-      `${basename(path)} exists but could not be read (${errorMessage(error)}), so its pnpm config is unknown`,
-    );
-  }
-};
-
 function runWorkspaceAudit(): AuditPayload {
   // Before spawning anything: a pnpm-side mute would leave the payload looking
   // clean, so this has to be read off disk rather than detected in the result.
-  assertNoAuditConfigMutes({
-    manifest: readIfPresent(ROOT_MANIFEST_PATH),
-    workspaceYaml: readIfPresent(WORKSPACE_YAML_PATH),
-  });
+  assertNoAuditConfigMutes(readPnpmConfigSources(ROOT_MANIFEST_PATH, WORKSPACE_YAML_PATH));
   return withRetries(() => {
     const result = spawnSync('pnpm', ['audit', '--json'], { ...SPAWN_OPTIONS, cwd: REPO_ROOT });
     if (result.error) {
@@ -225,7 +206,7 @@ function main(): void {
   writeFileSync(reportPath, buildReport({ mode, counts, ...classification }) + '\n');
 
   for (const advisory of blocking) {
-    const id = advisory.github_advisory_id ?? String(advisory.id ?? '');
+    const id = advisoryId(advisory);
     print(
       `::error::[${mode}] ${advisory.severity ?? ''} advisory ${id} in ${advisory.module_name ?? ''} — ${advisory.title ?? ''} (${advisory.url ?? ''})`,
     );

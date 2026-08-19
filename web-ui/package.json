@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsup && next dev",
-    "build": "tsup && next build",
+    "dev": "next dev",
+    "build:worker": "tsup",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint app middleware.ts test *.config.*",
-    "test": "tsup && vitest run",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

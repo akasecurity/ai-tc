@@ -15,6 +15,14 @@
  *    one.
  *  - **The refusal is real.** The size check has to go red when the rows are
  *    missing, or it is decoration.
+ *
+ * A fourth was added once the corpus grew the axes `/security`'s reads are
+ * sensitive to: **the shape has to land, not just the row count.** A corpus can
+ * hold every event and finding it promised while carrying no `finding_key` and no
+ * resolution row, and three of that page's reads then return NOTHING — while
+ * still running, still producing a plan, and still reporting a duration. That is
+ * the failure the four separate landed-row checks exist for, and the cases below
+ * drive each of them independently, because none implies another.
  */
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -248,6 +256,231 @@ describe('generateCaptureCorpus', () => {
     );
   });
 
+  it('makes a code_change capture trackable and every other kind not', () => {
+    // Mirrors the product: plugin-sdk's runtime sets
+    // `isAtRest = kind === 'code_change' && filePath !== undefined` and keys those
+    // findings alone. Asserted as a PARTITION rather than a count, because a
+    // corpus that keyed every finding would satisfy a bare "some are keyed" check
+    // while presenting a store no product path can write — and every read that
+    // branches on `finding_key IS NOT NULL` would then be measured on it.
+    const db = store.open();
+    const corpus = seedCaptureCorpus(db, { events: 600, seed: 3 });
+    const split = raw(db)
+      .prepare(
+        `SELECT e.event_type AS kind,
+                SUM(CASE WHEN f.finding_key IS NULL THEN 0 ELSE 1 END) AS keyed,
+                SUM(CASE WHEN f.finding_key IS NULL THEN 1 ELSE 0 END) AS unkeyed
+           FROM inspection_findings f
+           JOIN audit_events e ON e.id = f.audit_event_id
+          GROUP BY e.event_type`,
+      )
+      .all() as { kind: string; keyed: number; unkeyed: number }[];
+
+    // Vacuity: a corpus with no findings on either side of the partition would
+    // satisfy every row assertion below.
+    expect(corpus.findings, 'corpus produced no findings to partition').toBeGreaterThan(0);
+    expect(corpus.trackableFindings).toBeGreaterThan(0);
+    expect(corpus.trackableFindings).toBeLessThan(corpus.findings);
+
+    for (const row of split) {
+      if (row.kind === 'code_change') {
+        expect(row.unkeyed, 'a code_change finding was left unkeyed').toBe(0);
+        expect(row.keyed).toBeGreaterThan(0);
+      } else {
+        expect(row.keyed, `${row.kind} findings must carry no finding_key`).toBe(0);
+      }
+    }
+
+    // The reported tally is what a caller sizes a measurement against, so it is
+    // read back off disk rather than trusted.
+    const onDisk = (
+      raw(db)
+        .prepare('SELECT COUNT(*) AS c FROM inspection_findings WHERE finding_key IS NOT NULL')
+        .get() as { c: number }
+    ).c;
+    expect(corpus.trackableFindings).toBe(onDisk);
+  });
+
+  it('gives every code_change capture a file path, and no other kind one', () => {
+    // `file_path` is half of captureId's content-addressing and the key of the
+    // partial index `idx_audit_code_change_path`, so a corpus without it drives
+    // the at-rest path reads against an index holding nothing.
+    const db = store.open();
+    seedCaptureCorpus(db, { events: 400, seed: 4 });
+    const rows = raw(db)
+      .prepare(
+        `SELECT event_type AS kind,
+                SUM(CASE WHEN json_extract(attributes, '$.file_path') IS NULL THEN 0 ELSE 1 END) AS withPath,
+                SUM(CASE WHEN json_extract(attributes, '$.file_path') IS NULL THEN 1 ELSE 0 END) AS without
+           FROM audit_events
+          WHERE event_type IN ('prompt', 'response', 'code_change', 'tool_use')
+          GROUP BY event_type`,
+      )
+      .all() as { kind: string; withPath: number; without: number }[];
+
+    expect(rows.length, 'corpus produced no capture events').toBeGreaterThan(0);
+    for (const row of rows) {
+      if (row.kind === 'code_change') {
+        expect(row.without, 'a code_change capture has no file path').toBe(0);
+        expect(row.withPath).toBeGreaterThan(0);
+      } else {
+        expect(row.withPath, `${row.kind} captures must carry no file path`).toBe(0);
+      }
+    }
+  });
+
+  it('writes resolutions only for trackable findings, and only when asked', () => {
+    const db = store.open();
+    const none = seedCaptureCorpus(db, { events: 300, seed: 5 });
+    // The measured default is zero — the real store holds no resolution rows —
+    // so the option has to be the only way to get them.
+    expect(none.resolutions).toBe(0);
+
+    const other = createTempStore('aka-generate-res-');
+    try {
+      const withRes = seedCaptureCorpus(other.open(), {
+        events: 300,
+        seed: 5,
+        resolutionRate: 1,
+      });
+      expect(withRes.resolutions).toBeGreaterThan(0);
+      // At a rate of 1 every trackable finding gets exactly one row, which is
+      // also what pins the selection to the TRACKABLE set rather than to all
+      // findings — the looser reading would produce `findings` rows here.
+      expect(withRes.resolutions).toBe(withRes.trackableFindings);
+
+      const orphans = (
+        raw(other.open())
+          .prepare(
+            `SELECT COUNT(*) AS c FROM finding_resolution r
+              WHERE NOT EXISTS (SELECT 1 FROM inspection_findings f
+                                 WHERE f.finding_key = r.finding_key)`,
+          )
+          .get() as { c: number }
+      ).c;
+      // A resolution keyed to no finding is invisible to every read here (all of
+      // them reach resolutions THROUGH a finding), so it would inflate the tally
+      // while changing no measurement.
+      expect(orphans, 'a resolution was written against a key with no finding').toBe(0);
+    } finally {
+      other.destroy();
+    }
+  });
+
+  it('resolves only the keys ITS OWN call minted, not the whole store', () => {
+    // The generator is additive, so a bare "every trackable finding" read would
+    // pick up an earlier corpus's keys and write resolutions against findings
+    // this call never created. The landed-row check cannot catch that on its
+    // own: it is a DELTA, and rows written for older keys land inside the delta
+    // exactly the same way. Measured before the fix — a second 1,000-event
+    // corpus added 76 trackable findings and wrote 148 resolutions.
+    const db = store.open();
+    const first = seedCaptureCorpus(db, { events: 1_000, seed: 1, resolutionRate: 0 });
+    expect(
+      first.trackableFindings,
+      'first corpus minted no keys to contaminate with',
+    ).toBeGreaterThan(0);
+    expect(first.resolutions).toBe(0);
+
+    const second = seedCaptureCorpus(db, { events: 1_000, seed: 2, resolutionRate: 1 });
+    // At a rate of 1, every key the SECOND call minted gets exactly one row —
+    // so the total on disk is that call's trackable count and no more.
+    expect(second.resolutions).toBe(second.trackableFindings);
+
+    const onDisk = (
+      raw(db).prepare('SELECT COUNT(*) AS c FROM finding_resolution').get() as { c: number }
+    ).c;
+    expect(onDisk).toBe(second.trackableFindings);
+
+    // The sharper form of the same claim: no resolution may name a key the
+    // second call did not mint. Asserted over the store rather than over the
+    // tally, because the tally is what the defect kept green.
+    const foreign = (
+      raw(db)
+        .prepare(
+          `SELECT COUNT(*) AS c FROM finding_resolution
+            WHERE finding_key NOT LIKE 'corpus-key-2-%'`,
+        )
+        .get() as { c: number }
+    ).c;
+    expect(foreign, 'a resolution was written against a key from another corpus').toBe(0);
+  });
+
+  it('stays deterministic with resolutions on, ids and clock included', () => {
+    // The resolution writer mints an id and stamps created_at, so it is a second
+    // entropy surface the corpus has to close — and one that a row-count check
+    // cannot see, since non-deterministic ids still count correctly.
+    const shape = (db: LocalDatabase): unknown[] =>
+      raw(db)
+        .prepare(
+          'SELECT id, finding_key, status, method, resolved_at, created_at ' +
+            'FROM finding_resolution ORDER BY id',
+        )
+        .all();
+
+    const a = createTempStore('aka-generate-det-a-');
+    const b = createTempStore('aka-generate-det-b-');
+    try {
+      const dbA = a.open();
+      const dbB = b.open();
+      const seeded = seedCaptureCorpus(dbA, { events: 300, seed: 7, resolutionRate: 0.5 });
+      seedCaptureCorpus(dbB, { events: 300, seed: 7, resolutionRate: 0.5 });
+      expect(seeded.resolutions, 'no resolutions to compare').toBeGreaterThan(0);
+      expect(shape(dbA)).toEqual(shape(dbB));
+    } finally {
+      a.destroy();
+      b.destroy();
+    }
+  });
+
+  it('refuses a store that lost its resolutions, independently of its findings', () => {
+    // The positive control for the fourth landed-row check. Findings land
+    // normally and the resolution writer's table is emptied underneath it, which
+    // is what a fail-open swallow on that insert looks like from here — the
+    // events and findings checks both stay green.
+    const db = store.open();
+    const connection = raw(db);
+    // A Proxy, not a spread copy: `DatabaseSync`'s methods live on its prototype,
+    // so `{ ...connection }` carries none of them and the generator fails on a
+    // missing `exec` long before reaching the check under test — which is this
+    // case passing for the wrong reason unless the assertion names the message.
+    //
+    // Anything not intercepted is re-BOUND to the real target rather than handed
+    // back loose. `DatabaseSync` and `StatementSync` are host objects that reject
+    // a proxy as their receiver, so an unbound method throws `Illegal invocation`
+    // on the first call and an accessor throws at the read — the same reason
+    // `test/helpers/query-plans.ts` binds in its own pass-through.
+    const bound = (target: object, prop: string | symbol): unknown => {
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    };
+    const swallowResolutionInserts = new Proxy(connection, {
+      get(target, prop) {
+        if (prop !== 'prepare') return bound(target, prop);
+        return (sql: string) => {
+          const stmt = target.prepare(sql);
+          if (!sql.trimStart().startsWith('INSERT INTO finding_resolution')) return stmt;
+          return new Proxy(stmt, {
+            get(statement, statementProp) {
+              if (statementProp !== 'run') return bound(statement, statementProp);
+              return () => ({ changes: 0, lastInsertRowid: 0 });
+            },
+          });
+        };
+      },
+    });
+    const target: CaptureCorpusTarget = {
+      recordCapture: (event, findings) => {
+        db.recordCapture(event, findings);
+      },
+      connection: swallowResolutionInserts,
+    };
+
+    expect(() =>
+      generateCaptureCorpus(target, { events: 300, seed: 7, resolutionRate: 1 }),
+    ).toThrow(/wrote 0 resolutions, expected [1-9]/);
+  });
+
   it('rejects options it cannot honour', () => {
     const db = store.open();
     const target: CaptureCorpusTarget = {
@@ -261,6 +494,15 @@ describe('generateCaptureCorpus', () => {
     expect(() => generateCaptureCorpus(target, { events: 1.5 })).toThrow(TypeError);
     expect(() => generateCaptureCorpus(target, { events: 10, sessions: 0 })).toThrow(TypeError);
     expect(() => generateCaptureCorpus(target, { events: 10, findingRate: 2 })).toThrow(RangeError);
+    expect(() => generateCaptureCorpus(target, { events: 10, resolutionRate: 2 })).toThrow(
+      RangeError,
+    );
+    // NaN fails BOTH range comparisons, so a bare range check admits it and the
+    // corpus then silently carries no resolutions at all — the one outcome the
+    // landed-row checks exist to refuse.
+    expect(() => generateCaptureCorpus(target, { events: 10, resolutionRate: NaN })).toThrow(
+      RangeError,
+    );
   });
 
   it('leaves no transaction open', () => {

@@ -9,14 +9,22 @@ on:
   push:
     branches: [main]
   # No `branches:` filter, so a stacked PR (one based on another feature branch
-  # rather than on main) is analysed too. That is also what keeps the default
-  # event types sufficient here: `ci.yml` has to listen for `edited` because
-  # retargeting a PR's BASE fires only that event, and its `branches: [main]`
-  # filter means a stacked PR matches no event until it is retargeted. With no
-  # filter the run already happened when the PR was opened, so a retarget has
-  # nothing to re-trigger — and this check cannot end up permanently absent on
-  # a PR that is required to have it.
+  # rather than on main) is analysed too — a recorded decision, not an accident
+  # of the trigger. It is also what stops the deadlock `ci.yml` documents at
+  # length: there, retargeting a PR's BASE fires only `edited`, and the
+  # `branches: [main]` filter means a stacked PR matches no event until it is
+  # retargeted — so without `edited` the required check is permanently absent
+  # and the merge is blocked with nothing to re-run. With no filter here the run
+  # already happened when the PR was opened, so that state is unreachable.
+  #
+  # `edited` is carried anyway, for a smaller and different reason: retargeting
+  # changes the MERGE COMMIT, so the analysis on the old head describes a tree
+  # nobody will merge. Without this the check stays green and stale. The cost is
+  # a run on title and body edits too — GitHub gives one `edited` type for all
+  # three — which the concurrency group below bounds, since it cancels a
+  # superseded PR run per ref rather than queueing another.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   # A merge queue reaches this workflow through `merge_group` and no other event.
   # These analyses are meant to be required checks, and a required check missing
   # this trigger does not fail in the queue — it never reports, so the entry waits

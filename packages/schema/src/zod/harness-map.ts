@@ -17,7 +17,10 @@ import type { FindingProvider } from './finding.ts';
 /**
  * Instrumented coding assistant. The open-ended harness vocabulary shared by
  * the Activity surfaces and the capture writers. Do NOT mint a second
- * `Harness` export; extend this one (single canonical registry).
+ * `Harness` export; extend this one (single canonical registry). A consumer
+ * that only needs a SUBSET of these ids (`HarnessId`, `FindingProvider`,
+ * `Provider`) derives it with `Harness.extract([...])` rather than re-typing
+ * the member list — the subset can then never drift from this array.
  */
 export const Harness = z
   .enum([

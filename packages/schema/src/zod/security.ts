@@ -5,6 +5,7 @@
 import { z } from 'zod';
 
 import { Severity } from './finding.ts';
+import { Harness } from './harness-map.ts';
 import { DEFAULT_TIME_RANGE, TIME_RANGES, TimeRange } from './ranges.ts';
 
 // GET /v1/security/findings/severity-summary
@@ -218,9 +219,18 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 // SourceTool `claude-code`). Uses the shared `range` query param.
 // Order matches the dashboard display order (and SCAN_COVERAGE) so the generated
 // OpenAPI enum list reads the same as the returned `providers` array.
-export const Provider = z
-  .enum(['claudecode', 'cursor', 'codex', 'antigravity', 'claudeai', 'chatgpt', 'copilot', 'api'])
-  .meta({ id: 'Provider' });
+// A subset of the canonical `Harness` vocabulary (harness-map.ts) — extracted
+// rather than re-typed, so the member list can't drift from it.
+export const Provider = Harness.extract([
+  'claudecode',
+  'cursor',
+  'codex',
+  'antigravity',
+  'claudeai',
+  'chatgpt',
+  'copilot',
+  'api',
+]).meta({ id: 'Provider' });
 export type Provider = z.infer<typeof Provider>;
 
 export const ScanCoverageProvider = z

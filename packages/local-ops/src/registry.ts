@@ -1,5 +1,7 @@
 import type { SourceTool } from '@akasecurity/schema';
 
+import type { CliPluginBin } from './cli-plugin-manager.ts';
+
 // The plugin registry: the agent plugins the CLI hub knows how to surface. Plugins
 // are INDEPENDENT peers — each self-installs and writes the shared local store,
 // tagged with its SourceTool — and the CLI is an OPTIONAL hub over them, never a
@@ -25,7 +27,7 @@ export interface AgentPlugin {
   // Which host CLI binary's plugin manager `apply.ts` should shell out to for
   // this agent's install/update coordinates. Only meaningful when the
   // coordinates above are present.
-  cliBin?: 'claude' | 'codex';
+  cliBin?: CliPluginBin;
   // What to tell the user when there are no marketplace coordinates to drive.
   // Without one the CLI can only say "install it from the AKA marketplace",
   // which is wrong for a host that has no marketplace.

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { Harness } from './harness-map.ts';
+
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
 export const AssetType = z
@@ -36,9 +38,11 @@ export const HarnessEventKind = z
   .meta({ id: 'HarnessEventKind' });
 export type HarnessEventKind = z.infer<typeof HarnessEventKind>;
 
-export const HarnessId = z
-  .enum(['claudecode', 'cursor', 'codex', 'antigravity'])
-  .meta({ id: 'HarnessId' });
+// A subset of the canonical `Harness` vocabulary (harness-map.ts) — extracted
+// rather than re-typed, so the member list can't drift from it.
+export const HarnessId = Harness.extract(['claudecode', 'cursor', 'codex', 'antigravity']).meta({
+  id: 'HarnessId',
+});
 export type HarnessId = z.infer<typeof HarnessId>;
 
 // ─── Shared sub-shapes ────────────────────────────────────────────────────────

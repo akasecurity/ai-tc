@@ -1,8 +1,16 @@
 // Pure logic for the dependency-audit CI gate: waiver validation, audit
 // payload parsing (pnpm's v1 format and npm's v2 format), advisory
 // classification, and Markdown report generation. The CLI entry
-// (audit-dependencies.ts) owns all I/O; everything here is side-effect-free
-// so the unit suite can drive it with canned payloads.
+// (audit-dependencies.ts) owns the process spawning; everything here is
+// side-effect-free so the unit suite can drive it with canned payloads.
+//
+// One exception, and it is deliberate: `readPnpmConfigSources` reads two files.
+// It sits here rather than in the entry because the mute it detects is invisible
+// in pnpm's OUTPUT — the whole defect was a guard that read the payload — so the
+// reader that replaced it must itself be driven against real files rather than
+// left in the one module nothing tests.
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 
 // The gate runs in one of two modes — `pnpm audit` over the workspace
 // lockfile, or `npm audit` over an end-user resolution of the published CLI's
@@ -290,6 +298,48 @@ export function findAuditConfigMutes(sources: AuditConfigSources): string[] {
   return found;
 }
 
+/**
+ * Read the two files pnpm takes `auditConfig` from, off disk.
+ *
+ * Absent is not an error: only a file that exists is inspected, so a checkout
+ * without a workspace manifest simply contributes nothing to look at. Absent
+ * means **ENOENT and nothing else** — a file that exists but cannot be read is
+ * refused rather than reported as "no config here", which is how the JSON parse
+ * failure in `findAuditConfigMutes` already behaves. Reading a mute as absence
+ * is the one outcome this check exists to prevent, so it must not be reachable
+ * through a failed read either.
+ *
+ * It lives here rather than in the CLI entry so the suite can drive it against
+ * REAL FILES — a real manifest carrying a real mute, a real ENOENT, and a real
+ * unreadable file. The canned-payload-only test is what let the original defect
+ * ship, so the fix's own reader is not left in the one file nothing drives.
+ */
+export function readIfPresent(path: string): string | undefined {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new WaiverConfigError(
+      `${basename(path)} exists but could not be read (${error instanceof Error ? error.message : String(error)}), so its contents are unknown`,
+    );
+  }
+}
+
+export function readPnpmConfigSources(
+  manifestPath: string,
+  workspaceYamlPath: string,
+): AuditConfigSources {
+  const manifest = readIfPresent(manifestPath);
+  const workspaceYaml = readIfPresent(workspaceYamlPath);
+  // Built by omission rather than by assigning `undefined`: the workspace runs
+  // `exactOptionalPropertyTypes`, under which an explicit undefined is not an
+  // absent property.
+  const sources: AuditConfigSources = {};
+  if (manifest !== undefined) sources.manifest = manifest;
+  if (workspaceYaml !== undefined) sources.workspaceYaml = workspaceYaml;
+  return sources;
+}
+
 export function assertNoAuditConfigMutes(sources: AuditConfigSources): void {
   const found = findAuditConfigMutes(sources);
   if (found.length > 0) {
@@ -356,8 +406,117 @@ export const mdEscape = (text: string | number | null | undefined): string =>
     .replaceAll('`', '\\`')
     .replaceAll('\n', ' ');
 
+/**
+ * The id an advisory is REPORTED under. A GHSA id where the registry supplies
+ * one, and the numeric registry id otherwise — an advisory carrying neither is
+ * the empty string, which no caller may treat as an identity.
+ *
+ * One function because the fallback used to be spelled inline at each of the
+ * three sites that need it, and the daily report's new-vs-seen dedup — the
+ * fourth — matched only the GHSA half. An advisory with no GHSA id therefore
+ * rendered into the report perfectly and matched nothing, so nothing was ever
+ * posted about it onto the tracking issue.
+ */
+export const advisoryId = (advisory: AuditAdvisory): string =>
+  advisory.github_advisory_id ?? String(advisory.id ?? '');
+
+/**
+ * Every advisory id a rendered report carries, sorted and deduped.
+ *
+ * Reads the report's own markdown rather than an audit payload, because the
+ * other side of the comparison is an ISSUE BODY — the same markdown, posted by
+ * a previous run, with no payload behind it any more. One reader for both is
+ * what keeps "an id we have already reported" answerable at all.
+ *
+ * The anchor is the advisory column's link, `[<id>](<url>)`, which is the only
+ * bracket-paren pair `buildReport` emits. Matching a bare `GHSA-…` anywhere in
+ * the text was the earlier form and is wrong in the other direction too: prose
+ * on the issue naming an advisory would count as having reported it.
+ *
+ * Anchored to a TABLE CELL rather than to the link alone, because only one side
+ * of the comparison is text this module wrote. The other is the tracking
+ * issue's body and comments — arbitrary human markdown — where an ordinary
+ * numbered link like `see [2](https://…/notes)` would otherwise put `2` into
+ * the seen set and silence a later advisory carrying that registry id. Both row
+ * shapes `buildReport` emits surround the link with cell pipes, and prose does
+ * not.
+ */
+// The closing pipe is a LOOKAHEAD so it is not consumed: one row's trailing
+// cell separator is the next cell's leading one, and consuming it would make
+// two adjacent link cells mask each other. No row shape emitted today has two,
+// which is exactly why the bug would be introduced by a later edit and found by
+// nobody.
+// Every quantifier here is BOUNDED, and that is a security property rather than
+// tidiness. One side of the comparison this feeds is the tracking issue's own
+// comments — anyone who can comment on a public repository — so this pattern
+// runs on genuinely uncontrolled input inside a job with a ten-minute budget.
+// Unbounded, `[A-Za-z0-9-]+` scans a long run, fails at the `]`, and `matchAll`
+// retries from the next `| [`: quadratic, measured at 66x for 8x input on
+// CodeQL's own witness string. A bound caps the work per start position, so the
+// total is linear in the input again.
+//
+// The limits are far above anything real (a GHSA id is 19 characters, a
+// registry id 7) and a value past them is not silently truncated — it simply
+// does not match, exactly as an unrecognised shape already did not.
+const ADVISORY_CELL = /\| \[(GHSA-[A-Za-z0-9-]{1,64}|\d{1,32})\]\([^)\n]{0,2048}\)(?= \|)/g;
+
+/** The heading `buildReport` gives the blocking table, and any sibling heading. */
+const BLOCKING_HEADING = '## Blocking advisories';
+const ANY_HEADING = '\n## ';
+
+/**
+ * Every BLOCKING advisory id a rendered report carries, sorted and deduped.
+ *
+ * Scoped to the blocking table on purpose. `advisoryRow` renders the Blocking
+ * table AND the "Below the gate (non-blocking)" one, and the waived table
+ * shares the same `| [id](url) |` cell shape — so a reader taking ids from the
+ * whole document counted a merely-REPORTED advisory as an ANNOUNCED one. The
+ * consequence is the exact event the tracking issue exists for: Monday's report
+ * lists GHSA-xxxx below the gate, Thursday the registry re-rates it to high and
+ * it moves into Blocking, `seen_ids` already carries it from Monday, `comm -23`
+ * emits nothing, and a newly-blocking advisory on `main` is never announced.
+ * The mirror held too — a change confined to the non-blocking table posted a
+ * comment for nothing.
+ *
+ * Both sides of the comparison are rendered reports (this run's, and the issue
+ * body a previous run posted), so slicing the same section out of each keeps
+ * them comparable. A concatenation of BOTH reports is the normal input —
+ * audit.yml passes the workspace and artifact reports together — so every
+ * blocking section is taken, not just the first.
+ */
+export function advisoryIdsFromReport(markdown: string): string[] {
+  const ids = new Set<string>();
+  for (let at = markdown.indexOf(BLOCKING_HEADING); at !== -1;) {
+    const next = markdown.indexOf(ANY_HEADING, at + BLOCKING_HEADING.length);
+    const section = next === -1 ? markdown.slice(at) : markdown.slice(at, next);
+    for (const match of section.matchAll(ADVISORY_CELL)) {
+      // The group is mandatory, so a match always carries it; the guard is what
+      // the compiler needs rather than a reachable state.
+      if (match[1] !== undefined) ids.add(match[1]);
+    }
+    at = markdown.indexOf(BLOCKING_HEADING, at + BLOCKING_HEADING.length);
+  }
+  return [...ids].sort();
+}
+
+/**
+ * The advisory ids carried by the files named on argv, one per line.
+ *
+ * A function rather than a module body so the suite can drive it: absent files
+ * contribute nothing (the artifact report does not exist when that audit never
+ * ran), and an empty result prints nothing at all rather than a blank line,
+ * which `comm` would otherwise read as an id.
+ */
+export function advisoryIdsCli(
+  paths: string[],
+  read: (path: string) => string | undefined,
+): string {
+  const ids = advisoryIdsFromReport(paths.map((path) => read(path) ?? '').join('\n'));
+  return ids.length > 0 ? `${ids.join('\n')}\n` : '';
+}
+
 function advisoryRow(advisory: AuditAdvisory): string {
-  const id = advisory.github_advisory_id ?? String(advisory.id ?? '');
+  const id = advisoryId(advisory);
   const paths = (advisory.findings ?? []).flatMap((finding) => finding.paths ?? []);
   const shown = paths
     .slice(0, 3)
@@ -427,7 +586,7 @@ export function buildReport({
     lines.push(`## Waived (${String(waived.length)})`, '');
     lines.push('| Package | Advisory | Expires | Reason |', '| --- | --- | --- | --- |');
     for (const { advisory, waiver } of waived) {
-      const id = advisory.github_advisory_id ?? String(advisory.id ?? '');
+      const id = advisoryId(advisory);
       lines.push(
         `| ${mdEscape(advisory.module_name)} | [${id}](${advisory.url ?? ''}) | ${waiver.expires} | ${mdEscape(waiver.reason)} |`,
       );

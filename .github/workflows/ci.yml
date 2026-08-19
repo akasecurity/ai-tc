@@ -423,25 +423,34 @@ jobs:
   # matching no package, so a typo here fails the job rather than quietly
   # narrowing it.
   #
+  # `plugin-browser-extension` is the one filter entry that is `private: true`
+  # AND here on purpose, so the derived rule above cannot require it and a bare
+  # entry would be removable with nothing going red. It is pinned by name in
+  # required-checks.test.js the way `@akasecurity/eslint-config` below is, and
+  # for a reason of the same shape: its `test/native-host/scan-worker-bundle
+  # .e2e.test.ts` is the ONLY place `resolveWorkerUrl()` is exercised from the
+  # built NATIVE HOST, and that resolver is `fileURLToPath` over a bundled
+  # script's own URL — drive letters, UNC paths, the `file:///C:/…` round trip,
+  # i.e. the one platform where it can differ. A miss there returns undefined,
+  # the host keeps running, and every pulled and custom regex rule is silently
+  # dropped on that machine while the built-in packs go on detecting. The
+  # package is private and reaches users only inlined into the CLI by
+  # `bundle:extension`, which makes the population smaller than the plugin's —
+  # not the failure quieter.
+  #
+  # `cli`'s extension suite covers the Windows INSTALL path already, and that is
+  # a different property: installing the native host is not the same as the host
+  # resolving its worker at runtime.
+  #
   # Whose `test` is deliberately NOT here: `dashboard-ui` and `ui-kit`
-  # (presentational, no I/O — `ui-kit` has no `test` script at all),
-  # `plugin-browser-extension` (private, and its Node half is a native-messaging
-  # host whose Windows install path `cli`'s extension suite already covers), and
+  # (presentational, no I/O — `ui-kit` has no `test` script at all) and
   # `audit-gate` (repo tooling, never shipped).
   #
-  # Say `test` rather than "excluded", because `plugin-browser-extension` is not
-  # absent from this leg: `cli` devDepends on it and the `test` task
-  # `dependsOn: ["build", "^build", "^typecheck"]`, so `--filter=@akasecurity/cli`
-  # drags its `build` and `typecheck` in. Turbo's `Packages in scope:` line does
-  # not list it while the log carries both as executed task groups — which is
-  # exactly how a reader concludes it never runs here.
-  #
-  # That distinction had a cost attached. `plugins/browser-extension/test/
-  # global-setup.ts` was the one of four `global-setup.ts` files without
-  # `shell: USE_SHELL`, which was safe only for as long as its `test` stayed off
-  # this leg. It now carries the flag like its three siblings, so adding that
-  # filter is a one-line change rather than a debugging session — the shim would
-  # otherwise fail before a single test ran.
+  # Adding it was a one-line change rather than a debugging session because
+  # `plugins/browser-extension/test/global-setup.ts` was already given
+  # `shell: USE_SHELL` in anticipation — it was the one of four `global-setup.ts`
+  # files without it, and the shim would otherwise have failed before a single
+  # test ran.
   #
   # setup-wizard is included for
   # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
@@ -687,6 +696,7 @@ jobs:
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/eslint-config
+          --filter=@akasecurity/plugin-browser-extension
 
       # web-ui's suite runs in its OWN turbo invocation, AFTER the fourteen
       # above rather than beside them, and the reason is a measured pairing

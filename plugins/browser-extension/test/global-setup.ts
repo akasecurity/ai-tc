@@ -19,11 +19,12 @@ const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // (Node warns DEP0190 for args-with-shell; it is a runtime notice on stderr,
 // not a failure, and it fires on Windows only.) POSIX stays shell-free.
 //
-// This package's `test` is not on the Windows leg today, so unlike its three
-// siblings the flag changes nothing here yet. It is carried anyway because the
-// only thing making its absence safe is that filter list, and the failure it
-// would cause lands before any test runs — a `.cmd` refusal in globalSetup, not
-// an assertion anyone can read.
+// This package's `test` IS on the Windows leg, so the flag is load-bearing
+// rather than anticipatory: without it the shim fails before a single test
+// runs — a `.cmd` refusal in globalSetup, not an assertion anyone can read.
+// It was carried here ahead of that filter entry landing, which is why adding
+// the package to the leg was a one-line change; do not read that history as
+// meaning the flag is still spare.
 const USE_SHELL = process.platform === 'win32';
 
 export function setup(): void {

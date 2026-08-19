@@ -1,0 +1,79 @@
+name: CodeQL alerts
+
+# Fails when the number of open CodeQL alerts on `main` moves away from
+# `.github/codeql-alert-baseline.json`, in either direction.
+#
+# `codeql.yml` runs the analyses and lands their findings in the Security tab.
+# This is the half that READS them. Without it an analysis is a report rather
+# than a gate, and the cost is invisible by construction: twenty-six alerts
+# accumulated there, none dismissed, with no run red and no check failing while
+# the count climbed.
+#
+# WHY THIS IS ITS OWN WORKFLOW rather than a job in codeql.yml, which is where
+# it started. A workflow has ONE `schedule:`, shared by every job in it, and
+# codeql.yml's is weekly (`30 6 * * 1`) because its analyses are two matrix legs
+# with a 45-minute budget each. A gate on a rising alert count living there is
+# only as timely as that cron — up to seven days of silence — and making it
+# daily would drag ~90 minutes of analysis along with it every day. Splitting it
+# out buys a daily answer for a job that needs a checkout, Node and one API call.
+#
+# Scheduled and manual only, and deliberately NOT a required check: it reads
+# repository-wide state on `main`, so its answer has nothing to do with the diff
+# in front of it. As a PR check it would fail for an alert somebody else's merge
+# introduced, which is a check people re-run rather than read.
+
+# NO `push` trigger, and that absence is the load-bearing part.
+#
+# It had one, on the baseline and the reader, so that "a PR lowering the
+# baseline learns within minutes of merging whether it told the truth". It
+# learns the PRE-MERGE answer instead. An alert is closed only when a LATER
+# analysis of the branch stops reporting it, and `codeql.yml` takes ~2m20s on a
+# main push (measured over five) while this job starts in seconds — so a push
+# run reads the Security tab as it stood before the merge.
+#
+# The consequence is systematic and it inverts this gate's own advice. Do what
+# the failure text says — fix one high, lower the baseline 25 -> 24 in the same
+# commit — and the push run reads live 25 against baseline 24, calls it RISEN,
+# and prints "Do not raise the baseline to absorb it" at the commit that
+# correctly lowered it. Every alert-fixing merge would produce one red run with
+# backwards guidance, and the next morning's cron would be green.
+#
+# The cron is the honest cadence: it runs long after any analysis has settled.
+on:
+  schedule:
+    - cron: '45 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keyed by SHA and event so two merges in quick succession each get their own
+# run rather than one cancelling or queueing behind the other. Same reasoning as
+# the gating workflows, at length in ci.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  alert-count:
+    name: Open alerts match the baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reading code-scanning alerts needs this; codeql.yml's analyze writes them.
+      security-events: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # No `pnpm install`: the gate imports nothing outside its own two files,
+      # and Node 24 runs the TypeScript entry directly (type stripping). The
+      # only external thing it needs is `gh`, which every GitHub runner ships.
+      - name: Compare open alerts against the baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/codeql-alerts-gate/src/check-alerts.ts

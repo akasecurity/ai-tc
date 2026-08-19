@@ -852,7 +852,23 @@ tools/                repo tooling, never shipped: the installer one-liners and
    `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
    way, since every entry is a hole in the guarantee.
 
-**Both of those guards enumerate the tree at RUN time, which is what makes adding a
+8. If any file the package ships or lints imports a `node:` builtin or reads
+   `import.meta.dirname`, declare `@types/node` in its OWN `devDependencies`, at
+   the single range every other manifest carries. Omitting it typechecks here and
+   fails nowhere in this repo: TypeScript walks up to the repo root's
+   `node_modules/@types` and finds the copy the root's devDependencies installed,
+   so the manifest reads as complete while the package is only ever built from
+   this workspace. It breaks the moment the package is consumed from one that does
+   not install this root — TS2307 on the `node:` specifier, TS2339 on
+   `import.meta.dirname`. Undeclared, it also lets pnpm resolve vitest's optional
+   `@types/node` peer for that importer independently of what the compiler
+   resolves from the root, putting two majors in play for one package. Three
+   packages carried this at once, which is why it is derived rather than
+   remembered: `packages/eslint-config/test/effective-config.test.js` reads each
+   package's own tracked source against its own manifest, so a package that skips
+   this reds CI instead of being caught in review.
+
+**All three of those guards enumerate the tree at RUN time, which is what makes adding a
 package the action most exposed to a stale base.** A `pull_request` check runs against a
 merge commit GitHub built when the branch was last pushed and never rebuilds as `main`
 moves, so a package added on one branch and a file it would judge added on another are

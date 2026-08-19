@@ -463,10 +463,16 @@ jobs:
   # cases assert POSIX mode bits and skip here rather than pass with no
   # assertions.
   # web-ui's `test` drops the `build`/`^build` edges (web-ui/turbo.json), so
-  # `next build` is not on ITS path — it still runs on this leg, because
-  # `cli` depends on web-ui and cli's `test` reaches web-ui's `build` through
-  # `^build`. Scoped to the shipped-surface packages to keep the job fast; the
-  # full suite runs on the Linux job above.
+  # `next build` is not on ITS path — the only task it waits on is the ~200ms
+  # `build:worker` that emits the scan worker two of its suites drive.
+  # `next build` still runs on this leg, because `cli` depends on web-ui and
+  # cli's `test` reaches web-ui's `build` through `^build`; the step split
+  # below is what keeps that build out of `web-ui#test`'s way HERE, while on
+  # the unfiltered legs above turbo schedules the two together with no edge
+  # between them. Which is why `build:worker` has to be the only task that
+  # writes web-ui/dist/ (web-ui/test/scan-worker-build.test.ts). Scoped to the
+  # shipped-surface packages to keep the job fast; the full suite runs on the
+  # Linux job above.
   #
   # Two entries here are `private: true` and bundled by no artifact, so both are
   # the first thing anyone trimming this list back to "the shipped surface"
@@ -745,9 +751,10 @@ jobs:
       #
       # `--concurrency=1` for the reason the installer's is: one package, and
       # ci-test-concurrency.test.js requires a bound on every `turbo run test`.
-      # Every dependency web-ui's `test` has (`^typecheck`; its `build` edge is
-      # dropped in web-ui/turbo.json) is already cached by the step above, so
-      # this executes one task.
+      # Every dependency web-ui's `test` has (`build:worker` and `^typecheck`;
+      # its `build` edge is dropped in web-ui/turbo.json) is already cached by
+      # the step above — `build:worker` because `web-ui#build` depends on it and
+      # cli's `test` reaches that through `^build` — so this executes one task.
       #
       # `!cancelled()` so a red shipped-surface step still leaves this one
       # reporting, for the same reason that step takes `--continue`.

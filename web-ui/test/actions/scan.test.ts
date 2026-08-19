@@ -24,7 +24,13 @@ import { runScan } from '../../app/(app)/scan/actions.ts';
  * guarded-scan.test.ts). What only this suite can show is that the ACTION is
  * wired to it — including the half that is invisible from source, because the
  * action resolves its worker from a path this package's build produces. The
- * `test` script builds it first for exactly that reason.
+ * `build:worker` turbo task builds it before this one runs, and it is the ONLY
+ * task that writes `dist/` — see test/scan-worker-build.test.ts for why that
+ * shape is load-bearing. Both suites here drive the real artifact, so a
+ * second writer racing this run does not read as a build problem: it reads as
+ * the action's own wording ("shipped without its scan worker" when the file is
+ * gone at `existsSync`, no culprit quarantined when it vanishes under the
+ * worker's load) and would send a reader to debug the timing battery.
  *
  * Setup follows the four steps every web-ui Server Action test needs: redirect
  * the home dir by mocking `node:os` (the action resolves ~/.aka from it, and

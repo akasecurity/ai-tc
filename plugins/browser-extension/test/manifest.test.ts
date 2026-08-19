@@ -156,18 +156,62 @@ describe('extensionIdFromKey requires a bare base64 SPKI key', () => {
 // The CLI's list is read as text, because cli and plugins/* are sibling leaf
 // packages and importing across them is a package-wall crossing.
 //
-// Comments are stripped before tokenizing. An apostrophe inside one — "the
-// Chrome Web Store's own id", the very comment the next entry invites — would
-// otherwise pair with a real opening quote and swallow the entry after it,
-// reddening this guard on a comment fragment while the CLI list is perfectly
-// correct. Matching the id SHAPE instead would hide the opposite failure:
-// every quoted entry is captured here, malformed ones included, so a typo'd id
-// still reaches the well-formedness check rather than vanishing from it.
+// Comments come off the WHOLE source before the array is located, not out of
+// the body after it. The body regex stops at the first `];`, so a comment
+// carrying one — `// mirrors allowed_origins: [chrome-extension://<id>/];`,
+// exactly the note the next entry invites — ends the body early and drops
+// every id below it; a block comment spanning the real `];` loses the list
+// outright. Both redden this guard on a comment fragment while the CLI list is
+// perfectly correct.
+//
+// Stripping first is only safe if the stripper knows a string from a comment,
+// because this file writes `chrome-extension://${id}/` — a `//` a line-comment
+// regex would read as the start of a comment, discarding the rest of that line
+// and any `];` on it. So strings are walked over rather than matched.
+//
+// Matching the id SHAPE instead of quoted text would hide the opposite
+// failure: every quoted entry is captured here, malformed ones included, so a
+// typo'd id still reaches the well-formedness check rather than vanishing
+// from it.
+function stripComments(source: string): string {
+  let out = '';
+  let i = 0;
+  while (i < source.length) {
+    const pair = source.slice(i, i + 2);
+    if (pair === '//') {
+      while (i < source.length && source[i] !== '\n') i += 1;
+      continue;
+    }
+    if (pair === '/*') {
+      i += 2;
+      while (i < source.length && source.slice(i, i + 2) !== '*/') i += 1;
+      i += 2;
+      continue;
+    }
+    const ch = source[i] ?? '';
+    if (ch === "'" || ch === '"' || ch === '`') {
+      out += ch;
+      i += 1;
+      while (i < source.length && source[i] !== ch) {
+        // An escape takes the next character with it, so a \' never closes.
+        const span = source[i] === '\\' ? 2 : 1;
+        out += source.slice(i, i + span);
+        i += span;
+      }
+      out += source[i] ?? '';
+      i += 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 function parseExtensionIds(source: string): string[] {
-  const body = /const EXTENSION_IDS = \[([\s\S]*?)\];/.exec(source)?.[1];
+  const body = /const EXTENSION_IDS = \[([\s\S]*?)\];/.exec(stripComments(source))?.[1];
   if (body === undefined) return [];
-  const withoutComments = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-  return [...withoutComments.matchAll(/'([^']*)'/g)]
+  return [...body.matchAll(/'([^']*)'/g)]
     .map((m) => m[1])
     .filter((id): id is string => id !== undefined);
 }
@@ -202,6 +246,50 @@ describe('the EXTENSION_IDS tokenizer', () => {
   /* The store's own id. */
   'aaaabbbbccccddddeeeeffffgggghhhh',
 ];`;
+    expect(parseExtensionIds(source)).toEqual(['aaaabbbbccccddddeeeeffffgggghhhh']);
+  });
+
+  // The two below are why comments come off before the array is located.
+  // Locating first ended the body at the first `];` in the RAW text, so a
+  // comment carrying one truncated the list — and each of these is a note a
+  // maintainer has an obvious reason to write next to the entry it explains.
+  it('is not truncated by a line comment carrying the array terminator', () => {
+    const source = `const EXTENSION_IDS = [
+  'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+  // mirrors allowed_origins: [chrome-extension://<store-id>/];
+  'aaaabbbbccccddddeeeeffffgggghhhh',
+];`;
+    expect(parseExtensionIds(source)).toEqual([
+      'mdoiaiemcnjnaokmcmgbikcdhgiemdof',
+      'aaaabbbbccccddddeeeeffffgggghhhh',
+    ]);
+  });
+
+  it('is not emptied by a block comment spanning the array terminator', () => {
+    const source = `const EXTENSION_IDS = [
+  /* was allowed_origins: ['chrome-extension://legacy/']; before the split */
+  'aaaabbbbccccddddeeeeffffgggghhhh',
+];`;
+    expect(parseExtensionIds(source)).toEqual(['aaaabbbbccccddddeeeeffffgggghhhh']);
+  });
+
+  // The two below are why the stripper walks over strings instead of matching
+  // comments with a regex. Stripping first is what fixes the cases above, and
+  // a string-blind stripper is how stripping first breaks something else.
+  it('does not read a "/*" inside a string as the start of a block comment', () => {
+    // The wider of the two hazards, because a block comment is not bounded by
+    // its line: with no `*/` after it, a string-blind stripper discards the
+    // rest of the FILE, and the array with it. A path glob is all it takes.
+    const source = `const GLOB = 'plugins/*';
+const EXTENSION_IDS = ['aaaabbbbccccddddeeeeffffgggghhhh'];`;
+    expect(parseExtensionIds(source)).toEqual(['aaaabbbbccccddddeeeeffffgggghhhh']);
+  });
+
+  it('does not read a "//" inside a string as the start of a line comment', () => {
+    // This file really does write `chrome-extension://${id}/`. The damage is
+    // bounded by the line, so it costs the array only when the two share one —
+    // which is why the fixture puts them there rather than as prettier would.
+    const source = `const ORIGIN = \`chrome-extension://x/\`; const EXTENSION_IDS = ['aaaabbbbccccddddeeeeffffgggghhhh'];`;
     expect(parseExtensionIds(source)).toEqual(['aaaabbbbccccddddeeeeffffgggghhhh']);
   });
 

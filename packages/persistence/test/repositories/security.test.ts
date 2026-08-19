@@ -657,17 +657,32 @@ describe('scanCoverage', () => {
     ]);
   });
 
-  it('pins the claudeai row: listed, not yet supported', async () => {
-    // The claude-ai source exists in the schema before any capture surface
-    // ships for it, so the coverage table names it explicitly at zero rather
-    // than omitting it — an omitted provider reads as an oversight, a zero
-    // row reads as a decision.
+  it('pins the two web-chat rows: supported at partial (40) coverage', async () => {
+    // The browser extension scans the typed prompt at the submit gesture on
+    // both sites, so neither is "not yet supported" — but content.ts watches a
+    // single composer element, so every other way bytes reach the model is
+    // uncovered by construction: assistant responses, attachments, and
+    // edit-and-resend among them. That is why these are partial rather than
+    // 100, and why they must stay strictly below every terminal harness row
+    // rather than matching one — a web-chat row reaching 100 would claim
+    // scanning the extension structurally does not do.
     const res = await security().scanCoverage('30d');
-    expect(res.providers.find((p) => p.provider === 'claudeai')).toEqual({
-      provider: 'claudeai',
-      coverage: 0,
-      supported: false,
-    });
+    for (const provider of ['claudeai', 'chatgpt'] as const) {
+      expect(res.providers.find((p) => p.provider === provider)).toEqual({
+        provider,
+        coverage: 40,
+        supported: true,
+      });
+    }
+  });
+
+  it('pins the still-unsupported rows: listed at zero, not omitted', async () => {
+    // A source that exists in the schema before any capture surface ships for
+    // it is named explicitly at zero rather than omitted — an omitted provider
+    // reads as an oversight, a zero row reads as a decision.
+    const res = await security().scanCoverage('30d');
+    const unsupported = res.providers.filter((p) => !p.supported).map((p) => p.provider);
+    expect(unsupported).toEqual(['cursor', 'copilot', 'api']);
   });
 
   it('pins the codex row: supported at partial (80) coverage', async () => {
@@ -700,5 +715,9 @@ describe('scanCoverage', () => {
       res.providers.find((row) => row.provider === p)?.coverage ?? -1;
     expect(coverageOf('antigravity')).toBeLessThan(coverageOf('codex'));
     expect(coverageOf('codex')).toBeLessThan(coverageOf('claudecode'));
+    // The web-chat rows scan prompts only, so they stay below every terminal
+    // harness row — including the most constrained one.
+    expect(coverageOf('chatgpt')).toBeLessThan(coverageOf('antigravity'));
+    expect(coverageOf('claudeai')).toBeLessThan(coverageOf('antigravity'));
   });
 });

@@ -58,13 +58,39 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // and PostToolUse is record-only. Tool calls are covered across every tool in
 // the CLI; the IDE fires no hooks at all (see
 // plugins/antigravity/skills/setup/SKILL.md).
+// The two web-chat surfaces sit lowest of the supported rows, and what bounds
+// them is structural: content.ts watches ONE element. findComposer() is
+// firstMatch(COMPOSER_SELECTORS) — the first match of the first selector that
+// matches anything, singular — and content.ts keeps a single composer/unwatch
+// pair, so the typed prompt in that one composer is scanned (and blocked,
+// redacted or warned) before it leaves the page, while EVERY other way text or
+// bytes reach the model is uncovered by construction. That is a property of
+// plugins/browser-extension/src/content.ts, not an observation about a vendor's
+// markup, so it holds through any redesign.
+//
+// Three such surfaces are known and none is scanned: assistant responses are
+// never read back out of the DOM; an ATTACHMENT is a sibling node rather than
+// composer text, so a file added by paperclip, drag-drop or paste egresses with
+// no scan, no event and no finding (extractText is extractContentEditableText
+// on both adapters and reads the composer element alone); and EDIT-AND-RESEND
+// submits from the message being edited rather than the composer, so nothing
+// watches it. Treat that list as a floor rather than a partition: the
+// one-element bound admits surfaces nobody has enumerated yet, which is why 40
+// is a curated position below every terminal-harness row rather than a fraction
+// computed from a channel count.
+//
+// This row also rests on weaker footing than the rows above it, which are
+// backed by a documented hook contract. Each adapter's selectors are
+// best-effort against a vendor's DOM, and a miss is silent by design
+// (findComposer() returns null and the adapter does nothing), so a redesign can
+// take real coverage to zero without changing this table.
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
   { provider: 'claudecode', coverage: 100, supported: true },
   { provider: 'cursor', coverage: 0, supported: false },
   { provider: 'codex', coverage: 80, supported: true },
   { provider: 'antigravity', coverage: 60, supported: true },
-  { provider: 'claudeai', coverage: 0, supported: false },
-  { provider: 'chatgpt', coverage: 0, supported: false },
+  { provider: 'claudeai', coverage: 40, supported: true },
+  { provider: 'chatgpt', coverage: 40, supported: true },
   { provider: 'copilot', coverage: 0, supported: false },
   { provider: 'api', coverage: 0, supported: false },
 ];

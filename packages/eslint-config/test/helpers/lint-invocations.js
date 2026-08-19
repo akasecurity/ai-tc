@@ -23,6 +23,11 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..
 /** git reports posix paths on every platform; globSync and join yield native ones. */
 export const toPosix = (p) => p.split(sep).join('/');
 
+// Normalizes EITHER separator, where `toPosix` splits on the running platform's
+// only — so this one converts a Windows path from a POSIX host, which is what
+// makes a separator bug testable anywhere rather than only where it fires.
+export const toPosixPath = (p) => p.split(/[\\/]/).join('/');
+
 // eslint flags that consume the NEXT argument, so its value is not mistaken for
 // a lint target (`-c eslint.scripts.config.mjs scripts` targets scripts, not the
 // config file). Boolean flags are skipped by the leading-dash test alone.
@@ -422,12 +427,20 @@ export function workspaceGlobs() {
  * separators, as globSync yields them.
  * @returns {string[]}
  */
+// Posix-separated on every platform, the same contract `trackedFiles` has —
+// `globSync` yields NATIVE separators, so on Windows this returned
+// `packages\ui-kit` where every caller compares against `packages/ui-kit`.
+// Normalized here rather than at each call site: four suites read this and each
+// was re-deriving the fix, which is one forgetting away from a guard that
+// passes vacuously on the platform it was written on and fails on the one it
+// was not.
 export function workspacePackageDirs() {
   return [
     ...new Set(
       workspaceGlobs()
         .flatMap((g) => globSync(g, { cwd: REPO_ROOT }))
-        .filter((rel) => existsSync(join(REPO_ROOT, rel, 'package.json'))),
+        .filter((rel) => existsSync(join(REPO_ROOT, rel, 'package.json')))
+        .map(toPosixPath),
     ),
   ].sort();
 }

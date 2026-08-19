@@ -1,5 +1,5 @@
 // @ts-check
-import { base, noEnterpriseImports, rootConfigFiles } from '@akasecurity/eslint-config';
+import { base, noDrizzleImports, rootConfigFiles } from '@akasecurity/eslint-config';
 
 export default [
   // Test fixture corpora are scanner INPUT, not compiled sources: they are
@@ -8,7 +8,7 @@ export default [
   // than for the lint rules.
   { ignores: ['test/fixtures/**'] },
   ...base,
-  ...noEnterpriseImports,
+  ...noDrizzleImports,
   {
     languageOptions: {
       parserOptions: {

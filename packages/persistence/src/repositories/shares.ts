@@ -272,7 +272,7 @@ function buildDetail(
 }
 
 /**
- * Data Shares read views over the tenant-free local store — the read side of
+ * Data Shares read views over the local store — the read side of
  * the Data Shares page. Reads share_destination/endpoint/call_site (+ the egress
  * decision override) and shapes the finished @akasecurity/schema responses.
  * The local store IS the shares service, so it

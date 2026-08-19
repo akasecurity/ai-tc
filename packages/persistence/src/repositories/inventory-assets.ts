@@ -396,7 +396,7 @@ function accessCountsFromFiles(files: ProjectFileRow[]): AccessCounts {
 }
 
 /**
- * Inventory read views over the tenant-free local store — the read side of the
+ * Inventory read views over the local store — the read side of the
  * Inventory page. Reads inventory_asset / harness_asset / project_file (+ their
  * overrides) and the shared inventory (harnesses) / source_project (projects)
  * tables, and shapes the finished @akasecurity/schema responses (the local store IS

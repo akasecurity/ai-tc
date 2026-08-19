@@ -1,4 +1,4 @@
-// Pure, tenant-free findings grouping + enum translation. No I/O, no side
+// Pure findings grouping + enum translation. No I/O, no side
 // effects. Shared by every findings read path (e.g. the SQLite adapter in
 // @akasecurity/persistence; callers layer overrides/pack-names/cursor
 // pagination on top), so the grouped-findings shape can never drift between
@@ -122,7 +122,7 @@ export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
 // ─── Grouping ────────────────────────────────────────────────────────────────
 
 /**
- * A tenant-free finding row (a finding joined with its parent event), the input
+ * A finding row (a finding joined with its parent event), the input
  * to buildFindingGroups. Callers project their storage rows onto this shape:
  * the SQLite adapter maps the
  * findings⋈events join. `occurredAt` is ISO; `repo`/`file` come from the event

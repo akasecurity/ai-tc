@@ -70,6 +70,20 @@ const writesWorkerDir = (script: string): boolean =>
 const dependsOn = (task: string): string[] => tasks[task]?.dependsOn ?? [];
 const outputs = (task: string): string[] => tasks[task]?.outputs ?? [];
 
+// A glob covers `dist/` under more spellings than the `dist/`-prefix literal:
+// turbo accepts (and keeps, in `resolvedTaskDefinition.outputs`) a leading
+// `./`, and a bare `**` — or any `**/`-rooted glob — restores every directory
+// including this one. Comparing the raw string against `dist/` alone passes
+// `./dist/**` and `**` straight through, which puts a cache-hit `build` back in
+// the race this suite exists to catch.
+const normalizeGlob = (glob: string): string => glob.replace(/^\.\//, '');
+const coversWorkerDir = (glob: string): boolean => {
+  const normalized = normalizeGlob(glob);
+  return (
+    normalized === '**' || normalized.startsWith('**/') || normalized.startsWith(`${WORKER_DIR}/`)
+  );
+};
+
 describe('the scan worker has one writer, and every consumer waits for it', () => {
   it(`\`${WORKER_TASK}\` is the only script that writes \`${WORKER_DIR}/\``, () => {
     // Pinned as an EXACT set rather than "build:worker runs tsup": a second
@@ -105,7 +119,23 @@ describe('the scan worker has one writer, and every consumer waits for it', () =
     // `dist/**`, and a cache-hit `web-ui#build` replaying beside `web-ui#test`
     // would restore the worker into a directory the suite is reading.
     expect(tasks.build?.outputs, 'build.outputs must be declared in this package').toBeDefined();
-    const restoresWorkerDir = outputs('build').some((glob) => glob.startsWith(`${WORKER_DIR}/`));
+    const restoresWorkerDir = outputs('build').some(coversWorkerDir);
     expect(restoresWorkerDir).toBe(false);
+  });
+});
+
+describe('coversWorkerDir', () => {
+  // Positive control: every spelling turbo accepts for "restore dist/" has to
+  // flag true here, or the assertion above passes on a `build` task that
+  // reintroduces the second-writer race under one of them.
+  it.each([`${WORKER_DIR}/**`, `./${WORKER_DIR}/**`, `${WORKER_DIR}/*`, '**', '**/*', './**'])(
+    'flags %s as covering the worker dir',
+    (glob) => {
+      expect(coversWorkerDir(glob)).toBe(true);
+    },
+  );
+
+  it.each(['.next/**', '!.next/cache/**', `${WORKER_DIR}-other/**`])('does not flag %s', (glob) => {
+    expect(coversWorkerDir(glob)).toBe(false);
   });
 });

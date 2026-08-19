@@ -182,8 +182,20 @@ describe('the project walk terminates on a hostile tree', () => {
     // the cap — the cap has its own cases below, and one of them re-runs this
     // fixture at the default to show the difference is the bound and not the
     // tree.
+    // `budgetMs` is raised well past the shipped 4 s along with the depth, and
+    // that is not incidental: this case asserts RECURSION, so a wall clock must
+    // not be able to decide it. The walk measures ~51 ms here against ~474
+    // levels, but the same chain reaches roughly four times deeper on Linux
+    // (`PATH_MAX` 4096 against macOS' 1024) and a contended runner has measured
+    // an order of magnitude slower for filesystem work — and the deadline is now
+    // read once per DIRECTORY, so a chain of ~474 of them consults it ~474
+    // times where it used to consult it never. If it fired the walk would stop
+    // before the marker and this case would fail as though the walker had
+    // overflowed, which is the one failure it must not be able to report
+    // falsely. Every sibling in the bounds block below keeps the clock out the
+    // same way.
     const scan = resolveProjectFiles(r.root, {
-      bounds: { maxDepth: chain.addressable + 8, budgetMs: PROJECT_WALK_BOUNDS.budgetMs },
+      bounds: { maxDepth: chain.addressable + 8, budgetMs: 60_000 },
     });
 
     // Returning at all is the headline: `markerDepth` frames of recursion, and

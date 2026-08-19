@@ -16,8 +16,7 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/plugin-sdk": "workspace:*",
-    "@akasecurity/schema": "workspace:*",
-    "ignore": "^7.0.6"
+    "@akasecurity/schema": "workspace:*"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

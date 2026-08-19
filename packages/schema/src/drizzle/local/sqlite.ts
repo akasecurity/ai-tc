@@ -254,7 +254,7 @@ export const exceptions = sqliteTable(
   ],
 );
 
-// ─── [Meta] data model — local mirror ───────────────────────────
+// ─── [Meta] data model — local mirror ────────────────────────────────────────
 // The inventory / audit / inspection dimensions of the meta data model,
 // here without owner columns — one store per machine.
 // Content-addressed ids dedupe within the store.
@@ -436,7 +436,7 @@ export const inspectionFindings = sqliteTable(
   ],
 );
 
-// ─── Data Shares (outbound egress) — local mirror ────────────────
+// ─── Data Shares (outbound egress) — local mirror ────────────────────────────
 // Outbound data egress detected in the user's software, grouped by destination
 // (provider / internal domain / raw IP) → endpoint → call-site. The share_*
 // tables carry no owner columns. trust/status/network are DERIVED on
@@ -568,7 +568,7 @@ export const egressDecisionOverride = sqliteTable(
   ],
 );
 
-// ─── Inventory API (asset model) — local store ───────────────────
+// ─── Inventory API (asset model) — local store ───────────────────────────────
 // The rich asset inventory the Inventory page renders: skills / MCP
 // servers / hooks / config as inventory_asset, their harness edges as
 // harness_asset (→ the inventory harness rows), and per-project files with

@@ -247,7 +247,11 @@ describe('classifyInstall', () => {
     expect(planCliUpdate(channel).command).toBeNull();
   });
 
-  it('does not mistake a project-local node_modules link for a global install', () => {
+  it('reads a project-local dependency as the project\u2019s, not as a global install', () => {
+    // What `npx aka` runs. Calling this a source checkout was the one layout
+    // whose advice was confidently wrong rather than merely vague — it printed
+    // `git pull`, which updates nothing, for a copy that is updated by bumping
+    // a dependency in the project that declares it.
     const channel = classifyInstall(
       probe({
         moduleDir: '/Users/x/code/app/node_modules/@akasecurity/cli/dist',
@@ -257,7 +261,64 @@ describe('classifyInstall', () => {
         },
       }),
     );
-    expect(channel.kind).toBe('dev');
+    expect(channel).toMatchObject({ kind: 'project', projectRoot: p('/Users/x/code/app') });
+    const plan = planCliUpdate(channel);
+    expect(plan.command).toBeNull();
+    expect(plan.display).not.toBe('git pull');
+    expect(plan.reason).toContain(p('/Users/x/code/app'));
+  });
+
+  it('names the project\u2019s own manager, read off the lockfile it committed', () => {
+    for (const [lockfile, manager] of [
+      ['pnpm-lock.yaml', 'pnpm'],
+      ['yarn.lock', 'yarn'],
+      ['bun.lockb', 'bun'],
+      ['package-lock.json', 'npm'],
+    ] as const) {
+      const channel = classifyInstall(
+        probe({
+          moduleDir: '/Users/x/code/app/node_modules/@akasecurity/cli/dist',
+          packages: {
+            '/Users/x/code/app/node_modules/@akasecurity/cli': CLI_PACKAGE,
+            '/Users/x/code/app': 'my-app',
+          },
+          dirs: [`/Users/x/code/app/${lockfile}`],
+        }),
+      );
+      expect(channel, lockfile).toMatchObject({ kind: 'project', manager });
+      expect(planCliUpdate(channel).display, lockfile).toContain(manager);
+    }
+  });
+
+  it('a project with no lockfile is still described, defaulting to npm', () => {
+    const channel = classifyInstall(
+      probe({
+        moduleDir: '/Users/x/code/app/node_modules/@akasecurity/cli/dist',
+        packages: {
+          '/Users/x/code/app/node_modules/@akasecurity/cli': CLI_PACKAGE,
+          '/Users/x/code/app': 'my-app',
+        },
+      }),
+    );
+    expect(channel).toMatchObject({ kind: 'project', manager: 'npm' });
+    expect(describeChannel(channel)).toContain('npm');
+  });
+
+  it('a workspace checkout linking its own source stays a dev tree', () => {
+    // The discriminator between the two things a package.json beside a
+    // node_modules can mean. A monorepo's linked copy is its own source, so
+    // `git pull` is the right advice there and a dependency bump is not.
+    const channel = classifyInstall(
+      probe({
+        moduleDir: '/Users/x/code/ai-tc/node_modules/@akasecurity/cli/dist',
+        packages: {
+          '/Users/x/code/ai-tc/node_modules/@akasecurity/cli': CLI_PACKAGE,
+          '/Users/x/code/ai-tc': 'ai-tc',
+        },
+        dirs: ['/Users/x/code/ai-tc/pnpm-workspace.yaml'],
+      }),
+    );
+    expect(channel).toMatchObject({ kind: 'dev' });
   });
 
   it('reads a workspace checkout as dev even when the CLI package is not above it', () => {
@@ -315,7 +376,7 @@ describe('classifyInstall', () => {
       expect(plan.display).not.toContain('.pnpm');
     });
 
-    it('reads a project dependency as a dev tree, not as a global install', () => {
+    it('reads a project dependency as the project\u2019s, not as a global install', () => {
       const channel = classifyInstall(
         probe({
           moduleDir:
@@ -327,7 +388,7 @@ describe('classifyInstall', () => {
           },
         }),
       );
-      expect(channel.kind).toBe('dev');
+      expect(channel).toMatchObject({ kind: 'project', projectRoot: p('/Users/x/proj') });
       expect(planCliUpdate(channel).command).toBeNull();
     });
   });
@@ -438,6 +499,7 @@ describe('planCliUpdate', () => {
       { kind: 'sea', execPath: '/usr/local/bin/aka', installRoot: null },
       { kind: 'homebrew', packageDir: '/opt/homebrew/x' },
       { kind: 'dev', packageDir: '/src/cli' },
+      { kind: 'project', packageDir: '/p/node_modules/x', projectRoot: '/p', manager: 'pnpm' },
       { kind: 'unknown', detail: 'nowhere' },
     ];
     for (const channel of channels) {

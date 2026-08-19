@@ -1,5 +1,5 @@
 import { createCliPluginManager } from './cli-plugin-manager.ts';
-import { runCapture, runInherit } from './exec.ts';
+import { binExists, runCapture, runInherit } from './exec.ts';
 import type { InstallChannel } from './install-channel.ts';
 import { planCliUpdate } from './install-channel.ts';
 import { findAgent, pluginRef } from './registry.ts';
@@ -55,7 +55,14 @@ function run(command: string, args: string[], mode: ApplyMode): ApplyResult {
  * caller PRINTS and the plan it RUNS are the same object; detecting twice
  * around a confirmation prompt lets the two disagree.
  */
-export function applyCliUpdate(channel: InstallChannel, mode: ApplyMode = 'capture'): ApplyResult {
+export function applyCliUpdate(
+  channel: InstallChannel,
+  mode: ApplyMode = 'capture',
+  // The PATH probe as a parameter, so the guard below can be driven without a
+  // runnable channel reaching a real package manager on the developer's own
+  // machine — the reason this file's other cases only ever drive refusals.
+  hasBin: (bin: string) => boolean = binExists,
+): ApplyResult {
   const plan = planCliUpdate(channel);
   if (plan.command === null) {
     return {
@@ -63,7 +70,21 @@ export function applyCliUpdate(channel: InstallChannel, mode: ApplyMode = 'captu
       output: `Cannot update automatically: ${plan.reason ?? 'unsupported install'}.\nRun: ${plan.display}`,
     };
   }
-  return run(plan.command.bin, plan.command.args, mode);
+  // The manager that OWNS the install need not be on PATH — a pnpm/yarn/bun
+  // global keeps working after its manager is uninstalled, and the standalone
+  // binary's `aka` is on PATH while no package manager may be. Without this,
+  // the spawn fails ENOENT and both surfaces report the failure with nothing
+  // in it: the dashboard renders an empty output panel, and the CLI prints
+  // "see the bun output above" above nothing at all. `applyPluginUpdate`
+  // already guards the identical case through `manager.available()`.
+  const { bin, args } = plan.command;
+  if (!hasBin(bin)) {
+    return {
+      ok: false,
+      output: `the \`${bin}\` CLI isn't on your PATH — install it, then run: ${plan.display}`,
+    };
+  }
+  return run(bin, args, mode);
 }
 
 // Resolve an agent id to its `<plugin>@<marketplace>` ref plus its bound

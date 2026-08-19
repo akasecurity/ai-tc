@@ -40,6 +40,13 @@ export type InstallChannel =
   | { kind: 'homebrew'; packageDir: string }
   /** Running out of a source checkout (`pnpm dev`, a linked workspace). */
   | { kind: 'dev'; packageDir: string }
+  /**
+   * Installed as a DEPENDENCY of a project rather than as a tool on PATH —
+   * `<project>/node_modules/@akasecurity/cli`, which is what `npx aka` runs.
+   * Nothing global owns this copy: it is updated by bumping the dependency in
+   * the project that declares it.
+   */
+  | { kind: 'project'; packageDir: string; projectRoot: string; manager: InstallManager }
   /** Located, but under no layout we recognise. */
   | { kind: 'unknown'; detail: string };
 
@@ -160,6 +167,24 @@ function isHomebrewCellar(parts: string[]): boolean {
   );
 }
 
+// Which manager owns a project's node_modules, read off the lockfile it
+// committed. Only used to phrase advice — nothing here runs it — so an
+// unrecognised project falls back to npm rather than refusing to answer.
+const PROJECT_LOCKFILES: readonly (readonly [string, InstallManager])[] = [
+  ['pnpm-lock.yaml', 'pnpm'],
+  ['yarn.lock', 'yarn'],
+  ['bun.lock', 'bun'],
+  ['bun.lockb', 'bun'],
+  ['package-lock.json', 'npm'],
+];
+
+function projectManager(probe: ChannelProbe, root: string): InstallManager {
+  for (const [file, manager] of PROJECT_LOCKFILES) {
+    if (probe.exists(join(root, file))) return manager;
+  }
+  return 'npm';
+}
+
 // `yarn`, `Yarn` and `.yarn` are the same vendor directory: yarn v1 capitalises
 // it on Windows and hides it on POSIX.
 function isYarnSegment(segment: string): boolean {
@@ -273,9 +298,22 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
     // what keeps the case hypothetical; a new manager needs its own rule
     // there rather than a wider net here.
     const prefix = toPath(parts.slice(0, npmWin), leading);
-    if (probe.exists(join(prefix, 'package.json')) || probe.exists(join(prefix, 'src'))) {
-      return { kind: 'dev', packageDir };
+    // A package.json beside the node_modules means a PROJECT owns this copy,
+    // and the two things that can be are told apart by the workspace manifest:
+    // a checkout linking its own source is a dev tree, anything else is an
+    // ordinary dependency — which is what `npx aka` runs. Calling that a
+    // source checkout was the one layout whose advice was confidently wrong
+    // rather than merely vague: it printed `git pull`, which updates nothing.
+    if (probe.exists(join(prefix, 'package.json'))) {
+      if (probe.exists(join(prefix, 'pnpm-workspace.yaml'))) return { kind: 'dev', packageDir };
+      return {
+        kind: 'project',
+        packageDir,
+        projectRoot: prefix,
+        manager: projectManager(probe, prefix),
+      };
     }
+    if (probe.exists(join(prefix, 'src'))) return { kind: 'dev', packageDir };
     return { kind: 'global', manager: 'npm', root: prefix, packageDir };
   }
 
@@ -414,6 +452,20 @@ export function planCliUpdate(
         display: 'git pull',
         reason: `running from a source checkout at ${channel.packageDir} — nothing to install`,
       };
+    case 'project': {
+      // Advice rather than a runnable plan, deliberately. Bumping a dependency
+      // rewrites the project's own manifest and lockfile, which is the user's
+      // repository — a different thing from replacing a tool they installed,
+      // and not something to do behind a confirmation about updating `aka`.
+      const add = channel.manager === 'npm' ? 'install' : 'add';
+      return {
+        command: null,
+        display: `${channel.manager} ${add} ${spec}`,
+        reason:
+          `this copy is a dependency of the project at ${channel.projectRoot}, not a global ` +
+          `install — update it there, in that project`,
+      };
+    }
     case 'unknown':
       return {
         command: null,
@@ -436,6 +488,8 @@ export function describeChannel(channel: InstallChannel): string {
         : `standalone binary at ${channel.execPath} (installer root ${channel.installRoot})`;
     case 'dev':
       return `source checkout at ${channel.packageDir}`;
+    case 'project':
+      return `${channel.manager} project dependency of ${channel.projectRoot}`;
     case 'unknown':
       return `unrecognised install (${channel.detail})`;
   }

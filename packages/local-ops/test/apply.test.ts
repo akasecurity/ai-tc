@@ -39,6 +39,53 @@ describe('applyCliUpdate refuses a channel it cannot update', () => {
   });
 });
 
+describe('applyCliUpdate refuses a manager that is not on PATH', () => {
+  // The manager that OWNS an install need not be runnable here: a pnpm/yarn/bun
+  // global keeps working after its manager is uninstalled. Without the guard the
+  // spawn fails ENOENT and `run` reports `{ ok: false, output: '' }` — the
+  // dashboard renders an empty failure panel and the CLI prints "see the bun
+  // output above" above nothing.
+  //
+  // Driven through the injected probe rather than by arranging a real PATH, so
+  // no runnable channel can reach a real `npm install -g` here.
+  const global: InstallChannel = {
+    kind: 'global',
+    manager: 'bun',
+    root: '/home/u/.bun/install/global',
+    packageDir: '/home/u/.bun/install/global/node_modules/@akasecurity/cli',
+  };
+
+  it('says which CLI is missing, and what to run once it is back', () => {
+    const res = applyCliUpdate(global, 'capture', () => false);
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain('bun');
+    expect(res.output).toContain("isn't on your PATH");
+    // The actionable half: an empty output is the defect this replaced.
+    expect(res.output).toContain('bun add -g');
+  });
+
+  it('probes the manager the plan will actually run, not a hardcoded one', () => {
+    const asked: string[] = [];
+    applyCliUpdate(global, 'capture', (bin) => {
+      asked.push(bin);
+      return false;
+    });
+    expect(asked).toStrictEqual(['bun']);
+  });
+
+  it('probes nothing for a channel that was refused before any command existed', () => {
+    // The order matters: a refusing channel has no `command`, so a probe here
+    // would be dereferencing it.
+    const asked: string[] = [];
+    const res = applyCliUpdate({ kind: 'dev', packageDir: '/src/ai-tc' }, 'capture', (bin) => {
+      asked.push(bin);
+      return true;
+    });
+    expect(asked).toStrictEqual([]);
+    expect(res.output).toContain('Cannot update automatically');
+  });
+});
+
 describe('applyPluginUpdate / installAgentPlugin id validation', () => {
   it('fails closed on an unknown agent id', () => {
     const res = applyPluginUpdate('definitely-not-an-agent');

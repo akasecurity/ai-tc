@@ -367,6 +367,45 @@ describe('generateCaptureCorpus', () => {
     }
   });
 
+  it('resolves only the keys ITS OWN call minted, not the whole store', () => {
+    // The generator is additive, so a bare "every trackable finding" read would
+    // pick up an earlier corpus's keys and write resolutions against findings
+    // this call never created. The landed-row check cannot catch that on its
+    // own: it is a DELTA, and rows written for older keys land inside the delta
+    // exactly the same way. Measured before the fix — a second 1,000-event
+    // corpus added 76 trackable findings and wrote 148 resolutions.
+    const db = store.open();
+    const first = seedCaptureCorpus(db, { events: 1_000, seed: 1, resolutionRate: 0 });
+    expect(
+      first.trackableFindings,
+      'first corpus minted no keys to contaminate with',
+    ).toBeGreaterThan(0);
+    expect(first.resolutions).toBe(0);
+
+    const second = seedCaptureCorpus(db, { events: 1_000, seed: 2, resolutionRate: 1 });
+    // At a rate of 1, every key the SECOND call minted gets exactly one row —
+    // so the total on disk is that call's trackable count and no more.
+    expect(second.resolutions).toBe(second.trackableFindings);
+
+    const onDisk = (
+      raw(db).prepare('SELECT COUNT(*) AS c FROM finding_resolution').get() as { c: number }
+    ).c;
+    expect(onDisk).toBe(second.trackableFindings);
+
+    // The sharper form of the same claim: no resolution may name a key the
+    // second call did not mint. Asserted over the store rather than over the
+    // tally, because the tally is what the defect kept green.
+    const foreign = (
+      raw(db)
+        .prepare(
+          `SELECT COUNT(*) AS c FROM finding_resolution
+            WHERE finding_key NOT LIKE 'corpus-key-2-%'`,
+        )
+        .get() as { c: number }
+    ).c;
+    expect(foreign, 'a resolution was written against a key from another corpus').toBe(0);
+  });
+
   it('stays deterministic with resolutions on, ids and clock included', () => {
     // The resolution writer mints an id and stamps created_at, so it is a second
     // entropy surface the corpus has to close — and one that a row-count check

@@ -42,8 +42,17 @@
  *    enumerated every (code_change event x resolved key) pair. The page took 126
  *    SECONDS at 150k, not 5.9 s at 1M.
  *
- * Both are fixed: the generator now seeds resolutions and finding keys, and its
- * finding rate is a measured 0.33 rather than 0.1. `recentlyResolved`, `mttrTrend`
+ * Both are fixed HERE, in this file's own fixture, and that is worth stating as a
+ * property of the CALL rather than of the generator. The generator gaining
+ * `resolutionRate` and `spacingMs` changes nothing for a caller that never turns
+ * them on: `DEFAULT_RESOLUTION_RATE` is 0 and `spacingMs` defaults to one second,
+ * so the fixture below passes both explicitly. An earlier revision of this header
+ * claimed the fix while the call beneath it still took the defaults, which
+ * reproduced the retracted numbers under a comment disowning them — the same
+ * empty-table measurement, one level up. (Finding KEYS are the exception and need
+ * no argument: the generator mints those unconditionally for a `code_change`
+ * capture.) Its finding rate is a measured 0.33 rather than 0.1, which IS a
+ * default and so arrives without being asked for. `recentlyResolved`, `mttrTrend`
  * and `recentFindings` were rewritten to drive from the bounded side of their
  * joins, and `test/performance/security-page-scale.test.ts` pins all three as
  * ratios so a regression is a red test rather than a number in this comment.
@@ -103,6 +112,24 @@ interface Surfaces {
   readonly now: number;
 }
 
+/**
+ * Milliseconds between consecutive events — the real figure, not the
+ * generator's default. See the note at the `seedCaptureCorpus` call.
+ */
+const REAL_SPACING_MS = 74_528;
+
+/**
+ * Fraction of TRACKABLE findings carrying a resolution row.
+ *
+ * Deliberately NOT the generator's measured default, which is 0 — that zero is
+ * honest about a real install (nothing writes `finding_resolution` until a user
+ * runs the at-rest remediation flow) and is exactly the wrong input for a
+ * benchmark, since it makes three of the eight reads free. A benchmark wants the
+ * join to cost something; 0.5 is chosen for that, and is a stated assumption
+ * rather than a measurement.
+ */
+const BENCH_RESOLUTION_RATE = 0.5;
+
 const fixtures = new Map<number, Surfaces>();
 
 function fixtureFor(events: number): Surfaces {
@@ -111,7 +138,25 @@ function fixtureFor(events: number): Surfaces {
 
   const store = createTempStore(`aka-bench-queries-${String(events)}-`);
   const db = store.open();
-  const corpus = seedCaptureCorpus(db, { events, sessions: 200, seed: 1 });
+  const corpus = seedCaptureCorpus(db, {
+    events,
+    sessions: 200,
+    seed: 1,
+    // Both of these are the difference between measuring this page and measuring
+    // its cheapest path, and neither has a default that would do.
+    //
+    // `spacingMs` is DENSITY. At the 1 s default even a million events span 11.6
+    // days, so a 30-day window contains the whole store and the four windowed
+    // reads cost exactly what unwindowed ones do. 74,528 ms is the real figure,
+    // read off a live store: 16,390 capture events over 14.1 days.
+    spacingMs: REAL_SPACING_MS,
+    // `resolutionRate` is the one that produced the retracted number above.
+    // `finding_resolution` is EMPTY by default, and empty is the cheapest path
+    // through the three reads that join it — `recentlyResolved` measured 8 ms
+    // that way and 10,966 ms once rows existed. A benchmark that leaves this at
+    // the default is timing an absence.
+    resolutionRate: BENCH_RESOLUTION_RATE,
+  });
   const raw = corpusConnection(db);
 
   // The corpus's own end, not the wall clock, and read off the corpus rather

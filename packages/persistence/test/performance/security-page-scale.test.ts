@@ -72,15 +72,27 @@ const SMALL_EVENTS = 2_000;
 const LARGE_EVENTS = 20_000;
 
 /**
- * Real per-event spacing, so a 30-day window holds a FRACTION of the store.
+ * Real per-event spacing: 74,528 ms, measured on a real `~/.aka/data/aka.db`
+ * (16,390 capture events spanning 14.1 days).
  *
- * Measured on a real `~/.aka/data/aka.db`: 16,390 capture events spanning 14.1
- * days, i.e. 74,528 ms between events. At the generator's 1 s default a corpus
- * of any size fits inside a 30-day window, which makes every windowed read cost
- * exactly what an unwindowed one does — so `mttrTrend`'s window would bound
- * nothing here and the case would hold whether or not the fix worked.
+ * **It does NOT make the 30-day window bind at these sizes, and an earlier
+ * version of this comment claimed it did.** The arithmetic follows from the
+ * measurement it cites: 20,000 x 74,528 ms is 17.25 days, so the whole large
+ * corpus sits inside a 30-day window, exactly as it does at the generator's 1 s
+ * default. Crossing that boundary needs **34,779** events, and a later change
+ * raising `LARGE_EVENTS` past it would silently alter the experiment rather than
+ * fail — which is the reason to write the number down.
+ *
+ * What holds `mttrTrend`'s answer fixed here is `RESOLUTION_TARGET`, not the
+ * window. So this constant earns its place for a narrower reason than the one it
+ * used to give: it keeps the corpus's TIMESTAMPS plausible, so the reads run
+ * against a shape a real store could present, and it stops the two corpora
+ * differing in density as well as in size. Do not cite it as a windowing bound.
  */
 const REAL_SPACING_MS = 74_528;
+
+/** Events needed for a corpus to outlast a 30-day window at `REAL_SPACING_MS`. */
+const WINDOW_SPANNING_EVENTS = Math.ceil((30 * 86_400_000) / REAL_SPACING_MS);
 
 /** Resolutions both corpora carry, so the ANSWER size is what stays fixed. */
 const RESOLUTION_TARGET = 120;
@@ -133,19 +145,72 @@ const CONTROL_FLOOR = 2;
 const GROSS_REGRESSION_MS = 500;
 
 const SAMPLES = 25;
-const SEED_TIMEOUT_MS = 120_000;
+/**
+ * The hook's ceiling. Nothing is measured against it — it exists so a slow seed
+ * on a contended runner is not reported as a test timeout, which reads as a
+ * budget failure and is not one.
+ *
+ * **Sized for THIS file's work rather than copied**, which is the mistake it
+ * corrects. It was 120,000 ms, taken from `scale-budgets.test.ts`, whose hook
+ * does substantially less: measured here at 3.53 s of hook time against that
+ * file's 1.42-1.92 s for the nominally identical 2k + 20k pair. The difference
+ * is the corpus, not the sampling — 3,119 ms of seeding against 539 ms of
+ * samples — because this file needs the generator's measured 0.33 finding rate
+ * and writes resolution rows, where that one pins 0.1 and writes none.
+ *
+ * At the ~30x macOS-CI factor `scale-budgets` derives, 3.53 s lands near 106 s:
+ * inside 120,000 ms by about 12%, which a single preemption erases. That file
+ * has already overrun this same ceiling once, at 135,237 ms.
+ *
+ * **Cutting the corpus is the usual remedy and is not available here**, so the
+ * ceiling moves instead. `findingRate` cannot come down: at 0.1 the small corpus
+ * holds 191 findings and `recentFindings` returns 191 rows against the large
+ * corpus's 500, so the two sides would measure different amounts of work and the
+ * ratio would stop meaning anything. And 2k -> 20k is already the cheapest pair
+ * giving a 10x separation. Raising a ceiling that asserts nothing is not the same
+ * act as relaxing a budget that does.
+ */
+const SEED_TIMEOUT_MS = 240_000;
 
 /** The fastest of `samples` — the estimator note in the file header says why. */
 function fastest(samples: number[]): number {
   return Math.min(...samples);
 }
 
-function measure(fn: () => void): number[] {
+/**
+ * `SAMPLES` timings of the read's SYNCHRONOUS work.
+ *
+ * Every repository method here runs its SQL synchronously and returns an
+ * already-resolved promise, so the elapsed time around the bare call is the
+ * whole of the work and the promise is never awaited. (That same fact is why
+ * `/security`'s `Promise.all` buys nothing and the page costs the SUM of its
+ * reads rather than the max.)
+ *
+ * The rejection is CAUGHT rather than discarded, and the reason is diagnostic
+ * rather than cosmetic. A bare `void promise` that rejects is an unhandled
+ * rejection — one per sample, 25 per read — and vitest may attribute that to an
+ * unrelated test, so a broken read here would fail somewhere else in the suite
+ * instead of failing as the clean assertion this file exists to give.
+ *
+ * The `catch` is deliberately EMPTY, and that is not a swallowed error: what
+ * surfaces a broken read is the awaited `run[name]()` in `seedAndMeasure`, which
+ * runs before any sampling and rejects the `beforeAll` with the read's own error.
+ * Collecting the rejection here and rethrowing it after the loop looks stronger
+ * and cannot work — a `.catch` callback runs in a MICROTASK, so it has not fired
+ * by the time a synchronous loop finishes, and the check would read `undefined`
+ * every time. That exact dead code was written here first, and what caught it was
+ * fault-injecting a read that rejects only after its first call: the suite stayed
+ * green through all 8 cases.
+ */
+function measure(fn: () => Promise<unknown>): number[] {
   const out: number[] = [];
   for (let i = 0; i < SAMPLES; i += 1) {
-    const t = performance.now();
-    fn();
-    out.push(performance.now() - t);
+    const started = performance.now();
+    void fn().catch(() => {
+      // See above: the awaited call in `seedAndMeasure` is what reports a broken
+      // read. This exists only so a rejection is never unhandled.
+    });
+    out.push(performance.now() - started);
   }
   return out;
 }
@@ -188,10 +253,24 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // zero. That shipped here first time round, and what caught it was the vacuity
   // case below rather than review — every flatness ratio was a clean 1.00,
   // because zero rows cost the same at both sizes.
+  // Each entry reports how many rows the read MATCHED — a number that must go to
+  // zero when the read finds nothing, or the vacuity check below cannot fire.
+  //
+  // `mttrTrend` is the one where the obvious metric is a trap, and it shipped
+  // here first time round: it returns `points`, which is
+  // `Array.from({ length: numBuckets })` — 30 for a '30d' range — whether or not
+  // a single finding matched. So `points.length` is the CONSTANT 30, and a
+  // corpus seeding zero countable resolutions still reported 30 while every
+  // bucket held null. Verified: at 2,000 events with `resolutionRate: 0` the read
+  // returns 30 points and 0 non-null buckets. Counting non-null buckets is what
+  // makes the guard mean "this read found something".
   const run: Record<ReadName, () => Promise<number>> = {
     recentFindings: async () => (await findings.recentFindings({ limit: 500 })).length,
     recentlyResolved: async () => (await security.recentlyResolved(20)).items.length,
-    mttrTrend: async () => (await security.mttrTrend('30d')).points.length,
+    mttrTrend: async () =>
+      (await security.mttrTrend('30d')).points.filter((point) =>
+        Object.values(point.bySeverity).some((mean) => mean !== null),
+      ).length,
     severitySummary: async () => (await security.severitySummary()).total,
   };
 
@@ -199,7 +278,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   const samples: Record<string, number[]> = {};
   for (const name of READS) {
     returned[name] = await run[name]();
-    samples[name] = measure(() => void run[name]());
+    samples[name] = measure(run[name]);
   }
   return { corpus, returned, samples };
 }
@@ -247,6 +326,21 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
         'TRACKABLE_PER_EVENT needs re-measuring — the flatness cases below would ' +
         'otherwise be measuring resolution growth rather than store growth',
     ).toBeLessThan(RESOLUTION_TOLERANCE);
+  });
+
+  it('the corpus sits inside the 30-day window, so no case may claim the window bounds it', () => {
+    // Pinned as a fact rather than left in prose, because it is the assumption
+    // `REAL_SPACING_MS` used to state backwards. Every case here holds its
+    // answer fixed through RESOLUTION_TARGET and the LIMITs, never through the
+    // window — and if a later change raises LARGE_EVENTS past the boundary, the
+    // windowed reads start shrinking and the experiment quietly becomes a
+    // different one. This fails first and names the number.
+    expect(
+      LARGE_EVENTS,
+      `LARGE_EVENTS has passed ${String(WINDOW_SPANNING_EVENTS)}, so the 30-day window now ` +
+        'excludes part of the corpus. That changes what the windowed reads measure; re-read the ' +
+        'note on REAL_SPACING_MS before raising the ceiling on this assertion.',
+    ).toBeLessThan(WINDOW_SPANNING_EVENTS);
   });
 
   it('every read returns rows at both sizes, and the samples describe real work', () => {

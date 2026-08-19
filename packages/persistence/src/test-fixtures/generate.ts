@@ -417,8 +417,10 @@ export function generateCaptureCorpus(
   const trackableBaseline = countTrackableFindings(target.connection);
   const resolutionsBaseline = countResolutions(target.connection);
   let generated = 0;
-  let generatedTrackable = 0;
   let generatedResolutions = 0;
+  // The trackable keys THIS call minted, which is not the same set as the
+  // trackable keys on disk — see `landedTrackableFindings`.
+  const mintedKeys = new Set<string>();
 
   // Resolutions go through the product's own writer, like the captures — see
   // this module's header. Both of its entropy seams are supplied so the rows
@@ -500,7 +502,7 @@ export function generateCaptureCorpus(
           confidence: 0.9,
         });
         generated += 1;
-        if (findingKey !== undefined) generatedTrackable += 1;
+        if (findingKey !== undefined) mintedKeys.add(findingKey);
       }
 
       target.recordCapture(event, detected);
@@ -519,7 +521,7 @@ export function generateCaptureCorpus(
     // corpus scale, and the per-commit flush is what this module's header
     // explains it cannot afford.
     if (resolutionRate > 0) {
-      for (const row of landedTrackableFindings(target.connection)) {
+      for (const row of landedTrackableFindings(target.connection, mintedKeys)) {
         if (rng() >= resolutionRate) continue;
         // Resolved AFTER first detection, by a spread of the corpus's own
         // spacing. MTTR is `resolved_at - first_detected_at` and the read clamps
@@ -570,10 +572,10 @@ export function generateCaptureCorpus(
   // second repository against a table with no foreign key onto findings, so
   // every one of them could fail to land with the findings check still green.
   const trackableFindings = countTrackableFindings(target.connection) - trackableBaseline;
-  if (trackableFindings !== generatedTrackable) {
+  if (trackableFindings !== mintedKeys.size) {
     throw new Error(
       `generateCaptureCorpus wrote ${String(trackableFindings)} trackable findings, expected ` +
-        `${String(generatedTrackable)}. A finding is trackable exactly when its capture is a ` +
+        `${String(mintedKeys.size)}. A finding is trackable exactly when its capture is a ` +
         'code_change carrying a file path; a corpus with none measures every finding_key read ' +
         'against an empty result.',
     );
@@ -622,18 +624,32 @@ function countResolutions(connection: DatabaseSync): number {
 }
 
 /**
- * Every trackable finding that landed, with its preserved first-detection time,
- * in a deterministic order.
+ * The trackable findings THIS call minted that actually landed, with each one's
+ * preserved first-detection time, in a deterministic order.
  *
- * Ordered by `finding_key` rather than by rowid: the selection below walks this
+ * Read from the store rather than from the loop — the point of the read is to
+ * see what survived `recordCapture`'s dedup gates — but intersected with
+ * `minted`, and the intersection is load-bearing rather than tidiness. The
+ * generator is ADDITIVE by design (`adds to a store that already holds a corpus
+ * rather than counting it twice`), so a bare read returns every trackable
+ * finding in the store, including every earlier corpus's. A second
+ * `seedCaptureCorpus(db, { resolutionRate: r })` would then write resolutions
+ * against keys it never created, and the landed-row check could not see it: that
+ * check is a DELTA, and rows written for older keys land inside the delta just
+ * the same. Measured before this filter existed — a second 1,000-event corpus
+ * added 76 trackable findings and wrote 148 resolutions, 72 of them against the
+ * first corpus's keys, and reported success.
+ *
+ * Ordered by `finding_key` rather than by rowid: the selection walks this
  * consuming from the seeded stream per row, so the order decides WHICH keys get
  * a resolution. A rowid order is insertion order, which is stable today and is
  * not a property SQLite promises, whereas the key is unique and self-ordering.
  */
 function landedTrackableFindings(
   connection: DatabaseSync,
+  minted: ReadonlySet<string>,
 ): { finding_key: string; first_detected_at: number }[] {
-  return connection
+  const rows = connection
     .prepare(
       `SELECT f.finding_key AS finding_key,
               COALESCE(f.first_detected_at, e.started_at) AS first_detected_at
@@ -643,6 +659,7 @@ function landedTrackableFindings(
         ORDER BY f.finding_key`,
     )
     .all() as { finding_key: string; first_detected_at: number }[];
+  return rows.filter((r) => minted.has(r.finding_key));
 }
 
 /**

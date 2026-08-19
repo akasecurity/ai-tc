@@ -453,15 +453,77 @@ function bannedNamesOf(ruleEntry) {
 }
 
 /**
+ * Whether a rule value switches the rule OFF. `'off'` and `0` are the two
+ * spellings, bare or as the severity slot of an options array.
+ * @param {unknown} value
+ */
+const ruleIsOff = (value) => {
+  const severity = Array.isArray(value) ? value[0] : value;
+  return severity === 'off' || severity === 0;
+};
+
+/**
+ * The shipped network module names a `no-restricted-syntax` value still bans, or
+ * null when the value cannot be read.
+ *
+ * The dynamic half of the ban is a regex ALTERNATION inside an esquery selector
+ * (`ImportExpression[source.value=/^(node:http|http|…)$/]`), so what a value
+ * permits is derived by differencing its alternation tokens against the shipped
+ * one — never by re-deriving the escaping, which is an implementation detail of
+ * the generator. A selector this cannot parse returns null, which the caller
+ * resolves toward "permits everything": the loud direction, matching how every
+ * other ambiguity in this file is broken.
+ * @param {unknown} ruleEntry
+ * @returns {Set<string> | null}
+ */
+function syntaxBannedNamesOf(ruleEntry) {
+  if (!Array.isArray(ruleEntry)) return null;
+  const tokens = new Set();
+  for (const entry of ruleEntry.slice(1)) {
+    const selector = typeof entry === 'string' ? entry : entry?.selector;
+    if (typeof selector !== 'string') return null;
+    for (const match of selector.matchAll(/\^\(([^)]*)\)\$/g)) {
+      for (const token of match[1].split('|')) tokens.add(token);
+    }
+  }
+  const shipped = bannedNamesOf(noNetworkImports());
+  // A name appears in the alternation with its `/` regex-escaped; everything
+  // else in these specifiers is already regex-inert.
+  return new Set([...shipped].filter((name) => tokens.has(name.replaceAll('/', '\\/'))));
+}
+
+/**
  * The network specifiers a config entry PERMITS that the shipped default bans.
- * Derived by differencing against `noNetworkImports()` with no allow list, so it
- * keeps no copy of the module list and cannot drift from it.
+ * Derived by differencing against `noNetworkImports()` / `noNetworkSyntax()`
+ * with no allow list, so it keeps no copy of the module list and cannot drift.
+ *
+ * BOTH halves of the ban are read, and a rule that is merely PRESENT is not the
+ * same as one that bans something. Three shapes each permit every network
+ * specifier and each used to read as permitting none, so an opt-out written any
+ * of these ways was invisible to every audit in this file:
+ *
+ *   - `'off'` / `0`, bare or in the severity slot — the rule is switched off.
+ *   - a value naming no `paths` and no selector (`'error'`, `['error']`) — the
+ *     rule is on and bans nothing.
+ *   - a value this cannot parse — unknown scope, so the widest reading.
+ *
+ * A rule the entry does not mention at all is different again: it states no
+ * opinion and inherits the shared ban, so it contributes nothing here.
  */
 function networkSpecifiersPermittedBy(rules) {
-  const banned = bannedNamesOf(rules?.['no-restricted-imports']);
-  if (banned === null) return [];
-  const shipped = bannedNamesOf(noNetworkImports());
-  return [...shipped].filter((name) => !banned.has(name));
+  const shipped = [...bannedNamesOf(noNetworkImports())];
+  /** @type {Set<string>} */
+  const permitted = new Set();
+  for (const [key, stillBannedBy] of /** @type {const} */ ([
+    ['no-restricted-imports', bannedNamesOf],
+    ['no-restricted-syntax', syntaxBannedNamesOf],
+  ])) {
+    const value = rules?.[key];
+    if (value === undefined) continue;
+    const banned = ruleIsOff(value) ? null : stillBannedBy(value);
+    for (const name of shipped) if (banned === null || !banned.has(name)) permitted.add(name);
+  }
+  return [...permitted].sort();
 }
 
 /**
@@ -1016,6 +1078,84 @@ const OPT_OUT_TABLE_HEADER = ['Site', 'Allowed specifier', 'Why'];
 const SITE_COUNT_SENTENCE = /(\w+) files carry a genuine local-only opt-out/g;
 /** "Adding another opt-out site means updating this table." */
 const ADDING_SENTENCE = /Adding (?:an? )?(\w+)(?: opt-out)? site means updating this table/g;
+
+describe('networkSpecifiersPermittedBy (what a config entry really relaxes)', () => {
+  // Every shape below permits the whole banned module list, and each one used to
+  // read as permitting NONE — so an opt-out written any of these ways was
+  // invisible to every audit in this file while eslint let the import through.
+  // Driven directly because no config in the tree is written this way, which is
+  // exactly why nothing caught them.
+  const ALL = [...bannedNamesOf(noNetworkImports())].sort();
+  const permits = (rules) => networkSpecifiersPermittedBy(rules);
+
+  it('treats a rule that is switched off as permitting everything', () => {
+    for (const off of ['off', 0, ['off'], [0]]) {
+      expect(permits({ 'no-restricted-imports': off }), JSON.stringify(off)).toEqual(ALL);
+      expect(permits({ 'no-restricted-syntax': off }), JSON.stringify(off)).toEqual(ALL);
+    }
+    // The DISCRIMINATING shape: severity `off` with the options still attached.
+    // Every spelling above is also caught by the parse falling through to null,
+    // so on those alone the severity check is dead weight no mutation can kill.
+    // Here the options parse perfectly well and the severity is the only thing
+    // saying the ban is not running — read the options and the answer inverts,
+    // reporting the one specifier still listed as the one NOT permitted.
+    expect(
+      permits({ 'no-restricted-imports': ['off', { paths: [{ name: 'node:http' }] }] }),
+      'severity off with options present',
+    ).toEqual(ALL);
+    expect(
+      permits({ 'no-restricted-syntax': ['off', ...noNetworkSyntax().slice(1)] }),
+      'severity off with selectors present',
+    ).toEqual(ALL);
+  });
+
+  it('treats a rule that is on but bans nothing as permitting everything', () => {
+    // Severity with no options. The rule is live and reports nothing, which is
+    // the same exposure as switching it off and reads nothing like it.
+    for (const bare of ['error', ['error'], 'warn']) {
+      expect(permits({ 'no-restricted-imports': bare }), JSON.stringify(bare)).toEqual(ALL);
+    }
+  });
+
+  it('treats a value it cannot parse as permitting everything', () => {
+    // The loud direction: an unreadable scope is reported as the widest one, so
+    // the failure names the config instead of silently clearing it.
+    expect(permits({ 'no-restricted-syntax': ['error', { selector: 42 }] })).toEqual(ALL);
+    expect(permits({ 'no-restricted-imports': ['error', { paths: 'nope' }] })).toEqual(ALL);
+  });
+
+  it('reads the DYNAMIC half, not only the static one', () => {
+    // An opt-out relaxing just the import-expression ban permits that specifier
+    // as surely as relaxing the static one does.
+    expect(permits({ 'no-restricted-syntax': noNetworkSyntax({ allow: ['node:https'] }) })).toEqual(
+      ['node:https'],
+    );
+    expect(permits({ 'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }) })).toEqual(
+      ['node:net'],
+    );
+    // …and both halves union rather than one masking the other.
+    expect(
+      permits({
+        'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }),
+        'no-restricted-syntax': noNetworkSyntax({ allow: ['node:https'] }),
+      }),
+    ).toEqual(['node:https', 'node:net']);
+  });
+
+  it('leaves the shipped ban, and an entry that says nothing, permitting nothing', () => {
+    // The controls. Without them every case above passes on a predicate that
+    // returned the whole module list for absolutely everything.
+    expect(
+      permits({
+        'no-restricted-imports': noNetworkImports(),
+        'no-restricted-syntax': noNetworkSyntax(),
+      }),
+      'the shipped ban permits nothing',
+    ).toEqual([]);
+    expect(permits({}), 'an entry mentioning neither rule states no opinion').toEqual([]);
+    expect(permits(undefined), 'no rules block at all').toEqual([]);
+  });
+});
 
 describe('optOutSiteProblems (the site check, tested on synthetic configs)', () => {
   // The real tree is healthy, so every branch above returns nothing against it —

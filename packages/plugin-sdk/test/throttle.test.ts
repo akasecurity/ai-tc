@@ -47,11 +47,11 @@ describe('throttled', () => {
   });
 
   it('independent marker names gate independently', () => {
-    expect(throttled(dir, 'sync-last-attempt', 30_000)).toBe(false);
-    // A different job (reconcile) gates on its own marker — not throttled by sync.
+    expect(throttled(dir, 'first-last-attempt', 30_000)).toBe(false);
+    // A second job gates on its own marker — firing the first does not throttle it.
     expect(throttled(dir, 'reconcile-last-attempt', 30_000)).toBe(false);
     // …and each is now throttled on its own.
-    expect(throttled(dir, 'sync-last-attempt', 30_000)).toBe(true);
+    expect(throttled(dir, 'first-last-attempt', 30_000)).toBe(true);
     expect(throttled(dir, 'reconcile-last-attempt', 30_000)).toBe(true);
   });
 

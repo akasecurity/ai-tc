@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, matchesGlob, posix, sep } from 'node:path';
+import { join, matchesGlob, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
@@ -210,21 +210,19 @@ const extendsSharedConfig = (abs) =>
  */
 function discoverWorkspacePackages() {
   return workspacePackageDirs().map((dir) => {
-    // git reports posix paths on every platform; globSync yields native ones.
-    const posixDir = dir.split(sep).join('/');
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
-    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : posixDir;
+    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : dir;
     const configRel = join(dir, 'eslint.config.mjs');
     const configAbs = join(REPO_ROOT, configRel);
     const hasConfig = existsSync(configAbs);
     const scriptsConfigRel = join(dir, 'eslint.scripts.config.mjs');
     const scriptsConfigAbs = join(REPO_ROOT, scriptsConfigRel);
     const hasScriptsConfig = existsSync(scriptsConfigAbs);
-    const codeDirs = lintableChildDirs(posixDir);
+    const codeDirs = lintableChildDirs(dir);
     return {
       name,
       dir,
-      label: name === posixDir ? posixDir : `${name} (${posixDir})`,
+      label: name === dir ? dir : `${name} (${dir})`,
       lintScript: pkg.scripts?.lint ?? '',
       configRel,
       hasConfig,
@@ -236,7 +234,7 @@ function discoverWorkspacePackages() {
       codeDirs,
       sourceDirs: codeDirs.filter((d) => d !== SCRIPTS_DIR),
       // The other half of what the lint script must cover, derived the same way.
-      rootFiles: lintableRootFiles(posixDir),
+      rootFiles: lintableRootFiles(dir),
       hasScriptsDir: codeDirs.includes(SCRIPTS_DIR),
       scriptsConfigRel,
       hasScriptsConfig,
@@ -580,7 +578,7 @@ function configViolations(guarded) {
 // added, which is the only moment this check exists for.
 
 /** Every workspace package directory, as a posix path. */
-const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir.split(sep).join('/'));
+const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir);
 
 /** Every git-tracked lintable file that sits under no workspace package. */
 const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(

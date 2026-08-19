@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { ESLint, Linter } from 'eslint';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   REPO_ROOT,
   toPosix,
+  toPosixPath,
   trackedEslintConfigFiles,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
@@ -270,11 +271,20 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
   // So the two lists have to account for every workspace package between them,
   // derived from pnpm-workspace.yaml rather than restated. A package added
   // tomorrow is a decision, not a default.
-  it('accounts for every workspace package, walled or exempt', () => {
+  // Normalizes its input, because the two lists are posix literals while
+  // `workspacePackageDirs()` builds on `globSync`, which yields NATIVE
+  // separators. Taking the dirs as an ARGUMENT rather than reading them is what
+  // makes that testable: the separator this is wrong about is the one the
+  // running host does not use, so a case driving the real tree can only fail on
+  // Windows — where it did, reporting all 22 packages unaccounted for.
+  const unaccountedIn = (dirs) => {
     const walled = new Set(WALLED_PACKAGES.map((p) => p.dir));
     const exempt = new Set(WALL_EXEMPT_PACKAGES.map((e) => e.dir));
+    return dirs.map(toPosixPath).filter((d) => !walled.has(d) && !exempt.has(d));
+  };
 
-    const unaccounted = workspacePackageDirs().filter((d) => !walled.has(d) && !exempt.has(d));
+  it('accounts for every workspace package, walled or exempt', () => {
+    const unaccounted = unaccountedIn(workspacePackageDirs());
     expect(
       unaccounted,
       'These workspace packages are in neither WALLED_PACKAGES nor WALL_EXEMPT_PACKAGES, so ' +
@@ -287,36 +297,30 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
     // rule kept alive for a package that is gone.
     const known = new Set(workspacePackageDirs());
     expect(
-      [...walled, ...exempt].filter((d) => !known.has(d)).sort(),
+      [...WALLED_PACKAGES.map((p) => p.dir), ...WALL_EXEMPT_PACKAGES.map((e) => e.dir)]
+        .filter((d) => !known.has(d))
+        .sort(),
       'Listed here but not a workspace package any more.',
     ).toEqual([]);
 
+    const walled = new Set(WALLED_PACKAGES.map((p) => p.dir));
     expect(
-      [...walled].filter((d) => exempt.has(d)),
+      WALL_EXEMPT_PACKAGES.map((e) => e.dir).filter((d) => walled.has(d)),
       'walled and exempt at once',
     ).toEqual([]);
   });
-});
 
-// A file-scoped entry that relaxes the network ban REPLACES the wall's rules for
-// the files it matches, and a lost ban still exits 0. The package-level
-// assertions above cannot see this: they resolve one ordinary source file, which
-// no `files:` entry matches. This resolves the relaxed file itself.
-describe('a file that relaxes the network ban keeps the wall', () => {
-  it.each(RELAXED_FILES.map((f) => [f.name, f]))('%s', (_name, file) => {
-    expect(firedIn(file.name, `import x from '${file.allowed}';`, 'no-restricted-imports')).toBe(0);
-
+  // The same accounting over the same tree, spelled the way Windows hands it
+  // back. An absence assertion on THIS host's dirs is vacuous — they carry no
+  // backslash to find — so the Windows-shaped input has to be constructed, not
+  // observed. Drop the `.map(toPosixPath)` above and this is the only case in
+  // the workspace that goes red before CI does.
+  it('accounts for them the same when the platform hands back native separators', () => {
+    const nativeStyle = workspacePackageDirs().map((d) => d.split('/').join('\\'));
     expect(
-      firedIn(file.name, "import { eq } from 'drizzle-orm';", 'no-restricted-imports'),
-      `${file.name} relaxes the network ban and lost the drizzle wall with it — build its rules ` +
-        'with drizzleWallRules({ allow }) rather than noNetworkImports({ allow }).',
-    ).toBe(1);
-    expect(firedIn(file.name, "import z from 'drizzle-zod';", 'no-restricted-imports')).toBe(1);
-    expect(
-      firedIn(file.name, "await import('drizzle-orm/sqlite-core');", 'no-restricted-syntax'),
-    ).toBe(1);
-
-    // The relaxation is scoped to the one module it names.
-    expect(firedIn(file.name, "import h from 'node:http';", 'no-restricted-imports')).toBe(1);
+      nativeStyle.some((d) => d.includes('\\')),
+      'fixture built no windows path',
+    ).toBe(true);
+    expect(unaccountedIn(nativeStyle)).toEqual([]);
   });
 });

@@ -1,9 +1,10 @@
 // Presentation descriptors for the Inventory page. The data itself (projects,
-// assets, harnesses, file trees, events) is fetched from the control-plane
-// inventory API (/v1/inventory/*) and typed by `@akasecurity/schema` — this module
-// only holds the label/icon/colour lookups the API shapes don't carry, plus a
-// couple of pure-presentation helpers. No dummy data, no view-model types that
-// duplicate a schema shape.
+// assets, harnesses, file trees, events) arrives as props, typed by
+// `@akasecurity/schema` — this package renders and never loads, so where those
+// props come from is the host application's business. This module only holds the
+// label/icon/colour lookups the schema shapes don't carry, plus a couple of pure
+// presentation helpers. No dummy data, no view-model types that duplicate a
+// schema shape.
 import type {
   AccessLevel,
   AssetType,

@@ -804,6 +804,54 @@ describe('the Windows legs', () => {
     expect(jobBlock(ci, 'windows')).toMatch(/--continue/);
   });
 
+  // `persistence#test` and `web-ui#test` are the two heaviest fsync-bound suites
+  // on this platform, and running them in ONE turbo invocation is the pairing
+  // this leg kept failing on: under `--concurrency=2` they overlapped in nearly
+  // every run — completely once everything else was a cache hit, which is also
+  // every rerun — each ran 2-3x slower for it, and a different test file timed
+  // out each time. Every `timed out in 20000ms` in the ~60 runs surveyed had
+  // that overlap; the one run in which the two happened to serialise was the
+  // fastest of all. The job's own comment carries the numbers. What this pins is
+  // the STRUCTURE those numbers argued for, because folding web-ui back into the
+  // main filter list is exactly the tidy-up that reads right in a diff and
+  // reopens the flake — the split is not something anyone would notice was
+  // missing.
+  //
+  // Both halves are asserted, not just the absence: each package must still run
+  // on this leg (a positive control — a job that dropped web-ui altogether would
+  // otherwise satisfy "no invocation carries both"), and no single step's
+  // invocation may carry both filters. Steps are split at their list items, so
+  // a filter is attributed to the invocation it is actually written under;
+  // jobBlock has already dropped the comments, so prose naming a package above a
+  // step does not count for it.
+  it('runs persistence and web-ui in separate turbo invocations, never overlapping', () => {
+    const perStep = jobBlock(ci, 'windows')
+      .split(/^ {6}- /m)
+      .slice(1)
+      .map((step) => ({ step, filters: turboFilters(step) }));
+    const carrying = (name) => perStep.filter(({ filters }) => filters.includes(name));
+    expect(carrying('@akasecurity/persistence').length).toBeGreaterThan(0);
+    const webUiSteps = carrying('@akasecurity/web-ui');
+    expect(webUiSteps.length).toBeGreaterThan(0);
+    // The positive control above is satisfied by ANY task run under that
+    // filter — typecheck, lint, build — not only `test`. web-ui is
+    // `private: true`, so it is excluded from the published-package check
+    // elsewhere in this file, and this is the only thing pinning that its
+    // suites — the OS-sensitive half the job's own comment gives as the
+    // reason web-ui belongs on Windows at all — actually run there. Same
+    // shape as the `--filter=@akasecurity/installer` check below.
+    expect(webUiSteps.some(({ step }) => /turbo run test/.test(step))).toBe(true);
+    expect(
+      perStep
+        .filter(
+          ({ filters }) =>
+            filters.includes('@akasecurity/persistence') && filters.includes('@akasecurity/web-ui'),
+        )
+        .map(({ step }) => step),
+      'a turbo invocation carries both persistence and web-ui — the pairing this leg failed on',
+    ).toEqual([]);
+  });
+
   it('restores a Turbo cache', () => {
     const block = jobBlock(ci, 'windows');
     expect(block).toMatch(/uses: actions\/cache\/restore@/);

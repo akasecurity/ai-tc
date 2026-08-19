@@ -11,8 +11,7 @@ import type { EventsReadPort } from '../ports.ts';
  * longer exists (recordCapture writes `audit_events` via
  * SqliteAuditEventsRepository instead — see database.ts); a dropped-then-
  * viewed compatibility shape backs any already-shipped binary that still
- * writes the old table by name. The local store is single-tenant, so there
- * is no tenant predicate on any query.
+ * writes the old table by name. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteEventsRepository implements EventsReadPort {
   constructor(private readonly db: DatabaseSync) {}

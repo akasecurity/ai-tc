@@ -1,6 +1,5 @@
 // Security widget display formatting — pure ms → human-string helpers. Lives
-// with the views (not the apps) so both the Vite dashboard and the OSS web-ui
-// render identical labels. `formatMttrDuration` mirrors the semantics of
+// with the views (not the apps) so every host renders identical labels. `formatMttrDuration` mirrors the semantics of
 // MttrTrendPoint.bySeverity: `null` means no resolutions fell in that bucket
 // (no data point to average), never zero — so it renders as an em dash, not
 // "0m".

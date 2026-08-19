@@ -151,8 +151,8 @@ function ensurePacks(): void {
   }
 }
 
-// Who grants/revokes. There is no machine-local user identity in the OSS
-// store (it is tenant-free), so the OS account name is the honest source.
+// Who grants/revokes. The store records no user identity of its own — every row
+// in it belongs to this machine — so the OS account name is the honest source.
 function resolveCreatedBy(): string {
   try {
     return userInfo().username;

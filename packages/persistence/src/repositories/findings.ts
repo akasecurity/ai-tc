@@ -245,14 +245,49 @@ interface FindingRowJoined {
  * longer exists (recordCapture writes `inspection_findings` via
  * SqliteInspectionFindingsRepository instead — see database.ts); a dropped-
  * then-viewed compatibility shape backs any already-shipped binary that still
- * writes the old table by name. The local store is tenant-free (single
- * tenant), so there is no tenant predicate on any query.
+ * writes the old table by name. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteFindingsRepository
   implements FindingsReadPort, DashboardViews, GroupedFindingsView, FindingInstancesView
 {
   constructor(private readonly db: DatabaseSync) {}
 
+  /**
+   * The newest `limit` findings, newest first.
+   *
+   * THE PLAN IS THE POINT HERE, and two things in the SQL below exist only to
+   * pin it. The natural spelling — drive from `inspection_findings`, order by the
+   * JOINED `e.started_at` — cannot push the LIMIT down, because the sort key is
+   * not on the driving table: SQLite sorts every finding in the store through a
+   * temp B-tree to return 500 rows. Measured at 35.0 ms on a 40,000-event corpus
+   * against 0.9 ms for the form below, and the gap is a ratio of the store size
+   * rather than a constant.
+   *
+   * What it takes to make `started_at` order come out of an index instead:
+   *
+   *  - **`+e.event_type`** — the unary plus makes that term non-indexable, so the
+   *    planner stops choosing `idx_audit_type_t` (`event_type, started_at`). That
+   *    index cannot serve the ORDER BY: the predicate spans four event types, so
+   *    satisfying a global `started_at` order across them needs a range merge
+   *    SQLite will not do, and it sorts instead. Freed of it, the planner scans
+   *    `idx_audit_started_at` — a bare `started_at` index — in DESC order and
+   *    filters the type per row, which lets the LIMIT stop the scan early.
+   *  - **`CROSS JOIN`** — semantically identical to JOIN in SQLite, and there
+   *    purely to stop the tables being reordered. With plain JOINs the planner
+   *    drives from `f` and sorts everything again: measured at 23.6 ms, i.e. the
+   *    unary plus ALONE recovers almost none of the win. Both are needed.
+   *
+   * Neither is a micro-optimisation that a later reader should tidy away, and
+   * `packages/persistence/test/performance/hot-read-query-plans.test.ts` fails if
+   * the temp B-tree comes back.
+   *
+   * Degrading gracefully was the reason for `+` over `INDEXED BY`, which measured
+   * identically (0.9 ms): `INDEXED BY` is a hard requirement, so dropping or
+   * renaming the index turns this read into an ERROR, where `+` turns it into a
+   * scan-and-sort — slower, still correct. The worst case for the chosen form is
+   * a store whose recent captures carry no findings at all, where the scan walks
+   * the whole index; that is still no worse than the full sort it replaced.
+   */
   recentFindings(opts?: { limit?: number }): Promise<FindingView[]> {
     const limit = opts?.limit ?? 50;
     const rows = allRows<FindingRowJoined>(
@@ -261,10 +296,10 @@ export class SqliteFindingsRepository
                 f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
                 json_extract(e.attributes, '$.source_tool') AS source_tool,
                 e.event_type AS kind
-         FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
-         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
-         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+         FROM audit_events e
+         CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
+         CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         WHERE +e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
          ORDER BY e.started_at DESC, f.rowid DESC
          LIMIT :limit`,
       ),

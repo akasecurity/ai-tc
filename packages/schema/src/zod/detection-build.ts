@@ -1,4 +1,4 @@
-// Pure, tenant-free detection read-model builders. No I/O, no side effects.
+// Pure detection read-model builders. No I/O, no side effects.
 // Shared by every detections read path (e.g. the SQLite adapter in
 // @akasecurity/persistence; callers may layer registry update-checks on top), so the
 // list/detail shapes can never drift between callers.

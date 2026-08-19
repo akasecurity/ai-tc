@@ -25,6 +25,7 @@ import {
   packageLintInvocations,
   parseWorkspaceGlobs,
   REPO_ROOT,
+  toPosix,
   ROOT_LINT_ENTRY_SCRIPT,
   rootLintInvocations,
   trackedEslintConfigFiles,
@@ -134,12 +135,21 @@ const OPT_OUT_NAMES = new Set(CONFIG_OPT_OUT.map((o) => o.name));
 //   files — every lintable tracked path, flat. Both maps above are keyed by a
 //     package-relative parent, so neither can answer "which files belong to no
 //     package at all"; that question needs the whole list.
+//   subtreeFiles — dir -> every lintable tracked file anywhere beneath it, kept
+//     repo-relative. childDirs answers "is there source under here" and
+//     rootFiles answers "what sits directly here"; neither can enumerate the
+//     files a DIRECTORY target actually hands to eslint, which is what an
+//     ignore flag subtracts from. Without it a file-level ignore is invisible:
+//     the directory still reads as covered, so the file is unlinted by
+//     construction and no bucket names it.
 const LINTABLE_TRACKED = (() => {
   const tracked = trackedFiles();
   /** @type {Map<string, Set<string>>} */
   const childDirs = new Map();
   /** @type {Map<string, Set<string>>} */
   const rootFiles = new Map();
+  /** @type {Map<string, string[]>} */
+  const subtreeFiles = new Map();
   /** @type {string[]} */
   const files = [];
   for (const file of tracked) {
@@ -156,8 +166,18 @@ const LINTABLE_TRACKED = (() => {
       if (!children) childDirs.set(ancestor, (children = new Set()));
       children.add(/** @type {string} */ (parts[i]));
     }
+    // One index further than the loop above: that one stops at the file's
+    // grandparent because it records a CHILD DIR at each step, and the file's
+    // own parent has no child dir to contribute. This one records the FILE, so
+    // the parent is exactly the key that must carry it.
+    for (let i = 0; i < parts.length; i++) {
+      const ancestor = parts.slice(0, i).join('/');
+      let under = subtreeFiles.get(ancestor);
+      if (!under) subtreeFiles.set(ancestor, (under = []));
+      under.push(file);
+    }
   }
-  return { childDirs, rootFiles, files: files.sort() };
+  return { childDirs, rootFiles, subtreeFiles, files: files.sort() };
 })();
 
 /** The immediate subdirectories of `dir` that hold lintable tracked source. */
@@ -165,6 +185,9 @@ const lintableChildDirs = (dir) => [...(LINTABLE_TRACKED.childDirs.get(dir) ?? [
 
 /** The lintable tracked files sitting directly in `dir`, no subdirectory. */
 const lintableRootFiles = (dir) => [...(LINTABLE_TRACKED.rootFiles.get(dir) ?? [])].sort();
+
+/** Every lintable tracked file anywhere beneath `dir`, repo-relative and sorted. */
+const lintableFilesUnder = (dir) => [...(LINTABLE_TRACKED.subtreeFiles.get(dir) ?? [])].sort();
 
 // Scripts live behind a SEPARATE second lint pass (`--no-config-lookup -c
 // eslint.scripts.config.mjs scripts`), so they are excluded from the main
@@ -204,9 +227,9 @@ const extendsSharedConfig = (abs) =>
  * to fix.
  * @returns {{
  *   name: string, dir: string, label: string, lintScript: string,
- *   configRel: string, hasConfig: boolean, extendsShared: boolean,
- *   codeDirs: string[], sourceDirs: string[], rootFiles: string[], hasScriptsDir: boolean,
- *   scriptsConfigRel: string, hasScriptsConfig: boolean, scriptsExtendsShared: boolean,
+ *   hasConfig: boolean, extendsShared: boolean,
+ *   codeDirs: string[], rootFiles: string[], codeFiles: string[],
+ *   hasScriptsDir: boolean, hasScriptsConfig: boolean, scriptsExtendsShared: boolean,
  * }[]}
  */
 function discoverWorkspacePackages() {
@@ -225,19 +248,23 @@ function discoverWorkspacePackages() {
       dir,
       label: name === dir ? dir : `${name} (${dir})`,
       lintScript: pkg.scripts?.lint ?? '',
-      configRel,
       hasConfig,
       extendsShared: hasConfig && extendsSharedConfig(configAbs),
       // Derived, not hardcoded: every child dir holding lintable tracked source.
-      // `codeDirs` is what the lint script must cover (scripts/ included — its
-      // second pass is an eslint invocation too); `sourceDirs` is what the MAIN
-      // config is probed at, so scripts/ drops out.
+      // `codeDirs` is what the lint script must cover, scripts/ included — its
+      // second pass is an eslint invocation too.
       codeDirs,
-      sourceDirs: codeDirs.filter((d) => d !== SCRIPTS_DIR),
       // The other half of what the lint script must cover, derived the same way.
       rootFiles: lintableRootFiles(dir),
+      // The files those code dirs actually hand to eslint, package-relative. A
+      // directory target is checked as a directory, so an ignore naming ONE file
+      // inside it subtracts nothing the directory check can see — the dir still
+      // reads as covered and the file is unlinted by construction. Enumerating
+      // them is what lets that be reported by name.
+      codeFiles: codeDirs.flatMap((d) =>
+        lintableFilesUnder(`${dir}/${d}`).map((f) => f.slice(dir.length + 1)),
+      ),
       hasScriptsDir: codeDirs.includes(SCRIPTS_DIR),
-      scriptsConfigRel,
       hasScriptsConfig,
       scriptsExtendsShared: hasScriptsConfig && extendsSharedConfig(scriptsConfigAbs),
     };
@@ -514,6 +541,14 @@ const invocationsCoverFile = (invocations, file) =>
  * @param {ReturnType<typeof discoverWorkspacePackages>} guarded
  */
 function configViolations(guarded) {
+  // Three buckets below read the same package's invocations, and a lint script is
+  // a shell string that has to be tokenized to answer any of them. Parse once.
+  const parsed = new Map();
+  const invocationsFor = (p) => {
+    let invocations = parsed.get(p);
+    if (!invocations) parsed.set(p, (invocations = packageLintInvocations(p.lintScript)));
+    return invocations;
+  };
   return {
     missing: guarded.filter((p) => !p.hasConfig).map((p) => p.label),
     notExtending: guarded.filter((p) => p.hasConfig && !p.extendsShared).map((p) => p.label),
@@ -531,7 +566,7 @@ function configViolations(guarded) {
     // lints <b> however the targets read.
     lintNotWired: guarded
       .filter((p) => {
-        const invocations = packageLintInvocations(p.lintScript);
+        const invocations = invocationsFor(p);
         if (!invocations.some((i) => i.targets.length)) return true;
         return (p.codeDirs ?? []).some((d) => !invocationsCoverDir(invocations, d));
       })
@@ -545,8 +580,30 @@ function configViolations(guarded) {
     // Each offender names its uncovered files, because neither "add a target"
     // nor "drop an ignore" is actionable without knowing which ones are missing.
     rootFilesNotWired: guarded.flatMap((p) => {
-      const invocations = packageLintInvocations(p.lintScript);
+      const invocations = invocationsFor(p);
       const uncovered = (p.rootFiles ?? []).filter((f) => !invocationsCoverFile(invocations, f));
+      return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
+    }),
+    // The third bucket, and the one neither of the two above can reach. A code
+    // dir is checked AS A DIRECTORY, and an ignore pattern is reduced to its
+    // literal prefix to answer that — so `--ignore-pattern test/probe.test.ts`
+    // reduces to a base that neither equals `test` nor prefixes it, the
+    // directory goes on reading as covered, and eslint skips the file. That is
+    // worse than an unguarded path rather than equal to it: the reviewer who
+    // checks coverage finds a green guard, and a fetch() in that file ships.
+    //
+    // Only dirs that READ AS COVERED are walked. Where the directory itself is
+    // uncovered, lintNotWired already names the package, and listing every file
+    // beneath it would bury that one line under hundreds. So the two buckets
+    // partition the failure rather than both reporting it.
+    filesNotWired: guarded.flatMap((p) => {
+      const invocations = invocationsFor(p);
+      const covered = new Set(
+        (p.codeDirs ?? []).filter((d) => invocationsCoverDir(invocations, d)),
+      );
+      const uncovered = (p.codeFiles ?? []).filter(
+        (f) => covered.has(f.split('/')[0]) && !invocationsCoverFile(invocations, f),
+      );
       return uncovered.length ? [`${p.label} → ${uncovered.join(', ')}`] : [];
     }),
     // `eslint <src> <test>` never reaches scripts/, so a scripts/ dir needs its
@@ -732,41 +789,134 @@ const importOf = (specifier) => `import probe from ${JSON.stringify(specifier)};
 // src/, and a package could ship both, so picking one dir would leave a
 // path-scoped block unexercised — the last-wins mistake this suite exists to
 // catch. Packages with a scripts/ dir contribute their scripts config too.
-const PROBE_TARGETS = GUARDED_PACKAGES.flatMap((p) => {
+/**
+ * The file a directory is probed through: a synthetic NAME carrying a real
+ * EXTENSION, and both halves are load-bearing in opposite directions.
+ *
+ * The extension is taken from a file the directory really ships, because a
+ * config only claims the extensions it is written for — a `.ts` probe aimed at
+ * this package's own `test/`, which is plain JS behind `eslint.guard.config.mjs`,
+ * matches no block at all and reports "no config" while every real file there is
+ * governed perfectly well. Hardcoding `.ts` (with `.mjs` for `scripts/`) is the
+ * same inference-from-a-name this derivation exists to remove, one level down.
+ *
+ * The NAME stays synthetic because a real path can resolve a file-scoped
+ * OVERRIDE rather than the directory's general rules — `plugin-sdk/src`'s first
+ * tracked file is one of CLAUDE.md §3's documented `n/no-process-env` opt-out
+ * sites, so probing it would report the package as failing a ban it holds
+ * everywhere the exception does not reach. The probes want the block a new file
+ * would land in, which is exactly what a name nothing overrides resolves.
+ * @param {{ codeFiles: string[] }} p @param {string} dir
+ */
+const probeFileFor = (p, dir) => {
+  const real = p.codeFiles.find((f) => f.startsWith(`${dir}/`));
+  if (real === undefined) return undefined;
+  // `lastIndexOf` on a dotless name returns -1, and `slice(-1)` would hand back
+  // its final CHARACTER as the extension — a probe name resolving no block,
+  // reported as a config failure rather than as the derivation fault it is.
+  const dot = real.lastIndexOf('.');
+  return dot === -1 ? undefined : `${dir}/__network_ban_probe__${real.slice(dot)}`;
+};
+
+/**
+ * The package-relative config an invocation runs under, or undefined when it
+ * resolves none. A `-c` names it outright; without one, ordinary flat-config
+ * lookup from the package root finds `eslint.config.mjs` — unless
+ * `--no-config-lookup` cancelled that lookup, which leaves the invocation
+ * running under no config at all.
+ * @param {{ configName?: string, noConfigLookup: boolean }} invocation
+ */
+const invocationConfigName = (invocation) =>
+  invocation.configName ?? (invocation.noConfigLookup ? undefined : 'eslint.config.mjs');
+
+// Each probe path is paired with the config the invocation that REALLY lints it
+// runs under, never with one inferred from the path's own name. The inference
+// this replaced modelled two shapes — everything under `eslint.config.mjs`, plus
+// a hardcoded `scripts/` case — and a package linting a directory any other way
+// was silently paired with a config that `--no-config-lookup` guarantees never
+// applies there. This package is that case: its `test/` runs under
+// `eslint.guard.config.mjs`, so the whole enforcement suite sat behind a config
+// no probe exercised, and switching the ban off there left every test green.
+//
+// Pairing by invocation removes the shape mapping and the `scripts/` special
+// case together, so a THIRD shape added later is probed by construction rather
+// than by someone remembering to extend a table.
+/**
+ * Every (path, config) probe pair one package contributes. Pure over its input,
+ * so the paths that must FAIL are drivable with a synthetic package the way
+ * configViolations' are — a real, healthy tree produces no unresolved pair by
+ * construction, which would otherwise leave that branch untested.
+ * @param {Pick<ReturnType<typeof discoverWorkspacePackages>[number],
+ *   'dir' | 'hasConfig' | 'lintScript' | 'codeDirs' | 'codeFiles' | 'rootFiles'
+ *   | 'hasScriptsConfig'>} p
+ */
+function probeTargetsFor(p) {
+  if (!p.hasConfig) return [];
   const pkgDir = join(REPO_ROOT, p.dir);
-  const targets = p.hasConfig
-    ? (p.sourceDirs.length ? p.sourceDirs : ['src']).map((d) => ({
-        id: `${p.configRel} @ ${d}/`,
+  const invocations = packageLintInvocations(p.lintScript);
+
+  /**
+   * One (path, config) pair. A path no invocation lints, and a path whose
+   * invocation resolves no config, both yield a target carrying `unresolved`
+   * rather than no target at all — a shape that generated nothing would be
+   * skipped silently, which is the failure mode this whole derivation exists to
+   * remove.
+   * @param {string} relFile @param {string} label
+   */
+  const probe = (relFile, label) => {
+    if (relFile === undefined) {
+      return {
+        id: `${toPosix(p.dir)}/<no file> @ ${label}`,
         pkgDir,
-        configName: 'eslint.config.mjs',
-        relFile: `${d}/__network_ban_probe__.ts`,
-      }))
-    : [];
+        configName: undefined,
+        relFile: label,
+        unresolved:
+          `${label} enumerated no tracked file to probe through, so the ban protecting ` +
+          'it is exercised by nothing',
+      };
+    }
+    const invocation = coveringInvocation(invocations, relFile);
+    const configName = invocation ? invocationConfigName(invocation) : undefined;
+    return {
+      // POSIX, never `join`: an id is compared as text (below, and in the
+      // per-config assertions), and `join` yields backslashes on Windows — where
+      // this package's suite really runs — so a native id fails a check that
+      // holds everywhere else.
+      id: `${toPosix(p.dir)}/${configName ?? '<no config>'} @ ${label}`,
+      pkgDir,
+      configName,
+      relFile,
+      unresolved: !invocation
+        ? `no eslint invocation in this package's \`lint\` script lints ${label}, so the ban ` +
+          'protecting it is exercised by nothing'
+        : configName === undefined
+          ? `the invocation linting ${label} passes --no-config-lookup with no -c, so it runs ` +
+            'under no config at all'
+          : undefined,
+    };
+  };
+
   // Top-level files are probed at their REAL paths, never a synthetic name.
   // Which config block claims a root file depends on its filename — the build
   // and tooling config resolves through `rootConfigFiles` with the type-aware
   // rules off, while web-ui's middleware.ts keeps them — so an invented name
   // would exercise a block that no real file resolves to.
-  if (p.hasConfig) {
-    for (const file of p.rootFiles) {
-      targets.push({
-        id: `${p.configRel} @ ${file}`,
-        pkgDir,
-        configName: 'eslint.config.mjs',
-        relFile: file,
-      });
-    }
-  }
-  if (p.hasScriptsConfig) {
-    targets.push({
-      id: `${p.scriptsConfigRel} @ scripts/`,
-      pkgDir,
-      configName: 'eslint.scripts.config.mjs',
-      relFile: 'scripts/__network_ban_probe__.mjs',
-    });
-  }
-  return targets;
-});
+  // A `scripts/` dir whose files are all build output contributes no codeDir,
+  // but its `eslint.scripts.config.mjs` still governs whatever lands there — so
+  // the config is included on its own account and reports as unresolved rather
+  // than vanishing. Dropping it because nothing is tracked yet is how a config
+  // ends up asserted by nothing.
+  const probeDirs = [...new Set([...p.codeDirs, ...(p.hasScriptsConfig ? [SCRIPTS_DIR] : [])])];
+  return [
+    ...probeDirs.map((d) => probe(probeFileFor(p, d), `${d}/`)),
+    ...p.rootFiles.map((f) => probe(f, f)),
+  ];
+}
+
+const PROBE_TARGETS = GUARDED_PACKAGES.flatMap(probeTargetsFor);
+
+/** Probe targets by id, so an `it.each` case does not rescan the whole list. */
+const PROBE_TARGET_BY_ID = new Map(PROBE_TARGETS.map((t) => [t.id, t]));
 
 // --- Structural guard: every package ships a network-guarded config ----------
 
@@ -852,6 +1002,44 @@ describe('every workspace package ships a network-guarded eslint config', () => 
             'lints nothing at all. A root config file also sits outside the tsconfig `include`, so the ' +
             'package eslint config must spread `...rootConfigFiles` after its projectService block ' +
             `or the type-aware parser rejects the file instead of linting it:\n  ${rootFilesNotWired.join('\n  ')}`
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it('every guarded package lints every file inside the dirs it covers', () => {
+    // The bucket is a FILTER over the derived file list, so a derivation that
+    // resolved nothing would leave it empty and this assertion green for the one
+    // reason it must never be green for. Prove the enumeration reached the tree
+    // before trusting the silence, the same rule the parse checks above apply.
+    const enumerated = GUARDED_PACKAGES.flatMap((p) => p.codeFiles);
+    expect(
+      enumerated.length,
+      'no guarded package enumerated a single file inside its code dirs — the subtree index has ' +
+        'regressed and this check is passing vacuously',
+    ).toBeGreaterThan(0);
+    // Every code dir a package ships must contribute, or a dir could drop out of
+    // the enumeration and take its files with it while the total stayed healthy.
+    for (const p of GUARDED_PACKAGES) {
+      for (const dir of p.codeDirs) {
+        expect(
+          p.codeFiles.some((f) => f.startsWith(`${dir}/`)),
+          `${p.label} ships ${dir}/ but enumerated no file under it`,
+        ).toBe(true);
+      }
+    }
+
+    const { filesNotWired } = configViolations(GUARDED_PACKAGES);
+    expect(
+      filesNotWired,
+      filesNotWired.length
+        ? 'These packages ship a tracked source file that their `lint` script targets by ' +
+            'DIRECTORY and then takes back out with an `--ignore-pattern` / `--ignore-path` on the ' +
+            'same invocation. The directory still reads as covered, so nothing else here reports ' +
+            'it — and eslint skips the file, so a fetch() in it passes `pnpm lint` with CI green ' +
+            '(CLAUDE.md "No network calls"). Drop the ignore flag rather than the directory: an ' +
+            'ignore that names one file is exactly the shape this bucket exists to catch, and an ' +
+            '`--ignore-path` excludes its whole invocation because flat-config eslint rejects the ' +
+            `flag outright:\n  ${filesNotWired.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });
@@ -1525,12 +1713,76 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
     hasConfig: true,
     extendsShared: true,
     codeDirs: ['src', 'test'],
-    sourceDirs: ['src'],
     rootFiles: ['vitest.config.ts'],
+    codeFiles: ['src/index.ts', 'test/ordinary.test.ts', 'test/probe.test.ts'],
     hasScriptsDir: false,
     hasScriptsConfig: false,
     scriptsExtendsShared: false,
     ...over,
+  });
+
+  it('names a file an ignore takes out of a directory that still reads as covered', () => {
+    // The shape the directory check structurally cannot see. `test` is targeted
+    // and the ignore names one file inside it, so the literal-prefix reduction
+    // the dir check uses reports no exclusion — the package reads as fully
+    // covered while eslint skips that file. Nothing above this bucket reports
+    // it, which is what makes the exposure worse than an unguarded path: the
+    // reviewer who checks coverage finds a green guard.
+    const v = configViolations([
+      pkg({ lintScript: 'eslint src test *.config.* --ignore-pattern test/probe.test.ts' }),
+    ]);
+    expect(v.filesNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg) → test/probe.test.ts']);
+    // …and the two older buckets stay silent, which is the whole point: without
+    // the new one the package passes every coverage check in this suite.
+    expect(v.lintNotWired).toEqual([]);
+    expect(v.rootFilesNotWired).toEqual([]);
+  });
+
+  it('leaves a package with no ignore flag alone', () => {
+    // The control. Without it the bucket could name every file in the workspace
+    // and every case above would still pass.
+    expect(configViolations([pkg({})]).filesNotWired).toEqual([]);
+    expect(
+      configViolations([pkg({ lintScript: 'eslint . ' })]).filesNotWired,
+      'a bare `.` covers every file beneath it',
+    ).toEqual([]);
+  });
+
+  it('leaves an ignore that misses every shipped file alone', () => {
+    // Narrowing must be real. An ignore naming a file the package does not ship
+    // subtracts nothing, so reporting here would be over-reporting — and would
+    // send someone to drop a flag that costs no coverage.
+    expect(
+      configViolations([
+        pkg({ lintScript: 'eslint src test *.config.* --ignore-pattern test/absent.test.ts' }),
+      ]).filesNotWired,
+    ).toEqual([]);
+  });
+
+  it('leaves a whole-directory exclusion to the directory bucket', () => {
+    // The two buckets partition the failure rather than both reporting it.
+    // `--ignore-pattern test` empties the directory, so lintNotWired names the
+    // package and this bucket stays quiet — otherwise one mistake prints one
+    // line plus every file beneath it, burying the actionable line.
+    const v = configViolations([
+      pkg({ lintScript: 'eslint src test *.config.* --ignore-pattern test' }),
+    ]);
+    expect(v.lintNotWired).toEqual(['@akasecurity/newpkg (packages/newpkg)']);
+    expect(v.filesNotWired).toEqual([]);
+  });
+
+  it('names every ignored file, not just the first', () => {
+    // A `.find`-shaped reduction would report one and leave the rest unlinted
+    // with the guard green after a single fix.
+    const v = configViolations([
+      pkg({
+        lintScript:
+          'eslint src test *.config.* --ignore-pattern test/probe.test.ts --ignore-pattern src/index.ts',
+      }),
+    ]);
+    expect(v.filesNotWired).toEqual([
+      '@akasecurity/newpkg (packages/newpkg) → src/index.ts, test/probe.test.ts',
+    ]);
   });
 
   it('names a package that ships no config', () => {
@@ -1642,7 +1894,6 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
       pkg({
         lintScript: 'eslint app middleware.ts test *.config.*',
         codeDirs: ['app', 'test'],
-        sourceDirs: ['app', 'test'],
         rootFiles: ['middleware.ts', 'next.config.ts'],
       }),
     ]);
@@ -1741,6 +1992,7 @@ describe('configViolations (the guard mechanism, tested on synthetic packages)',
       notExtending: [],
       lintNotWired: [],
       rootFilesNotWired: [],
+      filesNotWired: [],
       missingScriptsConfig: [],
       scriptsNotExtending: [],
     });
@@ -2211,8 +2463,15 @@ describe('ignore flags subtract from what an invocation covers', () => {
   it('leaves a script with no ignore flag exactly as it was', () => {
     // Every real lint script in the workspace is one of these shapes, so a
     // regression here fails the whole tree rather than one package. Each is
-    // paired with the dirs it must still cover — an `||` over two candidates
+    // paired with the dirs its TARGETS reach — an `||` over two candidates
     // would pass on a predicate that had stopped seeing one of them.
+    //
+    // What is pinned here is the DIRECTORY reading, and that is deliberately
+    // narrower than "these dirs are fully linted". An ignore naming one file
+    // leaves its directory reading as covered, so pinning coverage here would
+    // record that as intended and hide it. Whether every file is really linted
+    // is derived from the tree by `every guarded package lints every file
+    // inside the dirs it covers`, never asserted from this list.
     const REAL_SHAPES = [
       ['eslint src test *.config.*', ['src', 'test']],
       // The benchmark harness adds a third code directory to the packages that
@@ -2268,8 +2527,13 @@ describe('ignore flags subtract from what an invocation covers', () => {
     ).toBeGreaterThan(0);
     expect(
       inTree.filter((s) => !pinned.has(s)),
-      'REAL_SHAPES no longer mirrors the workspace. Add the new lint-script shape — and the dirs ' +
-        'it must still cover — so this control keeps exercising what the tree actually ships.',
+      'REAL_SHAPES no longer mirrors the workspace. Add the new lint-script shape here — and the ' +
+        'dirs its TARGETS reach — so this control keeps exercising what the tree actually ships. ' +
+        'Pin what the targets reach, NOT what you expect to end up linted: an ignore flag can ' +
+        'leave a directory reading as covered while eslint skips a file inside it, and asserting ' +
+        'coverage here would record that as intended. Whether every file is really linted is ' +
+        'decided by `every guarded package lints every file inside the dirs it covers`, which ' +
+        'derives the answer from the tree rather than from this list.',
     ).toEqual([]);
   });
 });
@@ -2353,6 +2617,13 @@ describe('effective per-package config (composition / last-wins)', () => {
   // report which target failed and why.
   beforeAll(async () => {
     for (const t of PROBE_TARGETS) {
+      // A pair the derivation could not build has no config to resolve, so it
+      // skips resolution — but it is still a TARGET, so it still appears in
+      // every `it.each` below and `probeProblem` reports its reason. Emitting no
+      // target is the failure mode that matters: a lint-pass shape nobody
+      // modelled would then generate no case at all, and a suite that runs no
+      // assertion reports green.
+      if (t.unresolved) continue;
       try {
         configById.set(t.id, await resolveConfig(t.pkgDir, t.relFile, t.configName));
       } catch (cause) {
@@ -2365,8 +2636,119 @@ describe('effective per-package config (composition / last-wins)', () => {
     expect(PROBE_TARGETS.length).toBeGreaterThanOrEqual(GUARDED_PACKAGES.length);
   });
 
+  it('pairs each directory with the config the invocation linting it really runs', () => {
+    // The derivation's whole point, stated as an outcome rather than a restatement
+    // of the code. Every package running a SECOND eslint pass under its own `-c`
+    // must show up here paired with THAT config — under the shape mapping this
+    // replaced they were all paired with `eslint.config.mjs`, and a directory
+    // behind a differently-shaped pass was asserted by nothing.
+    const byConfig = (name) =>
+      PROBE_TARGETS.filter((t) => t.configName === name)
+        .map((t) => t.id)
+        .sort();
+
+    // Derived, not hardcoded: every package whose lint script names a `-c` config
+    // must own a probe under it, so a fifth second-pass package is covered the day
+    // it lands rather than when someone remembers this list.
+    const secondPassPairs = GUARDED_PACKAGES.flatMap((p) =>
+      packageLintInvocations(p.lintScript)
+        .map(invocationConfigName)
+        .filter((name) => name !== undefined && name !== 'eslint.config.mjs')
+        .map((name) => `${toPosix(p.dir)}/${name}`),
+    ).sort();
+    expect(
+      secondPassPairs.length,
+      'no package runs a second eslint pass under its own -c, so this control exercises nothing',
+    ).toBeGreaterThan(0);
+    for (const configRel of secondPassPairs) {
+      expect(
+        PROBE_TARGETS.filter((t) => t.configName).map(
+          (t) => `${toPosix(t.pkgDir.slice(REPO_ROOT.length + 1))}/${t.configName}`,
+        ),
+        `${configRel} governs a directory that no probe pairs it with`,
+      ).toContain(configRel);
+    }
+
+    // The case that motivated this: this package's own suites run under
+    // eslint.guard.config.mjs, never the sibling eslint.config.mjs that
+    // --no-config-lookup guarantees does not apply there.
+    expect(byConfig('eslint.guard.config.mjs')).toEqual([
+      'packages/eslint-config/eslint.guard.config.mjs @ test/',
+    ]);
+    expect(
+      byConfig('eslint.config.mjs'),
+      'packages/eslint-config/test/ must not be paired with the config that never lints it',
+    ).not.toContain('packages/eslint-config/eslint.config.mjs @ test/');
+  });
+
+  it('reports a directory it could build no config pair for, rather than skipping it', () => {
+    // Driven directly: a lint pass nobody modelled must FAIL, not vanish. A derivation that emitted nothing for an unknown shape would leave
+    // `it.each` with no case, and a suite that runs no assertion reports green.
+    const orphan = {
+      dir: 'packages/newpkg',
+      codeDirs: ['src'],
+      codeFiles: ['src/index.ts'],
+      rootFiles: [],
+      hasConfig: true,
+      lintScript: "echo 'no eslint here'",
+    };
+    const built = probeTargetsFor(orphan);
+    expect(built.map((t) => t.id)).toHaveLength(1);
+    expect(built[0].unresolved).toMatch(/no eslint invocation/);
+    // …and the control: the same package with a real pass resolves cleanly, so
+    // the case above is not simply "this helper always reports unresolved".
+    const healthy = probeTargetsFor({ ...orphan, lintScript: 'eslint src' });
+    expect(healthy[0].unresolved).toBeUndefined();
+    expect(healthy[0].configName).toBe('eslint.config.mjs');
+  });
+
+  it('reports a scripts config whose directory ships no tracked file', () => {
+    // A `scripts/` dir that is entirely build output contributes no codeDir, so
+    // the derivation has no file to take a probe extension from — but the config
+    // still governs whatever lands there. It must be named, not dropped: a
+    // config asserted by nothing is the failure this whole pass exists to catch.
+    const built = probeTargetsFor({
+      dir: 'packages/newpkg',
+      codeDirs: ['src'],
+      codeFiles: ['src/index.ts'],
+      rootFiles: [],
+      hasConfig: true,
+      hasScriptsConfig: true,
+      lintScript: 'eslint src && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts',
+    });
+    const scripts = built.find((t) => t.id.endsWith('@ scripts/'));
+    expect(scripts, 'no probe was built for the scripts config at all').toBeDefined();
+    expect(scripts.unresolved).toMatch(/enumerated no tracked file/);
+    // The control: src/ ships a file, so it resolves rather than reporting too.
+    expect(built.find((t) => t.id.endsWith('@ src/')).unresolved).toBeUndefined();
+  });
+
+  /**
+   * Why a probe target cannot be exercised, or undefined. Reads the target's OWN
+   * `unresolved` reason as well as any resolution throw, so a pair the derivation
+   * could not build is reported whatever the loop above chose to record. Routing
+   * this through `failureById` alone would let the whole unresolved branch be
+   * deleted with every case still green — the real tree builds no unresolved pair,
+   * so nothing would execute the deletion.
+   * @param {{ unresolved?: string }} target @param {Error | undefined} failure
+   */
+  const probeProblem = (target, failure) => target.unresolved ?? failure?.message;
+
   it.each(PROBE_TARGETS.map((t) => t.id))('resolves an effective config for %s', (id) => {
-    expect(failureById.get(id)?.message, `${id} did not resolve`).toBeUndefined();
+    const target = /** @type {(typeof PROBE_TARGETS)[number]} */ (PROBE_TARGET_BY_ID.get(id));
+    expect(probeProblem(target, failureById.get(id)), `${id} did not resolve`).toBeUndefined();
+  });
+
+  it('reports an unresolved target through the same predicate the cases read', () => {
+    // Drives probeProblem on both sides, because the real tree produces no
+    // unresolved target and so exercises only the healthy one. Without this the
+    // predicate could ignore `unresolved` entirely and every case above would
+    // still pass.
+    expect(probeProblem({ unresolved: 'no invocation lints src/' }, undefined)).toBe(
+      'no invocation lints src/',
+    );
+    expect(probeProblem({}, new Error('resolution threw'))).toBe('resolution threw');
+    expect(probeProblem({}, undefined)).toBeUndefined();
   });
 
   it.each(PROBE_TARGETS.map((t) => t.id))('bans every network form in %s', (id) => {

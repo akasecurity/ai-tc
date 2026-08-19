@@ -6,6 +6,7 @@ import {
   type EnforcementActionsResponse,
   type FindingsTimeseriesPoint,
   type FindingsTimeseriesResponse,
+  HARNESS,
   type MttrTrendPoint,
   type MttrTrendResponse,
   type Provider,
@@ -85,14 +86,14 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // (findComposer() returns null and the adapter does nothing), so a redesign can
 // take real coverage to zero without changing this table.
 const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
-  { provider: 'claudecode', coverage: 100, supported: true },
-  { provider: 'cursor', coverage: 0, supported: false },
-  { provider: 'codex', coverage: 80, supported: true },
-  { provider: 'antigravity', coverage: 60, supported: true },
-  { provider: 'claudeai', coverage: 40, supported: true },
-  { provider: 'chatgpt', coverage: 40, supported: true },
-  { provider: 'copilot', coverage: 0, supported: false },
-  { provider: 'api', coverage: 0, supported: false },
+  { provider: HARNESS.ClaudeCode, coverage: 100, supported: true },
+  { provider: HARNESS.Cursor, coverage: 0, supported: false },
+  { provider: HARNESS.Codex, coverage: 80, supported: true },
+  { provider: HARNESS.Antigravity, coverage: 60, supported: true },
+  { provider: HARNESS.ClaudeAi, coverage: 40, supported: true },
+  { provider: HARNESS.ChatGpt, coverage: 40, supported: true },
+  { provider: HARNESS.Copilot, coverage: 0, supported: false },
+  { provider: HARNESS.Api, coverage: 0, supported: false },
 ];
 
 // Bucket size per range. A table rather than a ternary so adding a range to

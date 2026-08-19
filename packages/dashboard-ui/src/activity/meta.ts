@@ -1,7 +1,13 @@
 // Activity presentation layer — labels, icons and token-class tones for the
 // audit-log views. Keyed off the semantic @akasecurity/schema enums; no styling lives on
 // the types themselves. All colors resolve to theme.css tokens (no hardcoded hex).
-import type { ActivityLink, AuditEventKind, Harness, SessionStatus } from '@akasecurity/schema';
+import {
+  type ActivityLink,
+  type AuditEventKind,
+  HARNESS,
+  type Harness,
+  type SessionStatus,
+} from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
@@ -24,33 +30,26 @@ import {
 
 /** The one bit the shared PROVIDERS lettermark map lacks — how a harness runs. */
 export const HARNESS_KIND: Record<Harness, string> = {
-  claudecode: 'CLI agent',
-  cursor: 'IDE',
-  copilot: 'IDE',
-  codex: 'CLI agent',
+  [HARNESS.ClaudeCode]: 'CLI agent',
+  [HARNESS.Cursor]: 'IDE',
+  [HARNESS.Copilot]: 'IDE',
+  [HARNESS.Codex]: 'CLI agent',
   // Ships as both the `agy` CLI and an IDE; the CLI is the surface this
   // repo's plugin instruments (the IDE fires no plugin hooks).
-  antigravity: 'CLI agent',
-  windsurf: 'IDE',
-  claudedesktop: 'Desktop app',
-  chatgpt: 'Web app',
-  claudeai: 'Web app',
-  api: 'API',
+  [HARNESS.Antigravity]: 'CLI agent',
+  [HARNESS.Windsurf]: 'IDE',
+  [HARNESS.ClaudeDesktop]: 'Desktop app',
+  [HARNESS.ChatGpt]: 'Web app',
+  [HARNESS.ClaudeAi]: 'Web app',
+  [HARNESS.Api]: 'API',
 };
 
-/** The harnesses shown in the filter, in display order. */
-export const HARNESS_IDS: Harness[] = [
-  'claudecode',
-  'cursor',
-  'copilot',
-  'codex',
-  'antigravity',
-  'windsurf',
-  'claudedesktop',
-  'chatgpt',
-  'claudeai',
-  'api',
-];
+// The harnesses shown in the filter, in display order — the registry's own
+// declaration order, not a second list. The hand-written copy this replaced
+// was pinned only by a SORTED set-equality assertion, so it agreed with the
+// registry on membership while being free to disagree on the order it exists
+// to specify.
+export const HARNESS_IDS: readonly Harness[] = Object.values(HARNESS);
 
 interface EventMeta {
   label: string;

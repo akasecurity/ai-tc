@@ -219,17 +219,17 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 // SourceTool `claude-code`). Uses the shared `range` query param.
 // Order matches the dashboard display order (and SCAN_COVERAGE) so the generated
 // OpenAPI enum list reads the same as the returned `providers` array.
-// A subset of the canonical `Harness` vocabulary (harness-map.ts) — extracted
-// rather than re-typed, so the member list can't drift from it.
+// A subset of the canonical `Harness` vocabulary (harness-map.ts), named by
+// MEMBER so it can carry no id that file does not define.
 export const Provider = Harness.extract([
-  'claudecode',
-  'cursor',
-  'codex',
-  'antigravity',
-  'claudeai',
-  'chatgpt',
-  'copilot',
-  'api',
+  'ClaudeCode',
+  'Cursor',
+  'Codex',
+  'Antigravity',
+  'ClaudeAi',
+  'ChatGpt',
+  'Copilot',
+  'Api',
 ]).meta({ id: 'Provider' });
 export type Provider = z.infer<typeof Provider>;
 

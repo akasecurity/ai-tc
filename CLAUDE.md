@@ -107,6 +107,35 @@ the failure being guarded against.
 
 **Do not create new types and interfaces — use the ones exported from `@akasecurity/schema` to the maximum extent.** Consumers (web-ui, CLI, plugin) import the schema types directly rather than redefining local "view-model" shapes or adapters. A new type is justified only when there is genuinely no schema equivalent (e.g. pure presentation descriptors like `{ label, icon, color }`). If a shape is missing, add it to `@akasecurity/schema/src/zod/` first, then consume it.
 
+**The agent vocabulary is ONE registry, and nothing outside it may spell an id.**
+`src/zod/harness-map.ts` holds both spellings as named-member const objects —
+`SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
+display id the dashboard renders, `'claudecode'`). Three rules keep them from re-multiplying,
+which they had done into five hand-typed copies:
+
+- **A narrower enum is `Harness.extract([...])` over MEMBER NAMES**, never a fresh
+  `z.enum([...])` of the same strings. `Provider`, `HarnessId` and `FindingProvider` are each
+  that, so a subset structurally cannot carry an id the registry does not define, while each
+  keeps its own member ORDER (`Provider`'s is the dashboard's display order, and
+  `.extract()` preserves the order passed).
+- **Call sites spell `HARNESS.ClaudeCode` / `SOURCE_TOOL.ClaudeCode`, not the literal.** A
+  literal that merely equals a member is invisible to a rename, which is exactly how these
+  drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`) — verified to
+  keep `satisfies Record<Harness, …>` exhaustiveness, so a harness added upstream is a
+  compile error at every table that owes it a row.
+- **The two vocabularies are joined by MEMBER NAME**, so `TOOL_TO_HARNESS` pairs them without
+  either spelling being retyped, and a member in only one of them is meaningful rather than an
+  omission (`Cli`/`Unknown` capture under no harness; `Windsurf`/`Api` render under no
+  capture). Anything that reads the join BACKWARDS derives it — `toDbProviderFilter` is the
+  inverse of that one table rather than a second map, because the hand-written copy it
+  replaced had to be edited in step with it and nothing checked that it was.
+
+Declared as const objects rather than TypeScript `enum`s deliberately:
+`packages/plugin-sdk/src/scan-worker.ts` is loaded by raw Node under type **stripping** and
+reaches schema through `@akasecurity/detections`, so an `enum` — which emits runtime code
+rather than erasing — fails at load on that path only. The repo has no `enum` declarations,
+and adding one anywhere schema can reach is what would break it.
+
 ### 3. `process.env` is off by default
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks — or the real installer scripts — carry inline disables of their own and are out of this table's scope:

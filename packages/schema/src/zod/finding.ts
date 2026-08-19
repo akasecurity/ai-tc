@@ -68,22 +68,22 @@ export const FindingAction = z
   .meta({ id: 'FindingAction' });
 export type FindingAction = z.infer<typeof FindingAction>;
 
-// FindingProvider: API-facing provider enum. 'claudedesktop' is a new value
-// (maps from source_tool = 'claude-desktop'). Never merged with 'claudecode'.
-// A subset of the canonical `Harness` vocabulary (harness-map.ts) — extracted
-// rather than re-typed, so the member list can't drift from it. Missing
-// 'windsurf' on purpose: see the `Harness & FindingProvider` intersection on
+// FindingProvider: API-facing provider enum. 'claudedesktop' is a distinct
+// value (maps from source_tool = 'claude-desktop') and is never merged with
+// 'claudecode'. A subset of the canonical `Harness` vocabulary (harness-map.ts)
+// named by MEMBER, so it can carry no id that file does not define. Omits
+// 'Windsurf' on purpose: see the `Harness & FindingProvider` intersection on
 // TOOL_TO_HARNESS.
 export const FindingProvider = Harness.extract([
-  'claudecode',
-  'claudedesktop',
-  'cursor',
-  'copilot',
-  'chatgpt',
-  'claudeai',
-  'codex',
-  'antigravity',
-  'api',
+  'ClaudeCode',
+  'ClaudeDesktop',
+  'Cursor',
+  'Copilot',
+  'ChatGpt',
+  'ClaudeAi',
+  'Codex',
+  'Antigravity',
+  'Api',
 ]).meta({ id: 'FindingProvider' });
 export type FindingProvider = z.infer<typeof FindingProvider>;
 

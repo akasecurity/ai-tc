@@ -1,4 +1,4 @@
-import type { SourceTool } from '@akasecurity/schema';
+import { SOURCE_TOOL, type SourceTool } from '@akasecurity/schema';
 
 import type { CliPluginBin } from './cli-plugin-manager.ts';
 
@@ -38,7 +38,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'claude-code',
     name: 'Claude Code',
-    sourceTool: 'claude-code',
+    sourceTool: SOURCE_TOOL.ClaudeCode,
     description:
       'Hooks Claude Code sessions to detect + redact sensitive data in prompts, responses, and file writes.',
     npmPackage: '@akasecurity/ai-tc-claude-code',
@@ -50,7 +50,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'codex',
     name: 'Codex CLI',
-    sourceTool: 'codex',
+    sourceTool: SOURCE_TOOL.Codex,
     description:
       'Hooks Codex CLI sessions to detect + redact sensitive data in prompts, responses, and Bash tool calls.',
     npmPackage: '@akasecurity/ai-tc-codex',
@@ -69,7 +69,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'antigravity',
     name: 'Antigravity',
-    sourceTool: 'antigravity',
+    sourceTool: SOURCE_TOOL.Antigravity,
     description:
       'Hooks Antigravity CLI sessions to detect sensitive data in shell commands and file writes.',
     npmPackage: '@akasecurity/ai-tc-antigravity',

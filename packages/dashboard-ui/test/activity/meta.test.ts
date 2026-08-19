@@ -8,8 +8,13 @@ import { PROVIDERS } from '../../src/shared/Provider.tsx';
 // and lettermarks live here. A harness added upstream can therefore arrive
 // without any of the three — these pin all of them to the enum.
 describe('HARNESS_IDS', () => {
-  it('covers exactly the schema Harness vocabulary', () => {
-    expect([...HARNESS_IDS].sort()).toEqual([...Harness.options].sort());
+  // Order, not membership. HARNESS_IDS derives from the registry, so a sorted
+  // set comparison is satisfied by construction and would stay green if the
+  // list went back to being hand-written in some other order — while
+  // HarnessSelect treats this as the canonical display order. Comparing the
+  // sequence is what still fails on that.
+  it('is exactly the schema Harness vocabulary, in its declared order', () => {
+    expect([...HARNESS_IDS]).toEqual([...Harness.options]);
   });
 
   it('gives every harness a non-empty kind label', () => {

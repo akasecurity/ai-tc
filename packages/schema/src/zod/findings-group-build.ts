@@ -103,20 +103,19 @@ export function toApiProvider(sourceTool: string): FindingProvider {
  * API FindingProvider → DB sourceTool filter values (string[]).
  * claudecode and claudedesktop must never be merged. 'api' → [] (matches any
  * unknown value; the filter is applied in-memory).
+ *
+ * DERIVED as the inverse of the same TOOL_TO_HARNESS table `toApiProvider`
+ * reads forward, rather than restated as a second map. The hand-written copy
+ * this replaced had to be edited in step with that table and in the same
+ * commit, and nothing checked that it was: a provider missing a row here reads
+ * as a filter that quietly matches no stored event, which is a silently empty
+ * findings page rather than an error. 'api' falls out with no rows of its own,
+ * which is correct — it is the miss bucket and names no single stored value.
  */
 export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
-  const map: Record<FindingProvider, string[]> = {
-    claudecode: ['claude-code'],
-    claudedesktop: ['claude-desktop'],
-    copilot: ['github-copilot'],
-    cursor: ['cursor'],
-    chatgpt: ['chatgpt'],
-    claudeai: ['claude-ai'],
-    codex: ['codex'],
-    antigravity: ['antigravity'],
-    api: [], // 'api' catches unknown tools — applied in-memory (no single DB value)
-  };
-  return map[apiProvider];
+  return Object.entries(TOOL_TO_HARNESS)
+    .filter(([, harness]) => harness === apiProvider)
+    .map(([sourceTool]) => sourceTool);
 }
 
 // ─── Grouping ────────────────────────────────────────────────────────────────

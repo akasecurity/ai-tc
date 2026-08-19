@@ -30,7 +30,7 @@ import type {
   TrustLevel,
   Visibility,
 } from '@akasecurity/schema';
-import { HarnessId as HarnessIdSchema } from '@akasecurity/schema';
+import { HARNESS, HarnessId as HarnessIdSchema } from '@akasecurity/schema';
 
 import { safeJson } from '../internal/json.ts';
 import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
@@ -104,10 +104,10 @@ const WORKTREE_CHECKOUT_FILTER =
 // total: a new enum value without a label is a typecheck failure, not a raw id
 // leaking into the UI.
 const HARNESS_LABELS: Record<HarnessId, string> = {
-  claudecode: 'Claude Code',
-  cursor: 'Cursor',
-  codex: 'Codex',
-  antigravity: 'Antigravity',
+  [HARNESS.ClaudeCode]: 'Claude Code',
+  [HARNESS.Cursor]: 'Cursor',
+  [HARNESS.Codex]: 'Codex',
+  [HARNESS.Antigravity]: 'Antigravity',
 };
 
 // A harness (AI tool) is "live" only if its inventory row was seen within this
@@ -159,11 +159,15 @@ function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | nul
   if (attrs.provider && VALID_HARNESS_IDS.has(attrs.provider)) {
     return attrs.provider as HarnessId;
   }
+  // Fall back to sniffing the row's title. The needles are the harness ids
+  // themselves with separators stripped, so they are derived from the registry
+  // rather than spelled again — a respelled id changes what is matched and what
+  // is returned together.
   const t = (row.title ?? '').toLowerCase().replace(/[\s-]/g, '');
-  if (t.includes('claudecode') || t === 'claude') return 'claudecode';
-  if (t.includes('cursor')) return 'cursor';
-  if (t.includes('codex')) return 'codex';
-  if (t.includes('antigravity')) return 'antigravity';
+  if (t.includes(HARNESS.ClaudeCode) || t === 'claude') return HARNESS.ClaudeCode;
+  if (t.includes(HARNESS.Cursor)) return HARNESS.Cursor;
+  if (t.includes(HARNESS.Codex)) return HARNESS.Codex;
+  if (t.includes(HARNESS.Antigravity)) return HARNESS.Antigravity;
   return null;
 }
 
@@ -176,7 +180,7 @@ function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | nul
 function isLiveRealClaudeCode(rows: HarnessRow[]): boolean {
   return rows.some((r) => {
     const attrs = safeJson<HarnessAttrs>(r.attributes, {});
-    return attrs.provenance !== 'sample' && resolveHarnessId(attrs, r) === 'claudecode';
+    return attrs.provenance !== 'sample' && resolveHarnessId(attrs, r) === HARNESS.ClaudeCode;
   });
 }
 
@@ -532,7 +536,8 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       // Skills/hooks are Claude Code config concepts — attach them ONLY to the real
       // Claude Code card, never a future (real) Cursor/Codex harness, and on exactly
       // one card so assetCount here agrees with getInventoryStats' single count.
-      const attachConfig = isRealHarness && harnessId === 'claudecode' && configAssets.length > 0;
+      const attachConfig =
+        isRealHarness && harnessId === HARNESS.ClaudeCode && configAssets.length > 0;
       const assets = attachConfig
         ? [...harnessAssets, ...configAssets].sort((a, b) => a.name.localeCompare(b.name))
         : harnessAssets;

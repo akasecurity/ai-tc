@@ -21,6 +21,7 @@ import {
   defaultCostModel,
   epochMillisToIso,
   eventSeverity,
+  HARNESS,
   Harness,
   isoToEpochMillis,
   SessionStatus,
@@ -146,11 +147,19 @@ function safeParseStringArray(raw: string | null): string[] {
   return Array.isArray(parsed) ? (parsed as string[]) : [];
 }
 
-/** Validate a raw harness attribute against the enum, defaulting to `claudecode`
- * so the FE's `PROVIDERS[harness]` lookup can never miss (crash the view). */
+// What a session root with no stored `harness` attribute reads as. Named once
+// because THREE places have to agree on it — this validator and the two SQL
+// coalesces below — and a disagreement is silent: the filter would match rows
+// the view renders under a different harness. A code-defined constant, never
+// user input, so the SQL interpolations are injection-safe.
+const DEFAULT_HARNESS = HARNESS.ClaudeCode;
+
+/** Validate a raw harness attribute against the enum, defaulting to
+ * `DEFAULT_HARNESS` so the FE's `PROVIDERS[harness]` lookup can never miss
+ * (crash the view). */
 function toHarness(raw: string | null): HarnessType {
   const parsed = Harness.safeParse(raw);
-  return parsed.success ? parsed.data : 'claudecode';
+  return parsed.success ? parsed.data : DEFAULT_HARNESS;
 }
 
 interface SessionRootRow {
@@ -403,12 +412,12 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     if (query.harness && query.harness.length > 0) {
       // Coalesce the stored harness to the SAME default the read side applies
-      // (`toHarness`: missing → 'claudecode'). The live capture path historically
+      // (`toHarness` → DEFAULT_HARNESS). The live capture path historically
       // wrote no `harness` attribute, so a bare `$.harness IN (...)` matched zero
-      // rows — filtering by "claudecode" returned nothing even though every bare
-      // row RENDERS as claudecode. Coalescing makes the filter agree with the view.
+      // rows — filtering by the default returned nothing even though every bare
+      // row RENDERS as it. Coalescing makes the filter agree with the view.
       conditions.push(
-        `coalesce(json_extract(attributes, '$.harness'), 'claudecode') IN (${placeholders(query.harness.length)})`,
+        `coalesce(json_extract(attributes, '$.harness'), '${DEFAULT_HARNESS}') IN (${placeholders(query.harness.length)})`,
       );
       params.push(...query.harness);
     }
@@ -676,13 +685,13 @@ export class SqliteActivityRepository implements ActivityReadPort {
    * The DISTINCT harnesses that actually have sessions (optionally within a
    * `started_at >= fromMs` window), so the filter can offer only the harnesses
    * present rather than the full enum. Each stored value is normalized through
-   * the SAME `toHarness` default the list uses (missing → 'claudecode'), so a
-   * store of bare (harness-less) roots surfaces exactly `['claudecode']`.
+   * the SAME `toHarness` default the list uses (missing → DEFAULT_HARNESS), so
+   * a store of bare (harness-less) roots surfaces exactly that one harness.
    */
   harnessFacets(fromMs?: number): Promise<HarnessType[]> {
     const where = fromMs === undefined ? '' : ' AND started_at >= ?';
     const stmt = this.db.prepare(
-      `SELECT DISTINCT coalesce(json_extract(attributes, '$.harness'), 'claudecode') AS harness
+      `SELECT DISTINCT coalesce(json_extract(attributes, '$.harness'), '${DEFAULT_HARNESS}') AS harness
          FROM audit_events WHERE ${SESSION_ROOT}${where}`,
     );
     const rows = allRows<{ harness: string | null }>(

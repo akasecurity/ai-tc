@@ -926,3 +926,26 @@ pointer inside a shell command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
+
+**The model-judge step needs an `agy` that is a real executable on native
+Windows.** This host takes the judge prompt on the command line, because it
+documents no way to feed one on stdin. Where `agy` is installed as a batch shim
+(`agy.cmd`), reaching it on Windows means going through `cmd.exe` — and a Windows
+command line cannot carry that prompt: it spans multiple lines, it runs to
+several kilobytes against cmd.exe's 8,191-character limit, and it is built from
+scanned transcript text, where a character like `&` or `"` would be read as
+syntax rather than as content. AKA refuses that spawn outright rather than
+mangling or escaping it, so a user in that position gets a clear refusal at the
+model-judge step instead of a rated set of findings. Where `agy` is a real
+executable, the step runs normally.
+
+Everything before it is unaffected either way — the calibration questions, the
+consent-gated historical read, and the local ruleset scan all run, and every
+finding is still detected and redacted locally. What is unavailable is only the
+model pass that rates false positives and severity.
+
+Say this plainly if a Windows user hits it, and do not offer to retry: the same
+prompt fails the same way every time. Two things worth getting right if it comes
+up — running under WSL2 is Linux rather than Windows and is not affected, and
+declining model-judge consent is not a workaround so much as the other supported
+path, since the local scan is what produces the findings in the first place.

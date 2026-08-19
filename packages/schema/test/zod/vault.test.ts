@@ -3,8 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { DetectionCategory } from '../../src/zod/finding.ts';
 import {
   BATCHED_DEREF_REASONS,
+  DEFAULT_VAULT_DEREFS_LIMIT,
+  DEFAULT_VAULT_INVENTORY_LIMIT,
   isBatchedDerefReason,
   isVaultConsentValid,
+  ListVaultDerefsQuery,
+  ListVaultDerefsResponse,
+  ListVaultInventoryQuery,
+  ListVaultInventoryResponse,
+  ListVaultReuseQuery,
+  ListVaultReuseResponse,
   POINTER_FORMAT_VERSION,
   POINTER_TOKEN_ANCHORED,
   PointerDescriptor,
@@ -152,6 +160,256 @@ describe('PointerDescriptor', () => {
     expect(keys).not.toContain('ciphertext');
     expect(keys).toContain('maskedMatch');
     expect(keys).toContain('category');
+  });
+});
+
+// ─── Paged reads ─────────────────────────────────────────────────────────────
+
+// The three paged queries share one shape, so the range and coercion rules are
+// driven against all of them rather than whichever one was edited last.
+const PAGED_VAULT_QUERIES = [
+  ListVaultInventoryQuery,
+  ListVaultReuseQuery,
+  ListVaultDerefsQuery,
+] as const;
+
+// A minimal inventory row: every required field, nothing optional. `provider` is
+// the only optional key, and `revealGrantId` is nullable-but-required.
+const inventoryEntry = {
+  pointerId: 'p1',
+  category: 'secret',
+  maskedMatch: 'A******E',
+  occurrences: 3,
+  firstSeen: '2026-07-27T00:00:00.000Z',
+  lastSeen: '2026-07-28T00:00:00.000Z',
+  revealGrantId: null,
+  sightings: [
+    {
+      location: 'src/config/database.ts',
+      kind: 'file',
+      firstSeen: '2026-07-27T00:00:00.000Z',
+      lastSeen: '2026-07-28T00:00:00.000Z',
+    },
+  ],
+};
+
+const derefRow = {
+  id: '3f1b8c2e-9a4d-4f6b-8c1e-2d5a7b9c0e13',
+  pointerId: 'p1',
+  at: '2026-07-28T00:00:00.000Z',
+  target: 'model',
+  reason: 'model-input',
+  outcome: 'revealed',
+};
+
+describe('paged vault queries', () => {
+  it('parses an empty query — limit and cursor are both optional', () => {
+    for (const schema of PAGED_VAULT_QUERIES) {
+      const result = schema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.limit).toBeUndefined();
+        expect(result.data.cursor).toBeUndefined();
+      }
+    }
+  });
+
+  it('accepts the ends of the range and rejects either side of it', () => {
+    for (const schema of PAGED_VAULT_QUERIES) {
+      expect(schema.safeParse({ limit: 1 }).success).toBe(true);
+      expect(schema.safeParse({ limit: 200 }).success).toBe(true);
+      expect(schema.safeParse({ limit: 0 }).success).toBe(false);
+      expect(schema.safeParse({ limit: 201 }).success).toBe(false);
+    }
+  });
+
+  it('rejects a fractional limit', () => {
+    for (const schema of PAGED_VAULT_QUERIES) {
+      expect(schema.safeParse({ limit: 1.5 }).success).toBe(false);
+    }
+  });
+
+  // These cross a Server Action boundary the browser can post anything to, so a
+  // numeric string has to arrive as a number — asserting only `.success` here
+  // would stay green with the coercion dropped.
+  it('coerces a string limit to a number', () => {
+    for (const schema of PAGED_VAULT_QUERIES) {
+      const result = schema.safeParse({ limit: '25' });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.limit).toBe(25);
+    }
+  });
+
+  it('takes an arbitrary opaque cursor string', () => {
+    for (const schema of PAGED_VAULT_QUERIES) {
+      const result = schema.safeParse({ cursor: 'eyJzdGFydGVkQXRNcyI6MSwiaWQiOiJwMSJ9' });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.cursor).toBe('eyJzdGFydGVkQXRNcyI6MSwiaWQiOiJwMSJ9');
+    }
+  });
+
+  // The store applies these when a query omits `limit`. A default outside the
+  // boundary's own range would let the two page at different sizes, so it has to
+  // parse as a limit itself.
+  it('accepts its own default page size as a limit', () => {
+    const inventory = ListVaultInventoryQuery.safeParse({ limit: DEFAULT_VAULT_INVENTORY_LIMIT });
+    expect(inventory.success).toBe(true);
+    if (inventory.success) expect(inventory.data.limit).toBe(DEFAULT_VAULT_INVENTORY_LIMIT);
+
+    const reuse = ListVaultReuseQuery.safeParse({ limit: DEFAULT_VAULT_INVENTORY_LIMIT });
+    expect(reuse.success).toBe(true);
+    if (reuse.success) expect(reuse.data.limit).toBe(DEFAULT_VAULT_INVENTORY_LIMIT);
+
+    const derefs = ListVaultDerefsQuery.safeParse({ limit: DEFAULT_VAULT_DEREFS_LIMIT });
+    expect(derefs.success).toBe(true);
+    if (derefs.success) expect(derefs.data.limit).toBe(DEFAULT_VAULT_DEREFS_LIMIT);
+  });
+});
+
+describe('ListVaultDerefsQuery.includeBatched', () => {
+  // A real boolean, not a stringbool: this arrives over a Server Action, which
+  // preserves the type, never as a URL param.
+  it('accepts a real boolean either way round', () => {
+    for (const raw of [true, false]) {
+      const result = ListVaultDerefsQuery.safeParse({ includeBatched: raw });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.includeBatched).toBe(raw);
+    }
+  });
+
+  it('is optional — absent means the batched reasons stay hidden', () => {
+    const result = ListVaultDerefsQuery.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.includeBatched).toBeUndefined();
+  });
+});
+
+describe('ListVaultInventoryResponse', () => {
+  it('parses a page with its store-wide total', () => {
+    const result = ListVaultInventoryResponse.safeParse({
+      totals: { values: 9323 },
+      items: [inventoryEntry],
+      nextCursor: 'opaque-cursor',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.totals.values).toBe(9323);
+      expect(result.data.items[0]?.sightings[0]?.kind).toBe('file');
+    }
+  });
+
+  it('parses a null nextCursor at the last page', () => {
+    expect(
+      ListVaultInventoryResponse.safeParse({
+        totals: { values: 0 },
+        items: [],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  // `.nullable()`, deliberately not `.optional()` — the convention the whole
+  // package follows. An omitted key would read as "no further pages" to a
+  // consumer that only checks falsiness, so a producer that forgot to emit it
+  // must fail here rather than silently truncate the list.
+  it('rejects an omitted nextCursor key', () => {
+    expect(ListVaultInventoryResponse.safeParse({ totals: { values: 0 }, items: [] }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a missing totals key', () => {
+    expect(ListVaultInventoryResponse.safeParse({ items: [], nextCursor: null }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('ListVaultReuseResponse', () => {
+  // The reuse total is a property of the WHOLE store, not of the page — named
+  // apart from the inventory's `values` so the two cannot be swapped silently.
+  it('parses a page whose total is `reused`, not `values`', () => {
+    const result = ListVaultReuseResponse.safeParse({
+      totals: { reused: 12 },
+      items: [inventoryEntry],
+      nextCursor: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.totals.reused).toBe(12);
+
+    expect(
+      ListVaultReuseResponse.safeParse({
+        totals: { values: 12 },
+        items: [],
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an omitted nextCursor key', () => {
+    expect(ListVaultReuseResponse.safeParse({ totals: { reused: 0 }, items: [] }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a negative reuse total', () => {
+    expect(
+      ListVaultReuseResponse.safeParse({
+        totals: { reused: -1 },
+        items: [],
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('ListVaultDerefsResponse', () => {
+  it('parses a page with the whole-trail hidden count', () => {
+    const result = ListVaultDerefsResponse.safeParse({
+      items: [derefRow],
+      nextCursor: 'opaque-cursor',
+      hiddenBatched: 4172,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hiddenBatched).toBe(4172);
+      expect(result.data.items[0]?.pointerCount).toBe(1);
+    }
+  });
+
+  it('parses a null nextCursor at the last page', () => {
+    expect(
+      ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null, hiddenBatched: 0 }).success,
+    ).toBe(true);
+  });
+
+  it('rejects an omitted nextCursor key', () => {
+    expect(ListVaultDerefsResponse.safeParse({ items: [], hiddenBatched: 0 }).success).toBe(false);
+  });
+
+  // The count the "N hidden" line and its toggle speak for — a response that
+  // omits it would render the toggle with nothing behind it.
+  it('rejects a missing or negative hiddenBatched', () => {
+    expect(ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null }).success).toBe(false);
+    expect(
+      ListVaultDerefsResponse.safeParse({ items: [], nextCursor: null, hiddenBatched: -1 }).success,
+    ).toBe(false);
+  });
+});
+
+// The vault's deliberate departure from the findings/activity list convention:
+// those responses register an OpenAPI component id, these do not. Per the
+// vault.ts file header, an id registers the schema globally and a swagger setup
+// would emit it as a public component — and nothing about the vault belongs on a
+// public API surface. Adding one is a one-word change that nothing else notices.
+describe('paged vault schemas carry no OpenAPI component id', () => {
+  it('leaves every one of the six id-less', () => {
+    expect(ListVaultInventoryQuery.meta()?.id).toBeUndefined();
+    expect(ListVaultInventoryResponse.meta()?.id).toBeUndefined();
+    expect(ListVaultReuseQuery.meta()?.id).toBeUndefined();
+    expect(ListVaultReuseResponse.meta()?.id).toBeUndefined();
+    expect(ListVaultDerefsQuery.meta()?.id).toBeUndefined();
+    expect(ListVaultDerefsResponse.meta()?.id).toBeUndefined();
   });
 });
 

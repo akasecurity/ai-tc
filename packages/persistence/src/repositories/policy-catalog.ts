@@ -13,7 +13,7 @@ import type { SqliteInstalledPacksRepository } from './installed-packs.ts';
  * OSS Policies page reads — the built-in policy catalog (monitor/warn/redact/
  * block) with live "used by N detections" counts joined from installed_packs.
  * Serves getBuiltinList / getStats /
- * getBuiltinDetail over the tenant-free local store, reusing the shared
+ * getBuiltinDetail over the local store, reusing the shared
  * @akasecurity/schema catalog (BUILTIN_POLICIES / BUILTIN_ORDER) so every
  * surface renders identical detail. The catalog IS the list (there are no
  * custom policies), so `kind='custom'` returns an empty list.

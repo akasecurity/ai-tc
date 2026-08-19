@@ -46,6 +46,7 @@ export {
   DATA_FILE_MODE,
   DB_FILENAME,
   ensureDataDirSync,
+  KeyUnclaimableError,
   tightenFile,
   tightenPerms,
   writeOwnerOnlyFileSync,
@@ -84,7 +85,11 @@ export {
 export { SqliteFindingsRepository } from './repositories/findings.ts';
 export { SqliteInspectionDefinitionsRepository } from './repositories/inspection-definitions.ts';
 export { SqliteInspectionFindingsRepository } from './repositories/inspection-findings.ts';
-export type { InstalledPackCounts } from './repositories/installed-packs.ts';
+export type {
+  InstalledPackCounts,
+  InstalledRuleset,
+  RejectedRule,
+} from './repositories/installed-packs.ts';
 export { SqliteInstalledPacksRepository } from './repositories/installed-packs.ts';
 export { SqliteInventoryRepository } from './repositories/inventory.ts';
 export { SqliteInventoryAssetsRepository } from './repositories/inventory-assets.ts';

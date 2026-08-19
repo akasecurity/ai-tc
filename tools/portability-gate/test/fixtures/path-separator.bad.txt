@@ -1,0 +1,12 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const binDir = mkdtempSync(join(tmpdir(), 'shim-'));
+
+const env = {
+  PATH: `${binDir}:${process.env.PATH ?? ''}`,
+};
+
+const alsoWrong = [binDir, process.env.PATH].join(':');
+const entries = env.PATH.split(':');

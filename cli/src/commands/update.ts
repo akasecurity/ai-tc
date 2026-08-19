@@ -5,22 +5,28 @@ import {
   applyCliUpdate as applyCliUpdateShared,
   applyPluginUpdate as applyPluginUpdateShared,
   clearCache,
-  CLI_PACKAGE,
   createCliPluginManager,
+  describeChannel,
+  detectInstallChannel,
   findAgent,
   gatherReportLive,
   outdated,
+  planCliUpdate,
   pluginRef,
   renderReport,
 } from '@akasecurity/local-ops';
 import type { ComponentStatus } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
+import { cliInstallOrigin } from '../lib/install-origin.ts';
 
 // `aka update [cli|<plugin-id>]` — the one command to get current. Shows the
 // installed-vs-latest report, then (unless --yes) asks before applying. The CLI
-// updates itself via the same `npm i -g` used to install it; plugins update through
-// the `claude` plugin manager. With no target it updates everything that's behind.
+// updates itself through whichever channel THIS copy came from — the package
+// manager and location are derived from where the running code lives, not from
+// what `npm` on PATH happens to point at (see local-ops' install-channel.ts);
+// plugins update through the `claude` plugin manager. With no target it updates
+// everything that's behind.
 export async function runUpdate(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -109,9 +115,24 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 function applyCliUpdate(): boolean {
-  process.stdout.write(`Updating the aka CLI (npm install -g ${CLI_PACKAGE}@latest)…\n`);
-  const { ok } = applyCliUpdateShared('inherit');
-  process.stdout.write(ok ? '✓ CLI updated.\n' : '✗ CLI update failed (see npm output above).\n');
+  const channel = detectInstallChannel(cliInstallOrigin());
+  const plan = planCliUpdate(channel);
+  if (plan.command === null) {
+    process.stderr.write(
+      `✗ aka CLI: ${plan.reason ?? 'this install cannot be updated automatically'}.\n` +
+        `  This copy is a ${describeChannel(channel)}.\n` +
+        `  To update it, run:\n\n    ${plan.display}\n\n`,
+    );
+    return false;
+  }
+  process.stdout.write(`Updating the aka CLI — ${describeChannel(channel)}\n`);
+  process.stdout.write(`  ${plan.display}\n`);
+  // The same channel that produced the line above, so the command printed is
+  // the command run.
+  const { ok } = applyCliUpdateShared(channel, 'inherit');
+  process.stdout.write(
+    ok ? '✓ CLI updated.\n' : `✗ CLI update failed (see the ${plan.command.bin} output above).\n`,
+  );
   return ok;
 }
 
@@ -123,14 +144,37 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
-  if (!createCliPluginManager(cliBin).available()) {
+  // Two renders off the host's own verb table — a hardcoded `plugin update` is
+  // wrong for Codex, which has no such subcommand — and they are NOT
+  // interchangeable.
+  //
+  // The RECIPE is the manual equivalent: what a user retypes when this process
+  // cannot run it for them. It is joined with `&&`, so it carries only steps
+  // whose failure should stop the chain, which is why the survivable snapshot
+  // refresh is deliberately absent. It leads with `marketplace add` because
+  // `available()` proves only that the binary is on PATH, never that the
+  // marketplace was ever registered.
+  //
+  // The SPAWN PLAN is the disclosure: every command this process is about to
+  // run, refresh included. Announcing the recipe here named two of the three
+  // spawns — the same under-disclosure the dashboard's confirm dialog had, and
+  // worse on this surface, since a terminal is where a user watches commands go
+  // by and notices one they were not told about. It is printed as a list and
+  // never joined with `&&`: that join would state a chaining rule this code
+  // does not follow, since a failed refresh is survivable here.
+  const manager = createCliPluginManager(cliBin);
+  const recipe = manager.updateRecipe(ref, agent.marketplaceSource).join(' && ');
+  if (!manager.available()) {
     process.stderr.write(
       `✗ ${status.name}: the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, ` +
-        `then run \`${cliBin} plugin update ${ref}\`.\n`,
+        `then run \`${recipe}\`.\n`,
     );
     return false;
   }
-  process.stdout.write(`Updating ${status.name} (${cliBin} plugin update ${ref})…\n`);
+  const plan = manager.updateSpawnPlan(ref, agent.marketplaceSource, agent.marketplace);
+  process.stdout.write(
+    `Updating ${status.name}, running:\n` + plan.map((command) => `  ${command}\n`).join(''),
+  );
   const { ok } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
   return ok;

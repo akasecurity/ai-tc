@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
-import { severityFloorPosture } from '@akasecurity/plugin-sdk';
+import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory, DetectionException } from '@akasecurity/schema';
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { readRegisteredCommands } from '../src/command-registry.ts';
 import { NAME, ONE_LINER, TAGLINE } from '../src/identity.ts';
 import { buildIntroCard, buildVerifiedIntroCard, type Manifest } from '../src/intro-card.ts';
@@ -1188,7 +1189,11 @@ describe('runQuery — against a seeded standalone gateway', () => {
     dir = mkdtempSync(join(tmpdir(), 'aka-query-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    // removeTree, not a bare rmSync: this block leaves a real SQLite store with
+    // its -wal/-shm siblings, and `force` suppresses only ENOENT — not the
+    // sharing violation Windows raises for a file still held open. 37 files in
+    // the repo already take it for exactly this.
+    removeTree(dir);
   });
 
   const SECRET = AWS_EXAMPLE_KEY;
@@ -1241,35 +1246,78 @@ describe('runQuery — against a seeded standalone gateway', () => {
 
   it('status bar stays stable across surfaces even when /findings truncates its page', async () => {
     // Seed more findings than the /findings page limit (25) so the listed rows
-    // are a truncated slice while /health and /recommend read a wider window.
+    // are a truncated slice while /health and /recommend read a wider window
+    // (both ask for 500 — see render.ts). Any N in 26..500 pins the truncation;
+    // 30 is comfortably inside that and the corpus stays available as a lever.
+    //
+    // Seeded on ONE store handle rather than through 30 handleCapture calls.
+    // handleCapture resolves a gateway, captures, and closes it again per call,
+    // and the gateway constructor is eager — openLocalDatabase plus a whole
+    // recordInventory over the bundled packs — so the loop's cost was 30 store
+    // opens rather than 30 writes. Measured on arm64 macOS at 140ms against
+    // 20ms for the same writes on a single handle.
+    //
+    // Those are the operations Windows is slowest at (file create, fsync, and a
+    // virus scanner reading each new file), which is the leading HYPOTHESIS for
+    // why this test hit the 20s ceiling there. It is not established: no
+    // Windows figure was taken, 140ms to 20s needs a ~140x factor against the
+    // ~30x CLAUDE.md records for this work, and ci.yml already notes that this
+    // leg times out on a different file each run under a starved runner. The
+    // change stands on removing real load from a shared leg either way.
+    //
+    // The write path is unchanged: handleCapture is a fail-open wrapper around
+    // exactly this runtime, and the test at the top of this block covers it.
     const cfg = config(dir);
-    for (let i = 0; i < 30; i++) {
-      await handleCapture(
-        { kind: 'prompt', sourceTool: 'claude-code', text: `key ${String(i)} ${SECRET}` },
-        cfg,
-      );
+    // The gateway gets its own binding, taken BEFORE the try, because
+    // resolveDataGateway has already opened the store by the time
+    // createPluginRuntime is called — and createPluginRuntime can throw on its
+    // first call in a process, where it registers the bundled packs. Built as an
+    // argument expression, that throw would leave the handle open with nothing
+    // holding it, and the afterEach removal then meets a live file.
+    const seedGateway = resolveDataGateway(cfg);
+    let seed: ReturnType<typeof createPluginRuntime> | undefined;
+    try {
+      seed = createPluginRuntime(seedGateway, cfg.settings, { dataDir: cfg.dataDir });
+      for (let i = 0; i < 30; i++) {
+        await seed.capture({
+          kind: 'prompt',
+          sourceTool: 'claude-code',
+          text: `key ${String(i)} ${SECRET}`,
+        });
+      }
+    } finally {
+      // runtime.close() closes the gateway with it, so close the gateway
+      // directly only when there is no runtime to do it. The queries below then
+      // read the store back through a handle of their own, so the rows have to
+      // be on disk and not merely in the connection that wrote them.
+      if (seed === undefined) await seedGateway.close();
+      else await seed.close();
     }
 
     const gateway = resolveDataGateway(cfg);
     try {
-      const footer = (surface: string): string => {
+      // Takes the surface's NAME as well as its text: three call sites feed this
+      // now, and `surface` holds rendered output rather than anything that
+      // identifies it, so an unnamed throw cannot say which one lost its status
+      // bar.
+      const footer = (name: string, surface: string): string => {
         const line = strip(surface)
           .split('\n')
           .find((l) => l.includes('open findings'));
-        if (line === undefined) throw new Error('no status bar on surface');
+        if (line === undefined) throw new Error(`no status bar on /${name}`);
         return line;
       };
 
       const findings = strip(await runQuery('findings', gateway));
       // The page is capped at 25 rows, but the footer reports the whole store.
       expect(findings).toContain('Recent findings (25)');
-      const findingsFooter = footer(findings);
+      const findingsFooter = footer('findings', findings);
       expect(findingsFooter).toContain('⚑ 30 open findings');
 
       // Same footer on /health and /recommend — derived from the summary, not the
       // page — so the count no longer drifts with each command's row limit.
-      expect(footer(await runQuery('health', gateway))).toBe(findingsFooter);
-      expect(footer(await runQuery('recommend', gateway))).toBe(findingsFooter);
+      expect(footer('health', await runQuery('health', gateway))).toBe(findingsFooter);
+      expect(footer('recommend', await runQuery('recommend', gateway))).toBe(findingsFooter);
     } finally {
       await gateway.close();
     }

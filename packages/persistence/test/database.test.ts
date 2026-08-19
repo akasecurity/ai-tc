@@ -1,36 +1,36 @@
 import { randomUUID } from 'node:crypto';
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { openLocalDatabase } from '../src/database.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
 import { descriptorProbe } from './helpers/descriptors.ts';
 import { corruptStore } from './helpers/fault-injection.ts';
+import { useTempStore } from './helpers/temp-store.ts';
 
-let dir: string;
+const store = useTempStore('aka-persistence-');
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-persistence-'));
-});
-
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-});
+// Two raw connections here stay hand-built, and the reason is narrow: they open
+// a file that is NOT the store. `store.openRaw()` only ever opens
+// `<home>/data/aka.db`, and those two read a `.legacy.` backup copy and a
+// moved-aside store beside it. Every connection to the store file itself goes
+// through the harness.
+//
+// The descriptor probes below are unaffected by that, and the reason is narrower
+// than it looks. `leakedBy` takes its own before-count at call time, so a handle
+// opened before the window sits in both counts and moves nothing. But the probe
+// windows DO call `store.open()` inside themselves — and what makes those inert
+// is that every one of them THROWS (a corrupt store, a dropped table), so
+// `openLocalDatabase` never returns and the harness never registers a handle.
+//
+// A future in-window open that SUCCEEDS is therefore not inert: the harness
+// holds it to teardown, the delta counts it, and `expect(leaked).toBe(0)` fails
+// looking like a product descriptor leak. Close such a handle inside the window.
 
 const MASKED = 'AKIA…MPLE';
 
@@ -63,7 +63,7 @@ function finding(eventId: string, overrides: Partial<DetectedFinding> = {}): Det
 
 describe('openLocalDatabase — open / migrate / seed', () => {
   it('applies the schema and is safe to open repeatedly (idempotent migrations)', async () => {
-    const d1 = openLocalDatabase(dir);
+    const d1 = store.open();
     // First open seeds the default policies into the tenant-free store.
     const seeded = await d1.policies.readPolicies();
     expect(seeded.length).toBeGreaterThan(0);
@@ -71,14 +71,14 @@ describe('openLocalDatabase — open / migrate / seed', () => {
 
     // Re-opening applies no migration twice and does not re-seed (the seed guard
     // is "table is empty"), so the policy count is unchanged — no error, no churn.
-    const d2 = openLocalDatabase(dir);
+    const d2 = store.open();
     const reopened = await d2.policies.readPolicies();
     expect(reopened.length).toBe(seeded.length);
     d2.close();
   });
 
   it('seeds one enabled policy per default category', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const policies = await db.policies.readPolicies();
     db.close();
 
@@ -91,22 +91,28 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     expect(policies.every((p) => p.enabled)).toBe(true);
   });
 
-  it('writes the db file owner-only (0600) where POSIX modes apply', () => {
-    const db = openLocalDatabase(dir);
+  it('writes the db file owner-only (0600) where POSIX modes apply', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const db = store.open();
     db.close();
-    if (process.platform === 'win32') return;
-    const mode = statSync(join(dir, 'aka.db')).mode & 0o777;
+    const mode = statSync(join(store.dataDir, 'aka.db')).mode & 0o777;
     expect(mode).toBe(0o600);
   });
 
-  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', () => {
+  it('writes the -wal/-shm sidecars owner-only (0600) while the store is open', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // The sidecars hold prompt/file content just like the main db, so they must
     // carry the same 0600 mode. They exist only while a WAL-mode handle is open
     // (a clean close checkpoints and removes them), so assert before closing.
-    const db = openLocalDatabase(dir);
-    const dbFile = join(dir, 'aka.db');
+    const db = store.open();
+    const dbFile = join(store.dataDir, 'aka.db');
     try {
-      if (process.platform === 'win32') return;
       // WAL mode creates exactly the -wal/-shm pair (no rollback -journal).
       for (const sidecar of [`${dbFile}-wal`, `${dbFile}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
@@ -117,18 +123,24 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     }
   });
 
-  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', () => {
+  it('re-tightens the db and its recreated -wal/-shm sidecars to 0600 on reopen (steady-state)', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // Every hook after the first init reopens an already-migrated store. The
     // sidecars are removed on close and recreated by the reopen's writes; SQLite
     // gives a new sidecar the main db's mode, so a store loosened out of band
     // must be re-tightened on open — not only at first creation.
-    openLocalDatabase(dir).close();
-    const file = join(dir, 'aka.db');
-    if (process.platform !== 'win32') chmodSync(file, 0o644); // simulate a loosened store
+    store.open().close();
+    const file = join(store.dataDir, 'aka.db');
+    // Unguarded because the ctx.skip at the top of this body already returned on
+    // Windows, where chmod is a no-op; narrowing that skip means restoring a
+    // platform guard here.
+    chmodSync(file, 0o644); // simulate a loosened store
 
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     try {
-      if (process.platform === 'win32') return;
       expect(statSync(file).mode & 0o777).toBe(0o600);
       for (const sidecar of [`${file}-wal`, `${file}-shm`]) {
         expect(existsSync(sidecar)).toBe(true);
@@ -143,8 +155,7 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // Simulate an old (tenant-bearing) store this lineage can't migrate
     // forward: a `tenants` table + a tenant_id column, with a bumped user_version
     // so the applier would otherwise skip it entirely.
-    const file = join(dir, 'aka.db');
-    const legacy = new DatabaseSync(file);
+    const legacy = store.openRaw();
     legacy.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
     legacy.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
     legacy.exec('PRAGMA user_version = 10');
@@ -153,20 +164,20 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // Opening detects the foreign lineage, backs it up, and starts fresh — so a
     // write now succeeds (the old schema would have thrown NOT NULL tenant_id,
     // swallowed fail-open).
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id)]);
     expect(await db.findings.recentFindings()).toHaveLength(1);
     db.close();
 
     // The old store is preserved (recoverable), not destroyed.
-    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    const backups = readdirSync(store.dataDir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
     // The backup is a full copy of the prompt corpus, so it must carry the same
     // 0600 as the live store — the pre-tightened legacy file was 0644.
     const [backupName] = backups;
     if (process.platform !== 'win32' && backupName !== undefined) {
-      expect(statSync(join(dir, backupName)).mode & 0o777).toBe(0o600);
+      expect(statSync(join(store.dataDir, backupName)).mode & 0o777).toBe(0o600);
     }
   });
 
@@ -187,12 +198,10 @@ describe('openLocalDatabase — open / migrate / seed', () => {
       return;
     }
 
-    const file = join(dir, 'aka.db');
-
     // A tenant-bearing (foreign-lineage) store in WAL mode. autocheckpoint = 0
     // plus a never-closed writer keep every write — the schema included — stranded
     // in the -wal, never folded into the main file.
-    const writer = new DatabaseSync(file);
+    const writer = store.openRaw();
     writer.exec('PRAGMA journal_mode = WAL');
     writer.exec('PRAGMA wal_autocheckpoint = 0');
     writer.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
@@ -204,18 +213,18 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     try {
       // Opening detects the foreign lineage and backs the store up while the
       // writer still holds the un-checkpointed WAL.
-      openLocalDatabase(dir).close();
+      store.open().close();
     } finally {
       writer.close();
     }
 
-    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    const backups = readdirSync(store.dataDir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
     // The snapshot is published by renaming a `.partial` into place, so a
     // completed backup leaves no partial file beside it.
-    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+    expect(readdirSync(store.dataDir).filter((f) => f.endsWith('.partial'))).toEqual([]);
     const [backupName] = backups;
-    const backup = new DatabaseSync(join(dir, backupName ?? ''));
+    const backup = new DatabaseSync(join(store.dataDir, backupName ?? ''));
     // The WAL-only rows survived into the backup — a bare rename + sidecar
     // delete would have dropped them (the rows, and even the tables themselves,
     // lived only in the -wal that the delete destroyed). Both tables are
@@ -238,8 +247,8 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // already spans the several pages corruptStore('page') needs, and this store
     // is in rollback-journal mode, where a loop of per-row commits is a loop of
     // fsyncs — slow enough on Windows CI to reach the per-test timeout by itself.
-    const file = join(dir, 'aka.db');
-    const legacy = new DatabaseSync(file);
+    const file = join(store.dataDir, 'aka.db');
+    const legacy = store.openRaw();
     legacy.exec('CREATE TABLE tenants (id TEXT PRIMARY KEY)');
     legacy.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
     legacy.exec('PRAGMA user_version = 10');
@@ -250,22 +259,22 @@ describe('openLocalDatabase — open / migrate / seed', () => {
 
     // The reset completes: the fresh store takes a write the legacy schema
     // would have rejected.
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id)]);
     expect(await db.findings.recentFindings()).toHaveLength(1);
     db.close();
 
-    const backups = readdirSync(dir).filter((f) => f.includes('.legacy.'));
+    const backups = readdirSync(store.dataDir).filter((f) => f.includes('.legacy.'));
     expect(backups).toHaveLength(1);
     // Nothing partial is left to mistake for a backup.
-    expect(readdirSync(dir).filter((f) => f.endsWith('.partial'))).toEqual([]);
+    expect(readdirSync(store.dataDir).filter((f) => f.endsWith('.partial'))).toEqual([]);
     // The moved-aside file is the damaged original, whole — not a truncated or
     // re-created one. NOT byte-for-byte: `PRAGMA journal_mode = WAL` runs on the
     // open before the copy fails and rewrites the header (4 bytes, the file
     // format versions among them). So pin the two properties that do hold — the
     // full length, and that the damage is still in it.
-    const moved = join(dir, backups[0] ?? '');
+    const moved = join(store.dataDir, backups[0] ?? '');
     expect(statSync(moved).size).toBe(beforeSize);
     const check = new DatabaseSync(moved);
     const integrity = check.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
@@ -278,8 +287,8 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     // which creates a brand-new file at the process umask (typically 0644). That
     // backup is a full copy of the prompt corpus, so it must be tightened to the
     // store's own 0600.
-    const file = join(dir, 'aka.db');
-    const raw = new DatabaseSync(file);
+    const file = join(store.dataDir, 'aka.db');
+    const raw = store.openRaw();
     raw.exec('PRAGMA journal_mode = WAL');
     raw.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     raw.exec("INSERT INTO t (v) VALUES ('prompt corpus')");
@@ -289,14 +298,13 @@ describe('openLocalDatabase — open / migrate / seed', () => {
     raw.close();
 
     expect(existsSync(backup)).toBe(true);
-    if (process.platform === 'win32') return;
-    expect(statSync(backup).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(backup).mode & 0o777).toBe(0o600);
   });
 });
 
 describe('recordCapture', () => {
   it('persists one event + N findings exactly as given (already masked)', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id)]);
 
@@ -309,7 +317,7 @@ describe('recordCapture', () => {
   });
 
   it('dedupes a finding repeated across surfaces within one session', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const sessionId = randomUUID();
     // Same value flagged on the prompt, then again when written to a file — one
     // logical action across two surfaces, sharing a session id. Distinct
@@ -346,7 +354,7 @@ describe('recordCapture', () => {
   });
 
   it('keeps distinct values, and the same value in a different session', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const s1 = randomUUID();
     const s2 = randomUUID();
     // Two different emails in one session → both kept (different masked value).
@@ -366,7 +374,7 @@ describe('recordCapture', () => {
   });
 
   it('is fail-open: a duplicate event id is swallowed, never thrown', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id)]);
     // Same id again → PK violation inside the txn → rolled back, not thrown.
@@ -380,7 +388,7 @@ describe('recordCapture', () => {
 
 describe('read surfaces', () => {
   it('healthSummary counts by action and severity and reports full coverage on a fresh store', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const e1 = event();
     const e2 = event();
     db.recordCapture(e1, [finding(e1.id, { actionTaken: 'block', severity: 'critical' })]);
@@ -409,7 +417,7 @@ describe('read surfaces', () => {
   });
 
   it('activityByDay returns a continuous window with today populated', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id, { actionTaken: 'block' })]);
 
@@ -425,7 +433,7 @@ describe('read surfaces', () => {
 
 describe('transaction', () => {
   it('commits every write inside fn atomically', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.policies.upsertCategoryAction('secret', 'warn');
     await db.transaction(() => {
       db.policies.upsertCategoryAction('secret', 'block');
@@ -437,7 +445,7 @@ describe('transaction', () => {
   });
 
   it('rolls back every write inside fn on throw', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     db.policies.upsertCategoryAction('secret', 'warn');
     await expect(
       db.transaction(() => {
@@ -450,7 +458,7 @@ describe('transaction', () => {
   });
 
   it('rolls back a nested exceptions.create() collision-retry when the outer fn throws', async () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const grant = {
       ruleId: 'aws-access-key-id',
       category: 'secret' as const,
@@ -513,10 +521,10 @@ describe('a failed open leaves no handle behind', () => {
   const ATTEMPTS = 5;
 
   function corruptTheStore(): string {
-    const file = join(dir, 'aka.db');
-    openLocalDatabase(dir).close(); // a real store first, so this is damage not absence
+    const file = join(store.dataDir, 'aka.db');
+    store.open().close(); // a real store first, so this is damage not absence
     for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
-      rmSync(join(dir, sidecar), { force: true });
+      rmSync(join(store.dataDir, sidecar), { force: true });
     }
     writeFileSync(file, 'this is not a SQLite database at all\n');
     return file;
@@ -527,8 +535,8 @@ describe('a failed open leaves no handle behind', () => {
   // store reproduces that: the ledger still says applied, so the next open skips
   // the applier and goes straight to the constructors.
   function dropAMigratedTable(): void {
-    openLocalDatabase(dir).close();
-    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    store.open().close();
+    const raw = store.openRaw();
     try {
       raw.exec('DROP TABLE installed_packs');
     } finally {
@@ -538,7 +546,7 @@ describe('a failed open leaves no handle behind', () => {
 
   it('throws rather than returning a half-open store', () => {
     corruptTheStore();
-    expect(() => openLocalDatabase(dir)).toThrow();
+    expect(() => store.open()).toThrow();
   });
 
   it('stays throwing across repeated attempts, without accumulating handles', () => {
@@ -547,7 +555,7 @@ describe('a failed open leaves no handle behind', () => {
     // per attempt.
     corruptTheStore();
     for (let i = 0; i < ATTEMPTS; i += 1) {
-      expect(() => openLocalDatabase(dir)).toThrow();
+      expect(() => store.open()).toThrow();
     }
     // afterEach removes the tree — on Windows that is the assertion.
   });
@@ -564,7 +572,7 @@ describe('a failed open leaves no handle behind', () => {
     const leaked = probe.leakedBy(() => {
       for (let i = 0; i < ATTEMPTS; i += 1) {
         try {
-          openLocalDatabase(dir);
+          store.open();
         } catch {
           threw += 1;
         }
@@ -583,7 +591,7 @@ describe('a failed open leaves no handle behind', () => {
     dropAMigratedTable();
 
     for (let i = 0; i < ATTEMPTS; i += 1) {
-      expect(() => openLocalDatabase(dir)).toThrow(/no such table/);
+      expect(() => store.open()).toThrow(/no such table/);
     }
     // Measured on macOS with the sequence guard removed: ~2 descriptors per
     // attempt, matching the 11 the guard-removal table above records for this
@@ -599,7 +607,7 @@ describe('a failed open leaves no handle behind', () => {
     const leaked = probe.leakedBy(() => {
       for (let i = 0; i < ATTEMPTS; i += 1) {
         try {
-          openLocalDatabase(dir);
+          store.open();
         } catch {
           threw += 1;
         }
@@ -613,13 +621,13 @@ describe('a failed open leaves no handle behind', () => {
 
 describe('store hygiene', () => {
   it('does not write the WAL/SHM secret to a separate plaintext copy', () => {
-    const db = openLocalDatabase(dir);
+    const db = store.open();
     const ev = event();
     db.recordCapture(ev, [finding(ev.id)]);
     db.close();
 
     // inspection_findings holds only the masked value handed in — never a raw one.
-    const raw = new DatabaseSync(join(dir, 'aka.db'));
+    const raw = store.openRaw();
     const masked = raw.prepare('SELECT masked_match FROM inspection_findings').all() as {
       masked_match: string;
     }[];

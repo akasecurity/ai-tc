@@ -32,3 +32,23 @@ export function errorFrom(fn: () => unknown): Error | undefined {
     return err as Error;
   }
 }
+
+/**
+ * The async twin: the error a promise REJECTED with, captured outside any
+ * catch of the test's own.
+ *
+ * `await expect(p).rejects.toThrow(/…/)` covers the common case, but not one
+ * that has to read several things off the error — a message, a `.stack`, a
+ * status code — or assert what the error does NOT say. Written as a
+ * try/catch around an `await`, that shape has the same defect `errorFrom`
+ * exists to remove: the guard error thrown when the promise unexpectedly
+ * RESOLVES lands in the test's own catch and satisfies the assertions below
+ * it. Here a never-rejected promise arrives as `undefined`, so
+ * `toBeDefined()` catches it.
+ */
+export async function rejectionFrom(promise: Promise<unknown>): Promise<Error | undefined> {
+  return promise.then(
+    () => undefined,
+    (err: unknown) => err as Error,
+  );
+}

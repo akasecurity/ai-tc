@@ -13,13 +13,25 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A merge queue reaches this workflow through `merge_group` and no other event,
+  # and this guard is the one where being skipped is a DISCLOSURE rather than a
+  # missing verdict. Two branches that are each clean can merge to a tree that is
+  # not — the marker arrives from neither diff — and the queue is precisely the
+  # mechanism that merges such a tree. Without this trigger the guard would first
+  # see it on the post-merge `push`, i.e. after the internal path is public.
+  merge_group:
 
 permissions:
   contents: read
 
+# Only a PR run is cancellable. Every push to main shares `refs/heads/main`, so a
+# ref-keyed group let a second merge cancel the first commit's guard run outright,
+# leaving that commit with its leak check neither passed nor failed; keying non-PR
+# events by SHA gives each merged commit its own group, which drops neither run
+# nor queues one behind the other. See ci.yml for the same reasoning at length.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   guard:

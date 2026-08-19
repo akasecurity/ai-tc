@@ -6,7 +6,7 @@ import {
 } from '@akasecurity/dashboard-ui';
 import { Harness, type ListActivitySessionsQuery } from '@akasecurity/schema';
 
-// The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=&empty=1)
+// The Activity list state rides in the URL (?q=&harness=&harness=&range=&id=&empty=1&view=full)
 // so the Server Component re-queries the local store on every change — the same
 // mechanism as the findings/detections pages. These pure helpers convert between
 // the URL params and the persistence query; shared by the page (parse) and the
@@ -24,9 +24,10 @@ export function parseQuery(sp: ActivitySearchParams): string {
 }
 
 /**
- * URL ?harness values → the multi-select, validated against the schema enum here
- * (the OSS Server-Component path has no Fastify/Zod door), so a crafted
- * `?harness=bogus` is dropped rather than passed to the store.
+ * URL ?harness values → the multi-select, validated against the schema enum
+ * HERE, in the Server Component, because this is the only boundary the value
+ * crosses before it reaches the store — a crafted `?harness=bogus` is dropped
+ * rather than passed on.
  */
 export function parseHarness(sp: ActivitySearchParams): Harness[] {
   return asArray(sp.harness).filter((v): v is Harness =>
@@ -48,6 +49,23 @@ export function parseActivityRange(sp: ActivitySearchParams): TimeRange {
  * `?empty=1` reveals them. */
 export function parseShowEmpty(sp: ActivitySearchParams): boolean {
   return one(sp.empty) === '1';
+}
+
+/**
+ * Whether the full-width session inspector is open (`?view=full&id=<session>`).
+ *
+ * It lives in the URL rather than in component state so the drill-down is a real
+ * navigation: it gets a history entry (Back closes it) and the link is
+ * shareable — `?id=<session>&view=full` opens straight into that session's
+ * inspector. Any other value reads as closed, so a crafted `?view=` is inert.
+ *
+ * The `?id` is required here, not just when building: the serializer constrains
+ * only the URLs this app writes, and a hand-typed `/activity?view=full` reaches
+ * the parser having gone nowhere near it. The panel is a view OF a session, so
+ * the pairing is a property of the state itself and belongs on both sides.
+ */
+export function parseExpanded(sp: ActivitySearchParams): boolean {
+  return one(sp.view) === 'full' && parseSelectedId(sp) !== '';
 }
 
 /**
@@ -80,6 +98,7 @@ export function buildActivityParams(opts: {
   range: TimeRange;
   id?: string;
   showEmpty?: boolean;
+  expanded?: boolean;
 }): URLSearchParams {
   const sp = new URLSearchParams();
   const q = opts.q.trim();
@@ -91,5 +110,8 @@ export function buildActivityParams(opts: {
   if (opts.range !== DEFAULT_TIME_RANGE) sp.set('range', opts.range);
   if (opts.id) sp.set('id', opts.id);
   if (opts.showEmpty) sp.set('empty', '1');
+  // The inspector is scoped to one session, so it is only ever written next to
+  // the ?id that names it — `?view=full` alone would open a panel over nothing.
+  if (opts.expanded && opts.id) sp.set('view', 'full');
   return sp;
 }

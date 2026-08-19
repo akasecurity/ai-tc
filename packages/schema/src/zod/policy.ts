@@ -30,10 +30,9 @@ export const PolicyTarget = z
   .meta({ id: 'PolicyTarget' });
 export type PolicyTarget = z.infer<typeof PolicyTarget>;
 
-// The canonical open-source policy shape AND the public OpenAPI component
-// 'Policy'. Tenant-free: the local store + the wire PolicyBundle use it directly,
-// and it backs the policies API contract — the public contract carries no
-// scoping columns.
+// The canonical policy shape, and the component named 'Policy'. The local store
+// and the wire PolicyBundle use it directly, and it backs the policies contract.
+// Carries no scoping columns — a policy is identified by its own id.
 export const Policy = z
   .object({
     id: z.guid(),
@@ -263,6 +262,14 @@ export const PolicyListItem = z
   })
   .meta({ id: 'PolicyListItem' });
 export type PolicyListItem = z.infer<typeof PolicyListItem>;
+
+// The built-in policy catalog as a list. Lives here, beside the item shape it
+// wraps, because the local store's policy-catalog port returns exactly this —
+// see `getPolicyList` in @akasecurity/persistence.
+export const ListPoliciesResponse = z
+  .object({ items: z.array(PolicyListItem) })
+  .meta({ id: 'ListPoliciesResponse' });
+export type ListPoliciesResponse = z.infer<typeof ListPoliciesResponse>;
 
 export const PolicyDetail = z
   .object({

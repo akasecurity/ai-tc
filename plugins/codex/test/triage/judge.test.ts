@@ -1,12 +1,24 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import type { BareCommandUnsupportedError } from '@akasecurity/plugin-sdk/bare-command';
+import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
 import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const VERDICT_FENCE = [
   '```json',
@@ -390,5 +402,90 @@ describe('runJudge', () => {
       if (locked !== '') chmodSync(locked, 0o700);
       rmSync(outDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a Windows argv the command interpreter cannot carry', () => {
+  const hit: TriageHit = {
+    ruleId: 'core-secret/aws',
+    category: 'secret',
+    severity: 'high',
+    maskedMatch: 'A***Z',
+    rawMatch: 'AKIAIOSFODNN7EXAMPLE',
+    context: 'export KEY=AKIAIOSFODNN7EXAMPLE # prod',
+    confidence: 0.9,
+  };
+
+  it('surfaces the planner’s own reason instead of flattening it to "unknown error"', () => {
+    // spawnCodex routes through planBareCommand, which reaches a Windows
+    // `codex.cmd` through cmd.exe and refuses an argv cmd.exe would re-parse.
+    // The prompt rides stdin here, so the only argv value is the temp
+    // last-message path — reachable in principle (a home directory carrying a
+    // `%`), and the refusal carries the only actionable explanation any spawn
+    // failure here has, where spawnFailureMeta reads nothing but exit metadata.
+    const refusal = errorFrom(() =>
+      planBareCommand('codex', ['exec', String.raw`C:\Users\%USER%\out.txt`], {
+        platform: 'win32',
+        home: '/anchor/home',
+        resolve: () => String.raw`C:\Users\dev\AppData\Roaming\npm\codex.cmd`,
+      }),
+    );
+    // The positive control: a planner that stopped refusing leaves this
+    // undefined and the absence check below holds over an empty reason.
+    expect(isBareCommandUnsupported(refusal)).toBe(true);
+    const reason = (refusal as BareCommandUnsupportedError).reason;
+
+    const err = errorFrom(() =>
+      runJudge([hit], {
+        spawn: () => {
+          // Narrowed by the assertion above; `expect` does not narrow for TS.
+          throw refusal as BareCommandUnsupportedError;
+        },
+        loadRubric: () => 'RUBRIC',
+      }),
+    );
+
+    expect(err?.message).toBe(`codex exec judge subprocess failed (${reason})`);
+    expect(reason).toContain('cmd.exe');
+    expectNoEchoOf(err?.message, hit.rawMatch);
+  });
+});
+
+describe('the judge spawn is planned, not hand-built', () => {
+  // The wizard-journey suites run on the Windows leg only because this spawn
+  // reaches a `.cmd` shim through the planner, and only anchor at the user's
+  // home because the plan's options reach the spawn. Neither is visible from a
+  // POSIX run, so both are pinned here as source facts — the regression has to
+  // be noticed on the leg the author is actually on, which is not Windows.
+  //
+  // Each half is load-bearing and none is enough alone. Measured: a revert that
+  // kept `import { planBareCommand }` and built a plain `{ file, args, options }`
+  // object in its place satisfied a bare `includes('planBareCommand')`, and a
+  // spawn that drops `...plan.options` keeps every planner test green while
+  // silently losing the cwd anchor a planted `%COMMAND%.cmd` needs.
+  const JUDGE = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'src',
+    'triage',
+    'judge.ts',
+  );
+  const source = readFileSync(JUDGE, 'utf8');
+  const stale =
+    'judge.ts no longer builds its spawn from planBareCommand, so a Windows `.cmd` ' +
+    'shim is unreachable again and/or the home-directory anchor is gone. Restore it, ' +
+    'or re-gate the wizard-journey suites on Windows and rewrite this case to say why.';
+
+  it('calls the planner rather than merely importing it', () => {
+    expect(/\bplanBareCommand\(/.test(source), stale).toBe(true);
+  });
+
+  it('spawns the plan’s own file', () => {
+    expect(source.includes('execFileSync(plan.file'), stale).toBe(true);
+  });
+
+  it('spreads the plan’s options, which is what carries the Windows cwd anchor', () => {
+    expect(source.includes('...plan.options'), stale).toBe(true);
   });
 });

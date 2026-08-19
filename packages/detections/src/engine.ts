@@ -1,8 +1,9 @@
-import type { Rule } from '@akasecurity/schema';
+import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
+import { memoizedRegExpList } from './regex-cache.ts';
 import type { MatchResult, RulePack } from './types.ts';
 import { isHighEntropy } from './validators/entropy.ts';
 import { luhnCheck } from './validators/luhn.ts';
@@ -10,14 +11,33 @@ import { luhnCheck } from './validators/luhn.ts';
 const keywordMatcher = new KeywordMatcher();
 const regexMatcher = new RegexMatcher();
 
+// A matcher PRODUCES the candidate spans a rule then filters. Keyed on the
+// schema's own matcher union for the reason POST_VALIDATORS is keyed on
+// PostValidatorName: while this was an if/else chain ending in `continue`, an
+// arm the schema accepted and this file did not handle fell straight through and
+// contributed nothing, so the rule parsed, loaded and matched NOTHING — a dead
+// rule that reads from the outside exactly like a pattern finding no secrets.
+// An arm added to the union without an entry here now fails to compile.
+const MATCHERS: Record<Rule['matcher']['type'], (text: string, rule: Rule) => Span[]> = {
+  keyword: (text, rule) => keywordMatcher.match(text, rule),
+  regex: (text, rule) => regexMatcher.match(text, rule),
+};
+
 const packs = new Map<string, RulePack>();
 
 // Post-validators run against each candidate match (the captured span) and must
-// all pass for the match to become a finding. Unknown validator names are
-// ignored so rules can reference validators a given engine build doesn't ship.
-// A validator may take per-rule config (the object form of PostValidatorRef).
+// all pass for the match to become a finding. A validator may take per-rule
+// config (the object form of PostValidatorRef).
+//
+// Keyed on the schema's PostValidatorName rather than on `string`, which is what
+// binds the two together: a name the schema accepts and this table does not
+// implement fails to compile, and so does an entry here the schema would reject.
+// While the key was `string` the pair could drift in either direction in
+// silence, and drift in the schema's direction meant a rule that referenced a
+// nonexistent validator parsed, loaded and fired with its false-positive guard
+// absent — the guard the author believed they had added doing nothing at all.
 const POST_VALIDATORS: Record<
-  string,
+  PostValidatorName,
   (value: string, config?: Record<string, unknown>) => boolean
 > = {
   entropy: (value, config) =>
@@ -41,8 +61,13 @@ function passesPostValidators(rule: Rule, value: string): boolean {
   for (const ref of validators) {
     const name = typeof ref === 'string' ? ref : ref.name;
     const config = typeof ref === 'string' ? undefined : ref.config;
-    const validate = POST_VALIDATORS[name];
-    if (validate && !validate(value, config)) return false;
+    // Unconditional: `name` is a PostValidatorName, so the table has an entry
+    // for it by type. This used to be guarded by `validate && …`, and that
+    // guard WAS the defect — it turned a name the table did not know into a
+    // silently skipped check rather than an error, which is how a rule shipped
+    // with its false-positive guard absent. The schema refuses such a name now,
+    // so there is no longer a missing entry to fall through.
+    if (!POST_VALIDATORS[name](value, config)) return false;
   }
   return true;
 }
@@ -111,13 +136,24 @@ function isCorroborated(candidate: Candidate, candidates: Candidate[], text: str
   const labels = req.labels;
   if (labels && labels.length > 0) {
     const haystack = text.slice(Math.max(0, winStart), winEnd);
-    for (const label of labels) {
-      const trimmed = label.trim();
-      if (trimmed.length === 0) continue;
-      // Boundaries = non-alphanumeric neighbours; robust for labels containing
-      // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
-      const re = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
-      if (re.test(haystack)) return true;
+    // Boundaries = non-alphanumeric neighbours; robust for labels containing
+    // punctuation or spaces (e.g. "p.o. box") where \b is unreliable.
+    //
+    // This was the densest construction site in the package: the loop runs per
+    // label per gated candidate, so a rule whose primitive matcher fires often
+    // and corroborates rarely (a 5-digit ZIP against a column of numbers)
+    // reached it once per candidate per label — and built the pattern string as
+    // well as the object each time. Compiling the set once per `requiresNearby`
+    // takes both off that product.
+    for (const re of memoizedRegExpList('label', req, () =>
+      labels.map((label) => {
+        const trimmed = label.trim();
+        return trimmed.length === 0
+          ? undefined
+          : new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, 'i');
+      }),
+    )) {
+      if (re?.test(haystack)) return true;
     }
   }
 
@@ -157,14 +193,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
     if (!ruleApplies(rule, extension)) continue;
-    let spans;
-    if (rule.matcher.type === 'keyword') {
-      spans = keywordMatcher.match(text, rule);
-    } else if (rule.matcher.type === 'regex') {
-      spans = regexMatcher.match(text, rule);
-    } else {
-      continue;
-    }
+    const spans = MATCHERS[rule.matcher.type](text, rule);
 
     for (const span of spans) {
       const rawMatch = text.slice(span.start, span.end);

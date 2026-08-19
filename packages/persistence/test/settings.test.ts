@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -52,7 +53,7 @@ describe('readWorkspaceSettings', () => {
     expect(settings.onboardedAt).toBe('2026-06-19T00:00:00.000Z');
   });
 
-  it("reads a settings.json carrying the retired 'attached' runMode as standalone", () => {
+  it('reads a settings.json carrying a superseded runMode, keeping its other fields', () => {
     writeSettings({ specVersion: 1, runMode: 'attached', policy: 'warn' });
     const settings = readWorkspaceSettings(base);
     expect(settings.runMode).toBe('standalone');
@@ -77,8 +78,11 @@ describe('readWorkspaceSettings', () => {
     expect(settings.onboardedAt).toBeUndefined();
   });
 
-  it('is a pure reader — reading does not alter settings.json mode', () => {
-    if (process.platform === 'win32') return;
+  it('is a pure reader — reading does not alter settings.json mode', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     // The self-heal deliberately lives in the write/init/loadConfig paths, not
     // here: a documented fail-open reader (also called from a web-ui page render)
     // must not chmod on every read. This pins that contract so nobody re-adds it.
@@ -108,19 +112,35 @@ describe('applyOnboarding', () => {
     }
   });
 
-  it('writes settings.json 0600 even over a leftover loose .tmp', () => {
-    if (process.platform === 'win32') return;
+  it('writes settings.json 0600 even over a leftover loose .tmp', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
     const dir = join(base, 'settings');
     mkdirSync(dir, { recursive: true });
-    // A crash between the tmp write and the rename can leave a settings.json.tmp
-    // behind. writeFileSync's `mode` option is honored only on creation, so the
-    // owner-only writer clears a stale tmp first (and re-tightens after the
-    // rename) rather than carrying its loose mode onto settings.json.
-    const tmp = join(dir, 'settings.json.tmp');
+    // A crash between the tmp write and the rename can leave a stale tmp behind.
+    // writeFileSync's `mode` option is honored only on creation, so the owner-only
+    // writer clears that tmp first (and re-tightens after the rename) rather than
+    // carrying its loose mode onto settings.json.
+    //
+    // The tmp name has to carry THIS process's pid, because that is the path the
+    // writer builds and therefore the only one it can collide with. A plain
+    // `settings.json.tmp` is a file the writer never touches, so the fixture is
+    // inert and the case holds on the create mode alone — which is what it did
+    // until the writer's tmp became per-process.
+    const tmp = join(dir, `settings.json.${String(process.pid)}.tmp`);
     writeFileSync(tmp, 'stale');
     chmodSync(tmp, 0o666);
 
     applyOnboarding({ policy: 'warn' }, base);
+
+    // The writer consumed the planted tmp — it clears that path, writes it
+    // exclusively, and removes it again. A tmp still sitting there is one the
+    // writer never touched, i.e. the name above has drifted from the one it
+    // builds and the fixture is back to being inert. Assert it before the mode,
+    // because a mode of 0600 holds on the create mode alone either way.
+    expect(existsSync(tmp)).toBe(false);
 
     const file = join(dir, 'settings.json');
     expect(statSync(file).mode & 0o777).toBe(0o600);

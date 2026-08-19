@@ -55,7 +55,7 @@ interface FindingKeyRow {
  * updating in place, so the history of dispositions for a key is retained;
  * `latestByKey` reads the newest by created_at. The clock is injectable so
  * created_at is deterministic under test (mirrors SqliteSecurityRepository's
- * injectable `now`). Single-tenant: no tenant predicate on any query.
+ * injectable `now`). One store per machine: no query carries an owner predicate.
  *
  * LATEST-RESOLUTION-WINS: `openAtRestKeysForPath` / `resolvedAtRestKeysForPath`
  * classify a key by its NEWEST row only (max created_at, tie-broken by rowid),

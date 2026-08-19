@@ -1,0 +1,41 @@
+import { describe, expect, it } from 'vitest';
+
+import { tightenFile } from '../src/paths.ts';
+
+// Returning a VALUE is a helper handing its caller a reason, not a test bailing
+// out — the real occurrence of this shape lives in plugin-sdk's walk benchmark.
+function skipReason(): string | undefined {
+  if (process.platform === 'win32') return 'chmod does not deny reads on win32';
+  return undefined;
+}
+
+// The same helper spelled as a block. The rule locates the block on masked text,
+// where the literal is blanked to spaces, so only reading the RAW source keeps
+// this one from being flagged as a bare return.
+function blockSkipReason(): string | undefined {
+  if (process.platform === 'win32') {
+    return 'chmod does not deny reads on win32';
+  }
+  return undefined;
+}
+
+describe('tightenFile', () => {
+  it('sets 0600 on a single file', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    expect(mode(file)).toBe(0o600);
+  });
+
+  // Still asserts something on Windows, so it stays a running test and gates
+  // only the assertion that does not apply there.
+  it('creates the file, and tightens it where POSIX modes apply', () => {
+    expect(existsSync(file)).toBe(true);
+    if (process.platform !== 'win32') expect(mode(file)).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink at the final path', () => {
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+});

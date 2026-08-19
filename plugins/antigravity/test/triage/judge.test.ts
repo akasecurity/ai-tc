@@ -1,7 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import type { BareCommandUnsupportedError } from '@akasecurity/plugin-sdk/bare-command';
+import { isBareCommandUnsupported, planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -364,6 +375,91 @@ describe('runJudge', () => {
     expect(err?.cause).toBeUndefined();
   });
 
+  it('runs on Windows unchanged when `agy` resolves to a real executable', () => {
+    // The other half of the refusal above, and the reason this plugin's judge is
+    // NOT simply "broken on Windows": a bare name that resolves to a real
+    // executable is spawned by absolute path with no interpreter in the middle,
+    // so the prompt crosses on argv exactly as it does on POSIX — no re-parse, no
+    // 8,191-character ceiling, nothing to refuse. Only a batch shim forces
+    // cmd.exe, and only then does the refusal apply.
+    //
+    // Driven against the REAL argv this judge builds, so it cannot drift from
+    // what the product actually spawns.
+    const seen: { argv?: readonly string[] } = {};
+    runJudge([hit], {
+      spawn: fakeSpawn(VERDICT_FENCE, seen),
+      loadRubric: () => 'RUBRIC',
+      home: tempHome(),
+    });
+    const argv = seen.argv ?? [];
+
+    const plan = planBareCommand('agy', argv, {
+      platform: 'win32',
+      home: '/anchor/home',
+      resolve: () => String.raw`C:\Program Files\Antigravity\agy.exe`,
+    });
+
+    expect(plan.viaShell).toBe(false);
+    expect(plan.file).toBe(String.raw`C:\Program Files\Antigravity\agy.exe`);
+    // The prompt survives as ONE argv element, raw hit and all — the property
+    // cmd.exe could not have preserved.
+    expect(plan.args).toEqual(argv);
+    expect(plan.args[plan.args.indexOf('-p') + 1]).toContain(hit.rawMatch);
+    // Still anchored: Windows searches the working directory before PATH for
+    // libuv's own lookup too, so the direct path needs the anchor as much as the
+    // shelled one does.
+    expect(plan.options.cwd).toBe('/anchor/home');
+  });
+
+  it('surfaces a Windows argv refusal as its own raw-free reason, not as bare metadata', () => {
+    // This host is the one where planBareCommand's refusal branch is REACHABLE
+    // rather than theoretical: the prompt rides argv, and reaching an `agy`
+    // installed as a batch shim means crossing cmd.exe — which cannot carry a
+    // multi-line, multi-KiB, transcript-derived string.
+    //
+    // The refusal is taken from the REAL planner against the REAL argv this
+    // judge builds. A hand-written reason would prove only that this test can
+    // write a raw-free string, not that the one a user sees is one.
+    const seen: { argv?: readonly string[] } = {};
+    runJudge([hit], {
+      spawn: fakeSpawn(VERDICT_FENCE, seen),
+      loadRubric: () => 'RUBRIC',
+      home: tempHome(),
+    });
+    const refusal = errorFrom(() =>
+      planBareCommand('agy', seen.argv ?? [], {
+        platform: 'win32',
+        home: '/anchor/home',
+        resolve: () => String.raw`C:\Users\dev\AppData\Roaming\npm\agy.cmd`,
+      }),
+    );
+    // The positive control for everything below: a planner that stopped
+    // refusing leaves `refusal` undefined, and the absence checks would then
+    // hold over an error that never carried a prompt in the first place.
+    expect(isBareCommandUnsupported(refusal)).toBe(true);
+    const reason = (refusal as BareCommandUnsupportedError).reason;
+
+    const err = errorFrom(() =>
+      runJudge([hit], {
+        spawn: () => {
+          // Narrowed by the assertion above; `expect` does not narrow for TS.
+          throw refusal as BareCommandUnsupportedError;
+        },
+        loadRubric: () => 'RUBRIC',
+        home: tempHome(),
+      }),
+    );
+
+    // A Windows refusal is the one spawn failure here that is actionable, so it
+    // reaches the user as its reason rather than flattened to "unknown error".
+    expect(err?.message).toBe(`agy judge subprocess failed (${reason})`);
+    expect(reason).toContain('cmd.exe');
+    // And that reason names an argv index and a character class, never the
+    // value — the argument it refused is the one carrying every raw hit.
+    expectNoEchoOf(err?.message, hit.rawMatch);
+    expectNoEchoOf(err?.message, hit.context);
+  });
+
   describe('judge-conversation cleanup', () => {
     it('removes the conversation the run reported', () => {
       const home = tempHome();
@@ -524,5 +620,44 @@ describe('runJudge', () => {
       chmodSync(brain, 0o700);
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the judge spawn is planned, not hand-built', () => {
+  // The wizard-journey suites run on the Windows leg only because this spawn
+  // reaches a `.cmd` shim through the planner, and only anchor at the user's
+  // home because the plan's options reach the spawn. Neither is visible from a
+  // POSIX run, so both are pinned here as source facts — the regression has to
+  // be noticed on the leg the author is actually on, which is not Windows.
+  //
+  // Each half is load-bearing and none is enough alone. Measured: a revert that
+  // kept `import { planBareCommand }` and built a plain `{ file, args, options }`
+  // object in its place satisfied a bare `includes('planBareCommand')`, and a
+  // spawn that drops `...plan.options` keeps every planner test green while
+  // silently losing the cwd anchor a planted `%COMMAND%.cmd` needs.
+  const JUDGE = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'src',
+    'triage',
+    'judge.ts',
+  );
+  const source = readFileSync(JUDGE, 'utf8');
+  const stale =
+    'judge.ts no longer builds its spawn from planBareCommand, so a Windows `.cmd` ' +
+    'shim is unreachable again and/or the home-directory anchor is gone. Restore it, ' +
+    'or re-gate the wizard-journey suites on Windows and rewrite this case to say why.';
+
+  it('calls the planner rather than merely importing it', () => {
+    expect(/\bplanBareCommand\(/.test(source), stale).toBe(true);
+  });
+
+  it('spawns the plan’s own file', () => {
+    expect(source.includes('execFileSync(plan.file'), stale).toBe(true);
+  });
+
+  it('spreads the plan’s options, which is what carries the Windows cwd anchor', () => {
+    expect(source.includes('...plan.options'), stale).toBe(true);
   });
 });

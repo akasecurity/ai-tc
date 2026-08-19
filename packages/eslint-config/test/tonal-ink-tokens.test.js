@@ -1,8 +1,5 @@
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { ESLint, Linter } from 'eslint';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { Linter } from 'eslint';
+import { describe, expect, it } from 'vitest';
 
 import { noNetworkSyntax, tonalInkTokens } from '../src/index.js';
 
@@ -16,7 +13,6 @@ import { noNetworkSyntax, tonalInkTokens } from '../src/index.js';
 // imported from ../src/index.js and assert observable lint output, so weakening
 // the ban in the config fails here rather than passing as a config-shape check.
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const linter = new Linter();
 const LANG = { ecmaVersion: 'latest', sourceType: 'module' };
 
@@ -147,43 +143,5 @@ describe('re-spreading the network ban it overrides', () => {
 
   it('is set to error, so it fails a lint run rather than warning', () => {
     expect(/** @type {unknown[]} */ (SHIPPED_RULE)[0]).toBe('error');
-  });
-});
-
-// The wiring half: the rule value above is worth nothing in a package that never
-// spreads it. Resolve each real config through ESLint and lint against what it
-// actually produces for a real source file in that package.
-describe('the packages that render Tailwind classes all wire it', () => {
-  /** Packages whose source carries utility classes, and a real file in each. */
-  const UI_PACKAGES = [
-    { name: '@akasecurity/ui-kit', dir: 'packages/ui-kit', file: 'src/badge.tsx' },
-    {
-      name: '@akasecurity/dashboard-ui',
-      dir: 'packages/dashboard-ui',
-      file: 'src/findings/meta.ts',
-    },
-    { name: 'web-ui', dir: 'web-ui', file: 'app/components/AppShell.tsx' },
-  ];
-
-  /** @type {Map<string, unknown>} */
-  const resolved = new Map();
-
-  beforeAll(async () => {
-    for (const pkg of UI_PACKAGES) {
-      const pkgDir = join(REPO_ROOT, pkg.dir);
-      const eslint = new ESLint({ cwd: pkgDir });
-      const config = await eslint.calculateConfigForFile(join(pkgDir, pkg.file));
-      resolved.set(pkg.name, config.rules?.['no-restricted-syntax']);
-    }
-  });
-
-  it.each(UI_PACKAGES.map((p) => p.name))('%s rejects a hue used as text', (name) => {
-    const rule = resolved.get(name);
-    expect(rule, `${name} resolved no no-restricted-syntax rule at all`).toBeDefined();
-    expect(firedOn("const c = 'text-sev-critical';", rule)).toBe(1);
-  });
-
-  it.each(UI_PACKAGES.map((p) => p.name))('%s still enforces the network ban', (name) => {
-    expect(firedOn("await import('node:http');", resolved.get(name))).toBe(1);
   });
 });

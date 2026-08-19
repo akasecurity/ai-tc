@@ -6,7 +6,26 @@
   // in a `test` task's hash — weakening or deleting it would leave every package
   // replaying a cached green produced under the OLD guard, which is a false
   // green for the guarantee it exists to enforce.
-  "globalDependencies": ["tsconfig.base.json", "rules/**", "test/setup/**"],
+  //
+  // test/helpers/** is there for the same reason: nine packages' teardowns
+  // import removeTree, whose retry and win32 tolerance no call site can observe,
+  // so weakening it would otherwise leave every one of them replaying a cached
+  // green taken under the old rule.
+  //
+  // test/vitest/** is the third, and the sharpest of them: it holds the shared
+  // coverage block AND every package's coverage FLOOR. A floor is a threshold
+  // the package's own test run enforces, so lowering one — or widening an
+  // exclude so a file stops counting — changes what `test` is allowed to pass
+  // with. Outside the hash, every package would go on replaying a cached green
+  // taken under the STRICTER rule, which is a false green for the one thing a
+  // floor exists to prevent.
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "rules/**",
+    "test/setup/**",
+    "test/helpers/**",
+    "test/vitest/**"
+  ],
   "tasks": {
     // `native-host/**` is plugins/browser-extension's tsup outDir. An output a
     // package writes but does not declare is not restored on a cache hit, so a
@@ -36,9 +55,118 @@
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
+    // `env` is part of the hash, and this entry is the only reason the Windows
+    // leg's installer coverage is real. AKA_INSTALLER_ALLOW_USER_PATH switches
+    // on the install.ps1 cases that write HKCU's `Path`; turbo hashes only the
+    // env it is told about, so without this line a run WITH the variable set
+    // hash-matches a cached run without it and replays a green in which those
+    // cases skipped. Undeclared, the variable would silently buy nothing.
+    // `passThroughEnv` reaches the task WITHOUT entering the hash, which is the
+    // right side of that line for an ambient platform fact: every name below
+    // describes the RUNNER, so hashing one would fork the cache per machine
+    // while answering no question about the inputs.
+    //
+    // turbo's env mode is `strict`. Its default passthrough already carries
+    // PATH, HOME, TEMP, TMP and PATHEXT — so those need no entry here, and
+    // adding one would only read as though it bought something. None of the
+    // names below are in it, and each is one a Windows child genuinely needs:
+    //
+    //   PROCESSOR_ARCHITECTURE  install.ps1 reads it at step 1 to pick its
+    //                           target triple. Filtered, the child sees an
+    //                           empty string and the script correctly refuses
+    //                           an architecture it was never told — a refusal
+    //                           that reads like a script bug and is not one.
+    //   SystemRoot, windir,     Windows PowerShell derives its DEFAULT module
+    //   ComSpec, SystemDrive    path from %SystemRoot%, and this suite drops
+    //                           PSModulePath on purpose so each edition
+    //                           computes its own. Filtered, that derivation has
+    //                           nothing to work from and the child loses its
+    //                           standard library, Compress-Archive included.
+    //   LOCALAPPDATA            install.ps1's default install dir when
+    //                           AKA_INSTALL_DIR is unset.
     "test": {
       "dependsOn": ["build", "^build", "^typecheck"],
+      "env": ["AKA_INSTALLER_ALLOW_USER_PATH"],
+      "passThroughEnv": [
+        "PROCESSOR_ARCHITECTURE",
+        "SystemRoot",
+        "windir",
+        "ComSpec",
+        "SystemDrive",
+        "LOCALAPPDATA"
+      ],
       "outputs": ["coverage/**"]
+    },
+    // Benchmarks, run by the nightly `.github/workflows/bench.yml` and by hand.
+    //
+    // What it must NOT become is a PR gate: hosted runners vary by a large
+    // factor on neighbour load alone, a flaky gate is one people learn to re-run
+    // until green, and an ignored gate is worth less than none.
+    //
+    // `test/performance/` is where the properties that must HOLD live, and it
+    // gates without contradicting the line above, because what it asserts is not
+    // a wall clock: it compares one cost against itself at two store sizes, and
+    // a ratio cancels the runner. The one absolute millisecond bound left there
+    // is a gross-regression backstop four orders of magnitude clear of the
+    // measurement, for the constant-factor case a ratio cannot see. An absolute
+    // bound tight enough to be interesting is exactly what does not survive
+    // here — that shape was tried, and a preempted sample on a shared runner
+    // reddened a healthy tree.
+    //
+    // Whether a workflow runs this is a claim about a SIBLING file, and a stale
+    // justification reads exactly like a live one — three branches carried three
+    // different answers to it at once, all of them green, because the task body
+    // is byte-identical whichever comment sits above it. So it is not left to
+    // this comment: `bench-harness.test.js` reads bench.yml's schedule and this
+    // sentence together and fails when they disagree, in either direction.
+    //
+    // `cache: false` is the load-bearing line. Every other task here derives its
+    // output from its inputs, which is what makes replaying one sound; a
+    // benchmark returns a MEASUREMENT, and the machine it ran on — its load, its
+    // CPU, its disk — is in none of the hashes. A cache hit would hand the trend
+    // another runner's number, taken at another moment, and label it this run's.
+    // It is the one stale green that cannot be spotted by reading the result,
+    // because the result looks exactly right.
+    //
+    // No `outputs` here, deliberately. Turbo consults it only to decide what to
+    // save into and restore from the cache, so on a never-cached task it does
+    // nothing while reading as if the file were tracked somewhere — the opposite
+    // of the line above it. Where `bench-results.json` lands is stated by the
+    // thing that collects it: `bench.yml`'s upload glob.
+    //
+    // `dependsOn: build` is there for the benchmarks that measure a BUNDLED
+    // artifact rather than source — where the two differ by enough that a run
+    // against an unbuilt tree would track a number no user pays. It costs the
+    // source-only benchmarks nothing: turbo skips a package with no build task.
+    "bench": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "cache": false
+    },
+    // manifest.test.ts asserts two cross-package invariants by reading the CLI's
+    // source as text: the native-host name, and that EXTENSION_IDS grants the id
+    // manifest.json's "key" derives. Chrome refuses connectNative for an origin
+    // the host manifest omits, so a CLI-side drift is a silent runtime failure
+    // rather than a build one — this suite is the only thing that catches it.
+    //
+    // plugins/browser-extension does not depend on cli, so nothing under cli/ is
+    // in the default hash. Measured: swapping the CLI's id for a different
+    // well-formed one left the task hash byte-identical, and ci.yml restores
+    // .turbo/cache with restore-keys that fall back across commits — so a
+    // follow-up touching only the CLI would replay a cached pass and neither
+    // guard would execute. Same hazard as the eslint-config entry below, same
+    // remedy: name the cross-package file the suite reads.
+    //
+    // turbo.json is named too, so this entry covers the config that declares it:
+    // removing these inputs re-hashes the task, which re-runs the suite, whose
+    // own turbo-inputs case then fails rather than going quietly stale.
+    "@akasecurity/plugin-browser-extension#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/cli/src/commands/extension.ts",
+        "$TURBO_ROOT$/turbo.json"
+      ]
     },
     // The eslint-config suite asserts a workspace-wide invariant: every package
     // ships an eslint.config.mjs wiring the no-network ban, points its `lint`
@@ -89,17 +217,37 @@
         "$TURBO_ROOT$/*/*/eslint*.config.mjs",
         "$TURBO_ROOT$/*/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
         "$TURBO_ROOT$/*/*/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
-        // ci.yml, audit.yml and codeql.yml are all READ by this suite — the
-        // first for the repo-root lint/typecheck passes and the egress script,
-        // the other two by required-checks.test.js, which drives every job name
-        // and PR trigger behind a required check. A glob would be wrong here:
-        // an unread workflow in the same directory would then bust this hash on
-        // every edit.
-        "$TURBO_ROOT$/.github/workflows/ci.yml",
-        "$TURBO_ROOT$/.github/workflows/audit.yml",
-        "$TURBO_ROOT$/.github/workflows/codeql.yml",
+        // EVERY workflow is read by this suite, so this is a glob rather than a
+        // list. Named individually, the entries were ci.yml (the repo-root
+        // lint/typecheck passes and the egress script), audit.yml and codeql.yml
+        // (required-checks.test.js, which drives every job name and PR trigger
+        // behind a required check), and bench.yml (bench-harness.test.js, which
+        // asserts the benchmark job stays ADVISORY). ci-test-concurrency.test.js
+        // now reads the whole directory, because an unbounded `turbo run test`
+        // is the same hazard in a release workflow as in ci.yml — and four of
+        // those gate a publish on tag push.
+        //
+        // A glob USED to be wrong here for a good reason: an unread workflow in
+        // this directory would bust the hash on every edit. That reason is gone
+        // precisely because nothing here is unread any more, which makes this
+        // entry and that suite's directory read one decision in two files. A
+        // future suite that narrows back to a filename has to narrow this too,
+        // or the cost returns. The hazard in the other direction is the one that
+        // matters: a workflow this suite reads and turbo does not hash moves no
+        // hash on the edit the guard exists to catch, so turbo replays a cached
+        // green and the assertion never runs.
+        "$TURBO_ROOT$/.github/workflows/*.yml",
         "$TURBO_ROOT$/tools/ci/**",
         "$TURBO_ROOT$/package.json",
+        // THIS file is read by coverage-config.test.js, which asserts that the
+        // `test` task still declares `coverage/**` and that the shared coverage
+        // module is still in globalDependencies. Both live here, so without this
+        // entry the two edits that break them — deleting the output declaration,
+        // dropping the module out of the hash — would move no hash at all, and
+        // turbo would replay a cached green at the one moment those assertions
+        // exist to fire. Same hazard the CLAUDE.md and workflow entries carry:
+        // no extension glob above reaches a .json at the repo root.
+        "$TURBO_ROOT$/turbo.json",
         "$TURBO_ROOT$/tsconfig.root.json",
         "$TURBO_ROOT$/eslint.root*.config.mjs",
         "$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",

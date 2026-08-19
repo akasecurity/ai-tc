@@ -109,20 +109,21 @@ the failure being guarded against.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Eight places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks carry inline disables of their own and are out of this table's scope:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out — test harnesses that spawn the real hooks — or the real installer scripts — carry inline disables of their own and are out of this table's scope:
 
-| Site                                              | Mechanism                         | Why                                                        |
-| ------------------------------------------------- | --------------------------------- | ---------------------------------------------------------- |
-| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                    |
-| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart              |
-| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                              |
-| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips     |
-| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                |
-| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth |
-| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth  |
-| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation  |
+| Site                                              | Mechanism                         | Why                                                         |
+| ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `packages/plugin-sdk/src/provider.ts`             | file-scoped ESLint config         | LLM-provider resolution at SessionStart                     |
+| `packages/plugin-sdk/src/provider-codex.ts`       | file-scoped ESLint config         | Codex LLM-provider resolution at SessionStart               |
+| `cli/src/commands/dashboard.ts`                   | inline `eslint-disable-next-line` | spawning the dashboard server                               |
+| `plugins/claude-code/src/backfill.ts`             | inline `eslint-disable-next-line` | the host session id the self-contamination guard skips      |
+| `plugins/claude-code/src/triage/judge.ts`         | inline `eslint-disable-next-line` | the judge subprocess must inherit PATH/auth                 |
+| `plugins/codex/src/triage/judge.ts`               | file-scoped ESLint config         | the judge subprocess must inherit PATH + `CODEX_HOME` auth  |
+| `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth   |
+| `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
+| `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a ninth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a tenth site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -147,15 +148,16 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Five files carry a genuine local-only opt-out:
+Six files carry a genuine local-only opt-out:
 
-| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                             |
-| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                             |
-| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                   |
-| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                 |
-| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable |
+| Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                                  |
+| `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                                  |
+| `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                        |
+| `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                      |
+| `packages/eslint-config/test/no-network-runtime.test.js` (via `packages/eslint-config/eslint.guard.config.mjs`) | `node:net`, `node:dgram`, `node:dns`, `fetch` (inline) | the runtime half of the no-network guarantee imports the three transports to drive real connect/send/resolve calls against the patched guard; its one real `fetch()` carries an inline disable      |
+| `tools/installer/test/helpers/serve-release.ts` (via `tools/installer/eslint.config.mjs`)                       | `node:http`                                            | the installer suite serves its fixture release over loopback so the shipped `install.sh`/`install.ps1` run against a local base — the only base BOTH take, since PowerShell rejects a `file://` URI |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
@@ -214,8 +216,12 @@ registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audi
 PR and daily, sending the workspace dependency graph — package names and versions,
 including the `@akasecurity/*` workspace importers — to the registry's audit endpoint; it
 also resolves and audits the published CLI's runtime dependency ranges with `npm` in a
-temp dir, sending that (public-package) graph the same way. That is repository tooling,
-not a product path; nothing a user installs performs it.
+temp dir, sending that (public-package) graph the same way. The binary channel's packaging
+is the second such path: `cli/scripts/package-sea.mjs` shells out to `npm install` to place
+the Next standalone server's runtime dependencies (`next`, `react`, `react-dom` and their
+transitive graph) inside the archive, so `release-binaries.yml` and `build-binaries.yml`
+both reach the registry — and `pnpm package:sea` does not run offline. Both are repository
+tooling, not product paths; nothing a user installs performs either.
 
 **Three gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
@@ -313,7 +319,7 @@ first one's answers — with both reporting success, because neither ever learns
 
 `withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
 existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
-equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Four
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Six
 properties are load-bearing:
 
 - **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
@@ -321,9 +327,15 @@ properties are load-bearing:
   writers hold it today: `applyOnboarding` (which the `/aka:setup` wizard and the dashboard's
   Settings action both go through) and `aka init`'s create-if-absent. A third that writes
   `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
-  `fingerprint.ts`'s key mint and `local-ops`' `update-cache.ts` are unlocked read-modify-writes
-  with the same shape, and each is its own outstanding fix. Do not read this section as a
-  property the store has; it is a property `settings.json` has.
+  `fingerprint.ts`'s key ROTATION and `local-ops`' `update-cache.ts` are unlocked
+  read-modify-writes with the same shape, and each is its own outstanding fix. The first MINT
+  is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
+  `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
+  caller wins and every loser reads the file back and ADOPTS the winner's key. That works only
+  because a first mint has nothing to preserve — rotation must replace an existing file, so it
+  still reads the current version and writes version+1 over it, and the same fix does not reach
+  it. Do not read this section as a property the store has; it is a property `settings.json`
+  has.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's
@@ -359,6 +371,84 @@ processes, released together on a readiness handshake, asserting no answer is lo
 revocation is resurrected. It uses processes rather than worker threads deliberately — a worker
 shares `process.pid`, and the atomic write's tmp path is per-process, so two threads meet a
 collision two processes never can, which is the wrong axis.
+
+### 7. A command spawned by BARE NAME goes through the planner
+
+`planBareCommand` (`packages/plugin-sdk/src/bare-command.ts`, the `./bare-command` subpath)
+is how every bare-name spawn in the plugins is built. Three facts have to hold together, and
+handling any one of them alone makes things worse rather than better:
+
+- **libuv does no PATHEXT.** Its own executable search tries `.com` and `.exe` and stops, so a
+  shell-free `execFileSync('claude', …)` never sees the `claude.cmd` an npm global install put
+  on PATH. It fails **ENOENT** — the same code a genuinely-absent CLI produces, which is why
+  this read as "not installed" rather than as a batch-file problem for as long as it did.
+  Reaching the shim needs a shell, exactly as `packages/local-ops/src/exec.ts` says.
+- **Windows searches the working directory BEFORE PATH.** So the moment a shell is involved, a
+  `claude.cmd` in a cloned repo runs instead of the real CLI. Every Windows spawn is anchored at
+  `homedir()`; nothing spawned this way depends on the caller's cwd. POSIX never consults the
+  cwd, and no anchor is added there.
+- **A shell RE-PARSES the argv.** Node joins `[file, ...args]` with a space and hands the result
+  to `cmd.exe` verbatim — it says so itself, in DEP0190: "the arguments are not escaped, only
+  concatenated". So `shell: true` on its own is not a fix, it is a command-injection surface
+  wherever an argument carries content this repo did not choose.
+
+The planner's answers to the third are what must not be softened. It quotes each argument
+itself and passes the joined line as the FILE with an empty args array, so Node has nothing left
+to concatenate; it **refuses** — `BareCommandUnsupportedError`, never a best-effort escape — an
+argument carrying `"`, `%`, `!`, a line break or a NUL, or a line over cmd.exe's 8,191
+characters; and its refusal `reason` names an argv INDEX and a character class, never a value,
+because the one caller that reaches it in practice is refusing a raw-bearing prompt. It also
+skips the shell entirely when the bare name resolves (via `where.exe`) to a real executable,
+which removes the re-parse, the 8 KiB ceiling and the extra `cmd.exe` process at once — the
+binary channel's `aka.exe` takes that path.
+
+**Two measurements inside that are easy to get subtly wrong, and both fail SILENTLY.** What
+counts as "a real executable" is an **allowlist** — `.exe` and `.com`, what `CreateProcessW`
+loads as an image — never a `.cmd`/`.bat` denylist. An npm global install writes an
+EXTENSIONLESS launcher (a Bourne script, for Git Bash) beside the shim, and `where` prints that
+line FIRST: `…\npm\aka` before `…\npm\aka.cmd`. A denylist therefore takes the direct path and
+hands a shell script to `CreateProcessW`, which fails **ENOEXEC** — a different code from the
+ENOENT every caller here tests for, so the CLI reads as installed and the spawn then does
+nothing at all. And the 8,191 ceiling is charged against the line **cmd.exe is handed**, which
+is Node's `<COMSPEC> /d /s /c "<line>"` and not `<line>`; measuring the inner line alone admits
+one that is then truncated rather than refused, which is the whole failure the refusal exists to
+prevent. `where.exe` also runs under its own timeout, because a PATH entry on an unreachable
+network share blocks that search for as long as the OS takes to give up — and it runs in front
+of a launcher meant to return at once, and before the judge's own spawn timeout, which cannot
+bound something that has not spawned yet.
+
+**Antigravity's judge is the case that cannot be made to work through `cmd.exe`, and the reason
+is worth keeping.** Its prompt rides ARGV (§4), so it is multi-line, several KiB, and built from
+scanned transcript text — three independent reasons a Windows command line cannot carry it. It
+therefore runs on Windows only where `agy` resolves to a real executable, and refuses loudly
+otherwise. `plugins/antigravity/test/helpers/judge-argv-unsupported.ts` is the gate that keeps
+that plugin's wizard-journey suite off the Windows leg (its stub can only be a `.cmd`), and its
+suite pins the justification behaviourally, against the real planner and the real argv, so the
+gate goes red the day the prompt stops riding argv.
+
+**A probe in front of such a spawn reads the plan rather than re-deriving it.** A shell-free
+probe ahead of a shelled spawn reports a false miss and the reverse a false pass, and the PATH
+shims fail OPEN (see [Testing](#testing)), so a false pass reaches the developer's real
+installed CLI. The journey harnesses pass `plan.viaShell` and `plan.options.cwd` straight
+through to `assertShimResolves` for that reason.
+
+`packages/plugin-sdk/test/bare-command.test.ts` drives every branch from any host — the planner
+takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` take a platform.
+**Three** sites deliberately do NOT go through it, and they are unsafe to different degrees:
+
+- `cli/src/lib/external-dispatch.ts` is POSIX-only by design, so none of the three facts apply.
+- `plugins/claude-code/src/provenance.ts` shells out to `npm` with its own `USE_SHELL` because
+  `npm audit signatures` reads the caller's project — it therefore carries the shell half
+  **without** the cwd anchor, which is a live gap tracked separately.
+- `packages/local-ops/src/exec.ts` carries `USE_SHELL` **and** the `homedir()` anchor, so it has
+  both halves of the cwd defence — but no quoting and no refusal, so on the shell path Node
+  concatenates its argv unescaped exactly as DEP0190 describes. It is not exploitable today, and
+  the reason is written into `apply.ts`: the only `npm` argument is the `CLI_PACKAGE` constant,
+  and plugin arguments are refs resolved from the static `AGENT_PLUGINS` registry. That is a
+  **hand-maintained invariant in a comment** — the precise class this module converts into a
+  structural one everywhere else — and `local-ops` already depends on `@akasecurity/plugin-sdk`,
+  so routing it through `planBareCommand` is available rather than blocked by a package wall.
+  Migrating it is tracked separately.
 
 ## Dependency advisories
 
@@ -459,6 +549,11 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      so `src/bundled-packs.generated.ts` — 101 JSON imports without import
                      attributes — would break it at load, and it never needs them anyway
                      because the ruleset arrives over `workerData`.
+                     `src/bare-command.ts` is the shared bare-name spawn planner
+                     (Architecture principles §7), exported as the `./bare-command`
+                     subpath rather than off the index so the plugins' dashboard
+                     launcher can reach it without inlining the bundled packs. It
+                     imports node:child_process/os/path and nothing else.
 @akasecurity/scanner        → @akasecurity/plugin-runtime, plugin-sdk, ignore (node:fs only; no fetch, no process.env)
 @akasecurity/setup-wizard   → @akasecurity/plugin-sdk, schema, zod
                      (the harness-agnostic core of the /aka:setup calibration →
@@ -580,7 +675,12 @@ the live examples); and a class assembled from a non-literal.
 
 ## Detection rules
 
-See `skills/write-detection-rule/SKILL.md`. A rule PR without fixtures is rejected by CI.
+See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or
+2 negative fixtures is rejected by CI — `packages/detections/test/engine.test.ts` asserts
+the bar per rule, and `packages/detections/test/posture/config-posture.test.ts` asserts it
+for posture rules. Both read it from `packages/detections/test/helpers/fixture-bar.ts`, so
+the number and its message live in one place; the count is of DISTINCT cases, because a
+repeated fixture exercises nothing the first one did not.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
 legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it
@@ -601,8 +701,11 @@ packages/             the workspace libraries (schema · persistence · local-op
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)
-tools/                repo tooling: installer one-liners + the audit-gate workspace
-                      package (the CI dependency-audit gate; never shipped)
+tools/                repo tooling, never shipped: the installer one-liners and
+                      the installer workspace package whose suite drives them end
+                      to end, plus audit-gate (CI dependency-audit),
+                      portability-gate (cross-platform test rules) and
+                      coverage-gate (per-PR diff coverage)
 ```
 
 ## Adding a new workspace package
@@ -659,8 +762,9 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    steps. The chain has to be unconditional: behind a `||` the root pass runs only
    once the workspace pass has already failed, which is every green run skipping
    the repo root. `lint:root` is a single invocation: `eslint.root.config.mjs` runs
-   the full ruleset over `test/setup/**`, `tools/ci/**`, and the repo-root
-   `*.config.*`. `typecheck:root` runs `tsc -p tsconfig.root.json`.
+   the full ruleset over `test/setup/**`, `test/fixtures/**`, `test/helpers/**`,
+   `test/vitest/**`, `tools/ci/**`, and the repo-root `*.config.*`.
+   `typecheck:root` runs `tsc -p tsconfig.root.json` over the same set.
 
    It used to carry a second, network-only invocation over the plain-JS
    enforcement suites in `packages/eslint-config/test/**`, because that package's
@@ -748,6 +852,35 @@ tools/                repo tooling: installer one-liners + the audit-gate worksp
    `EXPECTED_NON_VITEST_TEST_PACKAGES` — a list that is empty and should stay that
    way, since every entry is a hole in the guarantee.
 
+8. If any file the package ships or lints imports a `node:` builtin or reads
+   `import.meta.dirname`, declare `@types/node` in its OWN `devDependencies`, at
+   the single range every other manifest carries. Omitting it typechecks here and
+   fails nowhere in this repo: TypeScript walks up to the repo root's
+   `node_modules/@types` and finds the copy the root's devDependencies installed,
+   so the manifest reads as complete while the package is only ever built from
+   this workspace. It breaks the moment the package is consumed from one that does
+   not install this root — TS2307 on the `node:` specifier, TS2339 on
+   `import.meta.dirname`. Undeclared, it also lets pnpm resolve vitest's optional
+   `@types/node` peer for that importer independently of what the compiler
+   resolves from the root, putting two majors in play for one package. Three
+   packages carried this at once, which is why it is derived rather than
+   remembered: `packages/eslint-config/test/effective-config.test.js` reads each
+   package's own tracked source against its own manifest, so a package that skips
+   this reds CI instead of being caught in review.
+
+**All three of those guards enumerate the tree at RUN time, which is what makes adding a
+package the action most exposed to a stale base.** A `pull_request` check runs against a
+merge commit GitHub built when the branch was last pushed and never rebuilds as `main`
+moves, so a package added on one branch and a file it would judge added on another are
+each green against a tree the other has already changed. Neither diff contains the
+mismatch and the first run to see both is the post-merge run on `main` — which is how a
+new package's unlinted root config file reddened `main` from a PR whose own diff was
+innocent. Deriving is still right; a pinned list stays green through exactly the drift
+these exist to catch. What closes it is a repository setting rather than anything in this
+tree, and CONTRIBUTING.md's "Branch freshness" section records which one is in use and
+what it obliges `.github/workflows/` to carry. Read it before assuming a green PR check
+saw your package.
+
 ## Commit messages
 
 Follow Conventional Commits: `feat:`, `fix:`, `chore:`, `test:`, `docs:`, `refactor:`. Enforced by commitlint on commit-msg.
@@ -834,7 +967,27 @@ Everything AKA owns lives under `~/.aka` — `settings/settings.json` (preferenc
 and run `aka init` again. There is **no demo/sample data anywhere** (removed by product
 decision) — dashboard pages render only real data; do not add ad-hoc seeding. The rich
 sample datasets survive only as repository test fixtures in
-`packages/persistence/src/test-fixtures/` (imported by `*.test.ts` only — never shipped).
+`packages/persistence/src/test-fixtures/` — never shipped, because only a package's own
+`test/` and `bench/` files import it and `src/index.ts` never re-exports it. That rule is
+about DIRECTORIES rather than filename suffixes (`test/helpers/corpus.ts` is an importer
+and is neither a `*.test.ts` nor a `*.bench.ts`), and
+`packages/eslint-config/test/test-fixtures-imports.test.js` derives it from the tracked
+tree — so a product importer fails CI rather than being caught in review. Two kinds live
+there and they answer different questions: the
+`seedSample*` datasets are FIXED rows shaped to exercise a read surface, while
+`generate.ts` is a deterministic GENERATOR for the benchmark harness, because the store
+sizes that matter there cannot live in git.
+
+**Derive the importer set from import SPECIFIERS, never from filenames or a grep.** Both
+mislead, in opposite directions. A grep for the directory name counts a file that merely
+mentions it in a comment — `test/migrations.test.ts` does, and imports nothing from here,
+which is how an earlier count of this set came out one too high. Filenames miss the other
+way: a `*.bench.ts` reaching the fixtures through `test/helpers/corpus.ts` is a transitive
+reader, not a direct one. Today no `*.bench.ts` imports the directory directly, and that
+is a fact about the seam rather than a second rule — seeding needs the raw connection, and
+`test-only-seam.test.js` classifies a `.bench.` file as shipped source. The two predicates
+answer different questions and are deliberately not shared; do not collapse them into
+"`bench/` may not import fixtures".
 
 ## Documentation
 
@@ -854,6 +1007,242 @@ pnpm test --filter @akasecurity/persistence  # just the local-store adapter + re
 Never mock `node:sqlite` or the filesystem — every store test runs against a real
 database in a real temp dir, which is what catches real SQLite semantics.
 
+### Coverage: per-package floors, no global threshold
+
+Every package's `vitest.config.ts` spreads one shared block —
+`coverageOptions(import.meta.url)` from `test/vitest/coverage.ts` — which carries the
+provider, the reporters, the exclude list and **that package's floor**. A package with no
+entry in `COVERAGE_FLOORS` throws rather than defaulting to zero, because an unlisted
+package is one nobody chose a floor for.
+
+Four properties are load-bearing:
+
+- **Coverage is always on, not behind `--coverage`.** `turbo.json` declares
+  `outputs: ["coverage/**"]` for the `test` task, and an output a task produces only
+  sometimes is worse than one it never produces: turbo restores outputs on a cache hit, so
+  a hit taken from a run without the flag hands back a report belonging to another commit.
+  Unconditional is what makes that declaration true — and what makes a floor bind locally
+  rather than only on the machine that remembered the flag.
+- **There is NO global or aggregate threshold, and adding one is a regression.** It would
+  be satisfied by covering `dashboard-ui`'s SVG icon sheet while a mutating Server Action
+  stayed at zero — the number rises, the risk is untouched. Floors are per package and
+  cannot be paid off that way. `coverage-config.test.js` pins the floors table as an
+  **exact** set against the packages that run tests, so a global threshold has nowhere to
+  live in it.
+- **`test/vitest/**` is in `globalDependencies`.** It holds the floors, which are what
+  `test` is allowed to pass with. Outside the hash, lowering one would move no package's
+  hash and every package would replay a cached green taken under the stricter floor.
+- **Floors are MEASURED, never estimated.** Each is one point below what its suite actually
+  reported, with the measurement in a comment beside it. The estimates this replaced were
+  wrong in both directions — `scanner` read ~75% and measures 96.8%, while four packages
+  measured _below_ the floor their estimate implied, which would have failed CI on the
+  first run. Numbers were taken on macOS/Node 24; platform-gated code (the macOS keychain
+  backend most clearly) can read lower on another leg, and the fix there is to re-take that
+  package's number on the platform that reports lowest — not to widen every floor.
+
+The second half is **diff coverage**: of the lines a PR adds, how many does the suite
+execute? A global percentage on a repo this size moves by fractions on any one PR, so it
+can neither pass nor fail one honestly. `tools/coverage-gate` reads the reports
+`turbo run test` already wrote, intersects them with the diff against the merge base, and
+reports to the PR's step summary. It is a workspace tool rather than a third-party
+uploader, so no coverage data leaves the runner.
+
+```bash
+pnpm turbo run test          # writes every package's coverage/ report
+pnpm check:diff-coverage     # then measures the diff against origin/main
+```
+
+### Benchmarks are a trend, never a gate
+
+```bash
+pnpm bench                                    # every package that has benchmarks
+pnpm bench --filter @akasecurity/detections   # just one
+```
+
+`vitest bench` (no second framework), one `bench/*.bench.ts` per package, a `bench` turbo
+task, and a nightly `bench.yml` on `main` that uploads each package's
+`bench-results.json` as a workflow artifact. **Nothing gates a PR on wall-clock.** Hosted
+runners vary by a large factor on neighbour load alone — this repository has retuned three
+timing assertions for exactly that — so a wall-clock check on a PR fails for reasons
+unrelated to the diff, and a check that cries wolf is one people learn to re-run until it
+is green.
+
+What DOES gate a PR is the timing **guards**, which are correctness assertions rather than
+measurements: the adversarial-rule bound in `packages/detections/test/security/redos.test.ts`
+and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
+threw would be a timing gate wearing a different name.
+
+Four properties are load-bearing, and each is enforced by
+`packages/eslint-config/test/bench-harness.test.js` rather than remembered:
+
+- **`cache: false` on the `bench` turbo task.** Every other task derives its output from
+  its inputs, so replaying one is sound; a benchmark returns a MEASUREMENT, and the machine
+  it ran on is in none of the hashes. A cache hit hands the trend another runner's number
+  and labels it this run's — the one stale green that cannot be spotted by reading it.
+- **A package holding benchmarks declares a `bench` script.** `turbo run bench` skips a
+  package without one silently and exits 0, so the nightly job goes on reporting success
+  having measured nothing.
+- **`bench/` is a lint target and a tsconfig `include` like any other source directory.** A
+  bench file imports product code; outside those, its types are stripped unchecked and the
+  network bans never apply to it.
+- **`bench.yml` has no `pull_request` trigger**, still runs nightly, and still uploads.
+
+A benchmark carries no assertions, so anything a bench file would otherwise have checked
+about its own input belongs in a test instead. `generateCaptureCorpus` is the worked
+example: it writes through the product's own `recordCapture` (so the corpus cannot drift
+from what the product writes), wraps the whole corpus in one transaction, and — because
+`recordCapture` is fail-open — **counts the rows that actually landed and throws when they
+are not there**. Without that last check a locked or full store hands back an empty one and
+every downstream measurement is a timing of nothing, reported as a fast one.
+
+### Store scale: what is bounded, and what grows for ever
+
+`packages/persistence/test/performance/` holds the scale guards, and they are **tests
+rather than benchmarks** because each asserts a size, a query plan or a row set — none
+of them a wall clock. A benchmark reports a trend and gates nothing; these fail a PR.
+
+**No gate here asserts an elapsed time against a budget, and one used to.** The two
+per-call store costs are gated as a **ratio of the same cost at two store sizes**
+(`scale-budgets.test.ts`, 2k against 20k), because a ratio cancels the runner: half the
+machine halves both sides and moves the quotient not at all. The absolute form was tried
+first — a p95 against a budget ~165x the median, which reads like unmissable headroom —
+and it reddened a healthy tree twice, at 43 ms and 277 ms against a 30 ms budget on one
+commit. A shared runner does not get 1/165th as fast, it gets **preempted**, and a
+preempted sample has no upper bound; no headroom multiple fixes that. Anything newly
+added here follows the ratio shape, and **`p95` is not the estimator to build one from** —
+measured across idle and 3x-oversubscribed runs, a p95 ratio spread 4.6x on capture and
+17x on open, where the same ratio over the **fastest** sample spread 1.08x and 1.06x.
+Noise only ever adds time, so the minimum of n is the estimator a loaded runner cannot
+inflate.
+
+One absolute bound survives, and only as a **gross-regression backstop** four orders of
+magnitude clear of the measurement: a ratio is blind to a constant-factor regression
+(0.06 ms → 500 ms at every size keeps a ratio of 1.0), just as the backstop is blind to a
+scaling one. They catch different defects; neither substitutes for the other.
+
+The numbers, measured on arm64 macOS / Node 24 against corpora from
+`src/test-fixtures/generate.ts`:
+
+| Property                                  | Measured                           | Gate                    |
+| ----------------------------------------- | ---------------------------------- | ----------------------- |
+| Store growth, 5k → 10k                    | **797.9 B/event** marginal         | ±15% band ✅            |
+| `recordCapture` 2k → 20k                  | ratio **1.02** (fastest of 200)    | ratio < 3 ✅            |
+| `openLocalDatabase` 2k → 20k              | ratio **0.99** (fastest of 20)     | ratio < 3 ✅            |
+| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅  |
+| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅  |
+| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5           | ungated (misses 2 s) ❌ |
+
+**Both pairs came down from a decade higher, and the reason is worth carrying.** They
+were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
+pieces of work `@akasecurity/persistence` does — `scale-budgets` seeded for 117 s on a
+macOS CI run that passed and 135 s on one that did not, against a 120 s hook ceiling. A
+3% margin is not headroom, and it landed both ways inside one afternoon. The property in
+each case is a RATIO or a SLOPE, and neither needs a particular absolute size, so the
+corpus came down rather than the ceiling going up. The prices are stated where they are
+paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's centre
+had to be retaken, because the marginal creeps with size — 791.3 B/event across 2.5k→5k,
+797.9 across 5k→10k, 818.4 across 10k→20k, all measured, all byte-identical run to run.
+**Do not carry a centre across a size change**; a stale one still reads green.
+
+**A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
+The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
+size-dependent term to reach 2/7 of the baseline — ~15 us against `recordCapture`'s ~53 us
+(measured 53.4 us at 2k and 53.0 us at 5k, i.e. flat in the corpus size),
+i.e. a per-row slope of ~7.6 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
+linear and does **not** redden it: SQLite answers the count from a covering index. The
+same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
+fails. So a ratio gate catches a linear cost that changes what the operation costs, not
+one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
+the pair by 2.5x raised it by 2.5x.
+
+**`/security` misses its budget, and it is not a missing index.**
+`hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
+`/vault` pages issue and confirms each one runs indexed. That capture runs at 3k and
+nothing re-captures the plans above it: the store carries no `ANALYZE` statistics, so
+SQLite plans from the schema rather than from row counts and the plans are EXPECTED to
+hold at 1M — reasoning, not a second measurement, and worth wording that way. The
+cost is that FOUR of the eight never shrink with the window at all: `severitySummary`,
+`recentFindings` and `recentlyResolved` take no range argument, and `mttrTrend` takes one
+whose `EXISTS` prefilter bounds the RESULT rather than the scan (measured at 1,523 ms
+returning zero rows). All four are linear in total FINDINGS, not events. And the page's
+`Promise.all` buys nothing: every repository method here runs its SQL **synchronously**
+and returns an already-resolved promise, so the page costs the SUM of the eight.
+
+Linear past 100k at 6.19 ms per thousand events (373 ms at 100k, 5,945 ms at 1M, both
+measured), so the budget is crossed near **363k events** (~300 MB). Fixing it means
+bounding what the page reads — retention, pre-aggregation or a cap — which is a product
+decision, not tuning.
+
+**Two tables have a retention policy; six do not.**
+`BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
+`EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,
+`inspection_findings`, `inspection_definitions` and the three `secret_vault*` tables have
+none — and `audit_events.content` is a full prompt corpus, so that is 818 B for every
+prompt, response and tool-call body the machine has ever produced. The vault tables raise
+a second concern beyond size: an entry nobody will reveal again is a ciphertext that
+stays decryptable for as long as its key epoch survives. `retention-surface.test.ts` pins
+the split behaviourally, with a positive control on the swept pair, so adding retention
+for one of the unbounded tables is a deliberate edit rather than a silent one.
+
+**`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
+`openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
+store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
+measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
+checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
+the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+which is hundreds of megabytes. Nothing on the capture path does that (every
+`recordCapture` commits, and every hook is its own process), but a batch importer would.
+Do not "fix" the pragma without re-reading `store-growth.test.ts`.
+
+That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
+the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
+batching them removes the property under test — and each one is an fsync on the platform
+that charges most for it; it overran its own 180 s setup ceiling there and starved
+neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
+the event count instead is the worse trade: the count is what puts a log that never
+checkpointed several times over the ceiling, so cutting it weakens the assertion on every
+platform to buy coverage on one.
+
+**`packages/persistence/bench/` is a separate tier, and it gates nothing.** `pnpm bench`
+(turbo task `bench`, `vitest bench`) reports a TREND — the trajectory the table above was
+taken from — and carries no assertions, because this repo does not gate a PR on
+wall-clock. Its turbo task sets `cache: false`: every other task returns the same answer
+for the same inputs, but a benchmark returns a measurement, and the machine it ran on is
+not in the hash, so a cached hit would report another runner's number as this run's.
+The nightly `.github/workflows/bench.yml` runs it unattended and uploads each package's
+`bench-results.json`; the table above was taken by hand and is re-taken the same way.
+Never wire it to a PR gate. Anything that must HOLD belongs in `test/performance/`
+instead — restated as a **ratio** against a second store size, not carried over as the
+elapsed number the bench prints, which is the one form that cannot survive a shared
+runner.
+
+Corpus scale is what decides where a scale test can live. Seeding is not flat per event,
+so a six-figure corpus belongs in a `beforeAll`, where it is charged to `hookTimeout`
+rather than eating a test's own budget before the first assertion. A synchronous body
+cannot be interrupted, so one that overruns runs to completion and is then reported as a
+timeout, which reads as a budget failure and is not one. Cut the corpus rather than
+raising the ceiling.
+
+**Take the rate yourself before sizing anything against it, and take the CI-to-local
+FACTOR too — that factor, not the local rate, is what has cost a red main.** Measured as
+the fastest of three seeds into a fresh store through `seedCaptureCorpus`, one warm-up
+discarded, on arm64 macOS 26.5.2 / Node 24.18.0 with nothing else running: **0.0434
+ms/event at 2k, 0.0427 at 3k, 0.0448 at 5k, 0.0558 at 20k, 0.0732 at 50k** (87 ms, 128 ms,
+224 ms, 1.12 s and 3.66 s for the corpus). Seeding is not flat per event — it creeps ~1.7x
+across that range — but there is **no step in it**, and no page-cache cliff: the rate runs
+flat straight through 2,400 events (0.0434 / 0.0434 / 0.0427 at 2k / 2.4k / 3k).
+
+What the 120 s ceiling in `scale-budgets.test.ts` was really missing is the runner
+multiple. Seeding 5k + 50k costs 3.88 s locally, which is what that pair was sized
+against and is accurate; the same hook took **116,970 ms on a macOS CI run that passed
+and 135,237 ms on one that did not**, against a 120,000 ms ceiling — a factor of **~30x**,
+not "several times". Size against the factor: 2k + 20k is 1.20 s locally, so ~36 s there.
+
+Older figures in this section (a 0.091 ms/event rate at 3k, a cliff at ~2,400 events, and
+the 100k and 1M rates of 0.096 and 0.639 ms/event) ran ~5-6x high and are retracted or
+untaken. Re-measure rather than budget from them.
+
 ### The no-network guard
 
 `test/setup/no-network.ts` is loaded by **every** package as a vitest `setupFiles`
@@ -865,6 +1254,15 @@ frame, since a transitive dependency reaching out is the case the ESLint ban can
 see and the frame a reader has to act on is the one that called it. Loopback
 (`127.0.0.0/8`, `::1`, `localhost`) and unix/named-pipe sockets stay open; the CLI's
 port probe and the dashboard boot test depend on them.
+
+**It covers `vitest bench` too**, and by construction rather than by a second wiring:
+bench mode resolves the same `vitest.config.ts`, so the same `setupFiles` entry loads.
+Both halves were confirmed live there — the throw on a non-loopback connect, and the
+`afterAll` backstop that fails a run where a refusal was swallowed. What that argument
+rests on is a `bench` script not steering vitest at another config, which
+`packages/eslint-config/test/bench-harness.test.js` asserts: a bench-only config missing
+the entry would run product code unguarded while every existing assertion here, all of
+which read the config the `test` script uses, stayed green.
 
 Five things about it are load-bearing:
 
@@ -926,10 +1324,139 @@ probe reporting itself broken, the probe file gone, started as root, and the one
 path where the command actually runs. Change a probe and a case fails; delete one and
 the case that covered it fails.
 
+### The PATH shim, and why it fails OPEN
+
+A suite that drives a **built** script cannot reach that script's spawn seams — they are
+in-process, and the script is another process. So the external command is faked by putting a
+controlled executable first on the child's `PATH`: the journey harnesses' judge stub
+(`claude`/`codex`/`agy`) and `plugins/claude-code/test/provenance.test.ts`'s fake `npm`.
+
+**A shim that does not land is not an `ENOENT`.** Resolution walks the rest of `PATH` and runs
+the REAL installed binary — measured by joining `PATH` with `';'` on a POSIX host, which
+resolved and executed the live `claude` CLI. So the failure mode is a suite that looks hermetic
+while reaching a live model or the npm registry, and no gate above sees it: the ESLint ban reads
+source, the vitest guard cannot follow a child process, and the Linux `No-network` job is the
+only one that would — on the one platform where the shim happens to work.
+
+`plugins/*/test/helpers/path-shim.ts` is the shared answer, and it is a **peer copy per
+plugin** for the reason `no-echo.ts` is: a package wall blocks the import, and a copy takes its
+`path-shim.test.ts` with it — or `assertShimResolves` can be weakened back into a no-op with
+every caller staying green. Four properties are load-bearing:
+
+- **Resolution is PROVEN before a chain is driven, not assumed.** `assertShimResolves` spawns
+  the command the way the code under test will, so a miss is a red setup rather than a live
+  call. It **performs** resolution rather than modelling it, so it agrees with libuv about
+  `PATHEXT` instead of restating it.
+- **`shell` and `cwd` must mirror the spawn being stood in for**, because the probe cannot
+  discover either and PATH is not the whole of resolution. `provenance.ts` exports its
+  `USE_SHELL` so the probe imports the runner's own condition rather than re-deriving it;
+  `triage/judge.ts`'s `spawnClaude` uses no shell. **Windows searches the working directory
+  before walking PATH**, so a probe taken under a different cwd than its subject faithfully
+  performs a resolution the subject never performs — which is why the journey harness keys its
+  proof by cwd rather than latching it once, its `run()` taking a per-step cwd.
+- **The probe answer comes before anything else the stub does**, so probing is never recorded
+  as an invocation — which is what a `judgeWasInvoked()`-style sentinel assertion rests on.
+- **Four POSIX-only defects, not one**: `path.delimiter` rather than a literal `':'`, a `.cmd`
+  launcher on win32 rather than an extensionless `#!` file, no reliance on a `chmod` that
+  is a no-op there, and the launcher naming its script by ABSOLUTE path rather than through
+  `%~dp0`. `tools/portability-gate`'s `path-separator-literal` rule catches the first
+  returning to a call site, which is how it arrived. The fourth is the one that reads as
+  correct and is not: `%~dp0` means "the directory of the running batch file" only when `%0`
+  holds a path, and for a batch cmd.exe resolved from PATH under a bare name `%0` is the name
+  AS TYPED — so `%~dp0` expands against the CURRENT DIRECTORY instead. It went unnoticed for
+  as long as nothing anchored the spawn's cwd; the moment §7's Windows anchor landed, every
+  shim-driven suite in all three plugins failed with node reporting `Cannot find module` for a
+  path under the anchor that nothing had written. Each plugin's `path-shim.test.ts` pins the
+  launcher's bytes under an explicit `'win32'`, so a POSIX runner catches its return.
+
+`writeCommandShim` takes an optional `platform` (as `judgeEnv` does), so both branches are
+driven from either host: writing the other platform's form is a resolution failure on this one.
+Pin the **artifact** as well as the refusal there — a branch that wrote nothing also refuses,
+and reads identically.
+
+Two smaller things the same reasoning decides. The probe's own deadline sits **well under the
+package's `testTimeout`**, because it runs inside a test body: equal deadlines mean vitest wins
+the race and the refusal — the whole point of failing closed — is replaced by a bare timeout.
+And `shimmedPath` returns the bin dir **alone** when there is no base PATH: an empty PATH entry
+means the current directory to execvp and to libuv, so a trailing separator quietly puts the cwd
+on a search path whose only purpose is that nothing but the shim is on it.
+
+### The adversarial fixture corpus
+
+`test/fixtures/adversarial/hostile-repo/` builds the hostile trees the tree walkers
+have to survive — symlink loops, `..`-bearing names, nesting past the depth a path can
+address, a `.gitignore` that ignores everything, 500k files ignored by directory and
+the same number ignored by pattern. It sits at the repo root for the same reason the
+no-network guard does: `project-files`, `local-ops`' folder scan and `scanner` all need
+the SAME inputs, a package wall blocks the import, and three private copies of a symlink
+loop drift apart. Only the first drives it today.
+
+Two things about it are load-bearing:
+
+- **Generators, not checked-in trees.** Most of these cannot live in git at all, and
+  the ones that could would read as a mistake in a listing. Everything goes into a temp
+  dir and comes back out through `cleanup()`.
+- **A shape that cannot be built everywhere reports `created: false` with a reason, and
+  the caller `ctx.skip`s on it** — a symlink needs a privilege on Windows, `chdir` is
+  absent in a worker thread. An early `return` would report as a pass, which is the
+  failure mode the store harness exists to remove.
+
+**Depth is the part that is easy to get expensively wrong.** Creating a directory whose
+absolute path exceeds `PATH_MAX` means descending with `process.chdir`, and the OS
+re-resolves an ever-longer working directory on every step — so that descent is
+QUADRATIC. Measured on an arm64 Mac: the first 500 levels take 35 ms, the next 1,000
+take 4.0 s, the next 2,000 take 31 s, and a 10,000-level chain costs ~348 s to build
+and ~347 s to remove. `deepChain` therefore builds the addressable part with plain
+absolute `mkdirSync` (one syscall a level) and gets PAST the ceiling by making a
+handful of NAMES 255 characters rather than the chain deep. A fixture that reaches for
+literal 10,000-deep nesting is not thorough, it is a timeout.
+
 `packages/persistence/test/helpers/` holds the shared store harness. Tests **in this
 package** import it rather than re-rolling the `mkdtempSync` + `openLocalDatabase` +
-cleanup dance; it is not reachable across a package wall, so store tests in `cli`,
-`local-ops`, `plugin-runtime`, `plugins/claude-code` and `web-ui` still roll their own.
+cleanup dance, and that is enforced rather than asked:
+`packages/persistence/test/harness-adoption.test.ts` derives the file set from
+`git ls-files` and fails on any suite that opens a store and builds its own temp tree.
+It carries **no** exception for that pair. The suites that build a tree and open no store
+are pinned as an EXACT set with a reason each — a floor would forbid removals while
+letting the next hand-rolled teardown in, which is the direction this actually drifts.
+That guard strips comments before it matches anything, because the count this replaced
+was taken with a plain grep and came out two files high: `paths.test.ts` and
+`local-layout.test.ts` name `openLocalDatabase` in prose and open nothing.
+
+**Reach for `store.openRaw()` by default; a bare `new DatabaseSync` needs a reason written
+at the top of the file.** `openRaw()` keeps every handle it hands out open until teardown,
+so it is wrong in exactly two places. Where the CLOSE is part of the setup:
+`legacy-writers.test.ts` replays a legacy _process_ — one connection, one statement, closed
+again, never overlapping — and `legacy-compat-views.test.ts`'s fixture handles leave the
+store at one point in a migration and close before the next pass drains further, so a live
+handle changes what that pass does. And where the file is not the store at all: `openRaw()`
+only ever opens `<home>/data/aka.db`, so a `.legacy.` backup copy or a moved-aside store has
+to be opened by hand (`database.test.ts` has both).
+
+**What is NOT a reason, though it reads like one, is a descriptor probe.**
+`descriptorProbe().leakedBy` measures a delta around a **synchronous window**, so a fixture
+handle opened outside that window sits in the before-count and the after-count alike and
+moves the number not at all — only a handle opened _inside_ the window can. Measured rather
+than reasoned: converting `database.test.ts`'s fixture handles to `openRaw()` left all 24 of
+its cases green, which is what retired an earlier version of this paragraph claiming the
+opposite.
+
+**Outside `packages/persistence` the harness is deliberately NOT available, and the
+decision is not "nobody got round to it".** It lives under `test/`, and the package's
+`exports` map is `"." -> "./src/index.ts"` alone — which is exactly what makes
+`UNSAFE_TEST_ONLY_RAW_HANDLE` unreachable elsewhere. A `./testing` subpath would undo
+that: `open()` hands back a spread copy that CARRIES the seam symbol, so every consumer
+package would gain a supported route to the raw `DatabaseSync`, and
+`test-only-seam.test.js` would stay green throughout because the new callers are tests.
+The harness also imports `vitest` at module scope, and `noExternal: [/^@akasecurity\//]`
+inlines whatever a shipped entry reaches. So store tests in `cli`, `local-ops`,
+`plugin-runtime`, the three plugins and `web-ui` still roll their own, and each of those
+is a teardown re-derived rather than reused. Closing that means a **separate dev-only
+workspace package** built on the public index (the one route that keeps both properties),
+with the full "Adding a new workspace package" checklist — its own lint config and script,
+tsconfig, a vitest config wiring the no-network guard, and entries in
+`EXPECTED_WORKSPACE_PACKAGE_NAMES` and `EXPECTED_VITEST_PACKAGES`. Tracked separately; do
+not reach for a `./testing` export instead.
 
 - `withTempStore(fn)` / `useTempStore(prefix)` — a disposable `~/.aka` (`settings/` +
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
@@ -938,6 +1465,23 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).
+- `corpus.ts` — `seedCaptureCorpus(db, options)`, a deterministic store of a stated SIZE
+  written through the product's own `recordCapture` inside one transaction, plus
+  `corpusConnection(db)` and the corpus clock (`CORPUS_EPOCH_MS`, and
+  `GeneratedCaptureCorpus.endsAt` — prefer the latter). Two rules. **Drive every windowed
+  read with the corpus clock**, never `Date.now()`: the corpus is stamped from a fixed
+  2024 epoch, so the wall clock puts every `WHERE … >= :from` years past the data and the
+  read matches nothing while still returning a real plan and a real, meaningless number.
+  And **reach the connection through `corpusConnection`, never `UNSAFE_TEST_ONLY_RAW_HANDLE`
+  directly, from anything outside `test/`** — `bench/` is not a `test/` path, so a
+  `*.bench.ts` naming that seam is read as a product caller and fails
+  `packages/eslint-config/test/test-only-seam.test.js`.
+- `query-plans.ts` — `recordingConnection(db, into)` captures the SQL and the bound
+  parameters as the repositories execute them, and `explain` / `classifyPlanRow` /
+  `indexOwners` turn one into a plan step (`full-table` / `full-index` / `search`). The
+  point is that no query is ever spelled twice: a plan assertion over SQL restated in a
+  test is a real plan for a query no user issues. Record at EXECUTION, not at prepare
+  time — several repositories prepare in their constructor.
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
   `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
   real error code from the real engine and refuses to run rather than take effect
@@ -980,6 +1524,14 @@ cleanup dance; it is not reachable across a package wall, so store tests in `cli
 - `assertNoOpenTransaction(db)` — a fault that leaves a transaction open is worse than the
   fault; assert this after injecting one. It reads `db.isTransaction` rather than probing
   with a transaction of its own, so it cannot disturb the handle it is inspecting.
+  **It belongs at two shapes, not only after a fault.** After a path that REFUSES inside a
+  transaction — `applyMigrations` on a partially-present migration, a `runInTransaction`
+  that drops a malformed leaf — because refusing is half the requirement and containing the
+  refusal is the other half; a handle left inside its `BEGIN` makes every later write on it
+  join a transaction nobody started, and the store reads as healthy from outside. And after
+  a fixture SEEDER's `COMMIT`, because a seeder that returns still inside its `BEGIN` has
+  committed nothing, and every read below it then measures an empty store and reports the
+  number as a result.
 - `errorFrom(fn)` — the error a thunk threw, captured OUTSIDE its own catch (see
   [Testing](#testing) on why the try/catch form asserts on the test's own guard).
 - `descriptorProbe()` — how many OS descriptors a synchronous thunk left behind. A
@@ -1032,9 +1584,35 @@ times slower, and a timing assertion there is a flake. Compare with `primaryCode
 
 Where a platform or a privilege makes an assertion meaningless, use `ctx.skip(reason)`.
 An early `return` reports as a pass, which is the failure mode the store harness exists
-to remove. Some older suites in this package still use
-`if (process.platform === 'win32') return;` — leave them be unless you are already
-changing that test for another reason, and do not convert a neighbour in passing.
+to remove — and it is worse than a missing test, because a green tick is read as
+coverage. The macOS-only `O_EXCL` case in `paths.test.ts` is the one that shows the cost:
+it is the only thing anywhere pinning `flag: 'wx'`, so while it returned, deleting that
+flag left every other leg green.
+
+**Which of the two shapes to write is decided by what the test still asserts on the
+guarded platform, not by taste.** A guard that ends the body before any assertion runs
+must `ctx.skip(reason)`, because a pass there is a claim the run never checked. A guard
+that only gates a subset — the test still verifies something real on that platform — is
+written as a positive conditional, `if (process.platform !== 'win32') expect(…)`, and
+**must not** become a skip: `ctx.skip` throws, so a skip at the tail discards a result
+that genuinely held and reports the case as uncovered where it was not. Both shapes are
+the same edit to make, and neither leaves an `if (process.platform …) return;` behind.
+
+That last part is enforced rather than asked: `tools/portability-gate`'s
+`platform-guard-early-return` (rule 6, spec files only) fails `pnpm lint` on the shape.
+Three older suites predated it — `settings.test.ts`, `fingerprint.test.ts` and
+`plugin-sdk`'s `config.test.ts` — and were exempt through `GRANDFATHERED_PLATFORM_GUARDS`
+while their six guards were owed. All six are converted, so **that map is now empty and
+nothing is exempt**: a guard in any spec file is reported. The mechanism stays, because it
+is what lets a rule of this kind land on a tree that already carries its shape, and an
+allowance is a ratchet in both directions — exceeding it is a violation, falling below it is
+`platform-guard-stale-allowance`, so converting a guard means lowering the number in the
+same commit and a file that reaches zero leaves the map. The ratchet is on the COUNT,
+though, not on which guards make it up: converting one and adding another in the same
+commit holds the number and passes both rules, so the gate cannot tell that pairing from an
+honest conversion. That is the reason to keep the map empty rather than to re-open it —
+with no entry at all, every guard in every spec file is reported and the pairing has
+nowhere to hide.
 
 ### Testing a web-ui Server Action
 
@@ -1062,6 +1640,44 @@ Seed whatever snapshot the action reads before calling it — anything scanning 
 scans against the **DB snapshot**, not the engine's process-global registry.
 `@akasecurity/plugin-sdk` is a **dev-only** dependency of `web-ui` for exactly this, which
 is not a runtime package-wall crossing.
+
+**A Server Action's parameter types are a claim its runtime never checks.** The arguments
+arrive as JSON over an HTTP POST, so a caller may post a number, a null, or an object
+carrying a hostile `toString` wherever the signature says `string`. Such a value reaching a
+`.trim()`, a `.slice()`, a template literal or a SQL bind parameter throws — and a **thrown
+Server Action rejects**, so the browser gets a framework error page instead of the
+recoverable `{ ok: false, error }` the action was written to return. That is the same
+failure the store-failure guards in `actions.ts` exist to prevent, reached by another door,
+which is why a fail-open `catch` around the store is not enough on its own.
+
+The exceptions surface closes it by parsing the **whole input** — the shapes live in
+`@akasecurity/schema` (`src/zod/exception-action.ts`) and every mutating action there
+`parseActionInput`s its payload before touching a field. Three rules make it hold:
+
+- **Parse the whole input, not each field.** A payload that is not an object at all fails
+  before any field is read, and no per-field check can express that case.
+- **The refusal names the schema's KEY, never the payload.** A field arriving as the wrong
+  type is still a live credential, so nothing derived from it — including a Zod issue
+  message — may reach the message describing its rejection.
+- **Widening in a test alias is per-PARAMETER, not per-action.** An alias that widens
+  `confirmation` to `unknown` and leaves `reason` at `string` covers one field while reading
+  as covering the action; that is exactly how `reason` went unwidened, and unguarded, across
+  three actions at once. Widen the alias's whole input to `unknown`.
+
+Assert three things per case, in this order: it does not throw, it names the field, and it
+echoes no raw value (`expectNoEchoOf`). The middle one is not decoration — `expectNoEchoOf`
+catches an absent error but not an empty one, and every `not.toContain` passes on `''`, so
+requiring the message to say something specific is what stops the echo check going vacuous.
+Keep a positive control that a well-formed payload still succeeds, or an action rewritten to
+refuse everything satisfies all three.
+
+Every other `'use server'` file under `web-ui/app` is **not** guarded this way yet — eight
+files, 20 exported actions at the time of writing — so do not read the above as a property
+the dashboard has. The set is deliberately **not** listed here: a partial list reads as
+exhaustive and stops an audit at the files it names, and a full one goes stale the first
+time an action file lands. Derive it from the **directive**, which is not the same as
+grepping for the words — `app/lib/dropped-rules.ts` mentions them in a comment and exports
+a sync function, so it matches the text and is not a Server Action.
 
 ### Testing a web-ui page
 
@@ -1111,8 +1727,9 @@ stays green if a branch echoes a _truncated_ value, which is still a live creden
 prefix. `expectNoEchoOf` is the **required form for every raw-value absence assertion that is
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
-`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts` and
-`packages/setup-wizard/test/helpers/no-echo.ts`. A plain
+`plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
+`packages/setup-wizard/test/helpers/no-echo.ts` and
+`packages/persistence/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -1131,7 +1748,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All six packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -1145,9 +1762,15 @@ without which an `undefined` message satisfies the loop vacuously.
 **A masked-preview control calls the product's mask, never a hand-rolled one.** A locally built
 literal asserts that a string the test constructed lacks a run of another string the test
 constructed — true by construction, and it stays true however `maskMatch` changes. Each
-`no-echo.test.ts` calls `maskMatch` itself (`@akasecurity/plugin-sdk` re-exports it, so the
-plugin crosses no package wall), which is what makes widening its generic branch go red where
-the reason is written down.
+`no-echo.test.ts` that has a masked-preview case calls `maskMatch` itself
+(`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
+makes widening its generic branch go red where the reason is written down.
+
+`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
+omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
+`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
+a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

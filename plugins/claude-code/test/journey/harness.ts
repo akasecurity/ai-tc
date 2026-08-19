@@ -14,6 +14,9 @@
  * The one external dependency the chain has — the `claude -p` triage judge the
  * apply-suppressions preview spawns — is stubbed hermetically by putting a
  * controlled `claude` executable first on the child PATH (see writeFakeJudge).
+ * That shim fails OPEN, so its resolution is PROVEN before any script runs
+ * (see assertJudgeStubOnPath): a shim that does not land is not an ENOENT, it
+ * is the real installed CLI answering instead, with the seeded hits on stdin.
  * Everything else is the real thing: the real backfill scan, the real store
  * writes, the real rendered frames.
  *
@@ -21,21 +24,14 @@
  * empty states).
  */
 import { execFileSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
+import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import type {
   ActionTaken,
   BatchedRemediation,
@@ -54,6 +50,12 @@ import { transcriptsDir } from '../../src/history/transcripts.ts';
 import { loadSecretLeakFindings } from '../../src/remediation/findings.ts';
 import { renderRemediationDecision } from '../../src/remediation/render.ts';
 import { frameJsonBlock } from '../../src/setup-frame-json.ts';
+import {
+  assertShimResolves,
+  SHIM_PROBE_ARG,
+  shimmedPath,
+  writeCommandShim,
+} from '../helpers/path-shim.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/claude-code
@@ -114,6 +116,9 @@ export class SetupJourney {
   // The settings.json the onboarding writer records the consent + prefs into.
   readonly settingsPath: string;
   private readonly binDir: string;
+  // The cwds the judge stub's resolution has already been proven under ('' is
+  // "no cwd override"). See assertJudgeStubOnPath.
+  private readonly shimProven = new Set<string>();
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-journey-home-'));
@@ -403,15 +408,30 @@ export class SetupJourney {
     return this.run('remediate.js', args, frameText, cwd);
   }
 
-  private run(script: string, args: string[], input?: string, cwd?: string): StepResult {
-    const env: NodeJS.ProcessEnv = {
-      ...HOST_ENV,
+  // The environment every step of the chain is spawned with. Shared with the
+  // resolution probe below, so the PATH the probe proves is the PATH the chain
+  // actually runs under — two independently-built envs could disagree.
+  private childEnv(): NodeJS.ProcessEnv {
+    // `process.env` reads case-insensitively on Windows but SPREADS the key as
+    // the OS stored it — `Path`, not `PATH`. So `{ ...HOST_ENV, PATH: … }` hands
+    // the child TWO path variables there: the host's untouched `Path` and our
+    // stub-first `PATH`. A Windows environment block is case-insensitive, so
+    // which one the child resolves against is not something this harness may
+    // assume — and if the host's wins, the stub judge is no longer first and a
+    // real `claude` becomes reachable, which is the one thing this harness
+    // promises cannot happen. Drop every case-variant before setting ours.
+    const hostEnv = Object.fromEntries(
+      Object.entries(HOST_ENV).filter(([name]) => name.toUpperCase() !== 'PATH'),
+    );
+    return {
+      ...hostEnv,
       HOME: this.home,
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
       // Stub judge first on PATH so apply-suppressions' `claude -p` spawn hits it,
-      // never a live model.
-      PATH: `${this.binDir}:${HOST_ENV.PATH ?? ''}`,
+      // never a live model. Joined with path.delimiter: a literal ':' is one
+      // malformed entry on Windows, which puts the shim dir on PATH nowhere.
+      PATH: shimmedPath(this.binDir, HOST_ENV.PATH),
       // Cleared so judgeEnvSeen() proves something: if these reached the stub
       // merely by being inherited from here, the assertion would hold even with
       // spawnClaude passing no env at all. Node drops undefined entries when it
@@ -419,6 +439,45 @@ export class SetupJourney {
       CLAUDE_CODE_SKIP_PROMPT_HISTORY: undefined,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined,
     };
+  }
+
+  // Proven before the first script runs under each working directory.
+  //
+  // A shim that fails to land does NOT fail closed: `claude` resolution keeps
+  // walking PATH and finds the REAL installed CLI, so the chain would send its
+  // seeded hits to a live model and only report it afterwards, via
+  // judgeEnvSeen()'s 'the judge stub never ran'. Proving resolution up front
+  // turns that into a red setup. Kept lazy so a journey that only drives the
+  // module-seam RemediationDrive pays for no spawn at all.
+  //
+  // Keyed by cwd rather than latched once, because PATH is not the whole of
+  // resolution: Windows searches the working directory BEFORE walking PATH, and
+  // run() takes a per-step cwd (a temp repo dir). A single proof taken under the
+  // harness's own cwd would say nothing about a step that runs somewhere else.
+  private assertJudgeStubOnPath(env: NodeJS.ProcessEnv, cwd?: string): void {
+    const key = cwd ?? '';
+    if (this.shimProven.has(key)) return;
+    // spawnClaude builds its spawn with planBareCommand, so the probe READS
+    // that plan's decisions rather than re-deriving them beside it. On Windows
+    // `shell` is the difference between resolving a .cmd and skipping it, and a
+    // probe that disagreed with its subject would prove nothing — disagreeing in
+    // the direction of "the probe succeeded" is the dangerous one, because the
+    // shim fails OPEN and the chain would reach the real installed CLI.
+    const plan = planBareCommand('claude', [SHIM_PROBE_ARG], { env });
+    // The plan anchors every Windows spawn at the user's home, so the step's own
+    // cwd is not what `claude` is resolved against there. On POSIX it sets no
+    // cwd and the step's applies — which is why this is `??` and not a branch.
+    const probeCwd = plan.options.cwd ?? cwd;
+    assertShimResolves('claude', env, {
+      shell: plan.viaShell,
+      ...(probeCwd === undefined ? {} : { cwd: probeCwd }),
+    });
+    this.shimProven.add(key);
+  }
+
+  private run(script: string, args: string[], input?: string, cwd?: string): StepResult {
+    const env = this.childEnv();
+    this.assertJudgeStubOnPath(env, cwd);
     try {
       const stdout = execFileSync(process.execPath, [join(SCRIPTS_DIR, script), ...args], {
         env,
@@ -447,9 +506,7 @@ export class SetupJourney {
   // category (e.g. aws + stripe + github secrets) each surface their own
   // genuine hit. No live model is ever hit.
   private writeFakeJudge(): void {
-    const src = `#!/usr/bin/env node
-'use strict';
-// Record that the judge actually ran, so a test can prove the consent gate
+    const body = `// Record that the judge actually ran, so a test can prove the consent gate
 // stopped the egress at the process boundary (see judgeWasInvoked) — and WITH
 // WHAT environment, so a test can prove judgeEnv's transcript-suppression vars
 // survived the trip through spawnClaude's execFileSync (see judgeEnvSeen).
@@ -496,9 +553,9 @@ const verdict = { perCategory, notes: 'looks routine' };
 const result = '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`';
 process.stdout.write(JSON.stringify({ result, is_error: false }));
 `;
-    const path = join(this.binDir, 'claude');
-    writeFileSync(path, src);
-    chmodSync(path, 0o755);
+    // writeCommandShim owns the shebang, the mode bits and — on Windows — the
+    // .cmd launcher that makes a bare `claude` resolvable at all.
+    writeCommandShim(this.binDir, 'claude', body);
   }
 }
 

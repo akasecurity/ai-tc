@@ -201,7 +201,11 @@ describe('redactLeakedKeys', () => {
     expect(platformRedactionScope().artifactRoots).not.toContain(tmpdir());
   });
 
-  it('a symlink inside an allowed root cannot redirect a write outside it', () => {
+  it('a symlink inside an allowed root cannot redirect a write outside it', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
     // The leaked key lives in an ordinary project file OUTSIDE every root.
     const projectFile = join(projectRoot, 'secrets.env');
     writeFileSync(projectFile, `AWS_ACCESS_KEY_ID=${PROJECT_KEY}\n`);

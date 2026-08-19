@@ -17,9 +17,12 @@ import { describe, expect, it } from 'vitest';
 //
 // The margin is one keyword, not one file. src/index.ts re-exports ./zod/index.ts
 // -> ./zod/local.ts, which names ../drizzle/local/sqlite.ts — the one module here
-// that imports drizzle-orm. That edge is `import type`, so TypeScript erases it
-// and nothing ships. Drop the `type` and drizzle-orm is in the bundle, with no
-// other file changing and no lint rule anywhere able to say so.
+// that imports drizzle-orm. That edge is a STATEMENT-level `import type`, so
+// TypeScript erases it and nothing ships. The keyword can be lost two ways and
+// both put drizzle-orm in the bundle with no other file changing: delete it, or
+// move it inside the braces — `import { type X } from` keeps the statement under
+// `verbatimModuleSyntax` and emits `import {} from '…'`. Neither is something a
+// lint rule anywhere can say, and the second is what lint positively allows.
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,7 +42,31 @@ const abs = (rel: string) => join(PKG_ROOT, rel);
 
 interface Edge {
   readonly specifier: string;
-  /** False for `import type` / `export type`, which the compiler erases. */
+  /**
+   * Whether the statement survives compilation.
+   *
+   * Only a STATEMENT-level `import type` / `export type` is erased. A brace list
+   * of inline `type` bindings is NOT: tsconfig.base.json sets
+   * `verbatimModuleSyntax`, under which TypeScript keeps the statement and emits
+   * `import {} from './mod.ts';` — a runtime side-effect import that pulls the
+   * whole module in. Compiled with this repo's own options:
+   *
+   *   import { type A } from './a.ts';  ->  import {} from './a.ts';
+   *   export { type A } from './a.ts';  ->  export {} from './a.ts';
+   *   import type { A } from './a.ts';  ->  export {};
+   *   export type { A } from './a.ts';  ->  export {};
+   *
+   * So an inline list reads as EMITTED here. Reading it as erased is a false
+   * negative in the one direction this guard exists to catch — and it is the
+   * likelier refactor of the two, because `consistent-type-imports` accepts the
+   * inline spelling, so moving the keyword inside the braces is a change nothing
+   * else in the repo objects to.
+   *
+   * Under a tree that turned `verbatimModuleSyntax` off the classification would
+   * be conservative rather than wrong: TypeScript would drop the emptied
+   * statement, and an edge called emitted that is not costs a false RED, never a
+   * false green.
+   */
   readonly emitted: boolean;
 }
 
@@ -47,7 +74,7 @@ interface Edge {
 // followed only `from '…'` would miss a lazily-imported module, the exact form
 // the static ban cannot see either.
 const STATIC_STATEMENT =
-  /(?:^|\n)\s*(?:import|export)\s+(type\s+)?([\s\S]*?)from\s*['"]([^'"]+)['"]/g;
+  /(?:^|\n)\s*(?:import|export)\s+(type\s+)?[\s\S]*?from\s*['"]([^'"]+)['"]/g;
 const DYNAMIC_CALL = /(?:^|[^\w.])(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 // `import './register.ts';` — no bindings, so no `from`, so STATIC_STATEMENT
@@ -58,17 +85,6 @@ const DYNAMIC_CALL = /(?:^|[^\w.])(?:import|require)\s*\(\s*['"]([^'"]+)['"]\s*\
 // assertion below green while the bundle ships Drizzle.
 const SIDE_EFFECT_IMPORT = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
 
-/** A brace list whose every binding is inline-`type` is erased too. */
-function bindingsAllTypeOnly(body: string): boolean {
-  const braced = /^\s*\{([^}]*)\}\s*$/.exec(body);
-  if (braced?.[1] === undefined) return false;
-  const bindings = braced[1]
-    .split(',')
-    .map((b) => b.trim())
-    .filter((b) => b.length > 0);
-  return bindings.length > 0 && bindings.every((b) => /^type\s/.test(b));
-}
-
 /** A relative specifier the walk pointed at a path it could not read. */
 interface Unresolvable {
   readonly from: string;
@@ -78,12 +94,9 @@ interface Unresolvable {
 function edgesOf(src: string): Edge[] {
   const edges: Edge[] = [];
   for (const m of src.matchAll(STATIC_STATEMENT)) {
-    const [, typeKeyword, body = '', specifier] = m;
+    const [, typeKeyword, specifier] = m;
     if (specifier === undefined) continue;
-    edges.push({
-      specifier,
-      emitted: typeKeyword === undefined && !bindingsAllTypeOnly(body),
-    });
+    edges.push({ specifier, emitted: typeKeyword === undefined });
   }
   for (const m of src.matchAll(SIDE_EFFECT_IMPORT)) {
     if (m[1] !== undefined) edges.push({ specifier: m[1], emitted: true });
@@ -186,6 +199,27 @@ describe('the package entry ships no Drizzle', () => {
     expect(typeOnly).toEqual([{ specifier: './t.ts', emitted: false }]);
   });
 
+  // Where the erased/emitted line really falls (see Edge.emitted). Only the
+  // statement-level keyword erases; `verbatimModuleSyntax` keeps a statement
+  // whose bindings are all inline `type` and emits `import {} from '…'`, which
+  // runs the module for its side effects. Driven directly, because the inline
+  // form appears nowhere on a path this package's entry reaches — so nothing
+  // derived from the tree would notice it being classified the wrong way.
+  it('erases only the statement-level keyword, never an inline `{ type … }`', () => {
+    for (const src of [
+      "import { type A } from './a.ts';",
+      "export { type A } from './a.ts';",
+      "import { type A, type B } from './a.ts';",
+      "import { type A, b } from './a.ts';",
+    ]) {
+      expect(edgesOf(src), src).toEqual([{ specifier: './a.ts', emitted: true }]);
+    }
+
+    for (const src of ["import type { A } from './a.ts';", "export type { A } from './a.ts';"]) {
+      expect(edgesOf(src), src).toEqual([{ specifier: './a.ts', emitted: false }]);
+    }
+  });
+
   // A specifier the walk could not read is a graph it did not finish walking,
   // and an unfinished walk satisfies every absence assertion below for the wrong
   // reason. Reported by name rather than surfacing as a raw ENOENT from whichever
@@ -218,7 +252,8 @@ describe('the package entry ships no Drizzle', () => {
         ? 'The `.` export of @akasecurity/schema now SHIPS Drizzle. Every consumer imports this ' +
             "entry, and dashboard-ui and ui-kit render in a browser, so this puts drizzle-orm's " +
             'runtime into a user bundle — and no lint ban can see it, because the specifier ' +
-            'appears in no consumer. Make the edge `import type`, or move the export to the ' +
+            'appears in no consumer. Make the edge a STATEMENT-level `import type` — an inline ' +
+            '`{ type … }` list is emitted, see Edge.emitted — or move the export to the ' +
             './drizzle subpath:\n  ' +
             emitted.offenders.map((o) => `${o.file} -> ${o.specifier}`).join('\n  ')
         : undefined,
@@ -235,8 +270,10 @@ describe('the package entry ships no Drizzle', () => {
     );
     expect(
       emitted.files,
-      `${ERASED_EDGE}'s import of ${DRIZZLE_MODULE} must stay \`import type\`: it is the only ` +
-        'reason drizzle-orm is absent from every consumer bundle.',
+      `${ERASED_EDGE}'s import of ${DRIZZLE_MODULE} must stay a STATEMENT-level ` +
+        '`import type` — moving the keyword inside the braces keeps the statement and emits ' +
+        '`import {} from …`, which lint accepts. It is the only reason drizzle-orm is absent ' +
+        'from every consumer bundle.',
     ).not.toContain(DRIZZLE_MODULE);
   });
 });

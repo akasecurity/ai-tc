@@ -25,7 +25,6 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // `persistence` would replay a cached green while an importer appeared in
 // `cli/src`.
 
-/** The directory that must not reach a shipped bundle. */
 // Budget for the cases below that walk the WHOLE tracked tree — a `git ls-files`
 // plus a read of every lintable file. That costs ~3s on an idle developer
 // machine, against vitest's 5s per-test default, so these carry under 2x
@@ -38,6 +37,7 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // default alone so the sub-millisecond assertions keep a tight one.
 const TREE_WALK_TIMEOUT_MS = 30_000;
 
+/** The directory that must not reach a shipped bundle. */
 const FIXTURES = 'packages/persistence/src/test-fixtures';
 
 /** The package entry point that must not re-export it. */

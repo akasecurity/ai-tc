@@ -1,6 +1,3 @@
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { Linter } from 'eslint';
 import { describe, expect, it } from 'vitest';
 
@@ -16,7 +13,6 @@ import { noNetworkSyntax, tonalInkTokens } from '../src/index.js';
 // imported from ../src/index.js and assert observable lint output, so weakening
 // the ban in the config fails here rather than passing as a config-shape check.
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const linter = new Linter();
 const LANG = { ecmaVersion: 'latest', sourceType: 'module' };
 

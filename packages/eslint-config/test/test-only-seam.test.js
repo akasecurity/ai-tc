@@ -25,7 +25,6 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // definition site or a test, so a new fault test needs no edit here while a
 // `cli/src/*.ts` reaching for it fails — which is the property, stated directly.
 
-/** The seam this suite exists for. */
 // Budget for the cases below that walk the WHOLE tracked tree — a `git ls-files`
 // plus a read of every lintable file. That costs ~3s on an idle developer
 // machine, against vitest's 5s per-test default, so these carry under 2x
@@ -38,6 +37,7 @@ import { lintableTrackedFiles, REPO_ROOT, trackedFiles } from './helpers/lint-in
 // default alone so the sub-millisecond assertions keep a tight one.
 const TREE_WALK_TIMEOUT_MS = 30_000;
 
+/** The seam this suite exists for. */
 const SEAM = 'UNSAFE_TEST_ONLY_RAW_HANDLE';
 
 /** The only shipped-source file allowed to name it: where it is defined. */

@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { ESLint, Linter } from 'eslint';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { REPO_ROOT, toPosix, trackedEslintConfigFiles } from './helpers/lint-invocations.js';
+import {
+  REPO_ROOT,
+  toPosix,
+  trackedEslintConfigFiles,
+  workspacePackageDirs,
+} from './helpers/lint-invocations.js';
 
 // Which packages actually GET each shared wall. Every other suite in this
 // package lints a rule value imported from ../src/index.js, which stays green
@@ -21,11 +26,11 @@ import { REPO_ROOT, toPosix, trackedEslintConfigFiles } from './helpers/lint-inv
 // Anything new that needs a resolved per-package config belongs in this file.
 //
 // The budget is charged per RESOLUTION, and the wall now reaches every package
-// that reads the store rather than five of them, so this hook resolves 13
+// that ships product code rather than five of them, so this hook resolves 17
 // configs where it once resolved 5. The ceiling is sized against that count on a
-// contended runner, not against the ~4s it takes on an idle machine — a hook
-// that overruns is reported as a timeout, which reads as a budget failure and is
-// not one.
+// contended runner, not against the few seconds it takes on an idle machine — a
+// hook that overruns is reported as a timeout, which reads as a budget failure
+// and is not one.
 const RESOLVE_TIMEOUT_MS = 120_000;
 
 /**
@@ -38,10 +43,12 @@ const WALLED_PACKAGES = [
   { name: '@akasecurity/plugin-sdk', dir: 'packages/plugin-sdk', file: 'src/config-inventory.ts' },
   { name: '@akasecurity/plugin-runtime', dir: 'packages/plugin-runtime', file: 'src/index.ts' },
   { name: '@akasecurity/scanner', dir: 'packages/scanner', file: 'src/index.ts' },
-  // The four self-contained bundles. `noExternal: [/^@akasecurity\//]` inlines
-  // every workspace package they use, so a Drizzle import in any of these ships
-  // to users in a published artifact — which is why they matter MORE here than
-  // the library packages above, not less.
+  // The self-contained bundles. `noExternal: [/^@akasecurity\//]` inlines every
+  // workspace package they use, so a Drizzle import in any of these ships to
+  // users in a published artifact — which is why they matter MORE here than the
+  // library packages above, not less. browser-extension is one of them and is
+  // the sharpest case: it sets the same `noExternal` and its MV3 content scripts
+  // run in a page.
   { name: '@akasecurity/cli', dir: 'cli', file: 'src/cli.ts' },
   {
     name: '@akasecurity/ai-tc-claude-code',
@@ -50,6 +57,14 @@ const WALLED_PACKAGES = [
   },
   { name: '@akasecurity/ai-tc-codex', dir: 'plugins/codex', file: 'src/backfill.ts' },
   { name: '@akasecurity/ai-tc-antigravity', dir: 'plugins/antigravity', file: 'src/backfill.ts' },
+  { name: '@akasecurity/detections', dir: 'packages/detections', file: 'src/engine.ts' },
+  { name: '@akasecurity/extract', dir: 'packages/extract', file: 'src/csv.ts' },
+  { name: '@akasecurity/setup-wizard', dir: 'packages/setup-wizard', file: 'src/index.ts' },
+  {
+    name: '@akasecurity/plugin-browser-extension',
+    dir: 'plugins/browser-extension',
+    file: 'src/content.ts',
+  },
   { name: '@akasecurity/ui-kit', dir: 'packages/ui-kit', file: 'src/badge.tsx', tonal: true },
   {
     name: '@akasecurity/dashboard-ui',
@@ -74,17 +89,32 @@ const RELAXED_FILES = [
   },
 ];
 
-// @akasecurity/schema is the one package that must NOT carry the drizzle wall:
-// it is where Drizzle is imported, to DEFINE the local-store and registry
-// schemas.
+// The workspace packages that deliberately do NOT carry the drizzle wall, with
+// the reason each is out. Every other workspace package is in WALLED_PACKAGES,
+// and the coverage assertion below holds the two together — so a package added
+// tomorrow fails until somebody decides which side it belongs on, rather than
+// being silently absent from a list nothing derives.
 //
-// This feeds the exact-set assertion's failure MESSAGE rather than a case of its
-// own. A separate `not.toContain` case could not fail unless the exact-set
-// assertion had already failed — the set is compared by equality, so a wall
-// appearing here fails there first — while costing a second full walk of the
-// tracked tree. What the exemption is worth is the explanation, and that belongs
-// where somebody meets the failure.
-const WALL_EXEMPT_PACKAGES = ['packages/schema'];
+// The first entry is also what feeds the exact-set assertion's failure MESSAGE
+// rather than a case of its own. A separate `not.toContain` case could not fail
+// unless the exact-set assertion had already failed — the set is compared by
+// equality, so a wall appearing there fails first — while costing a second full
+// walk of the tracked tree. What the exemption is worth is the explanation, and
+// that belongs where somebody meets the failure.
+const WALL_EXEMPT_PACKAGES = [
+  {
+    dir: 'packages/schema',
+    why: 'where Drizzle is imported, to DEFINE the local-store and registry schemas',
+  },
+  {
+    dir: 'packages/eslint-config',
+    why: 'defines the wall itself; repo tooling, never shipped and never reads the store',
+  },
+  { dir: 'tools/audit-gate', why: 'repo tooling, never shipped' },
+  { dir: 'tools/coverage-gate', why: 'repo tooling, never shipped' },
+  { dir: 'tools/installer', why: 'repo tooling, never shipped' },
+  { dir: 'tools/portability-gate', why: 'repo tooling, never shipped' },
+];
 
 /** @type {Map<string, import('eslint').Linter.Config['rules']>} */
 const resolved = new Map();
@@ -139,7 +169,7 @@ describe('every walled package resolves a config at all', () => {
 // flat-config entry, so the order a package spreads them in decides whether the
 // ban survives — and a lost ban still exits 0. These drive the resolved value,
 // so a reordering regression fails here rather than shipping.
-describe('the drizzle wall reaches every package that reads the store', () => {
+describe('the drizzle wall reaches every package that ships product code', () => {
   it.each(names)('%s rejects a static drizzle import', (name) => {
     expect(firedIn(name, "import { eq } from 'drizzle-orm';", 'no-restricted-imports')).toBe(1);
     expect(firedIn(name, "import { p } from 'drizzle-orm/pg-core';", 'no-restricted-imports')).toBe(
@@ -215,17 +245,56 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
       ),
     ].sort();
 
-  it('is exactly the packages that read the store', () => {
+  it('is exactly the packages that ship product code', () => {
     expect(
       configsReferencingWall(),
-      'The set of packages wiring the drizzle wall changed. A package that reads the local ' +
-        'store — or renders it in a browser — must spread `noDrizzleImports` (or `reactUiPackage`, ' +
-        'which composes it) so drizzle-orm cannot reach it or its bundle; that includes the four ' +
-        'self-contained bundles (cli and the three plugins), where a Drizzle import would be ' +
-        'INLINED into a published artifact. Update WALLED_PACKAGES here if that was deliberate. ' +
-        `The one package that must NOT carry the wall is ${WALL_EXEMPT_PACKAGES.join(', ')}, ` +
-        'since that is where Drizzle defines the local-store and registry schemas.',
+      'The set of packages wiring the drizzle wall changed. Every workspace package that ships ' +
+        'product code must spread `noDrizzleImports` (or `reactUiPackage`, which composes it), ' +
+        'whether or not it reads the store today: the shipping bundles set ' +
+        '`noExternal: [/^@akasecurity\\//]`, so ONE Drizzle import anywhere in that closure is ' +
+        'inlined into a published artifact — and into a browser for the extension, web-ui, ' +
+        'dashboard-ui and ui-kit. The exceptions are listed below, and they are the whole of the ' +
+        'difference. Update WALLED_PACKAGES here if that was deliberate. ' +
+        'Packages deliberately outside the wall, and why:\n  ' +
+        WALL_EXEMPT_PACKAGES.map((e) => `${e.dir} — ${e.why}`).join('\n  '),
     ).toEqual(WALLED_PACKAGES.map((p) => p.dir).sort());
+  });
+
+  // The exact-set assertion above compares the tree against WALLED_PACKAGES, so
+  // it cannot see a package that is in NEITHER list: absent from the tree's
+  // walled set and absent from ours, it agrees with itself and passes. That is
+  // how a package ships unwalled without anything going red — and, because the
+  // comparison is by equality, the omission is then PINNED, since walling it
+  // later fails until somebody edits the list.
+  //
+  // So the two lists have to account for every workspace package between them,
+  // derived from pnpm-workspace.yaml rather than restated. A package added
+  // tomorrow is a decision, not a default.
+  it('accounts for every workspace package, walled or exempt', () => {
+    const walled = new Set(WALLED_PACKAGES.map((p) => p.dir));
+    const exempt = new Set(WALL_EXEMPT_PACKAGES.map((e) => e.dir));
+
+    const unaccounted = workspacePackageDirs().filter((d) => !walled.has(d) && !exempt.has(d));
+    expect(
+      unaccounted,
+      'These workspace packages are in neither WALLED_PACKAGES nor WALL_EXEMPT_PACKAGES, so ' +
+        'nothing here says whether drizzle-orm may reach them. Wire `noDrizzleImports` into the ' +
+        'package and add it above, or add it to WALL_EXEMPT_PACKAGES with the reason it is out:' +
+        `\n  ${unaccounted.join('\n  ')}`,
+    ).toEqual([]);
+
+    // And the reverse: a dir listed here that the workspace no longer has is a
+    // rule kept alive for a package that is gone.
+    const known = new Set(workspacePackageDirs());
+    expect(
+      [...walled, ...exempt].filter((d) => !known.has(d)).sort(),
+      'Listed here but not a workspace package any more.',
+    ).toEqual([]);
+
+    expect(
+      [...walled].filter((d) => exempt.has(d)),
+      'walled and exempt at once',
+    ).toEqual([]);
   });
 });
 

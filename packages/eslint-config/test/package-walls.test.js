@@ -112,9 +112,11 @@ const WALL_EXEMPT_PACKAGES = [
     why: 'defines the wall itself; repo tooling, never shipped and never reads the store',
   },
   { dir: 'tools/audit-gate', why: 'repo tooling, never shipped' },
+  { dir: 'tools/codeql-alerts-gate', why: 'repo tooling, never shipped' },
   { dir: 'tools/coverage-gate', why: 'repo tooling, never shipped' },
   { dir: 'tools/installer', why: 'repo tooling, never shipped' },
   { dir: 'tools/portability-gate', why: 'repo tooling, never shipped' },
+  { dir: 'tools/required-checks-gate', why: 'repo tooling, never shipped' },
 ];
 
 /** @type {Map<string, import('eslint').Linter.Config['rules']>} */

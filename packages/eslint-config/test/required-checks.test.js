@@ -546,15 +546,26 @@ describe('the Windows legs', () => {
     const perStep = jobBlock(ci, 'windows')
       .split(/^ {6}- /m)
       .slice(1)
-      .map((step) => turboFilters(step));
-    const carrying = (name) => perStep.filter((filters) => filters.includes(name));
+      .map((step) => ({ step, filters: turboFilters(step) }));
+    const carrying = (name) => perStep.filter(({ filters }) => filters.includes(name));
     expect(carrying('@akasecurity/persistence').length).toBeGreaterThan(0);
-    expect(carrying('@akasecurity/web-ui').length).toBeGreaterThan(0);
+    const webUiSteps = carrying('@akasecurity/web-ui');
+    expect(webUiSteps.length).toBeGreaterThan(0);
+    // The positive control above is satisfied by ANY task run under that
+    // filter — typecheck, lint, build — not only `test`. web-ui is
+    // `private: true`, so it is excluded from the published-package check
+    // elsewhere in this file, and this is the only thing pinning that its
+    // suites — the OS-sensitive half the job's own comment gives as the
+    // reason web-ui belongs on Windows at all — actually run there. Same
+    // shape as the `--filter=@akasecurity/installer` check below.
+    expect(webUiSteps.some(({ step }) => /turbo run test/.test(step))).toBe(true);
     expect(
-      perStep.filter(
-        (filters) =>
-          filters.includes('@akasecurity/persistence') && filters.includes('@akasecurity/web-ui'),
-      ),
+      perStep
+        .filter(
+          ({ filters }) =>
+            filters.includes('@akasecurity/persistence') && filters.includes('@akasecurity/web-ui'),
+        )
+        .map(({ step }) => step),
       'a turbo invocation carries both persistence and web-ui — the pairing this leg failed on',
     ).toEqual([]);
   });

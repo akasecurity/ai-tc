@@ -1,14 +1,16 @@
 # ai-tc — AI Traffic Control
 
-> An open-source, local-first control plane for coding agents. Every event in an agent session — prompt, response, tool call, file read — passes one control point: the detection engine scans it against rule packs for secrets and regulated data (PCI, PHI, PII), and policy decides what happens next (monitor, warn, redact, block, or a manual exception). Runs entirely on the developer's machine with no backend and no account. Apache-2.0. Installs as a Claude Code / Claude Desktop plugin, or as the standalone `aka` CLI.
+> An open-source, local-first control plane for coding agents. Every event in an agent session — prompt, response, tool call, file read — passes one control point: the detection engine scans it against rule packs for secrets and regulated data (PCI, PHI, PII), and policy decides what happens next (monitor, warn, redact, block, or a manual exception). Runs entirely on the developer's machine with no backend and no account. Apache-2.0. Installs as a plugin for Claude Code (and Claude Desktop, the same package), Codex CLI or Antigravity; as a browser extension for ChatGPT and Claude.ai web chat; or as the standalone `aka` CLI.
 
-Detection and enforcement never send your data anywhere: the source ships no network client. Three narrow paths do reach the network through child processes — package-manager installs, the plugin's `npm audit signatures` supply-chain check, and the **opt-in** `/aka:setup` calibration. Only that last one carries your data, and it takes two separate, separately-revocable grants. The README's egress footnote states exactly what it sends.
+Detection and enforcement run locally: the source ships no network client. A handful of narrow paths do reach the network, all through child processes — package-manager installs, the plugin's `npm audit signatures` supply-chain check, git-style external `aka <name>` dispatch to a program on your own `PATH` this project doesn't bundle or control, and the **opt-in** `/aka:setup` calibration each host plugin ships. Only the opt-in calibration carries your data, and it takes two separate, separately-revocable grants. The README's `[^egress]` footnote is the guarded, up-to-date list of every path and exactly what the calibration payload contains — read it rather than this paragraph for the current count.
 
 ## Install
 
 - Claude Code: `/plugin marketplace add akasecurity/marketplace` then `/plugin install ai-tc@akasecurity`.
 - Claude Desktop: supported through the same plugin package; see the installation guide.
-- Standalone CLI (binary `aka`, no coding agent required): install, then `aka init` — it detects whether the plugin is present and offers to add it.
+- Codex CLI and Antigravity: separate plugin packages from the same marketplace; see the installation guide.
+- Browser extension (ChatGPT + Claude.ai web chat): `aka extension install`, bridged to Chrome over native messaging.
+- Standalone CLI (binary `aka`, no coding agent required): install, then `aka init` — it detects whether a plugin is present and offers to add it.
 
 ## Key concepts
 
@@ -17,11 +19,11 @@ Detection and enforcement never send your data anywhere: the source ships no net
 - **Rule** — a JSON file describing what to detect: a keyword list, a regex pattern, or a validator.
 - **Rule pack** — a directory of rules and their fixtures with a `manifest.json`. Seven ship built in: `secrets`, `secrets-infra`, `core-pii`, `core-financial`, `core-phi`, `core-code-context`, `code-flaws`.
 - **Policy** — the decision taken when a rule or category fires.
-- **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop.
+- **Plugin** — the harness extension that intercepts sessions. One package serves Claude Code and Claude Desktop; separate packages ship for Codex CLI and Antigravity, plus a browser extension for ChatGPT and Claude.ai web chat.
 
 ## Where your data lives
 
-A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/settings`. No database server, no schema to manage. The store is a running log of sessions: only rule-flagged spans are masked, the rest is kept verbatim and unencrypted. On macOS and Linux the directories are owner-only (`0700`) and files are `0600`; those permissions are the only at-rest control, and they do nothing on Windows. [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md) has the full picture.
+A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/settings`, and vault/exception key material under `~/.aka/keys`. No database server, no schema to manage. The store is a running log of sessions: only rule-flagged spans are masked, the rest is kept verbatim and unencrypted. On macOS and Linux the directories are owner-only (`0700`) and files are `0600`; those permissions are the only at-rest control, and they do nothing on Windows. [SECURITY.md](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md) has the full picture.
 
 ## Documentation
 
@@ -35,8 +37,9 @@ A local SQLite store at `~/.aka/data/aka.db`, settings beside it under `~/.aka/s
 
 ## Repository layout
 
-- `packages/` — the workspace: `detections` (rule engine), `scanner`, `extract`, `persistence` (SQLite store), `schema`, `plugin-runtime`, `plugin-sdk`, `local-ops`, `dashboard-ui`, `ui-kit`.
-- `plugins/claude-code/` — the harness plugin published as `@akasecurity/ai-tc-claude-code`.
+- `packages/` — the workspace: `detections` (rule engine), `scanner`, `extract`, `persistence` (SQLite store), `schema`, `plugin-runtime`, `plugin-sdk`, `local-ops`, `dashboard-ui`, `ui-kit`, `setup-wizard`.
+- `plugins/claude-code/`, `plugins/codex/`, `plugins/antigravity/` — the harness plugins, one per host, published as `@akasecurity/ai-tc-claude-code`, `@akasecurity/ai-tc-codex` and `@akasecurity/ai-tc-antigravity`.
+- `plugins/browser-extension/` — the Chrome extension for ChatGPT and Claude.ai web chat (MV3 content scripts + a native-messaging host).
 - `cli/` — the standalone CLI published as `@akasecurity/cli`, binary `aka`.
 - `rules/` — the seven built-in rule packs and their fixtures.
 - `skills/write-detection-rule/` — the authoring skill for new detection rules.

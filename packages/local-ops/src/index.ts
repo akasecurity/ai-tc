@@ -31,6 +31,19 @@ export type {
   GuardedFileScannerOptions,
 } from './guarded-scan.ts';
 export { createGuardedFileScanner } from './guarded-scan.ts';
+export type {
+  ChannelProbe,
+  InstallChannel,
+  InstallManager,
+  InstallOrigin,
+  UpdatePlan,
+} from './install-channel.ts';
+export {
+  classifyInstall,
+  describeChannel,
+  detectInstallChannel,
+  planCliUpdate,
+} from './install-channel.ts';
 export type { ProjectInventoryResult } from './project-inventory.ts';
 export { recordProjectInventory } from './project-inventory.ts';
 export type { AgentPlugin } from './registry.ts';

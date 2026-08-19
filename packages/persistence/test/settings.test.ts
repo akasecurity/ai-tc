@@ -53,7 +53,7 @@ describe('readWorkspaceSettings', () => {
     expect(settings.onboardedAt).toBe('2026-06-19T00:00:00.000Z');
   });
 
-  it("reads a settings.json carrying the retired 'attached' runMode as standalone", () => {
+  it('reads a settings.json carrying a superseded runMode, keeping its other fields', () => {
     writeSettings({ specVersion: 1, runMode: 'attached', policy: 'warn' });
     const settings = readWorkspaceSettings(base);
     expect(settings.runMode).toBe('standalone');

@@ -51,10 +51,10 @@ export const WORKSPACE_SETTINGS_SPEC_VERSION = 5;
 // older payload shape stops counting once this is bumped.
 export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
-// How the plugin runs. Single-valued: the plugin operates entirely against the
-// local store. Kept as an enum so the settings file stays explicit and the
-// value set can grow without a shape change.
-export const RunMode = z.enum(['standalone']);
+// How the plugin runs. One value: the plugin operates entirely against the local
+// store. Written into the settings file so the mode is stated rather than
+// implied by the absence of a field.
+export const RunMode = z.literal('standalone');
 export type RunMode = z.infer<typeof RunMode>;
 
 // What happens to detected sensitive data (the onboarding "handling" choice).
@@ -73,15 +73,6 @@ export type SimpleDetectionPolicy = z.infer<typeof SimpleDetectionPolicy>;
 export const HistoricalAccess = z.enum(['full', 'session-only']);
 export type HistoricalAccess = z.infer<typeof HistoricalAccess>;
 
-// Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
-// Versioned and default-filled so future config steps are additive: a
-// settings.json written by an older plugin still parses, with any missing key
-// taking its default.
-//
-// Plugin-local only — deliberately NO `.meta({ id })`. An id would register this
-// in Zod's global registry, and a @fastify/swagger setup
-// emits every registered schema as an OpenAPI component, leaking this plugin
-// config into a public API client. No API route references it.
 // A recorded model-judge consent: when it was given, and the payload shape it
 // was given against. Named here (rather than inlined on WorkspaceSettings) so
 // the plugin, CLI and dashboard all reference one shape.
@@ -102,10 +93,22 @@ export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined)
   return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
 }
 
+// Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
+// Versioned and default-filled so future config steps are additive: a
+// settings.json written by an older plugin still parses, with any missing key
+// taking its default.
+//
+// Plugin-local only — deliberately NO `.meta({ id })`. An id registers the shape
+// in Zod's global registry, and a consumer walking that registry publishes every
+// entry it finds under that name. This is on-disk plugin configuration, not a
+// shape anything refers to by name, so it stays unregistered.
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
-  // Settings files written by earlier releases may carry the retired 'attached'
-  // value; it parses as 'standalone' so those files keep loading.
+  // A settings file written before this field settled on one value can hold a
+  // string this build no longer knows. Normalising it keeps that file loading —
+  // and, more importantly, keeps the user's OTHER choices in it, which a failed
+  // parse of the whole object would discard. Only the one superseded value is
+  // normalised; anything else still fails, so a typo is still an error.
   runMode: z.preprocess(
     (v) => (v === 'attached' ? 'standalone' : v),
     RunMode.default('standalone'),

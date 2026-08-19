@@ -210,7 +210,7 @@ describe('ensureDataDir (async)', () => {
 
 describe('migrateLegacyLayout', () => {
   it('routes pre-layout flat files to their layout subdirs (best-effort)', () => {
-    writeFileSync(join(base, 'config.json'), '{"backendUrl":"https://x","token":"t"}');
+    writeFileSync(join(base, 'config.json'), '{"setting":"value"}');
     writeFileSync(join(base, 'policy-cache.json'), '{"bundle":{}}');
 
     migrateLegacyLayout(base);
@@ -219,7 +219,7 @@ describe('migrateLegacyLayout', () => {
     expect(existsSync(join(base, 'policy-cache.json'))).toBe(false);
     // config.json is settings; policy-cache.json is a cache that lives with the
     // SQLite store under data/.
-    expect(readFileSync(join(settingsDir(base), 'config.json'), 'utf8')).toContain('backendUrl');
+    expect(readFileSync(join(settingsDir(base), 'config.json'), 'utf8')).toContain('setting');
     expect(existsSync(join(dataDir(base), 'policy-cache.json'))).toBe(true);
   });
 
@@ -232,7 +232,7 @@ describe('migrateLegacyLayout', () => {
   it('tightens a pre-existing loose destination dir to 0700 while migrating', () => {
     // A settings/ that already existed with looser permissions must be tightened
     // as the flat config.json is routed into it — it holds sensitive files.
-    writeFileSync(join(base, 'config.json'), '{"backendUrl":"https://x","token":"t"}');
+    writeFileSync(join(base, 'config.json'), '{"setting":"value"}');
     mkdirSync(settingsDir(base));
     chmodSync(settingsDir(base), 0o777);
 
@@ -242,12 +242,13 @@ describe('migrateLegacyLayout', () => {
     if (process.platform !== 'win32') expect(mode(settingsDir(base))).toBe(0o700);
   });
 
-  it('tightens a moved legacy config.json to 0600 (it can carry a token)', () => {
-    // A pre-layout config.json held the backend token; a rename preserves its
-    // (possibly loose) mode, so the moved file must be tightened to 0600 too —
-    // not left group/other-readable inside settings/.
+  it('tightens a moved legacy config.json to 0600 (it can carry a secret)', () => {
+    // settings/ is owner-only because a config file can hold a credential, and a
+    // rename preserves the source file's (possibly loose) mode — so the moved
+    // file has to be tightened explicitly rather than inherit 0644 into
+    // settings/.
     const flat = join(base, 'config.json');
-    writeFileSync(flat, '{"backendUrl":"https://x","token":"t"}');
+    writeFileSync(flat, '{"setting":"value"}');
     if (process.platform !== 'win32') chmodSync(flat, 0o644);
 
     migrateLegacyLayout(base);

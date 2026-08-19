@@ -122,13 +122,25 @@ which they had done into five hand-typed copies:
   literal that merely equals a member is invisible to a rename, which is exactly how these
   drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`) — verified to
   keep `satisfies Record<Harness, …>` exhaustiveness, so a harness added upstream is a
-  compile error at every table that owes it a row.
+  compile error at every table keyed on the WHOLE enum. **That does not extend to the
+  `.extract()` subsets, which is where an id is actually added.** A subset gains the member
+  silently, and anything keyed on the subset — or keyed on nothing, like `SCAN_COVERAGE`'s
+  array in `packages/persistence/src/repositories/security.ts` — still compiles with no row
+  for it. Those owe a TEST; do not read the compile error as covering them.
 - **The two vocabularies are joined by MEMBER NAME**, so `TOOL_TO_HARNESS` pairs them without
   either spelling being retyped, and a member in only one of them is meaningful rather than an
   omission (`Cli`/`Unknown` capture under no harness; `Windsurf`/`Api` render under no
   capture). Anything that reads the join BACKWARDS derives it — `toDbProviderFilter` is the
   inverse of that one table rather than a second map, because the hand-written copy it
-  replaced had to be edited in step with it and nothing checked that it was.
+  replaced had to be edited in step with it and nothing checked that it was. Deriving it
+  gives up the exhaustiveness that `Record<FindingProvider, string[]>` carried, and no
+  compile error replaces it, so the agreement is asserted as SETS in
+  `packages/schema/test/zod/harness-map.test.ts` — every provider but the miss bucket must
+  name at least one stored value. That case is the only non-vacuous one: the round-trip
+  iterates the table itself, and the forward check's inner loop does not run on an empty
+  array. It has to be non-vacuous because an empty result is the miss bucket's own contract
+  (`'api'` → `[]`, matching any unknown value in-memory), so a provider with no rows reads
+  as the miss bucket rather than as no findings.
 
 Declared as const objects rather than TypeScript `enum`s deliberately:
 `packages/plugin-sdk/src/scan-worker.ts` is loaded by raw Node under type **stripping** and

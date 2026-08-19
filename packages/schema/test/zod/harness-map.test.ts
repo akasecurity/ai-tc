@@ -114,4 +114,23 @@ describe('toDbProviderFilter', () => {
   it('gives the miss bucket no rows of its own', () => {
     expect(toDbProviderFilter(HARNESS.Api)).toEqual([]);
   });
+
+  // The two loops above cannot see a provider with NO rows: the round-trip
+  // iterates the table itself, and the forward check's inner loop never runs
+  // on an empty array, so both pass vacuously on exactly the case that breaks
+  // a caller. Deriving the filter gave up the exhaustiveness the hand-written
+  // `Record<FindingProvider, string[]>` had — a member added to the enum no
+  // longer fails to compile here — so the agreement is asserted as SETS
+  // instead: every provider but the miss bucket must name at least one stored
+  // value. An empty array is indistinguishable from 'api''s, which the
+  // contract defines as "matches any unknown value, applied in-memory", so a
+  // rowless provider does not read as "no findings" but as the miss bucket —
+  // a silently-wrong findings page rather than an empty one.
+  it('gives every provider but the miss bucket at least one stored value', () => {
+    const covered = new Set(Object.values(TOOL_TO_HARNESS));
+    const rowless = FindingProvider.options
+      .filter((provider) => provider !== HARNESS.Api)
+      .filter((provider) => !covered.has(provider));
+    expect(rowless).toEqual([]);
+  });
 });

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { join, matchesGlob, posix, sep } from 'node:path';
+import { join, matchesGlob, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ESLint, Linter } from 'eslint';
@@ -54,8 +54,8 @@ import {
 //     rules still fire on real code. Flat config resolves "last wins": the final
 //     block matching a file overrides earlier ones for a given rule, and
 //     no-restricted-imports never merges across blocks. So a package that layers
-//     a second config on top of base (web-ui: react + noEnterpriseImports;
-//     persistence / local-ops: base + noEnterpriseImports; cli: base + the
+//     a second config on top of base (web-ui: react + noDrizzleImports;
+//     persistence / local-ops: base + noDrizzleImports; cli: base + the
 //     dashboard opt-out) could silently drop a network ban with the unit suite
 //     still green. Here we assert the composition, not the components.
 //
@@ -211,21 +211,19 @@ const extendsSharedConfig = (abs) =>
  */
 function discoverWorkspacePackages() {
   return workspacePackageDirs().map((dir) => {
-    // git reports posix paths on every platform; globSync yields native ones.
-    const posixDir = dir.split(sep).join('/');
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8'));
-    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : posixDir;
+    const name = typeof pkg.name === 'string' && pkg.name ? pkg.name : dir;
     const configRel = join(dir, 'eslint.config.mjs');
     const configAbs = join(REPO_ROOT, configRel);
     const hasConfig = existsSync(configAbs);
     const scriptsConfigRel = join(dir, 'eslint.scripts.config.mjs');
     const scriptsConfigAbs = join(REPO_ROOT, scriptsConfigRel);
     const hasScriptsConfig = existsSync(scriptsConfigAbs);
-    const codeDirs = lintableChildDirs(posixDir);
+    const codeDirs = lintableChildDirs(dir);
     return {
       name,
       dir,
-      label: name === posixDir ? posixDir : `${name} (${posixDir})`,
+      label: name === dir ? dir : `${name} (${dir})`,
       lintScript: pkg.scripts?.lint ?? '',
       configRel,
       hasConfig,
@@ -237,7 +235,7 @@ function discoverWorkspacePackages() {
       codeDirs,
       sourceDirs: codeDirs.filter((d) => d !== SCRIPTS_DIR),
       // The other half of what the lint script must cover, derived the same way.
-      rootFiles: lintableRootFiles(posixDir),
+      rootFiles: lintableRootFiles(dir),
       hasScriptsDir: codeDirs.includes(SCRIPTS_DIR),
       scriptsConfigRel,
       hasScriptsConfig,
@@ -581,7 +579,7 @@ function configViolations(guarded) {
 // added, which is the only moment this check exists for.
 
 /** Every workspace package directory, as a posix path. */
-const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir.split(sep).join('/'));
+const PACKAGE_DIRS = WORKSPACE_PACKAGES.map((p) => p.dir);
 
 /** Every git-tracked lintable file that sits under no workspace package. */
 const NON_PACKAGE_FILES = LINTABLE_TRACKED.files.filter(
@@ -810,7 +808,7 @@ describe('every workspace package ships a network-guarded eslint config', () => 
       notExtending.length
         ? 'These packages ship an eslint.config.mjs that never imports @akasecurity/eslint-config, ' +
             'so the shared no-network ban is not wired in. Extend the shared config (spread ' +
-            `...base / ...noEnterpriseImports / ...react):\n  ${notExtending.join('\n  ')}`
+            `...base / ...noDrizzleImports / ...react):\n  ${notExtending.join('\n  ')}`
         : undefined,
     ).toEqual([]);
   });
@@ -919,7 +917,7 @@ describe('every workspace package declares the @types/node its own source needs'
 
   /** Every lintable tracked file the package itself owns, nested packages excluded. */
   const ownFiles = (pkg) => {
-    const dir = `${pkg.dir.split(sep).join('/')}/`;
+    const dir = `${pkg.dir}/`;
     return LINTABLE_TRACKED.files.filter(
       (f) =>
         f.startsWith(dir) &&

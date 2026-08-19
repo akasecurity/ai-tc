@@ -24,9 +24,10 @@ export function parseQuery(sp: ActivitySearchParams): string {
 }
 
 /**
- * URL ?harness values → the multi-select, validated against the schema enum here
- * (the OSS Server-Component path has no Fastify/Zod door), so a crafted
- * `?harness=bogus` is dropped rather than passed to the store.
+ * URL ?harness values → the multi-select, validated against the schema enum
+ * HERE, in the Server Component, because this is the only boundary the value
+ * crosses before it reaches the store — a crafted `?harness=bogus` is dropped
+ * rather than passed on.
  */
 export function parseHarness(sp: ActivitySearchParams): Harness[] {
   return asArray(sp.harness).filter((v): v is Harness =>

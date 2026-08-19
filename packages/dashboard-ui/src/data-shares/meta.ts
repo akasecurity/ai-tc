@@ -1,9 +1,9 @@
 // Presentational lookups for the Data Shares views — semantic keys (transport /
 // data-class / trust) → label + icon + badge tone. Lives in @akasecurity/dashboard-ui
-// so the Vite dashboard and the OSS web-ui render identical styling. The API
-// returns semantic-only shapes (raw counts, ISO timestamps, stable enums); the
-// presentation descriptors here (labels, icons, tones, the provider lettermark)
-// are derived client-side — never sent by the server.
+// so every host renders identical styling. The shapes it reads are semantic only
+// (raw counts, ISO timestamps, stable enums); the presentation descriptors here
+// (labels, icons, tones, the provider lettermark) are derived in this package —
+// never carried in the data.
 import type {
   DataClass,
   DestinationKind,

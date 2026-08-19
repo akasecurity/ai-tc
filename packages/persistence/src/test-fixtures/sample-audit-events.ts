@@ -3,8 +3,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { sampleActivityId } from './sample-ids.ts';
 
 /**
- * Removable sample dataset for the Activity page, seeded onto the tenant-free
- * local `audit_events` store. There is no live writer for the rich session/
+ * Removable sample dataset for the Activity page, seeded onto the local
+ * `audit_events` store. There is no live writer for the rich session/
  * timeline attributes yet, so without this the Activity page would render
  * empty; the seed gives it representative data out of the box.
  *

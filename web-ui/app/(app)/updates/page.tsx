@@ -3,6 +3,7 @@ import {
   AGENT_PLUGINS,
   CLI_PACKAGE,
   cliVersion,
+  createCliPluginManager,
   detectInstallChannel,
   gatherReport,
   installedAgentPluginVersions,
@@ -48,7 +49,6 @@ export default function UpdatesPage() {
     cliInstalled: cliVersion(process.cwd()),
   });
 
-  // The exact command each button runs — shown verbatim in the confirm dialog.
   // The CLI's command depends on how THIS copy was installed (npm global under
   // one nvm version, a pnpm/bun store, the standalone binary…), so it is derived
   // rather than assumed — the same plan the button will run. The origin comes
@@ -71,25 +71,39 @@ export default function UpdatesPage() {
   } else {
     commands.cli = cliPlan.display;
   }
+
+  // EVERY command each plugin button spawns, one per line. Two things this must
+  // get right, and a literal gets both wrong:
   //
-  // A plugin's line is built from the registry the apply path resolves against,
-  // never from a literal. Two things follow from that. The host CLI is per
-  // agent (`claude` for Claude Code, `codex` for Codex), so naming one of them
-  // here shows a command that is not the one that spawns — and a user who
-  // copies it instead runs a real command against the wrong host. And both
-  // apply paths register the marketplace BEFORE installing or updating, which
-  // is a second child process and a persistent change to the host CLI's own
-  // config, so it belongs in a dialog that says what will run.
+  // It is derived from each agent's OWN host verb table, because the hosts share
+  // neither the verbs (`claude plugin update` vs `codex plugin add` — Codex has
+  // no update verb at all) nor the binary. A hardcoded `${bin} plugin update`
+  // shows every Codex user a command their CLI rejects, and one they may copy
+  // and run against the real host.
+  //
+  // And it is the SPAWN PLAN, not the op with a register prelude: the Server
+  // Action refreshes the marketplace snapshot too, so a dialog promising "this
+  // runs the following on this machine" while naming two of three spawns is
+  // false in the direction that matters for a local-first product.
+  // Newline-joined, never `&&` — the plan carries a step whose failure the
+  // action deliberately ignores.
   const installCommands: Record<string, string> = {};
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
-    const bin = agent.cliBin;
-    if (!ref || !bin) continue;
-    const prelude = agent.marketplaceSource
-      ? [`${bin} plugin marketplace add ${agent.marketplaceSource}`]
-      : [];
-    commands[agent.id] = [...prelude, `${bin} plugin update ${ref}`].join('\n');
-    installCommands[agent.id] = [...prelude, `${bin} plugin install ${ref}`].join('\n');
+    // No ref or no host binding means no automated path at all (Antigravity
+    // installs from a local directory). Leaving the entry out would render an
+    // EMPTY dialog under "this runs the following", which is a worse lie than
+    // the wrong command it replaced, so say so instead.
+    if (!ref || !agent.cliBin) {
+      const none = `No automated path for ${agent.name} — see \`aka plugins install ${agent.id}\`.`;
+      commands[agent.id] = none;
+      installCommands[agent.id] = none;
+      continue;
+    }
+    const manager = createCliPluginManager(agent.cliBin);
+    const { marketplaceSource: source, marketplace } = agent;
+    commands[agent.id] = manager.updateSpawnPlan(ref, source, marketplace).join('\n');
+    installCommands[agent.id] = manager.installSpawnPlan(ref, source, marketplace).join('\n');
   }
 
   return (

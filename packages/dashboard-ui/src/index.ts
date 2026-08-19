@@ -42,8 +42,9 @@ export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 export { MetaItem, SectionLabel } from './shared/DetailFields.tsx';
 
 // Activity views — props-driven (no data fetching). All domain shapes are the
-// @akasecurity/schema /v1/activity contract types (ActivitySession, ActivitySessionSummary,
-// AuditEvent, Harness…); the views consume them directly. Presentation — event/
+// @akasecurity/schema activity contract types (ActivitySession,
+// ActivitySessionSummary, AuditEvent, Harness…); the views consume them
+// directly. Presentation — event/
 // status styling, the harness/kind vocabularies — lives in activity/meta.ts, and
 // the semantic → display derivations (day grouping, time/duration/token labels)
 // in activity/format.ts.

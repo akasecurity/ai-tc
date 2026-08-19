@@ -160,6 +160,9 @@ export function UpdatesClient({
                 </>
               )}
             </DialogTitle>
+            {/* Plural on the run branch: a plugin's plan is the marketplace
+                prep plus the op, so it is several lines for every host that
+                keeps a snapshot. */}
             <DialogDescription>
               {pending?.kind === 'advice'
                 ? 'This one can’t be applied from the dashboard. Run it yourself:'

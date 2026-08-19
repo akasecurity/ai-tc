@@ -35,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   assertShimResolves,
+  nodeOnlyPathEntries,
   SHIM_PROBE_ARG,
   shimmedPath,
   WINDOWS_SYSTEM_DIRS,
@@ -73,23 +74,33 @@ interface StepResult {
 // POSIX, so pointing HOME at a temp dir isolates the whole chain — no
 // script-level flag or process.env read is added to shipped code. The child env
 // is built from scratch (never the host env): PATH carries only the stub-judge
-// bin dir, node's own dir and — on Windows alone — System32, so a real `codex`
-// on the developer's PATH is not reachable through it, and the shebang still
-// finds node. That is a narrower claim than "the stub is the only resolvable
-// judge" — PATH is not the whole of resolution (Windows searches the working
-// and system directories first), and a stub that fails to land is answered by
-// whatever is, not by an ENOENT. assertShimResolves in run() closes that gap.
+// bin dir, a dir holding node ALONE and — on Windows alone — System32, so a
+// real `codex` on the developer's PATH is not reachable through it, and the
+// shebang still finds node. Node alone, never node's own bin dir: under nvm, or
+// any prefix node shares with its global installs, that dir is where `npm i -g`
+// puts a real `codex` too. That is a narrower claim than "the stub is the only
+// resolvable judge" — PATH is not the whole of resolution (Windows searches the
+// working and system directories first), and a stub that fails to land is
+// answered by whatever is, not by an ENOENT. assertShimResolves in run() closes
+// that gap.
 class SetupJourney {
   readonly home: string;
   // The settings.json the onboarding writer records the consent into.
   readonly settingsPath: string;
   private readonly binDir: string;
+  // The interpreter for the stub's shebang, and nothing that lives beside it.
+  // Nested under the stub dir so it rides that dir's cleanup; being inside a
+  // dir on PATH does not put it on PATH, so it is listed there by itself.
+  // Empty on win32, where the `.cmd` shim names its interpreter outright and
+  // nothing reads a shebang at all.
+  private readonly nodeDirs: string[];
   private shimProven = false;
 
   constructor() {
     this.home = mkdtempSync(join(tmpdir(), 'aka-codex-journey-home-'));
     this.settingsPath = join(this.home, '.aka', 'settings', 'settings.json');
     this.binDir = mkdtempSync(join(tmpdir(), 'aka-codex-journey-bin-'));
+    this.nodeDirs = nodeOnlyPathEntries(this.binDir);
     this.writeFakeJudge();
   }
 
@@ -162,10 +173,10 @@ class SetupJourney {
       // Windows resolves the home dir from USERPROFILE; keep both in lockstep.
       USERPROFILE: this.home,
       // Stub judge first on PATH so apply-suppressions' `codex exec` spawn hits
-      // it, never a live model; node's own dir second so the stub's
+      // it, never a live model; a dir holding node ALONE second so the stub's
       // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
       // branch of writeCommandShim; on Windows the stub is a .cmd naming an
-      // absolute node, so node's dir is on PATH for POSIX's sake, not both.
+      // absolute node, so the node dir is on PATH for POSIX's sake, not both.
       // Nothing else from the host environment reaches the chain — except the
       // Windows OS plumbing below, which is not "else" so much as the platform:
       // cmd.exe and where.exe live under System32, and Node reads the
@@ -175,10 +186,7 @@ class SetupJourney {
       // win32, and no `codex` lives in System32, so the stub stays the only
       // resolvable one. Defined once in path-shim.ts, beside the shim writer
       // whose win32 output is what needs them.
-      PATH: shimmedPath(
-        this.binDir,
-        [dirname(process.execPath), ...WINDOWS_SYSTEM_DIRS].join(delimiter),
-      ),
+      PATH: shimmedPath(this.binDir, [...this.nodeDirs, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
       ...WINDOWS_SYSTEM_ENV,
     };
     // Proven once per journey, before the first script runs. A shim that does

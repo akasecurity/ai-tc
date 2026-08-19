@@ -53,14 +53,13 @@ function benchPackages() {
   const tracked = lintableTrackedFiles();
   return workspacePackageDirs()
     .map((dir) => {
-      const posixDir = dir.split(/[\\/]/).join('/');
-      const prefix = `${posixDir}/${BENCH_DIR}/`;
+      const prefix = `${dir}/${BENCH_DIR}/`;
       const benchFiles = tracked.filter(
         (f) => f.startsWith(prefix) && BENCH_FILE.test(posix.basename(f)),
       );
       const manifest = readPackageManifest(dir);
       return {
-        dir: posixDir,
+        dir: dir,
         name: manifest.name,
         benchFiles,
         benchScript: manifest.scripts?.bench ?? '',

@@ -1,11 +1,9 @@
 // @ts-check
-import { noEnterpriseImports, rootConfigFiles, tonalInkTokens } from '@akasecurity/eslint-config';
-import { react } from '@akasecurity/eslint-config/react';
+import { rootConfigFiles } from '@akasecurity/eslint-config';
+import { reactUiPackage } from '@akasecurity/eslint-config/react';
 
 export default [
-  ...react,
-  ...noEnterpriseImports,
-  ...tonalInkTokens,
+  ...reactUiPackage,
   {
     languageOptions: {
       parserOptions: {

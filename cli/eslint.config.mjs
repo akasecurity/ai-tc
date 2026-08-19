@@ -1,13 +1,14 @@
 // @ts-check
 import {
   base,
-  noNetworkImports,
-  noNetworkSyntax,
+  drizzleWallRules,
+  noDrizzleImports,
   rootConfigFiles,
 } from '@akasecurity/eslint-config';
 
 export default [
   ...base,
+  ...noDrizzleImports,
   {
     languageOptions: {
       parserOptions: {
@@ -23,10 +24,12 @@ export default [
     // call. Allow node:net in this one file; every other network import (and the
     // bare `net` specifier) stays banned here. The static and dynamic bans opt
     // out together so the exception holds whichever import form the file uses.
+    //
+    // Built through `drizzleWallRules` rather than `noNetworkImports` directly:
+    // this entry SETS both rules, and flat config replaces rather than merges,
+    // so stating only the network side would silently drop the Drizzle wall for
+    // this one file while lint stayed green.
     files: ['src/commands/dashboard.ts'],
-    rules: {
-      'no-restricted-imports': noNetworkImports({ allow: ['node:net'] }),
-      'no-restricted-syntax': noNetworkSyntax({ allow: ['node:net'] }),
-    },
+    rules: drizzleWallRules({ allow: ['node:net'] }),
   },
 ];

@@ -9,7 +9,7 @@ citations like "CLAUDE.md §4". Renaming it would break those references, so it 
 file points at it.
 
 `CLAUDE.md` is not optional background: the conventions in it are enforced by ESLint and CI, so code
-that violates them fails to merge. In particular the no-network rule, the OSS/enterprise dependency
-wall, and the fail-open requirement for plugin hooks are all machine-checked.
+that violates them fails to merge. In particular the no-network rule, the package-dependency and
+Drizzle walls, and the fail-open requirement for plugin hooks are all machine-checked.
 
 @./CLAUDE.md

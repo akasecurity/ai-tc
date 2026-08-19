@@ -89,6 +89,57 @@ describe('runInstall / runStatus', () => {
     expect(out).toContain('aka extension install');
   });
 
+  // `install` runs only when the user types it, and nothing re-runs it on
+  // upgrade — so appending an id to EXTENSION_IDS leaves every existing user's
+  // manifest granting the old list. Chrome refuses connectNative for an origin
+  // the manifest omits, so that extension installs cleanly and silently cannot
+  // reach the host. An existence check reports exactly that as "installed".
+  const writeManifest = (body: string): void => {
+    writeFileSync(join(manifestDir, 'com.akasecurity.aka.json'), body);
+  };
+  const status = (): string => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    runStatus(manifestDir);
+    return stdout.mock.calls.map((c) => String(c[0])).join('');
+  };
+
+  it('status reports a manifest that does not grant every current extension id', () => {
+    writeManifest(
+      JSON.stringify({
+        name: 'com.akasecurity.aka',
+        path: '/fake/launcher',
+        type: 'stdio',
+        allowed_origins: ['chrome-extension://aaaabbbbccccddddeeeeffffgggghhhh/'],
+      }),
+    );
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    // Names the id that is missing, so the reader can tell which grant lapsed
+    // rather than being sent to re-run install on a hunch.
+    expect(out).toContain('mdoiaiemcnjnaokmcmgbikcdhgiemdof');
+    expect(out).toContain('aka extension install');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('status reports a manifest carrying no allowed_origins at all', () => {
+    writeManifest(JSON.stringify({ name: 'com.akasecurity.aka', type: 'stdio' }));
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain('no allowed_origins list');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('status reports a manifest it cannot parse rather than calling it installed', () => {
+    writeManifest('{ this is not json');
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain('could not be read');
+    expect(process.exitCode).toBe(1);
+  });
+
   it('declines to install (no manifest written) when no host script can be found', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
     runInstall(manifestDir, null, null);
@@ -139,7 +190,13 @@ describe('runInstall / runStatus', () => {
 
     const statusStdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     runStatus(manifestDir);
-    expect(statusStdout.mock.calls.map((c) => String(c[0])).join('')).toContain('installed');
+    // The whole line, not `toContain('installed')` — that substring is in
+    // "not installed" and in "installed (out of date)" too, so it cannot tell
+    // a working install from either way of being broken.
+    expect(statusStdout.mock.calls.map((c) => String(c[0])).join('')).toContain(
+      'native-messaging host: installed\n',
+    );
+    expect(process.exitCode).toBe(0);
   });
 
   // Runs the launcher for real rather than pattern-matching its source: the

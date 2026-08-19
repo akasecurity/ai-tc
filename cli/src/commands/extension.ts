@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -288,12 +288,48 @@ export function runInstall(
   );
 }
 
+// What an existence check cannot see. `install` runs only when the user types
+// it, and nothing re-runs it on upgrade — so a manifest written before an id
+// joined EXTENSION_IDS keeps granting the shorter list. Chrome refuses
+// connectNative for an origin the manifest omits, so that extension installs
+// cleanly and silently cannot reach the host: the same failure the CLI-side
+// guard prevents, reached from the on-disk side instead of the source side.
+// Reported rather than repaired, because rewriting a manifest is what the
+// explicit `install` subcommand is for.
+function manifestFault(manifestPath: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (err) {
+    return `could not be read (${err instanceof Error ? err.message : String(err)})`;
+  }
+  const granted = (parsed as { allowed_origins?: unknown } | null)?.allowed_origins;
+  if (!Array.isArray(granted)) return 'has no allowed_origins list';
+  const missing = EXTENSION_IDS.filter((id) => !granted.includes(`chrome-extension://${id}/`));
+  if (missing.length === 0) return null;
+  return `does not grant ${missing.length === 1 ? 'the extension id' : 'the extension ids'} ${missing.join(', ')}`;
+}
+
 export function runStatus(manifestDir: string): void {
   const manifestPath = join(manifestDir, `${NATIVE_HOST_NAME}.json`);
-  const installed = existsSync(manifestPath);
+  if (!existsSync(manifestPath)) {
+    process.stdout.write(
+      'native-messaging host: not installed\n' +
+        `  manifest: ${manifestPath}\n` +
+        '  run `aka extension install` to set it up\n',
+    );
+    return;
+  }
+
+  const fault = manifestFault(manifestPath);
   process.stdout.write(
-    `native-messaging host: ${installed ? 'installed' : 'not installed'}\n` +
+    `native-messaging host: ${fault ? 'installed (out of date)' : 'installed'}\n` +
       `  manifest: ${manifestPath}\n` +
-      (installed ? '' : '  run `aka extension install` to set it up\n'),
+      (fault
+        ? `  this manifest ${fault}\n` +
+          '  Chrome refuses a connection from any origin the manifest omits —\n' +
+          '  re-run `aka extension install` to rewrite it\n'
+        : ''),
   );
+  if (fault) process.exitCode = 1;
 }

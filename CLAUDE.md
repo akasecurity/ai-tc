@@ -1123,14 +1123,17 @@ scaling one. They catch different defects; neither substitutes for the other.
 The numbers, measured on arm64 macOS / Node 24 against corpora from
 `src/test-fixtures/generate.ts`:
 
-| Property                                  | Measured                           | Gate                    |
-| ----------------------------------------- | ---------------------------------- | ----------------------- |
-| Store growth, 5k → 10k                    | **797.9 B/event** marginal         | ±15% band ✅            |
-| `recordCapture` 2k → 20k                  | ratio **1.02** (fastest of 200)    | ratio < 3 ✅            |
-| `openLocalDatabase` 2k → 20k              | ratio **0.99** (fastest of 20)     | ratio < 3 ✅            |
-| `recordCapture` at 1M rows                | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅  |
-| `openLocalDatabase` at 1M rows            | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅  |
-| `/security` (8 aggregations) at 1M events | **5,945 ms** median of 5           | ungated (misses 2 s) ❌ |
+| Property                                    | Measured                           | Gate                   |
+| ------------------------------------------- | ---------------------------------- | ---------------------- |
+| Store growth, 5k → 10k                      | **902.8 B/event** marginal         | ±15% band ✅           |
+| `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
+| `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
+| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
+| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅ |
+| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)            | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)           | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 300k events | **729 ms**                         | 3 flatness ratios ✅   |
+| `/security` at 1M events                    | **~2.5–3 s** extrapolated          | ungated, unmeasured ❌ |
 
 **Both pairs came down from a decade higher, and the reason is worth carrying.** They
 were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
@@ -1140,9 +1143,17 @@ macOS CI run that passed and 135 s on one that did not, against a 120 s hook cei
 each case is a RATIO or a SLOPE, and neither needs a particular absolute size, so the
 corpus came down rather than the ceiling going up. The prices are stated where they are
 paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's centre
-had to be retaken, because the marginal creeps with size — 791.3 B/event across 2.5k→5k,
-797.9 across 5k→10k, 818.4 across 10k→20k, all measured, all byte-identical run to run.
+had to be retaken, because the marginal creeps with size — 902.8 B/event across 2.5k→5k,
+902.8 across 5k→10k, 923.2 across 10k→20k, all measured, all byte-identical run to run.
 **Do not carry a centre across a size change**; a stale one still reads green.
+
+**Nor across a CORPUS change, which is the harder one to remember because the test's own
+size did not move.** That centre was 797.9 until the generator's finding rate went from
+0.1 to a measured 0.33: three times the finding rows per event took the marginal to 902.8,
+which the old band's 917.6 ceiling **passed, by 1.6%**. So a 13% growth regression went
+undetected and the band was left one unrelated commit away from failing for no reason — at
+which point widening it is the obvious-looking fix. Re-take the centre whenever anything
+about the corpus moves, not only its event count.
 
 **A ratio gate has a sensitivity floor, and it is worth knowing before trusting one.**
 The quotient is `(base + 10k) / (base + k)`, so clearing a ceiling of 3 needs the
@@ -1155,23 +1166,75 @@ fails. So a ratio gate catches a linear cost that changes what the operation cos
 one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
 the pair by 2.5x raised it by 2.5x.
 
-**`/security` misses its budget, and it is not a missing index.**
+**Three of `/security`'s eight reads are BOUNDED, and a plan test cannot tell you that.**
 `hot-read-query-plans.test.ts` drives every read the `/security`, `/activity` and
 `/vault` pages issue and confirms each one runs indexed. That capture runs at 3k and
 nothing re-captures the plans above it: the store carries no `ANALYZE` statistics, so
 SQLite plans from the schema rather than from row counts and the plans are EXPECTED to
-hold at 1M — reasoning, not a second measurement, and worth wording that way. The
-cost is that FOUR of the eight never shrink with the window at all: `severitySummary`,
-`recentFindings` and `recentlyResolved` take no range argument, and `mttrTrend` takes one
-whose `EXISTS` prefilter bounds the RESULT rather than the scan (measured at 1,523 ms
-returning zero rows). All four are linear in total FINDINGS, not events. And the page's
-`Promise.all` buys nothing: every repository method here runs its SQL **synchronously**
-and returns an already-resolved promise, so the page costs the SUM of the eight.
+hold at 1M — reasoning, not a second measurement, and worth wording that way.
 
-Linear past 100k at 6.19 ms per thousand events (373 ms at 100k, 5,945 ms at 1M, both
-measured), so the budget is crossed near **363k events** (~300 MB). Fixing it means
-bounding what the page reads — retention, pre-aggregation or a cap — which is a product
-decision, not tuning.
+An indexed plan is not a bound, in either direction, and this page is where both halves of
+that were learned. `mttrTrend` ran every step of its plan as a SEARCH while driving from
+`audit_events` and joining every capture event before its window predicate could reject a
+row. `recentFindings` now deliberately SCANS `idx_audit_started_at` so its `LIMIT` can stop
+early, and EXPLAIN QUERY PLAN has no text for "terminates after 500 rows". So the plans pin
+the mechanism and `security-page-scale.test.ts` pins the consequence, as a ratio across a
+10x store step with `severitySummary` as the growth control. Neither implies the other.
+
+`recentFindings`, `recentlyResolved` and `mttrTrend` are the three now flat in store size —
+ratios **1.10**, **1.26** and **1.32** over 2k → 20k, against a ceiling of 3 and a control
+reading 18.30. What each needed differs, and none of it was tuning:
+
+- **`recentlyResolved` was QUADRATIC**, O(code_change events x resolved keys), because the
+  join key was unreachable: `f` was reached FROM `latest`, so `latest` got probed on
+  (rn, status, method) and the plan enumerated every pair before `f` could reject it. 10,966
+  ms at 50k events and 125,322 ms at 150k — 3x the store for 11.4x the cost — returning 20
+  rows. It read 8 ms to everyone who measured it before, because an EMPTY
+  `finding_resolution` collapses the cross product to nothing.
+- **`mttrTrend`'s `EXISTS` bounded the RESULT, not the scan.** Fixed by driving from
+  `finding_resolution` over a `resolved_at` range. Migration **0021**'s index on that column
+  is NOT what buys the flatness — remove it and the ratio does not move, because the
+  latest-resolution derived table already passes over the whole table, so the read is
+  O(resolutions) either way and resolutions are not the store. What it buys is the criterion
+  the plan test hard-fails on: without it the driving step is a bare `SCAN fr`. Two guards,
+  two different defects, and neither catches the other's.
+- **`recentFindings` could not push its LIMIT down**, since the sort key sat on the joined
+  table. Fixed with `+e.event_type` (making `idx_audit_type_t` unattractive, so
+  `idx_audit_started_at` yields `started_at` order directly) plus `CROSS JOIN`.
+
+**`CROSS JOIN` is load-bearing in all three and must not be tidied into `JOIN`.** In SQLite
+it is semantically identical and exists only to stop the tables being reordered; with no
+`ANALYZE` statistics the planner prices `event_type IN (...)` as a selective probe and puts
+`audit_events` back on the outside. On `recentFindings` the unary plus ALONE recovers almost
+none of the win — 23.6 ms against 0.9 ms with both, from 35.0 ms.
+
+The page's `Promise.all` still buys nothing: every repository method here runs its SQL
+**synchronously** and returns an already-resolved promise, so the page costs the SUM of the
+eight.
+
+**What remains is `severitySummary`, the budget is still missed at 1M, and closing it is a
+product decision.** Measured at three points — 159 ms at 50k, 350 ms at 150k, 729 ms at 300k
+— and the page is mildly SUPERLINEAR rather than linear, which is the part a two-point
+reading gets wrong. `severitySummary` carries that: 46.6 → 177.7 → 472.2 ms, i.e. 0.93 →
+1.19 → 1.57 us per event, a cost per event rising ~1.33x per doubling (an all-time `GROUP BY`
+whose temp B-tree and working set both grow with it). Everything else is flat or
+window-bounded, so it goes from 29% of the page at 50k to 65% at 300k.
+
+Carrying that factor from 300k to 1M puts `severitySummary` near **2.6 s** and the page at
+**~2.5–3 s** — still OVER the 2,000 ms budget, with that one read accounting for ~85% of it.
+Read the RANGE as the finding, not either endpoint: it is an extrapolation over 1.7 doublings
+from three points whose slope is itself moving.
+
+**Nothing here measures 1M, and the reason is the corpus rather than the reads.** Seeding is
+badly superlinear — 142 s at 150k against 733 s at 300k, **5.2x for 2x the events** — so a 1M
+corpus is tens of minutes and belongs in neither a test nor a session. Do not size a change
+against a 1M figure from this section without taking it.
+
+So the engineering half is done and the arithmetic says it is not sufficient. Bounding
+`severitySummary` means a maintained rollup (exact, but invalidated from the resolution path
+as well as the capture path, plus a backfill for existing stores), windowing the card (cheap,
+changes what the number means from "ever" to "the last 30 days"), or retention on the corpus
+itself. All three are product calls, not tuning.
 
 **Two tables have a retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and

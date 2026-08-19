@@ -271,13 +271,17 @@ export type FindingFacets = z.infer<typeof FindingFacets>;
 // ─── Request / response schemas ───────────────────────────────────────────────
 
 // ListGroupedFindingsQuery / ListGroupedFindingsResponse: the grouped findings
-// read. Distinct from the older flat list, which pages differently — see below.
+// read — the one that answers "which rules are firing". Distinct from the
+// instance-level flat read further down (ListFindingInstancesQuery), which
+// answers "what happened most recently" and pages by a keyset cursor where this
+// one pages a sorted array. Two live contracts, neither superseding the other;
+// the flat read's own header says why they are not two modes of one query.
 //
-// Query schema — intentionally NO `.meta({ id })`: the OpenAPI generator expands
-// query params into individual `parameters` (which cannot be a `$ref`), so it
-// must stay inline (see the SHAPE IDS note in zod/index.ts). `limit` uses
-// `z.coerce.number()` because
-// query params arrive as strings (`?limit=50`).
+// Query schema — intentionally NO `.meta({ id })`: a consumer expands query
+// params into individual parameters, and a parameter cannot reference a named
+// shape, so it must stay inline (see the SHAPE IDS note in zod/index.ts).
+// `limit` uses `z.coerce.number()` because query params arrive as strings
+// (`?limit=50`).
 // Default page size for grouped findings when the query omits `limit` (schema
 // caps `limit` at 100). Shared by every findings read path so all consumers
 // page identically — a single source of
@@ -385,8 +389,13 @@ export type FindingInstanceDetail = z.infer<typeof FindingInstanceDetail>;
 // paginates by a real keyset cursor where the grouped one pages a sorted array.
 //
 // Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the
-// SHAPE IDS note in zod/index.ts). `limit` mirrors the legacy flat lists' 200 ceiling.
+// SHAPE IDS note in zod/index.ts).
 export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
+// The ceiling `limit` is rejected past. Named rather than left inline so the
+// number has a referent to check against, the way MAX_VAULT_PAGE_LIMIT does for
+// the vault reads. The grouped read caps at 100 and is set separately: the two
+// are distinct contracts, so neither cap is derived from the other.
+export const MAX_FLAT_FINDINGS_LIMIT = 200;
 
 export const ListFindingInstancesQuery = z.object({
   severity: z.array(Severity).optional(),
@@ -407,7 +416,7 @@ export const ListFindingInstancesQuery = z.object({
   q: z.string().optional(),
   sessionId: z.string().optional(),
   from: z.iso.datetime().optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_FLAT_FINDINGS_LIMIT).optional(),
   cursor: z.string().optional(),
 });
 export type ListFindingInstancesQuery = z.infer<typeof ListFindingInstancesQuery>;

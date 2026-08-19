@@ -144,14 +144,37 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
-  if (!createCliPluginManager(cliBin).available()) {
+  // Two renders off the host's own verb table — a hardcoded `plugin update` is
+  // wrong for Codex, which has no such subcommand — and they are NOT
+  // interchangeable.
+  //
+  // The RECIPE is the manual equivalent: what a user retypes when this process
+  // cannot run it for them. It is joined with `&&`, so it carries only steps
+  // whose failure should stop the chain, which is why the survivable snapshot
+  // refresh is deliberately absent. It leads with `marketplace add` because
+  // `available()` proves only that the binary is on PATH, never that the
+  // marketplace was ever registered.
+  //
+  // The SPAWN PLAN is the disclosure: every command this process is about to
+  // run, refresh included. Announcing the recipe here named two of the three
+  // spawns — the same under-disclosure the dashboard's confirm dialog had, and
+  // worse on this surface, since a terminal is where a user watches commands go
+  // by and notices one they were not told about. It is printed as a list and
+  // never joined with `&&`: that join would state a chaining rule this code
+  // does not follow, since a failed refresh is survivable here.
+  const manager = createCliPluginManager(cliBin);
+  const recipe = manager.updateRecipe(ref, agent.marketplaceSource).join(' && ');
+  if (!manager.available()) {
     process.stderr.write(
       `✗ ${status.name}: the \`${cliBin}\` CLI isn't on your PATH — install ${agent.name}, ` +
-        `then run \`${cliBin} plugin update ${ref}\`.\n`,
+        `then run \`${recipe}\`.\n`,
     );
     return false;
   }
-  process.stdout.write(`Updating ${status.name} (${cliBin} plugin update ${ref})…\n`);
+  const plan = manager.updateSpawnPlan(ref, agent.marketplaceSource, agent.marketplace);
+  process.stdout.write(
+    `Updating ${status.name}, running:\n` + plan.map((command) => `  ${command}\n`).join(''),
+  );
   const { ok } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
   return ok;

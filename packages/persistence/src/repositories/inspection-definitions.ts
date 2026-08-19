@@ -14,11 +14,15 @@ import { inspectionDefinitionId } from '../ids.ts';
  * boundaries: concatenation would put rule `ab` version `c` and rule `a` version
  * `bc` on one digest, collapsing two rule versions onto a single row so
  * historical findings cite the wrong definition. Content-addressed on the rule's
- * identity and its version and nothing else, so editing a rule mints a NEW row
- * and historical findings keep citing the exact version that fired. Two stores
- * that load the same rule version derive the same id.
+ * identity and its version and nothing else, so two stores that load the same
+ * rule version derive the same id.
  *
- * Idempotent upsert: re-loading the same rule version no-ops.
+ * The VERSION is what mints a row, not the edit. Bump it and the rule gets a new
+ * id and a new row, leaving historical findings citing the exact version that
+ * fired. Edit a rule WITHOUT bumping it and the id is unchanged — and the write
+ * is `INSERT OR IGNORE`, insert-if-absent rather than an update, so the row
+ * keeps its old `definition`/`name`/`category`/`severity` and the new text is
+ * dropped. Re-loading an unchanged rule version no-ops by that same route.
  */
 export class SqliteInspectionDefinitionsRepository {
   private readonly insertStmt: StatementSync;
@@ -32,7 +36,8 @@ export class SqliteInspectionDefinitionsRepository {
     );
   }
 
-  // Idempotent upsert; returns the content-addressed definition id.
+  // Insert-if-absent; returns the content-addressed definition id. An id already
+  // present keeps the stored row untouched — see the class doc.
   upsert(input: InspectionDefinitionInput): string {
     const id = inspectionDefinitionId(input.ruleId, input.version);
     const row = toInspectionDefinitionRow(input, id);

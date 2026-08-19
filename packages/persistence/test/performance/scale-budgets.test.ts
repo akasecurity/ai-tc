@@ -146,9 +146,13 @@
  * timeout, which is a red for the wrong reason and proves nothing about
  * flatness. Pick a cost above the floor and well under it.
  *
- * `/security` gets no test here, and the omission is deliberate rather than an
- * oversight: it MISSES its 2,000 ms budget at 1M events (5,945 ms measured), so
- * there is no passing assertion to write.
+ * `/security` gets no test here, and it is not untested either — see
+ * `security-page-scale.test.ts`, which states the three reads that must stay flat
+ * in store size as ratios over this same pair. It is a separate file because the
+ * experiment differs: this one grows everything and measures per-call store cost,
+ * while that one holds the ANSWER size fixed and grows only the store, which is
+ * what separates a read that is linear in the store from one that is linear in
+ * the rows it returns.
  *
  * ## The corpora are built in a HOOK, under a SETUP-sized ceiling
  *
@@ -225,6 +229,15 @@ const GROSS_REGRESSION_MS = 1_000;
  */
 const SEED_TIMEOUT_MS = 120_000;
 
+/**
+ * The finding rate the seed-time figures in this file's header were taken at.
+ *
+ * Not the generator's default, which is higher and measured — see the note at
+ * the `seedCaptureCorpus` call. Changing this invalidates the header's ms/event
+ * table and the 120 s ceiling sized from it, so re-take both if it moves.
+ */
+const SEED_FINDING_RATE = 0.1;
+
 const CAPTURE_SAMPLES = 200;
 const OPEN_SAMPLES = 20;
 
@@ -274,7 +287,24 @@ function seedAndMeasure(store: OwnedTempStore, events: number): Measured {
   // time, and the fastest possible store is an empty one — so without this the
   // whole file would pass most convincingly at the moment the corpus stopped
   // being written.
-  const corpus = seedCaptureCorpus(db, { events, sessions: 200, seed: 1 });
+  const corpus = seedCaptureCorpus(db, {
+    events,
+    sessions: 200,
+    seed: 1,
+    // Pinned rather than inherited, and this is a SEED-COST decision, not a
+    // realism one. What this file measures is the flatness of a `recordCapture`
+    // that writes NO findings (see `makeEvent` below, called with `[]`) and of
+    // `openLocalDatabase`; the corpus is here only to make the store large, so
+    // its finding rate is a cost paid and never measured. The generator's
+    // default moved to a measured 0.33, which triples the finding rows and takes
+    // the seed for this pair from 1.20 s to 2.65 s locally — and at the ~30x CI
+    // factor the header derives, from ~36 s to ~80 s against the 120,000 ms
+    // ceiling below. This file has ALREADY overrun that ceiling once, at
+    // 135,237 ms, so spending its remaining margin on a rate it does not measure
+    // is the wrong trade. The alternative the header rules out is cutting the
+    // pair again, which would raise the sensitivity floor a second time.
+    findingRate: SEED_FINDING_RATE,
+  });
 
   const captures: number[] = [];
   for (let i = 0; i < CAPTURE_SAMPLES; i += 1) {

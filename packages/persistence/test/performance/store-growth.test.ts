@@ -72,25 +72,36 @@ const BASE_EVENTS = 5_000;
 const DOUBLE_EVENTS = 10_000;
 
 /**
- * The band the marginal cost must land in: ±15% of a measured 797.9 B/event for
+ * The band the marginal cost must land in: ±15% of a measured 902.8 B/event for
  * the generator's 240-character events.
  *
  * TIGHT, and it can be, because this is not a timing measurement. The corpus is
  * deterministic and so is SQLite's page allocation, so the figure is
- * byte-identical run to run — two consecutive runs produced 4,395,008 B at 5k
- * and 8,384,512 B at 10k, the same integers each time. Nothing here can flake
+ * byte-identical run to run — two consecutive runs produced 4,956,160 B at 5k
+ * and 9,469,952 B at 10k, the same integers each time. Nothing here can flake
  * the way a wall-clock bound does, so the band is sized to catch a regression
  * rather than to survive one.
  *
- * **The centre is a property of the PAIR, not of an event**, which is why it is
- * retaken whenever the pair moves rather than carried across. Measured on the
- * same corpus at three consecutive decades: 791.3 B/event across 2.5k→5k, 797.9
- * across 5k→10k, 818.4 across 10k→20k. The slope creeps as the store grows —
- * ~3.4% over that range — so the old 818.4 sits 2.5% above where this pair
- * actually lands. Inside a ±15% band that would still have passed, which is
- * exactly the hazard: a centre nobody re-measured drifts the band off the
- * measurement it is supposed to bracket, one size change at a time, and the
- * band only ever reads as green while it happens.
+ * **The centre is a property of the CORPUS, not of an event**, so it is retaken
+ * whenever anything about the corpus moves — not only its size. Measured at
+ * three consecutive decades: 902.8 B/event across 2.5k→5k, 902.8 across 5k→10k,
+ * 923.2 across 10k→20k. The slope still creeps as the store grows, ~2.3% over
+ * that range.
+ *
+ * **What moved it last was the generator's finding RATE, not its size**, and that
+ * is the case this paragraph exists to stop being learned again. The rate went
+ * from 0.1 to a measured 0.33 (see `DEFAULT_FINDING_RATE`), so every event now
+ * carries about three times the finding rows, and the marginal went 797.9 →
+ * 902.8. Against the OLD centre's 917.6 ceiling that is a pass — by 1.6%. So the
+ * band did not catch a 13% growth regression and would not have caught the next
+ * one either; it would simply have started failing on some unrelated commit, at
+ * which point the obvious-looking fix is to widen it. A centre nobody re-measured
+ * drifts off the measurement it is supposed to bracket, one change at a time, and
+ * reads as green throughout.
+ *
+ * The three decades above were measured at the current rate. The figures the old
+ * centre rested on (791.3 / 797.9 / 818.4) described a corpus with a third of
+ * the findings and are retracted rather than kept for comparison.
  *
  * A band this narrow was chosen after a loose one failed to earn its place: at
  * a 1,800 B ceiling, a mutation that wrote a SECOND copy of every event's
@@ -98,11 +109,13 @@ const DOUBLE_EVENTS = 10_000;
  * ceiling has to sit below the smallest regression worth catching, not below the
  * absurd ones.
  *
- * That mutation is what re-earns the band at THIS pair, since a smaller corpus
- * is where a size-derived ceiling is likeliest to have gone slack: replanted, it
- * reads 1,129.7 B/event (6,057,984 B at 5k against 11,706,368 B at 10k) and
- * fails the 917.6 ceiling above. Replant it, rather than trusting this
- * paragraph, before moving the pair again.
+ * That mutation is what re-earns the band at THIS centre, and it was replanted
+ * when the centre moved rather than scaled forward from the old figure: it reads
+ * 1,214.1 B/event (6,516,736 B at 5k against 12,587,008 B at 10k) and fails the
+ * 1,038.2 ceiling above. Scaling the old 1,129.7 by the centre's own movement
+ * would have predicted 1,282.0 and been wrong by 5%, which is the reason to
+ * replant rather than extrapolate. Replant it, rather than trusting this
+ * paragraph, the next time either the pair or the corpus changes.
  *
  * The 15% is for cross-platform slack, not for noise: a SQLite build with a
  * different default page size would shift the figure, and this should fail
@@ -111,7 +124,7 @@ const DOUBLE_EVENTS = 10_000;
  * the corpus stopped writing what it claims to, and a growth test over a store
  * that is not growing proves nothing.
  */
-const MEASURED_MARGINAL_BYTES_PER_EVENT = 797.9;
+const MEASURED_MARGINAL_BYTES_PER_EVENT = 902.8;
 const MARGINAL_TOLERANCE = 0.15;
 const MIN_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 - MARGINAL_TOLERANCE);
 const MAX_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 + MARGINAL_TOLERANCE);

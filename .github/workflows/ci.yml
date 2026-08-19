@@ -447,34 +447,32 @@ jobs:
   # its plan-file handling (tmpdir/mkdtemp + path joins), which ships inside
   # the plugin bundle. web-ui is included because it
   # is bundled into the CLI (shipped surface), and turbo runs its whole `test`
-  # script — EVERY suite, not just the middleware gate:
-  #   - test/middleware.test.ts — the sole DNS-rebinding gate; pure string work
-  #     (68 tests in ~40ms here).
-  #   - test/actions/exceptions.test.ts — the three exception-granting Server
-  #     Actions (addException's raw-secret handling, approveBlocked's ledger and
-  #     key-version gates, rotateKey's confirmation gate), each driving a REAL
-  #     node:sqlite store and a REAL key file per test. This is the OS-sensitive
-  #     half and the reason it belongs on Windows.
-  #   - test/helpers/store-bytes.test.ts — the at-rest leak reader that suite
-  #     asserts through (6 tests in ~0.3s here). Opens no store, which is why it
-  #     is cheap; one case needs POSIX modes and skips on Windows, so the same
-  #     property is also pinned through an injected reader that runs everywhere.
-  #   - test/pages/settings-page-head.test.ts — copy guard; pure (8 tests).
-  # The exceptions suite is the slow one: ~2min wall for 74 tests — the other
-  # three together are under a second — against the 20s per-test timeout in
-  # web-ui/vitest.config.ts. A couple of cases assert POSIX mode bits and skip
-  # here rather than pass with no assertions. Keep an eye on that margin: the
-  # persistence suite needed batching twice to stay under it, and every test
-  # added there pays a full store-seeding hook (~2s), which is why a test that
-  # needs no store belongs beside the reader instead.
-  # web-ui's `test` also drops the `build`/`^build` edges
-  # (web-ui/turbo.json), so it never waits on a `next build` — only on the
-  # ~200ms `build:worker` task that emits the scan worker its suites drive.
-  # The CLI's tasks still reach `web-ui#build` through `^build`, so that build
-  # runs BESIDE `web-ui#test` here as on every leg, which is exactly why
-  # `build:worker` has to be the only task that writes web-ui/dist/
-  # (web-ui/test/scan-worker-build.test.ts). Scoped to the shipped-surface
-  # packages to keep the job fast; the full suite runs on the Linux job above.
+  # script — every suite, not just the middleware gate. Most of it is the
+  # Server Action suites under test/actions/, each driving a REAL node:sqlite
+  # store and a REAL key file per test; that is the OS-sensitive half and the
+  # reason the package belongs on Windows. test/actions/exceptions.test.ts is
+  # the slow one — 200 tests, each paying a full store-seeding hook, and all
+  # of them in ONE vitest worker, because a file is the unit vitest
+  # parallelises: ~136s wall on this runner with persistence off the disk,
+  # 310-620s with it on — against the 20s per-test timeout in
+  # web-ui/vitest.config.ts. Keep an eye on that margin: the persistence
+  # suite needed batching twice to stay under it. That is why a test that
+  # needs no store belongs beside the pure suites (middleware, store-bytes,
+  # settings-page-head) instead, and why web-ui runs in its OWN invocation
+  # below rather than in the main one — see the dashboard step. A couple of
+  # cases assert POSIX mode bits and skip here rather than pass with no
+  # assertions.
+  # web-ui's `test` drops the `build`/`^build` edges (web-ui/turbo.json), so
+  # `next build` is not on ITS path — the only task it waits on is the ~200ms
+  # `build:worker` that emits the scan worker two of its suites drive.
+  # `next build` still runs on this leg, because `cli` depends on web-ui and
+  # cli's `test` reaches web-ui's `build` through `^build`; the step split
+  # below is what keeps that build out of `web-ui#test`'s way HERE, while on
+  # the unfiltered legs above turbo schedules the two together with no edge
+  # between them. Which is why `build:worker` has to be the only task that
+  # writes web-ui/dist/ (web-ui/test/scan-worker-build.test.ts). Scoped to the
+  # shipped-surface packages to keep the job fast; the full suite runs on the
+  # Linux job above.
   #
   # Two entries here are `private: true` and bundled by no artifact, so both are
   # the first thing anyone trimming this list back to "the shipped surface"
@@ -613,12 +611,15 @@ jobs:
   # measured number would trade a real margin for a cosmetic one.
   #
   # What this budget does NOT address, and should not be reached for: this leg
-  # also fails intermittently with per-test `Test`/`Hook timed out in 20000ms`,
+  # also failed intermittently with per-test `Test`/`Hook timed out in 20000ms`,
   # a different test file each run, which is a starved runner rather than a
   # broken test. Those failures land well inside the job budget — the failing
   # run measured here took 12m07s of its 35 — so moving this number in either
-  # direction does nothing about them. The per-test timeout is the knob that
-  # governs those, not this one.
+  # direction does nothing about them. Nor is the per-test timeout the knob:
+  # what starved the runner was one specific PAIRING under `--concurrency=2`,
+  # and it is addressed where it lives, in the step layout below (see the
+  # dashboard step). A wider timeout would have hidden it while still paying
+  # the pairing's wall clock; serialising removes both.
   windows:
     name: Windows · Unit tests (shipped surface)
     runs-on: windows-latest
@@ -664,8 +665,10 @@ jobs:
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
         #
-        # The installer suite is deliberately NOT in this list — it runs in its
-        # own invocation below, for the reason given there.
+        # Two packages are deliberately NOT in this list. web-ui and the
+        # installer each run in their own invocation below, and each for a
+        # measured reason given at its step; both are the same shape of
+        # reason, which is why they are stated once each and not here.
         run: >
           pnpm turbo run test
           --continue
@@ -683,24 +686,98 @@ jobs:
           --filter=@akasecurity/setup-wizard
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops
-          --filter=@akasecurity/web-ui
           --filter=@akasecurity/eslint-config
 
-      # The installer suite runs in its OWN turbo invocation, AFTER the fifteen
-      # above rather than beside them. It is by far the most disk-expensive
-      # suite in the workspace on this platform — it copies, zips and expands a
-      # real ~115 MB PE — and under `--concurrency=2` it was therefore always
-      # running alongside one of the shipped-surface packages. What that
-      # produced was not its own failure so much as everyone else's:
-      # `Hook timed out in 20000ms` in plugin-sdk, persistence and claude-code,
-      # a different file each run, which is the signature of a starved runner
-      # rather than of any of those diffs.
+      # web-ui's suite runs in its OWN turbo invocation, AFTER the fourteen
+      # above rather than beside them, and the reason is a measured pairing
+      # rather than a hunch about load: `@akasecurity/persistence#test` and
+      # `@akasecurity/web-ui#test` are the two heaviest fsync-bound suites in
+      # the workspace, and under `--concurrency=2` they overlapped in nearly
+      # every run of this leg — COMPLETELY in the steady state, where every
+      # other task is a cache hit and those two are the only long misses left.
+      # A rerun re-executes exactly the tasks that went red, since turbo caches
+      # only a task that exited 0 and the exact-key guard on the save step
+      # below keeps a rerun from adding to the entry — so a SHA red on both was
+      # re-executed against the same pairing every time someone pressed
+      # re-run, and one red on persistence alone got the fourth row below.
+      # Each vitest is a pool of `cpus - 1` workers, so the pair is up
+      # to six store writers on the runner's one disk, and the cost is
+      # super-linear. Measured over ~60 runs of this leg (every attempt, read
+      # from the job logs, overlap computed from each task's start and wall):
+      #
+      #   pairing                    persistence   web-ui     outcome
+      #   serialised (one run)           321s        142s     green — the fastest
+      #                                                        web-ui observed
+      #   overlapping, green          266-464s    129-368s    (overlap 23-93% of
+      #                                                        persistence's wall)
+      #   overlapping, one or both    303-1145s   173-1023s   `timed out in
+      #     red                                                20000ms`, a
+      #                                                        different file
+      #                                                        each run
+      #   persistence with web-ui a   234-288s       n/a      timing-clean; the
+      #     cache hit (six runs)     (five runs)               sixth ran 755s on
+      #                                                        a runner where
+      #                                                        EVERY suite ran
+      #                                                        ~3x slow, and
+      #                                                        missed a 10s
+      #                                                        worker-start
+      #                                                        deadline in a
+      #                                                        fault helper
+      #
+      # Every `timed out in 20000ms` on this leg in those runs had the overlap,
+      # and no run without it produced one. What the overlap does not do on its
+      # own is decide the colour — the same SHA went 1145s/1023s red on one
+      # attempt and 370s/345s green on the next, at 82% and 93% overlap — so
+      # the runner's own throughput swing (~3x between runs) is the other
+      # factor, and the pairing is what amplifies it past a 20s budget. Wall
+      # clock is roughly neutral: the two alone sum to ~380-470s, against
+      # ~300-390s for a green overlapping pair and ~410-750s for a red one, and
+      # the red one is followed by a rerun. A wider per-test budget would have
+      # hidden the pairing while still paying its wall clock, which is why it
+      # was not the fix.
+      #
+      # web-ui is the one moved, not persistence, and not both. persistence's
+      # other neighbours are cheap: in the serialised run it shared the disk
+      # with plugin-sdk, plugin-runtime and local-ops for its whole 321s, and
+      # the alone figures above are only 10-27% below that. Moving it too
+      # would put its ~5 minutes on the critical path alone rather than beside
+      # the smaller suites — a cold run longer by most of that — for a
+      # neighbour cost that does not show in the data. web-ui, by contrast, is
+      # one file (test/actions/exceptions.test.ts) doing 200 store seeds in a
+      # single worker, so it is latency-bound: every fsync it waits on is one
+      # it cannot overlap with another of its own, which is exactly what a busy
+      # neighbour lengthens — 136s for that file in the serialised run,
+      # 309-616s with persistence's whole body beside it.
+      #
+      # `--concurrency=1` for the reason the installer's is: one package, and
+      # ci-test-concurrency.test.js requires a bound on every `turbo run test`.
+      # Every dependency web-ui's `test` has (`build:worker` and `^typecheck`;
+      # its `build` edge is dropped in web-ui/turbo.json) is already cached by
+      # the step above — `build:worker` because `web-ui#build` depends on it and
+      # cli's `test` reaches that through `^build` — so this executes one task.
+      #
+      # `!cancelled()` so a red shipped-surface step still leaves this one
+      # reporting, for the same reason that step takes `--continue`.
+      - name: Test the dashboard suites
+        if: ${{ !cancelled() }}
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui
+
+      # The installer suite runs in its OWN turbo invocation too, AFTER the
+      # fourteen above and the dashboard step, rather than beside any of them.
+      # It is by far the most disk-expensive suite in the workspace on this
+      # platform — it copies, zips and expands a real ~115 MB PE — and under
+      # `--concurrency=2` it was therefore always running alongside one of the
+      # shipped-surface packages. What that produced was not its own failure so
+      # much as everyone else's: `Hook timed out in 20000ms` in plugin-sdk,
+      # persistence and claude-code, a different file each run, which is the
+      # signature of a starved runner rather than of any of those diffs.
       #
       # A second STEP rather than a second JOB, and that is the whole reason it
       # is spelled this way: a new job is a new status check, and a check that
       # branch protection does not require reads as covered while gating
       # nothing. This needs no protection change and no new job name for
-      # CONTRIBUTING.md's table to carry.
+      # CONTRIBUTING.md's table to carry. The dashboard step above is a step
+      # for the same reason.
       #
       # `!cancelled()` so a red shipped-surface step still leaves this one
       # reporting, for the same reason that step takes `--continue`.
@@ -714,7 +791,9 @@ jobs:
       # and replay a green in which the case skipped. It sits on this step
       # alone rather than the whole job because this is the only package that
       # reads it — the other fifteen were being hashed against a variable none
-      # of them consults.
+      # of them consults. That is also why web-ui is not folded into this
+      # invocation, though both are single-package serial steps: it would put
+      # this variable into web-ui#test's hash for no reason.
       - name: Test the installer scripts
         if: ${{ !cancelled() }}
         env:

@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e11bdc7c-f5af-4286-a192-82f7aa1286a3",
-  "prevId": "90f14810-4928-4bdf-9963-cde6555bdcac",
+  "id": "8731ccf3-5672-4c1c-be96-68314d29de0d",
+  "prevId": "e11bdc7c-f5af-4286-a192-82f7aa1286a3",
   "tables": {
     "audit_events": {
       "name": "audit_events",
@@ -872,6 +872,13 @@
           "name": "idx_finding_resolution_key",
           "columns": [
             "finding_key"
+          ],
+          "isUnique": false
+        },
+        "idx_finding_resolution_resolved_at": {
+          "name": "idx_finding_resolution_resolved_at",
+          "columns": [
+            "resolved_at"
           ],
           "isUnique": false
         }

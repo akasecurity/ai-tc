@@ -317,6 +317,55 @@ describe('mttrTrend', () => {
     expect(todaysPoint?.bySeverity.critical).toBe(0);
   });
 
+  it('weights a finding ONCE however many resolution rows it has inside the window', async () => {
+    // finding_resolution is APPEND-ONLY, so a key fixed, redetected and fixed
+    // again carries several rows in one window. The read drives from that table,
+    // which means such a key matches once PER ROW — and this bucket's value is a
+    // MEAN, so a key matched three times is a key weighted three times.
+    //
+    // The skew only shows when two findings in one bucket duplicate UNEQUALLY and
+    // have different MTTRs. With a single key, or with equal duplication, sums and
+    // counts scale by the same factor and the mean is unchanged — which is why a
+    // fixture has to be built for it deliberately rather than expected to fall out
+    // of the cases above.
+    //
+    // key-a: detected 6 days ago, fixed today, and THREE rows inside the window.
+    record({ daysAgo: 6, severity: 'critical', kind: 'code_change', findingKey: 'key-dup' });
+    for (const [status, method, at] of [
+      ['resolved', 'fixed-at-source', NOW - 3 * DAY_MS],
+      ['open', 'redetected', NOW - 2 * DAY_MS],
+      ['resolved', 'fixed-at-source', NOW - 0.1 * DAY_MS],
+    ] as const) {
+      db.resolutions.insertResolution({
+        findingKey: 'key-dup',
+        status,
+        method,
+        resolvedAt: at,
+        evidence: '',
+      });
+    }
+    // key-b: detected 2 days ago, fixed today, ONE row. Same bucket, same
+    // severity, a different MTTR.
+    record({ daysAgo: 2, severity: 'critical', kind: 'code_change', findingKey: 'key-single' });
+    db.resolutions.insertResolution({
+      findingKey: 'key-single',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW - 0.1 * DAY_MS,
+      evidence: '',
+    });
+
+    const res = await security().mttrTrend('7d');
+    const today = res.points.at(-1);
+    // Unweighted mean of the two: (5.9 + 1.9) / 2 days. Weighted 3:1 by the
+    // duplicate rows it would be (3 * 5.9 + 1.9) / 4 = 4.9 days — so a fixture
+    // this shape is what separates the two, and the expected value is the one
+    // that counts each FINDING once.
+    const a = 5.9 * DAY_MS;
+    const b = 1.9 * DAY_MS;
+    expect(today?.bySeverity.critical).toBeCloseTo((a + b) / 2, -3);
+  });
+
   it('excludes a superseded (redetected) resolution — latest-resolution-wins', async () => {
     record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'key-redetected' });
     db.resolutions.insertResolution({

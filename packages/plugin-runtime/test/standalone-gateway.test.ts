@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
-import { createPluginRuntime, loadOrCreateFingerprintKey } from '@akasecurity/plugin-sdk';
+import {
+  createPluginRuntime,
+  hasLocalStoreMaintenance,
+  loadOrCreateFingerprintKey,
+} from '@akasecurity/plugin-sdk';
 import type {
   DetectedFinding,
   IngestEvent,
@@ -56,6 +60,23 @@ function finding(eventId: string, overrides: Partial<DetectedFinding> = {}): Det
 }
 
 describe('StandaloneDataGateway', () => {
+  it('satisfies the local-store maintenance capability at runtime', async () => {
+    // Where the two halves of the capability actually meet. The `implements
+    // DataGateway, LocalStoreMaintenance` clause makes a rename on the class a
+    // compile error, and the predicate's `Partial<LocalStoreMaintenance>`
+    // candidate makes a rename on the interface break its own property reads —
+    // but every other case for this predicate is driven with a hand-built
+    // object, so nothing else asserts that the SHIPPED gateway qualifies.
+    //
+    // It is the gateway failing this that would be silent: SessionStart gates
+    // the retention sweep, the warn-era cap and the project-file walk on the
+    // predicate, and all three are swallowed by design, so a gateway that
+    // stopped qualifying would skip them with nothing printed anywhere.
+    const gw = new StandaloneDataGateway(dir);
+    expect(hasLocalStoreMaintenance(gw)).toBe(true);
+    await gw.close();
+  });
+
   it('records a capture and reads it back', async () => {
     const gw = new StandaloneDataGateway(dir);
     const ev = event();

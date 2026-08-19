@@ -1,0 +1,450 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { ApplyMode } from '../src/apply.ts';
+import { applyPluginUpdate, installAgentPlugin } from '../src/apply.ts';
+import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
+import {
+  assertShimResolves,
+  SHIM_NEEDS_SHELL,
+  SHIM_PROBE_ARG,
+  WINDOWS_SYSTEM_DIRS,
+  WINDOWS_SYSTEM_ENV,
+  writeCommandShim,
+} from './helpers/path-shim.ts';
+
+/**
+ * What actually reaches a child process.
+ *
+ * Everything else about the verb table is asserted as STRINGS — the recipes,
+ * the spawn plans, the hint copy. That is one derivation short of the claim
+ * this package makes: the Updates page shows `installSpawnPlan` under "this
+ * runs the following on your machine", and nothing there proves `apply.ts`
+ * spawns that. It is also where the defect this table replaced actually bit,
+ * one layer down: `codex plugin install` rendered fine and was rejected by the
+ * host.
+ *
+ * So these cases read the argv off the far side of the process boundary.
+ *
+ * ## Why PATH, and why a CLOSED one
+ *
+ * `src/exec.ts` takes no injectable runner — `binExists`, `runCapture` and
+ * `runInherit` reach `node:child_process` directly and let the child INHERIT
+ * this process's env, so there is nowhere to pass a fake to and PATH is the
+ * only seam. `vi.stubEnv` is how it is written rather than a `process.env`
+ * assignment, which `n/no-process-env` bans workspace-wide.
+ *
+ * The stubbed PATH carries the shim dir, this process's own node (the shim is
+ * a `#!/usr/bin/env node` script) and, on Windows, System32 — and nothing
+ * else. That closed set is the point: a shim that fails to land does NOT fail
+ * closed on an inherited PATH (see path-shim.ts), it resolves the REAL
+ * installed `claude` and the suite spawns a live plugin install against the
+ * developer's own machine. With the host PATH left out there is nothing for a
+ * miss to fall through to, and `assertShimResolves` names the miss besides.
+ */
+
+// The host's own PATH is deliberately absent. `dirname(process.execPath)` is
+// read off the running interpreter rather than the environment, so this needs
+// no `n/no-process-env` opt-out of its own.
+const NODE_DIR = dirname(process.execPath);
+
+// Every spawn in exec.ts is anchored at the user's home on Windows and at this
+// process's cwd elsewhere; the probe has to mirror it, because Windows searches
+// the working directory BEFORE walking PATH.
+const SPAWN_CWD = process.platform === 'win32' ? homedir() : process.cwd();
+
+interface Recorded {
+  readonly bin: string;
+  readonly args: readonly string[];
+}
+
+let dir: string;
+let binDir: string;
+let failDir: string;
+let emptyDir: string;
+let callsPath: string;
+
+/**
+ * A shim that records its own argv, prints a line, and fails on demand.
+ *
+ * The fail marker is keyed on argv[1] — `marketplace` for the prep steps,
+ * `install`/`update`/`add` for the plugin op — because that is the split
+ * `apply.ts` treats differently: prep is best-effort, the op is fatal.
+ *
+ * Every path is embedded with `JSON.stringify`, never pasted into the source,
+ * and that is a fifth POSIX-only defect to add to the four path-shim.ts lists.
+ * A Windows path is full of backslashes, so pasting one into a string literal
+ * hands the JS parser escapes: `\U`, `\A`, `\L` and `\T` are dropped and `\r`
+ * becomes a carriage return, which turns `C:\Users\…\calls.jsonl` into the
+ * DRIVE-RELATIVE `C:Users…calls.jsonl`. The shim then runs, prints, exits 0 and
+ * appends its record to a long-named file in its own cwd — so the harness reads
+ * nothing at the real path and every argv assertion sees an empty list, while
+ * the fail markers miss the same way and a step told to fail reports success.
+ */
+function shimBody(command: string, callsFile: string, failRoot: string): string {
+  return `const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+fs.appendFileSync(
+  ${JSON.stringify(callsFile)},
+  JSON.stringify({ bin: ${JSON.stringify(command)}, args }) + '\\n',
+);
+process.stdout.write(${JSON.stringify(command)} + ' ' + args.join(' ') + ' ran\\n');
+if (fs.existsSync(path.join(${JSON.stringify(failRoot)}, args[1] || '_'))) {
+  process.stderr.write('step refused\\n');
+  process.exit(3);
+}
+`;
+}
+
+function calls(): Recorded[] {
+  // The log is created EMPTY by the setup, so "no calls" is an empty file and a
+  // MISSING one is a broken harness — a shim writing somewhere else, which is
+  // precisely the failure the escaping above describes. Reading an absent file
+  // as "no calls" would let that shape satisfy every `toEqual([])` in here.
+  const raw = readFileSync(callsPath, 'utf8');
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Recorded);
+}
+
+/** The recorded calls as the command lines a spawn plan renders. */
+function commandLines(): string[] {
+  return calls().map((c) => `${c.bin} ${c.args.join(' ')}`);
+}
+
+function failStep(token: string): void {
+  writeFileSync(join(failDir, token), '');
+}
+
+/** Stub PATH with the closed set, and prove each host binary resolves to a shim. */
+function armShims(commands: readonly string[]): void {
+  const path = [binDir, NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter);
+  vi.stubEnv('PATH', path);
+  const probeEnv: NodeJS.ProcessEnv = { PATH: path, ...WINDOWS_SYSTEM_ENV };
+  for (const command of commands) {
+    assertShimResolves(command, probeEnv, { shell: SHIM_NEEDS_SHELL, cwd: SPAWN_CWD });
+  }
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'aka-local-ops-spawn-'));
+  binDir = join(dir, 'bin');
+  failDir = join(dir, 'fail');
+  emptyDir = join(dir, 'empty');
+  callsPath = join(dir, 'calls.jsonl');
+  for (const sub of [binDir, failDir, emptyDir]) mkdirSync(sub);
+  writeFileSync(callsPath, '');
+  for (const command of ['claude', 'codex']) {
+    writeCommandShim(binDir, command, shimBody(command, callsPath, failDir));
+  }
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('the shim source itself', () => {
+  // A Windows path, driven from any host — the same reason `writeCommandShim`
+  // takes a `platform`. On POSIX the paths this suite really uses carry no
+  // backslashes, so the defect below is invisible to every case above and shows
+  // up only on the leg nobody runs locally.
+  const WINDOWS_CALLS = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\aka-x\\calls.jsonl';
+  const WINDOWS_FAIL = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\aka-x\\fail';
+
+  it('embeds each path as a JS literal, not as pasted text', () => {
+    const src = shimBody('claude', WINDOWS_CALLS, WINDOWS_FAIL);
+
+    // What the emitted program RESOLVES to, which is the thing that broke —
+    // `toContain` on the raw path passes for both spellings, since the pasted
+    // form contains it verbatim. Only parsing the literal back can tell them
+    // apart.
+    const literal = /appendFileSync\(\s*("(?:[^"\\]|\\.)*")/.exec(src)?.[1];
+    expect(literal).toBeDefined();
+    expect(JSON.parse(literal ?? '""')).toBe(WINDOWS_CALLS);
+
+    // The control — without it the round-trip above could be satisfied by a
+    // `toContain` on the raw path, which BOTH spellings pass, since the pasted
+    // form contains it verbatim. Pasted, the path is not a valid literal by
+    // this check at all.
+    //
+    // Node's own parser is laxer than that and is what made the defect quiet:
+    // it takes `\U` as an identity escape, drops the backslash, and turns `\r`
+    // into a carriage return — so the shim gets a drive-relative path, writes
+    // to it happily, exits 0, and this suite finds nothing at the real one.
+    expect(() => {
+      JSON.parse(`"${WINDOWS_CALLS}"`);
+    }).toThrow();
+  });
+
+  it('answers the resolution probe before it records anything', () => {
+    // Ordering asserted on the source because the probe runs during setup: a
+    // shim that logged first would count every `armShims` as an invocation and
+    // every argv assertion here would carry two phantom leading entries.
+    const src = writeCommandShim(binDir, 'claude', shimBody('claude', callsPath, failDir), 'win32');
+    const emitted = readFileSync(src.replace(/\.cmd$/, '-shim.js'), 'utf8');
+    expect(emitted.indexOf(SHIM_PROBE_ARG)).toBeLessThan(emitted.indexOf('appendFileSync'));
+  });
+});
+
+describe('what an install/update really spawns', () => {
+  it('runs Claude Code’s own verbs, in the order the Updates dialog promises', () => {
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    // Spelled out rather than derived, so this pins the verbs themselves: a
+    // table edit that renamed `marketplace update` would keep a derived
+    // assertion green while changing what runs.
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin install ai-tc@akasecurity',
+    ]);
+    // …and the same list is what the confirm dialog renders. This is the join
+    // the string-level suites cannot make.
+    expect(commandLines()).toEqual(
+      createCliPluginManager('claude').installSpawnPlan(
+        'ai-tc@akasecurity',
+        'akasecurity/marketplace',
+        'akasecurity',
+      ),
+    );
+    // Capture mode returns the child's output rather than swallowing it.
+    expect(res.output).toContain('claude plugin install ai-tc@akasecurity ran');
+  });
+
+  it('updates Claude Code through `plugin update`, refreshing the snapshot first', () => {
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin update ai-tc@akasecurity',
+    ]);
+    expect(commandLines()).toEqual(
+      createCliPluginManager('claude').updateSpawnPlan(
+        'ai-tc@akasecurity',
+        'akasecurity/marketplace',
+        'akasecurity',
+      ),
+    );
+  });
+
+  it('runs Codex’s verbs, which are its own — never Claude Code’s', () => {
+    armShims(['codex']);
+
+    const res = applyPluginUpdate('codex', 'capture');
+
+    expect(res.ok).toBe(true);
+    // `upgrade`, not `update`; `add`, not `update`. Both differ from the Claude
+    // Code case above, which is the whole reason the table is per host.
+    expect(commandLines()).toEqual([
+      'codex plugin marketplace add akasecurity/ai-tc',
+      'codex plugin marketplace upgrade ai-tc',
+      'codex plugin add aka-codex@ai-tc',
+    ]);
+    const lines = commandLines();
+    expect(lines.some((l) => l.startsWith('claude '))).toBe(false);
+    expect(lines).not.toContain('codex plugin update aka-codex@ai-tc');
+  });
+
+  it('installs Codex with the same `add` it updates with, and spawns nothing else', () => {
+    armShims(['codex']);
+
+    expect(installAgentPlugin('codex', 'capture').ok).toBe(true);
+
+    expect(commandLines()).toEqual([
+      'codex plugin marketplace add akasecurity/ai-tc',
+      'codex plugin marketplace upgrade ai-tc',
+      'codex plugin add aka-codex@ai-tc',
+    ]);
+  });
+
+  it('streams instead of capturing in inherit mode, and still spawns the same plan', () => {
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'inherit');
+
+    expect(res.ok).toBe(true);
+    // The output already went to the caller's terminal; returning a copy here
+    // would be the CLI printing everything twice.
+    expect(res.output).toBe('');
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin install ai-tc@akasecurity',
+    ]);
+  });
+});
+
+// Whether prep STREAMS or is swallowed is invisible from inside this process:
+// 'inherit' hands the child this process's own stdout, so nothing JS-level sees
+// the bytes, and 'capture' pipes them somewhere apply.ts then discards. Both
+// look identical to every assertion above, which is how prep went on capturing
+// unconditionally while the CLI announced three commands and showed none of
+// them running. Read it from the far side of a process boundary instead.
+const APPLY_RUNNER = fileURLToPath(new URL('./helpers/apply-runner.ts', import.meta.url));
+
+function applyInChild(op: 'install' | 'update', agentId: string, mode: ApplyMode): string {
+  const path = [binDir, NODE_DIR, ...WINDOWS_SYSTEM_DIRS].join(delimiter);
+  const res = spawnSync(process.execPath, [APPLY_RUNNER, op, agentId, mode], {
+    encoding: 'utf8',
+    // The same closed PATH the in-process cases use. A child that inherited the
+    // host's PATH would resolve the developer's REAL `claude` and run a live
+    // plugin install against their machine — measured, not hypothetical.
+    env: { PATH: path, ...WINDOWS_SYSTEM_ENV },
+    cwd: SPAWN_CWD,
+  });
+  // The runner always prints its marker, so an absent one means it never got
+  // there — a silent stdout would otherwise satisfy the negative case below
+  // whether prep was quiet or the whole run had failed to start.
+  expect(res.stdout).toContain('[done]');
+  return res.stdout;
+}
+
+describe('what the user actually sees while it runs', () => {
+  it('streams every prep command in inherit mode, not just the op', () => {
+    armShims(['claude']);
+
+    const out = applyInChild('install', 'claude-code', 'inherit');
+
+    // All three, because all three were announced. Prep used to run through
+    // runCapture whatever the mode, so the first two lines existed only inside
+    // a discarded buffer and `aka update` sat silent across two network-bound
+    // spawns.
+    expect(out).toContain('claude plugin marketplace add akasecurity/marketplace ran');
+    expect(out).toContain('claude plugin marketplace update akasecurity ran');
+    expect(out).toContain('claude plugin install ai-tc@akasecurity ran');
+    expect(out).toContain('[done] ok=true');
+  });
+
+  it('keeps every command off stdout in capture mode — the dashboard has no terminal', () => {
+    armShims(['claude']);
+
+    const out = applyInChild('install', 'claude-code', 'capture');
+
+    // The control for the case above: same plan, same shims, and the ONLY
+    // difference is the mode. Without it that test passes for a build that
+    // streams unconditionally, which would print the dashboard's output into
+    // the server log.
+    expect(out).not.toContain('claude plugin marketplace add akasecurity/marketplace ran');
+    expect(out).not.toContain('claude plugin install ai-tc@akasecurity ran');
+    expect(out).toContain('[done] ok=true');
+  });
+});
+
+describe('which failures are fatal', () => {
+  it('carries on when marketplace prep fails — the op still runs, and succeeds', () => {
+    armShims(['claude']);
+    failStep('marketplace');
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    // Both prep steps refused; the op ran anyway and decided the result. This
+    // is the whole reason prep is not in the `&&` recipe: a git-fetch error on
+    // the refresh must not abort an install that was going to work.
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin install ai-tc@akasecurity',
+    ]);
+    // A refused prep step leaves no trace in the result either: prep's results
+    // are discarded, and that discard is the only thing keeping it survivable.
+    expect(res.output).not.toContain('step refused');
+  });
+
+  it('fails the operation when the plugin op itself fails, and says what ran', () => {
+    armShims(['claude']);
+    failStep('install');
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain('step refused');
+    expect(commandLines()).toContain('claude plugin install ai-tc@akasecurity');
+  });
+
+  it('reports the failure in inherit mode too, where there is no output to read', () => {
+    armShims(['codex']);
+    failStep('add');
+
+    const res = applyPluginUpdate('codex', 'inherit');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).toBe('');
+  });
+});
+
+describe('when the host CLI is not on PATH at all', () => {
+  // A PATH of one empty dir: the binaries are unreachable, `binExists` says so,
+  // and the question is what happens instead of a spawn.
+  function armEmptyPath(): void {
+    vi.stubEnv('PATH', emptyDir);
+  }
+
+  it('spawns nothing and hands back both recipes, in that host’s verbs', () => {
+    armEmptyPath();
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(calls()).toEqual([]);
+    expect(res.output).toContain("the `claude` CLI isn't on your PATH");
+    expect(res.output).toContain(
+      'claude plugin marketplace add akasecurity/marketplace && claude plugin install ai-tc@akasecurity',
+    );
+    expect(res.output).toContain('or update with');
+    expect(res.output).toContain('claude plugin update ai-tc@akasecurity');
+  });
+
+  it('says it once for a host whose install and update are the same command', () => {
+    armEmptyPath();
+
+    const res = applyPluginUpdate('codex', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(calls()).toEqual([]);
+    expect(res.output).toContain(
+      'codex plugin marketplace add akasecurity/ai-tc && codex plugin add aka-codex@ai-tc',
+    );
+    expect(res.output).toContain('that installs or updates');
+    // The two-recipe rendering would print the same ~120 characters twice.
+    expect(res.output).not.toContain('or update with');
+  });
+});
+
+describe('the manager’s own spawning verbs', () => {
+  it('install/update shell out to the host, one command each', () => {
+    armShims(['claude', 'codex']);
+
+    expect(createCliPluginManager('claude').install('ai-tc@akasecurity')).toBe(true);
+    expect(createCliPluginManager('codex').update('aka-codex@ai-tc')).toBe(true);
+
+    // No marketplace prep: these are the bare ops, which is what makes them
+    // wrong to call on their own from apply.ts.
+    expect(commandLines()).toEqual([
+      'claude plugin install ai-tc@akasecurity',
+      'codex plugin add aka-codex@ai-tc',
+    ]);
+  });
+
+  it('reports a failing op as false', () => {
+    armShims(['claude']);
+    failStep('update');
+
+    expect(createCliPluginManager('claude').update('ai-tc@akasecurity')).toBe(false);
+  });
+});

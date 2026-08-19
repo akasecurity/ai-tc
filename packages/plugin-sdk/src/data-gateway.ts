@@ -13,10 +13,12 @@ import type {
   InventoryFacets,
   LlmCallInput,
   PolicyBundle,
+  ProjectFilesScan,
   RecordProjectEgressInput,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
+  SimpleDetectionPolicy,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -198,4 +200,81 @@ export interface DataGateway {
   // withhold exactly those ledger entries or it will never read them again.
   recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary>;
   close(): Promise<void>;
+}
+
+/**
+ * Maintenance a gateway can offer when it owns a local store of its own.
+ *
+ * Deliberately NOT part of `DataGateway`: these are retention passes and
+ * read-model repairs, not data recording, and they only mean something to an
+ * implementation with a store to maintain. A gateway that has none simply does
+ * not provide them, and callers skip the work.
+ *
+ * Two members are synchronous — they complete inside a single store
+ * transaction and have nothing to await.
+ */
+export interface LocalStoreMaintenance {
+  /** Purge terminal exception rows past retention. Returns the row count. */
+  sweepTerminalExceptions(retentionMs: number): Promise<number>;
+  /** One-shot cap of block/redact enforcement rows to warn. */
+  capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number };
+  /** Commit one project-file scan into the local file tree. */
+  recordProjectFiles(projectId: string, scan: ProjectFilesScan): Promise<void>;
+  /** Fold checkout-path project rows into the repo's canonical row. */
+  reconcileWorktreeProjects(
+    canonicalId: string,
+    headRoot: string,
+    worktreeRoot: string,
+  ): Promise<void>;
+  /** The stale-session notice, or null when this session is current. */
+  staleBinaryNotice(currentVersion: string): string | null;
+}
+
+// The member names, derived from the interface rather than restated: a
+// `Record` keyed on `keyof LocalStoreMaintenance` fails to compile until a
+// sixth member added above is listed here too, so the two cannot drift.
+const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true> = {
+  sweepTerminalExceptions: true,
+  capWarnEraEnforcement: true,
+  recordProjectFiles: true,
+  reconcileWorktreeProjects: true,
+  staleBinaryNotice: true,
+};
+
+/**
+ * Whether a gateway offers ONE named maintenance member.
+ *
+ * Structural rather than an `instanceof` check: any implementation supplying
+ * the member qualifies, including a wrapper that forwards it to an inner
+ * gateway.
+ *
+ * Per member rather than all-or-nothing, because the five passes are
+ * unrelated — a retention purge, a one-shot legacy cap, a file-tree commit, a
+ * read-model repair, a version nudge — and an implementation that owns a store
+ * has every reason to supply some and not others. Gating the group on the full
+ * set means a gateway missing only the version nudge also stops purging
+ * terminal exceptions past retention, which is one of the two tables with any
+ * retention policy at all. Every pass is swallowed by design, so that loss is
+ * printed nowhere. Callers gate each pass on its own member.
+ */
+export function offersMaintenance<K extends keyof LocalStoreMaintenance>(
+  gateway: DataGateway,
+  member: K,
+): gateway is DataGateway & Pick<LocalStoreMaintenance, K> {
+  return typeof (gateway as Partial<LocalStoreMaintenance>)[member] === 'function';
+}
+
+/**
+ * Whether a gateway offers the WHOLE local-store maintenance capability.
+ *
+ * The all-or-nothing form, for a caller that needs every member — the shipped
+ * standalone gateway is pinned against it. It is not what session-start
+ * gates on; that gates each pass on its own member via `offersMaintenance`.
+ */
+export function hasLocalStoreMaintenance(
+  gateway: DataGateway,
+): gateway is DataGateway & LocalStoreMaintenance {
+  return Object.keys(LOCAL_STORE_MAINTENANCE_MEMBERS).every((member) =>
+    offersMaintenance(gateway, member as keyof LocalStoreMaintenance),
+  );
 }

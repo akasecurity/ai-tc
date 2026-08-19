@@ -73,7 +73,6 @@ export type AssetSummary = z.infer<typeof AssetSummary>;
 // ─── Shape 2: ProjectSummary ──────────────────────────────────────────────────
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
  * Embedded in harness summaries, project lists, and connect-project responses.
  */
 export const ProjectSummary = z
@@ -101,7 +100,6 @@ const HarnessCategory = z.object({
 });
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
  * Powers the by-harness tree view.
  */
 export const HarnessSummary = z
@@ -200,7 +198,6 @@ const AssetFindingRef = z.object({
 });
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
  * Powers the right-pane asset detail and setMcpTrust response.
  * `trust` is null for non-mcp; `tools` is omitted for non-mcp.
  */
@@ -300,7 +297,6 @@ export type ProjectTreeResponse = z.infer<typeof ProjectTreeResponse>;
 // ─── Shape 14: FileDetail ────────────────────────────────────────────────────
 
 /**
- * Response shape embedded in api.ts for the public OpenAPI contract.
  * Powers the per-file detail drawer.
  * Extends FileSummary with project context and findingsRefs.
  */
@@ -385,11 +381,12 @@ export const ConnectProjectBody = z.object({ repo: z.string() }).meta({ id: 'Con
 export type ConnectProjectBody = z.infer<typeof ConnectProjectBody>;
 
 // ─── Query schemas ────────────────────────────────────────────────────────────
-// Query schemas intentionally carry NO `.meta({ id })`: the OpenAPI generator
-// expands query params into individual `parameters` (which cannot be a `$ref`),
-// so they must stay inline.  Body schemas above DO carry ids.  See api.ts header.
+// Query schemas intentionally carry NO `.meta({ id })`: a consumer walking these
+// shapes expands their properties into individual parameters, and a parameter
+// cannot be a reference to a named shape, so they stay inline.  Body schemas
+// above DO carry ids.  See the SHAPE IDS note in zod/index.ts.
 
-/** GET /v1/inventory/assets query params. */
+/** Query params for the assets read. */
 export const ListAssetsQuery = z.object({
   /** Filter by one or more AssetType values; absent means all types. */
   type: z.array(AssetType).optional(),
@@ -398,7 +395,7 @@ export const ListAssetsQuery = z.object({
 });
 export type ListAssetsQuery = z.infer<typeof ListAssetsQuery>;
 
-/** GET /v1/inventory/projects/:id/tree query params. */
+/** Query params for the project-tree read. */
 export const GetProjectTreeQuery = z.object({
   /** Subtree root path; defaults to repository root when absent. */
   path: z.string().optional(),
@@ -413,14 +410,14 @@ export const GetProjectTreeQuery = z.object({
 });
 export type GetProjectTreeQuery = z.infer<typeof GetProjectTreeQuery>;
 
-/** GET /v1/inventory/projects/:id/file query params.  `path` is required. */
+/** Query params for the project-file read.  `path` is required. */
 export const GetProjectFileQuery = z.object({
   /** Repository-relative file path; absent or empty → 400. */
   path: z.string(),
 });
 export type GetProjectFileQuery = z.infer<typeof GetProjectFileQuery>;
 
-/** GET /v1/inventory/harnesses/:id/events query params. */
+/** Query params for the harness-events read. */
 export const GetHarnessEventsQuery = z.object({
   /** Maximum number of events to return.  Range: 1–50; default: 7. */
   limit: z.coerce.number().int().min(1).max(50).default(7),

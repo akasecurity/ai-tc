@@ -8,33 +8,39 @@ import { canonicalIdentity } from '@akasecurity/schema';
 // Node layer. Mirrors the sha256 fingerprint used for event `content_hash`.
 // Content-addressing dedupes repeat sessions on the same machine/project
 // within the local store.
+//
+// Every id below is `sha256Hex(canonicalIdentity([...]))`, and the shorthand in
+// each comment names the parts as a LIST for a reason: `canonicalIdentity`
+// JSON-encodes the array rather than concatenating it. Concatenation would put
+// ('ab', 'c') and ('a', 'bc') on the same digest — two distinct rows collapsing
+// onto one. Reading these as `a + b` is what that encoding exists to prevent.
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
-// sha256(object_type + identity_key). Repeat sessions on the same machine/project
+// sha256(['inventory', object_type, identity_key]). Repeat sessions on the same machine/project
 // upsert to the same row; random UUIDs would never merge.
 export function inventoryId(objectType: string, identityKey: string): string {
   return sha256Hex(canonicalIdentity(['inventory', objectType, identityKey]));
 }
 
-// sha256(remote_url): two machines reporting the same repo collapse.
+// sha256(['source_project', remote_url]): two machines reporting the same repo collapse.
 export function sourceProjectId(url: string): string {
   return sha256Hex(canonicalIdentity(['source_project', url]));
 }
 
-// sha256(class): a handful of rows, one per recognized class.
+// sha256(['classified_data', class]): a handful of rows, one per recognized class.
 export function classifiedDataId(cls: string): string {
   return sha256Hex(canonicalIdentity(['classified_data', cls]));
 }
 
-// sha256(rule_id + version): editing a rule mints a new definition id so
+// sha256(['inspection_definition', rule_id, version]): editing a rule mints a new definition id so
 // historical findings keep citing the exact version that fired.
 export function inspectionDefinitionId(ruleId: string, version: string): string {
   return sha256Hex(canonicalIdentity(['inspection_definition', ruleId, version]));
 }
 
-// sha256(session_id + message_id): transcript-derived `llm_call` rows are re-read on
+// sha256(['audit_event_llm_call', session_id, message_id]): transcript-derived `llm_call` rows are re-read on
 // every reconcile pass, so a random id would double-count. Keying the id on the
 // transcript `message.id` (`msg_…`) plus the session makes the row content-addressed.
 //
@@ -56,7 +62,7 @@ export function llmCallId(sessionId: string, messageId: string): string {
   return sha256Hex(canonicalIdentity(['audit_event_llm_call', sessionId, messageId]));
 }
 
-// sha256(session_id + tool_use_id): transcript-derived `tool_call` rows are re-read
+// sha256(['audit_event_tool_call', session_id, tool_use_id]): transcript-derived `tool_call` rows are re-read
 // on every reconcile pass, so a random id would double-count. The transcript
 // `tool_use.id` (`toolu_…`) is globally unique per call, so keying on it plus the
 // session makes the row content-addressed — a re-read no-ops via INSERT OR IGNORE.
@@ -64,7 +70,7 @@ export function toolCallId(sessionId: string, toolUseId: string): string {
   return sha256Hex(canonicalIdentity(['audit_event_tool_call', sessionId, toolUseId]));
 }
 
-// sha256(audit_event + rule + span): a transcript-derived inspection finding
+// sha256(['inspection_finding', audit_event, rule, span_start, span_end]): a transcript-derived inspection finding
 // (one detected secret hit on a tool_call) is re-scanned on every reconcile pass, so
 // unlike the config-scan path (which mints randomUUID per fresh scan event) this MUST
 // be content-addressed — a re-read of the same hit (same tool_call, same rule,
@@ -93,7 +99,7 @@ export function inspectionFindingId(
   );
 }
 
-// sha256(session_id + prompt_uuid): the run-grouping key the `tool_call` /
+// sha256(['audit_event_prompt', session_id, prompt_uuid]): the run-grouping key the `tool_call` /
 // `llm_call` attribute bags reference as `run_key` — every leaf spawned by the
 // same user turn shares it. Content-addressed on the transcript's own per-turn
 // uuid (the natural key the reconciler already maps `parentUuid → promptId`
@@ -113,7 +119,7 @@ const NO_SESSION = 'no_session';
 // prompt/response). Keeps the tuple length stable exactly like NO_SESSION.
 const NO_PATH = 'no_path';
 
-// sha256(session_id + content_hash + file_path): a capture (a prompt/response/
+// sha256(['capture', session_id, content_hash, file_path]): a capture (a prompt/response/
 // code-change/tool-use record) is content-addressed on the hash of its own
 // text, scoped to the session it belongs to so identical content captured in
 // two different sessions never collapses onto one row. The file path is folded
@@ -145,19 +151,19 @@ export function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/\.+$/, '');
 }
 
-// sha256(host): identity = the host AS GIVEN — callers pass normalizeHost(host)
+// sha256(['share_destination', host]): identity = the host AS GIVEN — callers pass normalizeHost(host)
 // (the same value stored on the host column) so the id and the unique index
 // agree and repeat scans collapse to one row.
 export function shareDestinationId(host: string): string {
   return sha256Hex(canonicalIdentity(['share_destination', host]));
 }
 
-// sha256(destinationId + method + url).
+// sha256(['share_endpoint', destinationId, method, url]).
 export function shareEndpointId(destinationId: string, method: string, url: string): string {
   return sha256Hex(canonicalIdentity(['share_endpoint', destinationId, method, url]));
 }
 
-// sha256(endpointId + project + file + line).
+// sha256(['share_call_site', endpointId, project, file, line]).
 export function shareCallSiteId(
   endpointId: string,
   project: string,

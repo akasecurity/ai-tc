@@ -17,6 +17,7 @@ import type {
   CaptureRecord,
   DataGateway,
   LlmCallLeaf,
+  LocalStoreMaintenance,
   RecordProjectEgressInput,
   ScanLedgerEntry,
   ScanLedgerState,
@@ -62,7 +63,7 @@ import { PLUGIN_RECORDER_BINARY } from './recorder.ts';
  * + install-if-absent into installed_packs — never mutating an existing
  * installed row; updates are manual).
  */
-export class StandaloneDataGateway implements DataGateway {
+export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance {
   private readonly db: LocalDatabase;
   // Kept for the fingerprint key lookup (exception.key lives beside the store).
   private readonly dataDir: string;
@@ -347,32 +348,35 @@ export class StandaloneDataGateway implements DataGateway {
   }
 
   // Retention sweep over TERMINAL exception rows (revoked / expired / budget
-  // exhausted) — standalone-only store maintenance, invoked from SessionStart,
-  // not part of the DataGateway port. Active grants are never touched.
+  // exhausted) — local-store maintenance, invoked from SessionStart through the
+  // LocalStoreMaintenance capability rather than the DataGateway port. Active
+  // grants are never touched.
   sweepTerminalExceptions(retentionMs: number): Promise<number> {
     return this.db.exceptions.sweepTerminal(retentionMs);
   }
 
-  // The warn-era enforcement cap, standalone-only store maintenance invoked
-  // from SessionStart, not part of the DataGateway port. Returns the number
-  // of block/redact rows capped to warn (0 for a redact-policy store or an
-  // already-capped one).
+  // The warn-era enforcement cap — local-store maintenance, invoked from
+  // SessionStart through the LocalStoreMaintenance capability rather than
+  // the DataGateway port. Returns the number of block/redact rows capped to
+  // warn (0 for a redact-policy store or an already-capped one).
   capWarnEraEnforcement(policyMode: SimpleDetectionPolicy): { capped: number } {
     const { capped } = capWarnEraEnforcementOnce(this.db, policyMode, this.dataDir);
     return { capped };
   }
 
   // One project-file scan → the local project_file tree (one transaction inside
-  // the LocalDatabase, fail-open there). Like the sweep above, this is
-  // NOT part of the DataGateway port: the file tree is a local-store read model.
+  // the LocalDatabase, fail-open there). Like the sweep above, this is reached
+  // through the LocalStoreMaintenance capability rather than the DataGateway
+  // port: the file tree is a local-store read model.
   recordProjectFiles(projectId: string, scan: ProjectFilesScan): Promise<void> {
     this.db.recordProjectFiles(projectId, scan);
     return Promise.resolve();
   }
 
   // Fold ghost source_project rows minted by the pre-worktree-fix resolver
-  // (checkout-path identities) into the repo's canonical row. Standalone-only
-  // store maintenance, invoked from SessionStart. Fail-open in the store.
+  // (checkout-path identities) into the repo's canonical row. Local-store
+  // maintenance, invoked from SessionStart through the LocalStoreMaintenance
+  // capability. Fail-open in the store.
   reconcileWorktreeProjects(
     canonicalId: string,
     headRoot: string,
@@ -388,10 +392,10 @@ export class StandaloneDataGateway implements DataGateway {
    * executing the plugin generation they started with (Claude Code caches
    * plugin versions), and the write gate makes their installed-pack writes
    * silent no-ops — this is the one-line nudge telling the user WHY, and that
-   * a restart picks the newer plugin up. Standalone-only, invoked from
-   * SessionStart, not part of the DataGateway port. Fail-open: any error →
-   * null (no notice), and unparseable versions compare equal so garbage can
-   * never fire it.
+   * a restart picks the newer plugin up. Local-store maintenance, invoked
+   * from SessionStart through the LocalStoreMaintenance capability rather
+   * than the DataGateway port. Fail-open: any error → null (no notice), and
+   * unparseable versions compare equal so garbage can never fire it.
    */
   staleBinaryNotice(currentVersion: string): string | null {
     try {

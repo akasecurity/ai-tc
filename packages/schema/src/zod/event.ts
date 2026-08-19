@@ -81,9 +81,9 @@ export const EventMetadata = z
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;
 
-// The canonical open-source event shape AND the public OpenAPI component 'Event'.
-// Tenant-free — the public API contract carries no scoping columns. Consumed
-// directly by @akasecurity/persistence and the web-ui.
+// The canonical event shape, and the component named 'Event'. Carries no
+// scoping columns — an event is identified by its own id and nothing else.
+// Consumed directly by @akasecurity/persistence and the web-ui.
 export const Event = z
   .object({
     id: z.guid(),
@@ -97,8 +97,8 @@ export const Event = z
   .meta({ id: 'Event' });
 export type Event = z.infer<typeof Event>;
 
-// Ingest wire shape. In OSS, ingest === stored (both tenant-free), so it is just
-// the base with its own OpenAPI id retained.
+// Ingest wire shape. What is sent and what is stored are the same shape, so
+// this is just the base with its own id retained.
 export const IngestEvent = Event.meta({ id: 'IngestEvent' });
 export type IngestEvent = z.infer<typeof IngestEvent>;
 

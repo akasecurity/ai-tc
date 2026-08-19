@@ -90,14 +90,20 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/claude-code/src/backfill.ts': [ENV_RULE],
   'plugins/claude-code/src/triage/judge.ts': [ENV_RULE],
 
-  // Test harnesses that spawn the real hooks as child processes and need the
-  // host PATH or a redirected HOME. §3's table says "in shipped source" and puts
-  // these deliberately out of its scope — which left them inventoried by
-  // NOTHING, in the one part of the tree where a new one is easiest to add
-  // without anyone weighing it.
+  // Test harnesses that spawn a real child process — a built hook, or the host
+  // CLI `local-ops` shells out to — and need the host PATH or a redirected
+  // HOME. §3's table says "in shipped source" and puts these deliberately out
+  // of its scope — which left them inventoried by NOTHING, in the one part of
+  // the tree where a new one is easiest to add without anyone weighing it.
+  //
+  // The four path-shim entries are peer COPIES of one file, which is what a
+  // package wall costs: `local-ops` needs the shim because its own `exec.ts`
+  // lets the child inherit this process's env, so PATH is the only seam its
+  // spawns have.
   'plugins/claude-code/test/helpers/path-shim.ts': [ENV_RULE],
   'plugins/codex/test/helpers/path-shim.ts': [ENV_RULE],
   'plugins/antigravity/test/helpers/path-shim.ts': [ENV_RULE],
+  'packages/local-ops/test/helpers/path-shim.ts': [ENV_RULE],
   'plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/claude-code/test/helpers/run-hook.ts': [ENV_RULE],
   'plugins/claude-code/test/journey/harness.ts': [ENV_RULE],

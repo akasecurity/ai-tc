@@ -1,8 +1,8 @@
-// Activity display formatting — semantic /v1/activity values in, display strings
-// out. Lives with the views (not the apps) so the Vite dashboard and the OSS
-// web-ui render identical labels. The API is deliberately semantic (ISO
-// timestamps + raw integer counts, no pre-formatted strings); day grouping,
-// time-of-day, duration, and token humanization are all derived here.
+// Activity display formatting — semantic activity values in, display strings
+// out. Lives with the views (not the apps) so every host renders identical
+// labels. The contract is deliberately semantic (ISO timestamps + raw integer
+// counts, no pre-formatted strings); day grouping, time-of-day, duration, and
+// token humanization are all derived here.
 import type { ActivitySessionSummary, SessionStatus, TokenRollup } from '@akasecurity/schema';
 import { formatTokenCount } from '@akasecurity/schema';
 

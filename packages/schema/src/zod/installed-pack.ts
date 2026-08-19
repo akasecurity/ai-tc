@@ -5,10 +5,9 @@ import { z } from 'zod';
 
 import { Namespace, PackId, SemVer } from './registry.ts';
 
-// The canonical open-source installed-pack shape AND the public OpenAPI component
-// 'InstalledPack'. Metadata only — the snapshotted rules are not returned here
-// (they reach the plugin via the policy bundle). Tenant-free — the public API
-// contract carries no scoping columns.
+// The canonical installed-pack shape, and the component named 'InstalledPack'.
+// Metadata only — the snapshotted rules are not returned here (they reach the
+// plugin via the policy bundle). Carries no scoping columns.
 export const InstalledPack = z
   .object({
     id: z.guid(),

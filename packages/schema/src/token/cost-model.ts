@@ -4,8 +4,8 @@
 // are the stored truth. This file holds the plugin-local default implementation
 // plus a reference price map. It is intentionally pure: no I/O, no `process.env`,
 // no `fetch`, no Node-API deps — so it lives in `@akasecurity/schema` (the
-// tenant-free core) and is imported by every read/report surface: the plugin's
-// `/aka:tokens`, the OSS Activity page (via `@akasecurity/persistence`), and the
+// shared core) and is imported by every read/report surface: the plugin's
+// `/aka:tokens`, the Activity page (via `@akasecurity/persistence`), and the
 // CLI/TUI. `@akasecurity/plugin-sdk` re-exports it for back-compat.
 //
 // Design notes:

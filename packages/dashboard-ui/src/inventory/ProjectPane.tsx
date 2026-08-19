@@ -1,11 +1,11 @@
 'use client';
 
-// Right pane shown when a project is selected: an API-backed file browser with
-// breadcrumb, in-project search and a folder/file table whose rows carry the
-// per-file LLM-access toggle. Each directory level is fetched from
-// GET /v1/inventory/projects/:id/tree (browse mode → folders+files at a path;
-// search mode → a flat, repo-wide match list). Access changes are written back
-// through PUT .../files/access.
+// Right pane shown when a project is selected: a file browser with breadcrumb,
+// in-project search and a folder/file table whose rows carry the per-file
+// LLM-access toggle. One directory level at a time — browse mode renders the
+// folders and files at a path, search mode a flat, repo-wide match list. The
+// host supplies each level and handles the access write; this component asks for
+// them through its callbacks and owns none of the loading.
 import type {
   AccessLevel,
   FileSummary,

@@ -4,11 +4,14 @@ import {
   applyCliUpdate,
   applyPluginUpdate,
   clearCache,
+  detectInstallChannel,
   installAgentPlugin,
   refreshCache,
 } from '@akasecurity/local-ops';
 import { defaultDataDir } from '@akasecurity/persistence';
 import { revalidatePath } from 'next/cache';
+
+import { dashboardInstallOrigin } from '../../lib/install-origin';
 
 // The web twins of `aka check-updates` / `aka update` / `aka plugins install`.
 // SECURITY: the actions accept only component/agent IDS — every child-process
@@ -35,7 +38,10 @@ export async function checkNow(): Promise<{ ok: boolean }> {
 /** Apply one component's update: `cli` → npm self-update; else a plugin update. */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function applyUpdate(id: string): Promise<ApplyActionResult> {
-  const result = id === 'cli' ? applyCliUpdate() : applyPluginUpdate(id);
+  const result =
+    id === 'cli'
+      ? applyCliUpdate(detectInstallChannel(dashboardInstallOrigin()))
+      : applyPluginUpdate(id);
   // The still-running process reflects the pre-update versions — a cache kept
   // now would falsely re-nag. Mirrors `aka update`.
   clearCache(defaultDataDir());

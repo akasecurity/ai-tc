@@ -5,22 +5,28 @@ import {
   applyCliUpdate as applyCliUpdateShared,
   applyPluginUpdate as applyPluginUpdateShared,
   clearCache,
-  CLI_PACKAGE,
   createCliPluginManager,
+  describeChannel,
+  detectInstallChannel,
   findAgent,
   gatherReportLive,
   outdated,
+  planCliUpdate,
   pluginRef,
   renderReport,
 } from '@akasecurity/local-ops';
 import type { ComponentStatus } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
+import { cliInstallOrigin } from '../lib/install-origin.ts';
 
 // `aka update [cli|<plugin-id>]` — the one command to get current. Shows the
 // installed-vs-latest report, then (unless --yes) asks before applying. The CLI
-// updates itself via the same `npm i -g` used to install it; plugins update through
-// the `claude` plugin manager. With no target it updates everything that's behind.
+// updates itself through whichever channel THIS copy came from — the package
+// manager and location are derived from where the running code lives, not from
+// what `npm` on PATH happens to point at (see local-ops' install-channel.ts);
+// plugins update through the `claude` plugin manager. With no target it updates
+// everything that's behind.
 export async function runUpdate(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -109,9 +115,24 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 function applyCliUpdate(): boolean {
-  process.stdout.write(`Updating the aka CLI (npm install -g ${CLI_PACKAGE}@latest)…\n`);
-  const { ok } = applyCliUpdateShared('inherit');
-  process.stdout.write(ok ? '✓ CLI updated.\n' : '✗ CLI update failed (see npm output above).\n');
+  const channel = detectInstallChannel(cliInstallOrigin());
+  const plan = planCliUpdate(channel);
+  if (plan.command === null) {
+    process.stderr.write(
+      `✗ aka CLI: ${plan.reason ?? 'this install cannot be updated automatically'}.\n` +
+        `  This copy is a ${describeChannel(channel)}.\n` +
+        `  To update it, run:\n\n    ${plan.display}\n\n`,
+    );
+    return false;
+  }
+  process.stdout.write(`Updating the aka CLI — ${describeChannel(channel)}\n`);
+  process.stdout.write(`  ${plan.display}\n`);
+  // The same channel that produced the line above, so the command printed is
+  // the command run.
+  const { ok } = applyCliUpdateShared(channel, 'inherit');
+  process.stdout.write(
+    ok ? '✓ CLI updated.\n' : `✗ CLI update failed (see the ${plan.command.bin} output above).\n`,
+  );
   return ok;
 }
 

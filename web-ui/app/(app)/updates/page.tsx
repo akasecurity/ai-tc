@@ -4,14 +4,18 @@ import {
   CLI_PACKAGE,
   cliVersion,
   createCliPluginManager,
+  detectInstallChannel,
   gatherReport,
   installedAgentPluginVersions,
+  planCliUpdate,
   pluginRef,
   readCache,
 } from '@akasecurity/local-ops';
 import { defaultDataDir } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
+import { dashboardInstallOrigin } from '../../lib/install-origin';
+import type { UpdateAdvisory } from './UpdatesClient';
 import { UpdatesClient } from './UpdatesClient';
 
 export const runtime = 'nodejs';
@@ -45,22 +49,44 @@ export default function UpdatesPage() {
     cliInstalled: cliVersion(process.cwd()),
   });
 
-  // EVERY command each button spawns, one per line — shown verbatim in the
-  // confirm dialog. Two things this must get right:
+  // The CLI's command depends on how THIS copy was installed (npm global under
+  // one nvm version, a pnpm/bun store, the standalone binary…), so it is derived
+  // rather than assumed — the same plan the button will run. The origin comes
+  // from this app, never from `import.meta.url`: see app/lib/install-origin.ts.
   //
-  // Derived from each agent's OWN host verb table, because the hosts share
-  // neither the verbs (`claude plugin update` vs `codex plugin add`) nor the
-  // binary — a hardcoded `claude …` here showed every Codex user a command
-  // wrong on both counts.
+  // A plan with no `command` is one this process will not run: the standalone
+  // binary, a Homebrew tree, a source checkout. Its `display` is advice and is
+  // kept OUT of `commands`, because the dialog introduces whatever it finds
+  // there with "This runs the following command on this machine" — and for the
+  // binary that line is the installer's curl-pipe-to-shell one-liner, which is
+  // the last thing to present as something the dashboard is about to execute.
+  const cliPlan = planCliUpdate(detectInstallChannel(dashboardInstallOrigin()));
+  const commands: Record<string, string> = {};
+  const advisories: Record<string, UpdateAdvisory> = {};
+  if (cliPlan.command === null) {
+    advisories.cli = {
+      display: cliPlan.display,
+      reason: cliPlan.reason ?? 'this copy cannot be updated from the dashboard',
+    };
+  } else {
+    commands.cli = cliPlan.display;
+  }
+
+  // EVERY command each plugin button spawns, one per line. Two things this must
+  // get right, and a literal gets both wrong:
   //
-  // And it is the SPAWN PLAN, not the op alone: the Server Action runs the
-  // marketplace prep first, so a dialog promising "this runs the following on
-  // this machine" while naming one of three spawns is false in the direction
-  // that matters for a local-first product. Newline-joined, never `&&` — the
-  // plan carries a step whose failure the action deliberately ignores.
-  const commands: Record<string, string> = {
-    cli: `npm install -g ${CLI_PACKAGE}@latest`,
-  };
+  // It is derived from each agent's OWN host verb table, because the hosts share
+  // neither the verbs (`claude plugin update` vs `codex plugin add` — Codex has
+  // no update verb at all) nor the binary. A hardcoded `${bin} plugin update`
+  // shows every Codex user a command their CLI rejects, and one they may copy
+  // and run against the real host.
+  //
+  // And it is the SPAWN PLAN, not the op with a register prelude: the Server
+  // Action refreshes the marketplace snapshot too, so a dialog promising "this
+  // runs the following on this machine" while naming two of three spawns is
+  // false in the direction that matters for a local-first product.
+  // Newline-joined, never `&&` — the plan carries a step whose failure the
+  // action deliberately ignores.
   const installCommands: Record<string, string> = {};
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
@@ -91,6 +117,7 @@ export default function UpdatesPage() {
         availablePlugins={report.availablePlugins}
         checkedAt={cache ? relativeTime(new Date(cache.checkedAt).toISOString()) : null}
         commands={commands}
+        advisories={advisories}
         installCommands={installCommands}
       />
     </div>

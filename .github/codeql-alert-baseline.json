@@ -1,0 +1,9 @@
+{
+  "measured": "2026-08-20",
+  "note": "Open CodeQL alerts on main. A ratchet in BOTH directions: a rise fails, and so does a fall, because a baseline nobody lowers stops describing the tree. Lower it in the commit that fixes or dismisses the alert. Every count here is untriaged work, not an accepted level.",
+  "predicted": "Nothing is predicted here: main MEASURED 23 high after this dismissal (js/path-injection 16, js/polynomial-redos 6, js/weak-cryptographic-algorithm 1), read from the settled analysis of 06db4805 rather than reasoned about. The 24 -> 23 is one alert: js/polynomial-redos on packages/detections/src/security/redos-probe.ts, dismissed as `won't fix` and not as a false positive \u2014 it is a genuine quadratic whose input the schema caps at 2000 characters, measured 2.2ms there, reached only inside the killable scan worker. The reasoning is at fuelChars in that file, including why the obvious atomic-group fix does not work. The remaining 22 stay untriaged like the rest.",
+  "total": 23,
+  "bySeverity": {
+    "high": 23
+  }
+}

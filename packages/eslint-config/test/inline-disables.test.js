@@ -90,6 +90,12 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/claude-code/src/backfill.ts': [ENV_RULE],
   'plugins/claude-code/src/triage/judge.ts': [ENV_RULE],
 
+  // Repo tooling rather than shipped source, so §3's table does not reach it
+  // either: GITHUB_STEP_SUMMARY is the runner's own output channel and there is
+  // no other way for a CI job to write one.
+  'tools/required-checks-gate/src/check-required.ts': [ENV_RULE],
+  'tools/codeql-alerts-gate/src/check-alerts.ts': [ENV_RULE],
+
   // Test harnesses that spawn a real child process — a built hook, or the host
   // CLI `local-ops` shells out to — and need the host PATH or a redirected
   // HOME. §3's table says "in shipped source" and puts these deliberately out
@@ -113,6 +119,10 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/codex/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
   'plugins/antigravity/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/antigravity/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
+  // The same boundary for the fourth harness: the native-messaging host is a
+  // spawned script like the hooks, and its bundle suite drives it the way
+  // Chrome does.
+  'plugins/browser-extension/test/native-host/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
 
   // The same boundary one step out: a harness that spawns a real shipped
   // SCRIPT rather than a real hook. install.sh needs the host PATH to find

@@ -1,4 +1,4 @@
-import type { MatchResult } from '@akasecurity/detections';
+import type { MatchResult, RuleTimingVerdict } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 /**
@@ -62,5 +62,20 @@ export type ScanWorkerMessage =
   // once the attributable stage is over. Only an attributing scan posts these.
   | { kind: 'progress'; index: number }
   | { kind: 'result'; id: number; findings: MatchResult[] }
-  | { kind: 'probed'; id: number; safe: boolean; worstMs: number }
+  // The pre-flight's three-way verdict, NOT a boolean. `safe` and
+  // `over-budget` are both decisions about the rule; `uncorroborated` is a
+  // decision about the machine, and the parent must not cache it. A boolean
+  // cannot carry that third case, and defaulting it to either of the other
+  // two is what this replaced.
+  | {
+      kind: 'probed';
+      id: number;
+      verdict: RuleTimingVerdict;
+      worstMs: number;
+      // The work reading behind the verdict. Carried so the parent's stderr
+      // line can QUOTE it: a `deferred` line tells the user their rule spent
+      // almost no CPU, and that claim is the whole reason the rule is not being
+      // blamed — unquoted it is an assertion they cannot check.
+      corroboratedMs: number;
+    }
   | { kind: 'failed'; id: number; message: string };

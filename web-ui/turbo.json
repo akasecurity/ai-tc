@@ -1,9 +1,45 @@
 {
-  "//": "Replaces the root `test` dependsOn (build, ^build, ^typecheck). Dropping `build` is the point: web-ui's build is `next build`, and both suites (a pure header gate + Server Actions over node:sqlite) read no build output, so keeping it would put a full production build on the critical path of `pnpm test`. `^build` goes with it as a side effect of overriding the key — a no-op today, since none of web-ui's workspace dependencies has a build script (only cli, web-ui and the plugin do). `^typecheck` is kept: it is what invalidates this package when a dependency's source changes, since libs are consumed as raw source.",
   "extends": ["//"],
+  // `dist/scan-worker.js` — the ReDoS-bounding worker the folder scan starts by
+  // path — is written by ONE task, `build:worker`, and every task that reads or
+  // ships it depends on that task. The shape is load-bearing rather than tidy:
+  // `turbo run test` schedules `web-ui#build` beside `web-ui#test` (the CLI's
+  // test task reaches it through `^build`) with no ordering between them, so a
+  // `tsup` inlined into either script would be a second writer of `dist/` —
+  // its `clean: true` removing and rewriting the worker while a vitest fork is
+  // between `existsSync` and `new Worker(…)`, which is a flake that reads as
+  // two unrelated assertions. test/scan-worker-build.test.ts pins this shape.
   "tasks": {
+    "build:worker": {
+      // `^typecheck`, not `^build`: the worker is bundled straight from the
+      // plugin SDK's source (none of this package's workspace dependencies has
+      // a build script), and the dependency edge is what puts that source in
+      // this task's hash. Without it a change to scan-worker.ts would replay a
+      // cached, stale worker.
+      "dependsOn": ["^typecheck"],
+      "outputs": ["dist/**"]
+    },
+    "build": {
+      "dependsOn": ["build:worker", "^build", "^typecheck"],
+      // Overrides the root's `dist/**`-bearing list on purpose. A cache hit is
+      // a write too — turbo restores whatever a task declared — so a replayed
+      // `web-ui#build` carrying `dist/**` would rewrite the worker beside a
+      // running `web-ui#test` exactly as a fresh tsup does. `next build` writes
+      // only `.next/`.
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
     "test": {
-      "dependsOn": ["^typecheck"]
+      // Replaces the root `test` dependsOn (build, ^build, ^typecheck). Dropping
+      // `build` is the point: it is a full `next build`, and nothing here reads
+      // its output, so keeping it would put a production build on the critical
+      // path of `pnpm test`. What the suites DO read is the worker, and
+      // `build:worker` is a ~200ms tsup. `^typecheck` is kept: it is what
+      // invalidates this package when a dependency's source changes, since libs
+      // are consumed as raw source.
+      "dependsOn": ["build:worker", "^typecheck"]
+    },
+    "dev": {
+      "dependsOn": ["build:worker", "^build"]
     }
   }
 }

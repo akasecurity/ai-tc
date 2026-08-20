@@ -24,9 +24,11 @@ import { checkRuleTiming } from '@akasecurity/detections';
 import type { Rule, RuleProbeVerdict } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { CompleteIsolatedScanOptions, IsolatedScanOptions } from '../src/isolated-scan.ts';
 import { createIsolatedScanner } from '../src/isolated-scan.ts';
 import type { RuleProbeGateway } from '../src/rule-quarantine.ts';
 import { filterUnsafeRules } from '../src/rule-quarantine.ts';
+import { workClockMs } from '../src/work-clock.ts';
 import { spinCounters } from './helpers/spin-counters.ts';
 import type { SpinningWorkerData } from './helpers/spinning-scan-worker.ts';
 import { countWorkerStarts } from './helpers/worker-starts.ts';
@@ -68,6 +70,20 @@ function regexRule(id: string, pattern: string): Rule {
 const HOSTILE = regexRule('pulled/battery-blind', BATTERY_BLIND_PATTERN);
 const BATTERY_KILLER = regexRule('pulled/battery-killer', BATTERY_KILLING_PATTERN);
 const BENIGN = regexRule('pulled/benign', 'AKIA[A-Z0-9]{16}');
+
+// Over the battery's budget and — unlike BATTERY_KILLER — it comes BACK, which
+// is the only shape that exercises a real verdict end to end. BATTERY_KILLER
+// never returns, so it produces a `timeout` and never a verdict at all, and
+// every other rule here clears the budget and reaches `safe` without the
+// corroborating clock mattering. Without a rule in this gap, the worker could
+// stop reading real work entirely and every case in this file would stay green.
+const OVER_BUDGET = regexRule('pulled/over-budget', '^(a+)+$');
+
+// Generous on purpose. `^(a+)+$` measures ~163ms of CPU on an arm64 Mac and a
+// Windows runner has been seen at 4-5x that on backtracking work, so the
+// shipped 1s budget would decide the case on a slow runner — reporting a
+// `timeout` where the assertion is about which VERDICT came back.
+const OVER_BUDGET_PROBE_MS = 30_000;
 
 // Startup grace period for every scanner built here, and the reason is the test
 // environment rather than the product's. CI runs the type-stripped `.ts` worker
@@ -152,16 +168,16 @@ describe('the residual risk the probe battery leaves open', () => {
     // testing a rule that never reaches the runtime. Change the pattern rather
     // than deleting the case: the gap is in the approach, not in one pattern.
     //
-    // `safe` is the whole property, and it already carries a bound: it IS
-    // `worstMs < BUDGET_MS`, the battery's own 100ms budget. A second, tighter
-    // assertion on the same number measures nothing extra — the rule and the
-    // battery are both fixed, so the only thing that moves this figure is a
-    // change to the probe derivation, and `safe` flipping is the loud signal
-    // for that. One was asserted here at 10ms and reddened unrelated PRs at
-    // 15.5ms on a loaded runner. Do not add another: a margin on a duration
+    // The verdict is the whole property, and it already carries a bound: `safe`
+    // IS `worstMs < BUDGET_MS`, the battery's own 100ms budget. A second,
+    // tighter assertion on the same number measures nothing extra — the rule
+    // and the battery are both fixed, so the only thing that moves this figure
+    // is a change to the probe derivation, and the verdict flipping is the loud
+    // signal for that. One was asserted here at 10ms and reddened unrelated PRs
+    // at 15.5ms on a loaded runner. Do not add another: a margin on a duration
     // nobody can influence is noise with a threshold.
-    const verdict = checkRuleTiming(HOSTILE);
-    expect(verdict.safe).toBe(true);
+    const verdict = checkRuleTiming(HOSTILE, workClockMs);
+    expect(verdict.verdict).toBe('safe');
   });
 });
 
@@ -172,7 +188,7 @@ describe('createIsolatedScanner.probe', () => {
       const outcome = await scanner.probe(BENIGN);
       expect(outcome.status).toBe('ok');
       if (outcome.status !== 'ok') return;
-      expect(outcome.safe).toBe(true);
+      expect(outcome.verdict).toBe('safe');
       // The whole battery for a real rule is ~2ms at worst on an arm64 Mac; the
       // ceiling is loose enough to survive a loaded Windows runner.
       expect(outcome.worstMs).toBeLessThan(100);
@@ -190,11 +206,41 @@ describe('createIsolatedScanner.probe', () => {
       // Same verdict the in-process battery gives. Moving the measurement off
       // this thread must not change what it decides — only where it can be
       // killed. This rule is caught later, by the scan bound.
-      expect(outcome.safe).toBe(true);
+      expect(outcome.verdict).toBe('safe');
     } finally {
       await scanner.close();
     }
   });
+
+  it('reads real work in the worker, so an over-budget rule is still quarantinable', async () => {
+    // The product path for the corroborating clock, and the ONLY case that
+    // reaches it: `checkRuleTiming` runs inside the worker, so the clock it is
+    // handed there is not observable from this thread except through the verdict
+    // that comes back.
+    //
+    // What this catches is the worker handing over a clock that reports no work.
+    // That is not a crash and not a slow scan — every breach would come back
+    // `uncorroborated`, nothing would ever be cached, and the machine would
+    // re-measure a genuinely catastrophic rule in every hook process for ever.
+    // Convergence is the property, and its absence is silent.
+    const scanner = isolated(
+      { verified: [], unverified: [] },
+      { probeBudgetMs: OVER_BUDGET_PROBE_MS },
+    );
+    try {
+      const outcome = await scanner.probe(OVER_BUDGET);
+      expect(outcome.status).toBe('ok');
+      if (outcome.status !== 'ok') return;
+      expect(
+        outcome.verdict,
+        "a catastrophic pattern is CPU-bound by construction, so the worker's work clock must " +
+          'corroborate it. `uncorroborated` here means the worker is not reading real work and ' +
+          'no rule on this machine can ever be quarantined again.',
+      ).toBe('over-budget');
+    } finally {
+      await scanner.close();
+    }
+  }, 60_000);
 
   it('terminates a pattern that hangs the battery itself', async () => {
     // This is the case an in-process pre-flight cannot survive: measuring the
@@ -225,7 +271,7 @@ describe('createIsolatedScanner.probe', () => {
       const after = await scanner.probe(BENIGN);
       expect(after.status).toBe('ok');
       if (after.status !== 'ok') return;
-      expect(after.safe).toBe(true);
+      expect(after.verdict).toBe('safe');
     } finally {
       await scanner.close();
     }
@@ -768,5 +814,65 @@ describe('createIsolatedScanner failure reporting', () => {
     const outcome = await scanner.scan('anything');
     expect(outcome.status).toBe('unavailable');
     expect((await scanner.probe(BENIGN)).status).toBe('unavailable');
+  });
+});
+
+describe('CompleteIsolatedScanOptions', () => {
+  // A TYPE-level case, so it fails at `pnpm typecheck` rather than at runtime.
+  // The runtime assertions are only there to give the case a body — what is
+  // being pinned is that the two annotated objects below compile the way they
+  // do, and one of them must not.
+  //
+  // This exists because the type is the guard, and the guard has a failure mode
+  // that looks exactly like a fix. Two shorter spellings were tried and both
+  // survive an ordinary review:
+  //
+  //   - `[K in keyof IsolatedScanOptions]-?: …` requires every key, but with
+  //     `exactOptionalPropertyTypes` OFF — which `web-ui/tsconfig.json` sets,
+  //     while still compiling `local-ops` source — `-?` also strips `undefined`
+  //     from each value, so `field: undefined` stops compiling and the forwarder
+  //     cannot say "take the default" at all.
+  //   - `[K in keyof IsolatedScanOptions as K]: …` compiles under both settings
+  //     and leaves every property OPTIONAL, so an omitted key is accepted in
+  //     silence. That is the original defect wearing the fix's clothes, and no
+  //     caller of the type would notice: `local-ops` would go on typechecking
+  //     green with a subset, exactly as it did before any of this.
+  //
+  // So a case asserting only that a COMPLETE object compiles would pass on both
+  // of those. The `@ts-expect-error` is the half that cannot: it fails the build
+  // when the omission stops being an error, which is the only direction this can
+  // silently rot in.
+  it('accepts an object that names every key, undefined included', () => {
+    const complete: CompleteIsolatedScanOptions = {
+      workerUrl: undefined,
+      budgetMs: undefined,
+      probeBudgetMs: undefined,
+      startBudgetMs: undefined,
+      minAttributionMs: undefined,
+      onWorkerStart: undefined,
+    };
+    // `undefined` has to survive as a value, or "take the SDK's default" is
+    // inexpressible and every forwarder is forced to invent a number.
+    expect(complete.budgetMs).toBeUndefined();
+    // …and the completed object is still an ordinary IsolatedScanOptions, so it
+    // can be handed straight to the scanner.
+    const asOptions: IsolatedScanOptions = complete;
+    expect(asOptions.onWorkerStart).toBeUndefined();
+  });
+
+  it('refuses an object that omits one', () => {
+    // @ts-expect-error — every key is required, and omitting `onWorkerStart` is
+    // the exact regression this type exists to catch. TS reports the missing
+    // property against the DECLARATION rather than against any line inside the
+    // literal, so the directive belongs here; placed on a property it reports as
+    // unused while the real error goes through unsuppressed.
+    const partial: CompleteIsolatedScanOptions = {
+      workerUrl: undefined,
+      budgetMs: undefined,
+      probeBudgetMs: undefined,
+      startBudgetMs: undefined,
+      minAttributionMs: undefined,
+    };
+    expect(partial.workerUrl).toBeUndefined();
   });
 });

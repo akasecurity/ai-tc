@@ -142,38 +142,56 @@ nothing produces any more. So renaming a job here means updating this table in t
 PR; `packages/eslint-config/test/required-checks.test.js` reads this table and fails when
 a name in it no longer belongs to a real job.
 
-| Check                                     | Workflow     |
-| ----------------------------------------- | ------------ |
-| `Lint · Typecheck · Test · Build`         | `ci.yml`     |
-| `No-network · Full suite, egress blocked` | `ci.yml`     |
-| `macOS · Full suite`                      | `ci.yml`     |
-| `Windows · Unit tests (shipped surface)`  | `ci.yml`     |
-| `Windows · Lint`                          | `ci.yml`     |
-| `Dependency audit`                        | `audit.yml`  |
-| `CodeQL (javascript-typescript)`          | `codeql.yml` |
-| `CodeQL (actions)`                        | `codeql.yml` |
+The **Enforced** column is the third fact, and it is the one that decides whether any of
+this blocks a merge. Whether a check is _actually_ required lives in repository settings,
+not in this tree, so no test here can set it — but it is **readable**, and the
+`Required checks` workflow (`required-checks.yml`, daily) reads it and fails when the live
+set stops matching this column.
 
-Whether each is _actually_ enforced lives in repository settings, not in this tree, so
-this table cannot assert it — but the state is readable without admin, which is worth
-knowing since the branch-protection REST endpoint 404s to non-admins and reads like
-"no protection at all":
+| Check                                     | Workflow     | Enforced |
+| ----------------------------------------- | ------------ | -------- |
+| `Lint · Typecheck · Test · Build`         | `ci.yml`     | ✅       |
+| `No-network · Full suite, egress blocked` | `ci.yml`     | ⛔       |
+| `macOS · Full suite`                      | `ci.yml`     | ⛔       |
+| `Windows · Unit tests (shipped surface)`  | `ci.yml`     | ✅       |
+| `Windows · Lint`                          | `ci.yml`     | ⛔       |
+| `Dependency audit`                        | `audit.yml`  | ⛔       |
+| `CodeQL (javascript-typescript)`          | `codeql.yml` | ⛔       |
+| `CodeQL (actions)`                        | `codeql.yml` | ⛔       |
+
+**Two of the eight block a merge. The other six run on every PR and block nothing.** Two
+of those six are asserted as enforced elsewhere in this repository: CLAUDE.md presents
+`No-network · Full suite, egress blocked` as one of the three gates behind the no-local-only
+guarantee — and as the only one that can see a child process — and describes `Dependency
+audit` as the reason a high or critical advisory "will not merge". Neither holds until an
+admin marks them required. A PR that reaches the network on a shell-out, or that carries a
+critical advisory, goes red there and stays mergeable.
+
+Raising that set is a repository-settings change and cannot be done from a PR. What a PR
+_can_ do is make the column true, which is why the column exists per-row rather than as a
+paragraph: the previous version of this section was a hand-recorded "measured on <date>"
+note, and a note is stale from the moment a setting changes, in either direction.
+
+**Read it without admin.** Three endpoints lie to a non-admin here, which is why the
+working query is written out rather than left as an exercise: the branch-protection REST
+endpoint 404s (reading exactly like "no protection at all"), GraphQL's
+`branchProtectionRules` returns an empty list, and `rulesets` is genuinely empty because
+the protection in use is the older classic kind. `isRequired` is the one that answers, at
+ordinary read permission, against any recent PR:
 
 ```bash
 gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequest(number:PR){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:50){nodes{... on CheckRun{name isRequired(pullRequestNumber:PR)}}}}}}}}}}'
 ```
 
-**Measured 2026-08-12: only two of the eight are actually required** —
-`Lint · Typecheck · Test · Build` and `Windows · Unit tests (shipped surface)`. The other
-six run on every PR and block nothing. Two of those six are asserted as enforced
-elsewhere in this repository: CLAUDE.md presents `No-network · Full suite, egress blocked`
-as one of the three gates gating the no-network guarantee, and describes `Dependency
-audit` as the reason a high or critical advisory "will not merge". Neither holds until an
-admin marks them required — a PR that reaches the network on a shell-out, or that carries
-a critical advisory, goes red there and stays mergeable.
+**When an admin marks one of the six required, the daily job goes red.** That is the
+intended behaviour, not a bug to work around: the pin and the public record are meant to
+move in the same commit. Flip the row's ⛔ to ✅ and the job is green again. The check is
+an exact match in both directions on purpose — a floor would let the enforced set grow
+while this table quietly went stale, which is the failure the per-row column replaced.
 
-This paragraph is a hand-recorded observation, not something the tree derives, so it goes
-stale in the safe direction only until someone fixes the setting. Re-run the query above
-rather than trusting it.
+A check dropping OUT of the required set is the other direction, and it is the one no
+document can catch on its own: protection matches by name, so renaming a job stops it
+being required while nothing in any diff says so.
 
 ### Branch freshness
 

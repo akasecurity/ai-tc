@@ -12,7 +12,17 @@
   // so weakening it would otherwise leave every one of them replaying a cached
   // green taken under the old rule.
   //
-  // test/vitest/** is the third, and the sharpest of them: it holds the shared
+  // test/fixtures/** is the third, and it is the one "fixtures are just test
+  // data" talks you out of. The adversarial corpus under
+  // test/fixtures/adversarial/hostile-repo/ GENERATES the trees the walkers have
+  // to survive — symlink loops, `..`-bearing names, nesting past what a path can
+  // address, 500k ignored files — and the suites that drive it live in other
+  // packages. Weaken a shape (shrink the tree, drop the loop, break the deep
+  // chain) and every one of those suites reports green WITHOUT EXECUTING,
+  // because turbo hands back a result computed under the OLD fixture. That is
+  // the guard silently ceasing to guard at the one moment it is being changed.
+  //
+  // test/vitest/** is the fourth, and the sharpest of them: it holds the shared
   // coverage block AND every package's coverage FLOOR. A floor is a threshold
   // the package's own test run enforces, so lowering one — or widening an
   // exclude so a file stops counting — changes what `test` is allowed to pass
@@ -24,6 +34,7 @@
     "rules/**",
     "test/setup/**",
     "test/helpers/**",
+    "test/fixtures/**",
     "test/vitest/**"
   ],
   "tasks": {
@@ -282,6 +293,38 @@
         "!$TURBO_ROOT$/cli/extension/**",
         "!$TURBO_ROOT$/cli/native-host/**"
       ]
+    },
+    // Three more suites read a file outside their own package, and each one is
+    // the same hazard as the CLAUDE.md entry below: a guard that reads a
+    // document is defeated by a cache that does not hash it. Editing only the
+    // document moves no hash, turbo replays a cached green, and the assertion
+    // never runs at the one moment it exists to fire. `$TURBO_DEFAULT$` keeps
+    // the package's own tree in the hash — `inputs` REPLACES the default rather
+    // than extending it, so dropping that entry would hash the doc and nothing
+    // else.
+    //
+    // audit-gate's suite parses the mute claim out of both documents and drives
+    // it against the real gate. That claim was FALSE in a shipped release and
+    // nothing caught it, which is the entire reason the guard exists.
+    "@akasecurity/audit-gate#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/CLAUDE.md", "$TURBO_ROOT$/CONTRIBUTING.md"]
+    },
+    // required-checks-gate parses CONTRIBUTING.md's gate table, including the
+    // Enforced column its whole job compares against.
+    "@akasecurity/required-checks-gate#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/CONTRIBUTING.md"]
+    },
+    // codeql-alerts-gate reads the baseline it gates on, and asserts its
+    // per-severity counts add up to its total — the one check that catches a
+    // half-finished hand edit, which is exactly the edit this file invites.
+    "@akasecurity/codeql-alerts-gate#test": {
+      "dependsOn": ["build", "^build", "^typecheck"],
+      "outputs": ["coverage/**"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.github/codeql-alert-baseline.json"]
     },
     "clean": {
       "cache": false

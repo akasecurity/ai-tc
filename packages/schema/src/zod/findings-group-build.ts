@@ -19,7 +19,7 @@ import type {
   FindingStatus,
   Severity,
 } from './finding.ts';
-import { TOOL_TO_HARNESS } from './harness-map.ts';
+import { HARNESS, TOOL_TO_HARNESS } from './harness-map.ts';
 
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
 
@@ -96,7 +96,7 @@ export function toApiProvider(sourceTool: string): FindingProvider {
   // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
   // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return TOOL_TO_HARNESS[sourceTool] ?? 'api';
+  return TOOL_TO_HARNESS[sourceTool] ?? HARNESS.Api;
 }
 
 /**
@@ -105,12 +105,18 @@ export function toApiProvider(sourceTool: string): FindingProvider {
  * unknown value; the filter is applied in-memory).
  *
  * DERIVED as the inverse of the same TOOL_TO_HARNESS table `toApiProvider`
- * reads forward, rather than restated as a second map. The hand-written copy
- * this replaced had to be edited in step with that table and in the same
- * commit, and nothing checked that it was: a provider missing a row here reads
- * as a filter that quietly matches no stored event, which is a silently empty
- * findings page rather than an error. 'api' falls out with no rows of its own,
- * which is correct — it is the miss bucket and names no single stored value.
+ * reads forward, so the two directions cannot disagree about which wire ids
+ * belong to a provider — a tool added to that table is carried here with no
+ * second edit.
+ *
+ * What deriving GIVES UP is the one thing a keyed table checks: that every
+ * provider has a row at all. A provider no tool maps onto returns [] rather than
+ * failing to compile, and [] is indistinguishable from 'api''s own contract
+ * below — so it reads as the miss bucket rather than as a filter matching
+ * nothing, which is a silently empty findings page instead of an error. Nothing
+ * in the type system replaces that; the set assertion in harness-map.test.ts is
+ * what covers it. 'api' falls out with no rows of its own, which is correct — it
+ * is the miss bucket and names no single stored value.
  */
 export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
   return Object.entries(TOOL_TO_HARNESS)

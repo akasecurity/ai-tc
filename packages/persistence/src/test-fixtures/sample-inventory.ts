@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { HARNESS, type HarnessId } from '@akasecurity/schema';
+
 import { sampleAssetId, sampleHarnessId, sampleProjectId } from './sample-ids.ts';
 
 /**
@@ -51,7 +53,8 @@ interface SampleProject {
 }
 interface SampleHarness {
   slug: string;
-  provider: 'claudecode' | 'cursor' | 'codex';
+  // The vocabulary the reader validates against, not a third spelling of it.
+  provider: HarnessId;
   label: string;
   kind: string;
   version: string;
@@ -250,7 +253,7 @@ const ASSETS: SampleAsset[] = [
 const HARNESSES: SampleHarness[] = [
   {
     slug: 'claudecode',
-    provider: 'claudecode',
+    provider: HARNESS.ClaudeCode,
     label: 'Claude Code',
     kind: 'claude_code',
     version: '2.1.0',
@@ -271,7 +274,7 @@ const HARNESSES: SampleHarness[] = [
   },
   {
     slug: 'cursor',
-    provider: 'cursor',
+    provider: HARNESS.Cursor,
     label: 'Cursor',
     kind: 'cursor',
     version: '0.43.0',

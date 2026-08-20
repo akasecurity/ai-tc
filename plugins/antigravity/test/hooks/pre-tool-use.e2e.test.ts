@@ -10,15 +10,14 @@
 // invisible to a unit test of the decision module and would block every tool
 // call the user makes.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
+import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/hooks -> plugins/antigravity
@@ -93,8 +92,7 @@ function runCommand(home: string, commandLine: string): HookRun {
 
 describe('pre-tool-use built hook — the pointer deny precedes the store open', () => {
   it('denies a run_command carrying a pointer even when the store cannot open', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-antigravity-ptu-pointer-'));
-    try {
+    withTempHome((home) => {
       corruptStore(home);
       const payload = decisionOf(runCommand(home, `echo ${POINTER}`));
       expect(payload.decision).toBe('deny');
@@ -102,9 +100,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       // A deny that depended on the store would have degraded to the
       // store-unavailable warning instead — its absence pins the ordering.
       expect(payload.reason).not.toContain('OFF for this session');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-antigravity-ptu-pointer-');
   });
 
   it('emits an EXPLICIT allow on a clean command over the same corrupt store', () => {
@@ -112,18 +108,14 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
     // this path, which Antigravity reads as a deny. Asserting the literal
     // `allow` (not merely the absence of "deny") is the only form that catches
     // it — empty stdout satisfies every not.toContain.
-    const home = mkdtempSync(join(tmpdir(), 'aka-antigravity-ptu-failopen-'));
-    try {
+    withTempHome((home) => {
       corruptStore(home);
       expect(decisionOf(runCommand(home, 'echo hello')).decision).toBe('allow');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-antigravity-ptu-failopen-');
   });
 
   it('emits an explicit allow for a tool it does not scan', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-antigravity-ptu-untracked-'));
-    try {
+    withTempHome((home) => {
       const run = runHook(home, {
         toolCall: { name: 'view_file', args: { TargetFile: '/etc/hosts' } },
         stepIdx: 1,
@@ -131,24 +123,19 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
         workspacePaths: ['/tmp'],
       });
       expect(decisionOf(run).decision).toBe('allow');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-antigravity-ptu-untracked-');
   });
 
   it('emits an explicit allow on a malformed payload rather than staying silent', () => {
     // Garbage in must not become a deny: the host cannot tell "the hook broke"
     // from "the hook refused", so a parse failure has to answer allow.
-    const home = mkdtempSync(join(tmpdir(), 'aka-antigravity-ptu-malformed-'));
-    try {
+    withTempHome((home) => {
       const run = runHook(home, 'not-an-object');
       expect(decisionOf(run).decision).toBe('allow');
 
       // …including a payload with no toolCall at all.
       const noCall = runHook(home, { conversationId: 'c', workspacePaths: [] });
       expect(decisionOf(noCall).decision).toBe('allow');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-antigravity-ptu-malformed-');
   });
 });

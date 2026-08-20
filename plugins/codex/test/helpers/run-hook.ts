@@ -86,8 +86,12 @@ export function runHook(name: string, stdin: string, options: RunHookOptions = {
 // points the whole chain at a throwaway temp home instead of a developer's real
 // store. Windows resolves the home dir from USERPROFILE instead of HOME, so
 // both are set in lockstep.
-export function withTempHome<T>(fn: (home: string) => T): T {
-  const home = mkdtempSync(join(tmpdir(), 'aka-codex-hook-e2e-'));
+//
+// `prefix` defaults to a generic tag; pass a case-specific one (e.g.
+// `aka-codex-ups-redact-`) so a directory a failed teardown leaves behind on
+// disk still names the case that leaked it.
+export function withTempHome<T>(fn: (home: string) => T, prefix = 'aka-codex-hook-e2e-'): T {
+  const home = mkdtempSync(join(tmpdir(), prefix));
   try {
     return fn(home);
   } finally {

@@ -12,14 +12,13 @@
 // the payload that hook's own "carry on unchanged" is spelled as. Silence fails
 // loudly rather than passing quietly.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/antigravity
@@ -103,22 +102,16 @@ function soleObject(run: HookRun): unknown {
   return JSON.parse(run.stdout) as unknown;
 }
 
-// Each case gets its own throwaway home so a store one hook creates cannot
-// change how the next one behaves.
-function withHome<T>(label: string, fn: (home: string) => T): T {
-  const home = mkdtempSync(join(tmpdir(), `aka-agy-failopen-${label}-`));
-  try {
-    return fn(home);
-  } finally {
-    removeTree(home);
-  }
-}
-
 describe.each(HOOKS)(
   '$name built hook — fails open by PRINTING, on every fault',
   (hook) => {
     it.each(FAULTS)('emits its carry-on payload on $label', (fault) => {
-      const run = withHome(hook.name, (home) => runHook(hook.name, hook.argv, home, fault.input));
+      // Each case gets its own throwaway home so a store one hook creates
+      // cannot change how the next one behaves.
+      const run = withTempHome(
+        (home) => runHook(hook.name, hook.argv, home, fault.input),
+        `aka-agy-failopen-${hook.name}-`,
+      );
       expect(soleObject(run)).toEqual(hook.failOpen);
     });
 
@@ -133,7 +126,7 @@ describe.each(HOOKS)(
       // wrapper's catch works. No fault available here makes a body throw after
       // the store opens, so the wrapper's throw branch is covered by
       // `test/hooks/fail-open-wrapper.test.ts` and by nothing at this tier.
-      const run = withHome(`${hook.name}-corrupt`, (home) => {
+      const run = withTempHome((home) => {
         const dataDir = join(home, '.aka', 'data');
         mkdirSync(dataDir, { recursive: true });
         writeFileSync(
@@ -151,7 +144,7 @@ describe.each(HOOKS)(
             workspacePaths: ['/tmp'],
           }),
         );
-      });
+      }, `aka-agy-failopen-${hook.name}-corrupt-`);
       expect(soleObject(run)).toEqual(hook.failOpen);
     });
   },

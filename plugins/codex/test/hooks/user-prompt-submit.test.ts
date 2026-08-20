@@ -1,6 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,8 +7,8 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/hooks -> plugins/codex
@@ -88,8 +86,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
     // This hook has no prompt-rewrite channel, so a redact policy must STOP
     // the prompt — warning and passing it through would send the raw secret
     // to the model. Same semantics as the Claude Code hook.
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-redact-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'redact');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -101,14 +98,11 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       // Run by run rather than whole — a branch echoing a truncated value is
       // still echoing a live credential's prefix.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-redact-');
   });
 
   it('block policy → the removal-based block, raw never on stdout', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-block-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'block');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -117,14 +111,11 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(payload.reason).toMatch(/^AKA blocked this prompt — flagged /);
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-block-');
   });
 
   it('warn policy → the prompt continues with a warning, never a block', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-warn-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'warn');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -134,14 +125,11 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(payload.systemMessage).toContain('sent unchanged');
       // The stale claim that prompts cannot be redacted is gone.
       expect(payload.systemMessage).not.toContain('cannot be redacted');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-warn-');
   });
 
   it('emits no block on a clean prompt', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-clean-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'redact');
       const run = runHook(home, {
         prompt: 'what does this function do?',
@@ -152,9 +140,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(run.status).toBe(0);
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-clean-');
   });
 });
 
@@ -169,8 +155,7 @@ function submitCleanPrompt(home: string, sessionId: string): HookRun {
 
 describe('user-prompt-submit first-run nudge — once per session, retired by onboarding', () => {
   it('nudges a clean prompt from an un-onboarded home, naming the setup skill', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-nudge-'));
-    try {
+    withTempHome((home) => {
       const first = submitCleanPrompt(home, 'sess-nudge');
       expect(first.status).toBe(0);
       const payload = JSON.parse(first.stdout) as { systemMessage?: string };
@@ -182,14 +167,11 @@ describe('user-prompt-submit first-run nudge — once per session, retired by on
       const second = submitCleanPrompt(home, 'sess-nudge');
       expect(second.status).toBe(0);
       expect(second.stdout).toBe('');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-nudge-');
   });
 
   it('emits nothing once the home is onboarded', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ups-onboarded-'));
-    try {
+    withTempHome((home) => {
       // The real onboarding writer stamps onboardedAt — the flag the nudge
       // keys on — so this is the post-setup state, not a seeded lookalike.
       execFileSync(process.execPath, [ONBOARD_SCRIPT, '--historical', 'session-only'], {
@@ -199,8 +181,6 @@ describe('user-prompt-submit first-run nudge — once per session, retired by on
       const run = submitCleanPrompt(home, 'sess-onboarded');
       expect(run.status).toBe(0);
       expect(run.stdout).toBe('');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ups-onboarded-');
   });
 });

@@ -1,13 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
+import { withTempHome } from '../helpers/run-hook.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/hooks -> plugins/codex
@@ -68,8 +67,7 @@ function submitBash(home: string, command: string): HookRun {
 
 describe('pre-tool-use built hook — the pointer deny precedes the store open', () => {
   it('denies a Bash command carrying a pointer even when the store cannot open', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ptu-pointer-'));
-    try {
+    withTempHome((home) => {
       corruptStore(home);
       const run = submitBash(home, `echo ${POINTER}`);
       expect(run.status).toBe(0);
@@ -81,21 +79,16 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       // A deny that depended on the store would have degraded to the
       // store-unavailable warning instead — its absence pins the ordering.
       expect(run.stdout).not.toContain('OFF for this session');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ptu-pointer-');
   });
 
   it('stays fail-open on a clean command over the same corrupt store — never a deny', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-codex-ptu-failopen-'));
-    try {
+    withTempHome((home) => {
       corruptStore(home);
       const run = submitBash(home, 'echo hello');
       expect(run.status).toBe(0);
       expect(run.stdout).not.toContain('"permissionDecision":"deny"');
       expect(run.stdout).not.toContain('"decision":"block"');
-    } finally {
-      removeTree(home);
-    }
+    }, 'aka-codex-ptu-failopen-');
   });
 });

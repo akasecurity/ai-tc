@@ -129,8 +129,11 @@ export class SetupJourney {
     this.writeFakeJudge();
   }
 
-  cleanup(): void {
-    removeTrees([this.home, this.binDir]);
+  // Takes any further trees a caller needs removed alongside the journey's own
+  // home + binDir (a scenario's own repoRoot, say), so the aggregation lives
+  // in one place instead of being re-rolled at each call site.
+  cleanup(...extra: readonly string[]): void {
+    removeTrees([...extra, this.home, this.binDir]);
   }
 
   // Whether the stub `claude` judge was actually executed. The stub touches a

@@ -31,7 +31,6 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { type BuiltinPolicyId, CalibrationFrame } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import {
   MULTI_KEY_GITHUB_KEY,
@@ -50,24 +49,6 @@ function readPosture(storeDir: string): string | undefined {
   } finally {
     db.close();
   }
-}
-
-// Both steps must run even if the first throws — journey.cleanup() owns the
-// whole temp home plus its store, not merely another tree removal, and must
-// not leak behind a repoRoot failure this suite's own children could cause.
-function cleanupJourneyAndRepo(journey: SetupJourney, repoRoot: string): void {
-  const errors: unknown[] = [];
-  try {
-    removeTree(repoRoot);
-  } catch (err) {
-    errors.push(err);
-  }
-  try {
-    journey.cleanup();
-  } catch (err) {
-    errors.push(err);
-  }
-  if (errors.length > 0) throw new AggregateError(errors, 'afterAll cleanup failed');
 }
 
 describe("'Redact + rotation checklist' through the built remediate.js persists the standing posture", () => {
@@ -95,7 +76,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
   }, 120_000);
 
   afterAll(() => {
-    cleanupJourneyAndRepo(journey, repoRoot);
+    journey.cleanup(repoRoot);
   });
 
   it('a redact route with no --posture fails loud — nothing persisted, no checklist, the key untouched', () => {
@@ -225,7 +206,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
   }, 120_000);
 
   afterAll(() => {
-    cleanupJourneyAndRepo(journey, repoRoot);
+    journey.cleanup(repoRoot);
   });
 
   it('redacts all three real keys, reports a transcript count distinct from the key count, and persists the posture on a fresh connection', () => {

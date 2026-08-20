@@ -38,7 +38,6 @@ import type {
 import { buildChecklistEntries, renderChecklistMarkdown } from '@akasecurity/setup-wizard';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
 import {
   REMEDIATION_LEAK_RAW_KEYS,
@@ -118,20 +117,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   }, 120_000);
 
   afterAll(() => {
-    // Both steps must run even if the first throws — journey.cleanup() owns
-    // the whole temp home plus its store, not merely another tree removal.
-    const errors: unknown[] = [];
-    try {
-      removeTree(repoRoot);
-    } catch (err) {
-      errors.push(err);
-    }
-    try {
-      journey.cleanup();
-    } catch (err) {
-      errors.push(err);
-    }
-    if (errors.length > 0) throw new AggregateError(errors, 'afterAll cleanup failed');
+    journey.cleanup(repoRoot);
   });
 
   it('reads the secret-leak findings from the seeded backfill frame — three, secret-only, PII excluded', () => {

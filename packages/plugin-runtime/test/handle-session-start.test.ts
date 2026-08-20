@@ -8,7 +8,7 @@ import { bundledDetections, type DataGateway, type PluginConfig } from '@akasecu
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import {
   EXCEPTION_RETENTION_MS,
   handleSessionStart,
@@ -33,9 +33,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  removeTree(dir);
-  removeTree(cwd);
-  removeTree(home);
+  removeTrees([dir, cwd, home]);
 });
 
 afterEach(() => {

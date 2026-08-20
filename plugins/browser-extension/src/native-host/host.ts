@@ -27,14 +27,15 @@ import type {
 } from '@akasecurity/plugin-sdk';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import type { SourceTool } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { HostRequest, HostResponse, WebSourceTool } from './protocol.ts';
 import { isHostRequest } from './protocol.ts';
 import { readMessages, writeMessage } from './wire.ts';
 
 const WEB_TOOL_TO_SOURCE: Record<WebSourceTool, SourceTool> = {
-  chatgpt: 'chatgpt',
-  'claude-ai': 'claude-ai',
+  [SOURCE_TOOL.ChatGpt]: SOURCE_TOOL.ChatGpt,
+  [SOURCE_TOOL.ClaudeAi]: SOURCE_TOOL.ClaudeAi,
 };
 
 // chatgpt.com / claude.ai are each single-backend web apps — there's no local
@@ -81,7 +82,12 @@ export async function handleRequest(
         {
           sessionId: request.sessionId,
           cwd: homedir(),
-          tool: request.tool,
+          // Mapped, exactly as the capture branch below maps it. The two ids are
+          // identical today, so passing `request.tool` raw here worked — but the
+          // session root's `harness` is derived from THIS value and its captures'
+          // `source_tool` from that one, so the first web provider whose web id
+          // differs from its wire id would split a session from its own events.
+          tool: WEB_TOOL_TO_SOURCE[request.tool],
           harnessInterface: request.hostname,
         },
         config,

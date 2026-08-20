@@ -23,6 +23,7 @@ import {
   scanAllRepos,
   scanWorktree,
 } from '@akasecurity/scanner';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
 
@@ -68,14 +69,14 @@ try {
     // Never the home directory implicitly: --discover without --root sweeps
     // the current directory. `--root ~` is the explicit machine-wide opt-in.
     const summary = await scanAllRepos(cfg, {
-      sourceTool: 'claude-code',
+      sourceTool: SOURCE_TOOL.ClaudeCode,
       searchRoots: [root ?? process.cwd()],
       ...(depth !== undefined ? { maxDepth: depth } : {}),
     });
     process.stdout.write(`${fenced(renderMultiRepoSummary(summary, { followUp: FOLLOW_UP }))}\n`);
   } else {
     const summary = await scanWorktree(cfg, {
-      sourceTool: 'claude-code',
+      sourceTool: SOURCE_TOOL.ClaudeCode,
       ...(dir !== undefined ? { rootDir: dir } : {}),
     });
     process.stdout.write(`${fenced(renderWorktreeSummary(summary, { followUp: FOLLOW_UP }))}\n`);

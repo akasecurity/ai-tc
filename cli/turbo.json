@@ -1,0 +1,51 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    // Replaces the root `test` dependsOn (build, ^build, ^typecheck). Dropping
+    // both build edges is the point, and the expensive one is INHERITED rather
+    // than this package's own: `^build` reaches `@akasecurity/web-ui#build`, a
+    // full `next build`, because the CLI ships the dashboard as a spawned Next
+    // server. Nothing in this suite reads either output — every test imports
+    // from `src/`, `dashboard.test.ts` writes its own fake standalone entry,
+    // and `extension.test.ts` builds its `<cliRoot>` fixtures in a temp dir —
+    // so that build sat on the critical path of every `turbo run test` on every
+    // leg, for nothing.
+    //
+    // It is not merely slow, it STARVES its neighbours, which is what makes
+    // this a correctness fix rather than a tuning one. Under the
+    // `--concurrency=2` the Windows leg runs, the build pairs with whichever
+    // suite is the other long cache-miss — in the steady state
+    // `ai-tc-claude-code#test`, whose 82 files spawn the built hooks as real
+    // child processes. Measured on a rerun where those two were the ONLY misses
+    // (34 of 36 tasks cached): the step reported 4m34.604s and
+    // claude-code#test alone reported 271.99s of it, so the build overlapped
+    // essentially the whole suite, which went red with `Test timed out in
+    // 20000ms` on two files that pass on every other leg — and on a different
+    // pair than the attempt before it, the rotating-cast signature of a starved
+    // runner rather than a broken test. web-ui/turbo.json cut exactly this
+    // pairing for `web-ui#test` with the same reasoning, and its comment
+    // already named THIS edge as the way the build gets pulled back in.
+    //
+    // Read a turbo log by its cache MISSES, not its `Duration` lines: a hit
+    // replays the cached log verbatim, that line included, so summing them
+    // counts runs that never happened.
+    //
+    // Dropping `build` takes this package's own `tsup` with it, which is
+    // deliberate rather than collateral: `cli#build` inherits the root `build`
+    // task's own `^build`, so keeping it here would pull `web-ui#build` right
+    // back in and cut nothing. Both builds stay covered, and neither cover is
+    // this task — ci.yml's `pnpm build` step builds the whole workspace, and
+    // build-binaries.yml runs `bundle:web-ui` (which shells out to
+    // `turbo run build --filter=@akasecurity/web-ui`) on all four release
+    // targets, Windows included, for every PR touching `cli/**`, `web-ui/**`
+    // or `packages/**`. So `next build` is still exercised on Windows per PR;
+    // it just no longer runs beside a test suite it can starve.
+    //
+    // `^typecheck` is kept: it is what invalidates this package when a
+    // dependency's source changes, since the libraries are consumed as raw
+    // source rather than as build output.
+    "test": {
+      "dependsOn": ["^typecheck"]
+    }
+  }
+}

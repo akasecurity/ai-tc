@@ -33,6 +33,7 @@ import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveAntigravityProvider } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import {
@@ -82,7 +83,7 @@ async function main(): Promise<unknown> {
     {
       sessionId,
       cwd,
-      tool: 'antigravity',
+      tool: SOURCE_TOOL.Antigravity,
       harnessVersion: harnessVersion(),
     },
     config,

@@ -12,7 +12,7 @@ import {
   type ScanPathResult,
 } from '@akasecurity/local-ops';
 import { dataDir } from '@akasecurity/persistence';
-import type { EgressWriteSummary } from '@akasecurity/schema';
+import { type EgressWriteSummary, SOURCE_TOOL } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
@@ -91,7 +91,7 @@ export async function runScan(path: string): Promise<ScanResult> {
       // Per-pack policy actions from the same snapshot, so at-rest findings carry the
       // detection's assigned Monitor/Warn/Redact/Block (not the per-category default).
       ruleActions: ruleset.ruleActions,
-      sourceTool: 'cli',
+      sourceTool: SOURCE_TOOL.Cli,
       // Same ~/.aka/data directory as db()'s store, so a finding's finding_key
       // uses the plugin's keyed-HMAC fingerprint and reconciles onto the same
       // row on re-scan instead of duplicating (see scanPathIntoStore).

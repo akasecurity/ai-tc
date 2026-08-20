@@ -79,6 +79,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { DetectedFinding, EventKind, IngestEvent, SourceTool } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { CAPTURE_EVENT_TYPES_SQL } from '@akasecurity/schema';
 
 import { withTransaction } from '../internal/transactions.ts';
@@ -344,7 +345,12 @@ function seededText(rng: () => number, chars: number): string {
 }
 
 const KINDS: EventKind[] = ['prompt', 'response', 'code_change', 'tool_use'];
-const TOOLS: SourceTool[] = ['claude-code', 'codex', 'antigravity', 'cli'];
+const TOOLS: SourceTool[] = [
+  SOURCE_TOOL.ClaudeCode,
+  SOURCE_TOOL.Codex,
+  SOURCE_TOOL.Antigravity,
+  SOURCE_TOOL.Cli,
+];
 
 /** Bytes of `content` per generated event — a plausible prompt, not a stress input. */
 const CONTENT_CHARS = 240;
@@ -449,7 +455,7 @@ export function generateCaptureCorpus(
       const occurredAtMs = CORPUS_EPOCH_MS + i * spacingMs;
       const event: IngestEvent = {
         id: seededGuid(rng),
-        sourceTool: TOOLS[Math.floor(rng() * TOOLS.length)] ?? 'claude-code',
+        sourceTool: TOOLS[Math.floor(rng() * TOOLS.length)] ?? SOURCE_TOOL.ClaudeCode,
         kind,
         occurredAt: new Date(occurredAtMs).toISOString(),
         // The capture row is content-addressed on (sessionId, contentHash,

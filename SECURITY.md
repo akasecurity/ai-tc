@@ -65,15 +65,20 @@ schema, or a recovery resets a store it cannot open, it snapshots `aka.db` to a
 sibling `.bak` file. Where the store cannot be copied at all — a corrupt page, or
 no room for a second copy — it moves the whole set aside instead, so that backup
 carries its own `-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
-prompt corpus and are written `0600` too.
+prompt corpus and are held at `0600` too.
 
-A snapshot cut short part-way — a plugin hook killed at its timeout — can leave a
-`.bak.partial` behind at the process umask instead (the default permissions a new
-file gets, commonly `0644`, i.e. readable by every account on the machine).
-`ai-tc` clears abandoned ones only when it next takes a snapshot, so on a machine
-that never migrates or resets again, that copy stays as it is. Treat a
-`.bak.partial` under `~/.aka/data` as a full, readable copy of the store, and
-delete it.
+A snapshot cut short part-way — a plugin hook killed at its timeout — leaves a
+`.bak.partial` **directory** behind, holding as much of the copy as had been
+written. That directory is created owner-only (`0700`) before the copy starts,
+which is what protects the copy for the whole time it is being written: SQLite
+refuses to write a copy over a file that already exists, so the copy itself
+cannot be pre-created at `0600` and lands at the process umask (commonly `0644`)
+until it is complete. Only the directory around it can cover that interval, and
+it survives a kill exactly as the copy does. `ai-tc` clears an abandoned
+`.bak.partial` **on the next open of the store**, once nothing has written to it
+for five minutes — a copy another process has in flight is left alone. Treat a
+`.bak.partial` under `~/.aka/data` as a full copy of the store, and delete one
+that outlives the process that was writing it.
 
 Those POSIX modes are a **no-op on Windows**: Node cannot apply them, so `ai-tc`
 sets no at-rest protection there. On Windows the store simply inherits whatever ACL

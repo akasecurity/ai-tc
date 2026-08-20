@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { REJECTED_RULE_DETAIL_CAP } from '../../src/repositories/installed-packs.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-packs-');
+const store = useTempStore('aka-packs-', { migrated: true });
 
 function rule(id: string): Rule {
   return {

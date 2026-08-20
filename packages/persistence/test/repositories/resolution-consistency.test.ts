@@ -23,7 +23,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-const store = useTempStore('aka-resolution-consistency-');
+const store = useTempStore('aka-resolution-consistency-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

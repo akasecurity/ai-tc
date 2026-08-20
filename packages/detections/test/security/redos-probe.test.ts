@@ -260,9 +260,30 @@ describe('checkRuleTiming', () => {
 describe('worstProbeMs attributes a probe to its interpreted tier', () => {
   // The verdict test above buys its directness with a ~1.3x margin. This one
   // carries no absolute millisecond threshold at all: both quantities are
-  // measured on the machine running them, so hardware speed and CPU contention
-  // move them together and cancel — the same reason `backtrackRatio` and
-  // CATASTROPHIC_RATIO exist rather than a fixed ms bound.
+  // measured on the machine running them, so a faster or slower MACHINE scales
+  // the numerator and the denominator alike and cancels out of the ratio — the
+  // same reason `backtrackRatio` and CATASTROPHIC_RATIO exist rather than a
+  // fixed ms bound.
+  //
+  // CPU CONTENTION does not cancel, and this comment used to say it did. Two
+  // quantities cancel only when they are sampled in the same window, and these
+  // are not: the numerator is timed inside `worstProbeMs` and the denominator
+  // ~135ms later. Load spanning both windows is the harmless direction — it
+  // RAISES the ratio, measured below — but load arriving only in the gap
+  // inflates the denominator alone, and the ratio then reports the runner
+  // rather than the tier — down to the 0.84x recorded below, on a gate that was
+  // working perfectly. That is a false failure, not a caught bypass, and it is
+  // why this case reddened runs of the full suite at turbo's default fan-out
+  // while passing the same commit standalone.
+  //
+  // So what makes the pair comparable is sampling shape, not the threshold, and
+  // it is two mechanisms rather than one. The denominator is a min over seven
+  // samples, which recovers the native tier wherever a quiet slot exists inside
+  // the window. And a fixed CPU-bound calibration is timed on either side of the
+  // whole measurement, so the one case `min` cannot rescue — a machine that
+  // changed speed BETWEEN the windows, where there is no quiet slot left to
+  // find — abstains instead of returning a verdict its sampling cannot support.
+  // Both are taken below, beside the reasoning that sizes them.
   it('reports the first probe at its interpreted cost, not its native cost', (ctx) => {
     // Read the machine's speed before anything is measured against it, and again
     // after. Neither reading touches `rule`.

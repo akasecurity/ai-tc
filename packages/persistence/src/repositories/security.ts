@@ -10,6 +10,7 @@ import {
   type MttrTrendPoint,
   type MttrTrendResponse,
   type Provider,
+  Provider as ProviderSchema,
   RANGE_DAYS,
   type RecentlyResolvedResponse,
   type ResolvedFeedItem,
@@ -85,16 +86,28 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // best-effort against a vendor's DOM, and a miss is silent by design
 // (findComposer() returns null and the adapter does nothing), so a redesign can
 // take real coverage to zero without changing this table.
-const SCAN_COVERAGE: readonly { provider: Provider; coverage: number; supported: boolean }[] = [
-  { provider: HARNESS.ClaudeCode, coverage: 100, supported: true },
-  { provider: HARNESS.Cursor, coverage: 0, supported: false },
-  { provider: HARNESS.Codex, coverage: 80, supported: true },
-  { provider: HARNESS.Antigravity, coverage: 60, supported: true },
-  { provider: HARNESS.ClaudeAi, coverage: 40, supported: true },
-  { provider: HARNESS.ChatGpt, coverage: 40, supported: true },
-  { provider: HARNESS.Copilot, coverage: 0, supported: false },
-  { provider: HARNESS.Api, coverage: 0, supported: false },
-];
+// Keyed by every `Provider` value rather than an array, so a provider added to
+// the enum without a row here is a compile error — an omission the array shape
+// this replaced could not catch (see scanCoverage() below for the ordering,
+// which is derived from Provider.options). Keys are spelled through `HARNESS.X`
+// computed members per CLAUDE.md's "call sites spell HARNESS.ClaudeCode, not
+// the literal" rule — `Record<Provider, …>` exhaustiveness survives computed
+// member keys. Key order here is deliberately NOT Provider's declaration
+// order: scanCoverage() must derive the response order from Provider.options
+// rather than from iterating this object, and keeping the two orders different
+// is what makes that a test can actually falsify — with the two orders
+// coincidentally equal, an implementation that iterates this object directly
+// would emit the identical sequence.
+const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> = {
+  [HARNESS.Antigravity]: { coverage: 60, supported: true },
+  [HARNESS.Api]: { coverage: 0, supported: false },
+  [HARNESS.ChatGpt]: { coverage: 40, supported: true },
+  [HARNESS.ClaudeAi]: { coverage: 40, supported: true },
+  [HARNESS.ClaudeCode]: { coverage: 100, supported: true },
+  [HARNESS.Codex]: { coverage: 80, supported: true },
+  [HARNESS.Copilot]: { coverage: 0, supported: false },
+  [HARNESS.Cursor]: { coverage: 0, supported: false },
+};
 
 // Bucket size per range. A table rather than a ternary so adding a range to
 // TIME_RANGES is a compile error here too, the way a missing RANGE_DAYS entry is.
@@ -239,9 +252,22 @@ export class SqliteSecurityRepository implements SecurityViews {
   }
 
   // Range is echoed but does not change the result today — coverage is a constant
-  // business fact (see SCAN_COVERAGE), not a measured per-window metric.
+  // business fact (see SCAN_COVERAGE), not a measured per-window metric. Order
+  // comes from Provider.options (the enum's declaration order), not from
+  // SCAN_COVERAGE's own key order — deliberately, not because object literals
+  // leave key order unspecified (ES2015 guarantees insertion order for these
+  // non-integer string keys, so iterating SCAN_COVERAGE directly would be
+  // reliable too). The reason is the schema comment's promise: the returned
+  // order must mirror the generated OpenAPI enum list, which is Provider's
+  // contract, not this table's.
   scanCoverage(range: TimeRange): Promise<ScanCoverageResponse> {
-    return Promise.resolve({ range, providers: SCAN_COVERAGE.map((p) => ({ ...p })) });
+    return Promise.resolve({
+      range,
+      providers: ProviderSchema.options.map((provider) => ({
+        provider,
+        ...SCAN_COVERAGE[provider],
+      })),
+    });
   }
 
   enforcementActions(range: TimeRange): Promise<EnforcementActionsResponse> {

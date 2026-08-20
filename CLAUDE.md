@@ -939,6 +939,18 @@ tools/                repo tooling, never shipped: the installer one-liners and
    enumerates by — a file whose extension it counts as lintable and the glob omits
    is the same cached-green hole one extension wide.
 
+   Those checks read `turbo.json` as TEXT and match its globs with
+   `path.matchesGlob`, which is a MODEL of turbo's hashing rather than turbo's
+   hashing. One case asks turbo instead: it plants a lintable file at the repo
+   root, runs `--dry=json`, and asserts the hash really moves — the only reading
+   that decides whether this suite RUNS. Two things in it are load-bearing. It
+   selects the task by `taskId`, because `tasks[0]` is `#build`, whose inputs are
+   package-local and which no repo-root file ever moves. And it carries a
+   POSITIVE CONTROL that plants under a different input (`tools/ci/**`) first, so
+   a broken measurement is reported as a broken measurement rather than as a
+   missing glob — without it, "the hash did not move" reads the same whether the
+   glob went or the selection did.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
@@ -959,6 +971,17 @@ tools/                repo tooling, never shipped: the installer one-liners and
    // …
    test: { setupFiles: [noNetworkGuard], … }
    ```
+
+   A package that also declares `testTimeout`/`hookTimeout` in that config must add
+   itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
+   which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
+   directions on purpose. Raising a timeout is the change that must not pass unnoticed:
+   the per-test SQLite migration above was 'fixed' once by moving this number from
+   vitest's 10s default to 20s, which bought a green run and let the same failure spread
+   from one package to four. Lowering it is a good change — setup is a file copy now, so
+   there is headroom to give back — but a deliberate one. Raising it through the `test`
+   script's CLI flags instead is refused by the same suite, since the pin reads config
+   literals and a flag would bypass it silently.
 
    The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
    package testing through anything else (`node --test`, say) runs with no runtime
@@ -1652,6 +1675,25 @@ not reach for a `./testing` export instead.
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
   suite shares setup across hooks, `withTempStore` when one test body owns the store. An
   async body is awaited before teardown.
+- **`{ migrated: true }`** — the second argument to all three, and the one to reach for by
+  default. `openLocalDatabase` runs every migration in the ledger on a store that has none,
+  so a suite with per-test isolation rebuilds the whole schema on every test; this seeds
+  `data/` from a template built ONCE per worker and copied. Isolation is unchanged — each
+  test still gets its own file, and no handle is shared. Measured at roughly 9-10x cheaper
+  per setup (`packages/persistence/bench/store-template.bench.ts`), which matters because
+  the Windows leg charges about 30x local cost for exactly this work and a `beforeEach`
+  that blows the hook ceiling fails a package the PR never touched.
+
+  **It is opt-IN, and that is load-bearing.** A seeded store has nothing left to migrate,
+  so a suite whose SUBJECT is the open path must not take it: migrations, the lineage
+  reset, the `.bak` a fresh migration leaves beside the store, `aka init` creating the
+  store, a first-run flow, or a fault injected so that `applyMigrations` is the thing that
+  refuses. Those assertions would hold **vacuously** rather than fail — which is worse
+  than losing them, because they go on reporting green. `test/helpers/store-template.ts`
+  is the shared builder (six packages copy from it; `migrated-store.ts` is this package's
+  build step), and it refuses a build that left no store, one that left a live `-wal`, and
+  any seed over a store or a foreign log that is already there.
+
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).

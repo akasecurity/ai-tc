@@ -30,6 +30,7 @@ import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with
@@ -193,6 +194,8 @@ let dir: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-cli-ex-'));
   dir = dataDir(homeBase(home));
+  // Schema by file copy rather than a migration this test would only repeat.
+  migratedStore.seed(dir);
 });
 
 afterEach(() => {

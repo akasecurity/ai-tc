@@ -24,7 +24,7 @@ import { errorFrom } from '../helpers/errors.ts';
 import { SQLITE_CONSTRAINT_FOREIGNKEY, sqliteErrcode } from '../helpers/fault-injection.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-classified-data-');
+const store = useTempStore('aka-classified-data-', { migrated: true });
 
 let db: LocalDatabase;
 let raw: DatabaseSync;

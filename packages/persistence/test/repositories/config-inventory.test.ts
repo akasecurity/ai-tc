@@ -6,7 +6,7 @@ import type { LocalDatabase } from '../../src/database.ts';
 import { inventoryId as inventoryIdOf } from '../../src/ids.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-config-inv-');
+const store = useTempStore('aka-config-inv-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

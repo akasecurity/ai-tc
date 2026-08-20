@@ -27,7 +27,7 @@ import { captureEvent, captureFinding } from './helpers/capture-fixtures.ts';
 import { fillStore } from './helpers/fault-injection.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
-const store = useTempStore('aka-raw-seam-');
+const store = useTempStore('aka-raw-seam-', { migrated: true });
 
 /** Big enough that a capture needs a new page, not free space in an old one. */
 const PAGE_HUNGRY_CONTENT = 'x'.repeat(4096);

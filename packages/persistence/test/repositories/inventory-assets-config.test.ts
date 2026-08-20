@@ -10,7 +10,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // exercises the projection that makes the Inventory page render them: a real
 // (non-sample) harness row + a config scan, read back through inventoryAssets.
 
-const store = useTempStore('aka-inv-config-');
+const store = useTempStore('aka-inv-config-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

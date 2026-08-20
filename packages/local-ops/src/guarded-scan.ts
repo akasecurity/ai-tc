@@ -1,6 +1,7 @@
 import type { MatchResult } from '@akasecurity/detections';
 import type { LocalDatabase } from '@akasecurity/persistence';
 import type {
+  CompleteIsolatedScanOptions,
   GuardedScanner,
   IsolatedProbeOutcome,
   IsolatedScanner,
@@ -86,6 +87,18 @@ export interface GuardedFileScannerOptions {
   startBudgetMs?: number | undefined;
   /** Test seam: the whole pre-flight's budget, across every rule it measures. */
   passBudgetMs?: number | undefined;
+  /**
+   * Called with the thread id of each worker this scan constructs. How many
+   * threads a scan builds is the property its suite is really about — none when
+   * nothing needs bounding, one for the pre-flight, two to recover from a hang
+   * and then name it — and the only other instrument for it is elapsed time,
+   * which cannot separate an extra recovery cycle from a cold start on a busy
+   * runner.
+   *
+   * It is also what makes the per-request lifetime observable: a scanner shared
+   * across two scans builds no thread for the second.
+   */
+  onWorkerStart?: ((threadId: number) => void) | undefined;
 }
 
 /**
@@ -107,9 +120,12 @@ export interface DroppedRules {
    */
   quarantined: number;
   /**
-   * Never measured here, so nothing was cached: no worker to measure them on,
-   * or the pre-flight's pass budget ran out first. The rules are excluded from
-   * this scan and back on the next one.
+   * Nothing was cached, so there is nothing to point anyone at. Three ways in:
+   * no worker to measure them on, the pre-flight's pass budget ran out first,
+   * or the measurement ran past the wall budget while burning almost no CPU —
+   * a busy machine rather than a slow pattern, which is a reading the pre-flight
+   * refuses to make permanent. The rules are excluded from this scan and back on
+   * the next one.
    */
   unmeasured: number;
   /**
@@ -199,11 +215,27 @@ export async function createGuardedFileScanner(
   // nothing in a bundled build, which is the failure that only shows up once
   // installed), and a rule that cannot be bounded is dropped rather than run.
   const workerUrl = opts.workerUrl;
-  const isolation = {
+  // Annotated rather than inferred, and that annotation is the whole point.
+  // `CompleteIsolatedScanOptions` requires every key of `IsolatedScanOptions` to
+  // be present, so a field added to the SDK fails this build until it is named
+  // here. Inferred, this object was free to list a subset — which it did, and
+  // `onWorkerStart` reached the plugin's isolation and never the dashboard's
+  // while typecheck, lint and every test stayed green.
+  //
+  // A field this caller deliberately does NOT expose is spelled `undefined`, so
+  // "take the SDK's default" is written down rather than left as an absence
+  // nobody can tell from an oversight.
+  const isolation: CompleteIsolatedScanOptions = {
     workerUrl,
     budgetMs: opts.budgetMs,
     probeBudgetMs: opts.probeBudgetMs,
     startBudgetMs: opts.startBudgetMs,
+    onWorkerStart: opts.onWorkerStart,
+    // Not exposed: attribution decides which rule a hang is PINNED on, and the
+    // verdict that follows is cached forever. The SDK's own floor is the only
+    // value anything here should reach, and a folder scan has no reason to
+    // widen or narrow it.
+    minAttributionMs: undefined,
   };
 
   const bundled = bundledProbeKeys();

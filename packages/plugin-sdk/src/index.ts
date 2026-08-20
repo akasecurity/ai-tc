@@ -41,6 +41,7 @@ export { childRel, evaluateIgnore, readIgnoreLayer, withLayer } from './ignore-l
 export type { ResolveInventoryInput } from './inventory-resolver.ts';
 export { resolveInventoryContext } from './inventory-resolver.ts';
 export type {
+  CompleteIsolatedScanOptions,
   IsolatedFailure,
   IsolatedProbeOutcome,
   IsolatedScanner,

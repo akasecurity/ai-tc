@@ -13,8 +13,9 @@ import type { DroppedRules } from '@akasecurity/local-ops';
 //   - a quarantined rule was measured, failed, and left a row behind, so
 //     `aka detections` names it and `aka detections unquarantine` undoes it;
 //   - an unmeasured one left nothing, deliberately, because caching a verdict
-//     for a rule nobody timed would disable it forever on the strength of a
-//     missing worker or an unlucky pass budget;
+//     for a rule nobody timed CONCLUSIVELY would disable it forever — on the
+//     strength of a missing worker, an unlucky pass budget, or a machine so
+//     busy that the reading was of elapsed time rather than of work;
 //   - a build with no worker at all is not a rule problem, it is a packaging
 //     one, and the fix is to the install rather than to the ruleset.
 //
@@ -42,8 +43,9 @@ export function describeDropped(dropped: DroppedRules, listed: boolean): string 
   if (dropped.unmeasured > 0) {
     parts.push(
       dropped.isolated
-        ? `${plural(dropped.unmeasured)} could not be time-checked before the check ran out of ` +
-            `time, and ${dropped.unmeasured === 1 ? 'was' : 'were'} skipped for this scan`
+        ? `${plural(dropped.unmeasured)} could not be time-checked conclusively — the check ran ` +
+            `out of time, or the machine was too busy for the measurement to mean anything — and ` +
+            `${dropped.unmeasured === 1 ? 'was' : 'were'} skipped for this scan`
         : `${plural(dropped.unmeasured)} could not be time-checked at all, because this ` +
             `dashboard build shipped without its scan worker`,
     );

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import type { MatchResult, ScanContext } from '@akasecurity/detections';
+import type { MatchResult, RuleTimingVerdict, ScanContext } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 import type {
@@ -59,6 +59,15 @@ import type {
  *     rule (nearly all of it the worker start) and 0.31 ms/rule amortized over
  *     50. It runs once per rule ever, and a machine whose verdicts are all
  *     cached — the steady state — starts no worker for it at all.
+ *
+ *     That per-rule figure PREDATES the corroborating clock and is now an
+ *     understatement. `checkRuleTiming` reads a second clock either side of
+ *     every probe, which is what lets a wall breach be told apart from a stall
+ *     before anything is written to the verdict cache. Measured apples to apples
+ *     over the 101 bundled rules, the battery walk goes from 0.1055 ms/rule to
+ *     0.1773 ms/rule — about 68% — so read the number above as the floor rather
+ *     than the cost. It is still paid once per rule ever and still bounded by
+ *     the pre-flight's own pass budget, which is what makes it affordable.
  */
 
 // The hard bound on one isolated scan. Sized against the hook's 10s harness
@@ -113,7 +122,8 @@ export type IsolatedFailure =
 export type IsolatedScanOutcome = { status: 'ok'; findings: MatchResult[] } | IsolatedFailure;
 
 export type IsolatedProbeOutcome =
-  { status: 'ok'; safe: boolean; worstMs: number } | IsolatedFailure;
+  | { status: 'ok'; verdict: RuleTimingVerdict; worstMs: number; corroboratedMs: number }
+  | IsolatedFailure;
 
 export interface IsolatedScanOptions {
   budgetMs?: number | undefined;
@@ -139,6 +149,55 @@ export interface IsolatedScanOptions {
    */
   onWorkerStart?: ((threadId: number) => void) | undefined;
 }
+
+/**
+ * `IsolatedScanOptions` with every key REQUIRED to be present — each may still
+ * be `undefined`, which is how a caller says "take the SDK's default".
+ *
+ * This is the type a caller ANNOTATES its pass-through object with when it
+ * re-exposes isolation to callers of its own. Building that object by listing
+ * keys is the natural thing to write and it fails silently in one direction
+ * only: every field here is optional, so a field added to `IsolatedScanOptions`
+ * and not added to the pass-through is dropped by construction, with nothing to
+ * notice it — not typecheck, not lint, not a test. That is not hypothetical.
+ * `onWorkerStart` was added here and `packages/local-ops/src/guarded-scan.ts`
+ * went on typechecking and testing green while never forwarding it, and the
+ * dashboard's folder scan — the caller with no harness timeout at all — reached
+ * the SDK default with no way to say otherwise.
+ *
+ * Removing the optionality is what converts that silence into a compile error:
+ * a pass-through annotated with this type must name every key, so the next
+ * field added above fails the build at each forwarding site until someone
+ * decides whether to expose it. Deciding NOT to is spelled `field: undefined`,
+ * which reads as the deliberate choice it is rather than as an omission.
+ *
+ * The keys are mapped from `Required<IsolatedScanOptions>` and the values from
+ * `IsolatedScanOptions`, and BOTH halves of that are load-bearing. The first is
+ * what makes every key required; the second is what leaves `undefined` in each
+ * value type, so "take the default" is still expressible.
+ *
+ * Two shorter spellings look equivalent and are not. Neither was reasoned about
+ * — both were compiled under `exactOptionalPropertyTypes` on and off, which is
+ * what separated them:
+ *
+ *   - `[K in keyof IsolatedScanOptions]-?: …` requires every key, but `-?` does
+ *     not only remove the optionality: with the flag OFF it strips `undefined`
+ *     from the value type as well, so each field narrows to a bare `URL` /
+ *     `number` and every deliberate `field: undefined` becomes an error.
+ *     Restating `| undefined` in the value does not rescue it — the modifier is
+ *     applied after the value type is computed and takes that away too. This is
+ *     not a theoretical setting: `tsconfig.base.json` turns the flag on and
+ *     `web-ui/tsconfig.json` turns it off while still compiling `local-ops`
+ *     source, so the form typechecks in one package and fails in the other.
+ *   - `[K in keyof IsolatedScanOptions as K]: …` survives both settings and is
+ *     WORSE than useless: the `as` clause leaves the properties optional, so an
+ *     omitted key is accepted in silence. It compiles, it reads like a guard,
+ *     and it enforces exactly nothing — the defect this type exists to remove,
+ *     wearing the fix's clothes.
+ */
+export type CompleteIsolatedScanOptions = {
+  [K in keyof Required<IsolatedScanOptions>]: IsolatedScanOptions[K];
+};
 
 export interface IsolatedScanner {
   /**
@@ -511,7 +570,12 @@ export function createIsolatedScanner(
             build: (id) => ({ kind: 'probe', id, rule }),
             reply: (message) => {
               if (message.kind !== 'probed') return false;
-              resolve({ status: 'ok', safe: message.safe, worstMs: message.worstMs });
+              resolve({
+                status: 'ok',
+                verdict: message.verdict,
+                worstMs: message.worstMs,
+                corroboratedMs: message.corroboratedMs,
+              });
               return true;
             },
           },

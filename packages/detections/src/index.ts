@@ -26,6 +26,7 @@ export {
   configPostureDefinitions,
   evaluateConfigPosture,
 } from './posture/config-posture.ts';
+export type { ProbeClock, RuleTiming, RuleTimingVerdict } from './security/redos-probe.ts';
 export { checkRuleTiming } from './security/redos-probe.ts';
 export type { TabularMatch, TabularTable } from './tabular.ts';
 export { scanTabular } from './tabular.ts';

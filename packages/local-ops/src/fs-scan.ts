@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, relative, resolve } from 'node:path';
+import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
 
 import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
 import {
@@ -22,7 +22,14 @@ import {
   fingerprintValue,
   loadOrCreateFingerprintKey,
 } from '@akasecurity/persistence';
-import { toPosix } from '@akasecurity/plugin-sdk';
+import {
+  childRel,
+  evaluateIgnore,
+  type IgnoreLayer,
+  readIgnoreLayer,
+  toPosix,
+  withLayer,
+} from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   DetectedFindingWithKey,
@@ -32,7 +39,6 @@ import type {
   SourceTool,
 } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
-import ignore, { type Ignore } from 'ignore';
 
 // The filesystem scan pipeline shared by `aka scan` and the web-ui's Scan page:
 // walk a file or directory, run the detection engine over each text file, and
@@ -69,44 +75,16 @@ const SKIP_DIRS = new Set([
 // reading them as text is wasteful. (1 MB.)
 const MAX_BYTES = 1_000_000;
 
-// One ignore file's rules, anchored to the directory that contains it (git
-// patterns are relative to their own ignore file, not the repo root).
-interface IgnoreLayer {
-  base: string;
-  matcher: Ignore;
-}
-
-// Read a directory's ignore file into a matcher layer. Fail-open: an
-// unreadable or malformed file yields no layer — we scan MORE on error,
-// never less.
-function readIgnoreLayer(dir: string, filename: string): IgnoreLayer | undefined {
-  try {
-    const content = readFileSync(join(dir, filename), 'utf8');
-    return { base: dir, matcher: ignore().add(content) };
-  } catch {
-    return undefined;
-  }
-}
-
-type IgnoreState = 'ignored' | 'unignored' | 'unmatched';
-
-// Evaluate the layered ignore state for a path, mirroring git's semantics:
-// deeper ignore files are consulted later, so their verdicts (ignore OR
-// re-include via `!`) override shallower ones. 'unignored' is distinct from
-// 'unmatched' because an explicit `!` re-include also overrides the default
-// directory-skip floor. Directories are tested with a trailing slash so
-// `dir/`-style patterns match.
-function evaluate(layers: IgnoreLayer[], absPath: string, isDir: boolean): IgnoreState {
-  let state: IgnoreState = 'unmatched';
-  for (const layer of layers) {
-    // The ignore package expects posix-style relative paths.
-    const rel = toPosix(relative(layer.base, absPath)) + (isDir ? '/' : '');
-    const verdict = layer.matcher.test(rel);
-    if (verdict.ignored) state = 'ignored';
-    else if (verdict.unignored) state = 'unignored';
-  }
-  return state;
-}
+// The layer representation, the deepest-first lookup and the walk-relative path
+// arithmetic all live in `@akasecurity/plugin-sdk`'s ./ignore-layers, shared
+// with the SessionStart inventory walk and the standalone scanner. This walk
+// carries ONE posix path per directory (`dirRel`, relative to the scan target)
+// and every layer holds an integer offset into it, in place of the
+// `relative(layer.base, absPath)` path diff this used to run per layer per
+// entry — which allocated, normalised separators, and could never stop early.
+//
+// TWO stacks descend here, not one: `.gitignore` MARKS (provenance) and
+// `.akaignore` SKIPS, so each entry was paying that diff twice.
 
 export interface CollectedFile {
   path: string;
@@ -129,27 +107,70 @@ export function* collectFiles(target: string): Generator<CollectedFile> {
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, [], [], false);
+  yield* visit(target, '', [], [], false);
 }
 
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
 // beneath it can be re-included, so we stop evaluating and mark everything.
 // (The skip stack needs no equivalent: a skipped directory is never entered.)
+//
+// `dirRel` is `dir` as a posix path relative to the scan target ('' at the
+// target itself), built by appending one component per descent. It is what both
+// layer stacks are addressed through, so it is threaded rather than recomputed.
 function* visit(
   dir: string,
-  markLayers: IgnoreLayer[],
-  skipLayers: IgnoreLayer[],
+  dirRel: string,
+  markLayers: readonly IgnoreLayer[],
+  skipLayers: readonly IgnoreLayer[],
   inIgnoredDir: boolean,
 ): Generator<CollectedFile> {
-  const markLayer = inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore');
-  const dirMarkLayers = markLayer ? [...markLayers, markLayer] : markLayers;
-  const skipLayer = readIgnoreLayer(dir, AKAIGNORE_FILENAME);
-  const dirSkipLayers = skipLayer ? [...skipLayers, skipLayer] : skipLayers;
+  // The listing comes FIRST, before either ignore file is read. Two reasons,
+  // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
+  // walkTree — the walker this one is aligned with — has always been in this
+  // order, and every directory that turns out to be unlistable was otherwise
+  // paying two `readFileSync` attempts and up to two array copies to build
+  // layer stacks for entries that will never be read. That is exactly the
+  // hostile shape this walk now has coverage for.
+  let dirents: Dirent[];
+  try {
+    dirents = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    // THE ROOT IS NOT BEST-EFFORT. `dirRel` is '' only at the scan target, and
+    // a target the user named and we could not read is a FAILED scan, not an
+    // empty one: `statSync` succeeds on a directory with no read bit (measured:
+    // mode 0000 gives `isDirectory() === true` and `readdirSync` EACCES), so
+    // swallowing this yields zero files, and `scanPathIntoStore` then records
+    // `scanned: 0, findings: 0` — the Scan page rendering "no findings" for a
+    // folder that was never opened. A false negative on the whole target is
+    // worse than the error the caller used to see, so the root rethrows.
+    if (dirRel === '') throw err;
+    // A SUBTREE is best-effort, matching the other two walkers: one unreadable
+    // directory costs its own subtree, never the whole scan. Unwrapped, a
+    // permission-denied directory, an antivirus lock, a transient EMFILE — or a
+    // path past the platform's ceiling, which is how the adversarial corpus
+    // finds this — aborts `collectFiles` mid-generator and takes every file
+    // already walked with it.
+    //
+    // That subtree is dropped SILENTLY, which is the same posture
+    // `@akasecurity/scanner`'s walkTree documents. Reporting it to the caller
+    // is worth doing and is a change to this function's contract, so it is
+    // tracked separately rather than smuggled in here.
+    return;
+  }
 
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  const dirMarkLayers = withLayer(
+    markLayers,
+    inIgnoredDir ? undefined : readIgnoreLayer(dir, '.gitignore', dirRel.length),
+  );
+  const dirSkipLayers = withLayer(
+    skipLayers,
+    readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length),
+  );
+
+  for (const entry of dirents) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      const skipState = evaluate(dirSkipLayers, path, true);
+      const skipState = evaluateIgnore(dirSkipLayers, dirRel, entry.name, true);
       // Precedence: an explicit .akaignore re-include beats the default floor
       // (SKIP_DIRS + dot-directories); otherwise the floor and .akaignore
       // matches both hard-skip.
@@ -159,11 +180,12 @@ function* visit(
       ) {
         continue;
       }
-      const dirIgnored = inIgnoredDir || evaluate(dirMarkLayers, path, true) === 'ignored';
-      yield* visit(path, dirMarkLayers, dirSkipLayers, dirIgnored);
+      const dirIgnored =
+        inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, true) === 'ignored';
+      yield* visit(path, childRel(dirRel, entry.name), dirMarkLayers, dirSkipLayers, dirIgnored);
     } else if (entry.isFile()) {
       // .akaignore skip — before stat/read, so an excluded file costs nothing.
-      if (evaluate(dirSkipLayers, path, false) === 'ignored') continue;
+      if (evaluateIgnore(dirSkipLayers, dirRel, entry.name, false) === 'ignored') continue;
       // Apply the MAX_BYTES cap here too: without it, directory traversal reads
       // arbitrarily large files fully into memory (the isFile() branch above only
       // guards a directly-named target).
@@ -176,7 +198,8 @@ function* visit(
       if (size > MAX_BYTES) continue;
       yield {
         path,
-        gitignored: inIgnoredDir || evaluate(dirMarkLayers, path, false) === 'ignored',
+        gitignored:
+          inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, false) === 'ignored',
       };
     }
   }

@@ -271,9 +271,6 @@ importers:
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../schema
-      ignore:
-        specifier: ^7.0.6
-        version: 7.0.6
     devDependencies:
       '@akasecurity/eslint-config':
         specifier: workspace:*

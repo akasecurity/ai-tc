@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { withTempHome } from '../helpers/run-hook.ts';
 
 const CANONICAL_NUDGE =
   'AKA Security is installed but not calibrated — run /aka:setup to tune notifications to this machine (about a minute).';
@@ -68,8 +68,7 @@ describe('user-prompt-submit hook source', () => {
 
 describe('user-prompt-submit hook — driven end-to-end', () => {
   it('emits the calibration nudge (not the stale copy) on a clean prompt from an un-calibrated machine', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-nudge-'));
-    try {
+    withTempHome((home) => {
       const run = runHook(home, {
         prompt: 'what does this function do?',
         session_id: 'sess-nudge',
@@ -83,14 +82,11 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       // at the emit call fails here, which the constant-equality check cannot catch.
       expect(payload.systemMessage).toBe(ONBOARDING_NUDGE);
       expect(run.stdout).not.toContain(STALE_INSTALL_NUDGE);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-nudge-');
   });
 
   it('emits no block on a clean prompt', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-clean-'));
-    try {
+    withTempHome((home) => {
       const run = runHook(home, {
         prompt: 'rename this variable across the module',
         session_id: 'sess-clean',
@@ -99,14 +95,11 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       });
       expect(run.status).toBe(0);
       expect(run.stdout).not.toContain('"decision":"block"');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-clean-');
   });
 
   it('falls back to allow and never throws when a store fault is injected (fail-open)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-failopen-'));
-    try {
+    withTempHome((home) => {
       // Injected fault: an unreadable store (not the SQLite header) so enforcement
       // cannot complete before the nudge. The hook must still resolve to allow.
       const dataDir = join(home, '.aka', 'data');
@@ -123,9 +116,7 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       expect(run.status).toBe(0);
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-failopen-');
   });
 });
 
@@ -183,8 +174,7 @@ function submitSecretPrompt(home: string): HookRun {
 
 describe('user-prompt-submit enforcement — redact blocks in every consent state', () => {
   it('redact policy, no vault consent → block with the plain removal message, raw never on stdout', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-redact-off-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'redact');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -196,33 +186,39 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(run.stdout).not.toContain('[[aka:');
       // The never-leak assertion: the raw value appears nowhere on stdout.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-redact-off-');
   });
 
-  it('redact policy, valid vault consent → block whose reason carries a pointerized rewrite', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-redact-on-'));
-    try {
+  it('redact policy, valid vault consent → block with NO pointerized rewrite', () => {
+    // Changed by the per-detection custody split, and the change is the point.
+    // A REDACT decision means the archetype already stated the value's fate, and
+    // Redact's catalog copy says it is destroyed and cannot be recovered — so
+    // the resubmit rewrite may only keep findings whose detection chose Redact &
+    // Vault. This machine is configured by CATEGORY policy, an axis that cannot
+    // express that archetype at all, so nothing is kept and the user gets the
+    // removal-based guidance instead.
+    //
+    // Consent alone no longer buys a pointerized rewrite on the redact path.
+    // That is a real loss of an affordance, taken deliberately: the alternative
+    // is vaulting a value whose own policy copy promises it was destroyed.
+    withTempHome((home) => {
       seedSecretPolicy(home, 'redact');
       grantVaultConsent(home);
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
       const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
       expect(payload.decision).toBe('block');
-      expect(payload.reason).toContain('never reached the model');
-      expect(payload.reason).toContain('[[aka:');
-      expect(payload.reason).toContain('paste and resubmit');
-      // The raw value appears nowhere in the pointerized output.
+      // The same removal-based guidance the no-consent sibling above gets: with
+      // nothing kept, there is no pointerized prompt to hand back.
+      expect(payload.reason).toContain('Remove the flagged content and resubmit');
+      expect(payload.reason).not.toContain('[[aka:');
+      // The raw value still appears nowhere.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-redact-on-');
   });
 
   it('block policy, no vault consent → the plain removal-based block, unchanged', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-block-off-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'block');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -232,14 +228,11 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
       expect(run.stdout).not.toContain('[[aka:');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-block-off-');
   });
 
   it('block policy, valid vault consent → block whose reason carries the resubmit rewrite', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-block-on-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'block');
       grantVaultConsent(home);
       const run = submitSecretPrompt(home);
@@ -248,14 +241,11 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.decision).toBe('block');
       expect(payload.reason).toContain('[[aka:');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-block-on-');
   });
 
   it('warn policy → the prompt continues with a warning, never a block', () => {
-    const home = mkdtempSync(join(tmpdir(), 'aka-ups-warn-'));
-    try {
+    withTempHome((home) => {
       seedSecretPolicy(home, 'warn');
       const run = submitSecretPrompt(home);
       expect(run.status).toBe(0);
@@ -265,8 +255,6 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.systemMessage).toContain('sent unchanged');
       // The stale claim that prompts cannot be redacted is gone.
       expect(payload.systemMessage).not.toContain('cannot be redacted');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    }, 'aka-ups-warn-');
   });
 });

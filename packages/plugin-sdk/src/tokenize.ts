@@ -137,7 +137,15 @@ export interface TokenizeSighting {
 export interface VaultGlue {
   tokenizeText(
     text: string,
-    opts?: { findings?: MatchResult[]; sighting?: TokenizeSighting },
+    opts?: {
+      findings?: MatchResult[];
+      sighting?: TokenizeSighting;
+      // The subset of `findings` whose detection chose the reversible archetype
+      // (Redact & Vault). Absent ⇒ every finding is kept, which is what callers
+      // predating the per-detection archetype meant. Every span is rewritten
+      // either way; this decides only whether the value behind it survives.
+      reversible?: ReadonlySet<MatchResult>;
+    },
   ): Promise<TokenizeTextResult>;
   tokenizeValue(
     raw: string,
@@ -269,10 +277,22 @@ class SecretVaultGlue implements VaultGlue {
 
   async tokenizeText(
     text: string,
-    opts?: { findings?: MatchResult[]; sighting?: TokenizeSighting },
+    opts?: {
+      findings?: MatchResult[];
+      sighting?: TokenizeSighting;
+      reversible?: ReadonlySet<MatchResult>;
+    },
   ): Promise<TokenizeTextResult> {
     try {
       const findings = opts?.findings ?? this.#selfScan(text);
+      // Which of those findings the policy said to KEEP. Absent means "all of
+      // them", which is what every caller predating the per-detection Redact &
+      // Vault archetype meant. Present means the rewrite is mixed: every span
+      // below is still replaced — the difference is only whether the value
+      // behind it survives as recoverable ciphertext or is destroyed.
+      const reversible = opts?.reversible;
+      const keeps = (finding: MatchResult): boolean =>
+        reversible === undefined || reversible.has(finding);
       // A self-scan that failed outright cannot tell secret from clean; the
       // only safe output is the blanket the mask path also emits.
       if (findings === null) return { text: '[REDACTED]', pointers: [], degraded: [] };
@@ -296,6 +316,13 @@ class SecretVaultGlue implements VaultGlue {
           // vaulting the sliced text would store something detection never saw.
           replacement = redactedPlaceholder(group.category);
           degraded.unshift({ category: group.category });
+        } else if (!keeps(finding)) {
+          // The detection that matched chose one-way Redact. Destroy it here
+          // rather than skipping the span: skipping would leave the raw value
+          // in `out`, since this loop IS the rewrite for every enforced span.
+          // Not counted as `degraded` either — nothing was downgraded, this is
+          // the policy being carried out.
+          replacement = redactedPlaceholder(finding.category);
         } else {
           replacement = await this.tokenizeValue(finding.rawMatch, {
             ruleId: finding.ruleId,
@@ -617,7 +644,7 @@ function glue(): VaultGlue {
 /** {@link VaultGlue.tokenizeText} over the default ~/.aka vault. */
 export function tokenizeText(
   text: string,
-  opts?: { findings?: MatchResult[] },
+  opts?: { findings?: MatchResult[]; reversible?: ReadonlySet<MatchResult> },
 ): Promise<TokenizeTextResult> {
   return glue().tokenizeText(text, opts);
 }

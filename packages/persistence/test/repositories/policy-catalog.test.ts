@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 
 import type { InstalledPackInput } from '@akasecurity/schema';
+import { KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyMigrations } from '../../src/migrations.ts';
@@ -41,13 +42,13 @@ function pack(packId: string, ruleIds: string[]): InstalledPackInput {
 }
 
 describe('SqlitePolicyCatalogRepository', () => {
-  it('lists the 4 built-ins with live usedBy counts', async () => {
+  it('lists every built-in with live usedBy counts', async () => {
     packs.recordInventory([pack('secrets', ['a', 'b']), pack('pii', ['c'])]);
     packs.setPolicy('aka', 'secrets', 'block');
     packs.setPolicy('aka', 'pii', 'block');
 
     const { items } = await catalog.getPolicyList();
-    expect(items.map((p) => p.id)).toEqual(['monitor', 'warn', 'redact', 'block']);
+    expect(items.map((p) => p.id)).toEqual([...KNOWN_BUILTIN_IDS]);
     expect(items.every((p) => p.kind === 'builtin' && p.enabled)).toBe(true);
     const block = items.find((p) => p.id === 'block');
     expect(block?.usedByCount).toBe(2);
@@ -74,7 +75,12 @@ describe('SqlitePolicyCatalogRepository', () => {
     expect(countFor('block')).toBe(1);
 
     const stats = await catalog.getPolicyStats();
-    expect(stats).toEqual({ policies: 4, builtin: 4, custom: 0, detectionsGoverned: 3 });
+    expect(stats).toEqual({
+      policies: KNOWN_BUILTIN_IDS.length,
+      builtin: KNOWN_BUILTIN_IDS.length,
+      custom: 0,
+      detectionsGoverned: 3,
+    });
   });
 
   it('detail carries the catalog description + usedBy detections; null for unknown', async () => {

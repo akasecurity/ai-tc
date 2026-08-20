@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectInventory } from './project-inventory.ts';
 
 const REMOTE_URL = 'https://github.com/acme/ai-tc.git';
@@ -67,7 +68,9 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-  rmSync(store, { recursive: true, force: true });
+  // `store` holds a real openLocalDatabase() connection each `it` closes
+  // before this runs — its -wal/-shm sidecars can still be on their way out.
+  removeTree(store);
 });
 
 describe('recordProjectInventory', () => {

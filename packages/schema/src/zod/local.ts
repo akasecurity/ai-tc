@@ -51,11 +51,41 @@ export const WORKSPACE_SETTINGS_SPEC_VERSION = 5;
 // older payload shape stops counting once this is bumped.
 export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
-// How the plugin runs. One value: the plugin operates entirely against the local
-// store. Written into the settings file so the mode is stated rather than
-// implied by the absence of a field.
-export const RunMode = z.literal('standalone');
+// How the plugin runs.
+//   'standalone' — everything against the local store under ~/.aka. No other
+//     party participates, and this is the default and the only mode this
+//     repository can complete on its own.
+//   'attached'   — the machine is registered against an organization's own
+//     deployment, which supplies policy and receives activity.
+//
+// THE TRANSPORT FOR 'attached' IS NOT IN THIS TREE, AND MUST NOT BE ADDED HERE.
+// This repository is local-only: it makes no network calls, and the workspace
+// lint config bans every client and transport module outright. What lives here
+// is the STATE — the mode, the descriptor below, and the surfaces that let a
+// user attach and detach — behind a port a separate distribution supplies. A
+// machine set to 'attached' with nothing plugged into that port behaves exactly
+// as standalone; it never silently degrades detection.
+export const RunMode = z.enum(['standalone', 'attached']);
 export type RunMode = z.infer<typeof RunMode>;
+
+// Which deployment this machine is attached to. Opaque to this tree — nothing
+// here parses, resolves or dials `endpoint`; it is stored so the dashboard can
+// name what the user is attached to and so a detach has something to clear.
+//
+// DELIBERATELY CARRIES NO CREDENTIAL. A bearer token in settings.json would sit
+// in a file every local process can read for as long as the attachment lasts,
+// and this repository has no consumer for one. Whatever authenticates the
+// attachment belongs to the distribution that owns the transport, in whatever
+// store that distribution already uses for secrets.
+export const ControlPlaneConnection = z
+  .object({
+    endpoint: z.string().min(1),
+    // Display name for the deployment, shown instead of the raw endpoint.
+    label: z.string().min(1).optional(),
+    attachedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'ControlPlaneConnection' });
+export type ControlPlaneConnection = z.infer<typeof ControlPlaneConnection>;
 
 // What happens to detected sensitive data (the onboarding "handling" choice).
 // The single-action precursor to the structured Policy/PolicyBundle that grouped
@@ -104,15 +134,10 @@ export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined)
 // shape anything refers to by name, so it stays unregistered.
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
-  // A settings file written before this field settled on one value can hold a
-  // string this build no longer knows. Normalising it keeps that file loading —
-  // and, more importantly, keeps the user's OTHER choices in it, which a failed
-  // parse of the whole object would discard. Only the one superseded value is
-  // normalised; anything else still fails, so a typo is still an error.
-  runMode: z.preprocess(
-    (v) => (v === 'attached' ? 'standalone' : v),
-    RunMode.default('standalone'),
-  ),
+  runMode: RunMode.default('standalone'),
+  // Present only while attached; a detach clears it. Its presence is what makes
+  // `runMode: 'attached'` mean anything — see isAttached.
+  controlPlane: ControlPlaneConnection.optional(),
   policy: SimpleDetectionPolicy.default('redact'),
   // Consent for scanning pre-install surfaces; opt-in (see HistoricalAccess).
   historicalAccess: HistoricalAccess.default('session-only'),
@@ -142,6 +167,26 @@ export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 // The default (unonboarded) settings the SDK falls back to when no file exists.
 export function defaultWorkspaceSettings(): WorkspaceSettings {
   return WorkspaceSettings.parse({});
+}
+
+/**
+ * Whether this machine is actually attached. The mode alone is not enough: a
+ * settings file can carry `runMode: 'attached'` with no descriptor (an older
+ * file, a hand edit, an interrupted attach), and treating that as attached
+ * would show the user a connection that does not exist and offer them a detach
+ * that clears nothing. Both halves, or standalone.
+ */
+export function isAttached(settings: WorkspaceSettings): boolean {
+  return settings.runMode === 'attached' && settings.controlPlane !== undefined;
+}
+
+/**
+ * How the attached deployment should be named on screen: the administrator's
+ * label if one was supplied, else the raw endpoint. One function so every
+ * surface names it the same way.
+ */
+export function controlPlaneName(connection: ControlPlaneConnection): string {
+  return connection.label ?? connection.endpoint;
 }
 
 // Row shapes derived from the local Drizzle tables, so the mappers can never

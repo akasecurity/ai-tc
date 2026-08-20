@@ -1,9 +1,20 @@
 // Theme preference: the stored choice, and the script that applies it before paint.
 //
-// The dashboard is a local Next server with no account, so the preference is a
-// browser-local value (localStorage), not workspace state in ~/.aka. Nothing
-// server-rendered depends on it — the class is applied by the inline script below
-// before React hydrates.
+// Shared by both dashboards, which is why it lives here rather than in either app.
+// Nothing in it is host-specific: it reads `localStorage` and `matchMedia` and
+// writes `document.documentElement`, all lazily inside functions. Only the
+// INJECTION POINT of THEME_INIT_SCRIPT differs — the OSS web-ui puts it in the Next
+// root layout, the enterprise dashboard in its Vite index.html — and that is a line
+// in each host, not a fork of this module.
+//
+// The preference is browser-local (localStorage), never server state. In the OSS
+// web-ui that is forced: a local Next server with no account has nowhere else to
+// put it, and it is deliberately not workspace state in ~/.aka. The enterprise
+// dashboard DOES have an account and still keeps it browser-local, because a theme
+// is a property of the screen you are looking at rather than of who you are — a
+// per-user column would follow you onto a machine whose display calls for the other
+// one. Nothing server-rendered depends on it either way: the class is applied by
+// the inline script below, before React hydrates.
 
 /** The tri-state the user picks. 'system' defers to the OS setting. */
 export type ThemePreference = 'light' | 'dark' | 'system';

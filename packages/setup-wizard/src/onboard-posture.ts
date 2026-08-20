@@ -11,14 +11,17 @@ import type {
 } from '@akasecurity/schema';
 import {
   ActionTaken,
-  BuiltinPolicyId,
+  CATEGORY_EXPRESSIBLE_IDS,
+  CategoryPolicyId,
   DetectionCategory as DetectionCategorySchema,
 } from '@akasecurity/schema';
 
-// Every key must be a real DetectionCategory and every value a palette id
-// (monitor/warn/redact/block) — 'log'/'allow' are ActionTaken values, not
-// palette ids, and are rejected here. Throws on any violation so onboard
-// fails loudly rather than writing garbage.
+// Every key must be a real DetectionCategory and every value a palette id —
+// 'log'/'allow' are ActionTaken values, not palette ids, and are rejected here.
+// Throws on any violation so onboard fails loudly rather than writing garbage.
+// The message names the accepted set from the canonical list rather than a
+// literal, so an added archetype cannot leave the error telling users to send a
+// value it now accepts.
 export function parsePosture(json: string): Partial<Record<DetectionCategory, BuiltinPolicyIdT>> {
   const raw: unknown = JSON.parse(json); // throws on malformed JSON
   if (typeof raw !== 'object' || raw === null) throw new Error('posture must be a JSON object');
@@ -26,10 +29,15 @@ export function parsePosture(json: string): Partial<Record<DetectionCategory, Bu
   for (const [key, value] of Object.entries(raw)) {
     const cat = DetectionCategorySchema.safeParse(key);
     if (!cat.success) throw new Error(`unknown category "${key}"`);
-    const act = BuiltinPolicyId.safeParse(value);
+    // CategoryPolicyId, not BuiltinPolicyId: this writes the per-CATEGORY axis,
+    // which stores an ActionTaken and cannot carry a reversible archetype. The
+    // wider enum parses 'vault' happily and applyCategoryPosture then writes
+    // plain 'redact' — a caller who asked for Redact & Vault silently gets
+    // one-way Redact. Refusing is the honest answer; there is nowhere to put it.
+    const act = CategoryPolicyId.safeParse(value);
     if (!act.success)
       throw new Error(
-        `invalid action "${String(value)}" for ${key} (expected monitor/warn/redact/block)`,
+        `invalid action "${String(value)}" for ${key} (expected ${CATEGORY_EXPRESSIBLE_IDS.join('/')})`,
       );
     out[cat.data] = act.data;
   }

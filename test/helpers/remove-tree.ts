@@ -22,7 +22,7 @@
 // property of the platform.
 //
 // It sits at the repo root for the reason the no-network guard and the
-// adversarial fixture corpus do: nine packages' teardowns need the SAME rule,
+// adversarial fixture corpus do: every package's teardowns need the SAME rule,
 // `@akasecurity/persistence`'s own harness is behind a package wall and is not
 // importable from any of them, and private copies of a platform rule drift
 // apart. A relative import reaches this from every one of them, which is how
@@ -57,5 +57,27 @@ export function removeTree(dir: string): void {
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (process.platform !== 'win32' || !STILL_HELD.has(code)) throw err;
+  }
+}
+
+// A caller tearing down several trees in one teardown needs every one of them
+// attempted — a single throwing `removeTree` in a sequence must not leave the
+// rest on disk for the run's remaining tests to trip over. So this runs the
+// whole list before reporting anything, and reports every failure it saw
+// rather than only the first.
+export function removeTrees(dirs: readonly string[]): void {
+  const errors: unknown[] = [];
+  for (const dir of dirs) {
+    try {
+      removeTree(dir);
+    } catch (err) {
+      errors.push(err);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `failed to remove ${String(errors.length)} of ${String(dirs.length)} temp tree(s)`,
+    );
   }
 }

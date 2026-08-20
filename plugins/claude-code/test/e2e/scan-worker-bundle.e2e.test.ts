@@ -30,6 +30,8 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
+
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
@@ -99,7 +101,7 @@ function runtimeBearingScripts(): string[] {
 }
 
 afterAll(() => {
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  removeTrees(temps);
 });
 
 describe('the built scan worker', () => {

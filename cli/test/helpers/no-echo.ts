@@ -31,18 +31,23 @@ export const ECHO_RUN = 8;
  *    assertions stay whole-value.
  * 3. **A masked preview only stays under the window for a GENERIC secret.**
  *    `maskMatch` reveals a generic secret's first and last character around six
- *    fixed asterisks — two characters, which cannot fill an eight-character
- *    window. Its email branch reveals the first local character plus the WHOLE
- *    DOMAIN, and a single-character local part returns the input unchanged, so
- *    an email's own preview fills the window legitimately. Do not point this at
- *    a surface that prints the preview of a pii/email value.
+ *    fixed asterisks — two characters, and they sit in two runs of ONE. The RUN
+ *    is what decides this, not the count: the loop below slides over contiguous
+ *    slices, so two characters that are never adjacent cannot fill a window of
+ *    any width. `no-echo.test.ts` derives that run from `maskMatch` and pins it
+ *    at one, so the first character of widening reddens there rather than
+ *    silently spending the margin. Its email branch reveals the first local
+ *    character plus the WHOLE DOMAIN, and a single-character local part returns
+ *    the input unchanged, so an email's own preview fills the window
+ *    legitimately. Do not point this at a surface that prints the preview of a
+ *    pii/email value.
  *
  * Shared by the CLI suites because they sit in one package. Across a package
- * wall it cannot be imported, so `plugins/claude-code/test/helpers/no-echo.ts`,
- * `web-ui/test/helpers/no-echo.ts`, and
- * `packages/setup-wizard/test/helpers/no-echo.ts` are peers of this file — each
- * a copy that takes the `toBeDefined()` guard and a `no-echo.test.ts` with it,
- * or the run length can be widened back with nothing going red.
+ * wall it cannot be imported, so the copies under `plugins/claude-code`,
+ * `plugins/codex`, `plugins/antigravity`, `web-ui`, `packages/setup-wizard` and
+ * `packages/persistence` are peers of this file — each a copy that takes the
+ * `toBeDefined()` guard and a `no-echo.test.ts` with it, or the run length can
+ * be widened back with nothing going red.
  */
 export function expectNoEchoOf(haystack: string | undefined, value: string): void {
   // Catches a never-thrown error arriving as `undefined`, which would otherwise

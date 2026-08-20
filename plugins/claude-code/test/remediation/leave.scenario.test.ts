@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +9,7 @@ import { presentBatchedRemediation, routeRemediationOption } from '@akasecurity/
 import { writeStandingSecretPosture } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import {
   type RedactionScope,
   type RedactionTarget,
@@ -66,9 +67,7 @@ describe('Leave exits the remediation flow with zero side effects', () => {
 
   afterEach(() => {
     db.close();
-    for (const dir of [transcriptRoot, tempRoot, projectRoot, base, workingDir]) {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    removeTrees([transcriptRoot, tempRoot, projectRoot, base, workingDir]);
   });
 
   it('leaves the artifacts, the store, settings.json, and the project tree untouched', () => {

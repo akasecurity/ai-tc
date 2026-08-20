@@ -9,7 +9,7 @@ import {
   isThemePreference,
   THEME_INIT_SCRIPT,
   THEME_STORAGE_KEY,
-} from '../app/lib/theme.ts';
+} from '../../src/theme/theme.ts';
 
 // THEME_INIT_SCRIPT is a flat literal, injected via dangerouslySetInnerHTML in the
 // root layout. It is deliberately NOT built from the constants it embeds — string

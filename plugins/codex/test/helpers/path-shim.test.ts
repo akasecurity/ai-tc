@@ -17,6 +17,7 @@ import { delimiter, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import {
   assertCommandNotOnPath,
   assertShimResolves,
@@ -116,7 +117,7 @@ const nodeVersionVia = (dir: string): string =>
   }).trim();
 
 afterEach(() => {
-  while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
+  removeTrees(dirs.splice(0));
 });
 
 const errorFrom = (fn: () => unknown): Error | undefined => {

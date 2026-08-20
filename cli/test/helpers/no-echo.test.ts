@@ -16,6 +16,35 @@ const GENERIC = getLoadedRules().find((r) => r.id === 'secrets/aws-access-key')?
 if (GENERIC === undefined) throw new Error('bundled rule secrets/aws-access-key has no example');
 const VALUE: string = GENERIC;
 
+// maskMatch's generic branch reveals the first and last character around six
+// fixed asterisks. That is two characters, but they sit in two runs of ONE —
+// and the RUN is the number that matters here, because expectNoEchoOf's window
+// slides over contiguous slices. Two characters that are never adjacent cannot
+// fill a window of any width; two adjacent ones start eating into it.
+const GENERIC_PREVIEW_RUN = 1;
+
+// The pii fixture both email cases below share: one calibrates the measurement
+// against a branch that discloses a long run, the other pins that such a preview
+// is refused. They must describe the SAME value or neither says what it claims.
+const EMAIL = 'user@example.com';
+
+// The longest contiguous run of `raw` that `preview` discloses, derived rather
+// than read off the mask's current output — a literal here would assert that a
+// string this file built lacks a run of another string this file built, which
+// is the shape CLAUDE.md forbids for exactly this reason.
+function longestRevealedRun(preview: string, raw: string): number {
+  let longest = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    // A preview holding raw.slice(i, i + len) holds every shorter slice from
+    // the same start, so the first miss ends this start's search.
+    for (let len = longest + 1; i + len <= raw.length; len += 1) {
+      if (!preview.includes(raw.slice(i, i + len))) break;
+      longest = len;
+    }
+  }
+  return longest;
+}
+
 // Did the helper refuse this pairing? A vitest assertion failure is a throw, so
 // "the assertion would have gone red" is observable without failing this test.
 function refuses(haystack: string | undefined, value: string): boolean {
@@ -73,10 +102,37 @@ describe('expectNoEchoOf', () => {
   it('accepts the masked preview of a generic secret, which callers do print', () => {
     // The coexistence the CLI's stdout assertions depend on: a generic secret's
     // preview reveals its first and last character around fixed asterisks, so it
-    // cannot fill the window. Widen maskMatch past that and this goes red HERE,
-    // where the reason is written down, rather than in a caller that reads like
-    // an unrelated regression.
+    // cannot fill the window. This pins that the preview is safe TODAY. It does
+    // NOT pin how much margin is left — see the case below, which is the one
+    // that holds the number the callers reason about.
     expect(refuses(maskMatch(VALUE), VALUE)).toBe(false);
+  });
+
+  it('measures a revealed run — the instrument the margin pin below is read on', () => {
+    // Calibration, kept as its own case so its failure names the INSTRUMENT
+    // rather than the pin it feeds. An implementation that always answered "one"
+    // would hold the margin pin green for ever — this rule's own failure mode,
+    // one level down — and from inside that pin the two are indistinguishable.
+    // maskMatch's email branch reveals the '@' and the WHOLE domain after it, so
+    // the measurement has to report exactly that run here.
+    expect(longestRevealedRun(maskMatch(EMAIL), EMAIL)).toBe(EMAIL.length - EMAIL.indexOf('@'));
+  });
+
+  it("reveals a run of one — the margin the CLI's stdout binding spends", () => {
+    // The acceptance case above fires only once a preview holds a contiguous run
+    // of ECHO_RUN characters, so it stays green through every widening from two
+    // revealed characters up to seven. That band is exactly where a usability
+    // change lands ("show enough of the value to tell two blocked secrets
+    // apart"), and it is the band in which the CLI's stdout binding quietly
+    // loses the margin its own comment claims.
+    //
+    // So the margin is pinned here, derived from maskMatch, and it goes red on
+    // the FIRST character of widening. detections/test/mask.test.ts also reddens
+    // on that change, but its failure reads as "you changed the mask, update the
+    // expectation" and says nothing about a downstream safety argument moving.
+    // This one goes red where that argument is written down.
+    expect(longestRevealedRun(maskMatch(VALUE), VALUE)).toBe(GENERIC_PREVIEW_RUN);
+    expect(GENERIC_PREVIEW_RUN).toBeLessThan(ECHO_RUN);
   });
 
   it('refuses an email preview — why the stdout rule is scoped to generic secrets', () => {
@@ -84,9 +140,8 @@ describe('expectNoEchoOf', () => {
     // local part returns the input unchanged. Both fill the window legitimately,
     // so a surface printing a pii/email preview is out of scope for this helper
     // rather than a leak it found.
-    const email = 'user@example.com';
-    expect(maskMatch(email)).toContain('example.com');
-    expect(refuses(maskMatch(email), email)).toBe(true);
+    expect(maskMatch(EMAIL)).toContain('example.com');
+    expect(refuses(maskMatch(EMAIL), EMAIL)).toBe(true);
     expect(maskMatch('a@b.com')).toBe('a@b.com');
   });
 

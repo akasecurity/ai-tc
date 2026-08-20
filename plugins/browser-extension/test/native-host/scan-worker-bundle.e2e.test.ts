@@ -11,7 +11,7 @@
  * pulled and custom rule while the built-in packs keep detecting.
  */
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,8 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
+
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 
 // test/native-host -> plugins/browser-extension
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -96,7 +98,7 @@ function frame(message: unknown): Buffer {
 }
 
 afterAll(() => {
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  removeTrees(temps);
 });
 
 describe('the built scan worker', () => {

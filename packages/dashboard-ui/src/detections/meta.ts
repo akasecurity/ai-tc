@@ -3,6 +3,7 @@
 // DetectionRule, …); this module owns only the frontend mapping of those semantic
 // enums to labels, icons, and tones — there are no domain types here.
 import type {
+  BuiltinPolicyId,
   DetectionCategory,
   DetectionDetail,
   Matcher,
@@ -19,6 +20,7 @@ import {
   EyeIcon,
   FingerprintIcon,
   GlobeIcon,
+  LockIcon,
   PolicyIcon,
   RedactIcon,
   ShieldCheckIcon,
@@ -93,9 +95,16 @@ export interface PolicyMeta {
   desc: string;
 }
 
-// The four built-in enforcement actions (KNOWN_BUILTIN_IDS). Order is the picker's
+// The built-in enforcement archetypes (KNOWN_BUILTIN_IDS). Order is the picker's
 // display order (least → most restrictive).
-export const POLICY_META: Record<string, PolicyMeta> = {
+//
+// Keyed by BuiltinPolicyId rather than `string`, which is what makes adding an
+// archetype a COMPILE error here. It was `Record<string, …>`, so a new id
+// compiled clean and rendered through policyMeta's fallback: an unlabelled gray
+// pill with an EMPTY description card, on both the picker and the detail view.
+// A missing entry has to fail loudly, because the failure it produces otherwise
+// looks like a styling bug rather than a missing policy.
+export const POLICY_META: Record<BuiltinPolicyId, PolicyMeta> = {
   monitor: {
     id: 'monitor',
     label: 'Monitor',
@@ -115,7 +124,19 @@ export const POLICY_META: Record<string, PolicyMeta> = {
     label: 'Redact',
     icon: RedactIcon,
     tone: 'primary',
-    desc: 'Automatically strip the matched value from the request, then continue.',
+    desc:
+      'Strip the matched value from the request and destroy it, then continue. ' +
+      'What was removed cannot be recovered.',
+  },
+  vault: {
+    id: 'vault',
+    label: 'Redact & Vault',
+    icon: LockIcon,
+    tone: 'teal',
+    desc:
+      'Strip the matched value from the request and keep an encrypted, recoverable copy in ' +
+      'the local vault, leaving a pointer in its place. Needs the vault consent granted under ' +
+      'Settings; without it this behaves as Redact.',
   },
   block: {
     id: 'block',
@@ -139,7 +160,12 @@ export const BUILTIN_POLICY_IDS: readonly string[] = KNOWN_BUILTIN_IDS;
 // uses the distinct neutral PolicyIcon (never Monitor's EyeIcon), so a custom
 // policy can't be misread as the log-only Monitor builtin.
 export function policyMeta(id: string): PolicyMeta {
-  const known = Object.hasOwn(POLICY_META, id) ? POLICY_META[id] : undefined;
+  // The map is keyed by BuiltinPolicyId so a missing archetype is a compile
+  // error, but the ARGUMENT is deliberately a plain string: a custom policy id
+  // reaches here too, and narrowing the parameter would just move the cast to
+  // every call site. Read through a widened view after the hasOwn guard.
+  const table: Partial<Record<string, PolicyMeta>> = POLICY_META;
+  const known = Object.hasOwn(POLICY_META, id) ? table[id] : undefined;
   return known ?? { id, label: id, icon: PolicyIcon, tone: 'gray', desc: '' };
 }
 

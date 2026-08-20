@@ -24,6 +24,7 @@ import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runException } from '../../src/commands/exception.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // `aka exception approve <pointer> --reveal` is the sanctioned door for "the
 // agent legitimately needs this raw value": it mints a reveal_to_model grant
@@ -71,6 +72,8 @@ let home: string;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-cli-exc-reveal-'));
+  // Schema by file copy rather than a migration this test would only repeat.
+  migratedStore.seed(dataDir(home));
   // Vaulting (tokenize) is consent-gated; grant it for the seeding step.
   applyOnboarding(
     {

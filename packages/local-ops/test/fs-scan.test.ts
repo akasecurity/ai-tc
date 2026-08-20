@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 /** The error a thunk threw, captured OUTSIDE its own catch so a never-thrown one is `undefined`. */
 function errorFrom(fn: () => unknown): Error | undefined {
@@ -87,6 +88,8 @@ let store: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-fs-scan-'));
   store = mkdtempSync(join(tmpdir(), 'aka-fs-scan-db-'));
+  // Schema by file copy rather than a migration this test would only repeat.
+  migratedStore.seed(store);
 });
 
 afterEach(() => {

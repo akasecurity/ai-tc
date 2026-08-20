@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid } from '@akasecurity/schema';
+import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const result = await handleSessionStart({
     sessionId,
     cwd,
-    tool: 'claude-code',
+    tool: SOURCE_TOOL.ClaudeCode,
     harnessVersion: harnessVersion(),
     // harnessInterface is intentionally omitted: Claude Code's SessionStart hook
     // exposes no meaningful interface discriminator (terminal vs IDE vs web) yet.

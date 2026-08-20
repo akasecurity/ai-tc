@@ -8,7 +8,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // the SAME views the Inventory page uses (listProjects access counts +
 // getProjectTree folders/files) — the write is only correct if the page renders.
 
-const store = useTempStore('aka-projfiles-db-');
+const store = useTempStore('aka-projfiles-db-', { migrated: true });
 let db: LocalDatabase;
 let projectId: string;
 

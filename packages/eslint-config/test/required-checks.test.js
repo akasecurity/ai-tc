@@ -178,6 +178,29 @@ const ANY_CACHE_ACTION = /uses: actions\/cache(?:\/(?:restore|save))?@/;
 const turboFilters = (block) => [...block.matchAll(/--filter=(\S+)/g)].map(([, name]) => name);
 
 /**
+ * The filters on a job's `turbo run test` invocations ALONE, attributed to the
+ * step they are written under.
+ *
+ * `turboFilters` is a flat job-wide scan, so it answers "is this name mentioned
+ * in a filter anywhere in this job". That is the same question as "does this
+ * package's suite RUN on this leg" only while every filter in the job sits on a
+ * test invocation — an invariant nothing enforced, and one a single
+ * `turbo run build --filter=…` step takes away for the whole job at once. A
+ * guard meaning the second question uses this instead, so a filter that moves
+ * to a build, lint or typecheck step stops counting rather than going on
+ * satisfying the check that its tests still run.
+ *
+ * Steps are split at their list items, and jobBlock has already dropped the
+ * comments, so prose naming a package above a step does not count for it.
+ */
+const turboTestFilters = (block) =>
+  block
+    .split(/^ {6}- /m)
+    .slice(1)
+    .filter((step) => /turbo run test/.test(step))
+    .flatMap((step) => turboFilters(step));
+
+/**
  * Every workspace package npm actually publishes — `private` absent or false.
  * Derived from pnpm-workspace.yaml and the manifests themselves rather than
  * listed, because a list is exactly what let the CLI and the plugin sit outside
@@ -712,7 +735,7 @@ describe('the Windows legs', () => {
     // those two failures.
     expect(published).toContain('@akasecurity/cli');
     expect(published).not.toContain('@akasecurity/persistence');
-    expect(turboFilters(jobBlock(ci, 'windows'))).toEqual(expect.arrayContaining(published));
+    expect(turboTestFilters(jobBlock(ci, 'windows'))).toEqual(expect.arrayContaining(published));
   });
 
   // @akasecurity/eslint-config is the one filter entry that ships nothing —
@@ -999,7 +1022,7 @@ describe('the installer trust chain is wired into CI', () => {
   // the filter at a sibling and took install.ps1's coverage away while staying
   // green.
   it('runs the installer suite on the Windows leg, the only one that reaches install.ps1 whole', () => {
-    expect(turboFilters(jobBlock(ci, 'windows'))).toContain('@akasecurity/installer');
+    expect(turboTestFilters(jobBlock(ci, 'windows'))).toContain('@akasecurity/installer');
     expect(jobBlock(ci, 'windows')).toMatch(/--filter=@akasecurity\/installer(?![\w-])/);
   });
 

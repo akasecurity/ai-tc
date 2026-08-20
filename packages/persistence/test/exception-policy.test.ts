@@ -40,7 +40,7 @@ function identity(overrides: Partial<PointerIdentity> = {}): PointerIdentity {
 describe('UserGrantPolicyProvider', () => {
   // The shared harness owns the temp store and closes its handles at teardown,
   // so no test here can leave the tree undeletable on Windows.
-  const store = useTempStore('aka-policy-');
+  const store = useTempStore('aka-policy-', { migrated: true });
   let db: LocalDatabase;
   let provider: UserGrantPolicyProvider;
 

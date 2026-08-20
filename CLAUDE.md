@@ -107,6 +107,64 @@ the failure being guarded against.
 
 **Do not create new types and interfaces — use the ones exported from `@akasecurity/schema` to the maximum extent.** Consumers (web-ui, CLI, plugin) import the schema types directly rather than redefining local "view-model" shapes or adapters. A new type is justified only when there is genuinely no schema equivalent (e.g. pure presentation descriptors like `{ label, icon, color }`). If a shape is missing, add it to `@akasecurity/schema/src/zod/` first, then consume it.
 
+**The agent vocabulary is ONE registry, and outside it an id is spelled through a
+member rather than as a literal.** Unlike §3 and §4, this is a CONVENTION and not a
+gate: no lint rule and no derived audit enforces it, so read it as what review looks
+for rather than as something CI will catch. Two neighbouring id spaces are
+deliberately outside it and are not violations — `AGENT_PLUGINS[].id` in
+`packages/local-ops/src/registry.ts` (the ref `aka plugins install` takes, which
+carries its own `sourceTool` field alongside) and the browser extension's
+content-script provider ids, which name a web app rather than a capture and whose
+files import nothing from schema on purpose.
+`src/zod/harness-map.ts` holds both spellings as named-member const objects —
+`SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
+display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,
+which they had done into five hand-typed copies:
+
+- **A narrower enum is `Harness.extract([...])` over MEMBER NAMES**, never a fresh
+  `z.enum([...])` of the same strings. `Provider`, `HarnessId` and `FindingProvider` are each
+  that, so a subset structurally cannot carry an id the registry does not define, while each
+  keeps its own member ORDER (`Provider`'s is the dashboard's display order, and
+  `.extract()` preserves the order passed).
+- **Call sites spell `HARNESS.ClaudeCode` / `SOURCE_TOOL.ClaudeCode`, not the literal.** A
+  literal that merely equals a member is invisible to a rename, which is exactly how these
+  drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`), which keeps
+  `satisfies Record<Harness, …>` exhaustiveness — so **a table over a vocabulary is
+  ANNOTATED `Record<ThatVocabulary, …>`**, and that one rule needs no per-table test. It
+  covers the `.extract()` subsets exactly as it covers the whole enum: a table annotated
+  `Record<HarnessId, …>` fails to compile the moment `HarnessId`'s extract list grows
+  (TS2741 — verified, not assumed). What the compile error cannot reach is a collection
+  keyed on NOTHING — an array of rows carrying its id in a field — because adding a member
+  changes no type it mentions. Give it a key, or it owes a TEST.
+- **Adding an id is one edit to the registry PLUS a deliberate decision per subset.**
+  `.extract()` takes explicit member names, so a member added to `HARNESS` joins no subset
+  on its own: it is a compile error at every table keyed on the whole enum (which is what
+  prompts the lettermark and the kind), and silently absent from `Provider`, `HarnessId`
+  and `FindingProvider` until each is extended on purpose. Until then it renders under no
+  scan-coverage row, gets no label, and buckets to the miss path. That is the intended
+  shape — subsets answer different questions and none should widen by accident — but do
+  not read the compile error as telling you the work is finished.
+- **The two vocabularies are joined by MEMBER NAME**, so `TOOL_TO_HARNESS` pairs them without
+  either spelling being retyped, and a member in only one of them is meaningful rather than an
+  omission (`Cli`/`Unknown` capture under no harness; `Windsurf`/`Api` render under no
+  capture). Anything that reads the join BACKWARDS derives it — `toDbProviderFilter` is the
+  inverse of that one table rather than a second map, because the hand-written copy it
+  replaced had to be edited in step with it and nothing checked that it was. Deriving it
+  gives up the exhaustiveness that `Record<FindingProvider, string[]>` carried, and no
+  compile error replaces it, so the agreement is asserted as SETS in
+  `packages/schema/test/zod/harness-map.test.ts` — every provider but the miss bucket must
+  name at least one stored value. That case is the only non-vacuous one: the round-trip
+  iterates the table itself, and the forward check's inner loop does not run on an empty
+  array. It has to be non-vacuous because an empty result is the miss bucket's own contract
+  (`'api'` → `[]`, matching any unknown value in-memory), so a provider with no rows reads
+  as the miss bucket rather than as no findings.
+
+Declared as const objects rather than TypeScript `enum`s deliberately:
+`packages/plugin-sdk/src/scan-worker.ts` is loaded by raw Node under type **stripping** and
+reaches schema through `@akasecurity/detections`, so an `enum` — which emits runtime code
+rather than erasing — fails at load on that path only. The repo has no `enum` declarations,
+and adding one anywhere schema can reach is what would break it.
+
 ### 3. `process.env` is off by default
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
@@ -881,6 +939,18 @@ tools/                repo tooling, never shipped: the installer one-liners and
    enumerates by — a file whose extension it counts as lintable and the glob omits
    is the same cached-green hole one extension wide.
 
+   Those checks read `turbo.json` as TEXT and match its globs with
+   `path.matchesGlob`, which is a MODEL of turbo's hashing rather than turbo's
+   hashing. One case asks turbo instead: it plants a lintable file at the repo
+   root, runs `--dry=json`, and asserts the hash really moves — the only reading
+   that decides whether this suite RUNS. Two things in it are load-bearing. It
+   selects the task by `taskId`, because `tasks[0]` is `#build`, whose inputs are
+   package-local and which no repo-root file ever moves. And it carries a
+   POSITIVE CONTROL that plants under a different input (`tools/ci/**`) first, so
+   a broken measurement is reported as a broken measurement rather than as a
+   missing glob — without it, "the hash did not move" reads the same whether the
+   glob went or the selection did.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
@@ -901,6 +971,17 @@ tools/                repo tooling, never shipped: the installer one-liners and
    // …
    test: { setupFiles: [noNetworkGuard], … }
    ```
+
+   A package that also declares `testTimeout`/`hookTimeout` in that config must add
+   itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
+   which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
+   directions on purpose. Raising a timeout is the change that must not pass unnoticed:
+   the per-test SQLite migration above was 'fixed' once by moving this number from
+   vitest's 10s default to 20s, which bought a green run and let the same failure spread
+   from one package to four. Lowering it is a good change — setup is a file copy now, so
+   there is headroom to give back — but a deliberate one. Raising it through the `test`
+   script's CLI flags instead is refused by the same suite, since the pin reads config
+   literals and a flag would bypass it silently.
 
    The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
    package testing through anything else (`node --test`, say) runs with no runtime
@@ -1594,6 +1675,25 @@ not reach for a `./testing` export instead.
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
   suite shares setup across hooks, `withTempStore` when one test body owns the store. An
   async body is awaited before teardown.
+- **`{ migrated: true }`** — the second argument to all three, and the one to reach for by
+  default. `openLocalDatabase` runs every migration in the ledger on a store that has none,
+  so a suite with per-test isolation rebuilds the whole schema on every test; this seeds
+  `data/` from a template built ONCE per worker and copied. Isolation is unchanged — each
+  test still gets its own file, and no handle is shared. Measured at roughly 9-10x cheaper
+  per setup (`packages/persistence/bench/store-template.bench.ts`), which matters because
+  the Windows leg charges about 30x local cost for exactly this work and a `beforeEach`
+  that blows the hook ceiling fails a package the PR never touched.
+
+  **It is opt-IN, and that is load-bearing.** A seeded store has nothing left to migrate,
+  so a suite whose SUBJECT is the open path must not take it: migrations, the lineage
+  reset, the `.bak` a fresh migration leaves beside the store, `aka init` creating the
+  store, a first-run flow, or a fault injected so that `applyMigrations` is the thing that
+  refuses. Those assertions would hold **vacuously** rather than fail — which is worse
+  than losing them, because they go on reporting green. `test/helpers/store-template.ts`
+  is the shared builder (six packages copy from it; `migrated-store.ts` is this package's
+  build step), and it refuses a build that left no store, one that left a live `-wal`, and
+  any seed over a store or a foreign log that is already there.
+
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).

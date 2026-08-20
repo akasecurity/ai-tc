@@ -15,7 +15,7 @@
  * these arguments, from the directory the plan chose".
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
   assertCommandNotOnPath,
@@ -65,8 +66,17 @@ const tempDir = (): string => {
   return dir;
 };
 
+// The launcher spawns DETACHED and unrefs, so the stub is still on its way out
+// when the body returns: `readCalls` waits for the RECORD, which the stub writes
+// before it exits, and on win32 `cmd.exe` holds the `.cmd` shim open past that
+// point. Windows refuses to unlink a running image, so a bare `rmSync` meets
+// EPERM on a tree POSIX drops without complaint — which is how this teardown
+// failed a CI leg whose every assertion had already passed. `removeTree` retries
+// through that window and, on win32 alone, tolerates the tree being handed to
+// the OS temp sweeper; on POSIX it still throws, where the same code would mean
+// a cleanup that genuinely did not run.
 afterEach(() => {
-  while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
+  while (dirs.length > 0) removeTree(dirs.pop() ?? '');
 });
 
 interface Spawned {

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 const REMOTE_URL = 'https://github.com/acme/payments-api.git';
 
@@ -89,6 +90,8 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-egress-'));
   store = mkdtempSync(join(tmpdir(), 'aka-egress-db-'));
   base = mkdtempSync(join(tmpdir(), 'aka-egress-home-'));
+  // Schema by file copy rather than a migration this test would only repeat.
+  migratedStore.seed(store);
   db = openLocalDatabase(store);
 });
 

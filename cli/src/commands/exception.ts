@@ -921,7 +921,15 @@ async function runRevoke(argv: string[], io: Prompter): Promise<void> {
  * surface refuses on, so the number and the rows a user can act on agree.
  *
  * An unreadable key is not a reason to fail the rotation — it yields zero,
- * which is true: nothing can be matched right now either way.
+ * which is true: nothing can be matched right now either way. That fallback is
+ * load-bearing rather than defensive: the read sits between the preamble and
+ * the confirm prompt, so an escaping throw lands ABOVE the rotate step that
+ * composes the recovery guidance. The preamble and the permanent-grant list
+ * have already printed and are not at risk; what a throw costs is the ledger
+ * disclosure below, and then the hint — leaving a bare parse or errno error in
+ * their place. Since the two hints say opposite things about the same file,
+ * losing them is worse than losing a count.
+ * cli/test/commands/exception.test.ts pins both fault cases against that.
  */
 async function countApprovableBlocked(db: LocalDatabase, dir: string): Promise<number> {
   const key = ((): FingerprintKeyState => {

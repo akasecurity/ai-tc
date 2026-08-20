@@ -25,6 +25,23 @@
 # it tries, where a plain install genuinely attempts the connection and lets the
 # namespace be the thing that stops it.
 #
+# THAT INSTALL-TIME HALF IS LIVE, and it is worth saying so because npm's own
+# output reads like the opposite. `npm ci` prints `allow-scripts … not yet
+# covered by allowScripts` and points at `npm approve-scripts`, which looks like
+# a refusal; on npm 11.16 it is ADVISORY and the script runs anyway. `sharp`
+# arrives through `next` as an optional dependency and its `install` really does
+# execute on this leg — visible as `> sharp@0.34.5 install` under
+# `--foreground-scripts`, inside the namespace, on a run that then exits 0.
+#
+# Do not re-derive this from `ignore-scripts`. That is a DIFFERENT and older
+# switch, it reads `false` here, and reasoning from it lands on the wrong answer
+# in both directions. `allowScripts` is the mechanism, and whether it merely
+# warns or actually blocks is a property of the npm MINOR the runner ships — so
+# this coverage can disappear under a version bump without anything here
+# changing. The placement is right either way: it is where the check has to sit
+# the moment npm starts enforcing, or someone runs `npm approve-scripts`, or the
+# leg meets an npm that never gated at all.
+#
 # WHAT MAKES IT NON-VACUOUS. `no-network-test.sh` proves the block is real before
 # this file runs at all, so that half is not repeated here. The control this file
 # owns is the opposite one: a scan that examined nothing exits 0 and reports no

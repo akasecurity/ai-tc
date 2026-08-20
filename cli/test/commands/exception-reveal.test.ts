@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { maskMatch } from '@akasecurity/detections';
 import {
   applyOnboarding,
   createKeyProvider,
@@ -38,9 +39,14 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 // catching a leak. Random-looking and rule-shaped for nothing satisfies both.
 const RAW = 'zq7vk2mx9tw4hb6njf3pd8sr5gc1ly';
 const RULE_ID = 'secrets/test-rule';
-// Derived so the two cannot drift apart. Seven characters, which is shorter
-// than the echo window on purpose: this preview is stored and shown, so it must
-// never be able to fill it.
+// Derived so the two cannot drift apart. What keeps it printable is its longest
+// revealed RUN — three characters at each end, against an eight-character
+// window — not its seven-character length: the window slides over CONTIGUOUS
+// slices, so length alone is a coarser test that happens to agree here.
+//
+// This is the preview a CALLER supplies at tokenize time, so it belongs on vault
+// entries and on grants minted from them. A blocked-detections row is the
+// PRODUCT masking, and those seeds use maskMatch(RAW) below.
 const MASKED = `${RAW.slice(0, 3)}…${RAW.slice(-3)}`;
 
 // Scripted, non-interactive Prompter with captured output.
@@ -179,11 +185,11 @@ describe('aka exception approve <pointer> --reveal', () => {
         category: 'secret',
         valueFingerprint: fingerprintValue(key, RAW),
         keyVersion: key.version,
-        // MASKED, like the sibling ledger seed below. The literal this replaced
-        // was another value's preview entirely, so the row paired one value's
-        // fingerprint with a different value's mask — a ledger state the product
-        // cannot produce.
-        maskedValue: MASKED,
+        // What the product writes for a blocked-detections row: plugin-sdk's
+        // runtime masks the finding with maskMatch before recording it. The
+        // literal this replaced was another value's preview entirely, so the row
+        // paired one value's fingerprint with a different value's mask.
+        maskedValue: maskMatch(RAW),
         sessionId: 'sess-1',
         repo: null,
       });
@@ -384,7 +390,8 @@ describe('aka exception approve <pointer> --reveal', () => {
           category: 'secret',
           valueFingerprint: fingerprintValue(rowKey, RAW),
           keyVersion: rowKey.version,
-          maskedValue: MASKED,
+          // A blocked-detections row, so the product's mask — see the seed above.
+          maskedValue: maskMatch(RAW),
           sessionId: 'sess-1',
           repo: null,
         });

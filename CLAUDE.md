@@ -1977,10 +1977,14 @@ control, and the two approve **selectors** that stand in for a value a user type
 hand-written `'A******E'` on both sides of one of those is true by construction and moves with
 nothing, which is the rule two paragraphs above, applied to a group rather than to a single
 control. **That is a claim about that group, not about every preview in the package**: a
-preview the CALLER supplies is a different thing, and `exception-reveal.test.ts` asserts
-against its own `MASKED` constant on purpose, because a vault pointer's preview is chosen at
-tokenize time rather than produced by `maskMatch`. Derive from `maskMatch` where the product
-masks; derive from the raw value where the caller does.
+preview the CALLER supplies is a different thing, and `exception-reveal.test.ts`'s **vault**
+seeds assert against its own `MASKED` constant on purpose, because a vault pointer's preview
+is chosen at tokenize time rather than produced by `maskMatch`. **The line is drawn per ROW,
+not per file.** The same file's `recordBlocked` seeds are `blocked_detections` rows, and
+`packages/plugin-sdk/src/runtime.ts` masks the finding with `maskMatch` before recording one
+— the only writer of that table — so those derive from `maskMatch` like any other product
+mask. Derive from `maskMatch` where the product masks; derive from the raw value where the
+caller does, and decide that per table rather than by which suite you are in.
 `packages/detections/test/mask.test.ts` keeps its exact-string cases: they are the right pin
 for the mask's own contract, and deliberately not a pin on the CLI's margin.
 

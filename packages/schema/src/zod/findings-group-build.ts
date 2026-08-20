@@ -10,7 +10,6 @@
 // around these primitives.
 import type {
   FindingAction,
-  FindingCategory,
   FindingFacetItem,
   FindingFacets,
   FindingGroup,
@@ -19,6 +18,9 @@ import type {
   FindingStatus,
   Severity,
 } from './finding.ts';
+// Value import: the fallback below validates against the enum itself, so a member
+// added to FindingCategory is honored here without restating the member list.
+import { FindingCategory } from './finding.ts';
 import { TOOL_TO_HARNESS } from './harness-map.ts';
 
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
@@ -62,17 +64,25 @@ export function toDbAction(apiVal: FindingAction): string {
 
 /**
  * DB DetectionCategory → API FindingCategory.
- *   code_context → source_code.
- * NOT a clean 1:1: FindingCategory does NOT include every DetectionCategory —
- * `code_flaw` and `config` have no FindingCategory member, so for those the cast
- * below passes an OFF-ENUM string through (a known gap — they don't reach the
- * legacy findings API today; config findings live in inspection_findings and
- * code_flaw findings are not yet surfaced on the findings read model). Every other
- * category is a genuine 1:1 pass-through.
+ *   code_context → source_code · every other member 1:1 · anything else → custom.
+ *
+ * TOTAL, like toApiAction ('allowed') and toApiProvider ('api'): it returns a
+ * FindingCategory for every input rather than casting an unrecognized one.
+ * `config` (tooling posture) is the one DetectionCategory with no member of its
+ * own and lands on 'custom'; `code_flaw` has its own member and round-trips.
+ *
+ * The fallback is load-bearing, not defensive. Every route returning a
+ * FindingGroup / FindingInstanceDetail Zod-validates its response body on the way
+ * out, and an off-enum string fails that validation for the WHOLE payload — so one
+ * unmapped row 500s the entire findings page rather than degrading its own cell.
+ *
+ * toDbCategory inverts every member EXCEPT that fallback: filtering by 'custom'
+ * matches DB 'custom' only, never the `config` rows displayed under it.
  */
 export function toApiCategory(dbVal: string): FindingCategory {
   if (dbVal === 'code_context') return 'source_code';
-  return dbVal as FindingCategory;
+  const parsed = FindingCategory.safeParse(dbVal);
+  return parsed.success ? parsed.data : 'custom';
 }
 
 /**

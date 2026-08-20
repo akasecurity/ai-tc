@@ -22,6 +22,7 @@ import {
   purgeVault,
   revealEntry,
 } from '../../app/(app)/vault/actions.ts';
+import { emptyStore } from '../helpers/store-templates.ts';
 
 /**
  * The vault page's three paged READ actions.
@@ -68,6 +69,8 @@ beforeEach(() => {
   // dataDir()'s argument is the ~/.aka ROOT, not the home — with the mock in
   // place the no-argument form resolves to exactly what the action will open.
   dir = dataDir();
+  // Schema by file copy rather than a migration this test would only repeat.
+  emptyStore.seed(dir);
   revalidate.mockClear();
   dropMemoisedDb();
 });

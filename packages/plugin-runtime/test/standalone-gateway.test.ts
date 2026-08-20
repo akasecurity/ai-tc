@@ -21,11 +21,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 let dir: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aka-standalone-'));
+  // Schema by file copy: identical every test, and migrating it per test is
+  // what put suites of this shape over the Windows hook ceiling.
+  migratedStore.seed(dir);
 });
 
 afterEach(() => {

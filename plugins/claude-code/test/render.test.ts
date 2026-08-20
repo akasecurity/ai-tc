@@ -54,6 +54,7 @@ import {
   runQuery,
   topFindings,
 } from '../src/render.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 // The real shipped plugin manifest — the same plugin.json the intro adapter
 // reads at runtime. Read here so the provenance assertions track the actual
@@ -1205,6 +1206,9 @@ describe('runQuery — against a seeded standalone gateway', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'aka-query-'));
+    // Schema by file copy: identical every test, and migrating it per test is
+    // what put suites of this shape over the Windows hook ceiling.
+    migratedStore.seed(dir);
   });
   afterEach(() => {
     // removeTree, not a bare rmSync: this block leaves a real SQLite store with

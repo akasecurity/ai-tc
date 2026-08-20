@@ -9,7 +9,7 @@ import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
 const SESSION_ID = 'session-audit-events-test';
 
-const store = useTempStore('aka-audit-events-');
+const store = useTempStore('aka-audit-events-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

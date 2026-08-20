@@ -8,7 +8,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // per `.claude/worktrees/*` session, and an older plugin can re-mint one at any
 // time. The checkout is already part of its head project.
 
-const store = useTempStore('aka-inv-projects-');
+const store = useTempStore('aka-inv-projects-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

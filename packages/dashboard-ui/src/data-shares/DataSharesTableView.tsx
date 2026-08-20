@@ -1,8 +1,9 @@
 'use client';
-// Grouped, expandable Data Shares register. Destinations are sectioned by kind
-// (providers / internal domains / raw IPs); each group row expands to reveal its
-// endpoint rows. Pure and props-driven — expansion/selection state and all
-// handlers come from the app; all shapes are @akasecurity/schema types.
+// Expandable Data Shares register for one destination kind — the app picks
+// which group's rows this renders (see DataSharesKindTabsView, the sibling
+// tab strip that drives the choice); each destination row expands to reveal
+// its endpoint rows. Pure and props-driven — expansion/selection state and
+// all handlers come from the app; all shapes are @akasecurity/schema types.
 import type {
   DataClass,
   EndpointSummary,
@@ -32,11 +33,11 @@ import {
   TransportTag,
   TrustTag,
 } from './atoms.tsx';
-import { hasInsecureTransport, KIND_LABEL } from './meta.ts';
+import { hasInsecureTransport } from './meta.ts';
 import type { ShareSelection } from './types.ts';
 
 export interface DataSharesTableViewProps {
-  groups: ShareDestinationGroup[];
+  group: ShareDestinationGroup;
   /** Which group rows are expanded (by destination id). */
   expanded: Record<string, boolean>;
   /** Force every group open (used while a search query is active). */
@@ -194,37 +195,8 @@ function EndpointRow({
   );
 }
 
-/** Full-width kind-section header row rendered between destination groups. */
-function SectionRow({ group }: { group: ShareDestinationGroup }) {
-  return (
-    <TableRow className="border-0 hover:bg-transparent">
-      <TableCell colSpan={7} className="pb-2 pt-4">
-        <div className="flex items-center gap-2">
-          <span className="text-label font-semibold uppercase tracking-wider text-text-3">
-            {KIND_LABEL[group.kind]}
-          </span>
-          <span className="rounded-full border border-border bg-surface-2 px-1.5 text-label py-0.5 font-semibold text-text-2">
-            {group.total}
-          </span>
-          {(group.kind === 'ip' || group.kind === 'external') && (
-            <span
-              className={cn(
-                'inline-flex items-center gap-1 text-xs',
-                group.kind === 'ip' ? 'text-sev-critical-ink' : 'text-sev-high-ink',
-              )}
-            >
-              <AlertIcon aria-hidden focusable={false} className="size-3" />
-              review recommended
-            </span>
-          )}
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-}
-
 export function DataSharesTableView({
-  groups,
+  group,
   expanded,
   forceExpand,
   selection,
@@ -233,10 +205,6 @@ export function DataSharesTableView({
   onOpenDest,
   onOpenEndpoint,
 }: DataSharesTableViewProps) {
-  // One table for every group (not a table per kind) so columns stay aligned
-  // across the Providers / Internal / Raw-IP sections — a single auto-layout
-  // table shares one set of column widths. Section headers are full-width rows
-  // between groups.
   return (
     <Table>
       <TableHeader>
@@ -251,43 +219,38 @@ export function DataSharesTableView({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {groups.map((g) => (
-          <Fragment key={g.kind}>
-            <SectionRow group={g} />
-            {g.items.map((d) => {
-              const isExp = (forceExpand ?? false) || !!expanded[d.id];
-              const groupSel = drawerOpen && selection?.id === d.id && selection.endpointId == null;
-              return (
-                <Fragment key={d.id}>
-                  <GroupRow
-                    d={d}
-                    expanded={isExp}
-                    selected={groupSel}
-                    onToggle={() => {
-                      onToggle(d.id);
-                    }}
-                    onOpen={() => {
-                      onOpenDest(d.id);
+        {group.items.map((d) => {
+          const isExp = (forceExpand ?? false) || !!expanded[d.id];
+          const groupSel = drawerOpen && selection?.id === d.id && selection.endpointId == null;
+          return (
+            <Fragment key={d.id}>
+              <GroupRow
+                d={d}
+                expanded={isExp}
+                selected={groupSel}
+                onToggle={() => {
+                  onToggle(d.id);
+                }}
+                onOpen={() => {
+                  onOpenDest(d.id);
+                }}
+              />
+              {isExp &&
+                d.endpoints.map((ep) => (
+                  <EndpointRow
+                    key={ep.id}
+                    ep={ep}
+                    selected={
+                      drawerOpen && selection?.id === d.id && selection.endpointId === ep.id
+                    }
+                    onClick={() => {
+                      onOpenEndpoint(d.id, ep.id);
                     }}
                   />
-                  {isExp &&
-                    d.endpoints.map((ep) => (
-                      <EndpointRow
-                        key={ep.id}
-                        ep={ep}
-                        selected={
-                          drawerOpen && selection?.id === d.id && selection.endpointId === ep.id
-                        }
-                        onClick={() => {
-                          onOpenEndpoint(d.id, ep.id);
-                        }}
-                      />
-                    ))}
-                </Fragment>
-              );
-            })}
-          </Fragment>
-        ))}
+                ))}
+            </Fragment>
+          );
+        })}
       </TableBody>
     </Table>
   );

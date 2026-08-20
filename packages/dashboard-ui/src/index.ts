@@ -325,6 +325,10 @@ export {
   type DataShareDetailViewProps,
 } from './data-shares/DataShareDetailView.tsx';
 export {
+  DataSharesKindTabsView,
+  type DataSharesKindTabsViewProps,
+} from './data-shares/DataSharesKindTabsView.tsx';
+export {
   DataSharesTableView,
   type DataSharesTableViewProps,
 } from './data-shares/DataSharesTableView.tsx';
@@ -344,6 +348,10 @@ export {
   TRUST_META,
   type TrustMeta,
 } from './data-shares/meta.ts';
+export {
+  NeedsReviewListView,
+  type NeedsReviewListViewProps,
+} from './data-shares/NeedsReviewListView.tsx';
 export {
   NeedsReviewStripView,
   type NeedsReviewStripViewProps,

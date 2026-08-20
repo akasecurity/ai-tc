@@ -40,11 +40,17 @@ export default async function DataSharesPage({
       <PageHead
         title="Data Shares"
         sub="Outbound data egress detected in your software — grouped by destination"
+        actions={
+          <span className="text-ui text-text-3">
+            <b className="text-text">{stats.destinations}</b> destinations ·{' '}
+            <b className="text-text">{stats.endpoints}</b> endpoints ·{' '}
+            <b className="text-text">{stats.callSites}</b> call sites
+          </span>
+        }
       />
 
       <DataSharesClient
         q={q}
-        stats={stats}
         groups={list.groups}
         review={review.items}
         destination={destination}

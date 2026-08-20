@@ -7,10 +7,10 @@
   // replaying a cached green produced under the OLD guard, which is a false
   // green for the guarantee it exists to enforce.
   //
-  // test/helpers/** is there for the same reason: nine packages' teardowns
-  // import removeTree, whose retry and win32 tolerance no call site can observe,
-  // so weakening it would otherwise leave every one of them replaying a cached
-  // green taken under the old rule.
+  // test/helpers/** is there for the same reason: every package whose teardowns
+  // import removeTree/removeTrees, whose retry and win32 tolerance no call site
+  // can observe, so weakening it would otherwise leave every one of them
+  // replaying a cached green taken under the old rule.
   //
   // test/fixtures/** is the third, and it is the one "fixtures are just test
   // data" talks you out of. The adversarial corpus under

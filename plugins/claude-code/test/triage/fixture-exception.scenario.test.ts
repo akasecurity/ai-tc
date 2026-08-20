@@ -20,7 +20,7 @@
  * store-touching path and is proven end-to-end at the emission seam
  * (fixture-exception.journey.test.ts).
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,6 +30,8 @@ import type { FalsePositivePatternGroup, FalsePositivePatternValue } from '@akas
 import { resolveScopeFlags, scopeFromAnswer } from '@akasecurity/schema';
 import { acceptFixtureExceptionOffer } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 const OPTS = { justification: 'confirmed test fixture', createdBy: 'me' };
 
@@ -63,7 +65,7 @@ describe('the mechanical write legs over a REAL local store', () => {
 
   afterEach(() => {
     db.close();
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it("accepting writes an exception keyed on the marked hit's exact value identity, masked on read-back", async () => {

@@ -27,7 +27,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 
 // test/e2e -> plugins/antigravity
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -92,7 +92,7 @@ function runtimeBearingScripts(): string[] {
 }
 
 afterAll(() => {
-  for (const dir of temps) removeTree(dir);
+  removeTrees(temps);
 });
 
 describe('the built scan worker', () => {

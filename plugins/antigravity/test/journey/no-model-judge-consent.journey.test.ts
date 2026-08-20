@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { judgeArgvUnsupported } from '../helpers/judge-argv-unsupported.ts';
 import {
   assertShimResolves,
@@ -107,8 +107,7 @@ class SetupJourney {
   }
 
   cleanup(): void {
-    removeTree(this.home);
-    removeTree(this.binDir);
+    removeTrees([this.home, this.binDir]);
   }
 
   // Whether the stub `agy` judge was actually executed. The stub touches a

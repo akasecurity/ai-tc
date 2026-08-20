@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,7 @@ import { SetupHandoffOffer as SetupHandoffOfferSchema } from '@akasecurity/schem
 import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import { runFirstRun } from '../../src/firstrun-core.ts';
 import { readPostureBlock } from '../../src/posture.ts';
@@ -76,7 +77,7 @@ describe('first-run handoff seam: calibration findings trigger (or skip) remedia
     dirs.length = 0;
   });
   afterEach(() => {
-    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    removeTrees(dirs);
   });
 
   // The calibrated-result step: build the calibration frame the wizard emits for

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,7 @@ import {
 } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import {
   readRegisteredCommands,
@@ -131,9 +132,7 @@ describe('batched four-option remediation decision (app-level: no case, secret-o
 
   afterEach(() => {
     db.close();
-    for (const dir of [transcriptRoot, base, workingDir]) {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    removeTrees([transcriptRoot, base, workingDir]);
   });
 
   it('step 1 — presents ONE batch of the 3 surfaced secret findings with the full decision layout, exactly four options, PII excluded, no "case"', () => {

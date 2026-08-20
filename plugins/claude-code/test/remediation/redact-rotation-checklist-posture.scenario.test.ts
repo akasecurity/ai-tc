@@ -52,6 +52,24 @@ function readPosture(storeDir: string): string | undefined {
   }
 }
 
+// Both steps must run even if the first throws — journey.cleanup() owns the
+// whole temp home plus its store, not merely another tree removal, and must
+// not leak behind a repoRoot failure this suite's own children could cause.
+function cleanupJourneyAndRepo(journey: SetupJourney, repoRoot: string): void {
+  const errors: unknown[] = [];
+  try {
+    removeTree(repoRoot);
+  } catch (err) {
+    errors.push(err);
+  }
+  try {
+    journey.cleanup();
+  } catch (err) {
+    errors.push(err);
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'afterAll cleanup failed');
+}
+
 describe("'Redact + rotation checklist' through the built remediate.js persists the standing posture", () => {
   let journey: SetupJourney;
   let transcriptPath: string;
@@ -77,8 +95,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
   }, 120_000);
 
   afterAll(() => {
-    removeTree(repoRoot);
-    journey.cleanup();
+    cleanupJourneyAndRepo(journey, repoRoot);
   });
 
   it('a redact route with no --posture fails loud — nothing persisted, no checklist, the key untouched', () => {
@@ -208,8 +225,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
   }, 120_000);
 
   afterAll(() => {
-    removeTree(repoRoot);
-    journey.cleanup();
+    cleanupJourneyAndRepo(journey, repoRoot);
   });
 
   it('redacts all three real keys, reports a transcript count distinct from the key count, and persists the posture on a fresh connection', () => {

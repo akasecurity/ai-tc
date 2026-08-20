@@ -33,7 +33,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import {
   assertShimResolves,
   nodeOnlyPathEntries,
@@ -106,8 +106,7 @@ class SetupJourney {
   }
 
   cleanup(): void {
-    removeTree(this.home);
-    removeTree(this.binDir);
+    removeTrees([this.home, this.binDir]);
   }
 
   // Whether the stub `codex` judge was actually executed. The stub touches a

@@ -22,7 +22,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 
 // test/native-host -> plugins/browser-extension
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -98,7 +98,7 @@ function frame(message: unknown): Buffer {
 }
 
 afterAll(() => {
-  for (const dir of temps) removeTree(dir);
+  removeTrees(temps);
 });
 
 describe('the built scan worker', () => {

@@ -1,5 +1,5 @@
 // The suite for `test/helpers/remove-tree.ts`, which sits at the repo root
-// because nine packages' teardowns share it. It lives HERE rather than beside
+// because every package's teardowns share it. It lives HERE rather than beside
 // that file because the repo root is not a workspace package: `turbo run test`
 // runs per-package scripts, so a root-level suite would be run by nothing, and
 // it would sit outside both the no-network setupFile every package wires and
@@ -7,8 +7,10 @@
 //
 // Four properties are load-bearing, and none of them is observable from a call
 // site — a caller sees a tree removed either way, so the retry, the platform
-// split and the code set could each be weakened with all 35 callers staying
-// green. That is what this file exists to stop.
+// split and the code set could each be weakened with every caller staying
+// green. That is what this file exists to stop. Counting callers here would
+// only go stale the way an earlier version of this comment did; the property
+// this suite pins does not depend on how many there are.
 //
 // `node:fs` is mocked wholesale: the helper imports `rmSync` alone, and the
 // point is to drive the branch on an error the real filesystem will not produce
@@ -18,7 +20,7 @@ import { rmSync } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
 
 vi.mock('node:fs', () => ({ rmSync: vi.fn() }));
 
@@ -114,4 +116,55 @@ describe('removeTree', () => {
       }).toThrow(code);
     },
   );
+});
+
+describe('removeTrees', () => {
+  it('removes every tree in the list', () => {
+    removeTrees(['/tmp/aka-a', '/tmp/aka-b', '/tmp/aka-c']);
+
+    expect(vi.mocked(rmSync)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(rmSync)).toHaveBeenNthCalledWith(1, '/tmp/aka-a', expect.anything());
+    expect(vi.mocked(rmSync)).toHaveBeenNthCalledWith(2, '/tmp/aka-b', expect.anything());
+    expect(vi.mocked(rmSync)).toHaveBeenNthCalledWith(3, '/tmp/aka-c', expect.anything());
+  });
+
+  it('attempts every tree even when an earlier one throws', () => {
+    stubPlatform('linux');
+    let calls = 0;
+    vi.mocked(rmSync).mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('rmSync failed: EBUSY'), { code: 'EBUSY' });
+    });
+
+    expect(() => {
+      removeTrees(['/tmp/aka-a', '/tmp/aka-b']);
+    }).toThrow(AggregateError);
+    // The second tree is reached despite the first throwing — a chained
+    // sequence must not abort at the first failure and leave the rest behind.
+    expect(calls).toBe(2);
+  });
+
+  it('aggregates every failure rather than reporting only the first', () => {
+    stubPlatform('linux');
+    rmSyncThrows('EBUSY');
+
+    let caught: unknown;
+    try {
+      removeTrees(['/tmp/aka-a', '/tmp/aka-b', '/tmp/aka-c']);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(3);
+  });
+
+  it('does not throw when every tree tolerates on win32', () => {
+    stubPlatform('win32');
+    rmSyncThrows('EPERM');
+
+    expect(() => {
+      removeTrees(['/tmp/aka-a', '/tmp/aka-b']);
+    }).not.toThrow();
+  });
 });

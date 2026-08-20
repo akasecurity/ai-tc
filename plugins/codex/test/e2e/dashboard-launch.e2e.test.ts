@@ -15,7 +15,7 @@
  * these arguments, from the directory the plan chose".
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
   assertCommandNotOnPath,
@@ -66,7 +67,7 @@ const tempDir = (): string => {
 };
 
 afterEach(() => {
-  while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
+  removeTrees(dirs.splice(0));
 });
 
 interface Spawned {

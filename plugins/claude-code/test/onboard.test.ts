@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,7 +98,7 @@ describe('onboard writes a valid store/settings state with the recommended postu
 
   afterEach(() => {
     db.close();
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('applyOnboarding writes a valid settings.json (session-only historical access)', () => {

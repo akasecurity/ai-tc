@@ -273,7 +273,33 @@
         // CONTRIBUTING.md the same way: required-checks.test.js parses its
         // "Checks that gate `main`" table and drives every row against the
         // workflows.
+        //
+        // And EVERY other tracked .md for the same reason one step wider:
+        // bench-harness.test.js reads prose across the whole tree, not two named
+        // documents, looking for a claim that a human is the only thing running
+        // the benchmarks. Naming only the two above would hash the two files
+        // least likely to be the one that drifts — the claim that motivated that
+        // guard was written in a .ts comment, and the next one is as likely to
+        // land in a README or a SKILL.md. A guard whose reach is the tree needs a
+        // cache key that is the tree.
         "$TURBO_ROOT$/CONTRIBUTING.md",
+        "$TURBO_ROOT$/**/*.md",
+        // The same reach for the other two kinds that scan reads. `#` opens a
+        // comment in YAML and `//` does in JSONC, so a claim can be written in
+        // either — and measured, neither was hashed: editing .github/dependabot.yml,
+        // cli/sea-config.json or a package tsconfig.json moved this task's hash not
+        // at all while cli/README.md moved it. Covering only .md would have left
+        // two thirds of the scan's own surface behind a cached green.
+        //
+        // Spelled as three globs rather than one brace list on purpose: the
+        // extension-completeness guard in effective-config.test.js requires every
+        // BRACE glob here to carry the full lintable-source alphabet, which is the
+        // right rule for a source glob and the wrong one for these. Keeping them
+        // brace-free states that they hash prose, not source, and leaves that
+        // guard at full strength.
+        "$TURBO_ROOT$/**/*.json",
+        "$TURBO_ROOT$/**/*.yml",
+        "$TURBO_ROOT$/**/*.yaml",
         "!$TURBO_ROOT$/**/node_modules/**",
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",

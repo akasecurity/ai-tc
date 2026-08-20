@@ -28,19 +28,134 @@ import { join, posix } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { cardinalFor, countWordIn, readConventions, sectionOf } from './helpers/claude-md.js';
+
 import {
   lintableTrackedFiles,
   readPackageManifest,
   REPO_ROOT,
+  rootScripts,
+  trackedFiles,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
 
 const WORKFLOW_REL = '.github/workflows/bench.yml';
+
+/** The conventions section this suite is named by, and the sentence that counts it. */
+const BENCH_HEADING = '### Benchmarks are a trend, never a gate';
+const PROPERTY_COUNT_SENTENCE = /\b(\w+) properties are load-bearing, and each is enforced by\b/g;
 const WORKFLOW = join(REPO_ROOT, WORKFLOW_REL);
 
 /** The directory a package keeps benchmarks in, and the basename vitest collects. */
 const BENCH_DIR = 'bench';
 const BENCH_FILE = /\.bench\.[cm]?[jt]sx?$/;
+
+/**
+ * How a file announces a comment, by extension — and so which files this scan
+ * can read at all.
+ *
+ * Split by KIND rather than run through one marker set, because the sets
+ * genuinely differ: `#` opens a comment in YAML and opens a private field in
+ * TypeScript. One combined pattern reads `#cache = new Map()` as prose and scans
+ * a line of code as if it were a claim.
+ *
+ * Every extension here must also be in this task's turbo `inputs` (see
+ * turbo.json), or editing one of these files moves no hash and turbo replays a
+ * cached green at the moment this guard exists to fire.
+ */
+const PROSE_KINDS = [
+  { ext: /\.md$/, kind: 'markdown' },
+  { ext: /\.ya?ml$/, kind: 'hash' },
+  { ext: /\.([cm]?[jt]sx?|json)$/, kind: 'slash' },
+];
+
+/** The comment kind for `file`, or undefined for a file this scan cannot read. */
+const proseKindOf = (file) => PROSE_KINDS.find((k) => k.ext.test(file))?.kind;
+
+/**
+ * Ways of saying that a human is the only thing that runs the benchmarks.
+ *
+ * Shapes rather than exact wording, so a reworded claim is still caught; a form
+ * that slips past belongs here. Deliberately NARROWER than the denials used
+ * against turbo.json's own comment: that list is already scoped to the one block
+ * above the `bench` task, so it can afford a phrase as generic as "does not
+ * exist". Tree-wide, that same phrase reads an unrelated sentence in
+ * shared-test-inputs.test.js — "a requirement that does not exist", in a block
+ * that happens to name a .bench.ts path — as a claim about the harness. A guard
+ * that reports a file with nothing wrong in it is spent faster than one that
+ * misses a case.
+ */
+const MANUAL_ONLY = [
+  /\brun by hand\b/i,
+  /\brun manually\b/i,
+  /\bno workflow\b/i,
+  /\bnothing (?:invokes|runs)\b/i,
+];
+
+/** Ways of acknowledging the unattended run, so a claim naming both is honest. */
+const ACKNOWLEDGES_SCHEDULE = [/\bnightly\b/i, /bench\.yml/];
+
+/**
+ * Whether `block` claims a human is the only thing that runs the benchmarks.
+ *
+ * One predicate, used by the tree scan and by the control case that proves the
+ * scan can still see anything. Two copies would be free to disagree, and the
+ * copy that quietly stopped matching is the tree one — which reports a clean
+ * tree either way.
+ */
+const deniesSchedule = (block) =>
+  MANUAL_ONLY.some((r) => r.test(block)) && !ACKNOWLEDGES_SCHEDULE.some((r) => r.test(block));
+
+/** A markdown line that begins a new item or section, and so a new block. */
+const MARKDOWN_BLOCK_START = /^ {0,3}(?:[-*+] |\d+[.)] |#{1,6} )/;
+
+/**
+ * Every contiguous run of prose in `text`, as `{ line, block }` — a comment run
+ * in code, a paragraph in markdown.
+ *
+ * The BLOCK rather than the line is the unit, because the two halves of the
+ * claim are routinely sentences apart: in the case that motivated this, the
+ * reference to `bench/project-files.bench.ts` and the manual-only phrase sat on
+ * different lines of one comment, and a line reader sees neither half as a claim
+ * about anything.
+ *
+ * Note that a specimen of the bad phrasing, quoted anywhere in the tree, is a
+ * real match rather than a false one — this guard cannot tell a quotation from a
+ * claim. Describe the shape rather than quoting it, or name the workflow in the
+ * same block, which is what every honest mention of it does anyway.
+ */
+function proseBlocks(text, kind) {
+  const isProse = (line) =>
+    kind === 'markdown'
+      ? line.trim() !== ''
+      : kind === 'hash'
+        ? /^\s*#/.test(line)
+        : /^\s*(\/\/|\/\*|\*)/.test(line);
+
+  const lines = text.split('\n');
+  const blocks = [];
+  let start = null;
+  const flush = (end) => {
+    if (start !== null) blocks.push({ line: start + 1, block: lines.slice(start, end).join('\n') });
+    start = null;
+  };
+  lines.forEach((line, i) => {
+    if (!isProse(line)) {
+      flush(i);
+      return;
+    }
+    // A markdown list runs without blank lines between its items, so a blank-line
+    // split alone makes a whole list ONE block — and one item saying `nightly`
+    // then exempts a stale claim in every other item. That is not hypothetical:
+    // this document's own six-property list is 27 lines and already names the
+    // nightly, so a manual-only claim added to any bullet in it went unreported.
+    // Headings bound a block for the same reason.
+    if (kind === 'markdown' && start !== null && MARKDOWN_BLOCK_START.test(line)) flush(i);
+    start ??= i;
+  });
+  flush(lines.length);
+  return blocks;
+}
 
 /**
  * Every workspace package, with what it holds and what it declares.
@@ -71,6 +186,13 @@ function benchPackages() {
 }
 
 const PACKAGES = benchPackages();
+
+/**
+ * One `git ls-files` walk for this file. `benchPackages()` already asked for it
+ * through `lintableTrackedFiles()`, and a second call spawns git again for an
+ * answer that cannot have changed mid-run.
+ */
+const TRACKED = trackedFiles();
 
 describe('the benchmark harness', () => {
   it('is wired somewhere at all', () => {
@@ -176,7 +298,11 @@ describe('the benchmark harness', () => {
     if (nightly) {
       // Denials by shape rather than by exact wording, so a reworded one is still
       // caught. A form that slips past belongs in this list.
-      const denials = [/\bno workflow\b/i, /\bnothing invokes\b/i, /\bdoes not exist\b/i];
+      // MANUAL_ONLY plus the one phrase only THIS case can afford: scoped to the
+      // single block above the `bench` task, "does not exist" is unambiguous,
+      // while tree-wide it reads unrelated prose. Two independent lists would be
+      // free to drift, so the shared shapes are shared.
+      const denials = [...MANUAL_ONLY, /\bdoes not exist\b/i];
       expect(
         denials.filter((d) => d.test(comment)).map(String),
         `${WORKFLOW_REL} runs this task on a schedule, but the comment above \`bench\` still ` +
@@ -188,6 +314,117 @@ describe('the benchmark harness', () => {
         `the comment above \`bench\` claims a nightly run, but ${WORKFLOW_REL} schedules none`,
       ).not.toMatch(/nightly/i);
     }
+  });
+
+  it('keeps every claim about how the benchmarks run honest, not only turbo.json’s', () => {
+    // The case above guards ONE sentence in ONE file. The same claim is made in
+    // prose all over the tree — a perf suite explaining why its durations live in
+    // bench/ rather than in an assertion, a bench file explaining what it leaves
+    // to a human — and each of those is a statement about a SIBLING file with
+    // nothing between them.
+    //
+    // That is not hypothetical. The header of
+    // packages/plugin-sdk/test/performance/project-files-walk.test.ts said the
+    // durations were "advisory and run by hand", written on a branch four hours
+    // AFTER bench.yml landed on main, and it stayed green through the merge and
+    // every run since — because no assertion anywhere read that sentence, and a
+    // stale justification reads exactly like a live one.
+    //
+    // Pinning the two known sites by name would repeat that mistake one file
+    // wider: the third site would be written tomorrow, guarded by nothing, and
+    // the list would read as exhaustive. So the sites are DERIVED — any prose
+    // block in the tracked tree that talks about benchmarks and claims a human is
+    // the only thing that runs them.
+    //
+    // This suite already cannot run without bench.yml (the advisory describe
+    // reads it at module scope), so the schedule is a precondition here rather
+    // than a branch — asserted, so a workflow that loses its schedule fails
+    // naming that rather than quietly turning the filter below into a tautology.
+    expect(
+      readFileSync(WORKFLOW, 'utf8'),
+      `${WORKFLOW_REL} schedules no unattended run, so nothing below means anything`,
+    ).toMatch(/^\s+schedule:/m);
+
+    const benchProse = [];
+    for (const file of TRACKED) {
+      const kind = proseKindOf(file);
+      if (kind === undefined) continue;
+      const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+      for (const { line, block } of proseBlocks(text, kind)) {
+        if (/\bbench/i.test(block)) benchProse.push({ file, line, block });
+      }
+    }
+
+    // The positive control. The assertion below is an absence check over this
+    // list, so an extractor that stopped matching — a comment syntax it does not
+    // know, a `trackedFiles()` that came back empty — would satisfy it perfectly
+    // while having read nothing at all. The floor is far under the ~90 blocks
+    // across ~30 files the tree carries today, because this is a canary for a
+    // scan that broke, not a second inventory to keep up to date.
+    expect(
+      benchProse.length,
+      'found no prose about the benchmarks anywhere in the tracked tree',
+    ).toBeGreaterThan(20);
+
+    const stale = benchProse
+      .filter(({ block }) => deniesSchedule(block))
+      .map(({ file, line }) => `${file}:${line}`);
+
+    expect(
+      stale,
+      `${WORKFLOW_REL} runs the benchmarks on a schedule, but these blocks still say a human is ` +
+        `the only thing that does:\n  ${stale.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('can still recognise the claim it is looking for', () => {
+    // The case above is an absence assertion over a filter, so EMPTYING
+    // `MANUAL_ONLY` — or narrowing a pattern until it matches nothing — satisfies
+    // it perfectly, over a tree it has read in full. The positive control there
+    // counts blocks and so cannot see this: the scan keeps working, the predicate
+    // stops. This drives the predicate itself, against the wording that actually
+    // went stale and against the wording that replaced it.
+    expect(
+      deniesSchedule(
+        'The durations live in `bench/x.bench.ts`, which is advisory and run by hand.',
+      ),
+      '`MANUAL_ONLY` no longer matches the phrasing that motivated this guard',
+    ).toBe(true);
+    expect(deniesSchedule('These benchmarks are run manually, and gate nothing.')).toBe(true);
+
+    // And the other half: acknowledging the schedule is not an offence, or the
+    // only way to a green tree would be to say nothing about the benchmarks.
+    expect(
+      deniesSchedule(
+        'The durations live in `bench/x.bench.ts` — run by the nightly workflow and by hand.',
+      ),
+      'a block that names the unattended run is honest and must not be reported',
+    ).toBe(false);
+    expect(deniesSchedule('Run by hand, and by `.github/workflows/bench.yml` overnight.')).toBe(
+      false,
+    );
+
+    // Prose about benchmarks that makes no claim about how they run is not the
+    // subject at all.
+    expect(deniesSchedule('This bench file measures the SessionStart walk.')).toBe(false);
+  });
+
+  it('states a property count that follows from the list rather than from memory', () => {
+    // CLAUDE.md claims a NUMBER of load-bearing properties and names this file as
+    // what enforces each. Nothing read that sentence, so the two cases added
+    // alongside it took the count from four to six by hand — and a seventh, or a
+    // deletion, would leave it stale with every test green. §1 of that document
+    // records this exact drift about its own hook shapes: "it claimed four shapes
+    // while six were reaching stdout".
+    //
+    // The count is derived from the bullets the sentence introduces, so the list
+    // is the source and the word merely reports it.
+    const section = sectionOf(readConventions(), BENCH_HEADING);
+    const bullets = section.slice(section.search(PROPERTY_COUNT_SENTENCE)).match(/^- \*\*/gm);
+    expect(bullets, `no property list under ${BENCH_HEADING}`).not.toBeNull();
+    expect(
+      countWordIn(section, PROPERTY_COUNT_SENTENCE, 'how many properties are load-bearing'),
+    ).toBe(cardinalFor(bullets.length));
   });
 
   it('lints and typechecks the bench directory like any other source directory', () => {
@@ -249,6 +486,34 @@ describe('the benchmark workflow stays advisory', () => {
     expect(triggers[1]).toMatch(/^\s+schedule:/m);
     expect(triggers[1]).toMatch(/^\s+- cron:/m);
     expect(triggers[1]).toMatch(/^\s+workflow_dispatch:/m);
+  });
+
+  it('actually runs the benchmarks', () => {
+    // The upload is asserted below, and an upload step is not a measurement. A
+    // workflow that schedules, checks out, installs and uploads — but never
+    // invokes the task — satisfies every other case in this file, finds no
+    // files, and WARNS rather than failing, because `if-no-files-found: warn` is
+    // part of what keeps this job advisory. The Actions UI shows a green nightly
+    // run either way, and the trend simply stops gaining points.
+    // `\b` rather than an end anchor: `pnpm bench --filter …` is a legitimate
+    // narrowing and must not redden the build, while `echo skipped` still fails.
+    const step = /^(\s+)run:\s*pnpm(?: run)? bench\b.*$/m.exec(workflow);
+    expect(step, `${WORKFLOW_REL} never invokes the bench task`).not.toBeNull();
+
+    // A matched step is not a step that RUNS. `if:` on it satisfies the match
+    // above while skipping the task on every trigger, which is the same silent
+    // green arrived at one line lower down.
+    const stepBlock = workflow.slice(workflow.lastIndexOf('- name:', step.index), step.index);
+    expect(stepBlock, `the \`pnpm bench\` step is gated by an \`if:\` condition`).not.toMatch(
+      /^\s+if:/m,
+    );
+
+    // …and that the command is real. A workflow calling a script the root
+    // manifest does not declare fails at run time — nightly, unattended, where
+    // the failure is a red square nobody is subscribed to.
+    expect(rootScripts()?.bench, 'the root manifest declares no `bench` script').toMatch(
+      /turbo run bench/,
+    );
   });
 
   it('uploads its results', () => {

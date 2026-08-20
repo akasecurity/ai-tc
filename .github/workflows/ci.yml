@@ -309,6 +309,73 @@ jobs:
         # the same reason --force does.
         run: tools/ci/no-network-test.sh pnpm exec turbo run test --force --concurrency=2
 
+  # Packaged-artifact leg: the job above covers every process the SUITE starts,
+  # and the suite never installs the published tarball. That is the gap this
+  # closes. All three gates behind the local-only claim observe either source
+  # text or an executed call — lint reads workspace source, which a build output
+  # is not; the vitest guard patches transports inside a worker, which never
+  # loads the tarball; the namespace job reaches only what the suite runs. An
+  # artifact nothing executes is outside all of them, and the bundling step
+  # (scripts/bundle-web-ui.mjs, and the tsup bundle beside it) is exactly where a
+  # dependency can arrive that the workspace source does not carry.
+  #
+  # PER-PR RATHER THAN AT RELEASE, deliberately. The release workflow already
+  # installs and boots this tarball, so the cheap version of this was to wrap
+  # that step — but a privacy gate that fires after the artifact is published is
+  # weaker than one that fires before merge, and a release-only check reports on
+  # a tree whose last chance to change was days earlier. Running here means every
+  # commit that reaches main has had its packaged form exercised under the block.
+  # The release workflow's own boot-verify is left alone rather than rerouted
+  # through this script: it gates a publish, and a namespace and an `npm ci` are
+  # two new ways for a release to fail at the worst moment.
+  #
+  # DELIBERATELY NO TURBO CACHE, for the reason the no-network job gives one step
+  # up: a restore key falls back to an earlier commit, and the artifact this job
+  # exists to exercise has to be built from THIS commit's source or the run
+  # reports on something else.
+  packaged-artifact:
+    name: Packaged artifact · Egress blocked
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The last step with a route off the host, and the only one that needs one.
+      # `pack` runs the CLI's own prepack, so the tarball is built the same way a
+      # release builds it. The install that follows resolves the PUBLISHED
+      # dependency ranges — the graph a user gets, which the workspace lockfile
+      # does not describe — and fills npm's cache with it, then drops
+      # node_modules again: the install under test happens inside the namespace,
+      # against the package.json and package-lock.json left here.
+      - name: Pack the CLI and resolve its published dependency graph
+        run: |
+          set -eu
+          pnpm --filter @akasecurity/cli pack --pack-destination "$RUNNER_TEMP"
+          tgz=$(ls "$RUNNER_TEMP"/akasecurity-cli-*.tgz)
+          work="$RUNNER_TEMP/packaged-artifact"
+          rm -rf "$work"
+          mkdir -p "$work"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "$tgz" --no-audit --no-fund >/dev/null
+          rm -rf node_modules
+          echo "AKA_PACKAGED_WORK=$work" >> "$GITHUB_ENV"
+
+      - name: Install and exercise the packaged CLI with egress blocked
+        run: tools/ci/no-network-test.sh tools/ci/packaged-cli-egress.sh "$AKA_PACKAGED_WORK"
+
   # macOS leg: the primary platform for a Claude Code plugin's users, and until
   # this job existed the only tier-1 platform whose tests never ran. macOS did
   # appear in build-binaries.yml and release-binaries.yml, but those compile the

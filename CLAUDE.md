@@ -238,14 +238,15 @@ transitive graph) inside the archive, so `release-binaries.yml` and `build-binar
 both reach the registry — and `pnpm package:sea` does not run offline. Both are repository
 tooling, not product paths; nothing a user installs performs either.
 
-**Three gates enforce this, and they cover different things.** Losing track of which is
+**Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                              | Cannot see                                                                                                                                                                                                                  |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                          | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                            |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                  | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above)                                                                                        |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                   |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                  |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -257,13 +258,38 @@ egress really is blocked (`tools/ci/egress-probe.mjs` is that proof — it conne
 own loopback listener before trusting a failed connect, so a probe that cannot reach
 anything is never mistaken for an absent network).
 
-**What none of the three sees** is code no test runs. All of them observe either source
-text or an executed call, so an untested path can still reach out — which is why the
-gate table's third row says "a path the suite never executes" rather than "nothing". The
-packaged artifact is the other uncovered surface: nothing here installs the published
-tarball and exercises it under a block. Note also that the three gates scope to the
-**product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
-runs in its own workflow rather than inside the `No-network` job's namespace.
+**What none of the four sees** is code nothing runs. All of them observe either source
+text or an executed call, so an unexercised path can still reach out — which is why the
+gate table's third row says "a path the suite never executes" rather than "nothing", and
+its fourth "a packaged path those three commands never reach".
+
+The fourth gate is the newest and the narrowest, and it is worth being precise about what
+it added. The first three all stop at the workspace: lint reads source, the vitest guard
+patches transports inside a worker, and the namespace job covers whatever the SUITE
+starts. A published tarball is none of those — it is a build output, nothing loads it into
+a worker, and no test installs it — so the bundling step, which is exactly where a
+dependency arrives that the workspace source does not carry, was outside every gate.
+`tools/ci/packaged-cli-egress.sh` closes that by installing the packed tarball inside the
+namespace and exercising it there.
+
+Be precise about what that establishes, because it is weaker than the middle gate and in a
+way the row above has to spell out. The runtime guard **records** a refusal and fails the
+run even when a fail-open `catch` swallows it. A namespace records nothing — it just makes
+the connect fail — and this product fails open everywhere, so a packaged path that reaches
+out and shrugs stays green here. What this leg proves is that the published artifact does
+its work with no route off the host, not that it asked for none. It also covers the **CLI**
+tarball only; the three plugin tarballs and the browser extension are still packed by
+nothing that runs under a block.
+
+That leg carries its own control, and it is a different one from the wrapper's. The
+wrapper proves the block is real before anything runs. What the script proves is that the
+run was not vacuous in the other direction: a scan that examined nothing exits 0 and
+reports no findings, which is byte-for-byte a clean run, so it seeds a file from a
+detection rule's own fixture and fails unless that rule fires.
+
+Note also that the four gates scope to the **product** and to `ci.yml`: `audit.yml`
+reaches the registry on purpose, as above, and runs in its own workflow rather than inside
+either job's namespace.
 
 **Checking the first gate has one trap, and it is in the package that defines the ban.**
 Every package's `eslint.config.mjs` imports `@akasecurity/eslint-config`, so ESLint
@@ -322,7 +348,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 
 Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
-What remains uncovered is the packaged artifact: nothing installs the published CLI and drives its dashboard's folder scan under a hostile pack, so the chain above is proven link by link rather than end to end.
+What remains uncovered here is the packaged artifact under a HOSTILE PACK. §4's packaged-artifact leg installs the published CLI and boots its bundled dashboard, but it drives neither a folder scan nor a pulled rule, so the chain above is still proven link by link rather than end to end.
 
 ### 6. Every writer of `settings.json` takes its lock
 

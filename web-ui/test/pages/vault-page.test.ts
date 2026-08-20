@@ -199,12 +199,20 @@ const OLDEST_OCCURRENCES = 5;
 // seeded NEWER than every reveal (see `seedFixture`), so one leads the trail the
 // moment they stop being hidden. Seeded over the reveals' own range instead they
 // land ON the fifty-row cutoff, tied on `at` with a reveal and split from it by a
-// `randomUUID()` tie-break. Measured that way, with the route's read widened so
-// the assertion SHOULD fire: at seven both tied rows still fall inside the page,
-// at six it fired 2 runs in 3, and at three and at one it fired in none of them
-// — below six the guard does not weaken, it stops working altogether. Green,
-// guarding nothing, with no red run to say so. The `two deref reads disagree`
-// control below is what fails instead if this stops straddling.
+// `randomUUID()` tie-break.
+//
+// What that costs is measured against the mutation the row-list assertion is the
+// ONLY guard against: dropping `listDerefs`' row filter while leaving its
+// `hiddenBatched` count alone. Those are independent statements, so the count
+// still reads BATCHED_DEREFS and nothing but `not.toContain` can notice. Widening
+// the route's read is the WRONG probe for this and proves nothing here, because
+// `includeBatched: true` short-circuits that same count to 0 — so `hiddenBatched`
+// fails first however the fixture is seeded. Filter dropped, three runs each:
+// seeded in range at three, the row-list case PASSED 3/3, inert against a filter
+// deleted outright rather than merely weakened; seeded above the reveals it fails
+// 3/3 at seven and still 3/3 at one. Green and guarding nothing is the state this
+// keeps out, and no red run announces it. The `two deref reads disagree` control
+// below is what fails instead if this stops straddling.
 const BATCHED_DEREFS = 7;
 // BOTH batched reasons, alternating, so the trail carries each one. Asserting a
 // page excludes `view-render` proves nothing while every batched row seeded is a

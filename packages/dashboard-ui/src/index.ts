@@ -162,6 +162,12 @@ export {
 export { PolicyPicker } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
 export { UpdateModal } from './detections/UpdateModal.tsx';
+export {
+  showsVaultDrift,
+  VAULT_DRIFT_BODY,
+  VAULT_DRIFT_TITLE,
+  type VaultDriftState,
+} from './detections/vault-drift.ts';
 
 // Policies views — props-driven built-in enforcement-policy catalog (stat strip +
 // master/detail). Fed by client hooks or @akasecurity/persistence Server

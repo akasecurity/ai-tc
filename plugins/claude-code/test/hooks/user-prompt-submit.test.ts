@@ -189,7 +189,18 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
     }, 'aka-ups-redact-off-');
   });
 
-  it('redact policy, valid vault consent → block whose reason carries a pointerized rewrite', () => {
+  it('redact policy, valid vault consent → block with NO pointerized rewrite', () => {
+    // Changed by the per-detection custody split, and the change is the point.
+    // A REDACT decision means the archetype already stated the value's fate, and
+    // Redact's catalog copy says it is destroyed and cannot be recovered — so
+    // the resubmit rewrite may only keep findings whose detection chose Redact &
+    // Vault. This machine is configured by CATEGORY policy, an axis that cannot
+    // express that archetype at all, so nothing is kept and the user gets the
+    // removal-based guidance instead.
+    //
+    // Consent alone no longer buys a pointerized rewrite on the redact path.
+    // That is a real loss of an affordance, taken deliberately: the alternative
+    // is vaulting a value whose own policy copy promises it was destroyed.
     withTempHome((home) => {
       seedSecretPolicy(home, 'redact');
       grantVaultConsent(home);
@@ -197,10 +208,11 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(run.status).toBe(0);
       const payload = JSON.parse(run.stdout) as { decision?: string; reason?: string };
       expect(payload.decision).toBe('block');
-      expect(payload.reason).toContain('never reached the model');
-      expect(payload.reason).toContain('[[aka:');
-      expect(payload.reason).toContain('paste and resubmit');
-      // The raw value appears nowhere in the pointerized output.
+      // The same removal-based guidance the no-consent sibling above gets: with
+      // nothing kept, there is no pointerized prompt to hand back.
+      expect(payload.reason).toContain('Remove the flagged content and resubmit');
+      expect(payload.reason).not.toContain('[[aka:');
+      // The raw value still appears nowhere.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     }, 'aka-ups-redact-on-');
   });

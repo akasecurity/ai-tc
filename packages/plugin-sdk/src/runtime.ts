@@ -131,6 +131,10 @@ export function createPluginRuntime(
   // `.find` order (explicit DB ruleId policies precede pack-derived ones).
   const ruleActionIndex = new Map<string, ActionTaken>();
   const categoryActionIndex = new Map<string, ActionTaken>();
+  // Rule ids whose pack chose Redact & Vault. Reassigned wholesale on each
+  // bundle load rather than mutated, so a re-initialised runtime cannot inherit
+  // a stale membership from the previous bundle.
+  let reversibleRuleIndex: ReadonlySet<string> = new Set<string>();
 
   // Pull the policy bundle once per runtime: cache its policies for action
   // resolution and compose the effective ruleset. When the bundle marks its
@@ -153,6 +157,10 @@ export function createPluginRuntime(
         categoryActionIndex.set(p.target.category, p.action);
       }
     }
+    // The reversibility axis rides beside the policies rather than on them (see
+    // PolicyBundle.reversibleRuleIds). An absent field means an older producer,
+    // and the empty set it yields is the pre-existing one-way behaviour.
+    reversibleRuleIndex = new Set(bundle.reversibleRuleIds ?? []);
     // The compiled-in bundled packs are already proven safe by the CI
     // adversarial battery on every commit, so they bypass the runtime timing
     // gate entirely — whether they arrive via getLoadedRules() or because the
@@ -314,11 +322,22 @@ export function createPluginRuntime(
     if (worst === 'block') return { action: 'block', text: null, findings };
     if (worst === 'redact') {
       const redactFindings = findings.filter((f) => actionFor(f) === 'redact');
+      // The subset whose own detection chose Redact & Vault. A per-finding
+      // split, not a per-capture one: a capture mixing a vaulted secret with a
+      // one-way-redacted PII match must vault only the first, which is the whole
+      // point of moving reversibility onto the per-detection axis.
+      //
+      // Filtered from redactFindings rather than from `findings`, so a rule
+      // assigned Redact & Vault whose finding resolved to some OTHER action
+      // (an exception downgraded it to 'allow', a category policy floored it)
+      // cannot be vaulted — only a value actually being stripped is ever kept.
+      const reversibleFindings = redactFindings.filter((f) => reversibleRuleIndex.has(f.ruleId));
       return {
         action: 'redact',
         text: redact(text, redactFindings),
         findings,
         enforcedFindings: redactFindings,
+        reversibleFindings,
       };
     }
     return { action: worst, text, findings };

@@ -1,3 +1,4 @@
+import { BUILTIN_POLICIES, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -21,6 +22,34 @@ describe('policyMeta', () => {
   it('resolves each built-in policy id to its label', () => {
     expect(policyMeta('monitor').label).toBe('Monitor');
     expect(policyMeta('block').label).toBe('Block');
+    expect(policyMeta('vault').label).toBe('Redact & Vault');
+  });
+
+  it('carries real metadata for EVERY built-in — none falls through to the fallback', () => {
+    // The fallback is indistinguishable from a styling bug: an unlabelled gray
+    // pill with an empty description card. Derived from the canonical id set so
+    // an added archetype fails here rather than rendering as one.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      const m = policyMeta(id);
+      expect(m.label, `${id} has no label`).not.toBe(id);
+      expect(m.desc, `${id} has no description`).not.toBe('');
+      expect(m.icon, `${id} uses the neutral fallback icon`).not.toBe(policyMeta('mystery').icon);
+    }
+  });
+
+  it('gives each built-in a description matching the schema catalog', () => {
+    // Two copies of this prose exist — the schema catalog (which the CLI and the
+    // plugins render) and this map (which the dashboard renders). Drift between
+    // them means the same policy is described two different ways depending on
+    // where the user reads it.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(policyMeta(id).desc, `${id} description drifted from the schema catalog`).toBe(
+        BUILTIN_POLICIES[id].description,
+      );
+      expect(policyMeta(id).label, `${id} label drifted from the schema catalog`).toBe(
+        BUILTIN_POLICIES[id].name,
+      );
+    }
   });
 
   it('falls back to a neutral entry for an unknown id (keeping the id as label)', () => {

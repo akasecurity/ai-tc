@@ -41,6 +41,11 @@ export type UserPromptSubmitOutput =
 export type PromptTokenizer = (
   prompt: string,
   findings: CaptureResult['findings'],
+  // Which of those the archetype said to KEEP. Without it the glue defaults to
+  // keeping ALL of them, so a detection assigned plain Redact — whose catalog
+  // copy promises the value is destroyed and unrecoverable — would still get a
+  // recoverable copy the moment its value appeared in a prompt.
+  reversible: ReadonlySet<CaptureResult['findings'][number]>,
 ) => Promise<{ text: string; pointers: readonly string[] }>;
 
 export interface UserPromptSubmitDeps {
@@ -69,8 +74,27 @@ export async function decideUserPromptSubmit(
     // Removal-based guidance is the floor. With consent it upgrades to the
     // resubmit message carrying a pointerized rewrite of the user's own
     // prompt — same block, strictly more the user can do about it.
+    // Custody on this path depends on WHY the prompt is being refused, and the
+    // two cases are genuinely different promises.
+    //
+    // A REDACT decision means each finding's archetype already stated what
+    // happens to the value: Redact's catalog copy says it is destroyed and
+    // cannot be recovered, so vaulting it here would make that copy false.
+    // Only the reversible subset may be kept.
+    //
+    // A BLOCK makes no claim about the value's fate — it refuses the request
+    // and says nothing about custody. The rewrite offered here is a
+    // user-initiated escape hatch they opt into by pasting, and what authorizes
+    // storing it is the vault CONSENT, exactly as before this archetype existed.
+    // Narrowing it to the reversible subset would remove the affordance from
+    // every machine configured by category policy, which cannot express the
+    // reversible archetype at all — a loss with no promise behind it.
+    const custody =
+      result.action === 'redact'
+        ? new Set(result.reversibleFindings ?? [])
+        : new Set(result.findings);
     const rewrite = deps.tokenizePrompt
-      ? await pointerizedRewrite(prompt, result.findings, deps.tokenizePrompt)
+      ? await pointerizedRewrite(prompt, result.findings, custody, deps.tokenizePrompt)
       : null;
     if (rewrite !== null) {
       // Only the pointerized text ever reaches the clipboard — never the raw
@@ -128,10 +152,11 @@ function writeClipboardSafely(
 export async function pointerizedRewrite(
   prompt: string,
   findings: CaptureResult['findings'],
+  reversible: ReadonlySet<CaptureResult['findings'][number]>,
   tokenize: PromptTokenizer,
 ): Promise<string | null> {
   try {
-    const tokenized = await tokenize(prompt, findings);
+    const tokenized = await tokenize(prompt, findings, reversible);
     if (tokenized.pointers.length === 0) return null;
     for (const finding of findings) {
       if (finding.rawMatch !== '' && tokenized.text.includes(finding.rawMatch)) return null;

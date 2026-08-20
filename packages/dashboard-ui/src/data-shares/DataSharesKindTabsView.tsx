@@ -8,24 +8,30 @@
 // No margin of its own: the app places this beside its search box in one
 // row, so the row (not this list) owns the spacing below it.
 import type { ShareDestinationGroup } from '@akasecurity/schema';
-import { TabsList, TabsTrigger } from '@akasecurity/ui-kit';
+import { Badge, TabsList, TabsTrigger } from '@akasecurity/ui-kit';
 
 import { AlertIcon } from '../shared/icons.tsx';
 import { KIND_LABEL } from './meta.ts';
 
 function KindTabLabel({ group }: { group: ShareDestinationGroup }) {
+  const flagged = group.kind === 'ip' || group.kind === 'external';
   return (
     <>
       {KIND_LABEL[group.kind]}
-      <span className="rounded-full border border-border bg-surface-2 px-1.5 text-label py-0.5 font-semibold text-text-2">
+      <Badge variant="outline" className="px-1.5 text-label">
         {group.total}
-      </span>
-      {(group.kind === 'ip' || group.kind === 'external') && (
-        <AlertIcon
-          aria-hidden
-          focusable={false}
-          className={group.kind === 'ip' ? 'text-sev-critical-ink' : 'text-sev-high-ink'}
-        />
+      </Badge>
+      {flagged && (
+        <>
+          <AlertIcon
+            aria-hidden
+            focusable={false}
+            className={group.kind === 'ip' ? 'text-sev-critical-ink' : 'text-sev-high-ink'}
+          />
+          {/* The icon alone reaches nobody using a screen reader, and the
+              visible "review recommended" text this replaced is gone. */}
+          <span className="sr-only">review recommended</span>
+        </>
       )}
     </>
   );

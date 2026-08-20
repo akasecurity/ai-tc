@@ -2,7 +2,7 @@
 import type { ReviewDestination } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 
-import { AlertIcon } from '../shared/icons.tsx';
+import { AlertIcon, CheckCircleIcon } from '../shared/icons.tsx';
 import { ClassTag, DestMark } from './atoms.tsx';
 import { bindId } from './bindings.ts';
 import { flagReason } from './meta.ts';
@@ -17,6 +17,17 @@ export interface NeedsReviewListViewProps {
 }
 
 export function NeedsReviewListView({ items, onReview }: NeedsReviewListViewProps) {
+  // The sheet outlives its own list: it stays open while the user works
+  // through the flagged destinations, and the last one can clear while it is
+  // still showing. Say so rather than rendering an empty box.
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-12 text-center text-text-3">
+        <CheckCircleIcon aria-hidden focusable={false} className="size-6 text-ok-ink" />
+        <div className="text-sm">Nothing needs review</div>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-2">
       {items.map((d) => (

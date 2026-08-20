@@ -1,5 +1,4 @@
 import type { DestinationKind, EgressDecision } from '@akasecurity/schema';
-import type { ChangeEvent } from 'react';
 
 /**
  * Handler factories for the Data Shares client shell. Framework-free: each
@@ -17,6 +16,29 @@ export function makeOpenDestHandler(push: PushFn, q: string): (id: string) => vo
   };
 }
 
+/**
+ * Opens a destination reached from the needs-review sheet, switching the table
+ * to the tab that destination lives under. Without the switch the table behind
+ * the sheet keeps showing whichever kind was last selected, so closing the
+ * sheet leaves the just-reviewed destination nowhere on screen.
+ *
+ * `kindOf` returns undefined when the destination is in no rendered group (the
+ * needs-review list is its own server read, so it can name a destination the
+ * grouped register's current search filtered out); the tab is left alone then.
+ */
+export function makeOpenReviewedDestHandler(
+  push: PushFn,
+  q: string,
+  kindOf: (id: string) => DestinationKind | undefined,
+  setActiveKind: (kind: DestinationKind) => void,
+): (id: string) => void {
+  return (id) => {
+    const kind = kindOf(id);
+    if (kind !== undefined) setActiveKind(kind);
+    push({ q, dest: id });
+  };
+}
+
 export function makeCloseDrawerHandler(
   push: PushFn,
   q: string,
@@ -25,14 +47,6 @@ export function makeCloseDrawerHandler(
   return () => {
     setDecisionError(null);
     push({ q });
-  };
-}
-
-export function makeSearchChangeHandler(
-  setQuery: (value: string) => void,
-): (e: ChangeEvent<HTMLInputElement>) => void {
-  return (e) => {
-    setQuery(e.target.value);
   };
 }
 
@@ -84,11 +98,18 @@ export function makeOnBackHandler(push: PushFn, q: string, destinationId: string
 }
 
 /**
- * The needs-review/detail Sheet's close policy: closing while a detail is
- * open just clears `dest`, which falls back to the review list if that sheet
- * is still logically open (reviewOpen) — see DataSharesClient's own comment
- * on the merged Sheet for why. Closing while the list itself is showing
- * closes the whole sheet.
+ * The needs-review/detail Sheet's close policy.
+ *
+ * `closeDrawer` runs on every dismissal, not just when a detail is showing. It
+ * clears `dest` from the URL, which is a no-op when none is set — but when a
+ * "Review" navigation is still in flight it supersedes that push, so the
+ * arriving `dest` cannot re-open the sheet on the destination the user just
+ * dismissed. Branching on `drawerOpen` alone cannot cover that case: it is
+ * captured at render time and still reads false while the push is in flight.
+ *
+ * `drawerOpen` still decides whether the review LIST survives the dismissal —
+ * closing a detail reached from the list falls back to it ("back to list"),
+ * while dismissing the list itself closes the sheet outright.
  */
 export function makeReviewSheetOpenChangeHandler(
   drawerOpen: boolean,
@@ -97,11 +118,8 @@ export function makeReviewSheetOpenChangeHandler(
 ): (open: boolean) => void {
   return (open) => {
     if (open) return;
-    if (drawerOpen) {
-      closeDrawer();
-    } else {
-      setReviewOpen(false);
-    }
+    if (!drawerOpen) setReviewOpen(false);
+    closeDrawer();
   };
 }
 

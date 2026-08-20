@@ -41,4 +41,15 @@ describe('DataSharesKindTabsView', () => {
     // One AlertIcon svg per flagged tab.
     expect(withFlag.split('<svg').length - 1).toBe(2);
   });
+
+  it('gives the warning icon accessible text, since the icon itself is aria-hidden', () => {
+    // The icon replaced a visible "review recommended" label; without this a
+    // screen reader hears only the tab name and count.
+    const withFlag = renderTabs([group({ kind: 'ip' })]);
+    expect(withFlag).toContain('review recommended');
+    expect(withFlag).toContain('sr-only');
+
+    const withoutFlag = renderTabs([group({ kind: 'provider' })]);
+    expect(withoutFlag).not.toContain('review recommended');
+  });
 });

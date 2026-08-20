@@ -40,9 +40,9 @@ import {
   makeOnPickHandler,
   makeOpenDestHandler,
   makeOpenEndpointHandler,
+  makeOpenReviewedDestHandler,
   makeReviewOpenHandler,
   makeReviewSheetOpenChangeHandler,
-  makeSearchChangeHandler,
   makeSetDecisionHandler,
   makeTabsValueChangeHandler,
 } from './interactions.ts';
@@ -120,25 +120,14 @@ export function DataSharesClient({
 
   const openDest = makeOpenDestHandler(push, q);
   const closeDrawer = makeCloseDrawerHandler(push, q, setDecisionError);
+  const openReviewedDest = makeOpenReviewedDestHandler(
+    push,
+    q,
+    (id) => groups.find((g) => g.items.some((d) => d.id === id))?.kind,
+    setActiveKind,
+  );
 
   const ql = q.trim();
-
-  // Shrinks before it wraps: flex-1 lets it grow to fill the row up to
-  // max-w-80 (the old fixed sm:w-80), and shrinks down to min-w-48 as the
-  // kind tabs beside it (which don't shrink — see DataSharesKindTabsView)
-  // claim more of the row.
-  const searchBox = (
-    <div className="flex h-9 min-w-48 max-w-80 flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3">
-      <SearchIcon aria-hidden focusable={false} className="size-4 shrink-0 text-text-3" />
-      <input
-        value={query}
-        onChange={makeSearchChangeHandler(setQuery)}
-        placeholder="Search destinations, URLs & call sites…"
-        aria-label="Search data shares"
-        className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
-      />
-    </div>
-  );
 
   return (
     <>
@@ -153,22 +142,45 @@ export function DataSharesClient({
         <div className="shrink-0">
           <NeedsReviewStripView items={review} onOpen={makeReviewOpenHandler(setReviewOpen)} />
         </div>
-        {activeGroup ? (
-          // The kind-tab strip has to be a sibling of the Card, outside its
-          // scroll container, so it stays put while the table scrolls under
-          // it — which is why the Tabs root is owned here rather than inside
-          // DataSharesTableView: TabsList and TabsContent only need a common
-          // ui-kit Tabs ancestor, not a common parent element.
-          <Tabs
-            value={activeGroup.kind}
-            onValueChange={makeTabsValueChangeHandler(setActiveKind)}
-            className="flex min-h-0 flex-1 flex-col"
-          >
-            <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">
-              <DataSharesKindTabsView groups={groups} />
-              {searchBox}
+        {/*
+          One Tabs root spanning both the populated and empty cases, so the
+          search input keeps the same position in the element tree either way.
+          Rooting the two cases at different element types (Tabs vs a plain
+          div) made React remount the whole subtree whenever a search crossed
+          the has-results boundary, destroying the <input> and dropping
+          keyboard focus mid-type.
+
+          The tab strip is a sibling of the Card, outside its scroll
+          container, so it stays put while the table scrolls under it — which
+          is why the Tabs root is owned here rather than inside
+          DataSharesTableView: TabsList and TabsContent only need a common
+          ui-kit Tabs ancestor, not a common parent element.
+        */}
+        <Tabs
+          {...(activeGroup ? { value: activeGroup.kind } : {})}
+          onValueChange={makeTabsValueChangeHandler(setActiveKind)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">
+            <DataSharesKindTabsView groups={groups} />
+            {/* Shrinks before it wraps: flex-1 grows it to fill the row up to
+                max-w-80, and it shrinks to min-w-48 as the kind tabs beside it
+                (which don't shrink — see DataSharesKindTabsView) take more. */}
+            <div className="flex h-9 min-w-48 max-w-80 flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3">
+              <SearchIcon aria-hidden focusable={false} className="size-4 shrink-0 text-text-3" />
+              <input
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                }}
+                placeholder="Search destinations, URLs & call sites…"
+                aria-label="Search data shares"
+                className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
+              />
             </div>
-            <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
+          </div>
+          <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
+            {activeGroup ? (
               <TabsContent
                 value={activeGroup.kind}
                 className="min-h-0 flex-1 overflow-y-auto p-3.5"
@@ -184,35 +196,23 @@ export function DataSharesClient({
                   onOpenEndpoint={makeOpenEndpointHandler(push, q)}
                 />
               </TabsContent>
-            </Card>
-          </Tabs>
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">{searchBox}</div>
-            <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
+            ) : (
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 overflow-y-auto p-3.5 text-center text-text-3">
                 <SearchIcon aria-hidden focusable={false} className="size-6" />
                 <div className="text-sm">
                   {ql ? `No destinations match “${q}”` : 'No outbound data shares detected'}
                 </div>
               </div>
-            </Card>
-          </div>
-        )}
+            )}
+          </Card>
+        </Tabs>
       </div>
 
       {/*
-        One Sheet for both the needs-review list and the destination detail —
-        never two independently-mounted Dialog.Roots. Opening a detail from the
-        list keeps reviewOpen true the whole time, so the overlay stays mounted
-        continuously instead of closing and reopening (the previous two-Sheet
-        version flickered: reviewOpen flipped false immediately on "Review",
-        but drawerOpen only turned true after the URL round-tripped through the
-        Server Component, leaving a gap with no sheet open at all). Closing the
-        detail just clears `dest` from the URL; if reviewOpen is still true the
-        sheet stays open and falls back to showing the list — "back to list" —
-        and if the detail was opened straight from the table (reviewOpen never
-        set), it closes outright, same as before.
+        One Sheet root for both panels rather than two, so opening a detail
+        from the review list never unmounts the overlay between them. `dest`
+        arrives a round trip after the click, so a second Sheet would spend
+        that gap with neither panel open.
       */}
       <Sheet
         open={reviewOpen || drawerOpen}
@@ -221,7 +221,7 @@ export function DataSharesClient({
         <SheetContent
           className={cn(
             'transition-[width] duration-200 ease-out',
-            drawerOpen ? 'w-117 max-w-[92%] gap-0 p-0' : 'w-160 max-w-[94%]',
+            drawerOpen ? 'w-117 max-w-[92%] gap-0 p-0' : 'w-160 max-w-[94%] gap-0 p-0',
           )}
           {...(drawerOpen ? { 'aria-describedby': undefined } : {})}
         >
@@ -262,16 +262,21 @@ export function DataSharesClient({
               )}
             </>
           ) : (
-            <>
-              <SheetHeader>
+            // Header pinned, rows scrolling under it — matching the detail
+            // panel's own header/body split, so a long list doesn't scroll
+            // the sheet's title away.
+            <div className="flex h-full min-h-0 flex-col">
+              <SheetHeader className="border-b border-border px-4.5 py-4">
                 <SheetTitle>Needs review</SheetTitle>
                 <SheetDescription>
                   {review.length} destination{review.length === 1 ? '' : 's'} flagged for raw IPs,
                   plaintext transfers &amp; unverified domains
                 </SheetDescription>
               </SheetHeader>
-              <NeedsReviewListView items={review} onReview={openDest} />
-            </>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4.5">
+                <NeedsReviewListView items={review} onReview={openReviewedDest} />
+              </div>
+            </div>
           )}
         </SheetContent>
       </Sheet>

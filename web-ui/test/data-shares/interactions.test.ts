@@ -7,9 +7,9 @@ import {
   makeOnPickHandler,
   makeOpenDestHandler,
   makeOpenEndpointHandler,
+  makeOpenReviewedDestHandler,
   makeReviewOpenHandler,
   makeReviewSheetOpenChangeHandler,
-  makeSearchChangeHandler,
   makeSetDecisionHandler,
   makeTabsValueChangeHandler,
 } from '../../app/(app)/data-shares/interactions.ts';
@@ -32,12 +32,22 @@ describe('makeCloseDrawerHandler', () => {
   });
 });
 
-describe('makeSearchChangeHandler', () => {
-  it('forwards the input value to setQuery', () => {
-    const setQuery = vi.fn();
-    const handler = makeSearchChangeHandler(setQuery);
-    handler({ target: { value: 'okta' } } as unknown as Parameters<typeof handler>[0]);
-    expect(setQuery).toHaveBeenCalledExactlyOnceWith('okta');
+describe('makeOpenReviewedDestHandler', () => {
+  it('switches to the tab the destination lives under before opening it', () => {
+    const push = vi.fn();
+    const setActiveKind = vi.fn();
+    makeOpenReviewedDestHandler(push, 'okta', () => 'ip', setActiveKind)('dest-1');
+    expect(setActiveKind).toHaveBeenCalledExactlyOnceWith('ip');
+    expect(push).toHaveBeenCalledExactlyOnceWith({ q: 'okta', dest: 'dest-1' });
+  });
+
+  it('leaves the tab alone when the destination is in no rendered group', () => {
+    const push = vi.fn();
+    const setActiveKind = vi.fn();
+    makeOpenReviewedDestHandler(push, '', () => undefined, setActiveKind)('dest-gone');
+    expect(setActiveKind).not.toHaveBeenCalled();
+    // Still navigates — the detail read is its own server query.
+    expect(push).toHaveBeenCalledExactlyOnceWith({ q: '', dest: 'dest-gone' });
   });
 });
 
@@ -117,7 +127,7 @@ describe('makeReviewSheetOpenChangeHandler', () => {
     expect(setReviewOpen).not.toHaveBeenCalled();
   });
 
-  it('closes the drawer (not the review list) when a detail is open', () => {
+  it('keeps the review list open when a detail is dismissed — "back to list"', () => {
     const closeDrawer = vi.fn();
     const setReviewOpen = vi.fn();
     makeReviewSheetOpenChangeHandler(true, closeDrawer, setReviewOpen)(false);
@@ -125,12 +135,16 @@ describe('makeReviewSheetOpenChangeHandler', () => {
     expect(setReviewOpen).not.toHaveBeenCalled();
   });
 
-  it('closes the review list when no detail is open', () => {
+  it('clears the destination too when the list itself is dismissed', () => {
+    // Not just cosmetic: `drawerOpen` is captured at render time, so a
+    // dismissal landing while a "Review" push is in flight still sees false.
+    // Clearing `dest` supersedes that push, which is what stops the sheet
+    // re-opening on the destination the user just dismissed.
     const closeDrawer = vi.fn();
     const setReviewOpen = vi.fn();
     makeReviewSheetOpenChangeHandler(false, closeDrawer, setReviewOpen)(false);
-    expect(closeDrawer).not.toHaveBeenCalled();
     expect(setReviewOpen).toHaveBeenCalledExactlyOnceWith(false);
+    expect(closeDrawer).toHaveBeenCalledOnce();
   });
 });
 

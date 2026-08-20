@@ -30,8 +30,11 @@ describe('NeedsReviewListView', () => {
     expect(html).toContain('1 call<');
   });
 
-  it('renders nothing for an empty list', () => {
+  it('says the queue is clear for an empty list, rather than rendering a blank body', () => {
+    // The sheet outlives its own list — the last flagged destination can clear
+    // while it is still open — so an empty list has to say something.
     const html = renderToStaticMarkup(<NeedsReviewListView items={[]} onReview={vi.fn()} />);
+    expect(html).toContain('Nothing needs review');
     expect(html).not.toContain('Review<');
   });
 });

@@ -20,6 +20,9 @@ export function NeedsReviewStripView({ items, onOpen }: NeedsReviewStripViewProp
       <button
         type="button"
         onClick={onOpen}
+        // Opens a modal sheet, which traps focus — a screen reader announces
+        // that only if the trigger says so.
+        aria-haspopup="dialog"
         className="flex w-full cursor-pointer items-center gap-2.5 px-3.5 py-3 text-left"
       >
         <span className="grid size-6.5 shrink-0 place-items-center rounded-md bg-sev-critical-ink text-on-accent">

@@ -31,10 +31,16 @@
  *
  *   - Plain type annotations only. No enums, no parameter properties, nothing
  *     that needs a real compile rather than an erase.
- *   - Nothing from this package beyond the protocol types. `rule-packs.ts`
- *     reaches `bundled-packs.generated.ts`, whose 101 JSON imports carry no
- *     import attributes and so fail outright under raw Node. The ruleset
- *     arrives over `workerData`, so there is nothing here to want from it.
+ *   - Nothing from this package that reaches the generated packs.
+ *     `rule-packs.ts` pulls in `bundled-packs.generated.ts`, whose 101 JSON
+ *     imports carry no import attributes and so fail outright under raw Node.
+ *     The ruleset arrives over `workerData`, so there is nothing here to want
+ *     from it. A leaf module is fine and there is one: `work-clock.ts`, whose
+ *     only import is a TYPE and therefore erased — it resolves nothing at
+ *     runtime. Check that before adding another; the test that would catch a
+ *     regression is `test/e2e/scan-worker-bundle.e2e.test.ts` in each plugin,
+ *     which drives the BUILT worker, since this constraint has no symptom until
+ *     the module is actually loaded.
  */
 import { parentPort, workerData } from 'node:worker_threads';
 
@@ -43,6 +49,7 @@ import { checkRuleTiming, scan } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 import type { ScanWorkerData, ScanWorkerJob, ScanWorkerMessage } from './isolated-scan-protocol.ts';
+import { workClockMs } from './work-clock.ts';
 
 // Null only when this module is loaded on the main thread, which nothing in the
 // product does. Throwing reaches the parent as a worker 'error' — the one
@@ -60,8 +67,13 @@ function post(message: ScanWorkerMessage): void {
 port.on('message', (job: ScanWorkerJob) => {
   try {
     if (job.kind === 'probe') {
-      const { safe, worstMs } = checkRuleTiming(job.rule);
-      post({ kind: 'probed', id: job.id, safe, worstMs });
+      // The corroborating clock reads THIS thread's CPU, which is the whole
+      // reason the measurement belongs on this side of the boundary twice over:
+      // a pattern that never returns can be killed here, and the work it did
+      // can be attributed here. `process.cpuUsage()` would sum the parent
+      // thread's too — see `work-clock.ts`.
+      const { verdict, worstMs, corroboratedMs } = checkRuleTiming(job.rule, workClockMs);
+      post({ kind: 'probed', id: job.id, verdict, worstMs, corroboratedMs });
       return;
     }
     const context: ScanContext | undefined =

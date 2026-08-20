@@ -23,6 +23,29 @@ function write(rel: string, content = 'x'): void {
 }
 
 describe('walkSourceFiles', () => {
+  it('applies a .gitignore from a MIDDLE directory to entries below it', () => {
+    // The anchor case. A layer in the directory being walked, and a layer at the
+    // walk root, are both addressed correctly however the offset arithmetic is
+    // computed — one returns early and the other slices from zero. Only a layer
+    // part way down, evaluated deeper still, exercises it, and this walk had no
+    // such case: the shared arithmetic could be broken outright with every
+    // suite in three packages staying green.
+    // The pattern names FILES below `gen/`, deliberately not the directory: a
+    // `gen/` pattern is answered at `src`, where the layer sits in the very
+    // directory being walked and the arithmetic is an early return. Only a
+    // pattern that survives to be re-asked one level deeper reaches it.
+    write('src/.gitignore', 'gen/*.js\n');
+    write('src/gen/a.js');
+    write('src/gen/b.ts');
+
+    const byPath = new Map(
+      [...walkSourceFiles({ rootDir: tmp })].map((f) => [f.relativePath, f.gitignored]),
+    );
+    expect(byPath.get('src/gen/a.js')).toBe(true);
+    // The control: the same layer has no opinion about its neighbour.
+    expect(byPath.get('src/gen/b.ts')).toBe(false);
+  });
+
   it('yields source files with correct metadata', () => {
     write('src/app.ts', 'const x = 1;');
     write('src/main.py', 'print("hi")');

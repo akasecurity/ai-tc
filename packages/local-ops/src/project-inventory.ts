@@ -65,6 +65,14 @@ export function recordProjectInventory(
 
     // undefined means the walk found nothing (or couldn't start) — the project
     // row above still stands, and the stored tree is left untouched.
+    //
+    // The default PROJECT_WALK_BOUNDS are taken deliberately, not by omission.
+    // Their deadline is sized against the hosts' 10 s hook timeout, which this
+    // caller does not have — but the tree an attacker authors is the same one,
+    // the budget clears the worst legitimate shape by a wide margin (a 500k-file
+    // gitignored monorepo measured 852 ms against 4 s), and a scan that does
+    // cross it is reported through `truncated` below rather than lost: a
+    // truncated scan never prunes the stored tree.
     const scan = resolveProjectFiles(abs);
     if (scan) db.recordProjectFiles(sourceProjectId, scan);
 

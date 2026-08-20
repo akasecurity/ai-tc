@@ -124,6 +124,49 @@ const START_MS = 30_000;
 const isolationCeilingMs = (starts: number, budgetUnits: number): number =>
   starts * START_MS + budgetUnits * BUDGET_MS;
 
+// How many interleaved pairs the round-trip ratio is taken over. The same count
+// on both sides, and the same statistic over each, is what makes the quotient
+// load-invariant — a ratio whose sides are drawn differently is NOT robust, and
+// the known dead end is a stall-immune denominator (a min-of-N) against a noisy
+// numerator, which makes a stall explode the quotient instead of cancelling in
+// it.
+const ROUND_TRIP_SAMPLES = 40;
+
+// What isolating one scan may cost, as a multiple of the same scan in-process.
+//
+// The property is "isolation is a message round trip, not an order of
+// magnitude". Measured on an arm64 Mac, the isolated:in-process ratio for a 2KB
+// field is flat in the ruleset size — 1.10 / 1.12 / 1.10 at 1 / 50 / 200 pulled
+// rules — because an ordinary scan makes ONE `scan()` call over the whole
+// ruleset either way.
+//
+// The bound sits far above that, because it is not a measurement and must not
+// read as one. What it has to separate is a round trip from a per-scan THREAD:
+// a worker start is ~14ms bundled and ~39ms from source against a ~0.2ms scan,
+// i.e. two orders of magnitude, and every regression this can catch is of that
+// kind — a thread per call, an extra attribution pass, a clone of the ruleset
+// per message. Sizing it near the measured 1.1 would buy no power against those
+// and would fail on ordinary variance instead, which is the failure this
+// replaced.
+//
+// Measured spread, so the headroom is a number rather than a feeling: 1.070 /
+// 1.098 / 1.037 on a quiet arm64 Mac, and 1.014 / 1.046 / 1.017 with 96 CPU
+// burners on 14 cores — where BOTH medians roughly doubled (0.183ms to 0.404ms
+// isolated, 0.171ms to 0.399ms in-process) and the quotient did not move. That
+// is the whole property, and it is what an absolute bound cannot have.
+//
+// This bound has a SENSITIVITY FLOOR worth knowing before trusting it. Against
+// an in-process median of ~0.17ms, a multiple of 10 only catches an added
+// per-scan cost above roughly 1.5ms — a synthetic 3ms delay reads 14.4 and
+// fails, a 1ms one would read ~6 and pass. That is deliberate: the gate is the
+// pair `starts.count()` above and this multiple, and a per-scan cost too small
+// for this to see is also too small to be a thread, an extra pass, or a clone
+// of the ruleset, which are the regressions with a mechanism behind them.
+// Tightening it to buy sub-millisecond power would spend the load-invariance
+// this exists for — and on a platform whose round trip has never been measured
+// here (Windows, the leg this replaced used to redden) it would spend it blind.
+const MAX_ISOLATION_RATIO = 10;
+
 // Above the ceilings below, so a path that blows its bound fails on the
 // assertion — which names what was exceeded — rather than on vitest's 20s
 // package default, which just says the test timed out.
@@ -247,6 +290,13 @@ function clearedByPreflight(...rules: Rule[]): Map<string, RuleProbeVerdictEntry
     if (key !== undefined) verdicts.set(key, { verdict: 'safe', worstProbeMs: 0.1 });
   }
   return verdicts;
+}
+
+// The middle sample. Both sides of the ratio go through this, because a ratio
+// of two DIFFERENT statistics is the shape that misbehaves under load.
+function medianOf(samples: number[]): number {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? Infinity;
 }
 
 // The degraded path is loud by design; keep the suite's own output readable.
@@ -577,6 +627,14 @@ describe('what isolation costs when nothing is wrong', () => {
         matcher: { type: 'regex', pattern: 'AKIA[A-Z0-9]{16}', flags: 'g' },
       };
       const starts = countWorkerStarts();
+      // The denominator: the same runtime over the same text with NOTHING to
+      // isolate. Its bundle carries no pulled rule, so `unverified` is empty and
+      // no thread is built — the state of a machine that installed nothing
+      // extra, and the cost isolation is measured against.
+      const baselineStarts = countWorkerStarts();
+      // Built AFTER the isolated runtime, so the `finally` below covers both. A
+      // baseline constructed first is left open if the second constructor throws,
+      // because the try has not been entered yet.
       const rt = createPluginRuntime(fakeGateway(bundle([benign])), settings(), {
         // The budgets that MEASURE a cost stay at the product's own default,
         // because that is what this case is about: the scan budget bounds the
@@ -603,6 +661,9 @@ describe('what isolation costs when nothing is wrong', () => {
         // the assertions below — not the runner — are what decide.
         scanIsolation: { startBudgetMs: START_MS, onWorkerStart: starts.onWorkerStart },
       });
+      const baseline = createPluginRuntime(fakeGateway(bundle()), settings(), {
+        scanIsolation: { startBudgetMs: START_MS, onWorkerStart: baselineStarts.onWorkerStart },
+      });
       try {
         const text = 'lorem ipsum dolor sit amet '.repeat(80); // ~2KB, a typical prompt
 
@@ -616,14 +677,49 @@ describe('what isolation costs when nothing is wrong', () => {
 
         // A PreToolUse hook scans one field per MCP leaf, so the steady-state
         // round trip — not the start — is what a real payload multiplies.
-        const samples: number[] = [];
-        for (let i = 0; i < 40; i++) {
-          const started = performance.now();
+        //
+        // Measured against an INTERLEAVED in-process baseline rather than against
+        // a millisecond number, because a millisecond number is a statement about
+        // the runner. `baseline` is the same runtime over the same text with
+        // nothing to isolate, so it takes the identical path — `processText`,
+        // policy evaluation, the gateway, masking — minus the worker hop. Every
+        // cost the two share cancels in the quotient, which leaves the round trip
+        // and nothing else.
+        //
+        // One warm-up call each, outside the samples: the isolated side has
+        // already had its cold start above, and this gives the baseline the same
+        // treatment so the first sample is not measuring a first sample.
+        await baseline.processText(text);
+
+        const isolatedSamples: number[] = [];
+        const inProcessSamples: number[] = [];
+        for (let i = 0; i < ROUND_TRIP_SAMPLES; i++) {
+          // Interleaved, one pair per iteration, so a stall that lasts several
+          // iterations lands in both series rather than in whichever one happened
+          // to be running. Two separate loops would put every stall in one of
+          // them, which is the shape that makes a ratio EXPLODE under load
+          // instead of cancelling.
+          const startedIsolated = performance.now();
           await rt.processText(text);
-          samples.push(performance.now() - started);
+          isolatedSamples.push(performance.now() - startedIsolated);
+
+          const startedInProcess = performance.now();
+          await baseline.processText(text);
+          inProcessSamples.push(performance.now() - startedInProcess);
         }
-        samples.sort((a, b) => a - b);
-        const medianMs = samples[Math.floor(samples.length / 2)] ?? Infinity;
+        const isolatedMedianMs = medianOf(isolatedSamples);
+        const inProcessMedianMs = medianOf(inProcessSamples);
+        // The denominator has to be a real measurement before the quotient means
+        // anything. A zero (or absent) in-process median makes the ratio Infinity
+        // or NaN, and the case would then fail claiming isolation costs an order
+        // of magnitude — pointing the reader at the worker when the baseline is
+        // what broke. Fail naming the baseline instead.
+        expect(
+          inProcessMedianMs,
+          'the in-process baseline measured nothing, so the ratio below would divide by zero and ' +
+            'report a worker problem that is really a baseline problem.',
+        ).toBeGreaterThan(0);
+        const roundTripRatio = isolatedMedianMs / inProcessMedianMs;
 
         // Isolation is still live, asserted before the count so that a worker
         // which failed to start says so. Without it the same overrun arrives as
@@ -670,13 +766,39 @@ describe('what isolation costs when nothing is wrong', () => {
         // is those 3000ms exactly.
         //
         // Losing the 10s smoke bound costs less than it looks: `starts.count()`
-        // above is the shape check, `medianMs` below is the per-scan cost, and
+        // above is the shape check, the ratio below is the per-scan cost, and
         // what is left for an elapsed ceiling is separating "slower" from "not
         // terminating" — which 63s against the 120s case timeout still does.
         expect(startupMs).toBeLessThan(isolationCeilingMs(2, 2));
-        expect(medianMs).toBeLessThan(25);
+
+        // The denominator really is the in-process path. Without this the whole
+        // ratio is vacuous in the worst way: a baseline that started a worker
+        // would divide one isolated scan by another, the quotient would sit at
+        // ~1 whatever isolation cost, and the gate would pass under every
+        // mutation it exists to catch.
+        expect(
+          baselineStarts.count(),
+          'the baseline runtime has no unverified rule, so it must start no thread at all — a ' +
+            'baseline that isolates makes the ratio below compare isolation against itself.',
+        ).toBe(0);
+
+        // What a real payload multiplies, stated as a multiple of the same work
+        // done in-process rather than as milliseconds. Both sides are the median
+        // of ROUND_TRIP_SAMPLES interleaved samples in this run, so a runner that
+        // is uniformly half as fast moves both and the quotient not at all —
+        // which an absolute bound cannot do, and is why this line used to redden
+        // PRs whose diff could not reach the isolation path (27.03ms against a
+        // 25ms bound, on a Windows leg that on its next attempt took 90% longer
+        // and blew 20s hook timeouts in three other packages instead).
+        expect(
+          roundTripRatio,
+          `isolated ${isolatedMedianMs.toFixed(3)}ms vs in-process ${inProcessMedianMs.toFixed(3)}ms ` +
+            `over ${String(ROUND_TRIP_SAMPLES)} interleaved samples. Isolation is a message round ` +
+            `trip on a worker started ONCE; a multiple this size means it started paying something ` +
+            `per scan — a thread per call, an extra pass, a clone of the ruleset.`,
+        ).toBeLessThan(MAX_ISOLATION_RATIO);
       } finally {
-        await rt.close();
+        await Promise.all([rt.close(), baseline.close()]);
       }
     },
     ISOLATION_CASE_TIMEOUT_MS,

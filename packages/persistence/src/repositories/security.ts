@@ -6,6 +6,7 @@ import {
   type EnforcementActionsResponse,
   type FindingsTimeseriesPoint,
   type FindingsTimeseriesResponse,
+  HARNESS,
   type MttrTrendPoint,
   type MttrTrendResponse,
   type Provider,
@@ -88,21 +89,24 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // Keyed by every `Provider` value rather than an array, so a provider added to
 // the enum without a row here is a compile error — an omission the array shape
 // this replaced could not catch (see scanCoverage() below for the ordering,
-// which is derived from Provider.options). Key order here is deliberately NOT
-// Provider's declaration order: scanCoverage() must derive the response order
-// from Provider.options rather than from iterating this object, and keeping
-// the two orders different is what makes that a test can actually falsify —
-// with the two orders coincidentally equal, an implementation that iterates
-// this object directly would emit the identical sequence.
+// which is derived from Provider.options). Keys are spelled through `HARNESS.X`
+// computed members per CLAUDE.md's "call sites spell HARNESS.ClaudeCode, not
+// the literal" rule — `Record<Provider, …>` exhaustiveness survives computed
+// member keys. Key order here is deliberately NOT Provider's declaration
+// order: scanCoverage() must derive the response order from Provider.options
+// rather than from iterating this object, and keeping the two orders different
+// is what makes that a test can actually falsify — with the two orders
+// coincidentally equal, an implementation that iterates this object directly
+// would emit the identical sequence.
 const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> = {
-  antigravity: { coverage: 60, supported: true },
-  api: { coverage: 0, supported: false },
-  chatgpt: { coverage: 40, supported: true },
-  claudeai: { coverage: 40, supported: true },
-  claudecode: { coverage: 100, supported: true },
-  codex: { coverage: 80, supported: true },
-  copilot: { coverage: 0, supported: false },
-  cursor: { coverage: 0, supported: false },
+  [HARNESS.Antigravity]: { coverage: 60, supported: true },
+  [HARNESS.Api]: { coverage: 0, supported: false },
+  [HARNESS.ChatGpt]: { coverage: 40, supported: true },
+  [HARNESS.ClaudeAi]: { coverage: 40, supported: true },
+  [HARNESS.ClaudeCode]: { coverage: 100, supported: true },
+  [HARNESS.Codex]: { coverage: 80, supported: true },
+  [HARNESS.Copilot]: { coverage: 0, supported: false },
+  [HARNESS.Cursor]: { coverage: 0, supported: false },
 };
 
 // Bucket size per range. A table rather than a ternary so adding a range to

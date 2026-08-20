@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCodexProvider } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
@@ -61,7 +62,7 @@ async function main(): Promise<void> {
     {
       sessionId,
       cwd,
-      tool: 'codex',
+      tool: SOURCE_TOOL.Codex,
       harnessVersion: harnessVersion(),
       harnessInterface,
     },

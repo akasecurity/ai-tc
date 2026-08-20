@@ -5,6 +5,7 @@
 import { z } from 'zod';
 
 import { Severity } from './finding.ts';
+import { Harness } from './harness-map.ts';
 import { DEFAULT_TIME_RANGE, TIME_RANGES, TimeRange } from './ranges.ts';
 
 // GET /v1/security/findings/severity-summary
@@ -220,9 +221,18 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 // list reads the same as the returned `providers` array — scanCoverage()
 // derives that array's order from this enum's declaration order directly,
 // not from SCAN_COVERAGE's own key order, which is otherwise decorative.
-export const Provider = z
-  .enum(['claudecode', 'cursor', 'codex', 'antigravity', 'claudeai', 'chatgpt', 'copilot', 'api'])
-  .meta({ id: 'Provider' });
+// A subset of the canonical `Harness` vocabulary (harness-map.ts), named by
+// MEMBER so it can carry no id that file does not define.
+export const Provider = Harness.extract([
+  'ClaudeCode',
+  'Cursor',
+  'Codex',
+  'Antigravity',
+  'ClaudeAi',
+  'ChatGpt',
+  'Copilot',
+  'Api',
+]).meta({ id: 'Provider' });
 export type Provider = z.infer<typeof Provider>;
 
 export const ScanCoverageProvider = z

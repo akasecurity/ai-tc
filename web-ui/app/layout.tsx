@@ -5,10 +5,9 @@ import '@fontsource-variable/space-grotesk';
 import '@fontsource-variable/jetbrains-mono';
 import './globals.css';
 
+import { THEME_INIT_SCRIPT } from '@akasecurity/dashboard-ui';
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
-
-import { THEME_INIT_SCRIPT } from './lib/theme.ts';
 
 export const metadata: Metadata = {
   title: {

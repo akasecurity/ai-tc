@@ -1,6 +1,6 @@
 'use client';
 
-import type { IconComponent } from '@akasecurity/dashboard-ui';
+import { type IconComponent, ThemeToggle } from '@akasecurity/dashboard-ui';
 import { cn } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -22,7 +22,6 @@ import {
   ShieldCheckIcon,
 } from './icons.tsx';
 import { NavigationProgressBar } from './NavigationTransition.tsx';
-import { ThemeToggle } from './ThemeToggle.tsx';
 
 // Sidebar + topbar shell layout, built for Next.js (next/link + usePathname).
 // No auth/user-card/sign-out; icons stay inline (the app

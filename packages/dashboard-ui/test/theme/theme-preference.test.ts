@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as ThemeModule from '../app/lib/theme.ts';
+import type * as ThemeModule from '../../src/theme/theme.ts';
 
 // The theme module's own surface — the half that runs for the rest of the session,
 // after the pre-paint script in theme-init-script.test.ts has done its one job.
@@ -51,7 +51,7 @@ function loadTheme(storage: StorageStub, systemDark = false) {
   const fireStorage = (key: string | null): void => {
     for (const fn of listeners.get('storage') ?? []) fn({ key });
   };
-  return { module: import('../app/lib/theme.ts'), classes, fireStorage };
+  return { module: import('../../src/theme/theme.ts'), classes, fireStorage };
 }
 
 /** A localStorage stub whose write can be made to fail the way a real one does. */

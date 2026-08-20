@@ -349,3 +349,29 @@ export {
   type NeedsReviewStripViewProps,
 } from './data-shares/NeedsReviewStripView.tsx';
 export type { ShareSelection } from './data-shares/types.ts';
+
+// Theme — the light/dark/system preference store, the topbar picker, and the
+// pre-paint init script. Shared because both dashboards need the identical
+// behaviour and only the script's INJECTION POINT is host-specific (Next root
+// layout vs Vite index.html). No `dark:` variants anywhere: ui-kit's theme.css
+// re-themes by overriding the same CSS variables its utilities read, so applying
+// the class is the whole of what a host has to do.
+export {
+  applyTheme,
+  DARK_CLASS,
+  DARK_QUERY,
+  DEFAULT_THEME_PREFERENCE,
+  isThemePreference,
+  prefersDark,
+  readStoredPreference,
+  serverPreference,
+  serverPrefersDark,
+  storePreference,
+  subscribePreference,
+  subscribeSystemTheme,
+  THEME_INIT_SCRIPT,
+  THEME_PREFERENCES,
+  THEME_STORAGE_KEY,
+  type ThemePreference,
+} from './theme/theme.ts';
+export { ThemeToggle } from './theme/ThemeToggle.tsx';

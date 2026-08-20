@@ -19,15 +19,7 @@
 //             process against an OS service on this machine, no network hop.
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -36,7 +28,10 @@ import {
   DATA_FILE_MODE,
   ensureDataDirSync,
   KeyUnclaimableError,
+  mkdirOwnerOnlySync,
   type Occupant,
+  tightenDir,
+  writeOwnerOnlyFileSync,
 } from '../paths.ts';
 
 // The keyring's wording for the three states classifyOccupant tells apart.
@@ -197,7 +192,12 @@ interface RotationLease {
 // than leaving behind a lock nobody can prove ownership of — and so release.
 function claimRotationLock(lock: string, owner: string): boolean {
   try {
-    mkdirSync(lock);
+    // Owner-only like every other directory under ~/.aka: it sits in the keys
+    // dir and names the holder, and the owner file is stamped into it
+    // immediately below. Non-recursive, so `mkdir` still reports EEXIST and the
+    // atomic create-or-lose answer is unchanged; only the mode is.
+    mkdirOwnerOnlySync(lock);
+    tightenDir(lock);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw asError(err);
@@ -386,14 +386,18 @@ export class FileKeyProvider implements KeyProvider {
    * Atomic tmp + rename so a crash mid-write cannot truncate the keyring.
    * Used only for rotation, under the rotation lock — first creation goes
    * through the creation-exclusive path instead.
+   *
+   * Delegated to the shared owner-only write rather than spelled here, so the
+   * create mode this file is published at is the one paths.ts owns and tests
+   * directly. A local copy of the pair was a second place the mode could be
+   * dropped with the trailing tighten still repairing the end state, which is
+   * the shape no assertion on a published file can see. It also picks up that
+   * primitive's per-process tmp name, its stale-tmp sweep, and an exclusive
+   * create that refuses to follow a symlink planted at the tmp path.
    */
   #write(keyring: Keyring): Keyring {
     ensureDataDirSync(this.#keysDir);
-    const file = this.filePath;
-    const tmp = `${file}.tmp`;
-    writeFileSync(tmp, `${serializeKeyring(keyring)}\n`, { mode: DATA_FILE_MODE });
-    renameSync(tmp, file);
-    tightenFileMode(file);
+    writeOwnerOnlyFileSync(this.filePath, `${serializeKeyring(keyring)}\n`);
     return keyring;
   }
 }

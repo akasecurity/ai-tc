@@ -6,6 +6,7 @@ import {
   BuiltinPolicyId,
   DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
+  policyIdIsReversible,
   policyIdToAction,
   Rule,
 } from '@akasecurity/schema';
@@ -109,6 +110,15 @@ export interface InstalledRuleset {
   // actually drives enforcement instead of being overridden by the seeded
   // per-category defaults. Only ids present in `rules` appear here.
   ruleActions: Map<string, ActionTaken>;
+  // The rule ids whose pack is assigned a REVERSIBLE archetype (Redact & Vault)
+  // — see policyIdIsReversible. A second axis over the same action rather than a
+  // second action: every id in here also carries `redact` in ruleActions, and
+  // what differs is whether the stripped value is kept recoverably or destroyed.
+  //
+  // A SET rather than a per-rule map because reversibility is only ever asked of
+  // rules that are already being redacted, and absence is the whole answer for
+  // the rest. Only ids present in `rules` appear here.
+  reversibleRules: Set<string>;
   // Per valid rule (by id): the version of the installed pack it came from. The
   // standalone gateway carries this onto the policy bundle so a captured
   // finding is stamped with the pack's real version instead of the rule file
@@ -443,6 +453,14 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * (all detection off) instead of falling back to the bundled packs. Every
    * JSON-level failure therefore counts as invalid.
    */
+  /**
+   * ORDERED, because a rule id is unique only WITHIN a pack — the sole unique
+   * index is (namespace, pack_id) — so two enabled packs may contribute the same
+   * id, and the per-rule maps below are last-write-wins. Without an ORDER BY the
+   * winner is whatever order SQLite happens to return, which makes a collision
+   * resolve differently on two machines holding identical stores. Ordering by
+   * (namespace, pack_id) makes the loser deterministic and therefore testable.
+   */
   installedRuleset(): InstalledRuleset {
     const rows = allRows<{
       enabled: number;
@@ -455,7 +473,8 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       this.db.prepare(
         `SELECT enabled, policy_id AS policyId, rules_json AS rulesJson, version,
                 namespace, pack_id AS packId
-           FROM installed_packs`,
+           FROM installed_packs
+          ORDER BY namespace, pack_id`,
       ),
     );
 
@@ -467,6 +486,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       rejectedRules: [],
       ruleActions: new Map(),
       ruleVersions: new Map(),
+      reversibleRules: new Set(),
     };
     // Records a rejection without ever copying the entry's own bytes. Callers
     // still bump `invalidRules` themselves — that count is exact, this list is
@@ -478,8 +498,10 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     for (const row of rows) {
       if (!intToBool(row.enabled)) continue;
       out.enabledPacks += 1;
-      // The whole pack shares one policy; each of its valid rules inherits it.
+      // The whole pack shares one policy; each of its valid rules inherits it —
+      // both the action it resolves to and whether that action is reversible.
       const action = policyIdToAction(row.policyId);
+      const reversible = policyIdIsReversible(row.policyId);
       const pack = `${row.namespace}/${row.packId}`;
       let raw: unknown;
       try {
@@ -500,6 +522,16 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
           out.rules.push(parsed.data);
           out.ruleActions.set(parsed.data.id, action);
           out.ruleVersions.set(parsed.data.id, row.version);
+          // Symmetric with ruleActions above, which is a Map and therefore
+          // last-write-wins. Nothing makes a rule id unique ACROSS packs — the
+          // only unique index is (namespace, packId) — so two enabled packs can
+          // contribute the same id, and an add-only Set would keep the first
+          // pack's reversibility after a later pack's plain-Redact assignment
+          // had already won the action. That combination (action 'redact',
+          // reversible true) never occurs for a singly-owned rule, and it
+          // vaults a value the winning policy said to destroy.
+          if (reversible) out.reversibleRules.add(parsed.data.id);
+          else out.reversibleRules.delete(parsed.data.id);
         } else {
           out.invalidRules += 1;
           reject(pack, printableRuleId(entry), firstIssueReason(parsed.error));

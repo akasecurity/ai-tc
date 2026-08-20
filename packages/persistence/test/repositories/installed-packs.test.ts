@@ -231,6 +231,101 @@ describe('installedRuleset (scan-time snapshot)', () => {
     db.close();
   });
 
+  // The reversibility axis. It rides beside ruleActions rather than on it,
+  // because two archetypes share the 'redact' action and differ only in whether
+  // the stripped value survives — so `reversibleRules` is the ONLY thing that
+  // carries a detection's Redact-vs-Redact & Vault choice out of the store.
+  describe('reversibleRules (the Redact & Vault axis)', () => {
+    it('names exactly the rules whose pack chose the reversible archetype', () => {
+      const db = store.open();
+      db.installedPacks.recordInventory([
+        pack('secrets', '2.0.0', ['secrets/aws']),
+        pack('core-pii', '2.0.0', ['core-pii/email']),
+      ]);
+      db.installedPacks.setPolicy('aka', 'secrets', 'vault');
+      db.installedPacks.setPolicy('aka', 'core-pii', 'redact');
+
+      const snapshot = db.installedPacks.installedRuleset();
+      // Both redact — that is the ACTION axis and they agree…
+      expect(snapshot.ruleActions.get('secrets/aws')).toBe('redact');
+      expect(snapshot.ruleActions.get('core-pii/email')).toBe('redact');
+      // …and only one keeps what it strips.
+      expect([...snapshot.reversibleRules]).toEqual(['secrets/aws']);
+      db.close();
+    });
+
+    it('is empty when no pack chose it, including for redacting packs', () => {
+      const db = store.open();
+      db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+      db.installedPacks.setPolicy('aka', 'secrets', 'redact');
+      expect([...db.installedPacks.installedRuleset().reversibleRules]).toEqual([]);
+      db.close();
+    });
+
+    it('drops a rule from a DISABLED pack, like every other snapshot field', () => {
+      const db = store.open();
+      db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+      db.installedPacks.setPolicy('aka', 'secrets', 'vault');
+      db.installedPacks.setEnabled('aka', 'secrets', false);
+      expect([...db.installedPacks.installedRuleset().reversibleRules]).toEqual([]);
+      db.close();
+    });
+
+    it('is LAST-WRITE-WINS on a rule id shared by two packs, exactly as ruleActions is', () => {
+      // Nothing makes a rule id unique across packs — the only unique index is
+      // (namespace, packId) — so two enabled packs can contribute the same id.
+      // ruleActions is a Map and resolves the collision; an add-only Set would
+      // keep the vault pack's reversibility after the plain-Redact pack had
+      // already won the action, producing (action redact, reversible true) and
+      // vaulting a value the winning policy said to destroy.
+      const db = store.open();
+      db.installedPacks.recordInventory([
+        pack('alpha', '1.0.0', ['shared/api-key']),
+        pack('beta', '1.0.0', ['shared/api-key']),
+      ]);
+      db.installedPacks.setPolicy('aka', 'alpha', 'vault');
+      db.installedPacks.setPolicy('aka', 'beta', 'redact');
+
+      // The read is ordered by (namespace, pack_id), so 'beta' is processed
+      // after 'alpha' and wins BOTH axes. Asserted deterministically rather
+      // than as "whichever won" — a case that accepts either outcome cannot
+      // fail, which is precisely how the additive Set survived its first guard.
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.ruleActions.get('shared/api-key')).toBe('redact');
+      expect([...snapshot.reversibleRules]).toEqual([]);
+      db.close();
+    });
+
+    it('the vault pack wins when IT is the one ordered last', () => {
+      // The mirror of the case above, so the pair proves the resolution follows
+      // the order rather than always favouring one answer. 'zeta' sorts after
+      // 'alpha', so here the reversible pack is the winner and the flag SURVIVES.
+      const db = store.open();
+      db.installedPacks.recordInventory([
+        pack('alpha', '1.0.0', ['shared/api-key']),
+        pack('zeta', '1.0.0', ['shared/api-key']),
+      ]);
+      db.installedPacks.setPolicy('aka', 'alpha', 'redact');
+      db.installedPacks.setPolicy('aka', 'zeta', 'vault');
+
+      const snapshot = db.installedPacks.installedRuleset();
+      expect(snapshot.ruleActions.get('shared/api-key')).toBe('redact');
+      expect([...snapshot.reversibleRules]).toEqual(['shared/api-key']);
+      db.close();
+    });
+
+    it('re-assigning a pack from vault to redact clears the flag', () => {
+      const db = store.open();
+      db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+      db.installedPacks.setPolicy('aka', 'secrets', 'vault');
+      expect([...db.installedPacks.installedRuleset().reversibleRules]).toEqual(['secrets/aws']);
+
+      db.installedPacks.setPolicy('aka', 'secrets', 'redact');
+      expect([...db.installedPacks.installedRuleset().reversibleRules]).toEqual([]);
+      db.close();
+    });
+  });
+
   it('maps each rule to its pack policy (unassigned ⇒ monitor/log, assigned ⇒ its action)', () => {
     const db = store.open();
     db.installedPacks.recordInventory([
@@ -345,11 +440,15 @@ describe('installedRuleset (scan-time snapshot)', () => {
         .run();
       raw.close();
 
+      // Pack order is (namespace, pack_id) — installedRuleset reads ORDERED so a
+      // rule id contributed by two packs resolves the same way on every machine.
+      // 'custom/broken' therefore precedes 'custom/mine'. Within a pack, rules
+      // keep their own encounter order.
       const snapshot = db.installedPacks.installedRuleset();
       expect(snapshot.rejectedRules).toEqual([
+        { pack: 'custom/broken', ruleId: null, reason: 'rules_json: malformed JSON' },
         { pack: 'custom/mine', ruleId: 'custom/b', reason: 'unrecognized_keys' },
         { pack: 'custom/mine', ruleId: 'custom/c', reason: 'postValidators.0: invalid_union' },
-        { pack: 'custom/broken', ruleId: null, reason: 'rules_json: malformed JSON' },
       ]);
       db.close();
     });

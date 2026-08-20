@@ -362,7 +362,7 @@ first one's answers — with both reporting success, because neither ever learns
 
 `withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
 existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
-equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Six
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Seven
 properties are load-bearing:
 
 - **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
@@ -379,6 +379,20 @@ properties are load-bearing:
   still reads the current version and writes version+1 over it, and the same fix does not reach
   it. Do not read this section as a property the store has; it is a property `settings.json`
   has.
+- **An ADMINISTRATIVE overlay is read, never written, and that is what keeps the writer count at
+  two.** `managed-settings.ts` reads a root-owned file outside `~/.aka` that an MDM or
+  config-management tool owns — `/Library/Application Support/AKASecurity` then
+  `/Library/Managed Preferences` on macOS (FIRST READABLE WINS, so the order is part of the
+  contract, not a detail), `%ProgramData%\AKASecurity` on Windows, `/etc/aka` on Linux. AKA overlays what it finds — `readEffectiveSettings` returns the settings in force
+  plus the locked set — and writes it never. Making AKA a writer of it would be the third
+  `settings.json`-class writer this section exists to prevent, on a file the lock does not cover.
+  Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
+  the user may still change, a lock with no value freezes whatever they last chose. A locked field
+  is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
+  writing the rest — a half-applied save reports success while losing the answer the user cared
+  about, which is this section's whole failure mode. And a damaged managed file leaves the machine
+  UNMANAGED rather than refusing to run, because a typo in an MDM payload must not break every
+  hook on every managed machine at once; that direction is deliberate and stated in the module.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's

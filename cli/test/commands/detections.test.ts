@@ -7,6 +7,7 @@ import type * as Persistence from '@akasecurity/persistence';
 import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
+import { BUILTIN_POLICIES, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -68,12 +69,34 @@ describe('renderDetectionsTable', () => {
     expect(lines[0]).toMatch(/Pack\s+Installed\s+Latest\s+Rules\s+Enabled\s+Policy\s+Status/);
     expect(lines[1]).toContain('aka/secrets');
     expect(lines[1]).toContain('✓ up to date');
-    expect(lines[1]).toContain('monitor'); // unassigned policy renders as monitor
+    // The catalog's NAME, not the raw id — the dashboard shows the same row as
+    // "Monitor"/"Redact", and two spellings of one setting read as two settings.
+    expect(lines[1]).toContain('Monitor'); // unassigned policy renders as Monitor
     expect(lines[2]).toContain('aka/core-pii');
     expect(lines[2]).toContain('v2.1.0');
     expect(lines[2]).toContain('⬆ update available');
-    expect(lines[2]).toContain('redact');
+    expect(lines[2]).toContain('Redact');
     expect(lines[2]).toContain('no');
+  });
+
+  it('names every built-in archetype exactly as the shared catalog does', () => {
+    // The consistency this exists for: the CLI, the plugins and the dashboard
+    // all render the per-pack assignment, and each used to spell it however its
+    // own code happened to. Derived from the catalog so a new archetype cannot
+    // reach one surface under a different name.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      const table = renderDetectionsTable([item({ policyId: id })]);
+      expect(table, `${id} is not rendered by its catalog name`).toContain(
+        BUILTIN_POLICIES[id].name,
+      );
+    }
+  });
+
+  it('prints a custom policy id verbatim rather than misreporting it', () => {
+    // An id the catalog does not carry is not a built-in and must not be shown
+    // as one — least of all as Monitor, which would read as "log only".
+    const table = renderDetectionsTable([item({ policyId: 'my-custom-policy' })]);
+    expect(table).toContain('my-custom-policy');
   });
 });
 

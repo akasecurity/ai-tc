@@ -43,7 +43,7 @@ describe('BuiltinPolicyId', () => {
   });
 
   it('KNOWN_BUILTIN_IDS matches BuiltinPolicyId enum values', () => {
-    expect(KNOWN_BUILTIN_IDS).toEqual(['monitor', 'warn', 'redact', 'block']);
+    expect(KNOWN_BUILTIN_IDS).toEqual(['monitor', 'warn', 'redact', 'vault', 'block']);
   });
 });
 

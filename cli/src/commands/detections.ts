@@ -5,7 +5,12 @@ import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
-import { splitDetectionId } from '@akasecurity/schema';
+import {
+  BUILTIN_POLICIES,
+  BuiltinPolicyId,
+  DEFAULT_PACK_POLICY_ID,
+  splitDetectionId,
+} from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -209,6 +214,16 @@ async function runUpdateSub(db: LocalDatabase, ids: string[], all: boolean): Pro
 
 // Width-padded plain-text table (same pattern as lib/update-render.ts — no
 // table/colour dependency). Exported for the unit test.
+// A per-pack policy id as a user reads it. An unassigned pack coalesces to the
+// catalog default (Monitor) exactly as every enforcement path does, and an id
+// the catalog does not carry — a custom policy — prints verbatim rather than
+// being misreported as a built-in.
+function policyDisplayName(policyId: string | null | undefined): string {
+  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
+  const parsed = BuiltinPolicyId.safeParse(id);
+  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
+}
+
 export function renderDetectionsTable(items: DetectionListItem[]): string {
   const rows = items.map((i) => ({
     pack: i.id,
@@ -216,7 +231,11 @@ export function renderDetectionsTable(items: DetectionListItem[]): string {
     latest: i.latestVersion ? `v${i.latestVersion}` : `v${i.version}`,
     rules: String(i.ruleCount),
     enabled: i.enabled ? 'yes' : 'no',
-    policy: i.policyId ?? 'monitor',
+    // The archetype's NAME, from the shared catalog — not the raw id. The
+    // dashboard renders "Redact & Vault" for the same row, and a table that
+    // printed `vault` beside it would read as a different setting. A custom
+    // policy the catalog does not know still prints its own id.
+    policy: policyDisplayName(i.policyId),
     status: i.latestVersion ? '⬆ update available' : '✓ up to date',
   }));
   const packW = Math.max(4, ...rows.map((r) => r.pack.length));

@@ -87,9 +87,10 @@ async function main(): Promise<void> {
           { persist: 'with-findings' },
         ),
       vaultGlue
-        ? (text, findings) =>
+        ? (text, findings, reversible) =>
             vaultGlue.tokenizeText(text, {
               findings,
+              reversible,
               sighting: filePath
                 ? { location: filePath, kind: 'file' }
                 : { location: `${toolName} output`, kind: 'tool-output' },

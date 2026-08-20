@@ -15,13 +15,19 @@ import type {
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
-  BuiltinPolicyId,
   DetectionException,
   DetectionListItem,
   FirstRunCalibration,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
-import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
+import {
+  BUILTIN_ORDER,
+  BUILTIN_POLICIES,
+  BuiltinPolicyId,
+  DEFAULT_PACK_POLICY_ID,
+  DetectionCategory,
+  toApiAction,
+} from '@akasecurity/schema';
 import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
 
 import { selectRegisteredCommands } from './command-registry.ts';
@@ -1008,6 +1014,17 @@ export function renderExceptions(exceptions: DetectionException[], nowMs = Date.
 // auto-updates an installed pack), and applying one stays in the terminal /
 // dashboard on purpose — a slash command is model-invocable, so this surface
 // only displays and points at the CLI (mirrors renderExceptions).
+// A per-pack policy id as a user reads it — the archetype's NAME from the shared
+// catalog, so this table, `aka detections` and the dashboard all spell one
+// setting one way. An unassigned pack coalesces to the catalog default exactly
+// as every enforcement path does; an id the catalog does not carry (a custom
+// policy) prints verbatim rather than being misreported as a built-in.
+function policyDisplayName(policyId: string | null | undefined): string {
+  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
+  const parsed = BuiltinPolicyId.safeParse(id);
+  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
+}
+
 export function renderDetections(items: DetectionListItem[]): string {
   if (items.length === 0) {
     return [
@@ -1022,7 +1039,7 @@ export function renderDetections(items: DetectionListItem[]): string {
     i.latestVersion ? `v${i.latestVersion}` : `v${i.version}`,
     String(i.ruleCount),
     i.enabled ? 'yes' : 'no',
-    i.policyId ?? 'monitor',
+    policyDisplayName(i.policyId),
     i.latestVersion ? '⬆ update available' : '✓ up to date',
   ]);
 

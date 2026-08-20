@@ -23,18 +23,47 @@
  * posture and nothing else.
  */
 import { applyCategoryPosture } from '@akasecurity/plugin-sdk';
-import { BUILTIN_POLICIES, type BuiltinPolicyId } from '@akasecurity/schema';
+import {
+  BUILTIN_POLICIES,
+  type BuiltinPolicyId,
+  CATEGORY_INEXPRESSIBLE_IDS,
+} from '@akasecurity/schema';
 
 import type { CategoryPolicyWriter } from '../triage/writeback.ts';
 
 // The prompt heading the standing-posture step presents above the palette.
 const STANDING_POSTURE_PROMPT = "Set the 'secret' detection level";
 
-// The palette the standing-posture step offers, in its own display order — Redact, Warn,
-// Block, Monitor — which is deliberately distinct from the catalog's canonical
-// least-to-most order (BUILTIN_ORDER). The strongest remediation for a leaked
-// secret (Redact) leads.
-const STANDING_POSTURE_ORDER: readonly BuiltinPolicyId[] = ['redact', 'warn', 'block', 'monitor'];
+// The palette the standing-posture step offers, in its own display order —
+// Redact, Warn, Block, Monitor — which is deliberately distinct from the
+// catalog's canonical least-to-most order (BUILTIN_ORDER). The strongest
+// remediation for a leaked secret (Redact) leads.
+//
+// REDACT & VAULT IS DELIBERATELY ABSENT, and the reason is a property of this
+// axis rather than an oversight. This step writes a per-CATEGORY policy, and
+// that row stores an ActionTaken — the enforcement verb alone. Reversibility is
+// the second axis, and only the per-PACK assignment (installed_packs.policy_id,
+// which stores the BuiltinPolicyId itself) can carry it. Offering Redact & Vault
+// here would take the choice, write 'redact', and silently drop the half the
+// user picked it for. It is offered on the Detections page, which writes the
+// axis that can hold it.
+//
+// Typed as a subset OF the canonical set, so an id that stops existing is a
+// compile error; the exclusion above is asserted in posture.test.ts, which is
+// what makes it a decision rather than a gap.
+const STANDING_POSTURE_ORDER: readonly BuiltinPolicyId[] = [
+  'redact',
+  'warn',
+  'block',
+  'monitor',
+] as const;
+
+// The archetypes this axis cannot express — re-exported from the schema, which
+// DERIVES them from the reversibility flag rather than listing them. A second
+// hand-written list here would be one more place a future archetype has to be
+// remembered, and the two could disagree about the same id.
+export const CATEGORY_INEXPRESSIBLE_POLICIES: readonly BuiltinPolicyId[] =
+  CATEGORY_INEXPRESSIBLE_IDS;
 
 // One offered palette level of the standing-posture step: the BuiltinPolicyId the flow
 // persists plus its user-facing label. A pure presentation descriptor (no schema

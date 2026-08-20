@@ -1,7 +1,9 @@
 import type { ActionTaken, DetectionCategory } from '@akasecurity/schema';
+import { builtinPolicyToAction, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CATEGORY_INEXPRESSIBLE_POLICIES,
   presentStandingSecretPosture,
   writeStandingSecretPosture,
 } from '../../src/remediation/posture.ts';
@@ -46,6 +48,31 @@ describe('presentStandingSecretPosture — standing-posture palette', () => {
     const { options } = presentStandingSecretPosture();
     expect(options.map((o) => o.level)).toEqual(['redact', 'warn', 'block', 'monitor']);
     expect(options.map((o) => o.label)).toEqual(['Redact', 'Warn', 'Block', 'Monitor']);
+  });
+
+  it('classifies every built-in as offered or inexpressible — no archetype falls out', () => {
+    // The display order above is deliberately not the catalog's, so the palette
+    // cannot be derived from it — which is exactly how an added archetype goes
+    // missing here with no compile error and nothing else failing. Requiring
+    // the two lists to PARTITION the canonical set forces a new one to be
+    // classified rather than forgotten.
+    const { options } = presentStandingSecretPosture();
+    const offered = options.map((o) => o.level);
+    expect([...offered, ...CATEGORY_INEXPRESSIBLE_POLICIES].sort()).toEqual(
+      [...KNOWN_BUILTIN_IDS].sort(),
+    );
+    // Disjoint as well as covering — an id in both lists would satisfy the sort
+    // above only by displacing one that is in neither.
+    expect(offered.filter((id) => CATEGORY_INEXPRESSIBLE_POLICIES.includes(id))).toEqual([]);
+  });
+
+  it('does NOT offer Redact & Vault, because this axis cannot store it', () => {
+    // A per-category policy row holds an ActionTaken — the verb alone — so
+    // 'vault' would be written as plain 'redact' and the user would lose the
+    // half they chose it for, silently. Pinned as a decision so re-adding it
+    // has to come with somewhere for the reversibility to live.
+    expect(presentStandingSecretPosture().options.map((o) => o.level)).not.toContain('vault');
+    expect(builtinPolicyToAction('vault')).toBe('redact');
   });
 });
 

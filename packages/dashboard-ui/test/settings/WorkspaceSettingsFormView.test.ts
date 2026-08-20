@@ -1,12 +1,23 @@
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { TriageHit, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import {
+  BUILTIN_POLICIES,
+  KNOWN_BUILTIN_IDS,
+  TriageHit,
+  VAULT_CONSENT_VERSION,
+} from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  CONNECTION_ATTACHED_DESCRIPTION,
+  CONNECTION_NO_TRANSPORT_NOTICE,
+  CONNECTION_STANDALONE_DESCRIPTION,
+  CONNECTION_UNAVAILABLE_NOTICE,
+  DETACH_MANAGED_NOTICE,
   HANDLING_SECTION_DESCRIPTION,
   HANDLING_SECTION_LABEL,
+  HANDLING_SECTION_LINK_LABEL,
   HISTORICAL_CHOICES,
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
@@ -15,10 +26,10 @@ import {
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
-  POLICY_CHOICES,
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
   VAULT_SECTION_LABEL,
+  VAULT_STALE_BADGE,
   VAULT_STALE_NOTICE,
   vaultChoiceOf,
   vaultConsentStale,
@@ -46,16 +57,19 @@ const ALWAYS_FALSE = [/next hook/i, /nothing is altered/i, /immediately/i, /righ
 const FORM_COPY: Record<string, string> = {
   HANDLING_SECTION_LABEL,
   HANDLING_SECTION_DESCRIPTION,
+  // The connection strings are swept like every other section's. They were the
+  // one block of copy in this file with no honesty coverage at all, and the
+  // attached description shipped claiming an exchange this build never performs.
+  CONNECTION_STANDALONE_DESCRIPTION,
+  CONNECTION_ATTACHED_DESCRIPTION,
+  CONNECTION_NO_TRANSPORT_NOTICE,
+  CONNECTION_UNAVAILABLE_NOTICE,
+  DETACH_MANAGED_NOTICE,
   HISTORICAL_SECTION_LABEL,
   HISTORICAL_SECTION_DESCRIPTION,
   VAULT_SECTION_LABEL,
   VAULT_SECTION_DESCRIPTION,
-  ...Object.fromEntries(
-    POLICY_CHOICES.flatMap((c) => [
-      [`POLICY_CHOICES.${c.value}.label`, c.label],
-      [`POLICY_CHOICES.${c.value}.description`, c.description],
-    ]),
-  ),
+  HANDLING_SECTION_LINK_LABEL,
   ...Object.fromEntries(
     HISTORICAL_CHOICES.flatMap((c) => [
       [`HISTORICAL_CHOICES.${c.value}.label`, c.label],
@@ -83,9 +97,29 @@ describe('WorkspaceSettingsFormView copy', () => {
     for (const claim of ALWAYS_FALSE) expect(text).not.toMatch(claim);
   });
 
-  it('points enforcement at the per-category Policies', () => {
-    expect(HANDLING_SECTION_DESCRIPTION).toMatch(/Policies/);
-    expect(HANDLING_SECTION_DESCRIPTION).toMatch(/per-category/i);
+  it('points enforcement at the per-detection assignment, and offers no control', () => {
+    // The pointer names the axis that actually decides — the PER-DETECTION
+    // assignment (installed_packs.policy_id), which is the only one that can
+    // carry every archetype. It used to say "per-category Policies", which is a
+    // different axis: that one stores an ActionTaken and cannot express
+    // Redact & Vault at all.
+    expect(HANDLING_SECTION_DESCRIPTION).toMatch(/per detection/i);
+    expect(HANDLING_SECTION_DESCRIPTION).toMatch(/Detections page/);
+    // And it is explicit that no global handling setting exists, because one
+    // did, it drove nothing, and users read it as if it did.
+    expect(HANDLING_SECTION_DESCRIPTION).toMatch(/no global handling setting/i);
+  });
+
+  it('names every built-in archetype in the enforcement pointer', () => {
+    // A user sent to the Detections page should already know what they will be
+    // choosing between. Derived from the catalog so an added archetype fails
+    // here rather than being silently absent from the one sentence that lists
+    // them.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(HANDLING_SECTION_DESCRIPTION, `${id} is not named`).toContain(
+        BUILTIN_POLICIES[id].name,
+      );
+    }
   });
 });
 
@@ -357,6 +391,17 @@ describe('stale grant enables the one-save re-consent', () => {
       }),
     );
     expect(html).toContain('data-slot="vault-stale-notice"');
+    // Present in the markup is NOT the same as visible: a collapsed <details>
+    // still renders its children, so the notice must be inside a row the
+    // browser has actually opened. Without this the whole warning can be
+    // hidden by default and every assertion here stays green.
+    const staleRow = html.slice(0, html.indexOf('data-slot="vault-stale-notice"'));
+    const rowOpen = staleRow.lastIndexOf('<details');
+    expect(staleRow.slice(rowOpen, staleRow.indexOf('>', rowOpen) + 1)).toContain('open');
+    // And the collapsed SUMMARY carries the contradiction too, because the row
+    // otherwise reads "Allow vaulting" on a machine where vaulting is paused.
+    expect(html).toContain('data-slot="row-alert"');
+    expect(html).toContain(VAULT_STALE_BADGE);
     // The documented recovery is ONE save with 'on' selected — so the button
     // must not be disabled by the form starting clean.
     // React renders the boolean attribute as disabled="" — the Tailwind
@@ -364,5 +409,185 @@ describe('stale grant enables the one-save re-consent', () => {
     const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
     expect(saveButton).not.toBe('');
     expect(saveButton).not.toContain('disabled=""');
+  });
+});
+
+// The Connection section and the administrative-lock affordance. Neither had any
+// render coverage, and both are places where the rendered state IS the claim:
+// a locked control that only looks disabled, or an attached machine described as
+// exchanging data it never exchanges, is a lie the type system cannot catch.
+describe('the connection section', () => {
+  const base: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+  };
+
+  const attached: WorkspaceSettings = {
+    ...base,
+    runMode: 'attached',
+    controlPlane: {
+      endpoint: 'https://aka.acme.internal',
+      label: 'Acme Prod',
+      attachedAt: '2026-02-02T00:00:00.000Z',
+    },
+  };
+
+  const render = (props: Partial<Parameters<typeof WorkspaceSettingsFormView>[0]> = {}): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: base,
+        onSave: () => undefined,
+        ...props,
+      }),
+    );
+
+  it('offers an attach form and no detach when standalone', () => {
+    const html = render({ onAttach: () => undefined, onDetach: () => undefined });
+    expect(html).toContain('data-slot="attach-form"');
+    expect(html).not.toContain('data-slot="detach-button"');
+    expect(html).toContain(CONNECTION_STANDALONE_DESCRIPTION);
+  });
+
+  it('offers a detach and names the deployment when attached', () => {
+    const html = render({
+      settings: attached,
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+    });
+    expect(html).toContain('data-slot="detach-button"');
+    expect(html).not.toContain('data-slot="attach-form"');
+    // The label, not the raw endpoint, when one was supplied.
+    expect(html).toContain('Acme Prod');
+  });
+
+  it('says plainly that nothing is sent, on an attached machine', () => {
+    // The honesty requirement. This build has no transport, so an attached
+    // machine must not be left implying an exchange is happening.
+    expect(
+      render({ settings: attached, onAttach: () => undefined, onDetach: () => undefined }),
+    ).toContain('data-slot="connection-no-transport"');
+  });
+
+  it('states the unavailable notice when no attach handler is supplied', () => {
+    // A surface that cannot attach says so rather than rendering a form whose
+    // button does nothing.
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings: base, onSave: () => undefined }),
+    );
+    // With no onAttach the form is replaced by the notice.
+    expect(html).toContain('data-slot="connection-unavailable"');
+    expect(html).toContain(CONNECTION_UNAVAILABLE_NOTICE);
+  });
+
+  it('withholds detach and explains why when the connection is managed', () => {
+    const html = render({
+      settings: attached,
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+      managed: { present: true, organization: 'Acme', lockedFields: ['runMode'] },
+    });
+    expect(html).not.toContain('data-slot="detach-button"');
+    expect(html).toContain('data-slot="connection-managed-notice"');
+    expect(html).toContain('Acme');
+    expect(html).toContain(DETACH_MANAGED_NOTICE);
+  });
+});
+
+// React server-renders attributes in its own order — `disabled` lands BEFORE
+// `name` — so an assertion that slices forward from the name attribute silently
+// misses it and reports a working lock as broken. Read the whole element.
+function inputFor(html: string, name: string): string {
+  const at = html.indexOf(`name="${name}"`);
+  if (at === -1) throw new Error(`no input named ${name} in the rendered form`);
+  const open = html.lastIndexOf('<input', at);
+  const close = html.indexOf('>', at);
+  return html.slice(open, close + 1);
+}
+
+describe('administratively locked rows', () => {
+  const settings: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'full',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+  };
+
+  const lockedHtml = (): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        managed: { present: true, organization: 'Acme', lockedFields: ['historicalAccess'] },
+      }),
+    );
+
+  it('actually DISABLES the inputs, not merely dims them', () => {
+    // The property that matters: a row that only looked disabled would still be
+    // reachable by keyboard and would still post a value the writer refuses.
+    expect(inputFor(lockedHtml(), 'historicalAccess')).toContain('disabled');
+  });
+
+  it('says who decided, so a locked control is not read as a bug', () => {
+    const html = lockedHtml();
+    expect(html).toContain('data-slot="managed-notice"');
+    expect(html).toContain('Acme');
+  });
+
+  it('leaves an UNLOCKED row editable on the same managed machine', () => {
+    // Per-field locking is the whole point; an all-or-nothing lock would make
+    // the managed layer far blunter than it claims to be.
+    expect(inputFor(lockedHtml(), 'vaultInlineReveal')).not.toContain('disabled');
+  });
+
+  it('renders every row editable when nothing is managed', () => {
+    // The positive control: without it, a form that disabled everything would
+    // satisfy the disabled-check above.
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined }),
+    );
+    expect(inputFor(html, 'historicalAccess')).not.toContain('disabled');
+    expect(html).not.toContain('data-slot="managed-notice"');
+  });
+});
+
+describe('the enforcement pointer', () => {
+  const settings: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+  };
+
+  it('links to the Detections page and offers no control of its own', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined }),
+    );
+    expect(html).toContain('data-slot="enforcement-pointer"');
+    expect(html).toContain('href="/detections"');
+    expect(html).toContain(HANDLING_SECTION_LINK_LABEL);
+    // No radio group for handling — that is the whole point of the section.
+    expect(html).not.toContain('name="policy"');
+  });
+
+  it('honours an injected href so the package stays router-agnostic', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        detectionsHref: '/app/detections',
+      }),
+    );
+    expect(html).toContain('href="/app/detections"');
   });
 });

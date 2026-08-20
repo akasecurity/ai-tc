@@ -53,11 +53,19 @@ describe('readWorkspaceSettings', () => {
     expect(settings.onboardedAt).toBe('2026-06-19T00:00:00.000Z');
   });
 
-  it('reads a settings.json carrying a superseded runMode, keeping its other fields', () => {
+  it('reads back both run modes, keeping the rest of the file', () => {
     writeSettings({ specVersion: 1, runMode: 'attached', policy: 'warn' });
     const settings = readWorkspaceSettings(base);
-    expect(settings.runMode).toBe('standalone');
+    expect(settings.runMode).toBe('attached');
     expect(settings.policy).toBe('warn'); // the rest of the file is untouched
+  });
+
+  it('an unknown runMode still falls back to unonboarded defaults', () => {
+    // The enum was widened, not opened: a typo must not load as a real mode.
+    // The whole object fails to parse, which is the documented fail-open — the
+    // point of this case is that it is not silently coerced to 'attached'.
+    writeSettings({ specVersion: 1, runMode: 'atached' });
+    expect(readWorkspaceSettings(base).runMode).toBe('standalone');
   });
 
   it('default-fills missing keys so an older partial settings.json still parses', () => {

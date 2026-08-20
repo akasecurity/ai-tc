@@ -44,11 +44,13 @@ export const HARNESS_KIND: Record<Harness, string> = {
   [HARNESS.Api]: 'API',
 };
 
-// The harnesses shown in the filter, in display order — the registry's own
-// declaration order, not a second list. The hand-written copy this replaced
-// was pinned only by a SORTED set-equality assertion, so it agreed with the
-// registry on membership while being free to disagree on the order it exists
-// to specify.
+// The harnesses shown in the filter, in display order. Derived from the registry
+// rather than listed again, so a harness added there cannot go missing from the
+// filter — but the order is then a SCHEMA file's declaration order, where
+// reordering members does not read as a UI change to anyone. meta.test.ts pins
+// the sequence against an explicit list for exactly that reason: the derivation
+// owns membership, the test owns order, and a reorder there has to be made here
+// too.
 export const HARNESS_IDS: readonly Harness[] = Object.values(HARNESS);
 
 interface EventMeta {

@@ -16,8 +16,12 @@
 //
 // Every narrower enum in this package (`Provider`, `HarnessId`,
 // `FindingProvider`) is `Harness.extract([...])` over these member names, so a
-// subset can never carry an id this file does not define, and adding a harness
-// here is the only edit an id needs.
+// subset can never carry an id this file does not define. It does NOT follow
+// that a member added here reaches them: `.extract()` takes an explicit list of
+// member names, so a new id joins no subset on its own. Adding one is this edit
+// plus a deliberate decision per subset — whether it is filtered on, scanned
+// for, or bucketed as a findings provider. A subset it never joins renders
+// nowhere and buckets to the miss path, with nothing failing to say so.
 //
 // The miss path is not shared, and the two consumers answer differently: an
 // unmapped tool id passes through `harnessFromTool` and the read side coalesces
@@ -34,7 +38,16 @@ import type { FindingProvider } from './finding.ts';
  *
  * Members are named so call sites spell `HARNESS.ClaudeCode` rather than a bare
  * `'claudecode'`: a literal that is merely equal to a member is invisible to a
- * rename, which is what let these ids drift into five hand-typed copies.
+ * rename.
+ *
+ * These values are PERSISTED, exactly as `SOURCE_TOOL`'s are — the capture path
+ * stamps one onto a session root's `harness` attribute, the Activity queries
+ * compare against them in SQL, and `HarnessId` is what a stored inventory
+ * `provider` is validated against. So a member's VALUE is a storage contract
+ * here too and may not be respelled without a migration, while its NAME is free
+ * to change. A respell compiles and passes the whole suite, because every call
+ * site spells the member — and every row an earlier version wrote stops matching.
+ *
  * Declared as a const object rather than a TypeScript `enum` on purpose —
  * `packages/plugin-sdk/src/scan-worker.ts` is loaded by raw Node under type
  * STRIPPING and reaches this module through `@akasecurity/detections`, so
@@ -59,9 +72,11 @@ export type Harness = z.infer<typeof Harness>;
 /**
  * The tool whose input/output was scanned — the WIRE id a plugin stamps on a
  * capture, and the value stored in the events table's `source_tool` column.
- * Distinct from `HARNESS` (`claude-code` vs `claudecode`): these are persisted
- * bytes, so a member's VALUE is a storage contract and may not be respelled
- * without a migration, while its NAME is free to change.
+ * Spelled differently from `HARNESS` (`claude-code` vs `claudecode`) because the
+ * capture and read sides name the same tool differently — NOT because only one
+ * of them is persisted. Both are: a member's VALUE here is a storage contract
+ * and may not be respelled without a migration, while its NAME is free to
+ * change.
  */
 export const SOURCE_TOOL = {
   ClaudeCode: 'claude-code',

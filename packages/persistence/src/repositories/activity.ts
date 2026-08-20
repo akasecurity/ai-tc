@@ -148,10 +148,20 @@ function safeParseStringArray(raw: string | null): string[] {
 }
 
 // What a session root with no stored `harness` attribute reads as. Named once
-// because THREE places have to agree on it — this validator and the two SQL
-// coalesces below — and a disagreement is silent: the filter would match rows
-// the view renders under a different harness. A code-defined constant, never
-// user input, so the SQL interpolations are injection-safe.
+// because three places spell it — this validator and the two SQL coalesces
+// below — and a disagreement is silent: the filter would match rows the view
+// renders under a different harness. A code-defined constant, never user input,
+// so the SQL interpolations are injection-safe.
+//
+// They agree on the NULL case only, and that is the whole of what is claimed
+// here. `toHarness` rescues any value the enum rejects; `coalesce` rescues only
+// NULL. So a root stored with an off-enum harness renders as the default and
+// appears in the facets under it, while the SQL filter compares its raw stored
+// value and matches nothing — the row vanishes when the user selects the very
+// harness it is shown as. No writer in this repo produces such a value (every
+// handleSessionStart caller passes a mapped tool), which is why this is stated
+// rather than fixed; activity.test.ts pins the divergence so that closing it is
+// a deliberate edit and not an accident.
 const DEFAULT_HARNESS = HARNESS.ClaudeCode;
 
 /** Validate a raw harness attribute against the enum, defaulting to

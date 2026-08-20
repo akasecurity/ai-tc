@@ -107,10 +107,18 @@ the failure being guarded against.
 
 **Do not create new types and interfaces — use the ones exported from `@akasecurity/schema` to the maximum extent.** Consumers (web-ui, CLI, plugin) import the schema types directly rather than redefining local "view-model" shapes or adapters. A new type is justified only when there is genuinely no schema equivalent (e.g. pure presentation descriptors like `{ label, icon, color }`). If a shape is missing, add it to `@akasecurity/schema/src/zod/` first, then consume it.
 
-**The agent vocabulary is ONE registry, and nothing outside it may spell an id.**
+**The agent vocabulary is ONE registry, and outside it an id is spelled through a
+member rather than as a literal.** Unlike §3 and §4, this is a CONVENTION and not a
+gate: no lint rule and no derived audit enforces it, so read it as what review looks
+for rather than as something CI will catch. Two neighbouring id spaces are
+deliberately outside it and are not violations — `AGENT_PLUGINS[].id` in
+`packages/local-ops/src/registry.ts` (the ref `aka plugins install` takes, which
+carries its own `sourceTool` field alongside) and the browser extension's
+content-script provider ids, which name a web app rather than a capture and whose
+files import nothing from schema on purpose.
 `src/zod/harness-map.ts` holds both spellings as named-member const objects —
 `SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
-display id the dashboard renders, `'claudecode'`). Three rules keep them from re-multiplying,
+display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,
 which they had done into five hand-typed copies:
 
 - **A narrower enum is `Harness.extract([...])` over MEMBER NAMES**, never a fresh
@@ -120,13 +128,22 @@ which they had done into five hand-typed copies:
   `.extract()` preserves the order passed).
 - **Call sites spell `HARNESS.ClaudeCode` / `SOURCE_TOOL.ClaudeCode`, not the literal.** A
   literal that merely equals a member is invisible to a rename, which is exactly how these
-  drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`) — verified to
-  keep `satisfies Record<Harness, …>` exhaustiveness, so a harness added upstream is a
-  compile error at every table keyed on the WHOLE enum. **That does not extend to the
-  `.extract()` subsets, which is where an id is actually added.** A subset gains the member
-  silently, and anything keyed on the subset — or keyed on nothing, like `SCAN_COVERAGE`'s
-  array in `packages/persistence/src/repositories/security.ts` — still compiles with no row
-  for it. Those owe a TEST; do not read the compile error as covering them.
+  drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`), which keeps
+  `satisfies Record<Harness, …>` exhaustiveness — so **a table over a vocabulary is
+  ANNOTATED `Record<ThatVocabulary, …>`**, and that one rule needs no per-table test. It
+  covers the `.extract()` subsets exactly as it covers the whole enum: a table annotated
+  `Record<HarnessId, …>` fails to compile the moment `HarnessId`'s extract list grows
+  (TS2741 — verified, not assumed). What the compile error cannot reach is a collection
+  keyed on NOTHING — an array of rows carrying its id in a field — because adding a member
+  changes no type it mentions. Give it a key, or it owes a TEST.
+- **Adding an id is one edit to the registry PLUS a deliberate decision per subset.**
+  `.extract()` takes explicit member names, so a member added to `HARNESS` joins no subset
+  on its own: it is a compile error at every table keyed on the whole enum (which is what
+  prompts the lettermark and the kind), and silently absent from `Provider`, `HarnessId`
+  and `FindingProvider` until each is extended on purpose. Until then it renders under no
+  scan-coverage row, gets no label, and buckets to the miss path. That is the intended
+  shape — subsets answer different questions and none should widen by accident — but do
+  not read the compile error as telling you the work is finished.
 - **The two vocabularies are joined by MEMBER NAME**, so `TOOL_TO_HARNESS` pairs them without
   either spelling being retyped, and a member in only one of them is meaningful rather than an
   omission (`Cli`/`Unknown` capture under no harness; `Windsurf`/`Api` render under no

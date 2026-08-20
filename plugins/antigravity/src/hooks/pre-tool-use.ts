@@ -17,6 +17,7 @@
  * error path, including a throw and the watchdog.
  */
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
@@ -97,7 +98,7 @@ async function main(): Promise<unknown> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: 'antigravity', text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata },
         kind === 'tool_use' ? { persist: 'with-findings' } : {},
       );
       scanned.push({ spec, result });

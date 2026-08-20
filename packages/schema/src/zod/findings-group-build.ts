@@ -21,7 +21,7 @@ import type {
 // Value import: the fallback below validates against the enum itself, so a member
 // added to FindingCategory is honored here without restating the member list.
 import { FindingCategory } from './finding.ts';
-import { TOOL_TO_HARNESS } from './harness-map.ts';
+import { HARNESS, TOOL_TO_HARNESS } from './harness-map.ts';
 
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
 
@@ -106,27 +106,32 @@ export function toApiProvider(sourceTool: string): FindingProvider {
   // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
   // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return TOOL_TO_HARNESS[sourceTool] ?? 'api';
+  return TOOL_TO_HARNESS[sourceTool] ?? HARNESS.Api;
 }
 
 /**
  * API FindingProvider → DB sourceTool filter values (string[]).
  * claudecode and claudedesktop must never be merged. 'api' → [] (matches any
  * unknown value; the filter is applied in-memory).
+ *
+ * DERIVED as the inverse of the same TOOL_TO_HARNESS table `toApiProvider`
+ * reads forward, so the two directions cannot disagree about which wire ids
+ * belong to a provider — a tool added to that table is carried here with no
+ * second edit.
+ *
+ * What deriving GIVES UP is the one thing a keyed table checks: that every
+ * provider has a row at all. A provider no tool maps onto returns [] rather than
+ * failing to compile, and [] is indistinguishable from 'api''s own contract
+ * below — so it reads as the miss bucket rather than as a filter matching
+ * nothing, which is a silently empty findings page instead of an error. Nothing
+ * in the type system replaces that; the set assertion in harness-map.test.ts is
+ * what covers it. 'api' falls out with no rows of its own, which is correct — it
+ * is the miss bucket and names no single stored value.
  */
 export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
-  const map: Record<FindingProvider, string[]> = {
-    claudecode: ['claude-code'],
-    claudedesktop: ['claude-desktop'],
-    copilot: ['github-copilot'],
-    cursor: ['cursor'],
-    chatgpt: ['chatgpt'],
-    claudeai: ['claude-ai'],
-    codex: ['codex'],
-    antigravity: ['antigravity'],
-    api: [], // 'api' catches unknown tools — applied in-memory (no single DB value)
-  };
-  return map[apiProvider];
+  return Object.entries(TOOL_TO_HARNESS)
+    .filter(([, harness]) => harness === apiProvider)
+    .map(([sourceTool]) => sourceTool);
 }
 
 // ─── Grouping ────────────────────────────────────────────────────────────────

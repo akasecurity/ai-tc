@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { SourceTool } from './harness-map.ts';
+
 // 'tool_use' is the enforcement record for a tool call whose arguments were
 // scanned before it ran (a Bash command, a WebFetch url, an MCP payload) —
 // text the tool acts on rather than durable content it authors, which stays
@@ -17,22 +19,6 @@ export type EventKind = z.infer<typeof EventKind>;
 // must constrain to these kinds; interpolate into `... event_type IN (${…})`.
 // A code-defined constant, never user input — direct interpolation is injection-safe.
 export const CAPTURE_EVENT_TYPES_SQL = EventKind.options.map((k) => `'${k}'`).join(',');
-
-export const SourceTool = z
-  .enum([
-    'claude-code',
-    'claude-desktop',
-    'cursor',
-    'chatgpt',
-    'claude-ai',
-    'github-copilot',
-    'codex',
-    'antigravity',
-    'cli',
-    'unknown',
-  ])
-  .meta({ id: 'SourceTool' });
-export type SourceTool = z.infer<typeof SourceTool>;
 
 export const EventMetadata = z
   .object({

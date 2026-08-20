@@ -13,6 +13,7 @@ import {
   safeMaskedMatch,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { type HistoryWalkOptions, iterateHistory } from './transcripts.ts';
 
@@ -161,7 +162,7 @@ export async function scanHistory(
       const result = await runtime.capture(
         {
           kind: message.kind,
-          sourceTool: 'claude-code',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
           text: message.text,
           occurredAt: message.occurredAt,
         },

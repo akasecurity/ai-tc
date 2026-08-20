@@ -1,13 +1,18 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
 import type { ActionTaken } from '@akasecurity/schema';
-import { EventKind } from '@akasecurity/schema';
+import { EventKind, SOURCE_TOOL } from '@akasecurity/schema';
 
-// The web chat UIs this native host serves. Kept as a local literal union
-// (not @akasecurity/schema's SourceTool) because it is the narrower set this
-// RPC contract actually accepts — content.ts's provider registry is the one
-// place new web providers (Gemini, DeepSeek, T3 Chat, …) get added, and each
-// addition widens this union + WEB_TOOL_TO_SOURCE in host.ts together.
-export type WebSourceTool = 'chatgpt' | 'claude-ai';
+// The web chat UIs this native host serves — the narrower SET of wire ids this
+// RPC contract accepts, taken FROM the registry rather than spelled again beside
+// it. content.ts's provider registry is the one place new web providers (Gemini,
+// DeepSeek, T3 Chat, …) get added, and each addition extends this list +
+// WEB_TOOL_TO_SOURCE in host.ts together.
+//
+// Narrowing by listing members keeps that property while making the ids
+// themselves unspellable here: a value that is not a SourceTool cannot be added
+// to this list, and a member respelled upstream moves this union with it.
+const WEB_SOURCE_TOOLS = [SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi] as const;
+export type WebSourceTool = (typeof WEB_SOURCE_TOOLS)[number];
 
 export interface SessionStartRequest {
   type: 'session_start';
@@ -95,7 +100,7 @@ export type HostResponse =
   SessionStartResponse | CaptureResponse | PingResponse | HealthResponse | ErrorResponse;
 
 function isWebSourceTool(value: unknown): value is WebSourceTool {
-  return value === 'chatgpt' || value === 'claude-ai';
+  return (WEB_SOURCE_TOOLS as readonly unknown[]).includes(value);
 }
 
 // `kind` is handed to handleCapture and written straight through to the store's

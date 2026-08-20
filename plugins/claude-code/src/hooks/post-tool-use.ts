@@ -19,7 +19,7 @@
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid } from '@akasecurity/schema';
+import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
       fields,
       (text) =>
         runtime.capture(
-          { kind: 'response', sourceTool: 'claude-code', text, metadata },
+          { kind: 'response', sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
           { persist: 'with-findings' },
         ),
       vaultGlue

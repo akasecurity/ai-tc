@@ -1369,6 +1369,254 @@ describe('every file outside every workspace package is linted by a repo-root pa
   });
 });
 
+describe("turbo's own hash moves when a lintable file appears at the repo root", () => {
+  // The three checks above read turbo.json as TEXT and match its globs with
+  // `path.matchesGlob`. That is a MODEL of turbo's hashing, not turbo's hashing:
+  // it holds only while `$TURBO_ROOT$` resolves where the helper assumes and the
+  // two glob dialects agree about `*` versus `**`. Nothing in this package has
+  // ever asked the one reader whose answer decides whether this suite RUNS.
+  //
+  // The hazard is the one turbo.json's own comments describe at length. Drop
+  // `$TURBO_ROOT$/*.{ts,…}` — the only entry that reaches a file sitting
+  // directly at the repo root, since the two per-package globs above it both
+  // require a directory segment — and adding a lintable file there moves this
+  // task's hash not at all. turbo replays the cached pass, every guard in this
+  // package is skipped at the one moment it exists to fire, `pnpm lint` and CI
+  // stay green, and the file ships with a `fetch()` in it.
+  const PKG = '@akasecurity/eslint-config';
+  const TASK_ID = `${PKG}#test`;
+  const BUILD_TASK_ID = `${PKG}#build`;
+
+  // Spawned as a Node script rather than through `node_modules/.bin/turbo`: that
+  // shim is a `.cmd` on Windows, which libuv's executable search cannot load
+  // without a shell (CLAUDE.md "A command spawned by BARE NAME"). The
+  // launcher turbo's own manifest names is plain JS, so `process.execPath` runs
+  // it identically on every platform and no argument is ever handed to `cmd.exe`
+  // to re-parse.
+  //
+  // Read out of that manifest rather than spelled here. A hardcoded
+  // `bin/turbo` survives only until turbo moves its launcher, and the failure
+  // then is an `existsSync` miss reported as "run pnpm install" — a confident
+  // instruction to reinstall a dependency that is installed correctly.
+  const TURBO_BIN = (() => {
+    const manifest = join(REPO_ROOT, 'node_modules', 'turbo', 'package.json');
+    if (!existsSync(manifest)) return '';
+    const bin = JSON.parse(readFileSync(manifest, 'utf8')).bin;
+    const entry = typeof bin === 'string' ? bin : bin?.turbo;
+    return typeof entry === 'string' ? join(REPO_ROOT, 'node_modules', 'turbo', entry) : '';
+  })();
+
+  // Five dry runs at ~0.1s each locally. The budget is not sized against that:
+  // it is a hung-subprocess backstop, and it is deliberately the same 120s as
+  // RESOLVE_TIMEOUT_MS above rather than a second number to keep in step —
+  // both answer "this stopped terminating", neither measures anything.
+  const HASH_TIMEOUT_MS = RESOLVE_TIMEOUT_MS;
+
+  // Neither name matches `*.config.*`, so neither is a target of any lint pass
+  // that a concurrently-running case in this package might make. Both are
+  // untracked for the whole of their short life, so every guard here that
+  // derives its file set from `git ls-files` is blind to them by construction.
+  const ROOT_PROBE = '__aka_turbo_hash_probe__.mjs';
+  const rootProbeAbs = join(REPO_ROOT, ROOT_PROBE);
+  const CONTROL_PROBE = '__aka_turbo_hash_control__.txt';
+  const controlRel = 'tools/ci';
+  const controlAbs = join(REPO_ROOT, controlRel, CONTROL_PROBE);
+
+  // Belt and braces with the finallys below: an assertion that throws mid-test
+  // must never leave a file behind that perturbs the next run's hash — or a
+  // later `pnpm lint` — for a reason nobody can trace back to here.
+  afterAll(() => {
+    rmSync(rootProbeAbs, { force: true });
+    rmSync(controlAbs, { force: true });
+  });
+
+  /** The hashes turbo computes for this package's two tasks, right now. */
+  function hashes() {
+    let stdout;
+    try {
+      stdout = execFileSync(
+        process.execPath,
+        [TURBO_BIN, 'run', 'test', `--filter=${PKG}`, '--dry=json'],
+        // stderr piped rather than inherited: turbo prints a version banner on
+        // every run, and inheriting it would put one in the middle of vitest's
+        // output for a case that succeeded.
+        {
+          cwd: REPO_ROOT,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+    } catch (err) {
+      // Piping stderr captures it onto `err.stderr`, and vitest renders only
+      // `message` and `stack` — so without this rethrow the whole reported
+      // failure is `Command failed: <argv>`, naming no reason at all. That is
+      // the shape a CI-only failure arrives in, which is the one place nobody
+      // can re-run it by hand to find out why.
+      const { stderr, status } = /** @type {{ stderr?: string, status?: number }} */ (err);
+      throw new Error(
+        `turbo dry run failed (exit ${String(status ?? 'unknown')}). Its stderr:\n` +
+          `${(stderr ?? '').trim() || '(empty)'}`,
+        { cause: err },
+      );
+    }
+
+    // Parsed defensively because the two ways this breaks both produce an error
+    // naming neither turbo nor this case. A notice on stdout — turbo prints a
+    // telemetry note on a machine that has never run it, which describes every
+    // fresh CI runner — makes `JSON.parse` throw about a token at position 0;
+    // and a payload without `tasks` makes `.find` throw about a property of
+    // undefined, from inside a helper.
+    let parsed;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch (err) {
+      throw new Error(
+        `turbo's --dry=json output did not parse as JSON. First 200 characters:\n` +
+          `${stdout.slice(0, 200)}`,
+        { cause: err },
+      );
+    }
+    const tasks = parsed.tasks;
+    expect(
+      Array.isArray(tasks),
+      "turbo's --dry=json payload carries no `tasks` array, so the shape this case reads has " +
+        'changed and no assertion below means what it says.',
+    ).toBe(true);
+
+    // Select by taskId, never by position. `tasks[0]` is `#build` today, whose
+    // inputs are package-local: read THAT and no probe below moves the hash, so
+    // the case reports a missing glob when the real fault is the selection. The
+    // build hash comes back too, so the control can say which of the two it is.
+    const test = tasks.find((t) => t.taskId === TASK_ID);
+    const build = tasks.find((t) => t.taskId === BUILD_TASK_ID);
+    expect(test, `no ${TASK_ID} in the dry run's task list`).toBeDefined();
+    expect(build, `no ${BUILD_TASK_ID} in the dry run's task list`).toBeDefined();
+
+    // Both hashes are asserted to be non-empty STRINGS, and that is not
+    // belt-and-braces. Every assertion in this case is a comparison between two
+    // of these values, so a renamed field hands back `undefined` on both sides:
+    // the stability check then passes for the best possible reason and the
+    // wrongest one, and the control fails blaming task selection. A guard whose
+    // whole job is to catch a cached green must not be able to go green because
+    // it read nothing.
+    for (const [label, task] of [
+      [TASK_ID, test],
+      [BUILD_TASK_ID, build],
+    ]) {
+      expect(
+        typeof task.hash === 'string' && task.hash.length > 0,
+        `${label} came back from the dry run with no \`hash\` string (got ` +
+          `${JSON.stringify(task.hash)}). Every comparison in this case is between two of these ` +
+          'values, so reading a missing field would make them all compare equal and pass.',
+      ).toBe(true);
+    }
+    return { test: test.hash, build: build.hash };
+  }
+
+  it(
+    'changes for a repo-root file, and holds still for an unchanged tree',
+    () => {
+      expect(
+        existsSync(TURBO_BIN),
+        `${TURBO_BIN} is missing, so this case cannot ask turbo anything. turbo is a root ` +
+          'devDependency; run `pnpm install`.',
+      ).toBe(true);
+
+      const baseline = hashes();
+
+      // An unchanged tree must hash to the same thing twice. Without this the
+      // two assertions below would be satisfied by a hash that simply is not
+      // stable — one that moves for every probe proves nothing about any of them.
+      //
+      // "Unchanged" is a claim about the WHOLE repo for the length of this case,
+      // and it is load-bearing rather than incidental: any concurrent writer
+      // under a path this task hashes moves the baseline underneath the
+      // comparisons. THIS FILE contains three such writers — the planted-probe
+      // describes below write `cli/__aka_network_probe__.config.ts` (matched by
+      // `$TURBO_ROOT$/*/**/*.{ts,…}`) and a repo-root
+      // `__aka_root_network_probe__.config.mjs` (matched by the very glob under
+      // test). They cannot overlap this case only because vitest runs one
+      // FILE's tests sequentially. So this case must stay in the same file as
+      // them; splitting either side into its own suite puts them in parallel
+      // workers, and the symptom is this assertion failing intermittently while
+      // naming turbo.json, which would be innocent.
+      expect(
+        hashes().test,
+        `${TASK_ID}'s hash is not stable across two dry runs of an unchanged tree, so nothing ` +
+          'below can attribute a change to the file that was planted rather than to the noise. ' +
+          'Check for a concurrent writer under a path this task hashes before suspecting turbo: ' +
+          'the planted-probe cases in this file write into `cli/` and the repo root, and are safe ' +
+          "only while they share this file's sequential execution.",
+      ).toBe(baseline.test);
+
+      // The positive control runs FIRST, and deliberately does not use the glob
+      // under test: it plants under `$TURBO_ROOT$/tools/ci/**`, an input this
+      // task lists by hand and `#build` does not carry at all. So it fails
+      // exactly when the MEASUREMENT is broken — the wrong task selected, a dry
+      // run that cannot see a new file — which is what lets the assertion after
+      // it be read as a verdict on the root glob rather than on the method.
+      //
+      // Not a CLAUDE.md edit, though that document is an equally decisive input
+      // of this task and not of `#build`: two describes in this package parse it,
+      // vitest runs test files in parallel, and mutating it mid-run reddens them
+      // for a reason nobody could trace back to here. Creating a file nothing
+      // reads carries the same discriminating power with none of that.
+      writeFileSync(controlAbs, 'turbo hash control probe\n');
+      let control;
+      try {
+        control = hashes();
+      } finally {
+        rmSync(controlAbs, { force: true });
+      }
+      expect(
+        control.test,
+        `planting ${controlRel}/${CONTROL_PROBE} moved no hash. Two edits produce exactly this ` +
+          'symptom and this case cannot tell them apart, so check both. (1) The dry run is being ' +
+          `read wrong — most likely by position, since \`tasks[0]\` is ${BUILD_TASK_ID}, whose ` +
+          `inputs are package-local. (2) \`$TURBO_ROOT$/${controlRel}/**\` was narrowed or ` +
+          "removed from this task's turbo.json inputs, in which case the control has stopped " +
+          'being a control. Settle that before reading the repo-root assertion below as a ' +
+          'verdict on turbo.json.',
+      ).not.toBe(baseline.test);
+      expect(
+        control.build,
+        `planting ${controlRel}/${CONTROL_PROBE} moved ${BUILD_TASK_ID}'s hash, which hashes only ` +
+          'package-local files. The two tasks are no longer distinguishable by what they hash, so ' +
+          'the control above no longer proves the selection is right.',
+      ).toBe(baseline.build);
+
+      // The property itself: a lintable file at the repo root — the shape the
+      // per-package globs structurally cannot reach — must move this task's hash.
+      writeFileSync(rootProbeAbs, 'export const probe = 1;\n');
+      let planted;
+      try {
+        planted = hashes();
+      } finally {
+        rmSync(rootProbeAbs, { force: true });
+      }
+      expect(
+        planted.test,
+        `adding ${ROOT_PROBE} at the repo root moved no hash for ${TASK_ID}, while the control ` +
+          'above did move it — so the measurement is sound and turbo.json is not. The repo-root ' +
+          'entry `$TURBO_ROOT$/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` is the only one that reaches a ' +
+          'file directly at the root; the per-package globs above it each require a directory ' +
+          'segment. Without it, every guard in this package replays a cached green on the commit ' +
+          'that adds an unlinted repo-root file.',
+      ).not.toBe(baseline.test);
+
+      // And the tree is back where it started, so the next reader of this hash
+      // is not charged for a file this case planted.
+      expect(
+        hashes().test,
+        'the planted files were removed but the hash did not return to its baseline, so this ' +
+          'case has left the tree perturbed for every task that hashes it next.',
+      ).toBe(baseline.test);
+    },
+    HASH_TIMEOUT_MS,
+  );
+});
+
 describe(`the root pass states the ignore-flag rule (${CONVENTIONS_DOC} step 5)`, () => {
   // The ignore rule is enforced for the ROOT pass by nonPackageFilesNotWired, and
   // stated for a PACKAGE by the paragraph earlier in step 5. Prose sitting beside

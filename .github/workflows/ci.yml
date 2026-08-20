@@ -666,39 +666,6 @@ jobs:
             turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-${{ runner.os }}-
 
-      # web-ui's BUILD lands in the step below whether or not this leg tests the
-      # dashboard: `@akasecurity/cli#test` depends on `^build`, so `web-ui#build`
-      # — a full `next build` — is scheduled inside that invocation. Under
-      # `--concurrency=2` it pairs with whichever suite is the other long miss,
-      # and in the steady state that is the biggest one,
-      # `ai-tc-claude-code#test`, whose 82 files spawn the built hooks as real
-      # child processes.
-      #
-      # Measured on a rerun of this leg where those two were the ONLY misses
-      # (34 of 36 tasks cached): the step reported 4m34.604s and
-      # claude-code#test alone reported 271.99s of it, so the build overlapped
-      # essentially the whole suite. It went red with `Test timed out in
-      # 20000ms` on two files that pass on every other leg — and on a different
-      # pair than the attempt before it, which is the rotating-cast signature
-      # the comments above call a starved runner rather than a broken test.
-      #
-      # Same fix and same reason as the dashboard and installer steps below: the
-      # pairing is addressed in the step layout, not by widening a per-test
-      # budget, which would hide it while still paying its wall clock. Building
-      # here changes nothing about the task list below — only what it has to
-      # execute, since this leaves a cache hit behind. Wall clock is EXPECTED to
-      # be roughly neutral — what the build stops overlapping, the suite stops
-      # paying for — but that is the reasoning carried over from that pairing,
-      # not a second measurement, and it is the number to watch here.
-      #
-      # No `--concurrency` here, unlike the two steps below: this runs no tests,
-      # so nothing in it is subject to the 20s per-test budget that the bound
-      # exists to protect, and ci-test-concurrency.test.js reads the flag on a
-      # non-test invocation as the `pnpm test -- --concurrency` mistake it
-      # guards against.
-      - name: Build the dashboard ahead of the suites it starves
-        run: pnpm turbo run build --filter=@akasecurity/web-ui
-
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.

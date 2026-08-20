@@ -29,7 +29,7 @@ function findingKeyFor(ruleId: string, filePath: string, valueFingerprint: strin
   return createHash('sha256').update(`${ruleId}\0${filePath}\0${valueFingerprint}`).digest('hex');
 }
 
-const store = useTempStore('aka-findings-');
+const store = useTempStore('aka-findings-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

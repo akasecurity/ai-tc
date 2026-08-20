@@ -11,7 +11,7 @@ const DAY_MS = 86_400_000;
 // A fixed clock so the 30-day findings window is deterministic.
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-const store = useTempStore('aka-detections-');
+const store = useTempStore('aka-detections-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ScanLedgerEntry } from '../../src/repositories/scan-ledger.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-ledger-');
+const store = useTempStore('aka-ledger-', { migrated: true });
 
 function entry(path: string, overrides: Partial<ScanLedgerEntry> = {}): ScanLedgerEntry {
   return {

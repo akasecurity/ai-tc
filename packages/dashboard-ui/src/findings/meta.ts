@@ -35,6 +35,9 @@ export const CATEGORY_LABEL: Record<FindingCategory, string> = {
   secret: 'Secret',
   pii: 'PII',
   source_code: 'Source code',
+  // Distinct from 'source_code': that is code as sensitive CONTENT, this is a
+  // vulnerability found in code.
+  code_flaw: 'Code flaw',
   external_share: 'External share',
   mcp_server: 'MCP server',
   customer_data: 'Customer data',
@@ -48,6 +51,7 @@ export const CATEGORY_ICON: Record<FindingCategory, IconComponent> = {
   secret: KeyIcon,
   pii: UserIcon,
   source_code: CodeIcon,
+  code_flaw: AlertIcon,
   external_share: ExternalShareIcon,
   mcp_server: ServerIcon,
   customer_data: DatabaseIcon,
@@ -61,6 +65,7 @@ export const CATEGORY_STYLE: Record<FindingCategory, string> = {
   secret: 'bg-sev-critical-fill text-sev-critical-ink',
   pii: 'bg-sev-low-fill text-sev-low-ink',
   source_code: 'bg-violet-fill text-violet-ink',
+  code_flaw: 'bg-sev-high-fill text-sev-high-ink',
   external_share: 'bg-teal-fill text-teal-ink',
   mcp_server: 'bg-sev-high-fill text-sev-high-ink',
   customer_data: 'bg-sev-high-fill text-sev-high-ink',

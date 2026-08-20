@@ -52,6 +52,7 @@ export {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   DB_FILENAME,
+  dbSidecars,
   ensureDataDirSync,
   KeyUnclaimableError,
   tightenFile,

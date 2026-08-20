@@ -17,6 +17,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DATA_DIR_MODE, DATA_FILE_MODE } from '../../src/paths.ts';
 import {
   createKeyProvider,
   FileKeyProvider,
@@ -97,6 +98,45 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 const POSIX_MODES = process.platform !== 'win32';
+
+// The real platform in the two forms the cases below need, both read at module
+// load, before anything can have faked it: the plain value is what the
+// order-independent guard compares against, and the DESCRIPTOR is what the
+// restore puts back. It has to be the descriptor — `process.platform` is a
+// non-writable own property, so a case that fakes it must redefine it, and
+// undoing that means reinstating the original definition rather than assigning
+// the old string back.
+const REAL_PLATFORM: NodeJS.Platform = process.platform;
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+if (!realPlatform) {
+  // Refuse rather than restore nothing: a fake that is never undone leaks into
+  // every later case in this worker, including the temp-dir teardowns.
+  throw new Error('process.platform has no own property descriptor to restore');
+}
+
+// KeychainKeyProvider's guard reads `process.platform` at CONSTRUCTION time, so
+// redefining it here reaches it. Faking rather than gating is the whole point:
+// `it.skipIf(process.platform === 'darwin')` runs one direction on one runner
+// and leaves the other unasserted everywhere — a guard hardcoded to ALWAYS fire
+// makes the backend unconstructable on macOS and no runner catches it.
+function stubPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+}
+
+// Unconditional and file-scoped rather than scoped to the block that fakes: a
+// case throwing mid-body would otherwise hand its fake to every case after it.
+// A no-op for every case that never faked.
+afterEach(() => {
+  Object.defineProperty(process, 'platform', realPlatform);
+});
+
+// The order-INDEPENDENT half of that guarantee. A single case asserting the
+// platform was restored covers only the cases declared before it, so appending
+// a faking case below it silently moves that case outside the guard. This runs
+// before every case in the file instead.
+beforeEach(() => {
+  expect(process.platform).toBe(REAL_PLATFORM);
+});
 
 describe('FileKeyProvider', () => {
   let dir: string;
@@ -470,6 +510,56 @@ describe('KeychainKeyProvider', () => {
     expect(existsSync(join(dir, `${VAULT_KEY_FILENAME}.lock`))).toBe(false);
   });
 
+  // Nothing repairs either of these. The keyring itself is re-tightened on every
+  // load, so a dropped mode there is a window; the lock is created, stamped and
+  // removed within one rotation, so a dropped mode there is simply a
+  // group/other-readable directory and owner file for as long as the lock is
+  // held. Neither carries a secret — the owner is a random token — but they sit
+  // in the keys dir, and SECURITY.md's at-rest note makes no carve-out for
+  // low-sensitivity files.
+  //
+  // Observed from INSIDE the lock through the injected `exec`, which the
+  // keychain backend calls while `withRotationLock` is still holding it. The
+  // file provider offers no such seam: its rotation takes, stamps and releases
+  // the lock in one synchronous stretch, so by the time `rotate()` resolves
+  // there is nothing left on disk to stat.
+  // `ctx.skip(reason)` rather than the file's usual `it.skipIf(!POSIX_MODES)`:
+  // both report as skipped rather than as a pass, but only this form carries the
+  // reason into the runner's output, which is what someone reading a Windows leg
+  // needs in order to tell a deliberate gate from a case that quietly vanished.
+  it('holds the rotation lock and its owner file owner-only', async (ctx) => {
+    if (!POSIX_MODES) {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const lock = join(dir, `${VAULT_KEY_FILENAME}.lock`);
+    let observed: { dir: number; owner: number } | undefined;
+    // As in the marker case: the umask only clears bits, so 0o000 is what makes
+    // a dropped `mode` argument show as 0666/0777 instead of being masked back
+    // down to the very value under test on a runner whose own umask is 0o077.
+    const previous = process.umask(0o000);
+    try {
+      const provider = new KeychainKeyProvider(dir, (args) => {
+        observed ??= {
+          dir: statSync(lock).mode & 0o777,
+          owner: statSync(join(lock, 'owner')).mode & 0o777,
+        };
+        if (args[0] === 'find-generic-password') return keyringJson(Buffer.alloc(32, 7));
+        return '';
+      });
+      await provider.rotate();
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(observed).toBeDefined();
+    expect(observed?.owner).toBe(DATA_FILE_MODE);
+    expect(observed?.dir).toBe(DATA_DIR_MODE);
+    // And the lock really was released, so the modes above were read from a
+    // live lock rather than from a leftover one.
+    expect(existsSync(lock)).toBe(false);
+  });
+
   // The defect this backend carried: the keyring rode argv (`-w <json>`), and
   // an execFileSync error's `.message` echoes argv — so a failed write put the
   // key in an error that outlives the process and travels into logs. It rides
@@ -690,10 +780,48 @@ describe('createKeyProvider', () => {
     expect(createKeyProvider('hsm-cluster', dir)).toBeInstanceOf(FileKeyProvider);
   });
 
-  it.skipIf(process.platform === 'darwin')(
-    'rejects keychain custody on a platform without one',
-    () => {
-      expect(() => new KeychainKeyProvider(dir)).toThrow(/not available on this platform/);
-    },
-  );
+  /**
+   * The platform guard, driven from a FAKED platform rather than gated on the
+   * real one — so both directions run on every runner.
+   *
+   * A gated case can only ever assert the direction its host happens to be on,
+   * and the direction it cannot reach is the worse of the two: a guard
+   * hardcoded to ALWAYS fire makes `KeychainKeyProvider` unconstructable, which
+   * silently kills keychain custody for every macOS user — the backend a
+   * security-conscious user deliberately opts into. Measured before this
+   * landed: replacing the `process.platform` read with `'linux'` left the whole
+   * suite green on a macOS host AND on a Linux one, because the only case
+   * taking the default was `it.skipIf(process.platform === 'darwin')` — which
+   * expects a throw and is satisfied by a guard that is right for the wrong
+   * reason.
+   *
+   * Neither case reaches `runSecurity`: the constructor stores `exec` and
+   * returns, so construction is the whole subject here. Executing the real
+   * `/usr/bin/security` is a separate gap, and it needs a macOS runner —
+   * `test/vault/keychain-real-binary.test.ts` is where that lives.
+   */
+  describe('the platform guard, on every runner', () => {
+    it('constructs with the real exec on darwin', () => {
+      stubPlatform('darwin');
+
+      expect(() => new KeychainKeyProvider(dir)).not.toThrow();
+    });
+
+    it('refuses the real exec off darwin, naming the platform', () => {
+      stubPlatform('linux');
+
+      expect(() => new KeychainKeyProvider(dir)).toThrow(
+        /not available on this platform \(linux\)/,
+      );
+    });
+
+    // The guard is scoped to the real binary on purpose: an injected exec
+    // carries its own platform expectations, and every case above it depends on
+    // that. Pinned so the guard cannot be widened to the seam by accident.
+    it('lets an injected exec through off darwin', () => {
+      stubPlatform('linux');
+
+      expect(() => new KeychainKeyProvider(dir, () => '')).not.toThrow();
+    });
+  });
 });

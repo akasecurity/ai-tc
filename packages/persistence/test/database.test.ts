@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -299,6 +308,93 @@ describe('openLocalDatabase — open / migrate / seed', () => {
 
     expect(existsSync(backup)).toBe(true);
     if (process.platform !== 'win32') expect(statSync(backup).mode & 0o777).toBe(0o600);
+  });
+});
+
+/**
+ * A snapshot cut short by a KILL — a plugin hook cut off at its 10 s harness
+ * timeout, mid `VACUUM INTO` — leaves its staging directory behind holding a
+ * byte-complete copy of the whole prompt corpus. A throw clears it; a kill
+ * cannot, and `discardStore` sweeps only the store and its sidecars.
+ *
+ * The sweep used to hang off the two snapshot paths alone, both of which sit
+ * immediately before taking ANOTHER snapshot — so it ran only if the machine
+ * performed a further migration or foreign-lineage reset, and on one that never
+ * did, the copy stayed indefinitely. That is the half that mattered: the copy
+ * holds the same content as the store, and the store's whole at-rest control is
+ * a mode on files beside it.
+ */
+describe('openLocalDatabase sweeps abandoned snapshot staging', () => {
+  const anHourAgo = new Date(Date.now() - 60 * 60_000);
+
+  /**
+   * A store that has already been migrated, which is what makes every case here
+   * mean anything.
+   *
+   * The FIRST open of a fresh store performs the legacy-table drop, and that
+   * path snapshots — so it reaps on its own way past, through the call site that
+   * predates this sweep. Planting a leftover before a first open therefore
+   * passes whether or not `openLocalDatabase` sweeps at all: measured, all three
+   * cases below were green against a `database.ts` with no sweep in it. The
+   * steady state — an already-migrated store, i.e. every open after the first —
+   * is the state in which nothing ran, and it is the one the gap lived in.
+   */
+  function migratedStore(): void {
+    store.open();
+    expect(readdirSync(store.dataDir).some((name) => name.endsWith('.bak'))).toBe(true); // the first open really did take its pre-drop snapshot
+  }
+
+  // A staging area exactly as a killed process leaves one: the directory, and
+  // the part-written copy inside it.
+  function abandonedStaging(name: string): string {
+    const stage = join(store.dataDir, name);
+    mkdirSync(stage);
+    const copy = join(stage, 'copy');
+    writeFileSync(copy, 'a full copy of the prompt corpus');
+    utimesSync(copy, anHourAgo, anHourAgo);
+    utimesSync(stage, anHourAgo, anHourAgo);
+    return stage;
+  }
+
+  it('clears one left by a killed snapshot, on an ordinary open', () => {
+    migratedStore();
+    const stage = abandonedStaging('aka.db.legacy.1.aaaaaaaa.bak.partial');
+
+    store.open();
+
+    expect(existsSync(stage)).toBe(false);
+  });
+
+  // The shape an older version left: a bare `.partial` FILE rather than a
+  // directory. An upgrade must not strand the copy its predecessor abandoned.
+  it('clears a legacy file-shaped one too', () => {
+    migratedStore();
+    const legacy = join(store.dataDir, 'aka.db.pre-drop.1.bbbbbbbb.bak.partial');
+    writeFileSync(legacy, 'a full copy of the prompt corpus');
+    utimesSync(legacy, anHourAgo, anHourAgo);
+
+    store.open();
+
+    expect(existsSync(legacy)).toBe(false);
+  });
+
+  // The positive control the sweep is worthless without: a copy another opener
+  // has IN FLIGHT shares the prefix, and pulling it out from under its writer is
+  // the failure the age bound exists to prevent. Without this case, a sweep that
+  // removed everything matching would pass the two above.
+  it('leaves a copy another opener has in flight, and the published backup', () => {
+    migratedStore();
+    const live = join(store.dataDir, 'aka.db.legacy.1.cccccccc.bak.partial');
+    mkdirSync(live);
+    writeFileSync(join(live, 'copy'), 'in flight');
+    const published = join(store.dataDir, 'aka.db.legacy.1.dddddddd.bak');
+    writeFileSync(published, 'a real backup');
+    utimesSync(published, anHourAgo, anHourAgo);
+
+    store.open();
+
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(published)).toBe(true);
   });
 });
 

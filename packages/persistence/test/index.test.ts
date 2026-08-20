@@ -61,6 +61,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'createKeyProvider',
   'dataDir',
   'dbPath',
+  'dbSidecars',
   'defaultDataDir',
   'deriveSubkeys',
   'ensureDataDir',

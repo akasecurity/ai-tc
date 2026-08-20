@@ -692,16 +692,17 @@ describe('looseStorePaths', () => {
     expect(looseStorePaths(dir)).toEqual([]);
   });
 
-  it('does not report a `.partial` (loose by design mid-copy, not a rejected chmod)', (ctx) => {
+  it('does not report a legacy `.partial` FILE (loose by design, not a rejected chmod)', (ctx) => {
     if (process.platform === 'win32') {
       ctx.skip('POSIX modes do not apply on Windows');
       return;
     }
-    // snapshotStore tightens its staging copy only just before the rename, so
-    // the file exists at the caller's umask for the whole VACUUM INTO and a copy
-    // cut short by a kill leaves a 0644 `.partial` behind on purpose. Naming it
-    // here would blame the filesystem for a mode nothing tried to apply — the
-    // same wrong diagnosis the symlink case below avoids.
+    // An older version wrote its staging copy straight to a `.partial` file and
+    // tightened it only just before the rename, so the file existed at the
+    // caller's umask for the whole VACUUM INTO and a copy cut short by a kill
+    // left a 0644 one behind on purpose. Naming it here would blame the
+    // filesystem for a mode nothing tried to apply — the same wrong diagnosis
+    // the symlink case below avoids.
     mkdirSync(dataDir(dir), { recursive: true });
     mkdirSync(settingsDir(dir), { recursive: true });
     for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
@@ -710,6 +711,50 @@ describe('looseStorePaths', () => {
     chmodSync(partial, 0o644);
 
     expect(looseStorePaths(dir)).toEqual([]);
+  });
+
+  // The current shape, and the opposite answer: a staging DIRECTORY is created
+  // owner-only before the copy starts, so its mode IS one this command stands
+  // behind and a loose one is a rejected chmod like any other. The pair of cases
+  // is the point — a rule that skipped every `.partial` would pass the one above
+  // while saying nothing about the artifact that actually holds the corpus now.
+  it('does report a loose `.partial` staging DIRECTORY, whose mode it does apply', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir)]) chmodSync(p, 0o700);
+    const stage = join(dataDir(dir), 'aka.db.pre-drop.1.bbbbbbbb.bak.partial');
+    mkdirSync(stage);
+    chmodSync(stage, 0o755);
+
+    expect(looseStorePaths(dir)).toEqual([stage]);
+  });
+
+  // `keys/` was enumerated as a DIRECTORY and never walked, so `vault.key`
+  // itself — the one file under ~/.aka that is not a copy of the data but the
+  // means to read it — was checked by nothing, and neither was the rotation lock
+  // beside it. A rejected chmod there left the key world-readable with `aka init`
+  // reporting the store as fully protected.
+  it('reports a loose file inside keys/, not just the directory', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    mkdirSync(dataDir(dir), { recursive: true });
+    mkdirSync(settingsDir(dir), { recursive: true });
+    const keys = keysDir(dir);
+    mkdirSync(keys, { recursive: true });
+    for (const p of [dir, settingsDir(dir), dataDir(dir), keys]) chmodSync(p, 0o700);
+    expect(looseStorePaths(dir)).toEqual([]); // precondition: the dirs are tight
+
+    const key = join(keys, 'vault.key');
+    writeFileSync(key, '{"current":1,"keys":{}}');
+    chmodSync(key, 0o644);
+
+    expect(looseStorePaths(dir)).toEqual([key]);
   });
 
   it('makes `aka init` print a warning when a mode could not be applied', async (ctx) => {

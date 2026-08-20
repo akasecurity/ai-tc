@@ -503,9 +503,27 @@ describe('the benchmark workflow stays advisory', () => {
     // A matched step is not a step that RUNS. `if:` on it satisfies the match
     // above while skipping the task on every trigger, which is the same silent
     // green arrived at one line lower down.
-    const stepBlock = workflow.slice(workflow.lastIndexOf('- name:', step.index), step.index);
+    //
+    // The boundary is the step's own `- ` bullet, NOT its `- name:`. `if:` may be
+    // the step's FIRST key — `- if: false` / `name:` / `run:` is valid YAML and
+    // was the shape this check missed. Anchoring on the name puts that `if:`
+    // outside the slice entirely.
+    //
+    // The pattern has to move with the boundary, and neither half is sufficient
+    // alone: once the bullet line is inside the slice, the line reads
+    // `      - if: false`, so a `/^\s+if:/` wanting whitespace immediately
+    // followed by `if:` no longer matches it. Optional `-` between the two runs
+    // of whitespace is what covers both placements.
+    const before = workflow.slice(0, step.index).split('\n');
+    const bulletAt = before.findLastIndex((l) => /^\s*- /.test(l));
+    // Without this, a run line with no bullet before it gives `bulletAt === -1`,
+    // `slice(-1)` takes the LAST line, and the assertion below runs against a
+    // string that cannot contain the step's `if:` — vacuous rather than failing.
+    // Same failure mode as the `if:` itself, one door further along.
+    expect(bulletAt, 'no step bullet precedes the `pnpm bench` run line').toBeGreaterThan(-1);
+    const stepBlock = before.slice(bulletAt).join('\n');
     expect(stepBlock, `the \`pnpm bench\` step is gated by an \`if:\` condition`).not.toMatch(
-      /^\s+if:/m,
+      /^\s*-?\s*if:/m,
     );
 
     // …and that the command is real. A workflow calling a script the root

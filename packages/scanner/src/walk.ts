@@ -19,7 +19,14 @@
 import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, relative, sep } from 'node:path';
 
-import ignore, { type Ignore } from 'ignore';
+import {
+  childRel,
+  evaluateIgnore,
+  type IgnoreLayer,
+  readIgnoreLayer,
+  withLayer,
+} from '@akasecurity/plugin-sdk';
+import ignore from 'ignore';
 
 import { COMMON_SKIP_DIRS } from './constants.ts';
 
@@ -98,44 +105,16 @@ export interface WalkOptions {
   shouldRead?: (meta: WalkedFileMeta) => boolean;
 }
 
-// One ignore file's rules, anchored to the directory that contains it (git
-// patterns are relative to their own ignore file, not the repo root).
-interface IgnoreLayer {
-  base: string; // absolute dir the ignore file lives in
-  matcher: Ignore;
-}
-
-// Read a directory's ignore file into a matcher layer. Fail-open: an
-// unreadable or malformed file yields no layer — we scan MORE on error,
-// never less.
-function readIgnoreLayer(dir: string, filename: string): IgnoreLayer | undefined {
-  try {
-    const content = readFileSync(join(dir, filename), 'utf8');
-    return { base: dir, matcher: ignore().add(content) };
-  } catch {
-    return undefined;
-  }
-}
-
-type IgnoreState = 'ignored' | 'unignored' | 'unmatched';
-
-// Evaluate the layered ignore state for a path, mirroring git's semantics:
-// deeper ignore files are consulted later, so their verdicts (ignore OR
-// re-include via `!`) override shallower ones. 'unignored' is distinct from
-// 'unmatched' because an explicit `!` re-include also overrides the SKIP_DIRS
-// default floor. Directories are tested with a trailing slash so `dir/`-style
-// patterns match.
-function evaluate(layers: IgnoreLayer[], absPath: string, isDir: boolean): IgnoreState {
-  let state: IgnoreState = 'unmatched';
-  for (const layer of layers) {
-    // The ignore package expects posix-style relative paths.
-    const rel = relative(layer.base, absPath).split(sep).join('/') + (isDir ? '/' : '');
-    const verdict = layer.matcher.test(rel);
-    if (verdict.ignored) state = 'ignored';
-    else if (verdict.unignored) state = 'unignored';
-  }
-  return state;
-}
+// The layer representation, the deepest-first lookup and the walk-relative path
+// arithmetic all live in `@akasecurity/plugin-sdk`'s ./ignore-layers, shared
+// with the SessionStart inventory walk and the dashboard's folder scan. This
+// walk carries ONE posix path per directory (`dirRel`, relative to `rootDir`)
+// and every layer holds an integer offset into it, in place of the
+// `relative(layer.base, absPath)` path diff this used to run per layer per
+// entry — which allocated, normalised separators, and could never stop early.
+//
+// TWO stacks descend here, not one: `.gitignore` MARKS (provenance) and
+// `.akaignore` SKIPS, so each entry was paying that diff twice.
 
 /** One file surfaced by walkTree, before any caller-specific filtering. */
 export interface TreeFile {
@@ -168,19 +147,25 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
   const trackGitignore = opts.trackGitignore ?? false;
 
   // Host-supplied excludePatterns form the OUTERMOST skip layer: on-disk
-  // .akaignore files are appended after it, so their negations win.
-  const rootSkipLayers: IgnoreLayer[] =
+  // .akaignore files are appended after it, so their negations win. Anchored at
+  // rootDir, which is offset 0 in the `dirRel` every layer is addressed through.
+  const rootSkipLayers: readonly IgnoreLayer[] =
     opts.excludePatterns && opts.excludePatterns.length > 0
-      ? [{ base: rootDir, matcher: ignore().add(opts.excludePatterns) }]
+      ? [{ matcher: ignore().add(opts.excludePatterns), anchorLen: 0 }]
       : [];
 
   // inIgnoredDir: git semantics — once a directory is gitignored, nothing
   // beneath it can be re-included, so we stop evaluating and mark everything.
   // (The skip stack needs no equivalent: a skipped directory is never entered.)
+  //
+  // `dirRel` is `dir` as a posix path relative to `rootDir` ('' at the root),
+  // built by appending one component per descent. It is what both layer stacks
+  // are addressed through, so it is threaded rather than recomputed.
   function* visit(
     dir: string,
-    markLayers: IgnoreLayer[],
-    skipLayers: IgnoreLayer[],
+    dirRel: string,
+    markLayers: readonly IgnoreLayer[],
+    skipLayers: readonly IgnoreLayer[],
     inIgnoredDir: boolean,
   ): Generator<TreeFile> {
     let dirents: Dirent[];
@@ -190,26 +175,32 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
       return;
     }
 
-    const markLayer =
-      trackGitignore && !inIgnoredDir ? readIgnoreLayer(dir, '.gitignore') : undefined;
-    const dirMarkLayers = markLayer ? [...markLayers, markLayer] : markLayers;
-    const skipLayer = readIgnoreLayer(dir, AKAIGNORE_FILENAME);
-    const dirSkipLayers = skipLayer ? [...skipLayers, skipLayer] : skipLayers;
+    const dirMarkLayers = withLayer(
+      markLayers,
+      trackGitignore && !inIgnoredDir
+        ? readIgnoreLayer(dir, '.gitignore', dirRel.length)
+        : undefined,
+    );
+    const dirSkipLayers = withLayer(
+      skipLayers,
+      readIgnoreLayer(dir, AKAIGNORE_FILENAME, dirRel.length),
+    );
 
     for (const entry of dirents) {
       const name = entry.name;
       const fullPath = join(dir, name);
 
       if (entry.isDirectory()) {
-        const skipState = evaluate(dirSkipLayers, fullPath, true);
+        const skipState = evaluateIgnore(dirSkipLayers, dirRel, name, true);
         // Precedence: an explicit .akaignore re-include beats the SKIP_DIRS
         // default; otherwise SKIP_DIRS and .akaignore matches both hard-skip.
         if (skipState !== 'unignored' && (SKIP_DIRS.has(name) || skipState === 'ignored')) {
           continue;
         }
         const dirIgnored =
-          trackGitignore && (inIgnoredDir || evaluate(dirMarkLayers, fullPath, true) === 'ignored');
-        yield* visit(fullPath, dirMarkLayers, dirSkipLayers, dirIgnored);
+          trackGitignore &&
+          (inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, name, true) === 'ignored');
+        yield* visit(fullPath, childRel(dirRel, name), dirMarkLayers, dirSkipLayers, dirIgnored);
         continue;
       }
 
@@ -218,19 +209,19 @@ export function* walkTree(rootDir: string, opts: TreeWalkOptions = {}): Generato
       // .akaignore skip — before stat/read, so an excluded file costs nothing.
       // Applies uniformly to every file this walk discovers; extension or
       // basename filtering is entirely the caller's job.
-      if (evaluate(dirSkipLayers, fullPath, false) === 'ignored') continue;
+      if (evaluateIgnore(dirSkipLayers, dirRel, name, false) === 'ignored') continue;
 
       yield {
         path: fullPath,
         name,
         gitignored:
           trackGitignore &&
-          (inIgnoredDir || evaluate(dirMarkLayers, fullPath, false) === 'ignored'),
+          (inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, name, false) === 'ignored'),
       };
     }
   }
 
-  yield* visit(rootDir, [], rootSkipLayers, false);
+  yield* visit(rootDir, '', [], rootSkipLayers, false);
 }
 
 // Lazily walk all source files under rootDir. Each file is read once and

@@ -939,6 +939,18 @@ tools/                repo tooling, never shipped: the installer one-liners and
    enumerates by — a file whose extension it counts as lintable and the glob omits
    is the same cached-green hole one extension wide.
 
+   Those checks read `turbo.json` as TEXT and match its globs with
+   `path.matchesGlob`, which is a MODEL of turbo's hashing rather than turbo's
+   hashing. One case asks turbo instead: it plants a lintable file at the repo
+   root, runs `--dry=json`, and asserts the hash really moves — the only reading
+   that decides whether this suite RUNS. Two things in it are load-bearing. It
+   selects the task by `taskId`, because `tasks[0]` is `#build`, whose inputs are
+   package-local and which no repo-root file ever moves. And it carries a
+   POSITIVE CONTROL that plants under a different input (`tools/ci/**`) first, so
+   a broken measurement is reported as a broken measurement rather than as a
+   missing glob — without it, "the hash did not move" reads the same whether the
+   glob went or the selection did.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping

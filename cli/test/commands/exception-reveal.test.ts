@@ -179,7 +179,11 @@ describe('aka exception approve <pointer> --reveal', () => {
         category: 'secret',
         valueFingerprint: fingerprintValue(key, RAW),
         keyVersion: key.version,
-        maskedValue: 'A******E',
+        // MASKED, like the sibling ledger seed below. The literal this replaced
+        // was another value's preview entirely, so the row paired one value's
+        // fingerprint with a different value's mask — a ledger state the product
+        // cannot produce.
+        maskedValue: MASKED,
         sessionId: 'sess-1',
         repo: null,
       });

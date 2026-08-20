@@ -5,12 +5,7 @@ import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
-import {
-  BUILTIN_POLICIES,
-  BuiltinPolicyId,
-  DEFAULT_PACK_POLICY_ID,
-  splitDetectionId,
-} from '@akasecurity/schema';
+import { policyDisplayName, splitDetectionId } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -210,18 +205,6 @@ async function runUpdateSub(db: LocalDatabase, ids: string[], all: boolean): Pro
     );
     if (!ok) process.exitCode = 1;
   }
-}
-
-// Width-padded plain-text table (same pattern as lib/update-render.ts — no
-// table/colour dependency). Exported for the unit test.
-// A per-pack policy id as a user reads it. An unassigned pack coalesces to the
-// catalog default (Monitor) exactly as every enforcement path does, and an id
-// the catalog does not carry — a custom policy — prints verbatim rather than
-// being misreported as a built-in.
-function policyDisplayName(policyId: string | null | undefined): string {
-  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
-  const parsed = BuiltinPolicyId.safeParse(id);
-  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
 }
 
 export function renderDetectionsTable(items: DetectionListItem[]): string {

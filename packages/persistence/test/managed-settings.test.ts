@@ -521,6 +521,74 @@ describe('applyOnboarding — refusing an administratively locked write', () => 
     );
   });
 
+  it('does not persist an UNLOCKED pin the form echoed back', () => {
+    // The other supported configuration: a pinned value with NO lock, which
+    // this layer calls "a DEFAULT the user may then change". The stripper only
+    // looked at the lock list, so the administrator's answer landed in the
+    // user's own file the first time the form echoed it — and then outlived the
+    // managed file, reading as the user's own choice.
+    applyOnboarding({ vaultInlineReveal: 'full', historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { historicalAccess: 'session-only' },
+      lockedFields: [],
+    };
+    // The page renders the pin, so the client posts it back alongside a real edit.
+    applyOnboarding(
+      { historicalAccess: 'session-only', vaultInlineReveal: 'masked' },
+      base,
+      managed,
+    );
+
+    // The real edit landed…
+    expect(readEffectiveSettings(base, null).settings.vaultInlineReveal).toBe('masked');
+    // …and with the administrator gone, the user's own answer is still theirs.
+    expect(readEffectiveSettings(base, null).settings.historicalAccess).toBe('full');
+  });
+
+  it('does not turn an UNLOCKED vaultConsent pin into a recorded grant', () => {
+    // The variant that matters most: the echoed pin becomes a real custody
+    // grant, with an acknowledgedAt the user never gave, that survives the
+    // managed file being removed.
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { vaultConsent: true },
+      lockedFields: [],
+    };
+    // What the page shows, hence what the client posts back.
+    expect(readEffectiveSettings(base, managed).settings.vaultConsent).toBeDefined();
+    applyOnboarding(
+      (current) => ({
+        // Exactly what saveSettings does: an invalid current grant mints a real one.
+        vaultConsent: current.vaultConsent ?? {
+          acknowledgedAt: new Date().toISOString(),
+          version: VAULT_CONSENT_VERSION,
+        },
+        vaultInlineReveal: 'off',
+      }),
+      base,
+      managed,
+    );
+
+    expect(readEffectiveSettings(base, null).settings.vaultInlineReveal).toBe('off');
+    // No grant on file once the administrator's is gone.
+    expect(readEffectiveSettings(base, null).settings.vaultConsent).toBeUndefined();
+  });
+
+  it('still writes a pinned key the user actually CHANGED', () => {
+    // The positive control: stripping a pin must not swallow a real edit. An
+    // unlocked pin is a default, so changing it is the user's to make.
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { vaultInlineReveal: 'masked' },
+      lockedFields: [],
+    };
+    applyOnboarding({ vaultInlineReveal: 'off' }, base, managed);
+    expect(readEffectiveSettings(base, null).settings.vaultInlineReveal).toBe('off');
+  });
+
   it('refuses a DETACH when the connection is locked', () => {
     // The ask this exists for: a machine an administrator attached is not one
     // the user may leave.

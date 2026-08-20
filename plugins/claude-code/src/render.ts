@@ -15,17 +15,16 @@ import type {
 import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
+  BuiltinPolicyId,
   DetectionException,
   DetectionListItem,
   FirstRunCalibration,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
 import {
-  BUILTIN_ORDER,
-  BUILTIN_POLICIES,
-  BuiltinPolicyId,
-  DEFAULT_PACK_POLICY_ID,
+  CATEGORY_EXPRESSIBLE_IDS,
   DetectionCategory,
+  policyDisplayName,
   toApiAction,
 } from '@akasecurity/schema';
 import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
@@ -150,12 +149,18 @@ export function renderRecommendedPosture(
 }
 
 // The full 8×4 posture matrix for the start-light branch: every pack laid out
-// against all four levels (monitor/warn/redact/block), the chosen level marked,
-// in canonical category order. This lays the whole choice space out per pack —
-// distinct from renderRecommendedPosture's condensed one-level-per-pack glance.
-// The level columns come from BUILTIN_ORDER (the schema's palette order), so the
-// DB action vocabulary (log/allow) never appears. Pure (no I/O); the caller
-// hands in the posture map (severityFloorPosture() for the recommended defaults).
+// against the four levels a per-CATEGORY policy can hold (monitor/warn/redact/
+// block), the chosen level marked, in canonical category order. This lays the
+// whole choice space out per pack — distinct from renderRecommendedPosture's
+// condensed one-level-per-pack glance.
+//
+// Columns come from CATEGORY_EXPRESSIBLE_IDS, NOT the full catalog. This map is
+// keyed by DetectionCategory, and that axis stores a bare ActionTaken — it
+// cannot express a reversible archetype, which is why parsePosture and
+// TriagePolicy both refuse one. Sourcing the columns from BUILTIN_ORDER shipped
+// a permanently empty VAULT column: a level offered on a grid that can never
+// mark it. The DB action vocabulary (log/allow) never appears either way. Pure
+// (no I/O); the caller hands in the posture map.
 const GRID_MARK = '●';
 export function renderPostureGrid(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
@@ -165,9 +170,9 @@ export function renderPostureGrid(
   );
   const rows = packs.map((category) => [
     category,
-    ...BUILTIN_ORDER.map((level) => (posture[category] === level ? GRID_MARK : '')),
+    ...CATEGORY_EXPRESSIBLE_IDS.map((level) => (posture[category] === level ? GRID_MARK : '')),
   ]);
-  return indent(table(['Category', ...BUILTIN_ORDER], rows));
+  return indent(table(['Category', ...CATEGORY_EXPRESSIBLE_IDS], rows));
 }
 
 // The re-tune hint that closes the start-light card and the applied frame,
@@ -1006,23 +1011,6 @@ export function renderExceptions(exceptions: DetectionException[], nowMs = Date.
     '',
     indent(howTo),
   ].join('\n');
-}
-
-// /aka:detections — the installed detection packs, read-only: installed
-// version, rule count, enabled state, effective policy, and whether the
-// running plugin ships a newer snapshot. Updates are MANUAL by design (nothing
-// auto-updates an installed pack), and applying one stays in the terminal /
-// dashboard on purpose — a slash command is model-invocable, so this surface
-// only displays and points at the CLI (mirrors renderExceptions).
-// A per-pack policy id as a user reads it — the archetype's NAME from the shared
-// catalog, so this table, `aka detections` and the dashboard all spell one
-// setting one way. An unassigned pack coalesces to the catalog default exactly
-// as every enforcement path does; an id the catalog does not carry (a custom
-// policy) prints verbatim rather than being misreported as a built-in.
-function policyDisplayName(policyId: string | null | undefined): string {
-  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
-  const parsed = BuiltinPolicyId.safeParse(id);
-  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
 }
 
 export function renderDetections(items: DetectionListItem[]): string {

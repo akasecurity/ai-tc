@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { z } from 'zod';
 
 import { InstalledPack, PatchInstalledPackRequest } from '../../src/zod/installed-pack.ts';
 import {
@@ -6,10 +7,14 @@ import {
   BuiltinPolicyId,
   builtinPolicyIsReversible,
   builtinPolicyToAction,
+  CATEGORY_EXPRESSIBLE_IDS,
+  CATEGORY_INEXPRESSIBLE_IDS,
+  CategoryPolicyId,
   DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   ListPoliciesResponse,
   PolicyDetail,
+  policyDisplayName,
   policyIdIsReversible,
   policyIdToAction,
   PolicyKind,
@@ -78,6 +83,71 @@ describe('builtinPolicyIsReversible', () => {
     for (const id of KNOWN_BUILTIN_IDS.filter((i) => builtinPolicyIsReversible(i))) {
       expect(builtinPolicyToAction(id)).toBe('redact');
     }
+  });
+});
+
+describe('policyDisplayName — one spelling for four surfaces', () => {
+  it('renders each built-in by its catalog name', () => {
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(policyDisplayName(id)).toBe(BUILTIN_POLICIES[id].name);
+    }
+  });
+
+  it('coalesces an unassigned pack exactly as its two siblings do', () => {
+    // The three resolvers must agree about what an unassigned pack IS, or one
+    // surface reads Monitor while another reads blank.
+    for (const absent of [null, undefined]) {
+      expect(policyDisplayName(absent)).toBe(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
+      expect(policyIdToAction(absent)).toBe(builtinPolicyToAction(DEFAULT_PACK_POLICY_ID));
+      expect(policyIdIsReversible(absent)).toBe(builtinPolicyIsReversible(DEFAULT_PACK_POLICY_ID));
+    }
+  });
+
+  it('returns a custom id verbatim rather than as a built-in', () => {
+    // Least of all as Monitor, which would read as log-only for a policy that
+    // may block.
+    for (const custom of ['my-custom-policy', 'VAULT', 'constructor']) {
+      expect(policyDisplayName(custom)).toBe(custom);
+    }
+  });
+});
+
+describe('CategoryPolicyId narrows at the TYPE level, not only at runtime', () => {
+  it('refuses a reversible archetype at runtime', () => {
+    for (const id of CATEGORY_INEXPRESSIBLE_IDS) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must not parse`).toBe(false);
+    }
+  });
+
+  it('accepts every archetype the category axis CAN store', () => {
+    for (const id of CATEGORY_EXPRESSIBLE_IDS) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must parse`).toBe(true);
+    }
+  });
+
+  it('the two sets partition the catalog', () => {
+    expect([...CATEGORY_EXPRESSIBLE_IDS, ...CATEGORY_INEXPRESSIBLE_IDS].sort()).toEqual(
+      [...KNOWN_BUILTIN_IDS].sort(),
+    );
+  });
+
+  it('the INFERRED type excludes the reversible ids', () => {
+    // The half that was missing. The enum was cast to the WIDE element type, so
+    // z.infer gave back the whole union and every "narrowed" signature accepted
+    // 'vault' — the runtime refused it while the compiler waved it through.
+    //
+    // Asserted as an assignability fact rather than with a compiler-error
+    // directive: this fails to COMPILE if the narrowing regresses, which is the
+    // property, and it does not pin tsc's wording.
+    type Narrow = z.infer<typeof CategoryPolicyId>;
+    type ReversibleIsExcluded = 'vault' extends Narrow ? false : true;
+    const narrowed: ReversibleIsExcluded = true;
+    expect(narrowed).toBe(true);
+
+    // And the companion direction: a non-reversible id IS in the narrow type.
+    type RedactIsIncluded = 'redact' extends Narrow ? true : false;
+    const included: RedactIsIncluded = true;
+    expect(included).toBe(true);
   });
 });
 

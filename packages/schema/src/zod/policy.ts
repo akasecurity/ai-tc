@@ -158,10 +158,13 @@ export const BUILTIN_ORDER: readonly BuiltinPolicyId[] = KNOWN_BUILTIN_IDS;
 // — ActionTaken is a stored column and a wire enum switched on by if/else-if
 // chains with no exhaustiveness check, so a new member falls through to allow;
 // a new BuiltinPolicyId is caught by this Record at compile time.
-const BUILTIN_POLICY_SPECS: Record<
-  BuiltinPolicyId,
-  { name: string; description: string; action: ActionTaken; reversible: boolean }
-> = {
+//
+// Declared with `as const satisfies` rather than a type ANNOTATION. The
+// annotation widened `reversible` to `boolean`, which erased at the type level
+// exactly the fact CategoryPolicyId is derived from — so the narrowing below
+// compiled to the full union and enforced nothing. `satisfies` keeps the
+// exhaustiveness check this comment relies on while preserving the literals.
+const BUILTIN_POLICY_SPECS = {
   monitor: {
     name: 'Monitor',
     action: 'log',
@@ -197,7 +200,20 @@ const BUILTIN_POLICY_SPECS: Record<
     reversible: false,
     description: 'Refuse the request entirely whenever any rule in this detection matches.',
   },
-};
+} as const satisfies Record<
+  BuiltinPolicyId,
+  { name: string; description: string; action: ActionTaken; reversible: boolean }
+>;
+
+// The archetypes that carry reversibility, derived AT THE TYPE LEVEL from the
+// specs above. This is what makes CategoryPolicyId a real narrowing rather than
+// an alias for the full union.
+type ReversibleBuiltinId = {
+  [K in BuiltinPolicyId]: (typeof BUILTIN_POLICY_SPECS)[K]['reversible'] extends true ? K : never;
+}[BuiltinPolicyId];
+
+/** A policy id the per-CATEGORY axis can express — every archetype but the reversible ones. */
+export type CategoryExpressibleId = Exclude<BuiltinPolicyId, ReversibleBuiltinId>;
 
 // Maps the palette BuiltinPolicyId (monitor/warn/redact/block) to the ActionTaken
 // enum actually stored on policies.action (warn/redact/block/allow/log).
@@ -220,7 +236,7 @@ export function builtinPolicyToAction(id: BuiltinPolicyId): ActionTaken {
 // fallback and to anything that feeds it.
 export const CATEGORY_EXPRESSIBLE_IDS = KNOWN_BUILTIN_IDS.filter(
   (id) => !BUILTIN_POLICY_SPECS[id].reversible,
-) as readonly BuiltinPolicyId[];
+) as readonly CategoryExpressibleId[];
 
 // The archetypes that axis CANNOT express — the complement, also derived, so the
 // two together are exhaustive by construction.
@@ -236,7 +252,11 @@ export const CATEGORY_INEXPRESSIBLE_IDS = KNOWN_BUILTIN_IDS.filter(
  * downgraded.
  */
 export const CategoryPolicyId = z
-  .enum(CATEGORY_EXPRESSIBLE_IDS as [BuiltinPolicyId, ...BuiltinPolicyId[]])
+  // The element type is the DERIVED narrow union, not BuiltinPolicyId. Casting
+  // to the wide one re-declared every member as the whole union, so `z.infer`
+  // gave back the full set and `writeStandingSecretPosture('vault')` compiled
+  // clean while the runtime refused it.
+  .enum(CATEGORY_EXPRESSIBLE_IDS as [CategoryExpressibleId, ...CategoryExpressibleId[]])
   .meta({ id: 'CategoryPolicyId' });
 export type CategoryPolicyId = z.infer<typeof CategoryPolicyId>;
 
@@ -332,6 +352,26 @@ export const DEFAULT_PACK_POLICY_ID: BuiltinPolicyId = 'monitor';
 // monitor-by-default posture (DEFAULT_PACK_POLICY_ID). NOTE: this is the PACK
 // axis; it is deliberately distinct from DEFAULT_ACTIONS, which is the per-CATEGORY
 // fallback. See PolicyTarget / DEFAULT_ACTIONS for how the axes relate.
+/**
+ * A per-pack policy id as a USER reads it — the archetype's NAME from this
+ * catalog. The display sibling of policyIdToAction and policyIdIsReversible,
+ * coalescing identically: an unassigned pack reads as the catalog default, and
+ * an id the catalog does not carry (a custom policy) is returned verbatim
+ * rather than misreported as a built-in — least of all as Monitor, which would
+ * read as log-only for a policy that may block.
+ *
+ * It lives here because four surfaces render this one value — `aka detections`,
+ * and the three plugins' detection tables — and each had its own copy of the
+ * resolver. That is the same defect this catalog exists to prevent, one level
+ * down: a change to the coalescing rule or the custom-id fallback would have to
+ * land in four files, with nothing checking that it did.
+ */
+export function policyDisplayName(policyId: string | null | undefined): string {
+  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
+  const parsed = BuiltinPolicyId.safeParse(id);
+  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
+}
+
 export function policyIdToAction(policyId: string | null | undefined): ActionTaken {
   const parsed = BuiltinPolicyId.safeParse(policyId ?? DEFAULT_PACK_POLICY_ID);
   const id: BuiltinPolicyId = parsed.success ? parsed.data : DEFAULT_PACK_POLICY_ID;

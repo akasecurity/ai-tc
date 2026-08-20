@@ -4,8 +4,9 @@ import type { FindingView } from '@akasecurity/plugin-sdk';
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory, DetectionListItem } from '@akasecurity/schema';
 import {
-  BUILTIN_ORDER,
   BUILTIN_POLICIES,
+  CATEGORY_EXPRESSIBLE_IDS,
+  CATEGORY_INEXPRESSIBLE_IDS,
   DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   SetupHandoffOffer,
@@ -126,7 +127,7 @@ describe('renderRecommendedPosture — condensed recommended view', () => {
   });
 });
 
-describe('renderPostureGrid — full posture matrix', () => {
+describe('renderPostureGrid — full 8×4 posture matrix', () => {
   // The eight packs, in the schema's canonical category order — the same order
   // renderPosture/renderRecommendedPosture use, and the order the grid must lock.
   const CANONICAL = [
@@ -140,7 +141,7 @@ describe('renderPostureGrid — full posture matrix', () => {
     'config',
   ];
 
-  it('lays every pack against every level, marks the chosen one, in canonical order', () => {
+  it('lays every pack against all four levels, marks the chosen one, in canonical order', () => {
     const out = renderPostureGrid(severityFloorPosture());
 
     // Every pack renders, once, in canonical category order (header and rule
@@ -151,29 +152,35 @@ describe('renderPostureGrid — full posture matrix', () => {
       .filter((tok): tok is string => tok !== undefined && CANONICAL.includes(tok));
     expect(packs).toEqual(CANONICAL);
 
-    // EVERY level label heads the grid — palette vocabulary only, never the DB
-    // action forms 'log'/'allow' (the full grid lays out every level per pack,
-    // unlike renderRecommendedPosture's condensed one-level glance). Derived
-    // from the canonical set rather than listed, so an added archetype that
-    // never reaches the grid fails here instead of silently missing a column.
-    for (const level of BUILTIN_ORDER) expect(out).toContain(level.toUpperCase());
+    // Every level this axis can HOLD heads the grid — palette vocabulary only,
+    // never the DB action forms 'log'/'allow'. Derived from
+    // CATEGORY_EXPRESSIBLE_IDS rather than the full catalog: this grid is keyed
+    // by DetectionCategory, and that axis cannot store a reversible archetype,
+    // so sourcing it from BUILTIN_ORDER offered a column that can never be
+    // marked.
+    for (const level of CATEGORY_EXPRESSIBLE_IDS) expect(out).toContain(level.toUpperCase());
     expect(out).not.toMatch(/\blog\b/);
     expect(out).not.toMatch(/\ballow\b/);
+    // And no column this axis cannot mark: an offered level that can never be
+    // chosen is worse than an absent one.
+    for (const absent of CATEGORY_INEXPRESSIBLE_IDS) {
+      expect(out, `${absent} cannot be stored per category`).not.toContain(absent.toUpperCase());
+    }
 
-    // The whole grid, so a layout regression is caught as a snapshot diff.
+    // The whole 8×4 grid, so a layout regression is caught as a snapshot diff.
     // Feeding the default posture map, the mark sits in monitor for the observe-only
     // packs (code_context, config) and in warn for the rest.
     expect(out).toMatchInlineSnapshot(`
-      "  CATEGORY       MONITOR   WARN   REDACT   VAULT   BLOCK
-        ────────────   ───────   ────   ──────   ─────   ─────
-        pii                      ●                            
-        financial                ●                            
-        secret                   ●                            
-        phi                      ●                            
-        code_context   ●                                      
-        code_flaw                ●                            
-        custom                   ●                            
-        config         ●                                      "
+      "  CATEGORY       MONITOR   WARN   REDACT   BLOCK
+        ────────────   ───────   ────   ──────   ─────
+        pii                      ●                    
+        financial                ●                    
+        secret                   ●                    
+        phi                      ●                    
+        code_context   ●                              
+        code_flaw                ●                    
+        custom                   ●                    
+        config         ●                              "
     `);
   });
 });
@@ -197,7 +204,7 @@ describe('renderStartLight — start-light card', () => {
     expect(renderStartLight(posture)).toContain('Starting light — your detection categories');
   });
 
-  it('embeds the full default posture grid, composed from the shared primitive', () => {
+  it('embeds the full 8×4 default posture grid, composed from the shared primitive', () => {
     // The card composes renderPostureGrid seeded with the default posture, so a grid
     // layout regression surfaces here too, not only in renderPostureGrid's own test.
     expect(renderStartLight(posture)).toContain(renderPostureGrid(posture));
@@ -230,16 +237,16 @@ describe('renderStartLight — start-light card', () => {
 
         For now, each detection category starts at a careful default. Run the aka-setup skill whenever you like and I'll tune these from Codex's recent work.
 
-        CATEGORY       MONITOR   WARN   REDACT   VAULT   BLOCK
-        ────────────   ───────   ────   ──────   ─────   ─────
-        pii                      ●                            
-        financial                ●                            
-        secret                   ●                            
-        phi                      ●                            
-        code_context   ●                                      
-        code_flaw                ●                            
-        custom                   ●                            
-        config         ●                                      
+        CATEGORY       MONITOR   WARN   REDACT   BLOCK
+        ────────────   ───────   ────   ──────   ─────
+        pii                      ●                    
+        financial                ●                    
+        secret                   ●                    
+        phi                      ●                    
+        code_context   ●                              
+        code_flaw                ●                    
+        custom                   ●                    
+        config         ●                              
 
         pii — warn: personal data carries real obligations, so I surface it before it moves.
         financial — warn: card and account numbers are sensitive by default, so these come to you.

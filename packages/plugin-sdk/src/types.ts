@@ -57,6 +57,10 @@ export interface CaptureResult {
   // Always a SUBSET of enforcedFindings, never a replacement for it: a caller
   // that rewrites only these leaves every other enforced span in the clear,
   // which is the failure this pairing exists to make hard to write.
+  //
+  // Set on a 'redact' decision only. A block produces no enforcedFindings and
+  // makes no promise about the value's fate, so custody there is not an
+  // enforcement question — see the prompt surface, which decides it separately.
   reversibleFindings?: MatchResult[];
   // Blocked-detections ledger rows recorded for this capture (one per unique
   // enforced (rule, value) pair), so adapters can surface them in the block

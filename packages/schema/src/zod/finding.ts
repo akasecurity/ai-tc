@@ -89,11 +89,20 @@ export type FindingProvider = z.infer<typeof FindingProvider>;
 // part of the FE contract and accepted here for forward-compatibility — no
 // detection rules emit them yet, so findings never carry them until those
 // rules exist (separate detection-authoring work).
+//
+// 'code_flaw' is the one member that is NOT a data class: it is a code
+// vulnerability, carried here so the code-flaws pack's findings keep their own
+// identity on the findings read model instead of collapsing into 'custom'.
+// A surface that means "sensitive DATA" must therefore exclude it by an explicit
+// membership test — it is a member like any other, so it can no longer be dropped
+// by failing to map. DB 'config' (tooling posture) has no member and maps to
+// 'custom'.
 export const FindingCategory = z
   .enum([
     'secret',
     'pii',
     'source_code',
+    'code_flaw',
     'external_share',
     'mcp_server',
     'customer_data',

@@ -2,10 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ManagedSettings, WorkspaceSettings } from '@akasecurity/schema';
+import type { ManagedContext, ManagedSettings, WorkspaceSettings } from '@akasecurity/schema';
 import {
   defaultWorkspaceSettings,
+  isFieldManaged,
   MANAGED_SETTINGS_FILENAME,
+  managedByLabel,
   MODEL_JUDGE_PAYLOAD_VERSION,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
@@ -307,6 +309,39 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       expect(out.controlPlane?.endpoint).toBe('https://two.internal');
       expect(out.controlPlane?.attachedAt).toBe('2026-03-04T05:06:07.000Z');
     });
+  });
+});
+
+describe('the two helpers every surface words a lock through', () => {
+  const ctx = (over: Partial<ManagedContext> = {}): ManagedContext => ({
+    present: true,
+    lockedFields: ['runMode'],
+    ...over,
+  });
+
+  it('isFieldManaged is false for every key on an unmanaged machine', () => {
+    // `present` gates it, not the list: a context that somehow carried locked
+    // fields while absent must still lock nothing.
+    const absent: ManagedContext = { present: false, lockedFields: ['runMode'] };
+    expect(isFieldManaged(absent, 'runMode')).toBe(false);
+  });
+
+  it('isFieldManaged names only the frozen keys', () => {
+    expect(isFieldManaged(ctx(), 'runMode')).toBe(true);
+    expect(isFieldManaged(ctx(), 'vaultConsent')).toBe(false);
+  });
+
+  it('managedByLabel names the organization when one is given', () => {
+    expect(managedByLabel(ctx({ organization: 'Acme' }))).toContain('Acme');
+  });
+
+  it('managedByLabel still says WHO decided when no organization is given', () => {
+    // The fallback has to remain a sentence about an administrator, not an
+    // empty name — the whole point of the label is that a locked control reads
+    // as a decision rather than a bug.
+    const label = managedByLabel(ctx());
+    expect(label).toMatch(/your organization/i);
+    expect(label).not.toContain('undefined');
   });
 });
 

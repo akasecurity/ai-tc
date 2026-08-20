@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import { InstalledPack, PatchInstalledPackRequest } from '../../src/zod/installed-pack.ts';
 import {
+  BUILTIN_POLICIES,
   BuiltinPolicyId,
+  builtinPolicyIsReversible,
+  builtinPolicyToAction,
+  DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   ListPoliciesResponse,
   PolicyDetail,
+  policyIdIsReversible,
+  policyIdToAction,
   PolicyKind,
   PolicyListItem,
   PolicyStatsResponse,
@@ -44,6 +50,60 @@ describe('BuiltinPolicyId', () => {
 
   it('KNOWN_BUILTIN_IDS matches BuiltinPolicyId enum values', () => {
     expect(KNOWN_BUILTIN_IDS).toEqual(['monitor', 'warn', 'redact', 'vault', 'block']);
+  });
+});
+
+// The reversibility axis. It is the ONLY thing that distinguishes Redact from
+// Redact & Vault — both resolve to the same `redact` ActionTaken — so every
+// consumer that decides whether a stripped value survives reads through these.
+
+describe('builtinPolicyIsReversible', () => {
+  it('is true for exactly the archetypes that keep what they strip', () => {
+    expect(builtinPolicyIsReversible('vault')).toBe(true);
+    for (const id of KNOWN_BUILTIN_IDS.filter((i) => i !== 'vault')) {
+      expect(builtinPolicyIsReversible(id), `${id} must not be reversible`).toBe(false);
+    }
+  });
+
+  it('agrees with the catalog it is derived from', () => {
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(builtinPolicyIsReversible(id)).toBe(BUILTIN_POLICIES[id].reversible);
+    }
+  });
+
+  it('never disagrees with the action axis: a reversible archetype still redacts', () => {
+    // The pairing the whole design rests on. A reversible archetype that
+    // resolved to some OTHER action would mean a value kept without being
+    // removed from the request.
+    for (const id of KNOWN_BUILTIN_IDS.filter((i) => builtinPolicyIsReversible(i))) {
+      expect(builtinPolicyToAction(id)).toBe('redact');
+    }
+  });
+});
+
+describe('policyIdIsReversible — the PACK axis', () => {
+  it('reads a real assignment', () => {
+    expect(policyIdIsReversible('vault')).toBe(true);
+    expect(policyIdIsReversible('redact')).toBe(false);
+    expect(policyIdIsReversible('block')).toBe(false);
+  });
+
+  it('coalesces an unassigned pack the same way policyIdToAction does', () => {
+    // Both must land on DEFAULT_PACK_POLICY_ID, or the two axes describe
+    // different policies for one unassigned pack.
+    for (const absent of [null, undefined]) {
+      expect(policyIdIsReversible(absent)).toBe(builtinPolicyIsReversible(DEFAULT_PACK_POLICY_ID));
+      expect(policyIdToAction(absent)).toBe(builtinPolicyToAction(DEFAULT_PACK_POLICY_ID));
+    }
+  });
+
+  it('treats an UNKNOWN id as the default rather than as reversible', () => {
+    // A custom policy, or a row written by a newer build. Defaulting to
+    // not-reversible is the safe direction: destroying a value that could have
+    // been recovered is survivable; keeping one the policy said to destroy is not.
+    for (const unknown of ['my-custom-policy', '', 'VAULT', 'constructor']) {
+      expect(policyIdIsReversible(unknown), `${unknown} must not read as reversible`).toBe(false);
+    }
   });
 });
 

@@ -3,6 +3,7 @@ import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
 import { isAttached } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,6 +33,22 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+
+// Lets a case make the STORE WRITE fail without touching the real one. The
+// managed-lock branch is otherwise unreachable from a test: applyOnboarding
+// decides it against a file at an absolute OS path (/etc/aka, /Library/…) that
+// no temp-home redirection can reach.
+const writeFailure = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    applyOnboarding: (...args: Parameters<typeof actual.applyOnboarding>) => {
+      if (writeFailure.error) throw writeFailure.error;
+      return actual.applyOnboarding(...args);
+    },
+  };
+});
 
 let home: string;
 
@@ -140,6 +157,60 @@ describe('detachFromControlPlane', () => {
 // throws on the first field read, and a THROWN Server Action rejects — the
 // browser gets a framework error page instead of the recoverable result these
 // were written to return.
+// The failure branches. These were unreachable from a test until the refusal
+// WORDING moved out of the 'use server' module — the managed branch needs a file
+// at an absolute OS path no test can redirect — so the store call is faked here
+// and the wording is asserted where it now lives (action-refusals.test.ts).
+describe('write failures are reported, never thrown', () => {
+  it('reports an administrative lock as a refusal rather than a fault', async () => {
+    const { ManagedFieldError } = await import('@akasecurity/persistence');
+    writeFailure.error = new ManagedFieldError(['runMode']);
+    try {
+      const res = await detachFromControlPlane();
+      expect(res.ok).toBe(false);
+      // Names the locked field and attributes the decision — a retry cannot help.
+      expect(res.error).toContain('runMode');
+      expect(res.error).toMatch(/organization/i);
+      expect(res.error).not.toMatch(/try again/i);
+    } finally {
+      writeFailure.error = null;
+    }
+  });
+
+  it('reports a store fault as a fault, distinctly', async () => {
+    writeFailure.error = new Error('disk on fire');
+    try {
+      const res = await saveSettings({
+        historicalAccess: 'full',
+        modelJudgeConsent: false,
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain('settings.json');
+      // And it must not borrow the administrative wording — different cause,
+      // different remedy.
+      expect(res.error).not.toMatch(/organization/i);
+      // Nor echo whatever the store threw.
+      expect(res.error).not.toContain('disk on fire');
+    } finally {
+      writeFailure.error = null;
+    }
+  });
+
+  it('reports a lock on ATTACH the same way', async () => {
+    const { ManagedFieldError } = await import('@akasecurity/persistence');
+    writeFailure.error = new ManagedFieldError(['runMode']);
+    try {
+      const res = await attachToControlPlane({ endpoint: ENDPOINT });
+      expect(res.ok).toBe(false);
+      expect(res.error).toMatch(/organization/i);
+    } finally {
+      writeFailure.error = null;
+    }
+  });
+});
+
 describe('untyped wire input', () => {
   const HOSTILE: [string, unknown][] = [
     ['null', null],

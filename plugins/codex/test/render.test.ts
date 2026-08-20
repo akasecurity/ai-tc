@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import type { FindingView } from '@akasecurity/plugin-sdk';
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
-import { BUILTIN_ORDER, SetupHandoffOffer } from '@akasecurity/schema';
+import type { BuiltinPolicyId, DetectionCategory, DetectionListItem } from '@akasecurity/schema';
+import {
+  BUILTIN_ORDER,
+  BUILTIN_POLICIES,
+  DEFAULT_PACK_POLICY_ID,
+  KNOWN_BUILTIN_IDS,
+  SetupHandoffOffer,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,6 +18,7 @@ import {
   renderAdjustConfirm,
   renderApplied,
   renderCategoriesTuned,
+  renderDetections,
   renderFirstRun,
   renderPosture,
   renderPostureGrid,
@@ -669,5 +676,48 @@ describe('topFindings', () => {
       3,
     );
     expect(ranked.map((f) => f.ruleId)).toEqual(['crit', 'high-new', 'high-old']);
+  });
+});
+
+// `renderDetections` is the plugin's read surface for the installed packs, and
+// the policy column is the one thing on it that is DERIVED rather than echoed.
+// It had no coverage at all, so the archetype name it prints could drift from
+// the catalog — and from `aka detections` and the dashboard, which render the
+// same assignment — without anything failing.
+describe('renderDetections — the policy column', () => {
+  const item = (overrides: Partial<DetectionListItem>): DetectionListItem => ({
+    id: 'aka/secrets',
+    name: 'Secrets',
+    version: '2.0.0',
+    enabled: true,
+    origin: 'library',
+    namespace: 'aka',
+    packId: 'secrets',
+    ruleCount: 21,
+    ...overrides,
+  });
+
+  it('prints each built-in by its CATALOG NAME, not its id', () => {
+    // Derived from the canonical set so a new archetype cannot reach this
+    // surface spelled differently from every other one.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      const out = renderDetections([item({ policyId: id })]);
+      expect(out, `${id} is not rendered by its catalog name`).toContain(BUILTIN_POLICIES[id].name);
+    }
+  });
+
+  it('renders an UNASSIGNED pack as the monitor-by-default posture', () => {
+    // Every enforcement path coalesces an unassigned pack to Monitor; a surface
+    // that showed it blank would read as "no policy" rather than "log only".
+    const out = renderDetections([item({})]);
+    expect(out).toContain(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
+  });
+
+  it('prints a CUSTOM policy id verbatim rather than misreporting it', () => {
+    // An id the catalog does not carry is not a built-in, and least of all
+    // Monitor — which would read as log-only for a policy that may block.
+    const out = renderDetections([item({ policyId: 'my-custom-policy' })]);
+    expect(out).toContain('my-custom-policy');
+    expect(out).not.toContain(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
   });
 });

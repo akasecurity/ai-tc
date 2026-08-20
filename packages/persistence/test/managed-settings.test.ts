@@ -387,6 +387,62 @@ describe('applyOnboarding — refusing an administratively locked write', () => 
     expect(readEffectiveSettings(base, null).settings.historicalAccess).toBe('full');
   });
 
+  it('does NOT refuse when the form echoes an administrator PINNED value back', () => {
+    // The case the dashboard actually produces on a managed machine. The page
+    // renders the EFFECTIVE settings, so a locked-and-pinned field comes back
+    // in the payload carrying the ADMINISTRATOR's value — which differs from
+    // what is in the user's own file. Compared against the raw file that reads
+    // as a change and refuses, so every save on such a machine fails, including
+    // saves of entirely unlocked fields.
+    applyOnboarding({ historicalAccess: 'full', vaultInlineReveal: 'masked' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { historicalAccess: 'session-only' },
+      lockedFields: ['historicalAccess'],
+    };
+    // What the page would show, and therefore post back.
+    expect(readEffectiveSettings(base, managed).settings.historicalAccess).toBe('session-only');
+
+    expect(() =>
+      applyOnboarding(
+        { historicalAccess: 'session-only', vaultInlineReveal: 'off' },
+        base,
+        managed,
+      ),
+    ).not.toThrow();
+    expect(readEffectiveSettings(base, managed).settings.vaultInlineReveal).toBe('off');
+  });
+
+  it('does not PERSIST an administrator pin into the user own file', () => {
+    // The other half, and why the echo is dropped rather than merged: a pin
+    // written into settings.json would outlive the managed file, so removing
+    // the lock would leave the administrator's answer behind as though the user
+    // had chosen it.
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { historicalAccess: 'session-only' },
+      lockedFields: ['historicalAccess'],
+    };
+    applyOnboarding({ historicalAccess: 'session-only', vaultInlineReveal: 'off' }, base, managed);
+
+    // With the administrator gone, the user's own choice is still theirs.
+    expect(readEffectiveSettings(base, null).settings.historicalAccess).toBe('full');
+  });
+
+  it('still refuses when the user tries to change a locked field away from the pin', () => {
+    // The positive control: relaxing the echo case must not relax the lock.
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { historicalAccess: 'session-only' },
+      lockedFields: ['historicalAccess'],
+    };
+    expect(() => applyOnboarding({ historicalAccess: 'full' }, base, managed)).toThrow(
+      ManagedFieldError,
+    );
+  });
+
   it('refuses a DETACH when the connection is locked', () => {
     // The ask this exists for: a machine an administrator attached is not one
     // the user may leave.

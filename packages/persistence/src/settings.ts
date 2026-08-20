@@ -229,6 +229,31 @@ function lockableKeysTouched(
   return keys;
 }
 
+// Drop every WorkspaceSettings key an administrator has locked. The inverse of
+// lockableKeysTouched, and deliberately written out rather than derived from it:
+// that one maps settings keys ONTO managed keys (many-to-one — `runMode` covers
+// `controlPlane` too), and inverting a many-to-one map in the head is how one of
+// the pair ends up covering a field the other does not.
+function withoutLockedKeys(
+  applied: Partial<WorkspaceSettings>,
+  managed: ManagedContext,
+): Partial<WorkspaceSettings> {
+  if (!managed.present || managed.lockedFields.length === 0) return applied;
+  const out = { ...applied };
+  const locked = (key: ManagedSettingKey): boolean => managed.lockedFields.includes(key);
+  if (locked('runMode')) {
+    delete out.runMode;
+    delete out.controlPlane;
+  }
+  if (locked('historicalAccess')) delete out.historicalAccess;
+  if (locked('vaultConsent')) delete out.vaultConsent;
+  if (locked('vaultKeyCustody')) delete out.vaultKeyCustody;
+  if (locked('vaultInlineReveal')) delete out.vaultInlineReveal;
+  if (locked('modelJudgeConsent')) delete out.modelJudgeConsent;
+  if (locked('dataSharesInPlace')) delete out.dataSharesInPlace;
+  return out;
+}
+
 export function applyOnboarding(
   answers: OnboardingAnswers,
   base: string = defaultDataDir(),
@@ -239,27 +264,35 @@ export function applyOnboarding(
   // settings.json, so the directory has to exist before one can be taken.
   ensureDataDirSync(dir);
   const file = join(dir, SETTINGS_FILENAME);
-  const managed = managedContextOf(
-    managedOverride === undefined ? readManagedSettings() : managedOverride,
-  );
+  const managedSettings = managedOverride === undefined ? readManagedSettings() : managedOverride;
+  const managed = managedContextOf(managedSettings);
   return withFileLock(file, () => {
     // The RAW file, never the overlaid view — see readUserSettings. Merging over
     // an overlay would write the administrator's pins into the user's own file.
     const current = readUserSettings(base);
     const applied = typeof answers === 'function' ? answers(current) : answers;
-    // Inside the lock, because the refusal has to be decided against the same
-    // file the merge is about to be applied to — and because refusing here
-    // guarantees the write never happens, rather than being undone afterwards.
+    // A locked field is judged against what the user was SHOWN, not against
+    // their own file, and the two differ exactly when an administrator pinned a
+    // value. The dashboard renders the effective settings and posts every field
+    // back, so on such a machine a locked field arrives carrying the
+    // ADMINISTRATOR's value — which against the raw file reads as a change.
     //
-    // A refusal THROWS rather than dropping the locked keys and writing the
-    // rest. Silently discarding half a save is the shape this whole writer
-    // exists to prevent: the user is told it saved, and the answer they cared
-    // about is gone. Both callers already surface a throw.
-    const refused = lockedAmong(managed, lockableKeysTouched(current, applied));
+    // Comparing against the raw file is wrong in BOTH directions, and the second
+    // is the dangerous one: an echo of the pin was refused (so every save on a
+    // managed machine failed, including saves of entirely unlocked fields),
+    // while a user posting their OWN value for a locked field matched the raw
+    // file, counted as no change, and went through — the lock enforcing nothing.
+    const effective = overlayManagedSettings(current, managedSettings);
+    const refused = lockedAmong(managed, lockableKeysTouched(effective, applied));
     if (refused.length > 0) throw new ManagedFieldError(refused);
     const merged = WorkspaceSettingsSchema.parse({
       ...current,
-      ...applied,
+      // Locked keys are stripped rather than merged. Everything still here is,
+      // by the refusal above, an unchanged ECHO of the administrator's value —
+      // so dropping it discards no answer of the user's, and writing it would
+      // persist the pin into their file, where it would outlive the managed
+      // file and read as their own choice once the lock was gone.
+      ...withoutLockedKeys(applied, managed),
       // First setup stamps the time; later edits keep the original completion mark.
       onboardedAt: applied.onboardedAt ?? current.onboardedAt ?? new Date().toISOString(),
     });

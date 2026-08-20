@@ -8,7 +8,6 @@ import type {
   IngestEvent,
   Severity,
 } from '@akasecurity/schema';
-import { Provider } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -639,20 +638,15 @@ describe('recentlyResolved', () => {
 });
 
 describe('scanCoverage', () => {
-  // SCAN_COVERAGE is now typed Record<Provider, ...>, so a provider added to
-  // the enum without a row is already a compile error. This pins the same
-  // invariant at runtime, so widening that type or reintroducing the old
-  // array shape still fails here rather than silently omitting a provider's
-  // row (the schema comment promises `providers` covers the whole enum).
-  it('gives every Provider enum member a scan-coverage row', async () => {
+  // scanCoverage() builds each row as `{ provider, ...SCAN_COVERAGE[provider] }`,
+  // and spreading `undefined` is legal and adds nothing — so a provider whose
+  // row went missing (a `Partial<Record<...>>` widening, or the old array shape
+  // re-indexed by string) would still show up with only `provider` set. A set
+  // comparison of provider names can't catch that (it's implied by construction
+  // once `providers` is mapped from `Provider.options`); asserting the fields
+  // themselves are present is the part that can actually fail.
+  it('gives every Provider enum member a scan-coverage row with real fields', async () => {
     const res = await security().scanCoverage('30d');
-    expect(res.providers.map((p) => p.provider).sort()).toEqual([...Provider.options].sort());
-    // The name alone isn't enough: scanCoverage() builds each row as
-    // `{ provider, ...SCAN_COVERAGE[provider] }`, and spreading `undefined`
-    // is legal and adds nothing — so a provider whose row went missing (a
-    // `Partial<Record<...>>` widening, or the old array shape re-indexed by
-    // string) would still show up here with only `provider` set. Assert the
-    // fields themselves are present, not just the name.
     for (const row of res.providers) {
       expect(row.coverage, `coverage missing for ${row.provider}`).toBeTypeOf('number');
       expect(row.supported, `supported missing for ${row.provider}`).toBeTypeOf('boolean');

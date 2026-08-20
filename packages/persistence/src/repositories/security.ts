@@ -88,16 +88,21 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // Keyed by every `Provider` value rather than an array, so a provider added to
 // the enum without a row here is a compile error — an omission the array shape
 // this replaced could not catch (see scanCoverage() below for the ordering,
-// which is derived from Provider.options rather than object key order).
+// which is derived from Provider.options). Key order here is deliberately NOT
+// Provider's declaration order: scanCoverage() must derive the response order
+// from Provider.options rather than from iterating this object, and keeping
+// the two orders different is what makes that a test can actually falsify —
+// with the two orders coincidentally equal, an implementation that iterates
+// this object directly would emit the identical sequence.
 const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> = {
-  claudecode: { coverage: 100, supported: true },
-  cursor: { coverage: 0, supported: false },
-  codex: { coverage: 80, supported: true },
   antigravity: { coverage: 60, supported: true },
-  claudeai: { coverage: 40, supported: true },
-  chatgpt: { coverage: 40, supported: true },
-  copilot: { coverage: 0, supported: false },
   api: { coverage: 0, supported: false },
+  chatgpt: { coverage: 40, supported: true },
+  claudeai: { coverage: 40, supported: true },
+  claudecode: { coverage: 100, supported: true },
+  codex: { coverage: 80, supported: true },
+  copilot: { coverage: 0, supported: false },
+  cursor: { coverage: 0, supported: false },
 };
 
 // Bucket size per range. A table rather than a ternary so adding a range to
@@ -245,9 +250,12 @@ export class SqliteSecurityRepository implements SecurityViews {
   // Range is echoed but does not change the result today — coverage is a constant
   // business fact (see SCAN_COVERAGE), not a measured per-window metric. Order
   // comes from Provider.options (the enum's declaration order), not from
-  // SCAN_COVERAGE's own key order, which object literals do not guarantee —
-  // and which must match the schema comment's promise that this order mirrors
-  // the generated OpenAPI enum list.
+  // SCAN_COVERAGE's own key order — deliberately, not because object literals
+  // leave key order unspecified (ES2015 guarantees insertion order for these
+  // non-integer string keys, so iterating SCAN_COVERAGE directly would be
+  // reliable too). The reason is the schema comment's promise: the returned
+  // order must mirror the generated OpenAPI enum list, which is Provider's
+  // contract, not this table's.
   scanCoverage(range: TimeRange): Promise<ScanCoverageResponse> {
     return Promise.resolve({
       range,

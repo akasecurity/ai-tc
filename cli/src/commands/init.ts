@@ -65,8 +65,9 @@ function storeTargets(home: string): string[] {
 
 // Every path whose owner-only MODE this command stands behind. The layout above
 // has to stay enumerated — some of it does not exist yet on a first run, and an
-// absent target is not a loose one — but the artifacts beside the store are not
-// a fixed list, so they are walked instead. SQLite's `-wal`/`-shm`/`-journal`
+// absent target is not a loose one — but the artifacts beside the store and
+// beside the vault key are not a fixed list, so both directories are walked
+// instead. SQLite's `-wal`/`-shm`/`-journal`
 // appear with whichever journal mode is active, and the legacy drop leaves an
 // `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the prompt corpus
 // — on every run, including a first one. `tightenPerms`/`tightenFile` already
@@ -75,20 +76,27 @@ function storeTargets(home: string): string[] {
 // next migration adds.
 function storeModeTargets(home: string): string[] {
   const targets = new Set(storeTargets(home));
-  const data = dataDir(home);
-  try {
-    for (const name of readdirSync(data)) {
-      // A `.partial` is the one artifact deliberately left at the umask: it
-      // exists for the whole of the `VACUUM INTO` that writes it and is only
-      // tightened just before the rename, so a copy cut short by a kill leaves
-      // a 0644 one behind on purpose (see snapshotStore). Reporting it would
-      // blame the filesystem for a mode nothing tried to apply — the wrong
-      // diagnosis, which is the same reason a symlinked path is skipped below.
-      if (name.endsWith('.partial')) continue;
-      targets.add(join(data, name));
+  // Both directories that accumulate artifacts the enumerated layout cannot
+  // name. data/ holds the sidecars and the backups; keys/ holds `vault.key`
+  // itself — enumerated only as a DIRECTORY above, so the key inside it, and the
+  // rotation lock beside it, were checked by nothing until this walked here too.
+  for (const dir of [dataDir(home), keysDir(home)]) {
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        // A `.partial` FILE is the legacy staging shape: an older version wrote
+        // its snapshot copy straight to one and only tightened it just before
+        // the rename, so a copy cut short by a kill left a 0644 file behind on
+        // purpose. Reporting it would blame the filesystem for a mode nothing
+        // tried to apply — the wrong diagnosis, which is the same reason a
+        // symlinked path is skipped below. The current shape is a `.partial`
+        // DIRECTORY created owner-only before the copy starts (see
+        // snapshotStore), and that mode IS one this command stands behind.
+        if (entry.name.endsWith('.partial') && !entry.isDirectory()) continue;
+        targets.add(join(dir, entry.name));
+      }
+    } catch {
+      // absent or unreadable — the enumerated layout still applies
     }
-  } catch {
-    // absent or unreadable data dir — the enumerated layout still applies
   }
   return [...targets];
 }

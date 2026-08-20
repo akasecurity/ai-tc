@@ -289,10 +289,12 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
 
 // Snapshots the live store aside immediately before the irreversible
 // legacy-table drop, while it stays open and in place — see snapshotStore for
-// why the copy goes through VACUUM INTO and lands via a `.partial` rename. A
-// failure still throws and is caught by the caller, which defers the drop.
+// why the copy goes through VACUUM INTO and is renamed out of a `.bak.partial`
+// staging directory into place. A failure still throws and is caught by the
+// caller, which defers the drop.
 export function backupBeforeLegacyDrop(db: DatabaseSync, file: string): string {
-  // Clear any `.partial` a prior open left behind before staging a new copy.
+  // Clear any `.bak.partial` staging area a prior open left behind (and the bare
+  // `.partial` file an older version wrote) before staging a new copy.
   reapStalePartials(file);
   const backup = backupPath(file, 'pre-drop');
   snapshotStore(db, backup);

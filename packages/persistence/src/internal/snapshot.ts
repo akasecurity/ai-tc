@@ -3,7 +3,7 @@ import { existsSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { dbSidecars, tightenFile, tightenPerms } from '../paths.ts';
+import { dbSidecars, mkdirOwnerOnlySync, tightenDir, tightenFile, tightenPerms } from '../paths.ts';
 
 /**
  * A backup path beside the store: `<file>.<tag>.<millis>.<random>.bak`.
@@ -21,27 +21,111 @@ export function backupPath(file: string, tag: string): string {
 
 // A snapshot copy of a local store finishes in well under this, and VACUUM INTO
 // keeps touching the file as it writes, so a live copy's mtime stays recent. A
-// `.partial` whose mtime has been frozen this long is therefore a leftover from
-// a killed process, not a copy another opener has in flight — the bound is what
-// lets a reap run without pulling a live staging file out from under its writer.
+// staging copy whose mtime has been frozen this long is therefore a leftover
+// from a killed process, not a copy another opener has in flight — the bound is
+// what lets a reap run without pulling a live staging file out from under its
+// writer.
 const STALE_PARTIAL_MS = 5 * 60_000;
 
+// The suffix that turns a `backupPath` into its staging area. `backupPath`
+// already ends in `.bak`, so a staged copy is `<store>.<tag>.<…>.bak.partial` —
+// which is the whole name the reap below matches on, deliberately narrower than
+// a bare `.partial` so it can never sweep something else's staging file.
+export const SNAPSHOT_STAGING_SUFFIX = '.partial';
+const STAGED_NAME_SUFFIX = `.bak${SNAPSHOT_STAGING_SUFFIX}`;
+
+// The copy's fixed name INSIDE the staging directory. Fixed rather than random
+// because the directory it sits in already carries the unguessable suffix.
+// Exported so the guards that classify what `~/.aka` holds derive this name
+// rather than spelling it — `copy` is an ordinary word, and a hand-written copy
+// of it in a test would keep matching after a rename here.
+export const SNAPSHOT_STAGING_COPY = 'copy';
+
 /**
- * Remove abandoned `.partial` staging files left beside the store.
+ * Create the staging area for a snapshot of `backup`: a directory beside the
+ * store, owner-only BEFORE SQLite writes anything into it, and the path the
+ * copy goes to inside it.
  *
- * `snapshotStore` writes its copy to a `<backup>.partial` and renames it into
- * place; a throw removes it, but a KILL — a hook cut off at its timeout, mid
- * `VACUUM INTO` — cannot, and nothing else reaps it: `discardStore` clears only
- * the store and its sidecars. On the plugin path (a store opened per hook,
- * killable at its timeout) that is one leftover per attempt, each up to store
- * size and at the process umask.
+ * The directory is the point. `VACUUM INTO` refuses a target that already
+ * exists, so the copy cannot be pre-created at 0600 and then written — it lands
+ * at the process UMASK and stays there until the tighten that runs after the
+ * copy completes. A `throw` removes it; a KILL cannot, and the plugin opens a
+ * store per hook and is killable at its 10 s harness timeout. So a killed hook
+ * used to leave a byte-complete copy of the whole prompt corpus at 0644.
  *
- * Runs before a snapshot, over every `<store>.*.bak.partial` beside the store,
- * so it covers both the `.legacy.` and `.pre-drop.` names. Age-bounded because a
- * concurrent opener's copy in flight shares the prefix: only a `.partial` whose
- * mtime has not moved for STALE_PARTIAL_MS is treated as abandoned. A pid bound
- * would be wrong — the name is random-suffixed, not pid-scoped. Best-effort
- * throughout: it runs on the fail-open open path and must never throw.
+ * Nothing can narrow that window at the file, because the file does not exist
+ * until SQLite creates it. Enclosing it does: an owner-only directory is
+ * untraversable to every other account from the instant it exists, whatever the
+ * copy inside it is later created as, and it survives a kill exactly as the
+ * copy does.
+ */
+export function createSnapshotStaging(backup: string): { stage: string; copy: string } {
+  const stage = `${backup}${SNAPSHOT_STAGING_SUFFIX}`;
+  // SQLite FOLLOWS a symlink at its output path, and a dangling link passes its
+  // "output file already exists" check — so a link planted here would send the
+  // whole prompt corpus to the link's target. Clearing the path first acts on
+  // the link itself, never on what it points at, and the `mkdirSync` that
+  // follows then OWNS the name: the copy is written at a path inside a directory
+  // this call just created, so it cannot be a link somebody planted in advance.
+  rmSync(stage, { recursive: true, force: true });
+  mkdirOwnerOnlySync(stage);
+  // mkdir's mode is subject to the umask, which only ever clears bits — the
+  // tighten is what holds 0700 under one that would have taken some away. The
+  // create mode is the half that matters and the half no assertion on a
+  // finished snapshot can see, since a completed one removes this directory;
+  // `test/internal/snapshot.test.ts` asserts this function directly for that
+  // reason, under a permissive umask.
+  tightenDir(stage);
+  return { stage, copy: join(stage, SNAPSHOT_STAGING_COPY) };
+}
+
+/**
+ * How long ago a staging leftover was last written, or null when it cannot be
+ * told. The directory's own mtime moves only when an entry is added or removed,
+ * so a copy that has been growing for minutes leaves it frozen at creation —
+ * reading it would age a LIVE copy into staleness. The copy inside is what
+ * VACUUM INTO keeps touching, so it is what the bound is measured against; the
+ * directory is the fallback for a staging area that never got that far.
+ *
+ * A leftover written by an older version is a `.partial` FILE rather than a
+ * directory, and its own mtime is the right reading. Both shapes are swept, so
+ * an upgrade does not strand the copy the previous version left behind.
+ */
+function idleMs(entry: string): number | null {
+  for (const candidate of [join(entry, SNAPSHOT_STAGING_COPY), entry]) {
+    try {
+      return Date.now() - statSync(candidate).mtimeMs;
+    } catch {
+      // The copy is absent (a staging dir cut short before VACUUM INTO created
+      // it, or a legacy file-shaped leftover) — fall through to the entry.
+    }
+  }
+  return null;
+}
+
+/**
+ * Remove abandoned staging areas left beside the store.
+ *
+ * `snapshotStore` writes its copy inside a `<backup>.bak.partial` directory and
+ * renames it into place; a throw clears it, but a KILL — a hook cut off at its
+ * timeout, mid `VACUUM INTO` — cannot, and nothing else reaps it:
+ * `discardStore` clears only the store and its sidecars. On the plugin path (a
+ * store opened per hook, killable at its timeout) that is one leftover per
+ * attempt, each up to store size.
+ *
+ * Runs on EVERY open, not only before a snapshot. The snapshot paths are
+ * reached by a migration or a foreign-lineage reset, so hanging the sweep off
+ * them alone meant a machine that never did either kept its leftover
+ * indefinitely — the copy holds the same prompt corpus as the store, so
+ * "indefinitely" was the half that mattered most.
+ *
+ * Covers every `<store>.*.bak.partial` beside the store, so both the `.legacy.`
+ * and `.pre-drop.` names, and both shapes: the directory this version stages
+ * into and the bare `.partial` FILE an older version left. Age-bounded because
+ * a concurrent opener's copy in flight shares the prefix: only a leftover idle
+ * for STALE_PARTIAL_MS is treated as abandoned. A pid bound would be wrong —
+ * the name is random-suffixed, not pid-scoped. Best-effort throughout: it runs
+ * on the fail-open open path and must never throw.
  */
 export function reapStalePartials(file: string): void {
   const dir = dirname(file);
@@ -53,14 +137,17 @@ export function reapStalePartials(file: string): void {
     return; // the data dir is unreadable or absent — nothing to sweep
   }
   for (const name of entries) {
-    if (!name.startsWith(prefix) || !name.endsWith('.bak.partial')) continue;
-    const partial = join(dir, name);
+    if (!name.startsWith(prefix) || !name.endsWith(STAGED_NAME_SUFFIX)) continue;
+    const staging = join(dir, name);
     try {
-      if (Date.now() - statSync(partial).mtimeMs > STALE_PARTIAL_MS) {
-        rmSync(partial, { force: true });
+      const idle = idleMs(staging);
+      if (idle !== null && idle > STALE_PARTIAL_MS) {
+        // `recursive` covers the directory shape; `force` covers a leftover
+        // that raced away between the reading above and here.
+        rmSync(staging, { recursive: true, force: true });
       }
     } catch {
-      // best-effort: raced away by another opener, or unstattable — leave it
+      // best-effort: raced away by another opener, or unremovable — leave it
     }
   }
 }
@@ -76,43 +163,50 @@ export function reapStalePartials(file: string): void {
  * all and those frames stay in the `-wal`. The bound parameter avoids any
  * path-quoting hazard.
  *
- * The copy lands on a `.partial` sibling and is renamed into place only once it
- * is complete, so a snapshot cut short by a kill rather than a throw (a hook
- * killed at its timeout) leaves a `.partial`, never a truncated file that reads
- * as a usable backup at recovery time.
+ * The copy lands inside a `.bak.partial` staging DIRECTORY and is renamed into
+ * place only once it is complete, so a snapshot cut short by a kill rather than
+ * a throw (a hook killed at its timeout) leaves a staging directory, never a
+ * truncated file that reads as a usable backup at recovery time.
  *
- * Throws on failure, having removed its own partial file.
+ * That directory is created owner-only before SQLite writes anything into it,
+ * which is the only way to cover the copy for the whole time it is being
+ * written: `VACUUM INTO` refuses an existing target, so the copy itself cannot
+ * be pre-created at 0600, and a kill leaves whatever the umask gave it. An
+ * enclosing 0700 directory is untraversable from the first instant and survives
+ * the kill with the copy (see createSnapshotStaging).
+ *
+ * Throws on failure, having removed its own staging directory.
  */
 export function snapshotStore(db: DatabaseSync, backup: string): void {
-  const partial = `${backup}.partial`;
+  // Built before the try so a failure to create the staging area throws with
+  // nothing to clean up — there is no stage to remove until this returns.
+  const { stage, copy } = createSnapshotStaging(backup);
   try {
-    // SQLite FOLLOWS a symlink at its output path, and a dangling link passes
-    // its "output file already exists" check — so a link planted here would send
-    // the whole prompt corpus to the link's target. Unlink acts on the link
-    // itself, never on what it points at. The rename below does not cover this:
-    // it protects the `backup` path, and `partial` is the path actually written.
-    rmSync(partial, { force: true });
-    db.prepare('VACUUM INTO ?').run(partial);
+    db.prepare('VACUUM INTO ?').run(copy);
     // VACUUM INTO writes a brand-new file at the process umask (typically 0644),
     // but it is a full copy of the prompt corpus, so hold it to the store's own
     // 0600. This runs before the rename, which carries the inode and its mode
-    // across, so the PUBLISHED backup is always 0600. It does NOT make the copy
-    // itself owner-only: the file exists at the umask for the whole VACUUM INTO
-    // above, so a process killed DURING the copy still leaves a 0644 `.partial`
-    // — the widest window, and the one reapStalePartials cleans up on a later
-    // open. The tighten cannot run any earlier: the file does not exist until
-    // VACUUM INTO creates it.
-    tightenFile(partial);
-    renameSync(partial, backup);
+    // across, so the PUBLISHED backup is always 0600. The copy is only ever
+    // reachable through the owner-only directory above until then.
+    tightenFile(copy);
+    renameSync(copy, backup);
   } catch (error) {
     // A partial copy left behind would read as a usable backup, so drop it. A
     // cleanup failure never replaces the error that caused it.
     try {
-      rmSync(partial, { force: true });
+      rmSync(stage, { recursive: true, force: true });
     } catch {
       // nothing to undo: no backup was published either way
     }
     throw error;
+  }
+  // The published backup is out; the staging directory has nothing left in it.
+  // Outside the try because a removal failure here must not be mistaken for a
+  // failed snapshot — the copy is already at `backup`.
+  try {
+    rmSync(stage, { recursive: true, force: true });
+  } catch {
+    // best-effort: an empty directory the next reap will clear
   }
 }
 

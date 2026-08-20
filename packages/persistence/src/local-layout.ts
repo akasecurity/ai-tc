@@ -22,9 +22,16 @@ export function defaultDataDir(): string {
   return join(homedir(), '.aka');
 }
 
-// On-disk layout (shared by ALL plugins):
+// On-disk layout (shared by ALL plugins). The sidecar set is the one dbSidecars
+// creates and tightens — three, not two: -wal/-shm are the pair SQLite keeps in
+// write-ahead logging, and -journal is what it writes instead wherever WAL is
+// unavailable (a DrvFs `/mnt/c` path under WSL, some network mounts). data/ also
+// accumulates `.bak` snapshot copies of the store and, after a snapshot cut
+// short by a kill, a `.bak.partial` staging directory:
 //   ~/.aka/settings/  settings.json
-//   ~/.aka/data/      aka.db (+ -wal/-shm sidecars) · policy-cache.json
+//   ~/.aka/data/      aka.db (+ -wal/-shm/-journal sidecars) · policy-cache.json
+//                     · aka.db.<tag>.<millis>.<random>.bak (+ .partial staging)
+//   ~/.aka/keys/      vault.key (see keysDir — deliberately its own directory)
 export function settingsDir(base: string = defaultDataDir()): string {
   return join(base, 'settings');
 }

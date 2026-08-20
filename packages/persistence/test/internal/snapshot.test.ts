@@ -13,13 +13,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   backupPath,
+  createSnapshotStaging,
   discardStore,
   moveStoreAside,
   reapStalePartials,
@@ -392,6 +393,64 @@ describe('discardStore', () => {
   });
 });
 
+describe('createSnapshotStaging', () => {
+  // The whole point of the staging DIRECTORY, and the one property no assertion
+  // on a finished snapshot can reach: a completed snapshot removes it, and a
+  // failed one removes it too, so by the time `snapshotStore` returns there is
+  // nothing left to stat. What the mode covers is the interval in between —
+  // `VACUUM INTO` refuses an existing target, so the copy cannot be
+  // pre-created at 0600 and lands at the umask instead, and a process KILLED
+  // during the copy leaves it there. An owner-only enclosing directory is
+  // untraversable to every other account from the instant it exists and
+  // survives the kill exactly as the copy does.
+  //
+  // The umask is the instrument, as in `paths.test.ts`: it only ever CLEARS
+  // bits, so under 0o000 the create keeps what it asked for and a dropped mode
+  // shows as 0777. A runner's own 0o077 would hand back 0700 either way.
+  it('creates the staging directory owner-only, before anything is written into it', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const backup = backupPath(join(dir, 'aka.db'), 'legacy');
+    const previous = process.umask(0o000);
+    let stage: string;
+    let copy: string;
+    try {
+      ({ stage, copy } = createSnapshotStaging(backup));
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(statSync(stage).mode & 0o777).toBe(0o700);
+    // The copy goes INSIDE it — a sibling would inherit none of the protection.
+    expect(copy.startsWith(`${stage}${sep}`)).toBe(true);
+    expect(existsSync(copy)).toBe(false); // nothing written yet
+  });
+
+  // The symlink guard moved here with the create. A dangling link at the
+  // staging path used to be the route to the whole prompt corpus, because
+  // VACUUM INTO follows one and its "already exists" check passes on a dangling
+  // one. Clearing the path acts on the link, never on its target — and the
+  // mkdir that follows then owns the name, so the copy path inside cannot have
+  // been planted in advance.
+  it('replaces a symlink planted at the staging path rather than following it', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const backup = backupPath(join(dir, 'aka.db'), 'legacy');
+    const target = join(dir, 'elsewhere.txt');
+    symlinkSync(target, `${backup}.partial`);
+
+    const { stage } = createSnapshotStaging(backup);
+
+    expect(existsSync(target)).toBe(false);
+    expect(lstatSync(stage).isSymbolicLink()).toBe(false);
+    expect(lstatSync(stage).isDirectory()).toBe(true);
+  });
+});
+
 describe('reapStalePartials', () => {
   it('reaps an abandoned .partial but spares a fresh one and the published .bak', () => {
     const file = join(dir, 'aka.db');
@@ -415,6 +474,52 @@ describe('reapStalePartials', () => {
     expect(existsSync(live)).toBe(true); // in flight → left alone
     expect(existsSync(published)).toBe(true); // published backup → never touched
     expect(existsSync(file)).toBe(true); // the store itself → never touched
+  });
+
+  // The directory's OWN mtime moves only when an entry is added or removed, so
+  // a copy that has been growing for minutes leaves it frozen at creation.
+  // Reading it would age a LIVE staging area into staleness and pull the copy
+  // out from under the process writing it — which is the one thing the age
+  // bound exists to prevent. The copy inside is what VACUUM INTO keeps
+  // touching, so that is what the bound is measured against.
+  it('measures a staging directory by the copy inside it, not by the directory', () => {
+    const file = join(dir, 'aka.db');
+    writeFileSync(file, 'store');
+    const anHourAgo = new Date(Date.now() - 60 * 60_000);
+
+    // A live copy: the directory was created an hour ago and the copy inside it
+    // is still being written, so its mtime is now.
+    const live = `${file}.legacy.1.aaaaaaaa.bak.partial`;
+    mkdirSync(live);
+    writeFileSync(join(live, 'copy'), 'in flight');
+    utimesSync(live, anHourAgo, anHourAgo);
+
+    // Abandoned: the copy itself has not been touched for an hour.
+    const abandoned = `${file}.pre-drop.1.bbbbbbbb.bak.partial`;
+    mkdirSync(abandoned);
+    const inner = join(abandoned, 'copy');
+    writeFileSync(inner, 'killed part-way');
+    utimesSync(inner, anHourAgo, anHourAgo);
+
+    reapStalePartials(file);
+
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  // A staging directory cut short before VACUUM INTO created anything has no
+  // copy to read, so the directory's own mtime is the only reading left.
+  it('falls back to the directory when the copy was never created', () => {
+    const file = join(dir, 'aka.db');
+    writeFileSync(file, 'store');
+    const empty = `${file}.legacy.1.dddddddd.bak.partial`;
+    mkdirSync(empty);
+    const anHourAgo = new Date(Date.now() - 60 * 60_000);
+    utimesSync(empty, anHourAgo, anHourAgo);
+
+    reapStalePartials(file);
+
+    expect(existsSync(empty)).toBe(false);
   });
 
   it('does nothing, and never throws, when the data dir has no stale partials', () => {

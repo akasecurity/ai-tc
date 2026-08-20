@@ -30,7 +30,7 @@ import type {
   TrustLevel,
   Visibility,
 } from '@akasecurity/schema';
-import { HarnessId as HarnessIdSchema } from '@akasecurity/schema';
+import { HARNESS, HarnessId as HarnessIdSchema, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { safeJson } from '../internal/json.ts';
 import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
@@ -104,10 +104,10 @@ const WORKTREE_CHECKOUT_FILTER =
 // total: a new enum value without a label is a typecheck failure, not a raw id
 // leaking into the UI.
 const HARNESS_LABELS: Record<HarnessId, string> = {
-  claudecode: 'Claude Code',
-  cursor: 'Cursor',
-  codex: 'Codex',
-  antigravity: 'Antigravity',
+  [HARNESS.ClaudeCode]: 'Claude Code',
+  [HARNESS.Cursor]: 'Cursor',
+  [HARNESS.Codex]: 'Codex',
+  [HARNESS.Antigravity]: 'Antigravity',
 };
 
 // A harness (AI tool) is "live" only if its inventory row was seen within this
@@ -155,15 +155,46 @@ interface HarnessAttrs {
   provenance?: string;
 }
 
+// Collapse the separators a wire id can carry, so a title and a needle are
+// compared in the same shape. Applied to BOTH sides of the sniff below.
+const stripSeparators = (value: string): string => value.toLowerCase().replace(/[\s-]/g, '');
+
+// The stored `title` values the sniff matches on, keyed by the member name they
+// resolve to. One row per `HarnessId` member, spelled through SOURCE_TOOL
+// because a title IS a wire id — see resolveHarnessId.
+const TITLE_NEEDLES: Record<keyof typeof HarnessIdSchema.enum, string> = {
+  ClaudeCode: stripSeparators(SOURCE_TOOL.ClaudeCode),
+  Cursor: stripSeparators(SOURCE_TOOL.Cursor),
+  Codex: stripSeparators(SOURCE_TOOL.Codex),
+  Antigravity: stripSeparators(SOURCE_TOOL.Antigravity),
+};
+
 function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | null {
   if (attrs.provider && VALID_HARNESS_IDS.has(attrs.provider)) {
     return attrs.provider as HarnessId;
   }
-  const t = (row.title ?? '').toLowerCase().replace(/[\s-]/g, '');
-  if (t.includes('claudecode') || t === 'claude') return 'claudecode';
-  if (t.includes('cursor')) return 'cursor';
-  if (t.includes('codex')) return 'codex';
-  if (t.includes('antigravity')) return 'antigravity';
+  // Fall back to sniffing the row's title, which is the live path: the capture
+  // side writes `title: input.tool` and no `provider` attribute at all, so the
+  // short-circuit above never fires for a real scanned row.
+  //
+  // That makes the haystack a SOURCE_TOOL wire id ('claude-code'), so the
+  // needles are derived from SOURCE_TOOL and mapped onto the harness ids they
+  // return. Deriving them from HARNESS instead reads as equivalent and is not:
+  // the two vocabularies spell ClaudeCode differently, so a HARNESS needle only
+  // matches here because stripping the separator happens to collapse the wire
+  // id onto the display id. Respelling `HARNESS.ClaudeCode` would move the
+  // needle while the stored titles stayed put, and every card would silently
+  // stop resolving.
+  //
+  // Both sides are stripped by the same function for the same reason. Stripping
+  // only the haystack is correct solely while no id carries a separator — give
+  // any harness a hyphenated id and an unstripped needle can never match a
+  // stripped haystack.
+  const t = stripSeparators(row.title ?? '');
+  if (t.includes(TITLE_NEEDLES.ClaudeCode) || t === 'claude') return HARNESS.ClaudeCode;
+  if (t.includes(TITLE_NEEDLES.Cursor)) return HARNESS.Cursor;
+  if (t.includes(TITLE_NEEDLES.Codex)) return HARNESS.Codex;
+  if (t.includes(TITLE_NEEDLES.Antigravity)) return HARNESS.Antigravity;
   return null;
 }
 
@@ -176,7 +207,7 @@ function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | nul
 function isLiveRealClaudeCode(rows: HarnessRow[]): boolean {
   return rows.some((r) => {
     const attrs = safeJson<HarnessAttrs>(r.attributes, {});
-    return attrs.provenance !== 'sample' && resolveHarnessId(attrs, r) === 'claudecode';
+    return attrs.provenance !== 'sample' && resolveHarnessId(attrs, r) === HARNESS.ClaudeCode;
   });
 }
 
@@ -532,7 +563,8 @@ export class SqliteInventoryAssetsRepository implements InventoryReadPort {
       // Skills/hooks are Claude Code config concepts — attach them ONLY to the real
       // Claude Code card, never a future (real) Cursor/Codex harness, and on exactly
       // one card so assetCount here agrees with getInventoryStats' single count.
-      const attachConfig = isRealHarness && harnessId === 'claudecode' && configAssets.length > 0;
+      const attachConfig =
+        isRealHarness && harnessId === HARNESS.ClaudeCode && configAssets.length > 0;
       const assets = attachConfig
         ? [...harnessAssets, ...configAssets].sort((a, b) => a.name.localeCompare(b.name))
         : harnessAssets;

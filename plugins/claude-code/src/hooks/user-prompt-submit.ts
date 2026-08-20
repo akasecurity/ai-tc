@@ -33,7 +33,7 @@ import {
   createVaultGlue,
   loadConfig,
 } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid } from '@akasecurity/schema';
+import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { writeClipboard } from './clipboard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   try {
     result = await runtime.capture({
       kind: 'prompt',
-      sourceTool: 'claude-code',
+      sourceTool: SOURCE_TOOL.ClaudeCode,
       text: prompt,
       metadata,
     });

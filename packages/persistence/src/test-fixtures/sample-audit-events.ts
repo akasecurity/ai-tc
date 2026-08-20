@@ -1,5 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { HARNESS, type Harness } from '@akasecurity/schema';
+
 import { sampleActivityId } from './sample-ids.ts';
 
 /**
@@ -63,7 +65,7 @@ interface SeedTokens {
 
 interface SeedSession {
   slug: string;
-  harness: string;
+  harness: Harness;
   title: string;
   project: string;
   repo: string;
@@ -87,7 +89,7 @@ interface SeedSession {
 const SAMPLE_SESSIONS: SeedSession[] = [
   {
     slug: 'payments-idempotency',
-    harness: 'claudecode',
+    harness: HARNESS.ClaudeCode,
     title: 'Add idempotency keys to charge & refund',
     project: 'payments-api',
     repo: 'globex/payments-api',
@@ -192,7 +194,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'matching-latency',
-    harness: 'cursor',
+    harness: HARNESS.Cursor,
     title: 'Investigate matching latency regression',
     project: 'matching-core',
     repo: 'globex/matching-core',
@@ -255,7 +257,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'deploy-runbook',
-    harness: 'claudecode',
+    harness: HARNESS.ClaudeCode,
     title: 'Deploy runbook + Pulse notifier',
     project: 'infra-iac',
     repo: 'globex/infra-iac',
@@ -317,7 +319,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'crm-export',
-    harness: 'claudecode',
+    harness: HARNESS.ClaudeCode,
     title: 'Customer export job for CRM sync',
     project: 'crm-sync',
     repo: 'globex/crm-sync',
@@ -404,7 +406,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'churn-notebook',
-    harness: 'claudecode',
+    harness: HARNESS.ClaudeCode,
     title: 'Churn analysis notebook',
     project: 'analytics-nb',
     repo: 'globex/analytics-nb',
@@ -467,7 +469,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'notion-mcp',
-    harness: 'codex',
+    harness: HARNESS.Codex,
     title: 'Scaffold MCP server for Notion',
     project: 'mcp-builder',
     repo: 'globex/mcp-builder',
@@ -519,7 +521,7 @@ const SAMPLE_SESSIONS: SeedSession[] = [
   },
   {
     slug: 'ci-release-debug',
-    harness: 'claudecode',
+    harness: HARNESS.ClaudeCode,
     title: 'Debug failing CI on release',
     project: 'infra-iac',
     repo: 'globex/infra-iac',

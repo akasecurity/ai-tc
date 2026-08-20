@@ -80,6 +80,33 @@ export function tightenDir(dir: string): void {
   chmodBestEffort(dir, DATA_DIR_MODE);
 }
 
+/**
+ * Create `dir` owner-only from the instant it exists — the directory twin of
+ * {@link writeExclusiveOwnerOnlySync}, and load-bearing for the same reason.
+ *
+ * Every caller follows this with a `tightenDir`, which is deliberate: `mkdir`'s
+ * mode is subject to the umask, and a umask only ever CLEARS bits, so one that
+ * would take some away (0o277 and up) leaves a directory this create alone
+ * cannot hold at 0700. That belt-and-suspenders pair is also why the create mode
+ * cannot be defended by looking at the finished directory — the tighten repairs
+ * the end state, so deleting the `mode` here leaves every post-hoc assertion in
+ * the workspace green while the directory is briefly traversable by every
+ * account on the machine. It matters most where something is written INTO the
+ * directory during that window: the snapshot staging area is a full copy of the
+ * prompt corpus, and the rotation lock is stamped immediately after it is made.
+ *
+ * `paths.test.ts` asserts this function directly, under a permissive umask and
+ * with no tighten in the way, so the create mode has one test of its own that a
+ * deletion reddens.
+ *
+ * `recursive` is passed through rather than fixed: the layout dirs are created
+ * parents-and-all, while the lock and the staging area need `mkdir`'s EEXIST to
+ * propagate — that refusal is how the lock picks exactly one winner.
+ */
+export function mkdirOwnerOnlySync(dir: string, recursive = false): void {
+  mkdirSync(dir, { recursive, mode: DATA_DIR_MODE });
+}
+
 // Create the data dir owner-only, tightening it even if it pre-existed with
 // looser permissions. chmod is best-effort (a no-op on platforms without POSIX
 // modes, e.g. Windows) and must never break the fail-open open path.
@@ -92,7 +119,7 @@ export function tightenDir(dir: string): void {
 // unusual home), and `aka init` names the link and its target, since inheriting
 // those permissions silently is the part a user has to know about.
 export function ensureDataDirSync(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
+  mkdirOwnerOnlySync(dir, true);
   tightenDir(dir);
 }
 
@@ -119,6 +146,29 @@ export function tightenPerms(file: string): void {
   for (const path of [file, ...dbSidecars(file)]) chmodBestEffort(path, DATA_FILE_MODE);
 }
 
+/**
+ * Create `file` with `data`, owner-only from the instant it exists.
+ *
+ * The single place a store file is BROUGHT INTO BEING, so the create mode lives
+ * in one place rather than beside each writer. `mode` is applied by the create
+ * itself, so the file is never briefly world-readable with its contents already
+ * in it — which a `writeFileSync` + `chmod` pair cannot promise, and which is
+ * the half a reader cannot see afterwards because the end state is identical
+ * either way. That is also why the mode is not defensible by any assertion on a
+ * published file: every caller below re-tightens after publishing, so dropping
+ * the `mode` here leaves every end state correct. `paths.test.ts` asserts this
+ * function directly, under a permissive umask and with no tighten in the way, so
+ * the create mode has one test of its own that a deletion reddens.
+ *
+ * `wx` (O_EXCL) is the other half of the contract and is equally load-bearing:
+ * it refuses to follow a symlink, so a leftover or planted link at `file` can
+ * neither be written through nor have its target chmod'd, and it picks exactly
+ * one winner when two callers race the same path.
+ */
+export function writeExclusiveOwnerOnlySync(file: string, data: string): void {
+  writeFileSync(file, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+}
+
 // Atomic owner-only write of `file`: write a sibling tmp, then rename it into
 // place. The caller must have created the parent dir (ensureDataDirSync).
 //
@@ -141,7 +191,7 @@ export function writeOwnerOnlyFileSync(file: string, data: string): void {
     // target; the exclusive `wx` create below still refuses to follow a symlink.
   }
   try {
-    writeFileSync(tmp, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    writeExclusiveOwnerOnlySync(tmp, data);
     renameSync(tmp, file);
   } finally {
     try {
@@ -276,7 +326,7 @@ export function createOwnerOnlyFileSync(file: string, data: string): boolean {
   }
   let created: boolean;
   try {
-    writeFileSync(tmp, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    writeExclusiveOwnerOnlySync(tmp, data);
     created = publishByLink(tmp, file, data);
   } finally {
     try {
@@ -321,7 +371,7 @@ function publishByLink(tmp: string, file: string, data: string): boolean {
     if (!LINK_UNSUPPORTED.has(code ?? '')) throw err;
   }
   try {
-    writeFileSync(file, data, { mode: DATA_FILE_MODE, flag: 'wx' });
+    writeExclusiveOwnerOnlySync(file, data);
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 import { EXCEPTION_KEY_FILENAME } from '../src/fingerprint.ts';
+import { SNAPSHOT_STAGING_SUFFIX } from '../src/internal/snapshot.ts';
 import { dataDir, defaultDataDir, keysDir, settingsDir } from '../src/local-layout.ts';
 import { DATA_DIR_MODE, DATA_FILE_MODE, DB_FILENAME, dbSidecars } from '../src/paths.ts';
 import { SETTINGS_FILENAME } from '../src/settings.ts';
@@ -139,7 +140,29 @@ const upToClaim = (text: string, claim: string): string => {
 
 const enumeration = upToClaim(atRest, FILE_MODE_CLAIM);
 
+// How many times the slice anchor occurs in the section it slices.
+const occurrences = (text: string, needle: string): number =>
+  needle === '' ? 0 : text.split(needle).length - 1;
+
 describe('SECURITY.md "Data at rest" enumerates the store', () => {
+  /**
+   * The slice above narrows the window to the enumeration, and it holds only
+   * while the anchor it slices on occurs ONCE. Nothing used to assert that.
+   *
+   * The claim is a sentence, not a marker, so it is reachable by an ordinary
+   * reword — and `are written 0600` already appeared a second time further down,
+   * in the paragraph about the backup copies. Reword the first occurrence and
+   * `upToClaim` falls through to that one, the window silently grows back to the
+   * whole section, and the guard is a whole-section text search again: dropping
+   * both `-journal` and `vault.key` from the list then stays green, because the
+   * WAL paragraph and the `vault.key` paragraph mention them anyway. That is
+   * exactly the failure mode the slice exists to prevent, so it is asserted
+   * rather than assumed — one line, beside the thing it protects.
+   */
+  it('slices on an anchor that occurs exactly once', () => {
+    expect(occurrences(atRest, FILE_MODE_CLAIM)).toBe(1);
+  });
+
   it.each(STORE_DIRS)('lists the %s directory among the tightened set', (dir) => {
     expect(enumeration).toContain(dir);
   });
@@ -166,14 +189,27 @@ describe('SECURITY.md "Data at rest" enumerates the store', () => {
     expect(atRest).toMatch(/moves the whole set aside/i);
   });
 
-  // The staging file is the widest window in the at-rest story: a full copy at
-  // the umask, and reapStalePartials runs from the two snapshot paths only —
-  // never on an ordinary open. Copy that implies routine cleanup understates how
-  // long it can sit there, so the note has to bound the sweep and say what to do.
+  // The staging copy is the one at-rest artifact that cannot be created
+  // owner-only — VACUUM INTO refuses an existing target, so the copy lands at
+  // the umask and only an enclosing directory can cover it while it is written.
+  // Both halves of that have to be in the note, and the suffix is DERIVED from
+  // the module that builds the path rather than spelled here: the name is what a
+  // reader greps their own data dir for, so a rename that left the note behind
+  // would send them looking for a file they do not have.
+  it('names the staging directory, and says it is owner-only', () => {
+    expect(atRest).toContain(`.bak${SNAPSHOT_STAGING_SUFFIX}`);
+    expect(atRest).toMatch(/created owner-only \(`0700`\) before the copy starts/i);
+  });
+
+  // And says when it goes. The previous wording — cleared "only when it next
+  // takes a snapshot" — was accurate and is now false: the sweep runs on every
+  // open. Copy that still implied a snapshot were needed would overstate the
+  // exposure, which is its own kind of wrong answer for someone auditing a
+  // machine.
   it('bounds when the abandoned staging copy is cleared, and says to delete it', () => {
-    expect(atRest).toContain('.bak.partial');
-    expect(atRest).toMatch(/only when it next takes a snapshot/i);
-    expect(atRest).toMatch(/delete it/i);
+    expect(atRest).toMatch(/on the next open of the store/i);
+    expect(atRest).toMatch(/in flight is left alone/i);
+    expect(atRest).toMatch(/delete one that outlives/i);
   });
 });
 

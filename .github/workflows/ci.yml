@@ -442,9 +442,16 @@ jobs:
   # a different property: installing the native host is not the same as the host
   # resolving its worker at runtime.
   #
-  # Whose `test` is deliberately NOT here: `dashboard-ui` and `ui-kit`
-  # (presentational, no I/O — `ui-kit` has no `test` script at all) and
-  # `audit-gate` (repo tooling, never shipped).
+  # Whose `test` is deliberately NOT here: `ui-kit` (presentational, no I/O, and
+  # no `test` script at all) and `audit-gate` (repo tooling, never shipped).
+  #
+  # `dashboard-ui` is not in this list either, but it is NOT excluded — it runs in
+  # the "Test the dashboard suites" step further down, beside `web-ui`. It is
+  # presentational and does no I/O, so it would belong in the sentence above on
+  # that reasoning alone; what put it on this platform is that the theme suites
+  # MOVED there out of `web-ui`, which this list does cover. Leaving it off would
+  # have silently dropped 24 tests from Windows in a diff that never mentions
+  # Windows — the coverage delta, not the platform sensitivity, is the reason.
   #
   # Adding it was a one-line change rather than a debugging session because
   # `plugins/browser-extension/test/global-setup.ts` was already given
@@ -759,18 +766,30 @@ jobs:
       # neighbour lengthens — 136s for that file in the serialised run,
       # 309-616s with persistence's whole body beside it.
       #
-      # `--concurrency=1` for the reason the installer's is: one package, and
-      # ci-test-concurrency.test.js requires a bound on every `turbo run test`.
-      # Every dependency web-ui's `test` has (`build:worker` and `^typecheck`;
-      # its `build` edge is dropped in web-ui/turbo.json) is already cached by
-      # the step above — `build:worker` because `web-ui#build` depends on it and
-      # cli's `test` reaches that through `^build` — so this executes one task.
+      # `dashboard-ui` rides along here rather than in the shipped-surface filter
+      # list above; why it is on this platform at all is stated once, in the
+      # comment above that list, and not repeated here.
+      #
+      # `--concurrency=1` for the reason the installer's is: a short filter list,
+      # and ci-test-concurrency.test.js requires a bound on every `turbo run
+      # test`. With two packages the bound also keeps them SERIAL, which is the
+      # isolation this step exists for in the first place — `web-ui` is
+      # latency-bound on fsync (see above), so a neighbour is exactly what it
+      # must not have, including a cheap one.
+      # Every dependency either `test` has is already cached by the step above, so
+      # what executes here is the two `test` tasks. `web-ui`'s `build:worker`
+      # because `web-ui#build` depends on it and cli's `test` reaches that through
+      # `^build` (its own `build` edge is dropped in web-ui/turbo.json);
+      # `dashboard-ui`'s `^typecheck` because cli devDepends on the package and
+      # cli's `test` takes `^typecheck`. The `dashboard-ui#build` and
+      # `ui-kit#build` nodes in the graph are no-ops — neither package has a
+      # `build` script.
       #
       # `!cancelled()` so a red shipped-surface step still leaves this one
       # reporting, for the same reason that step takes `--continue`.
       - name: Test the dashboard suites
         if: ${{ !cancelled() }}
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
       # fourteen above and the dashboard step, rather than beside any of them.

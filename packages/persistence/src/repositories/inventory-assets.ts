@@ -30,7 +30,7 @@ import type {
   TrustLevel,
   Visibility,
 } from '@akasecurity/schema';
-import { HARNESS, HarnessId as HarnessIdSchema } from '@akasecurity/schema';
+import { HARNESS, HarnessId as HarnessIdSchema, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { safeJson } from '../internal/json.ts';
 import { allRows, countBy, countScalar, getRow } from '../internal/rows.ts';
@@ -155,19 +155,46 @@ interface HarnessAttrs {
   provenance?: string;
 }
 
+// Collapse the separators a wire id can carry, so a title and a needle are
+// compared in the same shape. Applied to BOTH sides of the sniff below.
+const stripSeparators = (value: string): string => value.toLowerCase().replace(/[\s-]/g, '');
+
+// The stored `title` values the sniff matches on, keyed by the member name they
+// resolve to. One row per `HarnessId` member, spelled through SOURCE_TOOL
+// because a title IS a wire id — see resolveHarnessId.
+const TITLE_NEEDLES: Record<keyof typeof HarnessIdSchema.enum, string> = {
+  ClaudeCode: stripSeparators(SOURCE_TOOL.ClaudeCode),
+  Cursor: stripSeparators(SOURCE_TOOL.Cursor),
+  Codex: stripSeparators(SOURCE_TOOL.Codex),
+  Antigravity: stripSeparators(SOURCE_TOOL.Antigravity),
+};
+
 function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | null {
   if (attrs.provider && VALID_HARNESS_IDS.has(attrs.provider)) {
     return attrs.provider as HarnessId;
   }
-  // Fall back to sniffing the row's title. The needles are the harness ids
-  // themselves with separators stripped, so they are derived from the registry
-  // rather than spelled again — a respelled id changes what is matched and what
-  // is returned together.
-  const t = (row.title ?? '').toLowerCase().replace(/[\s-]/g, '');
-  if (t.includes(HARNESS.ClaudeCode) || t === 'claude') return HARNESS.ClaudeCode;
-  if (t.includes(HARNESS.Cursor)) return HARNESS.Cursor;
-  if (t.includes(HARNESS.Codex)) return HARNESS.Codex;
-  if (t.includes(HARNESS.Antigravity)) return HARNESS.Antigravity;
+  // Fall back to sniffing the row's title, which is the live path: the capture
+  // side writes `title: input.tool` and no `provider` attribute at all, so the
+  // short-circuit above never fires for a real scanned row.
+  //
+  // That makes the haystack a SOURCE_TOOL wire id ('claude-code'), so the
+  // needles are derived from SOURCE_TOOL and mapped onto the harness ids they
+  // return. Deriving them from HARNESS instead reads as equivalent and is not:
+  // the two vocabularies spell ClaudeCode differently, so a HARNESS needle only
+  // matches here because stripping the separator happens to collapse the wire
+  // id onto the display id. Respelling `HARNESS.ClaudeCode` would move the
+  // needle while the stored titles stayed put, and every card would silently
+  // stop resolving.
+  //
+  // Both sides are stripped by the same function for the same reason. Stripping
+  // only the haystack is correct solely while no id carries a separator — give
+  // any harness a hyphenated id and an unstripped needle can never match a
+  // stripped haystack.
+  const t = stripSeparators(row.title ?? '');
+  if (t.includes(TITLE_NEEDLES.ClaudeCode) || t === 'claude') return HARNESS.ClaudeCode;
+  if (t.includes(TITLE_NEEDLES.Cursor)) return HARNESS.Cursor;
+  if (t.includes(TITLE_NEEDLES.Codex)) return HARNESS.Codex;
+  if (t.includes(TITLE_NEEDLES.Antigravity)) return HARNESS.Antigravity;
   return null;
 }
 

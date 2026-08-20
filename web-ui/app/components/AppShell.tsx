@@ -1,6 +1,7 @@
 'use client';
 
-import { type IconComponent, ThemeToggle } from '@akasecurity/dashboard-ui';
+import type { IconComponent } from '@akasecurity/dashboard-ui';
+import { ThemeToggle } from '@akasecurity/dashboard-ui/theme/toggle';
 import { cn } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';

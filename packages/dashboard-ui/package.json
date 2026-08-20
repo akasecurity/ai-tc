@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./recommendations": "./src/security/recommendations.ts"
+    "./recommendations": "./src/security/recommendations.ts",
+    "./theme": "./src/theme/theme.ts",
+    "./theme/toggle": "./src/theme/ThemeToggle.tsx"
   },
   "scripts": {
     "lint": "eslint src test *.config.*",

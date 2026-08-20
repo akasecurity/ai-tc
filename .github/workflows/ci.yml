@@ -759,8 +759,10 @@ jobs:
       # neighbour lengthens — 136s for that file in the serialised run,
       # 309-616s with persistence's whole body beside it.
       #
-      # `--concurrency=1` for the reason the installer's is: one package, and
-      # ci-test-concurrency.test.js requires a bound on every `turbo run test`.
+      # `--concurrency=1` for the reason the installer's is: a short filter list,
+      # and ci-test-concurrency.test.js requires a bound on every `turbo run
+      # test`. With two packages the bound also keeps them serial, which is the
+      # isolation this step exists for in the first place.
       # Every dependency web-ui's `test` has (`build:worker` and `^typecheck`;
       # its `build` edge is dropped in web-ui/turbo.json) is already cached by
       # the step above — `build:worker` because `web-ui#build` depends on it and
@@ -770,7 +772,7 @@ jobs:
       # reporting, for the same reason that step takes `--continue`.
       - name: Test the dashboard suites
         if: ${{ !cancelled() }}
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
       # fourteen above and the dashboard step, rather than beside any of them.

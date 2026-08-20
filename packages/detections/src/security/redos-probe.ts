@@ -77,6 +77,33 @@ function literalPrefix(pattern: string): string {
 // One representative character per character class / shorthand the pattern uses,
 // so a probe run is made of characters the pattern's repeated group actually
 // consumes. Falls back to 'a' when the pattern names no class.
+//
+// THE CLASS SCAN BELOW IS QUADRATIC, DELIBERATELY LEFT SO, AND CodeQL'S ALERT ON
+// IT IS DISMISSED AS `won't fix` RATHER THAN AS A FALSE POSITIVE. The difference
+// matters, because the tempting reading is the wrong one.
+//
+// It is NOT a false positive. `/\[\^?([^\]]+)\]/g` is our own regex run over
+// text we did not write — a pulled pack's `pattern` — which is exactly the shape
+// a real ReDoS takes. That this module's job is adversarial concerns the probes
+// it BUILDS; this is a parser over hostile input, and being next to adversarial
+// code buys it nothing. On `[` repeated with no closing `]`, `matchAll` restarts
+// at each position and each restart consumes to the end: measured 2.2ms / 26.7ms
+// / 356ms at 2k / 8k / 32k characters.
+//
+// What makes it safe is the INPUT BOUND, and only that. `Rule.matcher.pattern`
+// is capped at `MAX_PATTERN_LENGTH` (2000) by `@akasecurity/schema`, so 2.2ms is
+// the worst reachable cost — and production reaches this only from inside the
+// scan worker, under `ISOLATED_PROBE_BUDGET_MS`, where it can be killed anyway.
+//
+// So the dismissal rests on that cap. Raise `MAX_PATTERN_LENGTH` and this grows
+// as its square with nothing guarding the link; re-measure before you do.
+//
+// Do not "fix" it with an atomic group. `(?=([^\]]+))\1` is provably equivalent
+// here — 0 diffs across all 90 bundled patterns and 13 adversarial cases — and
+// still quadratic (4.8/17.6/64.0/246.7ms at 4k/8k/16k/32k), because the cost is
+// per START POSITION, not inner backtracking. Every rewrite that IS linear
+// changes which classes are extracted, and that changes the probes the whole
+// battery derives.
 function fuelChars(pattern: string): string[] {
   const fuel = new Set<string>();
   for (const m of pattern.matchAll(/\[\^?([^\]]+)\]/g)) {

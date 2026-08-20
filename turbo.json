@@ -12,7 +12,17 @@
   // so weakening it would otherwise leave every one of them replaying a cached
   // green taken under the old rule.
   //
-  // test/vitest/** is the third, and the sharpest of them: it holds the shared
+  // test/fixtures/** is the third, and it is the one "fixtures are just test
+  // data" talks you out of. The adversarial corpus under
+  // test/fixtures/adversarial/hostile-repo/ GENERATES the trees the walkers have
+  // to survive — symlink loops, `..`-bearing names, nesting past what a path can
+  // address, 500k ignored files — and the suites that drive it live in other
+  // packages. Weaken a shape (shrink the tree, drop the loop, break the deep
+  // chain) and every one of those suites reports green WITHOUT EXECUTING,
+  // because turbo hands back a result computed under the OLD fixture. That is
+  // the guard silently ceasing to guard at the one moment it is being changed.
+  //
+  // test/vitest/** is the fourth, and the sharpest of them: it holds the shared
   // coverage block AND every package's coverage FLOOR. A floor is a threshold
   // the package's own test run enforces, so lowering one — or widening an
   // exclude so a file stops counting — changes what `test` is allowed to pass
@@ -24,6 +34,7 @@
     "rules/**",
     "test/setup/**",
     "test/helpers/**",
+    "test/fixtures/**",
     "test/vitest/**"
   ],
   "tasks": {

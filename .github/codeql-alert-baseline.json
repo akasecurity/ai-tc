@@ -1,9 +1,9 @@
 {
-  "measured": "2026-08-17",
+  "measured": "2026-08-20",
   "note": "Open CodeQL alerts on main. A ratchet in BOTH directions: a rise fails, and so does a fall, because a baseline nobody lowers stops describing the tree. Lower it in the commit that fixes or dismisses the alert. Every count here is untriaged work, not an accepted level.",
-  "predicted": "The 25 high alerts were MEASURED on main. The absence of the medium is PREDICTED, not measured: main currently carries one actions/missing-workflow-permissions alert on build-binaries.yml, and the permissions block added in this change is what clears it — which cannot be observed until main is re-analysed after merge. If the prediction is wrong the first scheduled run says so in one line and the fix is one character here.",
-  "total": 25,
+  "predicted": "main MEASURED 25 high on 2026-08-20 (js/path-injection 17, js/polynomial-redos 7, js/weak-cryptographic-algorithm 1). The 24 here is PREDICTED for after the tree-walk change lands, and the arithmetic is one alert: that change hoists the layered ignore evaluation into one shared module, so the two identical readFileSync(join(dir, filename)) sinks main carries at local-ops/src/fs-scan.ts and plugin-sdk/src/project-files.ts become a single one at plugin-sdk/src/ignore-layers.ts. Every other sink in those files relocates line-for-line \u2014 same expression, new line \u2014 so js/path-injection goes 17 -> 16 and the total 25 -> 24. Nothing is fixed or dismissed here: the walk still takes a caller-supplied root by design, which is what that rule flags, and the remaining 16 stay untriaged like the rest. This cannot be observed until main is re-analysed, and this gate runs on cron rather than on push precisely so it reads a settled analysis \u2014 so if the prediction is wrong the first scheduled run says so in one line and the fix is one character here.",
+  "total": 24,
   "bySeverity": {
-    "high": 25
+    "high": 24
   }
 }

@@ -36,6 +36,8 @@ export {
 } from './fingerprint.ts';
 export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
+export type { IgnoreLayer, IgnoreState } from './ignore-layers.ts';
+export { childRel, evaluateIgnore, readIgnoreLayer, withLayer } from './ignore-layers.ts';
 export type { ResolveInventoryInput } from './inventory-resolver.ts';
 export { resolveInventoryContext } from './inventory-resolver.ts';
 export type {
@@ -60,7 +62,8 @@ export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
 export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
 export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
-export { resolveProjectFiles } from './project-files.ts';
+export type { ProjectWalkBounds } from './project-files.ts';
+export { PROJECT_WALK_BOUNDS, resolveProjectFiles } from './project-files.ts';
 export type { Provider, ProviderOrUnknown, ResolvedProvider } from './provider.ts';
 export { providerFromModelId, resolveProvider } from './provider.ts';
 export type {
